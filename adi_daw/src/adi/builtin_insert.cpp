@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/builtin_catalog.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -12,12 +13,6 @@
 namespace adi {
 namespace {
 std::int64_t integer(const Payload& value){return detail::signedInteger(value);}
-std::int64_t nextId(SQLite::Database& db,const char* table) {
-    SQLite::Statement value(db,std::string("SELECT IFNULL(MAX(id),0) FROM ")+table);value.executeStep();
-    const auto last=std::max<std::int64_t>(0,value.getColumn(0).getInt64());
-    if(last==std::numeric_limits<std::int64_t>::max())throw std::runtime_error(std::string(table)+" identities are exhausted");
-    return last+1;
-}
 std::string identity(SQLite::Database& db) {
     SQLite::Statement query(db,"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
@@ -81,7 +76,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         const auto* info=findBuiltin(uid);
         if(!info)throw std::runtime_error("unknown built-in device");
         if(!info->available)throw std::runtime_error(std::string(info->name)+" is not available through this built-in loader");
-        auto& db=store.db();std::optional<SQLite::Transaction> read;
+        auto& db=store.db();RowIds ids(db);std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
         SQLite::Statement target(db,"SELECT 1 FROM tracks WHERE id=?");target.bind(1,track);
@@ -95,7 +90,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         reference.bind(1,std::string(uid));
         if(reference.executeStep())result.referenceId=reference.getColumn(0).getInt64();
         else {
-            result.referenceId=nextId(db,"plugin_refs");
+            result.referenceId=ids.next("plugin_refs");
             auto row=referenceRow(db,{{"id",result.referenceId},{"format","internal"},{"uid",uid},{"vendor","ADI"},
                 {"name",info->name},{"version","1"},{"subtype","effect"},{"path_hint",""},{"is_shell",0},{"shell_id",nullptr}});
             append("pluginRef.register",{{"id",result.referenceId},{"row",row}},"plugin",result.referenceId);
@@ -109,7 +104,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
             SQLite::Statement chain(db,"SELECT id FROM device_chains WHERE track_id=? ORDER BY ord,id LIMIT 1");chain.bind(1,track);
             if(chain.executeStep())result.chainId=chain.getColumn(0).getInt64();
             else {
-                result.chainId=nextId(db,"device_chains");
+                result.chainId=ids.next("device_chains");
                 append("chain.create",{{"id",result.chainId},{"track",track},{"ord",0},{"name","Devices"}},"chain",result.chainId);
             }
         }
@@ -123,7 +118,7 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
             const auto index=static_cast<std::int64_t>(i+(i>=position?1u:0u));
             if(order[i].second!=index)append("device.move",{{"id",order[i].first},{"chain",result.chainId},{"ord",index}},"device",order[i].first);
         }
-        result.deviceId=nextId(db,"devices");
+        result.deviceId=ids.next("devices");
         append("device.insert",{{"id",result.deviceId},{"chain",result.chainId},{"ord",static_cast<std::int64_t>(position)},
             {"ref",result.referenceId},{"name",info->name},{"enabled",true},{"rack",false}},"device",result.deviceId);
         result.ok=true;

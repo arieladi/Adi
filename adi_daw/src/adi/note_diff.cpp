@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/note_diff.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/note_diff_ops.hpp"
 #include "adi/note_overlap_detail.hpp"
 #include "adi/note_stream_detail.hpp"
@@ -459,13 +460,18 @@ Payload nativeCreation(SQLite::Database& db,std::int64_t clip,bool historicalSca
         actual.insert(columns.getColumn(0).getString());
     }
     if(actual!=native)throw std::runtime_error("legacy first note insert needs native columns; use prepared note.applyDiff creation");
-    SQLite::Statement ids(db,"SELECT MAX(id) FROM event_streams");ids.executeStep();
-    const auto stored=ids.getColumn(0).isNull()?std::int64_t{0}:ids.getColumn(0).getInt64();
-    // Old omitted INTEGER PRIMARY KEY allocation used MAX+1, including zero
-    // or negative IDs when only negative keys existed. New capture is literal.
-    const auto greatest=historicalScalar?stored:std::max<std::int64_t>(0,stored);
-    if(greatest==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("notes stream IDs are exhausted");
-    return {{"id",greatest+1},{"clip_id",clip},{"stream_kind","notes"},{"channel",nullptr},{"controller",nullptr},{"data",blob(nativeEmpty())}};
+    std::int64_t id;
+    if(historicalScalar) {
+        // Compatibility only: old scalar replay used MAX+1, including zero
+        // or negative IDs when only negative keys existed. Its capture is literal.
+        SQLite::Statement ids(db,"SELECT MAX(id) FROM event_streams");ids.executeStep();
+        const auto stored=ids.getColumn(0).isNull()?std::int64_t{0}:ids.getColumn(0).getInt64();
+        if(stored==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("notes stream IDs are exhausted");
+        id=stored+1;
+    } else {
+        RowIds ids(db);id=ids.next("event_streams");
+    }
+    return {{"id",id},{"clip_id",clip},{"stream_kind","notes"},{"channel",nullptr},{"controller",nullptr},{"data",blob(nativeEmpty())}};
 }
 int smallInteger(const Payload& value) {
     const auto parsed=integer(value);

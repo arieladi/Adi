@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/sample_slots.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/media_ops.hpp"
@@ -47,9 +48,8 @@ PreparedSampleAssignment prepare(Store& store,std::int64_t deviceId,std::int32_t
         result.options.expectHead.emplace(OpJournal(store).headSeq());
         Payload state=device::emptyBuiltinSample(uid,slot);
         if(file) {
-            const auto highest=db.execAndGet("SELECT MAX(0,IFNULL(MAX(id),0)) FROM media_files").getInt64();
-            if(highest==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("media identities are exhausted");
-            OpRequest import;const auto imported=media::prepareImport(store,*file,highest+1,utc,import,cache);
+            RowIds ids(db);
+            OpRequest import;const auto imported=media::prepareImport(store,*file,ids.next("media_files"),utc,import,cache);
             if(!imported.ok)throw std::runtime_error(imported.error);
             result.mediaId=imported.mediaId;
             if(!import.opType.empty())result.requests.push_back(std::move(import));

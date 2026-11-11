@@ -86,18 +86,12 @@ void restoreDeleted(OpContext& context,const Payload& image) {
 void CopyIds::reserve(const std::string& table,std::int64_t id) {
     const auto& spec=edit::rowSpec(table);
     if(std::string(spec.key)!="id")throw std::runtime_error("child identity is its clip identity");
-    auto found=used_.find(table);
-    if(found==used_.end()) {
-        SQLite::Statement st(db_,"SELECT IFNULL(MAX(id),0) FROM "+std::string(spec.table));
-        st.executeStep();found=used_.emplace(table,std::max<std::int64_t>(0,st.getColumn(0).getInt64())).first;
-    }
-    found->second=std::max(found->second,id);
+    ids_.reserve(table,id);
 }
 std::int64_t CopyIds::next(const std::string& table) {
-    reserve(table,0);auto& value=used_.at(table);
-    if(value==std::numeric_limits<std::int64_t>::max())throw std::runtime_error("clip child ids are exhausted");
-    return ++value;
+    reserve(table,0);return ids_.next(table);
 }
+
 Payload cloneImage(const Payload& source,std::int64_t id,CopyIds& ids) {
     if(id==detail::signedInteger(source.at("id")))throw std::runtime_error("a copy needs a new clip identity");
     ids.reserve("clips",id);

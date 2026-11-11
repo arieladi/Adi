@@ -439,7 +439,7 @@ target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp)
 target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp src/adi/audio/auto_warp.cpp src/adi/engine/warp_projection.cpp)
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
-  src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/row_ids.cpp src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -2022,6 +2022,10 @@ add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
 add_executable(adi_automation_edits_tests tests/test_automation_edits.cpp)
 target_link_libraries(adi_automation_edits_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_automation_edits_tests COMMAND adi_automation_edits_tests)
+
+add_executable(adi_row_ids_tests tests/test_row_ids.cpp)
+target_link_libraries(adi_row_ids_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_row_ids_tests COMMAND adi_row_ids_tests)
 
 add_executable(adi_automation_lanes_tests tests/test_automation_lanes.cpp)
 target_link_libraries(adi_automation_lanes_tests PRIVATE adi_core adi_warnings)
