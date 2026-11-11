@@ -68,7 +68,7 @@ std::error_code refuse(const fs::path&,const fs::path&){return std::make_error_c
 std::vector<unsigned> waits;unsigned renames=0;bool eventually=false;
 bool retry(const std::error_code&){return true;}
 void wait(unsigned ms){waits.push_back(ms);}
-std::error_code delayed(const fs::path& source,const fs::path& target){++renames;if(eventually && renames==3){std::error_code error;fs::rename(source,target,error);return error;}return std::make_error_code(std::errc::permission_denied);}
+std::error_code delayed(const fs::path& source,const fs::path& target){++renames;if(eventually && renames==3)return media::renameReplacing(source,target);return std::make_error_code(std::errc::permission_denied);}
 void publication(){
     test::TempDirectory temp{"project_replace","publish"};const auto source=temp.path()/"Stage",target=temp.path()/"Final";
     write(source,"new complete bytes");write(target,"old complete bytes");

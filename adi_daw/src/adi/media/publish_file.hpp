@@ -72,6 +72,13 @@ struct ReplaceHooks {
     bool (*retryable)(const std::error_code&) = nullptr;
     void (*retryWait)(unsigned milliseconds) = nullptr;
 };
+// The replacing rename replaceFile uses (test hooks reuse it). On Windows it
+// replaces a destination held open only by handles that share delete -- the
+// replacement's own exclusive lease -- which std::filesystem::rename cannot.
+// A volume without POSIX rename (SMB, FAT/exFAT, Windows before 10 1709)
+// returns std::errc::operation_not_supported, never a retryable refusal.
+[[nodiscard]] std::error_code renameReplacing(const std::filesystem::path& source,
+                                              const std::filesystem::path& target) noexcept;
 // Authoritative closed-stage replacement. No copy fallback. Every failure
 // before rename leaves the destination unchanged; post-rename sync failure is
 // published with a warning. A live Store lease refuses replacement.

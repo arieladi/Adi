@@ -7,8 +7,10 @@
 #include <chrono>
 #include <thread>
 #include <array>
+#include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <vector>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -230,14 +232,6 @@ std::error_code syncFolder(const fs::path& path) noexcept {
 #endif
     return {};
 }
-std::error_code renameReplacing(const fs::path& source,const fs::path& target) noexcept {
-#if defined(_WIN32)
-    if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return {};
-    return nativeError();
-#else
-    std::error_code error;fs::rename(source,target,error);return error;
-#endif
-}
 bool transientRename(const std::error_code& error) noexcept {
 #if defined(_WIN32)
     return error.category()==std::system_category() &&
@@ -257,6 +251,48 @@ PublishResult publishedResult(const fs::path& target,const FileIdentity& identit
     }catch(...){/* Publication already happened: never report an unchanged failure. */}
     return result;
 }
+}
+std::error_code renameReplacing(const fs::path& source,const fs::path& target) noexcept {
+#if defined(_WIN32)
+    // replaceFile renames while it holds the destination's exclusive lease
+    // handle. A classic replacing rename (MoveFileExW, std::filesystem::rename)
+    // refuses any target with an open handle, even one sharing delete, so it
+    // can never succeed under that lease. POSIX semantics replace a target
+    // whose every open handle shares delete -- our lease -- and still refuse
+    // one held by SQLite or a Store's shared lease, which do not.
+    try {
+        NativeOwner file;
+        file.value=CreateFileW(source.c_str(),DELETE|SYNCHRONIZE,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(file.value==invalidFile)return nativeError();
+        const auto absolute=fs::absolute(target);
+        const std::wstring& name=absolute.native();
+        const auto bytes=name.size()*sizeof(wchar_t);
+        if(bytes>0xFFFFFFF0u)return std::make_error_code(std::errc::filename_too_long);
+        // FILE_RENAME_INFO with its Flags member, laid out by hand so the
+        // build does not depend on the SDK's _WIN32_WINNT-gated union.
+        std::vector<unsigned char> buffer(sizeof(FILE_RENAME_INFO)+bytes);
+        auto* info=reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+        const DWORD flags=0x1u /*FILE_RENAME_FLAG_REPLACE_IF_EXISTS*/|0x2u /*FILE_RENAME_FLAG_POSIX_SEMANTICS*/;
+        std::memcpy(buffer.data(),&flags,sizeof flags);
+        info->RootDirectory=nullptr;
+        info->FileNameLength=static_cast<DWORD>(bytes);
+        std::memcpy(info->FileName,name.c_str(),bytes);
+        constexpr auto fileRenameInfoEx=static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+        if(SetFileInformationByHandle(file.value,fileRenameInfoEx,info,static_cast<DWORD>(buffer.size())))return {};
+        const auto error=nativeError();
+        // Before Windows 10 1709, or on a volume without POSIX rename (SMB
+        // shares, FAT/exFAT): the classic rename is no way out, since it
+        // refuses the destination replaceFile's own lease holds open. Report
+        // that once, not as a transient refusal to retry; the old bytes and
+        // the stage stay as they were.
+        if(error.value()==ERROR_INVALID_PARAMETER || error.value()==ERROR_NOT_SUPPORTED ||
+           error.value()==ERROR_INVALID_FUNCTION)return std::make_error_code(std::errc::operation_not_supported);
+        return error;
+    }catch(...){return std::make_error_code(std::errc::not_enough_memory);}
+#else
+    std::error_code error;fs::rename(source,target,error);return error;
+#endif
 }
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
@@ -365,6 +401,8 @@ PublishResult replaceFile(const fs::path& selectedSource,const fs::path& selecte
                     if(hooks.retryWait)hooks.retryWait(delay);else std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<std::int64_t>(delay)));
                 }
             }
+            if(error==std::errc::operation_not_supported)
+                return {PublishStatus::failed,false,"replace file: this volume cannot replace a file in place; choose a new name"};
             if(error)return {PublishStatus::failed,false,"replace file: "+error.message()};
             return publishedResult(target,*sourceId,hooks.syncDirectory);
         }
