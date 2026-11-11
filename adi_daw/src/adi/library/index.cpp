@@ -19,6 +19,7 @@ namespace fs = std::filesystem;
 using Json = nlohmann::json;
 namespace {
 using Key = std::pair<std::string, std::string>;
+struct ScanCancelled {};
 constexpr std::size_t maxLibraryJsonBytes=256*1024*1024;
 class LibraryJsonGuard final:public nlohmann::json_sax<Json> {
     struct Context {bool object=false;std::set<std::string> keys;};
@@ -207,32 +208,79 @@ void Index::waitIdle() {
     impl_->cv.wait(lock,[&]{return impl_->queue.empty() && !impl_->active;});
 }
 WorkerStats Index::stats() const { std::lock_guard lock(impl_->mutex); return impl_->counts; }
-ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
+ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std::stop_token stop,
+                       ScanObserver observer) {
     ScanResult result;
+    ScanProgress progress;
+    const auto checkpoint = [&] {
+        if (stop.stop_requested())
+            throw ScanCancelled{};
+    };
+    const auto report = [&] {
+        checkpoint();
+        if (observer) {
+            try {
+                observer(progress);
+            } catch (const std::exception &e) {
+                throw std::runtime_error(std::string("Library scan progress observer failed: ") +
+                                         e.what());
+            } catch (...) {
+                throw std::runtime_error("Library scan progress observer failed");
+            }
+        }
+        checkpoint();
+    };
     try {
+        checkpoint();
         if (volume.id.empty()) throw std::runtime_error("volume identity is empty");
         const auto folder = relativeText(relativeFolder);
         const auto root = fs::canonical(volume.root);
         const auto start = folder.empty() ? root : root / media::pathFromUtf8(folder);
         auto componentPath = root;
         for (const auto& part : media::pathFromUtf8(folder)) {
+            checkpoint();
             componentPath /= part;
             if (fs::is_symlink(fs::symlink_status(componentPath))) throw std::runtime_error("content folder traverses symlink");
         }
         struct Item { std::string path,key; Metadata meta; };
         std::vector<Item> items; std::set<std::string> keys;
+        report();
         for (const auto& file : fs::recursive_directory_iterator(start)) {
-            if (file.is_symlink() || !file.is_regular_file()) continue;
+            checkpoint();
+            ++progress.visited;
+            if (file.is_symlink() || !file.is_regular_file()) {
+                report();
+                continue;
+            }
             const auto path = file.path(); const auto rel = media::pathUtf8(path.lexically_relative(root));
-            if (rel == ".adi-volume-id" || rel.starts_with(".adi-volume-probe-")) continue;
+            if (rel == ".adi-volume-id" || rel.starts_with(".adi-volume-probe-")) {
+                report();
+                continue;
+            }
             const auto full = media::pathUtf8(path);
             const auto database = media::pathUtf8(impl_->path);
-            if (full == database || full == database+"-wal" || full == database+"-shm") continue;
+            if (full == database || full == database + "-wal" || full == database + "-shm") {
+                report();
+                continue;
+            }
             const auto key = normalized(rel,volume.caseSensitive);
             if (!keys.insert(key).second) throw std::runtime_error("ambiguous normalized filenames: " + rel);
             items.push_back({rel,key,metadata(path)});
+            ++progress.files;
+            report();
         }
-        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db);
+        progress.phase = ScanProgress::Phase::Publishing;
+        report();
+        std::unique_lock lock(impl_->mutex, std::defer_lock);
+        if (stop.stop_possible()) {
+            while (!lock.try_lock()) {
+                checkpoint();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else
+            lock.lock();
+        checkpoint();
+        SQLite::Transaction tx(*impl_->db);
         {
             SQLite::Statement existing(*impl_->db,"SELECT case_sensitive FROM volumes WHERE id=?"); existing.bind(1,volume.id);
             if (existing.executeStep() && (existing.getColumn(0).getInt()!=0) != volume.caseSensitive) throw std::runtime_error("volume case behavior changed; explicit rebuild needed");
@@ -245,6 +293,7 @@ ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
         SQLite::Statement change(*impl_->db,"INSERT INTO files(volume,path_key,rel_path,size,mtime) VALUES(?,?,?,?,?) ON CONFLICT(volume,path_key) DO UPDATE SET rel_path=excluded.rel_path,size=excluded.size,mtime=excluded.mtime,hash=NULL,error='',present=1,generation=files.generation+1");
         std::vector<Key> pending;
         for (const auto& item : items) {
+            checkpoint();
             ++result.files; old.reset(); old.clearBindings(); old.bind(1,volume.id); old.bind(2,item.key);
             const bool found = old.executeStep();
             const bool unchanged = found && !old.getColumn(2).isNull() && old.getColumn(0).getInt64()==item.meta.size && sameTime(old.getColumn(1).getInt64(),item.meta.time);
@@ -269,13 +318,25 @@ ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
         if (!prefix.empty()) { prior.bind(2,prefix); prior.bind(3,upper); }
         SQLite::Statement missing(*impl_->db,"UPDATE files SET present=0 WHERE volume=? AND path_key=?");
         while (prior.executeStep()) {
+            checkpoint();
             const auto key=prior.getColumn(0).getString();
             if (!keys.contains(key)) { missing.reset(); missing.bind(1,volume.id); missing.bind(2,key); missing.exec(); }
         }
+        checkpoint();
         tx.commit();
         for (const auto& key : pending) impl_->enqueue(key);
         result.ok=true; impl_->cv.notify_all(); return result;
-    } catch (const std::exception& e) { result.error=e.what(); return result; }
+    } catch (const ScanCancelled &) {
+        // The transaction and mutex have already unwound. These are committed
+        // counts: cancelled publication never advertises queued/hash work.
+        result.files = result.unchanged = result.queued = 0;
+        result.cancelled = true;
+        result.error = "Library scan cancelled";
+        return result;
+    } catch (const std::exception &e) {
+        result.error = e.what();
+        return result;
+    }
 }
 std::vector<Entry> Index::entries() const {
     std::lock_guard lock(impl_->mutex); std::vector<Entry> result;
