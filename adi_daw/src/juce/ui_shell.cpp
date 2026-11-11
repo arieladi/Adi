@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
 #include "ui_floating.hpp"
+#include "adi/edit_plan.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -56,6 +58,7 @@ void AppCommands::reload() {
         recordingDefaults_.quantize = quantize.get<std::string>();
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
+    splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -139,7 +142,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows"};
+                                  "Show Plug-In Windows", "Split"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -348,6 +351,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setActive(active_ != nullptr && active_->devices.canClipboard(clip));
         break;
     }
+    case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
+        info.addDefaultKeypress('e', cmd);
+        info.setActive(active_ != nullptr);
+        break;
     case TogglePluginWindows: // manual 23.3, 41.4: View > Show/Hide Plug-In Windows, Ctrl/Cmd+Alt+P
         info.addDefaultKeypress('p', cmd | alt);
         info.shortName = active_ != nullptr && active_->pluginWindowsShown() ? "Hide Plug-In Windows"
@@ -1276,6 +1283,64 @@ bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
         return true;
     ops.front().selBefore = session_.advisory();
     return edited(submitter_.submit(std::move(ops)));
+}
+double AdiRootComponent::editRate() const noexcept {
+    return sampleRate_ > 0 ? sampleRate_ : (reader_ ? reader_->sampleRate() : 48000.0);
+}
+bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended) {
+    if (!prepared.ok)
+        return fail(prepared.error.empty() ? "The edit could not be prepared." : prepared.error);
+    if (prepared.requests.empty())
+        return true;
+    prepared.requests.front().selBefore = session_.advisory();
+    return edited(submitter_.commitPrepared(
+        std::move(prepared),
+        [](Store &store, clip_edit::PreparedEdit &p, Actor actor) { return clip_edit::commitPrepared(store, p, actor); },
+        std::move(appended)));
+}
+bool AdiRootComponent::splitAtMarker() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Splitting needs an open project.");
+    const auto &sel = arrangement.geometry.selection;
+    if (sel.start != sel.end)
+        // Live's Split of a selection cuts at both of its edges: the two-point split (N17's open part).
+        return fail("Splitting at a time selection's edges waits for the engine's two-point split (N17); "
+                    "place the insert marker in a clip and split there.");
+    if (!sel.marked)
+        return fail("Place the insert marker inside a clip to split it.");
+    const auto at = sel.insert;
+    // Which clips: the chosen one; else those under the marker on the chosen track, or on every
+    // track when nothing is chosen and the setting says so.
+    std::vector<std::int64_t> clips;
+    const auto strictlyInside = [at](const engine::ClipNode &c) {
+        return at > c.posTicks && at < c.posTicks + c.lengthTicks;
+    };
+    for (const auto &t : current->tracks) {
+        if (!t)
+            continue;
+        const bool onTrack = sel.clip == 0 && (sel.track == t->id || (sel.track == 0 && commands_.splitAllWithNoSelection()));
+        for (const auto &c : t->clips)
+            if (c && strictlyInside(*c) && (c->id == sel.clip || onTrack))
+                clips.push_back(c->id);
+    }
+    if (clips.empty())
+        return fail("Place the insert marker inside a clip to split it.");
+    // One clip is one undo step; each further clip is a step of its own.
+    std::size_t done = 0;
+    for (const auto id : clips) {
+        const auto now = view_.current();
+        if (!now)
+            break;
+        auto prepared = clip_edit::prepareSplit(submitter_.store(), id, audio_drop_detail::newClipId(*now),
+                                                clip_edit::TimePoint{0, at}, editRate());
+        if (!commitEdit(std::move(prepared)))
+            return done > 0;
+        ++done;
+    }
+    if (done > 1)
+        say(std::to_string(done) + " clips split at the insert marker, one undo step each.");
+    return true;
 }
 bool AdiRootComponent::edited(const SubmitResult &result) {
     if (!result)
@@ -2254,6 +2319,8 @@ bool AdiRootComponent::command(int id) {
                                             : "Select a device first: click its title bar.");
         return devices.clipboard(clip);
     }
+    case AppCommands::Split:
+        return splitAtMarker();
     case AppCommands::TogglePluginWindows:
         // Every plug-in window hidden, or shown again where it stood (Auto-Hide still applies).
         pluginWindowsShown_ = !pluginWindowsShown_;
@@ -2374,7 +2441,7 @@ const std::vector<MenuEntries> &menuBar() {
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live.
-        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::Split, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
                   C::SelectLoop, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place

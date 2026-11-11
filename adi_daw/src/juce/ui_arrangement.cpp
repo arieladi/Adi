@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -2541,6 +2543,32 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         return false;
     const auto &sel = view.geometry.selection;
     const auto selected = view.geometry.selectedTracks(view.reader());
+    const auto content = rangeContent(current->tracks, selected, sel.start, sel.end);
+    // A clip crossing the selection's edge (E1, N17): Delete trims it there (`prepareDeleteRange`,
+    // with the settings' editing policy); 0 over one clip's edge splits it and deactivates the part
+    // inside, one batch. A selection inside one clip still waits for the two-point split.
+    if (content.crossing > 0 && !deactivate) {
+        clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+        const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+        if (!view.root.commitEdit(clip_edit::prepareDeleteRange(view.root.editStore(), range, options)))
+            return false;
+        view.changed();
+        return true;
+    }
+    if (deactivate)
+        if (const auto split = edgeSplit(content, sel.start, sel.end)) {
+            const auto right = audio_drop_detail::newClipId(*current);
+            auto prepared = clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
+                                                    clip_edit::TimePoint{0, split->at}, view.root.editRate());
+            const auto inside = split->insideIsRight ? right : split->clip;
+            auto mute = track_edits_detail::op("clip.setMute", {{"id", inside}, {"muted", true}}, "Deactivate Clip");
+            mute.targetKind = "clip";
+            mute.targetId = inside;
+            if (!view.root.commitEdit(std::move(prepared), std::move(mute)))
+                return false;
+            view.changed();
+            return true;
+        }
     const auto note = rangeNote(current->tracks, selected, sel.start, sel.end);
     auto edit = deactivate ? deactivateRange(current->tracks, selected, sel.start, sel.end)
                            : deleteRange(current->tracks, selected, sel.start, sel.end);

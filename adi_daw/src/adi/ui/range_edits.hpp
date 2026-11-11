@@ -20,6 +20,7 @@ namespace adi::ui {
 struct RangeContent {
     std::vector<const engine::ClipNode *> inside;
     std::size_t crossing = 0;
+    std::vector<const engine::ClipNode *> crossers; // the clips that cross an edge, in track order
 };
 inline RangeContent rangeContent(const SnapshotTracks &tracks, const std::vector<std::int64_t> &selected,
                                  std::int64_t start, std::int64_t end) {
@@ -35,15 +36,38 @@ inline RangeContent rangeContent(const SnapshotTracks &tracks, const std::vector
                 const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
                 if (a >= from && b <= to)
                     out.inside.push_back(c.get());
-                else if (a < to && b > from)
+                else if (a < to && b > from) {
                     ++out.crossing;
+                    out.crossers.push_back(c.get());
+                }
             }
     return out;
+}
+// 0 over a selection that crosses one edge of one clip, holding no whole clip (E1; manual 6.9): the
+// clip splits at the selection's edge inside it and the part inside the selection is deactivated.
+// None when the selection lies inside the clip (both its edges in it: the two-point split, N17's
+// open part) or reaches more than one clip.
+struct EdgeSplit {
+    std::int64_t clip = 0, at = 0;
+    bool insideIsRight = false; // the part after the split is the one in the selection
+};
+inline std::optional<EdgeSplit> edgeSplit(const RangeContent &content, std::int64_t start, std::int64_t end) {
+    if (content.crossers.size() != 1 || !content.inside.empty())
+        return std::nullopt;
+    const auto *c = content.crossers.front();
+    const auto from = std::min(start, end), to = std::max(start, end);
+    const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
+    if (from > a && from < b && to >= b)
+        return EdgeSplit{c->id, from, true};
+    if (to > a && to < b && from <= a)
+        return EdgeSplit{c->id, to, false};
+    return std::nullopt;
 }
 namespace range_edits_detail {
 inline std::string crossingNote(std::size_t crossing) {
     return std::to_string(crossing) + (crossing == 1 ? " clip crosses" : " clips cross") +
-           " the selection's edges and stays as it is: splitting it waits for the engine's split op.";
+           " the selection's edges and stays as it is: a selection inside a clip, or 0 over more than one clip's "
+           "edge, waits for the engine's two-point split (N17).";
 }
 } // namespace range_edits_detail
 // Delete on a time selection: the clips wholly inside it, on every selected track.
