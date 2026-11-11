@@ -424,6 +424,65 @@ int main(int argc, char **argv) {
         }
     }
     {
+        // Color Cab's sample slot (D5; N28, #414): a fixture WAV assigned to Impulse is one undo step
+        // and reads back; a moved file reads missing; Clear empties the slot. With Pd off the engine
+        // refuses, with its reason.
+        auto cab = ui::ProjectDocument::open(temp.path() / "color-cab.adi", true, {}, error);
+        check(cab != nullptr, "a project for Color Cab's sample");
+        if (cab) {
+            const auto wav = temp.path() / "impulse.wav";
+            {
+                std::vector<float> silence(256);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+                writer.write(silence.data(), 256);
+            }
+#if ADI_WITH_PD
+            check(cab->insertBuiltin("org.adidaw.builtin.color-cab", 4, std::nullopt), "Color Cab on 3 Audio");
+            const auto device = cab->store().db().execAndGet("SELECT id FROM devices WHERE name = 'Color Cab'").getInt64();
+            const auto slotOf = [&]() -> const engine::SampleSlotNode * {
+                for (const auto &slot : cab->view().current()->sampleSlots)
+                    if (slot && slot->deviceId == device && slot->slot == 1)
+                        return slot.get();
+                return nullptr;
+            };
+            // Every outcome of `ParamOps::appliedState`: this document has no loader for built-ins, so
+            // the device has no live instance here and the call lands on `unknownDevice`; in the app
+            // the instance takes the state. What is checked is that the window hands it over.
+            const auto handed = [&] {
+                const auto &st = cab->parameterStats();
+                return st.statesApplied + st.statesAppliedEqual + st.statesCleared + st.statesRefused + st.unknownDevice;
+            };
+            const auto appliedBefore = handed();
+            check(cab->assignSample(device, 1, wav, 7) && cab->ops().nextUndo() &&
+                      cab->ops().nextUndo()->label == "Assign device sample",
+                  "a fixture WAV assigned to Impulse, one step named Assign device sample");
+            check(slotOf() != nullptr && !slotOf()->empty && !slotOf()->missing && slotOf()->name == "Impulse",
+                  "the snapshot reads it back: Impulse, holding a sample, its file present");
+            check(handed() > appliedBefore,
+                  "the new state is handed to the live device (ParamOps::appliedState), as the engine's contract asks");
+            check(cab->ops().undo().ok && cab->synchronise() && (slotOf() == nullptr || slotOf()->empty),
+                  "one undo empties the slot again");
+            check(cab->ops().redo().ok && cab->synchronise() && slotOf() != nullptr && !slotOf()->empty, "redo assigns it again");
+            std::filesystem::rename(wav, temp.path() / "impulse-moved.wav");
+            cab->view().refresh(cab->store());
+            check(slotOf() != nullptr && slotOf()->missing, "a moved file reads missing");
+            check(cab->clearSample(device, 1) && slotOf() != nullptr && slotOf()->empty, "Clear empties the slot");
+#else
+            cab->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(40,'internal',"
+                                   "'org.adidaw.builtin.color-cab','Color Cab')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 40}, {"track", 4}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 40}, {"chain", 40}, {"ord", 0}, {"ref", 40}, {"name", "Color Cab"}, {"latency", 0}};
+            check(cab->ops().submit(std::move(make)).ok && cab->synchronise(), "Color Cab's rows, with Pd off");
+            check(!cab->assignSample(40, 1, wav, 7) && !cab->error().empty(),
+                  "with Pd off the assignment is refused, with the engine's reason");
+#endif
+            cab->release();
+        }
+    }
+    {
         // A built-in device from the browser (D4; N15, #395): Auto Filter onto a track with no chain
         // makes the plug-in reference, the chain and the device in one undo step, and undo removes
         // all three; with Pd off the load is refused with the catalogue's reason.

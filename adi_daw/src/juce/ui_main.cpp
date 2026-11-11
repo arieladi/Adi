@@ -8,6 +8,7 @@
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include <chrono>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <atomic>
@@ -298,6 +299,22 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        // A device's sample slot (D5): a file assigned, or the slot cleared; one undo step each.
+        root->devices.assignSample = [this](std::int64_t device, std::int32_t slot, const std::string &path) {
+            const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::system_clock::now().time_since_epoch())
+                                 .count();
+            const bool ok = document_->assignSample(device, slot, pathFromUtf8(path), now);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.clearSample = [this](std::int64_t device, std::int32_t slot) {
+            const bool ok = document_->clearSample(device, slot);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);
