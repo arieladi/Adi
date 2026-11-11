@@ -12,6 +12,14 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-11 — N45 factory base integrated; control fence remains in force
+
+N45 needs the Store creation/open lifecycle to refuse replacement of an open project, including aliases and other readers. The 11 November prompt requires retaining #507's schema/seed transaction before touching createEmpty. Merged current main **`e9d397ef`** into engine/log as **`38cb5ec2`**, without checking out or committing main. An explicit diff verified that this imported change touches **none** of the protected files (`ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.hpp/.cpp`, `src/main.cpp`). #512 remains open; those named spots stay fenced and main must be merged again after it lands. #509's scanner exit-before-drain fix is now in this base; post-fix scanner stress remains to run between items.
+
+Next/current workspace will be `/workspace/wt-engine-project-replace`, branch `engine/project-replace`, cut from this refreshed engine/log successor. No N45 source change or gate claim yet. Implement explicit confirmed replacement from a closed staged SQLite backup, a real authoritative replace primitive (not cache replacement), and native open-file/source/gesture identity protections. Keep one-argument APIs refusing collisions, preserve SourceChange/applied-domain behavior, and update SPEC §3.7. The later complete PD-04 crash-reaper/session-marker program is not part of this need. Continue N45 now, then N46/N48/HI-02/M0 without ending the turn. Concrete implementation notes and disk/evidence state: `/workspace/adi-cloud/project-replace/plan.md`.
+
+---
+
 ## 2026-11-11 — Actual clip-page admission race fixed and gated; taking N45
 
 **PR requested:** head `engine/clip-page-admission` at **`440bb200cd0c18fe6be58a6ae9856589c70d979e`**, base `engine/log` (**`c52a3f14bbade5d476fa15cf355368b8265bfddc`**). Title: **Retain admitted clip pages until native rendering consumes them**. Branch pushed; win opens/merges the PR and runs MSVC. Independent of the automation Undo fix and control slice. Four changed files, no item-log edit, opcode, schema or new test target.
