@@ -143,6 +143,16 @@ ProcessResult launch(const std::filesystem::path& executable,
     const auto deadline = std::chrono::steady_clock::now() + options.timeout;
     std::array<char, 4096> buffer{};
     for (;;) {
+        // Observe the exit BEFORE draining. A child that has exited has put
+        // every byte it wrote into the pipe, so a drain that then finds the
+        // pipe empty has everything. Checked the other way round (drain, then
+        // exit), a child could write and exit between the two and its output
+        // was dropped from a "successful" result (seen on macOS CI under
+        // parallel ctest, 11 Nov: "repeated children preserve exact stdout").
+        const DWORD state = WaitForSingleObject(process.value, 0);
+        if (state == WAIT_FAILED) {
+            result.status = ProcessStatus::IoFailed; result.osError = GetLastError(); break;
+        }
         DWORD available = 0;
         bool ok = true;
         // Bound each drain so cancellation/deadline cannot starve under output.
@@ -162,7 +172,6 @@ ProcessResult launch(const std::filesystem::path& executable,
             if (!append(result, buffer.data(), read, options)) { ok = false; break; }
         }
         if (!ok) break;
-        const DWORD state = WaitForSingleObject(process.value, 0);
         if (state == WAIT_OBJECT_0 && available == 0) {
             DWORD code = 0;
             if (!GetExitCodeProcess(process.value, &code)) {
@@ -170,9 +179,6 @@ ProcessResult launch(const std::filesystem::path& executable,
             } else if (code >= 0xC0000000UL) result.status = ProcessStatus::Crashed;
             else result.exitCode = code;
             break;
-        }
-        if (state == WAIT_FAILED) {
-            result.status = ProcessStatus::IoFailed; result.osError = GetLastError(); break;
         }
         if (cancelled(options)) { result.status = ProcessStatus::Cancelled; break; }
         if (std::chrono::steady_clock::now() >= deadline) { result.status = ProcessStatus::TimedOut; break; }
@@ -268,6 +274,15 @@ ProcessResult launch(const std::filesystem::path& executable,
     const auto deadline = std::chrono::steady_clock::now() + options.timeout;
     std::array<char, 4096> buffer{};
     for (;;) {
+        // Observe the exit BEFORE draining (see the Windows loop above): once
+        // the child has exited, all it wrote is in the pipe, so a drain that
+        // then reaches empty or EOF has everything.
+        siginfo_t info{};
+        // WNOWAIT keeps the PID reserved until ChildGuard has killed the group.
+        if (waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOHANG | WNOWAIT) != 0) {
+            if (errno == EINTR) continue;
+            result.status = ProcessStatus::IoFailed; result.osError = static_cast<std::uint32_t>(errno); break;
+        }
         bool ok = true;
         bool drained = false;
         for (unsigned batch = 0; batch < 16; ++batch) {
@@ -282,12 +297,6 @@ ProcessResult launch(const std::filesystem::path& executable,
             }
         }
         if (!ok) break;
-        siginfo_t info{};
-        // WNOWAIT keeps the PID reserved until ChildGuard has killed the group.
-        if (waitid(P_PID, static_cast<id_t>(pid), &info, WEXITED | WNOHANG | WNOWAIT) != 0) {
-            if (errno == EINTR) continue;
-            result.status = ProcessStatus::IoFailed; result.osError = static_cast<std::uint32_t>(errno); break;
-        }
         if (info.si_pid == pid && drained) {
             if (info.si_code == CLD_EXITED) result.exitCode = info.si_status;
             else { result.status = ProcessStatus::Crashed; result.signal = info.si_status; }
