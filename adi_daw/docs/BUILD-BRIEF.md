@@ -205,7 +205,7 @@ In this order unless a dependency says otherwise:
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
 7c. The export queue with stem jobs (ADR-0071, P1 by ADR-0205 d5): one pass renders the ticked
 7d. NI Stems export (`.stem.mp4`) as a queue job, P1 (ADR-0205 d8); the Export page's Cubase + REAPER
-7e. (phase F) The ArtCraft bridge (ADR-0206 d4): a surface-class client of the control API paired like
+7e. **Cancelled (ADR-0234).** ~~(phase F) The ArtCraft bridge (ADR-0206 d4)~~: a surface-class client of the control API paired like
    a surface, with a transport subscription on the API; Send to ADI through the OTIO/AAF converters (P2);
    Return to FilmCraft as an After Export action; ADI as transport master. P3 waits on storytold
    (`docs/INTEROP-ARTCRAFT.md` §8).
@@ -231,10 +231,10 @@ In this order unless a dependency says otherwise:
 17. Range commands (cut, copy, delete, silence); ripple edit; take lanes and comping; the hitpoint
     detector serving slicing, Audio Alignment (P2) and tempo detection.
 18. Templates in the User Library; Collect and Export to ZIP (built) beside Collect All and Save.
-19. The exact time-base converter (ADR-0206 d3): one pure component in the time library,
+19. **FilmCraft's base cancelled (ADR-0234); the integer time base and timecode stay (TM-IC-01).** The exact time-base converter (ADR-0206 d3): one pure component in the time library,
     `units_per_second` (FilmCraft's 254,016,000,000; samples for SoundCraft) ↔ frames, nanoseconds,
     musical ticks, with the range check; tests from `docs/INTEROP-ARTCRAFT.md` §3.
-20. The schema reservation `external_sessions` + `external_links` (ADR-0206 d3) as an additive minor
+20. **Cancelled (ADR-0234).** ~~The schema reservation `external_sessions` + `external_links` (ADR-0206 d3)~~ as an additive minor
     of its own (ADR-0144), separate from the `project.sampleRate` default change.
 
 ### Phase E — Mac and Linux, immediately (ADR-0203 d23)
