@@ -322,9 +322,21 @@ jobs:
       #                   schema (store.cpp) took mixer from 145 s to 38 s alone,
       #                   and the whole local MSVC Debug run from 27.6 min at
       #                   --parallel 4 to 5.2 min (15.9 min serial).
-      #                   CI step durations against main: #507.
+      #                   On CI (#507 at 5376d15f, every leg) against main's
+      #                   serial step (8855ab2b, 875f65a0):
+      #                     windows msvc        528 s   (main 3883-3991 s)
+      #                     macos apple clang   109 s   (main  508- 639 s)
+      #                     ubuntu gcc           81 s   (main  337- 481 s)
+      #                     ubuntu clang        110 s   (main  346- 393 s)
+      #                     ubuntu arm64 gcc     81 s   (main  408- 423 s)
+      #                   and the strict sweeps, build included, 454-647 s
+      #                   (main 757-1227 s).
+      #                   150 became 45 on 2026-11-11 (win), with it: the
+      #                   Windows step is nine minutes, so 45 is five times its
+      #                   healthy length and still fails a hang in under an
+      #                   hour.
       - name: adi_tests
-        timeout-minutes: 150
+        timeout-minutes: 45
         run: |
           jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
           echo "running the suites $jobs at a time"
