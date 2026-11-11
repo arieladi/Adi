@@ -31,6 +31,7 @@ class Database;
 }
 
 namespace adi {
+namespace media { class ProjectFileLease; }
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
@@ -55,6 +56,8 @@ enum class StoreError {
 };
 
 const char* toString(StoreError);
+
+enum class StoreFileCollision { Fail, ReplaceConfirmed };
 
 struct StoreFileResult {
     bool ok = false;
@@ -120,14 +123,16 @@ public:
     bool close();
 
     /// Owner thread, outside any SQL transaction. Snapshot committed WAL data
-    /// into a new file without replacing an existing destination. Rebase media
+    /// into a new file. Existing files require ReplaceConfirmed, supplied only
+    /// after the save dialog's explicit confirmation. Active Store files and
+    /// aliases refuse replacement. Rebase media
     /// paths in both rows and captured history so undo/redo still finds audio.
-    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&) const;
+    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
     /// success. A failed switch retains the source and a completed copy.
-    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&);
+    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail);
     /// Copy current and undo/branch media into audio/, verify their hashes and
     /// save the new locations atomically. Owner thread; no live SQL statements
     /// or transaction. Refresh readers after success. No undo step is appended.
@@ -204,11 +209,16 @@ private:
     std::int64_t frozenValidationChanges_=-1,frozenValidationDataVersion_=-1;
     std::int64_t frozenValidationSchema_=-1,frozenValidationTempSchema_=-1;
 
-    Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly);
+    Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
+          std::shared_ptr<media::ProjectFileLease>);
+    struct CopyState;
+    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();
 
+    // SQLite closes before its native shared file lease is released.
+    std::shared_ptr<media::ProjectFileLease> fileLease_;
     std::unique_ptr<SQLite::Database> db_;
     std::filesystem::path path_;
     bool readOnly_ = false;

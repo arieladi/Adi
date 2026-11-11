@@ -161,9 +161,13 @@ Any number of readers MAY open the project read-only.
 ### 3.7 Save As and Save a Copy (ADR-0203 d6)
 
 `Store::saveCopy(path)` uses SQLite backup to capture committed WAL data; the
-source is unchanged. The destination must not exist and its parent must exist.
-A private stage is checkpointed/closed before no-replace publication. Missing
-media does not prevent a save. No save op is appended.
+source is unchanged. Its parent must exist. The default `StoreFileCollision::Fail`
+refuses an existing destination. After the caller obtains replacement consent,
+`saveCopy(path, StoreFileCollision::ReplaceConfirmed)` replaces a closed regular
+file. A private stage is checkpointed/closed, synced and atomically renamed;
+there is no visible copy fallback. Missing media does not prevent a save. No save
+op is appended. An existing SQLite WAL, SHM or rollback journal at the destination
+refuses the operation without deleting recovery material.
 
 For a supported major, relative media locations are rebased for the destination
 folder, including captured media.import/media.relink paths on **every history
@@ -179,11 +183,22 @@ The caller refreshes ProjectView/Session and its displayed filename after
 success. Project name, UUID, writer identity, history, snapshots and UI/session
 state are preserved. Owner-thread use requires no active SQL transaction or
 live SQL statements; old database references must not be retained across the
-switch. Existing destinations are never overwritten by these APIs.
+switch. `saveAs(path, StoreFileCollision::ReplaceConfirmed)` uses the same explicit
+replacement policy; the default still refuses an existing file. The active file,
+including hardlink and symlink aliases, cannot be its own destination. A shared
+native lease held before every Store opens SQLite and until it closes refuses
+replacement of another live Store, including a read-only Store. The lease travels
+with the database during Save As. This is replacement protection, not the future
+one-writer/session policy. See [ENGINE-PROJECT-REPLACE](../ENGINE-PROJECT-REPLACE.md)
+for native lease scope and durability limits.
 
 A failed copy leaves the source active; a copy that succeeded but could not be
 opened for switching is retained and reported as such. A successful switch can
 report a warning if another reader prevented the old WAL from being folded.
+A directory-sync failure after publication also returns success with a durability
+warning: the old file has already been replaced. Save As verifies the published
+file identity before switching; a different replacement in that interval keeps
+the original project active and reports that the copy could not be selected.
 An unknown newer major supports **Save a Copy** verbatim, without interpreting
 or relocating its media paths; it remains read-only. Save As into an editable
 Store refuses that major.
