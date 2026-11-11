@@ -6,6 +6,48 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-11 (afternoon) — the MCP slice waits for the director; FilmCraft cancelled; six engine PRs; a Windows replace fix; the runner outage
+
+**For the engine seat — read first.**
+- **`engine/project-replace` moved: win pushed `501bc849` on top of your `a052a897` (#520).** On
+  MSVC, 8 of the 34 project-replace checks failed: `replaceFile` holds the destination's exclusive
+  lease handle while it renames over it, and `MoveFileExW` / `std::filesystem::rename` refuse any
+  replace target with an open handle, even one sharing delete. Windows now renames through
+  `FileRenameInfoEx` with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. That replaces a target held only by
+  delete-sharing handles (our lease) and still refuses one held by SQLite or a Store's shared lease.
+  A volume without POSIX rename (SMB, FAT/exFAT) reports `operation_not_supported` once, rather than
+  retrying a classic rename the lease itself refuses. `renameReplacing` is now in `publish_file.hpp`,
+  and the test's `delayed` hook calls it. POSIX code is unchanged. Fetch before you touch that
+  branch again.
+- **A race in `poolBounds` (test_progressive_decode.cpp), already on main.** It failed once on
+  ubuntu arm64 in #517, which does not touch decoding. After `files.clear()` the test sets
+  `release=true` at once. A fake codec that sees `release` before its stop request is visible leaves
+  its loop without counting a stop, so `stops==2` misses. Please make the check independent of that
+  ordering, e.g. set `release` only after the stops are observed, or count stops by the token alone.
+
+**Engine PRs opened and retargeted to main (all independent; every pair, and each with #512,
+merges cleanly):** #515 clip-page admission, #516 automation range Undo, #517 history cap, #518 strip
+held peak (N48), #519 window-state spec, #520 project replace (N45). #519 was green and is merged.
+The rest land when green. #517 also touches `ops.hpp`/`ops.cpp`, but only for `CommitResult` and
+compaction, so #512's schema export is unaffected. Window #514 (Color Cab's Impulse tile) is merged.
+
+**The runner outage.** From about 14:00 UTC, GitHub's hosted Ubuntu runners could not resolve
+`azure.archive.ubuntu.com` (actions/runner-images#15297, #15296; `archive.ubuntu.com` too).
+Every job that installs packages with apt failed on every PR and on main: the GUI shell on Ubuntu,
+i386 ILP32, the s390x big-endian guard, and the fuzz job. These are infrastructure failures, not
+code; win reruns them as the mirror recovers and merges nothing on a red leg.
+
+**#512, the control MCP slice (ADR-0233), is held for the director.** Its head `5eab55a4` passes
+every leg that ran, apart from the outage legs above. It waits for his rulings on Q-O (where the token lives)
+and on consent before AGT-03 (ADR-0233 d8), and for his go. His Antigravity (Gemini) round was
+verified claim by claim: the real findings are fixed in `5eab55a4`; the rest were misreadings.
+
+**FilmCraft (ADR-0234, #513).** At the director's word, the FilmCraft integration plans are
+cancelled: ADI cannot rely on another project doing work for it. Kept from ADR-0206: d6 only,
+i.e. OTIO/AAF interchange with a clean-room AAF writer and the integer time base with SMPTE.
+
+---
+
 ## 2026-11-09 to 11 — the lanes split; the chain of nine and the window seat's screens land; CI runs in parallel; a scanner race
 
 **The director's lane split (9 November).** He stopped the Codex engine seat because it had drained
