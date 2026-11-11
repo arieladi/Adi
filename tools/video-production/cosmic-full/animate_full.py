@@ -130,6 +130,10 @@ def render(s, take, src, seed, prompt, n, total):
     tag = f"cosmicfull-anim/{take}"
     inp = C / "input" / f"cosmicfull-{take}.png"
     keyframe_1280x736(src, inp)
+    end = None
+    if s.get("end_key"):
+        end = C / "input" / f"cosmicfull-{take}-end.png"
+        keyframe_1280x736(ROOT / "raw" / picks[s["end_key"]], end)
     g = {
         "1": node("UNETLoader", unet_name="wan2.2_ti2v_5B_fp16.safetensors", weight_dtype="default"),
         "2": node("CLIPLoader", clip_name="umt5_xxl_fp8_e4m3fn_scaled.safetensors", type="wan", device="default"),
@@ -139,6 +143,9 @@ def render(s, take, src, seed, prompt, n, total):
         "6": node("LoadImage", image=inp.name),
         "7": node("Wan22ImageToVideoLatent", vae=["3", 0], width=1280, height=736, length=s["length"],
                   batch_size=1, start_image=["6", 0]),
+        **({"12": node("LoadImage", image=end.name),  # a defined landing frame (AvasthaFLF custom node)
+            "7": node("Wan22FirstLastLatent", vae=["3", 0], width=1280, height=736, length=s["length"],
+                      start_image=["6", 0], end_image=["12", 0])} if end else {}),
         "8": node("ModelSamplingSD3", model=["1", 0], shift=8),
         "9": node("KSampler", model=["8", 0], positive=["4", 0], negative=["5", 0], latent_image=["7", 0],
                   seed=seed, steps=20, cfg=5, sampler_name="uni_pc", scheduler="simple", denoise=1),
@@ -170,7 +177,7 @@ def render(s, take, src, seed, prompt, n, total):
     frames = sorted((C / "output" / "cosmicfull-anim" / take).glob("f_*.png"))
     assert len(frames) == s["length"], (take, len(frames))
     gen = {"frames": [str(p) for p in frames], "native": [1280, 736], "keyframe": str(src), "seed": seed,
-           "prompt": prompt, "latent_saved": True, "worker": WORKER, "seconds": round(time.time() - t0)}
+           "prompt": prompt, "end_key": s.get("end_key"), "latent_saved": True, "worker": WORKER, "seconds": round(time.time() - t0)}
     if s.get("gate"):
         gen["gate"] = check(frames, s["step"])
     save(d / "generated.json", gen)
