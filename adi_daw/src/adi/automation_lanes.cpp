@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/automation_lanes.hpp"
 #include "adi/blob.hpp"
+#include "adi/automation_range_rows.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <cmath>
@@ -85,7 +86,8 @@ bool capture(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
             const auto col=q.getColumn(2); std::vector<std::uint8_t> b(static_cast<std::size_t>(col.getBytes()));
             if (!b.empty()) std::memcpy(b.data(),col.getBlob(),b.size());
             inv["state"]["data"].push_back({{"id",q.getColumn(0).getInt64()},
-                {"clip",q.getColumn(1).isNull()?Payload(nullptr):Payload(q.getColumn(1).getInt64())},{"bytes",Payload::binary(std::move(b))}});
+                {"clip",q.getColumn(1).isNull()?Payload(nullptr):Payload(q.getColumn(1).getInt64())},{"bytes",Payload::binary(std::move(b))},
+                {"ranges",range_rows::capture(c.db,q.getColumn(0).getInt64())}});
         }
         return true;
     } catch (const std::exception& e) { err=e.what(); return false; }
@@ -109,6 +111,7 @@ bool restore(OpContext& c,const Payload& p,std::string& err) {
             const auto& b=data.at("bytes").get_binary();
             if (b.size()>INT_MAX) throw std::runtime_error("automation: stream too large");
             q.bind(4,b.empty()?static_cast<const void*>(""):b.data(),static_cast<int>(b.size())); q.exec();
+            range_rows::replace(c.db,number(data.at("id")),data.at("clip"),data.value("ranges",Payload::array()));
         }
         return true;
     } catch (const std::exception& e) { err=e.what(); return false; }
@@ -141,6 +144,7 @@ bool clear(OpContext& c,const Payload& p,std::string& err) {
             out.insert(out.end(),bytes.begin()+static_cast<std::ptrdiff_t>(tail),bytes.end());
             SQLite::Statement update(c.db,"UPDATE automation_data SET data=? WHERE id=?");
             update.bind(1,out.data(),static_cast<int>(out.size())); update.bind(2,q.getColumn(0).getInt64()); update.exec();
+            range_rows::replace(c.db,q.getColumn(0).getInt64(),nullptr,Payload::array());
         }
         return true;
     } catch(const std::exception& e) { err=e.what(); return false; }
