@@ -61,7 +61,7 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
   # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
-  "Ableton/link link GPL-2.0-or-later Link-3.1.5 45931b8bd2a7066f1950f2a0beab81a0c51f28fe build submodules"
+  "Ableton/link link GPL-2.0-or-later Link-4.1.1 5ba907ae027a8c2ec8824463e37296dcefc5e9be build submodules"
   # Public headers only: independent ABI shims dynamically load Linux AAC.
   "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
   "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
