@@ -40,8 +40,9 @@ namespace adi::agent {
 
 struct Limits {
     /// §6.6: per-request op cap. Visible and editable in the UI; this is the
-    /// default a request gets when nobody set one.
-    std::size_t maxOps = 256;
+    /// default a request gets when nobody set one: ADR-0203 d20's 6000, the
+    /// default of `agent.maxOpsPerRequest`, which adi-mcp reads (AGT-01).
+    std::size_t maxOps = 6000;
 };
 
 struct Changeset {
