@@ -62,7 +62,10 @@ class WrenchButton final : public juce::Button {
 // Color Cab's Impulse slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
 // or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
 // holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
-class SampleTile final : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget {
+class SampleTile final : public juce::Component,
+                         public juce::SettableTooltipClient,
+                         public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropTarget {
   public:
     SampleTile(DeviceChainStrip &, std::int64_t device, std::int32_t slot, juce::String slotName);
     void paint(juce::Graphics &) override;

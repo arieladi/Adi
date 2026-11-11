@@ -2596,6 +2596,103 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// D5: Color Cab's Impulse tile (MR 9.8; N28, #414). The tile is drawn on Color Cab's panel only,
+// beside its controls, with no wrench (a built-in has no plug-in window). A file dropped assigns the
+// slot and Clear empties it, each one undo step, with Pd; with Pd off the drop says the device does
+// not run in this build.
+void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "color-cab-tile.adi", true, {}, error);
+    check(document != nullptr, "a project for Color Cab's tile");
+    if (!document)
+        return;
+    document->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(40,'internal',"
+                                "'org.adidaw.builtin.color-cab','Color Cab')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 40}, {"track", 4}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 40}, {"chain", 40}, {"ord", 0}, {"ref", 40}, {"name", "Color Cab"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "Color Cab on 3 Audio");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "colorcab");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.assignSample = [&](std::int64_t device, std::int32_t slot, const std::string &path) {
+        const bool ok = document->assignSample(device, slot, media::pathFromUtf8(path), 7);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.clearSample = [&](std::int64_t device, std::int32_t slot) {
+        const bool ok = document->clearSample(device, slot);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 4;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    auto &panels = root.devices.panels;
+    check(panels.size() == 1 && panels[0]->sample != nullptr && panels[0]->sample->isVisible() &&
+              panels[0]->sample->slotName == "Impulse" && panels[0]->sample->state() == SampleTile::State::Empty &&
+              !panels[0]->sample->clear.isVisible() && !panels[0]->wrench.isVisible(),
+          "Color Cab's panel draws its Impulse tile, empty, with no Clear and no wrench");
+    check(panels[0]->sample->getRight() <= panels[0]->getWidth() &&
+              panels[0]->sample->getY() >= DevicePanelView::kTitleHeight,
+          "the tile stands inside the panel, under its title bar");
+    const auto wav = dir / "cab-impulse.wav";
+    {
+        std::vector<float> silence(256);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+        writer.write(silence.data(), 256);
+    }
+    const auto path = juce::String::fromUTF8(media::pathUtf8(std::filesystem::path(wav).make_preferred()).c_str());
+#if ADI_WITH_PD
+    check(panels[0]->sample->drop(path), "a file dropped on the tile");
+    refresh();
+    check(panels[0]->sample->state() == SampleTile::State::Loaded && panels[0]->sample->clear.isVisible() &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Assign device sample",
+          "assigns Impulse in one step; the tile shows the sample and offers Clear");
+    std::filesystem::rename(wav, dir / "cab-impulse-moved.wav");
+    document->view().refresh(document->store());
+    root.frame();
+    check(panels[0]->sample->state() == SampleTile::State::Missing, "its file moved: the tile shows it missing");
+    panels[0]->sample->clear.onClick();
+    refresh();
+    check(panels[0]->sample->state() == SampleTile::State::Empty && !panels[0]->sample->clear.isVisible(),
+          "Clear empties it, one step");
+#else
+    check(!panels[0]->sample->drop(path) && !root.error().empty() &&
+              panels[0]->sample->state() == SampleTile::State::Empty,
+          "with Pd off a drop says the device does not run in this build, and the slot stays empty");
+#endif
+    // A file from the browser's Samples is the same drop.
+    const juce::DragAndDropTarget::SourceDetails fromBrowser("adi-sample:" + path, nullptr, {10, 10});
+    check(panels[0]->sample->isInterestedInDragSource(fromBrowser) &&
+              !panels[0]->sample->isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("other", nullptr, {10, 10})),
+          "the tile takes a sample dragged from the browser, and nothing else");
+    // The tile as drawn, for the picture.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * panels[0]->getWidth(), 2 * panels[0]->getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            panels[0]->paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-color-cab-tile.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -8112,6 +8209,7 @@ int main(int argc, char **argv) {
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     browserDevices(commands, temp.path());
+    colorCabTile(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
