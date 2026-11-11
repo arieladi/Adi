@@ -56,6 +56,12 @@ endif()
 #                  adi_link_playback_tests opens peers only with --peers, which
 #                  ctest does not pass; it holds the lock so that turning that
 #                  on later cannot race.
+#   the disk       shared by every suite, and the one that decided the speed:
+#                  four suites that each flush the disk hundreds of times only
+#                  queue behind one another. Store::createEmpty was the
+#                  flusher (one durable commit per schema statement); it now
+#                  commits its schema once. Keep new fixtures from flushing
+#                  per statement, or --parallel stops paying on Windows.
 #
 # Deferred to the end of this directory so that a suite added anywhere below,
 # including the cmake/devices modules, is covered without remembering to.
@@ -73,12 +79,12 @@ function(adi_isolate_tests)
     endforeach()
     # Longest first. A CI runner is fresh, so ctest has no timings from a
     # previous run and would start suites in registration order, leaving the
-    # heaviest (numbers 110-120) to start halfway through and finish alone.
-    # COST is in seconds, from a local --parallel 4 run (2026-11-10); only the
-    # order matters, and a local rerun replaces it with measured times.
-    foreach(_adi_cost IN ITEMS clip_playback:392 midi_clips:362 mixer:357
-            group_summing:270 clip_edit:244 midi_clock_continuity:223
-            edit_plan:214 param_live_replay:208)
+    # heaviest to start late and finish alone. COST is in seconds, from a
+    # local serial run (MSVC Debug, 2026-11-11); only the order matters, and a
+    # local rerun replaces it with measured times.
+    foreach(_adi_cost IN ITEMS clip_playback:62 hybrid_reverb:40 external_tempo:39
+            auto_filter:34 changeset:32 migrate:32 gesture_playback:31
+            plugin_scanner:30)
         string(REPLACE ":" ";" _adi_cost "${_adi_cost}")
         list(GET _adi_cost 0 _adi_name)
         list(GET _adi_cost 1 _adi_seconds)
@@ -1799,10 +1805,7 @@ target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Thre
 add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)
 target_compile_definitions(adi_clip_playback_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
-# 1200 for the mixer suite's reason (above), reached by a different road: run
-# beside seven other suites (ctest --parallel 8, ORC-VST, 2026-11-10) this
-# suite and midi_clips were cut off at 600 s with every check passing.
-set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 1200)
+set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 600)
 
 # ADR-0207 d2: 64-bit summing at every mix point, Live's Fact Sheet case.
 add_executable(adi_precision_tests tests/test_precision.cpp)
@@ -1850,9 +1853,6 @@ target_sources(adi_core PRIVATE src/adi/midi_capture.cpp)
 add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
-# 409 s serial on a slow runner; cut off at 600 s under --parallel 8 with every
-# check passing. See adi_clip_playback_tests.
-set_tests_properties(adi_midi_clips_tests PROPERTIES TIMEOUT 1200)
 
 # ADR-0159: the curve formulas of SPEC §6.3.2, one evaluator for every reader.
 target_sources(adi_core PRIVATE src/adi/engine/curves.cpp)

@@ -94,6 +94,10 @@ public:
     /// Schema-only creation for converters and low-level fixtures that supply
     /// their own project rows. Application New commands use create().
     static std::unique_ptr<Store> createEmpty(const std::filesystem::path&, StoreError&);
+    /// Test seam: the next createEmpty throws after the schema and its seed
+    /// have run, before they commit, so a test can prove a failed create
+    /// rolls back and leaves no file behind. One-shot; tests only.
+    static void failNextCreateBeforeCommitForTest() noexcept;
 
     /// Open an existing project. Verifies `application_id` before trusting any
     /// table, and downgrades to read-only if the file's major schema is newer
