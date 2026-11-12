@@ -73,7 +73,10 @@ const Spec& spec(std::size_t i) noexcept {
 std::size_t indexFor(const std::string& id) noexcept {
     if(id.empty()||id.size()>3||(id.size()>1&&id.front()=='0'))return count;
     std::size_t i=0;
-    for(const char ch:id){if(ch<'0'||ch>'9')return count;i=i*10+static_cast<std::size_t>(ch-'0');}
+    for(const char ch:id){
+        if(ch<'0'||ch>'9')return count;
+        i=i*10+static_cast<std::size_t>(ch-'0');
+    }
     return i<count?i:count;
 }
 float normalized(const Spec& s,float v) noexcept {
@@ -237,13 +240,15 @@ public:
         if(i==0)return structures[choice];
         if(i==resolution){constexpr std::array<const char*,3> names{"Low","Medium","High"};return names[choice];}
         if(f==Status){constexpr std::array<const char*,3> names{"Off","Bypass","On"};return names[choice];}
-        if(f==Shape)return shapes[choice];if(f==Route)return routes[choice];
+        if(f==Shape)return shapes[choice];
+        if(f==Route)return routes[choice];
         if(f==Order||f==SideOrder)return slopes[choice];
         if(f==SideShape){constexpr std::array<const char*,4> names{"Band Pass","Low Pass","High Pass","All"};return names[choice];}
         if(spec(i).choices==2)return v==0?"Off":"On";
         if(i>=extensionFirst&&i<resolution&&(i-extensionFirst)%extensionBandFields==0&&v<0)return "Use Slope Order";
         std::ostringstream out;out<<std::fixed<<std::setprecision(f==Q||f==SideQ?3:spec(i).unit==std::string("Hz")?3:2)<<v;
-        if(*spec(i).unit)out<<' '<<spec(i).unit;return out.str();
+        if(*spec(i).unit)out<<' '<<spec(i).unit;
+        return out.str();
     }
     std::vector<std::string> stateRoles() const override {return {"state"};}
     std::vector<std::uint8_t> saveState(const std::string& role) const override {
@@ -265,7 +270,9 @@ public:
             Values pending{};
             for(auto p=state.at("params").begin();p!=state.at("params").end();++p) {
                 const auto i=indexFor(p.key());if(i==count||!p->is_number())return false;
-                const auto v=p->get<double>();if(!validValue(i,v))return false;pending[i]=static_cast<float>(v);
+                const auto v=p->get<double>();
+                if(!validValue(i,v))return false;
+                pending[i]=static_cast<float>(v);
             }
             if(!q::valid(settings(pending)))return false;
             // This tier has no common compound-edit authority for linked
@@ -330,7 +337,11 @@ std::vector<MixEqCompanionEdit> mixEqCompanionEdits(const DeviceInstance& device
     if(!info||info->kind!=mix::Function::Eq||index==count||!std::isfinite(desired.normalized)||
        desired.normalized<0||desired.normalized>1)return {};
     Values current{};
-    for(std::size_t i=0;i<count;++i){const auto v=device.getParam(std::to_string(i));if(!v.hasReal||!validValue(i,v.real))return {};current[i]=static_cast<float>(v.real);}
+    for(std::size_t i=0;i<count;++i){
+        const auto v=device.getParam(std::to_string(i));
+        if(!v.hasReal||!validValue(i,v.real))return {};
+        current[i]=static_cast<float>(v.real);
+    }
     const auto previous=settings(current);current[index]=physical(index,desired.normalized);
     const auto wanted=settings(current),linked=q::resolveLinkedChanges(previous,wanted);
     std::vector<MixEqCompanionEdit> result;

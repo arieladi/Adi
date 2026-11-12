@@ -321,7 +321,7 @@ struct Core::Implementation {
         for (int ch = 0; ch < keyChannels; ++ch)
             if (key[ch] == nullptr)
                 return false;
-        FlushDenormals flush;
+        [[maybe_unused]] FlushDenormals flush;
         consider(desired);
         const auto s = pinned(desired);
         apply(s);

@@ -22,7 +22,10 @@ void* operator new(std::size_t n) {
     if(auto* p=std::malloc(n?n:1))return p;
     throw std::bad_alloc();
 }
-void operator delete(void* p) noexcept {if(inAudio&&p)++deallocations;std::free(p);}
+void operator delete(void* p) noexcept {
+    if(inAudio&&p)++deallocations;
+    std::free(p);
+}
 void operator delete(void* p,std::size_t) noexcept {::operator delete(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete[](void* p) noexcept {::operator delete(p);}
@@ -188,7 +191,8 @@ template<class Sample>void exactCore(int channels,double rate) {
     set(*model,9,1);set(*model,14,.7);set(*model,16,.65);set(*model,12,channels==1?0:.75);
     model->prepare(rate,64);const auto desired=view->prepared;
     auto host=make(q::makeBackend(),channels);check(host&&host->loadState("state",model->saveState("state")),"native backend loads identical physical settings");
-    if(!host)return;host->prepare(rate,64);q::Core direct;direct.prepare({rate,64,channels},desired);
+    if(!host)return;
+    host->prepare(rate,64);q::Core direct;direct.prepare({rate,64,channels},desired);
     bool exact=true;
     for(std::uint64_t block=1;block<=6;++block) {
         std::array<std::array<Sample,64>,2> actual{},expected{};
