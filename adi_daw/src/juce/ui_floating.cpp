@@ -156,6 +156,12 @@ struct FloatingHost::Entry {
             e.closing = true;
             setVisible(false);
         }
+        void minimisationStateChanged(bool minimised) override {
+            if (e.component.getComponent() == &h.root_.mixViewPanel) {
+                h.root_.mixViewPanel.spectrum.suspend(minimised);
+                if (minimised) h.root_.mixViewPanel.stack.cancelInteractions();
+            }
+        }
         FloatingHost &h;
         Entry &e;
         std::unique_ptr<juce::TooltipWindow> tips;
@@ -376,6 +382,8 @@ namespace {
 constexpr const char *kMixViewKey = "Mix View";
 }
 bool detachMixView(FloatingHost &host, AdiRootComponent &root, bool detach) {
+    root.mixViewPanel.stack.cancelInteractions();
+    root.mixViewPanel.spectrum.suspend(false);
     if (!detach) {
         // Back where it docks: the host returns the panel to the root, which lays it out.
         host.close(kMixViewKey);

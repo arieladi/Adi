@@ -2,7 +2,8 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
 // A peer that exercises JUCE's real input dispatch without an OS window/display.
-class UiFakePeer final : public juce::ComponentPeer {
+// Test-only subclasses may model state such as minimisation without creating an OS peer.
+class UiFakePeer : public juce::ComponentPeer {
   public:
     explicit UiFakePeer(juce::Component &c) : ComponentPeer(c, 0), bounds(c.getBounds()) {}
     void *getNativeHandle() const override { return nullptr; }
@@ -45,5 +46,9 @@ class UiFakePeer final : public juce::ComponentPeer {
 };
 class UiPeerRoot final : public juce::Component {
   public:
+#if JUCE_VERSION >= 0x090005
+    juce::ComponentPeer *createNewPeer(const juce::DesktopWindowOptions &) override { return new UiFakePeer(*this); }
+#else
     juce::ComponentPeer *createNewPeer(int, void *) override { return new UiFakePeer(*this); }
+#endif
 };

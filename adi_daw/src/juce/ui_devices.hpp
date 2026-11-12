@@ -38,9 +38,10 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     juce::Slider slider;
     juce::ToggleButton toggle;
     juce::ComboBox menu;
+    std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
 
   private:
-    void gesture(engine::ParamEventKind, double);
+    bool gesture(engine::ParamEventKind, double);
     DeviceChainStrip &strip;
     const panel::Record *record = nullptr;
     double defaultValue = 0;
@@ -81,6 +82,7 @@ class SampleTile final : public juce::Component,
     enum class State { Empty, Loaded, Missing };
     State state() const noexcept { return state_; }
     juce::TextButton clear{"Clear"};
+    std::function<bool()> targetValid;
     const std::int64_t device;
     const std::int32_t slot;
     const juce::String slotName;
@@ -95,6 +97,7 @@ class SampleTile final : public juce::Component,
 class DevicePanelView final : public juce::Component {
   public:
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &);
+    ~DevicePanelView() override;
     void present(const DevicePanelData &);
     void resized() override;
     void paint(juce::Graphics &) override;
@@ -126,9 +129,24 @@ class DevicePanelView final : public juce::Component {
     std::unique_ptr<SampleTile> sample;
     static constexpr int kTileWidth = 96;
     bool configuring = false;
+    // Optional owner hooks for retained views (Mix View); the ordinary device strip uses its
+    // existing authority. Hooks must never substitute a second parameter/undo implementation.
+    std::function<bool(const std::string &, engine::ParamEventKind, double)> parameterGesture;
+    enum class Interaction { Text, Menu };
+    std::function<bool(Interaction)> interactionBegin;
+    std::function<void(Interaction)> interactionEnd;
+    std::function<bool()> targetValid;
+    std::function<bool(bool forward)> navigate;
+    // Retention is separate from native menu presentation so an embedded owner can cancel it.
+    bool beginInteraction(Interaction);
+    void endInteraction(Interaction);
+    void cancelInteractions();
 
   private:
     void endRename(bool commit);
+    bool validTarget() const { return !targetValid || targetValid(); }
+    bool textInteraction_ = false, menuInteraction_ = false;
+    std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
 };
@@ -141,6 +159,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     void fold(std::int64_t);
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
+    bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
+    bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
     // Moves the focus from a device to its neighbour; at either end it stays.
     bool focusNext(std::int64_t from, bool forward);
@@ -171,6 +191,9 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
+    std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
+                       const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
+    std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
     // The app's clipboard: `copy` keeps a device's copy (and removes it, for Cut); `paste` puts the
     // kept copy on `track`, in front of `before` or at the chain's end; `duplicate` copies and
