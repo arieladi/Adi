@@ -32,6 +32,25 @@ std::int64_t sampleAt(long double seconds,double rate) {
     if(!std::isfinite(n) || n<0 || n>maxTime)throw std::runtime_error("clip time outside supported range");
     return static_cast<std::int64_t>(std::llround(n));
 }
+// A linear clip's endpoint in samples, exactly. Through `long double` seconds
+// the result depends on the platform's long double (64-bit on MSVC, 80-bit on
+// x86, 128-bit on AArch64 Linux), and an endpoint on a half-sample tie (35 ms
+// at 44.1 kHz is 1543.5) then rounds differently per platform. For a whole
+// sample rate the integer split below rounds the tie up, as llround does, on
+// every platform; any other rate keeps the floating path.
+std::int64_t sampleAtNs(std::int64_t ns,double rate) {
+    constexpr std::int64_t perSecond=1000000000;
+    if(ns>=0 && rate>0 && rate<=static_cast<double>(std::int64_t{1}<<31) && std::floor(rate)==rate) {
+        const auto r=static_cast<std::int64_t>(rate);
+        const auto whole=ns/perSecond, rest=ns%perSecond;
+        if(static_cast<long double>(whole)*static_cast<long double>(r)>maxTime)
+            throw std::runtime_error("clip time outside supported range");
+        const auto n=whole*r+(rest*r+perSecond/2)/perSecond;
+        if(static_cast<long double>(n)>maxTime)throw std::runtime_error("clip time outside supported range");
+        return n;
+    }
+    return sampleAt(static_cast<long double>(ns)*1e-9L,rate);
+}
 std::shared_ptr<const AutomationClock> clockFor(const rows::Model& model,double rate) {
     auto clock=std::make_shared<AutomationClock>();clock->rate=rate;
     clock->knots.push_back({0,0,5765760.0L*2});
@@ -193,7 +212,7 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
                 if(!c->posNs || !c->lengthNs || *c->posNs<0 || *c->lengthNs<=0 || *c->posNs>INT64_MAX-*c->lengthNs)
                     throw std::runtime_error("invalid linear placement");
                 e.originSeconds=static_cast<long double>(*c->posNs)*1e-9L;e.originTick=clock.ticksAt(e.originSeconds);
-                e.begin=sampleAt(e.originSeconds,rate);e.end=sampleAt(static_cast<long double>(*c->posNs+*c->lengthNs)*1e-9L,rate);
+                e.begin=sampleAtNs(*c->posNs,rate);e.end=sampleAtNs(*c->posNs+*c->lengthNs,rate);
             } else throw std::runtime_error("unknown clip time base");
             if(e.end<=e.begin || static_cast<long double>(c->contentOffsetTicks)<-maxTime || c->loopStartTicks<0)throw std::runtime_error("invalid clip interval or offset");
             e.offsetTicks=static_cast<long double>(c->contentOffsetTicks);e.loopStart=static_cast<long double>(c->loopStartTicks);
