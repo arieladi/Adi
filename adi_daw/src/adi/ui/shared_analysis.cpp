@@ -45,7 +45,18 @@ struct SharedAnalysis::Domain {
     std::vector<float> left, right, linear;
     std::mutex mutex;
     std::shared_ptr<const engine::ScopeTap> tap;
-    std::atomic<std::shared_ptr<const Result>> result;
+    // Some supported libc++ releases have no atomic<shared_ptr> specialization. Only the
+    // UI and analysis worker touch this publication; the audio callback never takes this lock.
+    mutable std::mutex resultMutex;
+    std::shared_ptr<const Result> result;
+    std::shared_ptr<const Result> readResult() const {
+        std::lock_guard lock(resultMutex);
+        return result;
+    }
+    void publishResult(std::shared_ptr<const Result> next) {
+        std::lock_guard lock(resultMutex);
+        result.swap(next); // next releases the old allocation after the guard is destroyed
+    }
     std::atomic<bool> active{true}, available{false};
     std::size_t consumers = 0; // State mutex
     std::int64_t lastWritten = 0; // Domain mutex
@@ -128,7 +139,7 @@ struct SharedAnalysis::State {
             out->binsDbfs.resize(domain.linear.size());
             std::transform(domain.linear.begin(), domain.linear.end(), out->binsDbfs.begin(), dsp::toDbfs);
             domain.lastWritten = written;
-            domain.result.store(std::move(out), std::memory_order_release);
+            domain.publishResult(std::move(out));
             transforms.fetch_add(1, std::memory_order_relaxed);
             publications.fetch_add(1, std::memory_order_relaxed);
             ++done;
@@ -181,7 +192,7 @@ bool SharedAnalysis::Lease::available() const noexcept {
     return static_cast<bool>(*this) && domain_->available.load(std::memory_order_acquire);
 }
 std::shared_ptr<const SharedAnalysis::Result> SharedAnalysis::Lease::read() const noexcept {
-    return available() ? domain_->result.load(std::memory_order_acquire) : nullptr;
+    return available() ? domain_->readResult() : nullptr;
 }
 SharedAnalysis::SharedAnalysis(AcquireTap acquire, ReleaseTap release, Mode mode)
     : state_(std::make_shared<State>(std::move(acquire), std::move(release))) {
@@ -264,7 +275,7 @@ void SharedAnalysis::refreshSources(bool forceEpoch) {
             domain->available.store(usable(domain->tap, request.fftSize), std::memory_order_release);
             ++domain->sourceEpoch;
             domain->lastWritten = tap.attachmentWritten;
-            domain->result.store({}, std::memory_order_release);
+            domain->publishResult({});
         }
     }
     state_->changed.notify_all();
