@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 12 November 2026 — function and analysis continuation in progress
+
+**Item:** `mixview/functions-analysis-20261112`, based on main `7aeeb098` plus the foundation PR #537 (merge `ae6cd083`). The director explicitly asks us to continue beyond the separate live gate. Win reviews and merges each slice. The private decision guide requested by the mission is written; it separates settled ADR-0237 rules from the remaining director choices. The Clip/Limiter composition question is pending and does not block the independent work below.
+
+**Cross-lane ownership declared:** device-area opt-in function tabs/+ and same-chain movement in the window; one shared analyzer interface and process-wide demand-driven scheduler; MX-30 source leases, independent cursors, device input/output capture, timestamp/generation metadata and callback-safe storage retirement in `engine/{scope,session,graph,host,process}`; extraction of the existing ADI limiter arithmetic into a framework-neutral core and its normal DeviceInstance adapter. These paths are coordinated within the Mix View seat. No reserved processor slots, parallel edit authority or new control/catalog ops. The #512 fence remains untouched.
+
+**Verification boundary:** strict headless audio comparisons and synthetic peerless component tests will precede review. Live interaction/capture remains exclusively with the director's Claude session. New CPU timing remains deferred at the director's request; this item will report structural demand and audio invariance checks, not invent CPU parity numbers. Private source snapshots, measurements and reference research remain outside public sources/tests.
+
 ## 12 November 2026 — actual-chain foundation ready for review
 
 **Item:** `mixview/stack-foundation-20261112`, current commit `cae3c61e3a1ac18c3ff7754355290619c8dbf179`, based on main `e5baefec`. Draft PR [#537](https://github.com/arieladi/Adi/pull/537). Initial foundation `b7c0fe05`, portable publication follow-up `a62f8257`, explicit UI CI coverage `9db1d58a`, explicit coordinate casts for Clang `cae3c61e`. The director directly authorized connecting StackModel to actual chains and visible Mix View, followed by shared analysis/processing integration. This is the foundation slice, not the completed unified DSP feature. Win reviews/merges; no self-merge.
