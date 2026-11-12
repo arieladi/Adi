@@ -1647,6 +1647,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     const bool wide = precision_ == Precision::Float64;
     const bool bypass = s.hasBypass && s.node->bypassed();
     ScopeTap* const inputTap = s.node->inputTap();
+    ScopeTap* const outputTap = s.node->outputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
     // With alignment off, scope input timestamps show the heard global time.
@@ -1655,6 +1656,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     const auto slotIndex = static_cast<std::size_t>(&s - slots_.data());
     const std::int32_t arrival =
         delayCompensation_ && slotIndex < slotArrival_.size() ? slotArrival_[slotIndex].load(std::memory_order_relaxed) : 0;
+    const auto configuredLatency = slotIndex < slotLatency_.size() ? slotLatency_[slotIndex].load(std::memory_order_relaxed) : 0;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1754,10 +1756,15 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     if (suspend) {
         if (inputTap)
             inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing);
+        if (outputTap)
+            outputTap->write(static_cast<const float*>(nullptr), nullptr, frames,
+                             firstSample - static_cast<std::int64_t>(arrival) - configuredLatency, advancing);
         NodeIo silence;
         silence.frames = frames;
         silence.channels = channels_;
         silence.transport = transport;
+        silence.renderBlock = renderBlock_;
+        silence.configuredLatency = configuredLatency;
         s.node->silenceTaps(silence);
         ++r.stats.nodesSuspended;
         s.silent = true;
@@ -1840,6 +1847,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         nio.inputSilent = mainSilent;
         nio.sidechainSilent = sideSilent;
         nio.sampleRate = sampleRate_;
+        nio.renderBlock = renderBlock_;
+        nio.configuredLatency = configuredLatency;
 
         // The summed, compensated input belongs to this graph's arrival,
         // before the node's own latency. No device implementation is involved.
@@ -1919,6 +1928,14 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
                 for (std::int32_t i = 0; i < n; ++i) d[i] = f[i];
             }
         }
+    }
+
+    // Capture what downstream really hears, after active processing or compensated
+    // dry bypass, at graph precision. Latencies are this callback's cached values.
+    if (outputTap && channels_ > 0) {
+        const auto stamp = firstSample - static_cast<std::int64_t>(arrival) - configuredLatency;
+        if (wide) outputTap->write(s.widePtrs[0], channels_ > 1 ? s.widePtrs[1] : nullptr, frames, stamp, advancing);
+        else outputTap->write(s.chanPtrs[0], channels_ > 1 ? s.chanPtrs[1] : nullptr, frames, stamp, advancing);
     }
 
     // Is this node's output silent? Measured rather than declared: a node that
@@ -2043,6 +2060,12 @@ void Graph::process(const AudioIo& io) noexcept {
 
     if (!ok_ || !prepared_) return;
     if (io.frames <= 0 || io.frames > maxFrames_) return;
+
+    // Direct graphs have no GraphHost physical-block pin. Keep their fallback IDs
+    // unique across graph replacement; the normal Session path performs no RMW.
+    static std::atomic<std::uint64_t> directSerial{0};
+    renderBlock_ = io.renderBlock != 0 ? io.renderBlock :
+        ((std::uint64_t{1} << 63) | (directSerial.fetch_add(1, std::memory_order_relaxed) + 1));
 
     ++stats_.blocks;
     render_.stats=GraphStats{};
