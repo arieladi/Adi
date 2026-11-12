@@ -90,6 +90,7 @@ public:
         pending_.clear();++loads;return true;
     }
     void flags(bool missing,bool automatable){params_[0].missing=missing;params_[0].automatable=automatable;}
+    void configurable(bool enabled){params_[0].configurable=enabled;}
     void renameCutoff(const std::string& name){params_[0].id=name;identity_.format="clap";}
     bool echo=false,deferred=false,refuse=false,stateful=false;
     int sets=0,loads=0;
@@ -261,9 +262,63 @@ void immediateAutomationOverride() {
     check(!ops.isAttached(7) && !ops.uiEvent(7,"00000011",ParamEventKind::End,0.7,5,out) && ops.drain(1000,out)==0 && out.empty(),
           "session synchronization cancels retired-device UI state and refuses late frames");
 }
+void configurationGesture() {
+    Project project;Knobs device;ParamOps ops;ops.attach(7,device);
+    std::vector<OpRequest> out;
+    device.flags(false,false);
+    check(!ops.uiConfigurationEvent(7,"cutoff",ParamEventKind::Begin,.5,0,out) && out.empty(),
+          "ordinary non-automatable parameters remain read-only by default");
+    device.configurable(true);
+    check(!ops.uiEvent(7,"cutoff",ParamEventKind::Begin,.5,0,out),
+          "configuration opt-in does not make an automation gesture eligible");
+    check(ops.uiConfigurationEvent(7,"cutoff",ParamEventKind::Begin,.5,0,out) &&
+          ops.uiConfigurationEvent(7,"cutoff",ParamEventKind::Value,.8,1,out) && out.empty() &&
+          ops.uiConfigurationEvent(7,"cutoff",ParamEventKind::End,.8,2,out),
+          "configuration uses the same explicit live gesture interval");
+    check(out.size()==2 && out.front().payload.at("norm")==.5 && out.back().payload.at("norm")==.8 &&
+              near(device.getParam("cutoff").normalized,.8),
+          "configuration keeps the first-touch origin and one final value");
+    check(OpJournal(*project.store).commit(out).ok,
+          "configuration commits through the existing journal");
+    const auto logged=OpJournal(*project.store).recent();
+    check(History(*project.store).undo().ok,"configuration undoes through the existing journal");
+    for(const auto& op:logged)if(op.inverse)ops.applied(*op.inverse,3);
+    check(near(device.getParam("cutoff").normalized,.5) &&
+              project.store->db().execAndGet("SELECT count(*) FROM plugin_params").getInt()==0,
+          "configuration undo restores the origin and removes the first-touch row");
+    device.flags(false,true);out.clear();
+    check(!ops.uiConfigurationEvent(7,"cutoff",ParamEventKind::Begin,.5,4,out),
+          "automatable controls cannot enter through the configuration-only wrapper");
+
+    Project owned;
+    owned.store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main')");
+    owned.store->db().exec("INSERT INTO mixer_strip(track_id) VALUES(1),(9)");
+    owned.store->db().exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) VALUES(1,'track',1,'track',9,'main')");
+    owned.store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,default_value) VALUES(90,'device',7,'17','normalized',0.2)");
+    Session session;session.graph().setFadeFrames(0);Knobs* runtime=nullptr;
+    check(session.load(*owned.store,[&](const DeviceRequest&,std::string&)->std::unique_ptr<device::DeviceInstance> {
+        auto instance=std::make_unique<Knobs>();instance->renameCutoff("00000011");
+        instance->flags(false,false);instance->configurable(true);runtime=instance.get();return instance;
+    },{2,48000,64}),"session-bound configuration loads with an old lane present");
+    if(!runtime)return;
+    ParamOps captured;check(captured.attachSession(session)==1,"configuration attaches the common owned capture");
+    session.setAutomationWriteState(true,true);out.clear();
+    check(captured.uiConfigurationEvent(7,"00000011",ParamEventKind::Begin,.5,0,out) &&
+          captured.uiConfigurationEvent(7,"00000011",ParamEventKind::Value,.7,1,out) &&
+          captured.uiConfigurationEvent(7,"00000011",ParamEventKind::End,.7,2,out),
+          "owned configuration uses common Begin Value End capture");
+    check(!session.automationOverridden() && session.writingAutomationLanes().empty() &&
+              session.automationArmed() && session.automationRecording(),
+          "configuration leaves automation overrides and write ownership unchanged");
+    check(OpJournal(*owned.store).commit(out).ok && session.refresh(*owned.store) &&
+              !session.automationOverridden() && session.writingAutomationLanes().empty(),
+          "configuration row commit does not override a stale non-automatable lane");
+    check(session.overrideDeviceAutomation(7,"00000011") && !session.automationOverridden(),
+          "direct override request respects current non-automatable declaration");
+}
 } // namespace
 int main() {
-    try{explicitGesture();implicitAndRefusal();journalAndDeferred();asynchronousEchoes();cancellationAndState();twoProducers();immediateAutomationOverride();}
+    try{explicitGesture();implicitAndRefusal();journalAndDeferred();asynchronousEchoes();cancellationAndState();twoProducers();immediateAutomationOverride();configurationGesture();}
     catch(const std::exception& error){check(false,std::string("exception: ")+error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

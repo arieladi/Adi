@@ -263,7 +263,11 @@ const PublishedGraph* GraphHost::acquireRender() noexcept {
 }
 
 GraphHost::RenderBlock::RenderBlock(GraphHost& host) noexcept
-    : host_(host), snapshot_(host.acquireRender()), serial_(host.renderSerial_) {}
+    : host_(host), snapshot_(host.acquireRender()), serial_(host.renderSerial_) {
+    // Transport/latency queries and every logical slice must observe the same
+    // physically admitted compensation plan, before any samples are rendered.
+    if (snapshot_) snapshot_->graph().graph().pinPhysicalPdc(serial_);
+}
 GraphHost::RenderBlock::~RenderBlock() {
     if (serial_ == host_.renderSerial_) host_.renderActive_ = false;
 }

@@ -6229,6 +6229,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         record.name = "Cutoff";
         record.playing = .5;
         expected.records.push_back(record);
+        expected.declared.push_back({"cutoff", "Cutoff", true});
         expected.resolved.entries.push_back({"cutoff", false});
         DevicePanelView retained(gateway, expected);
         bool valid = true;
@@ -7838,6 +7839,7 @@ int main(int argc, char **argv) {
                 record.stepCount = i % 3 == 1 ? 2 : 4;
                 record.text = "Plugin value";
                 panelData.records.push_back(record);
+                panelData.declared.push_back({record.id, record.name, true});
                 panelData.resolved.entries.push_back({record.id, false});
             }
             panel::finalize(panelData.records);
@@ -8191,6 +8193,9 @@ int main(int argc, char **argv) {
                     std::sin(2 * 3.141592653589793 * 32 * static_cast<double>(i) / 1024.));
             tap->write(sine.data(), sine.data(), 1024, 0, true);
             auto model = std::make_shared<AnalyserModel>(tap);
+            model->analyseOnce(); // explicit diagnostic demand; no private worker or timer
+            tap->write(sine.data(), sine.data(), 1024, 1024, true);
+            model->analyseOnce();
             AnalyserView small(model);
             auto big = std::make_unique<AnalyserView>(model);
             auto *bigPtr = big.get();
@@ -8201,10 +8206,9 @@ int main(int argc, char **argv) {
                   "the docked and the big view share one measurement model");
             std::array<float, 513> bins{};
             std::uint64_t revision = 0;
-            for (int retry = 0; retry < 100 && !model->read(bins, revision); ++retry)
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            model->read(bins, revision);
             check(revision > 0 && bins[100] < -90 && std::abs(bins[32]) < .01,
-                  "analyser worker calibrated floor before 0 dB sine");
+                  "shared analyzer explicit pass calibrates the 0 dB sine without autonomous polling");
             const std::string analyserKey = "analyser";
             floating.frame(analyserKey);
             allocations = 0;
@@ -8250,6 +8254,26 @@ int main(int argc, char **argv) {
             check(floating.openView("analyser", 11, std::move(again)) && floating.zoomOf(analyserKey) == .5f,
                   "and it opens again at that zoom");
             floating.close("analyser");
+            const auto selectedBeforeAnalysis = integrated.arrangement.geometry.selection.track;
+            check(showAnalyzerWindow(floating, integrated, integrated.analysisTrack()) &&
+                      integrated.arrangement.geometry.selection.track == selectedBeforeAnalysis,
+                  "opening the default Main analyzer preserves the selected editing channel");
+            auto *followingAnalysis = dynamic_cast<AnalysisPane *>(floating.content("Analysis"));
+            check(followingAnalysis && followingAnalysis->source() == AnalysisPane::Source::Main,
+                  "the project-owned analyzer window starts with explicit Main source");
+            const auto oldSessionSelection = integrated.session().selection();
+            auto detachedSelection = oldSessionSelection;
+            for (const auto &track : integrated.reader().tracks())
+                if (track->id != oldSessionSelection.track) { detachedSelection.track = track->id; break; }
+            check(integrated.session().select(detachedSelection, why), "another window can update the shared channel selection");
+            if (followingAnalysis) {
+                followingAnalysis->setSource(AnalysisPane::Source::Selected);
+                floating.frame("Analysis");
+            }
+            check(followingAnalysis && followingAnalysis->view.track() == detachedSelection.track,
+                  "a detached analyzer follows shared selection without ticking the main window");
+            check(integrated.session().select(oldSessionSelection, why), "restore the session selection after detached analyzer test");
+            floating.close("Analysis");
         }
         integrated.devices.publication = {};
         arrangement.geometry.selection.track = 2;

@@ -13,35 +13,36 @@ struct MonitorArea {
 };
 juce::Rectangle<int> restoreFloating(const FloatingState &, const std::vector<MonitorArea> &);
 std::vector<MonitorArea> currentMonitors();
-// Model owns the analysis worker, not a repaint clock. Views share this one result.
+// Compatibility wrapper. Production views use the document broker; there is no private FFT
+// worker or polling clock. analyseOnce is an explicit headless adapter only.
 class AnalyserModel {
   public:
     explicit AnalyserModel(std::shared_ptr<const engine::ScopeTap>);
+    AnalyserModel(std::shared_ptr<SharedAnalysis>, std::int64_t track);
     ~AnalyserModel();
     void analyseOnce() noexcept;
     bool read(std::array<float, 513> &, std::uint64_t &revision) const noexcept;
-    double sampleRate() const noexcept { return tap_->sampleRate(); }
+    double sampleRate() const noexcept;
+    const std::shared_ptr<SharedAnalysis> &broker() const noexcept { return broker_; }
+    std::int64_t track() const noexcept { return track_; }
 
   private:
     std::shared_ptr<const engine::ScopeTap> tap_;
-    dsp::Spectrum spectrum_{1024};
-    std::array<float, 1024> left_{}, right_{};
-    std::array<float, 513> scratch_{};
-    std::array<std::atomic<float>, 513> bins_{};
-    std::atomic<std::uint64_t> revision_{0};
-    std::jthread worker_;
+    std::shared_ptr<SharedAnalysis> broker_;
+    SharedAnalysis::Lease diagnostic_;
+    std::int64_t track_ = 1;
 };
 class AnalyserView final : public ClockedView {
   public:
     explicit AnalyserView(std::shared_ptr<AnalyserModel>);
     void frame() noexcept override;
     void paint(juce::Graphics &) override;
+    void resized() override { view_.setBounds(getLocalBounds()); }
     const std::shared_ptr<AnalyserModel> &model() const { return model_; }
 
   private:
     std::shared_ptr<AnalyserModel> model_;
-    std::array<float, 513> bins_{};
-    std::uint64_t revision_ = 0;
+    SharedSpectrumView view_;
 };
 class FloatingHost {
   public:
@@ -106,4 +107,7 @@ bool toggleMixViewWindow(FloatingHost &, AdiRootComponent &);
 // After the host collects the windows closed by their own button: a Mix View window closed so
 // closes the Mix View. With `restore`, at startup: one kept open in a window opens there again.
 void syncMixView(FloatingHost &, AdiRootComponent &, bool restore = false);
+// One project-owned analyzer window, following selection when opened for a channel. Main
+// remains the default for the Mix/Info analyzer. Its Mix View button returns to that channel.
+bool showAnalyzerWindow(FloatingHost &, AdiRootComponent &, std::int64_t track);
 } // namespace adi::ui

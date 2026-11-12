@@ -69,7 +69,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         state.mixView = j.value("mixView", false);
-        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 5);
         state.mixViewDetached = j.value("mixViewDetached", false);
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);

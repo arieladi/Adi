@@ -84,6 +84,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     SessionSpec offlineSpec{2,spec_.sampleRate,spec_.maxFrames};
     offlineSpec.precision=spec_.precision;
     offlineSpec.performanceState=false;
+    offlineSpec.exporting=false;
     if (!offline.load(store,loader_,offlineSpec)) return fail(offline.error());
     if (offline.stats().placeholders || offline.stats().skipped || !offline.problems().empty())
         return fail("gain stage requires a fully resolved project: missing device, media or unsupported playback");

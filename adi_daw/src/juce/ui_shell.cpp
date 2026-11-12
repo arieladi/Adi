@@ -836,7 +836,10 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     infoSpectrum.setBounds(infoArea_.reduced(look::border));
     infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
-    infoSpectrum.present(sharedAnalysis, analysisTrack());
+    infoSpectrum.setMode(mixViewPanel.analysis.mode());
+    infoSpectrum.setSource(mixViewPanel.analysis.point());
+    infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
+    infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
     infoSpectrum.frame();
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
@@ -1257,8 +1260,19 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
     arrangement.followPaused = paused;
     return done;
 }
-std::int64_t AdiRootComponent::analysisTrack() const noexcept {
-    for (const auto &track : reader().tracks())
+std::int64_t AdiRootComponent::analysisTrack(bool selected) const noexcept {
+    return analysisTrack(reader(), selected);
+}
+std::int64_t AdiRootComponent::analysisTrack(const SnapshotReader &snapshot, bool selected) const noexcept {
+    if (selected) {
+        // A detached window can advance while the main window's clock is suspended. Its
+        // source follows the session's newer selection and its own current project snapshot.
+        const auto id = selectionGeneration_ != session_.generation() ? session_.selection().track
+                                                                     : arrangement.geometry.selection.track;
+        if (id != 0 && snapshot.findTrack(id)) return id;
+        return 0;
+    }
+    for (const auto &track : snapshot.tracks())
         if (track->kind == "master") return track->id;
     return 0;
 }
@@ -1271,7 +1285,9 @@ bool AdiRootComponent::setMixView(bool open, bool detached) {
         state_.mixViewDetached = wasDetached;
         return fail(error_);
     }
-    if (!open || wasDetached != detached) mixViewPanel.stack.cancelInteractions();
+    if (!open || wasDetached != detached) {
+        mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
+    }
     resized();
     return true;
 }
@@ -1282,8 +1298,10 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
         state_.mixViewTab = was;
         return fail(error_);
     }
-    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was)
+    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was) {
         mixViewPanel.stack.cancelInteractions();
+        devices.cancelFunctionInteractions();
+    }
     dirty_.mark(DirtySet::Layout);
     return true;
 }
@@ -2435,8 +2453,10 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    if (id == AppCommands::Undo || id == AppCommands::Redo)
+    if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
+        devices.cancelFunctionInteractions();
+    }
     if (mixViewPanel.stack.hasDeviceContext()) {
         if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
             id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack)
@@ -2977,8 +2997,8 @@ void AdiWindow::moved() {
 void AdiWindow::minimisationStateChanged(bool minimised) {
     root_->infoSpectrum.suspend(minimised);
     if (root_->mixViewPanel.getParentComponent() == root_)
-        root_->mixViewPanel.spectrum.suspend(minimised);
-    if (minimised) root_->mixViewPanel.stack.cancelInteractions();
+        root_->mixViewPanel.suspendAnalysis(minimised);
+    if (minimised) { root_->mixViewPanel.stack.cancelInteractions(); root_->devices.cancelFunctionInteractions(); }
 }
 AdiWindow::~AdiWindow() {
 #if JUCE_MAC

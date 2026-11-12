@@ -420,6 +420,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         rq.sampleRate = spec_.sampleRate;
         rq.maxFrames = spec_.maxFrames;
         rq.channels = spec_.channels;
+        rq.exporting = spec_.exporting;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -1112,6 +1113,19 @@ struct StripValues {
     double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
+bool knownNonAutomatable(const device::DeviceInstance* instance,const std::string& parameter,bool laneReference) {
+    if (!instance || !instance->loaded()) return false;
+    for (std::int32_t i=0;i<instance->paramCount();++i) {
+        const auto* descriptor=instance->paramAt(i);
+        if (!descriptor || descriptor->missing) continue;
+        const auto reference=laneReference ? automationParamRef(instance->identity().format,descriptor->id)
+                                           : std::optional<std::string>{descriptor->id};
+        if (reference && *reference==parameter) return !descriptor->automatable;
+    }
+    // Unknown and temporarily missing declarations keep their existing waiting
+    // semantics. Only a live, explicit non-automatable declaration rejects it.
+    return false;
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
     std::set<std::int64_t> clapRefs, clapDevices;
@@ -1192,6 +1206,7 @@ bool Session::refresh(const Store& store) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
             if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
+            if (knownNonAutomatable(instanceFor(key.first),key.second,true)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
@@ -1528,6 +1543,7 @@ bool Session::reenableAutomation(std::int64_t laneId) {
 bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
     if (!deviceAutomation_) return true;
     const auto* instance = instanceFor(deviceId);
+    if (knownNonAutomatable(instance,paramId,false)) return true;
     const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
     if (!ref) return true;
     const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
@@ -1856,9 +1872,12 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     }
     session_.recording_->capture(io, session_.transport_);
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
-    if (!graph_.process(io)) return false;
     AudioIo block = io;
-    if (timing) block.transport = &timing->blockInfo;
+    if (timing) {
+        block.transport = &timing->blockInfo;
+        block.exporting = timing->spec.exporting;
+    }
+    if (!graph_.process(block)) return false;
     session_.mainLoudness_.process(block);
     struct ClickContext { Session* session; const TimingView* timing; };
     ClickContext click{&session_, timing};

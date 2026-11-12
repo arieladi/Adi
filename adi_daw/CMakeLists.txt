@@ -440,6 +440,7 @@ add_library(adi_core STATIC
     "${ADI_SCHEMA_HPP}"
 )
 target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp)
+include(cmake/mix_cores.cmake)
 target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp src/adi/audio/auto_warp.cpp src/adi/engine/warp_projection.cpp)
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp

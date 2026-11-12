@@ -2,6 +2,8 @@
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
+#include "adi/mix_function_edit.hpp"
+#include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
@@ -34,19 +36,19 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     ops_.followOverrides(session_.overriddenLanes());
     const auto lifetime = session_.lifetimeToken();
     analysis_ = std::make_shared<SharedAnalysis>(
-        [this, lifetime](std::int64_t track, engine::ScopePoint point) {
+        [this, lifetime](engine::ScopeSource source, double seconds) -> std::shared_ptr<const engine::ScopeTap> {
             if (lifetime.expired()) return std::shared_ptr<const engine::ScopeTap>{};
-            auto tap = session_.openScope(track, SharedAnalysis::kTapSeconds, point);
-            // Existing Session taps are retained across a format change. Do not label old-rate
-            // data as current; MX-30 owns replacing/retiring that storage safely.
-            if (tap && tap->sampleRate() != session_.spec().sampleRate) {
-                session_.closeScope(track, point);
-                return std::shared_ptr<const engine::ScopeTap>{};
+            auto &held = analysisSources_[source];
+            if (!held.lease || held.seconds != seconds) {
+                // Prepare the new history while the old lease still holds its publication.
+                auto replacement = session_.requestScope({source, seconds});
+                held.lease = std::move(replacement);
+                held.seconds = seconds;
             }
-            return tap;
+            return held.lease.tap();
         },
-        [this, lifetime](std::int64_t track, engine::ScopePoint point) {
-            if (!lifetime.expired()) session_.closeScope(track, point);
+        [this, lifetime](engine::ScopeSource source) {
+            if (!lifetime.expired()) analysisSources_.erase(source);
         });
 }
 ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
@@ -328,6 +330,32 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     feed_.publish(session_);
     return true;
 }
+bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
+    const auto available = device::mixFunctionAvailability(kind);
+    if (!available.ready) { error_ = available.reason; return false; }
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready);
+    if (!prepared.ok) { error_ = prepared.error; return false; }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
+        return mix::commitFunctionEdit(s, p, a);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise()) return false;
+    feed_.publish(session_); return true;
+}
+bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int64_t track,
+                                       std::optional<std::int64_t> before) {
+    if (!deviceTargetCurrent(expected.id, expected.runtime, expected.instance)) {
+        error_ = "That function changed before it could be moved."; return false;
+    }
+    auto prepared = mix::prepareFunctionMove(*store_, expected.id, track, before);
+    if (!prepared.ok) { error_ = prepared.error; return false; }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
+        return mix::commitFunctionEdit(s, p, a);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise()) return false;
+    feed_.publish(session_); return true;
+}
 namespace {
 // Commits a prepared sample batch and hands each new state to the live device, as the engine's
 // contract asks (ENGINE-SAMPLE-SLOTS.md): forward payloads after the commit.
@@ -389,6 +417,16 @@ std::string ProjectDocument::deviceCopyIdentity() const {
     return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
+    if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
+        SQLite::Statement exists(store_->db(),
+            "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
+            "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
+            "JOIN chains parent ON parent.id=owner.chain_id) "
+            "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+            "WHERE p.format='internal' AND p.uid=? LIMIT 1");
+        exists.bind(1,track); exists.bind(2,copy.reference->uid);
+        if (exists.executeStep()) { error_ = "That function is already present on this channel."; return false; }
+    }
     // The chain the device goes into: the one holding `before`, else the track's own (a rack's
     // nested chains belong to a device, never to the track).
     std::int64_t chain = 0;
@@ -412,7 +450,8 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
         ++id;
     // With no chain the engine still checks the copy first, so a copy from another project or a rack
     // says so rather than that the track has no chain.
-    auto prepared = prepareDevicePaste(*store_, copy, id, chain, before);
+    auto prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
+                                         : prepareDevicePaste(*store_, copy, id, chain, before);
     if (!prepared.ok) {
         error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
                  : prepared.error.empty()                         ? "The device could not be pasted."
@@ -515,7 +554,20 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     // (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the parameter's
     // automation lane for this run, which is what lights Re-Enable Automation.
     std::vector<OpRequest> requests;
-    const bool taken = parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    // Explicit configuration uses this same owner, transaction and exact-runtime
+    // path without treating the setting as automatable. Other non-automatable
+    // parameters remain read-only.
+    const auto *instance = session_.instanceFor(id);
+    bool configuration = false;
+    if (instance)
+        for (std::int32_t i = 0; i < instance->paramCount(); ++i)
+            if (const auto *d = instance->paramAt(i); d && d->id == param) {
+                configuration = !d->automatable && d->configurable;
+                break;
+            }
+    const bool taken = configuration
+                           ? parameterOps_.uiConfigurationEvent(id, param, kind, normalized, captureNowMs(), requests)
+                           : parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
     const bool appended = !requests.empty();
     const bool committed = commitCaptured(requests); // error_ says why when the store refused
     // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
@@ -547,7 +599,7 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
         return "The plug-in has no parameter \"" + param + "\".";
     if (descriptor->missing)
         return "The plug-in no longer has the parameter \"" + descriptor->name + "\".";
-    if (!descriptor->automatable)
+    if (!descriptor->automatable && !descriptor->configurable)
         return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
     return "The plug-in did not take the value.";
 }

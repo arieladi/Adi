@@ -4,6 +4,7 @@
 #include "ui_browser.hpp"
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 namespace adi::ui {
 ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
                                    double defaultNormalized)
@@ -54,6 +55,7 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     present(r, defaultNormalized);
 }
 bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
+    if (kind != engine::ParamEventKind::End && !isEnabled()) return false;
     return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
 }
 bool ParameterControl::keyPressed(const juce::KeyPress &k) {
@@ -242,7 +244,11 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     title.onClick = [this] { grabKeyboardFocus(); };
     enabled.onClick = [this] {
         if (!validTarget()) return;
-        strip.action("device.setEnabled", {{"id", id}, {"enabled", enabled.getToggleState()}});
+        if (nativeFunction()) {
+            const auto safe = SafePointer<DevicePanelView>(this);
+            cancelInteractions();
+            if (safe && safe->validTarget()) safe->strip.action("device.remove", {{"id", safe->id}});
+        } else strip.action("device.setEnabled", {{"id", id}, {"enabled", enabled.getToggleState()}});
     };
     configureButton.onClick = [this] { configure(); };
     addChildComponent(rename);
@@ -255,8 +261,15 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     present(d);
 }
 DevicePanelView::~DevicePanelView() {
+    endFunctionParameter();
     endInteraction(Interaction::Text);
     endInteraction(Interaction::Menu);
+    // Slider/menu teardown may finish native interaction after this destructor body. Do not
+    // leave callbacks reaching the retained owner once its identity/gesture members are gone.
+    for (auto &control : controls) {
+        control->slider.onDragStart = {}; control->slider.onValueChange = {}; control->slider.onDragEnd = {};
+        control->toggle.onClick = {}; control->menu.onChange = {};
+    }
 }
 bool DevicePanelView::beginInteraction(Interaction kind) {
     auto &active = kind == Interaction::Text ? textInteraction_ : menuInteraction_;
@@ -276,16 +289,178 @@ void DevicePanelView::cancelInteractions() {
     // A native menu may complete after this panel was hidden and shown again. Its old action
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
+    dragTarget_.reset();
+    const auto safe = SafePointer<DevicePanelView>(this);
+    endFunctionParameter();
+    if (!safe) return;
     endRename(false);
+    if (!safe) return;
     endInteraction(Interaction::Text);
+    if (!safe) return;
     endInteraction(Interaction::Menu);
 }
+const mix::FunctionInfo *DevicePanelView::nativeFunction() const noexcept {
+    return data && !data->plugin ? mix::functionForUid(data->uid) : nullptr;
+}
+std::uint64_t DevicePanelView::presentedInstance() const noexcept { return data ? data->instance : 0; }
+bool DevicePanelView::beginFunctionDrag() {
+    if (!nativeFunction() || !validTarget() || !data) return false;
+    auto expected = *data;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    endFunctionParameter();
+    if (!safe || !safe->validTarget()) return false;
+    dragTarget_ = std::move(expected);
+    return true;
+}
+const DevicePanelData *DevicePanelView::functionDragTarget() const noexcept {
+    return dragTarget_ ? &*dragTarget_ : nullptr;
+}
+void DevicePanelView::endFunctionParameter() {
+    if (!editingBegan_) return;
+    const auto parameter = std::move(editingParameter_);
+    const auto value = editingValue_;
+    editingBegan_ = false;
+    if (parameterGesture) parameterGesture(parameter, engine::ParamEventKind::End, value);
+    else strip.edit(id, parameter, engine::ParamEventKind::End, value);
+}
+bool DevicePanelView::editFunctionParameter(const std::string &parameter, engine::ParamEventKind kind, double value) {
+    if (kind == engine::ParamEventKind::End) {
+        if (!editingBegan_ || editingParameter_ != parameter) return false;
+        endFunctionParameter(); return true;
+    }
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (!parameterPages.empty() && kind == engine::ParamEventKind::Value &&
+        (!editingBegan_ || editingParameter_ != parameter)) return false;
+    if (kind == engine::ParamEventKind::Begin) {
+        endFunctionParameter();
+        if (!safe) return false;
+    }
+    if (!validTarget()) { endFunctionParameter(); return false; }
+    const bool accepted = parameterGesture ? parameterGesture(parameter, kind, value) : strip.edit(id, parameter, kind, value);
+    if (!safe) return false;
+    if (kind == engine::ParamEventKind::Begin && accepted) {
+        editingBegan_ = true; editingParameter_ = parameter; editingValue_ = value;
+    } else if (kind == engine::ParamEventKind::Value && editingBegan_ && editingParameter_ == parameter) {
+        if (accepted) editingValue_ = value;
+        else endFunctionParameter();
+    }
+    return accepted;
+}
+int DevicePanelView::pageSelectorWidth(const ParameterPageControl &page) noexcept {
+    return std::clamp(14 + 6 * static_cast<int>(std::min<std::size_t>(page.name.size(), 16)), 36, 110);
+}
+const panel::Record *DevicePanelView::pageEnableRecord(const ParameterPageControl &page) const {
+    if (!data || page.enableParameter.empty()) return nullptr;
+    const auto declared = std::find_if(data->declared.begin(), data->declared.end(), [&](const auto &p) {
+        return p.id == page.enableParameter && p.modifiable;
+    });
+    if (declared == data->declared.end()) return nullptr;
+    const auto at = std::find_if(data->records.begin(), data->records.end(), [&](const auto &r) { return r.id == page.enableParameter; });
+    return at != data->records.end() && !at->missing ? &*at : nullptr;
+}
+bool DevicePanelView::parameterShown(const std::string &parameter) const {
+    if (!data || parameterPages.empty()) return true;
+    const auto group = data->parameterGroups.find(parameter);
+    return group == data->parameterGroups.end() || group->second.groupId.empty() ||
+        (!group->second.groupEnableControl && group->second.groupId == selectedPage_);
+}
+bool DevicePanelView::chooseParameterPage(const std::string &page) {
+    if (!validTarget() || std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == page; })) return false;
+    if (selectedPage_ == page) return true;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    cancelInteractions();
+    if (!safe || !safe->validTarget()) return false;
+    selectedPage_ = page;
+    for (auto &p : parameterPages) p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
+    resized(); strip.resized(); repaint();
+    return true;
+}
+bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) {
+    const auto found = std::find_if(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == page; });
+    if (found == parameterPages.end()) return false;
+    const auto *record = pageEnableRecord(*found);
+    if (!record || !validTarget()) { endFunctionParameter(); return false; }
+    const auto parameter = found->enableParameter;
+    const double before = record->playing, desired = on ? 1. : 0.;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (!editFunctionParameter(parameter, engine::ParamEventKind::Begin, before) || !safe) return false;
+    const bool accepted = editFunctionParameter(parameter, engine::ParamEventKind::Value, desired);
+    if (!safe) return accepted;
+    editFunctionParameter(parameter, engine::ParamEventKind::End, desired);
+    if (!safe) return accepted;
+    const auto current = std::find_if(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == page; });
+    if (current != parameterPages.end()) current->enabled->setToggleState(accepted ? on : before >= .5, juce::dontSendNotification);
+    return accepted;
+}
+bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
+    if (data && data->parameterGroups == next.parameterGroups) return true;
+    struct Page { std::string id, name, enable; };
+    std::vector<Page> pages;
+    for (const auto &r : next.records) {
+        const auto metadata = next.parameterGroups.find(r.id);
+        if (metadata == next.parameterGroups.end() || metadata->second.groupId.empty()) continue;
+        const auto &m = metadata->second;
+        auto at = std::find_if(pages.begin(), pages.end(), [&](const auto &p) { return p.id == m.groupId; });
+        if (at == pages.end()) {
+            pages.push_back({m.groupId, m.groupName.empty() ? m.groupId : m.groupName, {}}); at = std::prev(pages.end());
+        }
+        if (m.groupEnableControl && at->enable.empty()) at->enable = r.id;
+    }
+    const auto order = [](const std::string &id) { return id == "clip" ? 0 : id == "limiter" ? 1 : 2; };
+    std::stable_sort(pages.begin(), pages.end(), [&](const auto &a, const auto &b) { return order(a.id) < order(b.id); });
+    bool same = pages.size() == parameterPages.size();
+    if (same) for (std::size_t i = 0; i < pages.size(); ++i)
+        if (pages[i].id != parameterPages[i].id || pages[i].name != parameterPages[i].name || pages[i].enable != parameterPages[i].enableParameter) { same = false; break; }
+    if (same) return true;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    cancelInteractions();
+    if (!safe) return false;
+    ++pageEpoch_;
+    parameterPages.clear();
+    if (std::none_of(pages.begin(), pages.end(), [&](const auto &p) { return p.id == selectedPage_; })) {
+        const auto limiter = std::find_if(pages.begin(), pages.end(), [](const auto &p) { return p.id == "limiter"; });
+        selectedPage_ = limiter != pages.end() ? limiter->id : pages.empty() ? std::string() : pages.front().id;
+    }
+    for (const auto &page : pages) {
+        ParameterPageControl p;
+        p.id = page.id; p.name = page.name; p.enableParameter = page.enable;
+        p.selector = std::make_unique<juce::TextButton>(page.name);
+        p.selector->setTitle(page.name + " parameters");
+        p.selector->setTooltip("Shows " + juce::String(page.name) + " controls. Page selection does not change processing.");
+        p.selector->setColour(juce::TextButton::buttonColourId, look::button);
+        p.selector->setColour(juce::TextButton::buttonOnColourId, look::accent);
+        p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
+        p.enabled = std::make_unique<ActivatorButton>();
+        p.enabled->setTitle(page.name + " processing enabled");
+        p.enabled->setTooltip("Enables " + juce::String(page.name) + " processing independently; the other page and saved settings are unchanged.");
+        const auto epoch = pageEpoch_;
+        p.selector->onClick = [safe, epoch, group = page.id] {
+            if (safe && safe->pageEpoch_ == epoch) safe->chooseParameterPage(group);
+        };
+        p.enabled->onClick = [safe, epoch, group = page.id] {
+            if (!safe || safe->pageEpoch_ != epoch || !safe->validTarget()) return;
+            const auto at = std::find_if(safe->parameterPages.begin(), safe->parameterPages.end(), [&](const auto &current) { return current.id == group; });
+            if (at != safe->parameterPages.end()) safe->setParameterPageEnabled(group, at->enabled->getToggleState());
+        };
+        addAndMakeVisible(*p.selector); addAndMakeVisible(*p.enabled);
+        parameterPages.push_back(std::move(p));
+    }
+    return true;
+}
+void DevicePanelView::visibilityChanged() {
+    if (!parameterPages.empty() && !isShowing()) cancelInteractions();
+}
 void DevicePanelView::present(const DevicePanelData &d) {
+    if (!presentParameterPages(d)) return;
     data = &d;
-    const auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
+    auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
+    if (nativeFunction()) hint += "\nNative Mix View function; drag the header to move it within this channel.";
     if (title.getTooltip() != hint) title.setTooltip(hint);
+    const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
+                                                          : "Switches the device on or off.");
+    if (enabled.getTooltip() != activatorHint) enabled.setTooltip(activatorHint);
     if (title.getButtonText() != juce::String(d.name)) {
         title.setButtonText(d.name);
     }
@@ -316,12 +491,15 @@ void DevicePanelView::present(const DevicePanelData &d) {
         return found == d.defaults.end() ? 0.0 : found->second;
     };
     if (!same) {
+        endFunctionParameter();
         controls.clear();
         for (const auto &e : d.resolved.entries)
             for (const auto &r : d.records)
                 if (r.id == e.id) {
                     auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
                     c->parameterGesture = [this](const std::string &param, engine::ParamEventKind kind, double v) {
+                        if (kind != engine::ParamEventKind::End && !parameterShown(param)) return false;
+                        if (nativeFunction() || !parameterPages.empty()) return editFunctionParameter(param, kind, v);
                         if (kind == engine::ParamEventKind::End && parameterGesture)
                             return parameterGesture(param, kind, v);
                         if (!validTarget()) return false;
@@ -337,18 +515,31 @@ void DevicePanelView::present(const DevicePanelData &d) {
         for (const auto &r : d.records)
             if (c->parameter == r.id) {
                 c->present(r, defaultOf(r.id));
+                const auto declared = std::find_if(d.declared.begin(), d.declared.end(), [&](const auto &p) {
+                    return p.id == r.id;
+                });
+                c->setEnabled(!r.missing && declared != d.declared.end() && declared->modifiable);
                 break;
             }
+    for (auto &page : parameterPages) {
+        const auto *record = pageEnableRecord(page);
+        page.enabled->setEnabled(record && validTarget());
+        page.enabled->setToggleState(record && record->playing >= .5, juce::dontSendNotification);
+    }
+    if (!parameterPages.empty()) resized();
 }
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
-    const int top = kTitleHeight + (configuring ? 26 : 2);
+    const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight);
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
-    const int columns = static_cast<int>((controls.size() + static_cast<std::size_t>(rows) - 1) /
+    const auto count = static_cast<std::size_t>(std::count_if(controls.begin(), controls.end(), [&](const auto &c) { return parameterShown(c->parameter); }));
+    const int columns = static_cast<int>((count + static_cast<std::size_t>(rows) - 1) /
                                          static_cast<std::size_t>(rows));
     // Wide enough for the title bar's switches, a name and Configure; and a sample tile beside.
-    return std::max(150, columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0));
+    int pageWidth = 12;
+    for (const auto &page : parameterPages) pageWidth += pageSelectorWidth(page) + (page.enableParameter.empty() ? 0 : 18) + 3;
+    return std::max({150, pageWidth, columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
@@ -363,17 +554,29 @@ void DevicePanelView::resized() {
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (sample) {
         sample->setVisible(!isFolded);
-        const int tileTop = kTitleHeight + (configuring ? 26 : 4);
+        const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
         sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6, std::min(84, std::max(0, getHeight() - tileTop - 4)));
     }
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
-    const int top = kTitleHeight + (configuring ? 26 : 2);
+    int top = kTitleHeight + (configuring ? 26 : 2);
+    int pageX = 6;
+    for (auto &page : parameterPages) {
+        page.selector->setVisible(!isFolded);
+        page.enabled->setVisible(!isFolded && !page.enableParameter.empty());
+        if (!page.enableParameter.empty()) { page.enabled->setBounds(pageX, top + 2, 16, 16); pageX += 18; }
+        const auto width = pageSelectorWidth(page);
+        page.selector->setBounds(pageX, top + 1, width, kPageHeight - 3); pageX += width + 3;
+    }
+    if (!parameterPages.empty()) top += kPageHeight;
     const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
-    for (std::size_t i = 0; i < controls.size(); ++i) {
-        const int column = static_cast<int>(i) / rows, row = static_cast<int>(i) % rows;
-        controls[i]->setVisible(!isFolded);
-        controls[i]->setBounds(6 + column * ParameterControl::kWidth,
+    int visible = 0;
+    for (auto &control : controls) {
+        const bool shown = !isFolded && parameterShown(control->parameter);
+        control->setVisible(shown);
+        if (!shown) continue;
+        const int column = visible / rows, row = visible++ % rows;
+        control->setBounds(6 + column * ParameterControl::kWidth,
                                top + row * ParameterControl::kHeight, ParameterControl::kWidth - 4,
                                ParameterControl::kHeight);
     }
@@ -381,7 +584,7 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const auto edge = hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
+    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
     g.fillAll(look::panel);
     g.setColour(edge);
     g.fillRect(0, 0, getWidth(), kTitleHeight);
@@ -434,6 +637,7 @@ void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
+    dragTarget_.reset();
     if (!validTarget()) return;
     if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
         contextMenu(e.getScreenPosition());
@@ -441,6 +645,13 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
         strip.fold(id);
 }
 juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
+void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
+    if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
+        !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
+    auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
+    if (container && beginFunctionDrag())
+        container->startDragging(juce::String("adi-mix-function"), this, juce::ScaledImage{}, true, nullptr, &e.source);
+}
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (!validTarget()) return;
     if (e.eventComponent == &title || e.y < kTitleHeight)
@@ -455,6 +666,7 @@ juce::PopupMenu DevicePanelView::commands() {
     using Clip = DeviceChainStrip::Clip;
     const auto clipItem = [&](const char *name, char key, Clip c) {
         juce::PopupMenu::Item item(name);
+        item.isEnabled = c != Clip::Duplicate || !nativeFunction();
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
         item.action = [safe, c, epoch] {
@@ -608,6 +820,12 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     // A click past the last device chooses the chain's end, where a paste goes (manual 23.2.1).
     setWantsKeyboardFocus(true);
     content.addMouseListener(this, false);
+    content.addChildComponent(addTab);
+    addTab.setTitle("Add Mix Function");
+    addTab.setTooltip("Add one native Mix View function to this channel. Nothing is enabled by default.");
+    addTab.onClick = [this] {
+        functionMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&addTab));
+    };
 }
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
     if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
@@ -626,6 +844,11 @@ std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
     return std::nullopt;
 }
 bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
+    if (details.description.toString() == "adi-mix-function") {
+        const auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get());
+        return source && source->functionDragTarget() && &source->strip.root == &root &&
+               source->functionDragTarget()->track == selectedTrack;
+    }
     return !BrowserPanel::droppedDevice(details.description).empty();
 }
 std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
@@ -636,10 +859,59 @@ std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
     return std::nullopt;
 }
 void DeviceChainStrip::itemDropped(const SourceDetails &details) {
+    if (details.description.toString() == "adi-mix-function") {
+        if (auto *source = dynamic_cast<DevicePanelView *>(details.sourceComponent.get()))
+            dropFunction(*source, dropBefore(details.localPosition.x));
+        return;
+    }
     const auto uid = BrowserPanel::droppedDevice(details.description);
     if (!uid.empty())
         root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
 }
+bool DeviceChainStrip::hasFunction(mix::Function kind) const {
+    if (presented) for (const auto &d : *presented)
+        if (d.track == selectedTrack && !d.plugin)
+            if (const auto *info = mix::functionForUid(d.uid); info && info->kind == kind) return true;
+    return false;
+}
+juce::PopupMenu DeviceChainStrip::functionMenu() {
+    juce::PopupMenu menu;
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto track = selectedTrack;
+    const auto epoch = ++addMenuEpoch_;
+    for (const auto &info : mix::functionCatalog()) {
+        const bool present = hasFunction(info.kind);
+        const auto availability = functionAvailability ? functionAvailability(info.kind)
+            : mix::Availability{false, "Engine unavailable"};
+        auto label = juce::String::fromUTF8(info.name.data(), static_cast<int>(info.name.size()));
+        if (!availability.ready && !present && !availability.reason.empty()) label += " (" + juce::String(availability.reason) + ")";
+        juce::PopupMenu::Item item(label);
+        item.isTicked = present;
+        item.isEnabled = !present && availability.ready && addFunction && selectedTrack > 0;
+        item.action = [safe, track, epoch, kind = info.kind] {
+            if (!safe || safe->addMenuEpoch_ != epoch || safe->selectedTrack != track || !safe->isShowing() ||
+                safe->hasFunction(kind) || !safe->addFunction || !safe->functionAvailability ||
+                !safe->functionAvailability(kind).ready) return;
+            safe->addFunction(kind, track);
+        };
+        menu.addItem(std::move(item));
+    }
+    return menu;
+}
+bool DeviceChainStrip::dropFunction(DevicePanelView &source, std::optional<std::int64_t> before) {
+    const auto *expected = source.functionDragTarget();
+    if (!expected || &source.strip.root != &root || expected->track != selectedTrack || !source.validTarget() ||
+        !validExpected(*expected) || !moveFunction) return false;
+    const auto captured = *expected;
+    source.dragTarget_.reset();
+    return moveFunction(captured, selectedTrack, before);
+}
+void DeviceChainStrip::cancelFunctionInteractions() {
+    ++addMenuEpoch_;
+    for (auto &panel : panels) if (panel->nativeFunction()) panel->cancelInteractions();
+}
+void DeviceChainStrip::visibilityChanged() { if (!isShowing()) cancelFunctionInteractions(); }
+void DeviceChainStrip::parentHierarchyChanged() { if (!isShowing()) cancelFunctionInteractions(); }
 const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
     if (presented)
         for (const auto &d : *presented)
@@ -658,6 +930,8 @@ bool DeviceChainStrip::canClipboard(Clip c) const {
     const auto device = focusedDevice();
     if (c == Clip::Paste)
         return holdsCopy && holdsCopy() && (device || (endChosen() && selectedTrack >= 0));
+    if (c == Clip::Duplicate && device)
+        if (const auto *data = dataOf(*device); data && !data->plugin && mix::functionForUid(data->uid)) return false;
     return device.has_value();
 }
 bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
@@ -675,7 +949,7 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
             return paste(data->track, *device);
         return endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
     case Clip::Duplicate: {
-        if (data == nullptr || !duplicate)
+        if (data == nullptr || !duplicate || (!data->plugin && mix::functionForUid(data->uid)))
             return false;
         // In front of the next device in its chain, else at the chain's end.
         std::optional<std::int64_t> next;
@@ -716,8 +990,10 @@ void DeviceChainStrip::frame(std::int64_t track) {
     auto next = publication ? publication() : nullptr;
     if (next == presented && track == selectedTrack)
         return;
-    if (track != selectedTrack)
+    if (track != selectedTrack) {
+        ++addMenuEpoch_;
         chosen_.reset();
+    }
     selectedTrack = track;
     // Keep the old publication alive until every control has adopted the new one.
     std::vector<const DevicePanelData *> visible;
@@ -728,7 +1004,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
     bool same = panels.size() == visible.size();
     if (same)
         for (std::size_t i = 0; i < panels.size(); ++i)
-            if (panels[i]->id != visible[i]->id) {
+            if (panels[i]->id != visible[i]->id ||
+                (panels[i]->nativeFunction() && panels[i]->presentedInstance() != visible[i]->instance)) {
                 same = false;
                 break;
             }
@@ -736,6 +1013,13 @@ void DeviceChainStrip::frame(std::int64_t track) {
         panels.clear();
         for (auto *d : visible) {
             auto p = std::make_unique<DevicePanelView>(*this, *d);
+            if (p->nativeFunction()) {
+                const auto expected = *d;
+                p->targetValid = [this, expected] { return validExpected(expected); };
+                p->parameterGesture = [this, expected](const std::string &parameter, engine::ParamEventKind kind, double value) {
+                    return editExpected(expected, parameter, kind, value);
+                };
+            }
             content.addAndMakeVisible(*p);
             panels.push_back(std::move(p));
         }
@@ -743,6 +1027,7 @@ void DeviceChainStrip::frame(std::int64_t track) {
     for (std::size_t i = 0; i < panels.size(); ++i)
         panels[i]->present(*visible[i]);
     presented = std::move(next);
+    addTab.setVisible(addFunction && selectedTrack > 0);
     // The panels just made show their sample slots in this frame, not the next.
     showSamples();
     resized();
@@ -759,7 +1044,8 @@ void DeviceChainStrip::resized() {
         x += width + 11;
     }
     end_ = x;
-    content.setSize(std::max(x, getWidth()), h);
+    addTab.setBounds(x + 2, 2, 28, 22);
+    content.setSize(std::max(x + (addTab.isVisible() ? 34 : 0), getWidth()), h);
 }
 void DeviceChainStrip::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
@@ -771,7 +1057,7 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
         g.fillRect(x, y, 2, 24);
         g.fillRect(x + 3, y, 2, 24);
     }
-    const int from = std::max(0, end_ - scroll.getViewPositionX());
+    const int from = std::max(0, end_ + (addTab.isVisible() ? 36 : 0) - scroll.getViewPositionX());
     g.setColour(look::text);
     g.setFont(look::font(11.5f));
     g.drawText("Drop Audio Effects Here", from, 0, std::max(0, getWidth() - from), getHeight(),
@@ -783,6 +1069,8 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
     }
 }
 void DeviceChainStrip::fold(std::int64_t id) {
+    for (auto &panel : panels)
+        if (panel->id == id && !panel->parameterPages.empty()) panel->cancelInteractions();
     auto &set = root.state().foldedDevices;
     if (!set.erase(id))
         set.insert(id);

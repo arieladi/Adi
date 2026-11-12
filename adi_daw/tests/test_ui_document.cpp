@@ -772,8 +772,8 @@ int main(int argc, char **argv) {
                       back.insert.value("params", Payload::array()) == cut.insert.value("params", Payload::array()) &&
                       back.insert.value("name", "") == "UI knobs",
                   "with its name and stored parameters");
-            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error().find("no device chain") != std::string::npos,
-                  "a track with no chain is refused, with the reason");
+            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error()=="destination track is missing",
+                  "a missing destination track is refused, with the reason");
             // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
             {
                 const auto rack = chainOrder()[0];

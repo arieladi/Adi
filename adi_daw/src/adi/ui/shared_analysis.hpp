@@ -10,46 +10,64 @@
 #include <vector>
 
 namespace adi::ui {
-// One document's visible analysis demand. It owns no audio processor and never changes audio.
-// Full and compact views acquire the same request and read the same immutable publication.
-// Creation, acquire, refreshSources, Lease destruction/reset and broker destruction belong to
-// the document owner thread. Only pump/the optional single worker run analysis. Session callbacks
-// are invoked on the owner thread, never by that worker. A lease must not outlive its document
-// owner thread; it may outlive the broker, in which case it is inert.
-//
-// This adapts the existing newest-window ScopeTap API. It is NOT MX-30's future gapless cursor,
-// device-tap, history-negotiation or epoch-reclamation implementation. Every acquired tap must
-// have kTapSeconds of history; a too-small tap is unavailable rather than silently shortened.
+// Owner-thread demand, immutable worker publications. No audio processor, callback lock,
+// repaint timer or independent analysis clock: visible windows request a bounded pass on
+// their frame clock. All documents share one process worker. Compatible output modes use
+// one cursor, overlap window, plan and FFT. Source/history callbacks run only on the owner.
 class SharedAnalysis final {
     struct State;
     struct Domain;
+    struct Scheduler;
   public:
-    static constexpr double kTapSeconds = 10.0;
+    static constexpr double kTapSeconds = 10.0; // legacy adapter's history contract
     static constexpr std::size_t kMaxDomains = 128;
     static constexpr std::int32_t kMaxFftSize = 65536;
-    enum class Channel : std::uint8_t { Mid, Side, Left, Right };
+    static constexpr std::size_t kMaxWindowsPerFrame = 16;
+    static constexpr std::size_t kMaxSamplesPerFrame = 262144;
+    static constexpr std::size_t kMaxReadsPerFrame = 256;
+    enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
+    enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16 };
     struct Request {
         std::int64_t track = 0;
         engine::ScopePoint point = engine::ScopePoint::PostFader;
         std::int32_t fftSize = 1024;
         Channel channel = Channel::Mid;
         dsp::Window window = dsp::Window::Hann;
+        std::int64_t device = 0;
+        std::int32_t hopSize = 0; // zero resolves to N/4
+        std::uint32_t outputs = Output::Spectrum;
         auto operator<=>(const Request &) const = default;
+        engine::ScopeSource source() const noexcept { return {track, point, device}; }
+    };
+    struct Column {
+        std::uint64_t serial = 0;
+        std::int64_t firstStamp = 0;
+        std::vector<float> binsDbfs;
     };
     struct Result {
         Request request;
-        std::uint64_t revision = 0, sourceEpoch = 0;
-        // Tap's heard-timeline stamp of the first sample in its newest window. No claim of a
-        // gapless stream or precise correspondence with an independently loaded written counter.
-        std::int64_t firstStamp = 0;
-        double sampleRate = 0;
+        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0;
+        std::int64_t firstStamp = 0, firstSequence = 0;
+        double sampleRate = 0, coherentGain = 0;
+        std::int32_t hopSize = 0;
+        std::uint32_t outputs = 0;
+        // Raw per-channel sample peak/RMS, not a true-peak or loudness meter. Spectrum uses
+        // dsp::Spectrum's coherent sine calibration; Scope/Phase keep unwindowed samples.
         std::array<float, 2> peak{}, rms{};
-        std::vector<float> binsDbfs;
+        double correlation = 0;
+        std::vector<float> binsDbfs, scopeLeft, scopeRight;
+        // Bounded newest columns. Serial and sourceEpoch expose missed or reset history.
+        std::vector<Column> columns;
+        std::uint64_t gapCount = 0, overrunCount = 0;
+        std::size_t nonFiniteSamples = 0;
+        std::int64_t pendingFrames = 0;
+        bool advancing = false, discontinuity = false, budgetLimited = false;
     };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
-        std::uint64_t transforms = 0, publications = 0;
+        std::uint64_t transforms = 0, publications = 0, frameRequests = 0, workerPasses = 0;
+        std::uint64_t cursorReads = 0, analysisWindows = 0;
     };
     class Lease {
       public:
@@ -64,38 +82,33 @@ class SharedAnalysis final {
         bool available() const noexcept;
         std::shared_ptr<const Result> read() const noexcept;
       private:
-        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>);
+        Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t);
         std::weak_ptr<State> state_;
         std::shared_ptr<Domain> domain_;
+        std::uint32_t outputs_ = 0;
         friend class SharedAnalysis;
     };
-    // AcquireTap must ensure the track/point tap is attached with kTapSeconds history. It is
-    // idempotent: refreshSources may call it again while attached. Null means unavailable.
-    // ReleaseTap is called exactly once at last demand, including after an unavailable refresh
-    // if that key had previously attached. Callbacks must not recursively enter this broker.
+    using AcquireSourceTap = std::function<std::shared_ptr<const engine::ScopeTap>(engine::ScopeSource, double)>;
+    // Acquire can establish a pending lease whose tap is currently null. Last demand calls
+    // Release once whenever Acquire was invoked, so unavailable sources cannot leak demand.
+    using ReleaseSourceTap = std::function<void(engine::ScopeSource)>;
     using AcquireTap = std::function<std::shared_ptr<const engine::ScopeTap>(std::int64_t, engine::ScopePoint)>;
     using ReleaseTap = std::function<void(std::int64_t, engine::ScopePoint)>;
+    SharedAnalysis(AcquireSourceTap, ReleaseSourceTap, Mode = Mode::Worker);
     SharedAnalysis(AcquireTap, ReleaseTap, Mode = Mode::Worker);
     ~SharedAnalysis();
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
-    // Permanent owner-thread revocation. Join the worker and detach taps before Session goes
-    // away even when views still retain this broker. Idempotent; all later leases are inert.
     void shutdown() noexcept;
-    // Owner calls after source/rate/graph replacement. forceEpoch is for an explicit transport
-    // seek: invalidate the old publication and wait for newly written samples. Existing leases
-    // remain valid. Repeated refresh of the same source does not reset it.
     void refreshSources(bool forceEpoch = false);
-    // Deterministic worker pass, useful in headless tests. Returns the transforms completed.
-    // Newest-window analysis only; repeated calls without new samples do no FFT/publication.
-    // First demand on a newly attached tap waits for a write after acquisition, so reopening
-    // a retained Session tap never republishes audio from before the view was hidden.
+    // Owner/window-frame driven and coalesced. Manual brokers deliberately do not schedule.
+    void requestFrame() noexcept;
+    // Explicit deterministic bounded pass for headless/component tests. Counts actual FFTs.
     std::size_t pump();
     Stats stats() const;
   private:
     std::shared_ptr<State> state_;
-    struct Worker;
-    std::unique_ptr<Worker> worker_;
+    Mode mode_;
 };
 } // namespace adi::ui

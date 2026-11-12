@@ -104,6 +104,8 @@ struct SessionSpec {
     /// uses this constant tempo for ALL musical playback and clock consumers;
     /// authored project tempo rows remain intact. Not an offline export option.
     std::optional<double> externalTempoBpm = std::nullopt;
+    /// Export quality is independent of monitoring/performance-state suppression.
+    bool exporting = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -115,6 +117,7 @@ struct DeviceRequest {
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
     std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
+    bool exporting = false; ///< known before prepare, so the first block uses the intended bank
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
