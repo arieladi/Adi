@@ -737,10 +737,69 @@ void performedTempoAcrossGesture(Precision precision) {
     f.cancel(*edit, "cancel after authored resume");
 }
 
+void countInAcrossGesture(Precision precision) {
+    Fixture f(precision, true, false, 128);
+    f.session.transport().play(false);
+    OpRequest setting;
+    setting.opType = "transport.setCountIn";
+    setting.payload = {{"bars", 1}};
+    require(OpJournal(*f.store).commit(setting).ok && f.session.refresh(*f.store),
+            "saved count-in before structural preview");
+    f.view.refresh(*f.store);
+    auto tempo = f.begin(g::tempoProducer(0), g::Strategy::Structural);
+    f.update(*tempo, std::make_unique<g::TempoInput>(60), "count-in structural tempo preview");
+    {
+        auto block = f.session.beginRender();
+        check(block.startPlayback(0, true) && f.session.transport().countInRemaining() == 192000,
+              "count-in start uses the preview's pinned tempo");
+    }
+    std::array<float, 128> left{}, right{};
+    std::array<double, 128> wideLeft{}, wideRight{};
+    float *out[]{left.data(), right.data()};
+    double *wide[]{wideLeft.data(), wideRight.data()};
+    AudioIo io;
+    io.out = out;
+    io.numOut = 2;
+    io.frames = 64;
+    if (precision == Precision::Float64)
+        io.out64 = wide;
+    {
+        auto block = f.session.beginRender();
+        check(block.process(io) && f.session.transport().countInRemaining() == 191936,
+              "structural generation owns count-in slice scratch");
+    }
+    // Isolate the near-boundary driver state; the full duration and exact PCM
+    // are independently checked by transport_settings at both widths.
+    f.session.transport().countIn(7);
+    io.frames = 19;
+    io.streamTimeSamples = 64;
+    {
+        auto block = f.session.beginRender();
+        check(block.process(io) && f.session.transport().playing() &&
+                  f.session.transport().position() == 12,
+              "structural preview splits the crossing callback at the same frame");
+    }
+    f.session.transport().play(false);
+    f.cancel(*tempo, "cancel count-in tempo preview");
+    {
+        auto block = f.session.beginRender();
+        check(block.startPlayback(0, true) && f.session.transport().countInRemaining() == 96000,
+              "restored generation starts with the committed tempo");
+    }
+    io.frames = 64;
+    io.streamTimeSamples = 83;
+    {
+        auto block = f.session.beginRender();
+        check(block.process(io) && f.session.transport().countInRemaining() == 95936,
+              "restored generation retains its own bounded slice scratch");
+    }
+    f.session.transport().play(false);
+}
+
 } // namespace
 int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
-        try { scalars(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
+        try { scalars(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); countInAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }
     try { endpointLifetimes(); } catch (const std::exception& exception) { check(false, std::string("unexpected endpoint fixture exception: ") + exception.what()); }

@@ -586,9 +586,54 @@ void corruptionRollback() {
           "pruning");
 }
 
+// A compaction that captures a point on another stored baseline moves there
+// inside a rolled-back savepoint, and that move turns defer_foreign_keys on.
+// The flag must not outlive the probe: the rest of the edit's commit
+// (beforeCommit, freeze validation, applied delivery) keeps immediate FK
+// checks. Found by an outside review; the scenario reaches it at edit 12.
+void foreignKeysStayImmediate() {
+    Project project;
+    History history(*project.store);
+    int edits = 0, deferredAt = 0, immediateRaised = 0;
+    auto edit = [&] {
+        CommitOptions options;
+        options.beforeCommit = [&](SQLite::Database &db, std::int64_t, std::string &) {
+            if (db.execAndGet("PRAGMA defer_foreign_keys").getInt() != 0 && !deferredAt)
+                deferredAt = edits;
+            db.exec("SAVEPOINT fk_probe");
+            try {
+                db.exec("UPDATE ops SET parent_seq=987654321 WHERE seq=(SELECT MAX(seq) FROM ops)");
+            } catch (const SQLite::Exception &) {
+                ++immediateRaised;
+            }
+            db.exec("ROLLBACK TO fk_probe");
+            db.exec("RELEASE fk_probe");
+            return true;
+        };
+        ++edits;
+        auto op = request("project.setName", {{"name", "e" + std::to_string(edits)}});
+        require(OpJournal(*project.store).commit({&op, 1}, options).ok, "edit commits");
+    };
+    for (int i = 0; i < 5; ++i)
+        edit();
+    for (int i = 0; i < 3; ++i)
+        require(history.undo().ok, "undo to the branch point");
+    for (int i = 0; i < 5; ++i)
+        edit();
+    require(history.setUndoRetentionPolicy(budget(8)).ok, "first compaction keeps two baselines");
+    require(rows(*project.store, "history_roots") >= 2, "the dead line keeps its own baseline");
+    for (int i = 0; i < 4; ++i)
+        edit();
+    check(deferredAt == 0, "no edit's commit runs with deferred foreign keys (first at edit " +
+                               std::to_string(deferredAt) + ")");
+    check(immediateRaised == edits, "an FK-violating statement is refused at once in every commit (" +
+                                        std::to_string(immediateRaised) + " of " + std::to_string(edits) + ")");
+}
+
 } // namespace
 int main() {
     try {
+        foreignKeysStayImmediate();
         savedPoints();
         forestReplay();
         redoGap();

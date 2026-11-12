@@ -89,7 +89,8 @@ double startSeconds(const Payload& row,const edit::TimeMap& time) {
 double endSeconds(const Payload& row,const edit::TimeMap& time) {
     if(row.at("time_base")==0)
         return time.seconds(edit::addTime(detail::signedInteger(row.at("pos_ticks")),detail::signedInteger(row.at("length_ticks"))));
-    return startSeconds(row,time)+static_cast<double>(detail::signedInteger(row.at("length_ns")))*1e-9;
+    return static_cast<double>(edit::addTime(detail::signedInteger(row.at("pos_ns")),
+        detail::signedInteger(row.at("length_ns"))))*1e-9;
 }
 std::int64_t originTicks(const Payload& row,const edit::TimeMap& time) {
     return row.at("time_base")==0?detail::signedInteger(row.at("pos_ticks")):time.ticks(detail::signedInteger(row.at("pos_ns")));

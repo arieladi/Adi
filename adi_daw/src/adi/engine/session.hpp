@@ -286,6 +286,11 @@ public:
         /// read-ahead and checks mandatory pages without waiting or doing I/O.
         [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
         [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        /// Driver command between slices. Saved song start overrides the
+        /// insert marker; only a record start uses the saved count-in. Prepare
+        /// the recorder on its owner first. Explicit locate/play bypasses this
+        /// default start policy. Offline sessions ignore saved performance state.
+        bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
         bool process(const AudioIo&) noexcept;
     private:
         friend class Session;
@@ -466,6 +471,11 @@ private:
         Session* session=nullptr; // retained Session owns every published graph
         mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
+        // Allocated on the owner; used only at a count-in's exact split. Input
+        // recording supports64 physical channels; output covers the full graph.
+        mutable std::vector<const float *> inputSlice;
+        mutable std::vector<float *> outputSlice;
+        mutable std::vector<double *> outputSlice64;
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
@@ -503,6 +513,9 @@ private:
     std::int64_t clickLastSample_=-2,clickLastBeat_=-1;
     bool clickWasPlaying_=false;
     double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
+    double countInBeatSamples_ = 24000;
+    std::int64_t countInBeatsPerBar_ = 4;
+    void renderCountIn(const TimingView &, const AudioIo &) noexcept;
     void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
