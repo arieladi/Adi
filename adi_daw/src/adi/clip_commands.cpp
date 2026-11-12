@@ -1105,7 +1105,7 @@ void trimFrozenStart(Payload& image,std::int64_t begin,const edit::TimeMap& time
     const char* length=base==0?"length_ticks":"length_ns";
     const auto first=adi::detail::signedInteger(row.at(position));
     const auto end=edit::addTime(first,adi::detail::signedInteger(row.at(length)));
-    if(begin<0 || begin>end)throw std::runtime_error("left trim must not pass the anchored end");
+    if(begin<0 || begin>=end)throw std::runtime_error("left trim must not pass the anchored end");
     const auto oldOrigin=clip_edit::originTicks(row,time);
     const auto oldOffset=adi::detail::signedInteger(row.at("content_offset_ticks"));
     constexpr std::int64_t limit=std::int64_t{1}<<50;
@@ -1121,6 +1121,9 @@ void trimFrozenStart(Payload& image,std::int64_t begin,const edit::TimeMap& time
         oldSample=sampleAt(first);
         sourceSample=clip_edit::sample(static_cast<double>(adi::detail::signedInteger(clock->at("content_offset_ns")))*1e-9,rate);
     } else if(audio && oldOffset<0)throw std::runtime_error("audio left trim needs a nonnegative source clock");
+    // A clip already at source zero has no earlier material: keep its begin,
+    // so prepareTrim restores the original image as a true no-op.
+    if(physical && sourceSample==0 && begin<first)begin=first;
     if(audio && begin<first) {
         // Find the first representable native position at or after source zero.
         // Binary search keeps directed conversion independent of tempo and of
@@ -1140,6 +1143,13 @@ void trimFrozenStart(Payload& image,std::int64_t begin,const edit::TimeMap& time
     const auto offset=edit::addTime(oldOffset,origin-oldOrigin);
     if(offset < -limit || offset > limit || (audio && !physical && offset<0))
         throw std::runtime_error("left trim source offset outside supported range");
+    // An unlooped MIDI or warped clip must keep Start before its End marker.
+    // Unwarped audio plays from its physical pins instead.
+    const auto& children=image.at("children");
+    if((!audio || warpSource) && row.at("loop_enabled")==0 && children.contains("clip_properties") &&
+       !children.at("clip_properties").empty() && !children.at("clip_properties")[0].at("end_marker_ticks").is_null() &&
+       offset>=adi::detail::signedInteger(children.at("clip_properties")[0].at("end_marker_ticks")))
+        throw std::runtime_error("left trim must not pass the clip End marker");
     const auto ticks=last-origin;
     const bool activeIn=adi::detail::signedInteger(row.at("fade_in_ticks"))>0;
     const bool activeOut=adi::detail::signedInteger(row.at("fade_out_ticks"))>0;

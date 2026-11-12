@@ -140,6 +140,22 @@ void pinnedEndAndSignedTrim() {
               signedSource.store->db().execAndGet("SELECT count(*) FROM ops").getInt64()==before,
           "portable defaults canonicalize only the unused negative tick fallback without writing the project");
 }
+void signedTrimRounding() {
+    // Source-zero clips whose start ns rounds down: the tick fallback must not
+    // derive -1 from rounded ns and truncated ticks.
+    auto capture=[](bool ticks,const char* tempo,std::int64_t position) {
+        Project p;original(p);auto& db=p.store->db();
+        db.exec(std::string("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES")+tempo);
+        if(ticks)db.exec("UPDATE clips SET time_base=0,pos_ns=NULL,length_ns=NULL,pos_ticks="+std::to_string(position)+",length_ticks=5765760,content_offset_ticks=-5 WHERE id=7");
+        else db.exec("UPDATE clips SET pos_ns="+std::to_string(position)+",content_offset_ticks=-5 WHERE id=7");
+        db.exec("UPDATE clip_playback_details SET content_offset_ns=0 WHERE clip_id=7");
+        return clip_edit::captureSampleDefaults(*p.store,7,48000);
+    };
+    const auto tick=capture(true,"(0,120),(11531520,240)",11532002);
+    check(tick.ok && tick.settings->contentOffsetTicks==0,"tick clip at source zero captures a zero tick fallback despite the ns round trip");
+    const auto linear=capture(false,"(0,120),(5765760,240)",700041667);
+    check(linear.ok && linear.settings->contentOffsetTicks==0,"linear clip at source zero measures its tick fallback from its exact ns start");
+}
 void guards() {
     Project source,target;original(source);test::TempDirectory home{"sample_defaults","guards"};std::string error;auto index=library::Index::open(home.path()/"library.sqlite",error,false);if(!index)throw std::runtime_error(error);const auto captured=clip_edit::captureSampleDefaults(*source.store,7,48000);if(!captured.ok)throw std::runtime_error(captured.error);auto wrong=*captured.settings;wrong.frames++;if(index->saveSampleSettings(captured.hash,wrong,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
     auto rejected=clip_edit::prepareImportAudio(*target.store,target.options(source.source()),48000,index.get());check(!rejected.edit.ok && target.store->db().execAndGet("SELECT count(*) FROM ops").getInt()==0 && target.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0,"mismatched authored dimensions refuse without native rows or history");
@@ -166,4 +182,4 @@ void atomicRecall() {
     auto legacy=clip_edit::prepareImportAudio(*other.store,other.options(source.source()),48000);check(legacy.edit.ok && clip_edit::commitMaterial(*other.store,legacy).ok && other.store->db().execAndGet("SELECT src_start_frames=0 AND src_len_frames=96000 FROM audio_clips").getInt()==1,"explicit import without a library retains the established original-source workflow");
 }
 }
-int main(){try{ordinary();warped();loopsAndMarkers();pinnedEndAndSignedTrim();guards();atomicRecall();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{ordinary();warped();loopsAndMarkers();pinnedEndAndSignedTrim();signedTrimRounding();guards();atomicRecall();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

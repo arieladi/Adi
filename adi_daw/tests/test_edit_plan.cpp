@@ -19,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -183,6 +184,47 @@ void anchoredLeftTrim() {
           "trim beyond anchored end refuses without writes");
     check(!prepareTrim(store,scope(),{7,{1,0}},locked()).ok && original.unchanged(store),
           "trim clock must match explicit scope clock");
+}
+void trimSourceZeroAndCollapse() {
+    {
+        // pos 250 at 120 BPM/48 kHz lies after the centre of its sample, so a
+        // centre bound would land on tick 241. Source zero has no earlier PCM.
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,250,4*q,"audio");
+        store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'offgrid','wav');"
+                        "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+        const ReadGuard original(store);
+        const auto clamped=prepareTrim(store,scope(),{7,{0,0}},locked());
+        check(clamped.ok && clamped.requests.empty() && original.unchanged(store) &&
+                  tableRows(store,"clip_playback_details").empty(),
+              "off-grid clip at source zero: extension is a true no-op without clock rows");
+    }
+    for(const char* kind:{"midi","audio"}) {
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,4*q,4*q,kind);
+        if(std::string_view(kind)=="audio")
+            store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'collapse','wav');"
+                            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+        const ReadGuard original(store);
+        check(!prepareTrim(store,scope(),{7,{0,8*q}},locked()).ok && original.unchanged(store),
+              "trim onto the anchored end refuses a collapsed clip without writes");
+    }
+    for(const bool warped:{false,true}) {
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,4*q,4*q,warped?"audio":"midi");
+        store.db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(7,11531520)");
+        if(warped)store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'marker','wav');"
+                                  "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,warp_enabled) VALUES(7,300,0,4000000,1)");
+        const ReadGuard original(store);
+        check(!prepareTrim(store,scope(),{7,{0,6*q}},locked()).ok && !prepareTrim(store,scope(),{7,{0,7*q}},locked()).ok &&
+                  original.unchanged(store),
+              "unlooped MIDI or warped trim refuses a Start at or past its End marker");
+        check(commit(store,prepareTrim(store,scope(),{7,{0,5*q}},locked())) && spanIs(store,7,21,0,5*q,3*q,q),
+              "trim that keeps Start before the End marker still applies");
+        store.db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=46126080");
+        check(commit(store,prepareTrim(store,scope(),{7,{0,7*q}},locked())) && spanIs(store,7,21,0,7*q,q,3*q),
+              "a looped clip is not bound by its End marker");
+    }
 }
 void trimPhysicalPinsAndCapture() {
     Project project;auto& store=*project.store;auto& db=store.db();
@@ -944,7 +986,7 @@ void seededTransactions() {
 
 int main() {
     try {
-        anchoredLeftTrim();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
+        anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
         irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}
