@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/device_copy.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
-#include <sqlite3.h>
 #include <algorithm>
+#include <limits>
+#include <sqlite3.h>
 #include <stdexcept>
 #include <utility>
 namespace adi {
@@ -73,8 +76,10 @@ DeviceCopy readDeviceCopy(Store& store,std::int64_t id) {
     } catch(const std::exception& error){result.error=error.what();}
     return result;
 }
-PreparedDevicePaste prepareDevicePaste(Store& store,const DeviceCopy& copy,std::int64_t newId,
-                                       std::int64_t chain,std::optional<std::int64_t> before) {
+namespace {
+PreparedDevicePaste preparePaste(Store &store, const DeviceCopy &copy, std::int64_t newId,
+                                 std::int64_t chain, std::optional<std::int64_t> before,
+                                 std::optional<std::int64_t> track) {
     PreparedDevicePaste result;
     try {
         if(audio::onAudioThread)throw std::runtime_error("device paste belongs off the audio callback");
@@ -88,8 +93,57 @@ PreparedDevicePaste prepareDevicePaste(Store& store,const DeviceCopy& copy,std::
         if(newId==copy.insert.at("id").get<std::int64_t>())throw std::runtime_error("device copy needs a new identity");
         SQLite::Statement occupied(store.db(),"SELECT 1 FROM devices WHERE id=?");occupied.bind(1,newId);
         if(occupied.executeStep())throw std::runtime_error("new device id is occupied");
-        SQLite::Statement target(store.db(),"SELECT 1 FROM device_chains WHERE id=?");target.bind(1,chain);
-        if(!target.executeStep())throw std::runtime_error("destination chain is missing");
+        OpTransactionInputs guards;
+        if (track) {
+            const auto row = detail::captureRow(store.db(), "tracks", "id", *track);
+            if (!row)
+                throw std::runtime_error("destination track is missing");
+            guards.rowGuards.push_back({"tracks", {{"id", *track}}, row});
+            const Payload selector = {{"track_id", *track}, {"parent_device_id", nullptr}};
+            guards.rowSetGuards.push_back(
+                {"device_chains", selector,
+                 detail::captureGuardRows(store, "device_chains", selector)});
+            SQLite::Statement target(store.db(),
+                                     "SELECT id FROM device_chains WHERE track_id=? AND "
+                                     "parent_device_id IS NULL ORDER BY ord,id LIMIT 1");
+            target.bind(1, *track);
+            if (target.executeStep())
+                chain = target.getColumn(0).getInt64();
+            else {
+                // Same bounded MAX strategy as native built-in insertion; the
+                // shared-allocator consolidation remains the M2 follow-up.
+                SQLite::Statement last(store.db(), "SELECT coalesce(MAX(id),0) FROM device_chains");
+                last.executeStep();
+                const auto id = std::max<std::int64_t>(0, last.getColumn(0).getInt64());
+                if (id == std::numeric_limits<std::int64_t>::max())
+                    throw std::runtime_error("device chain identities are exhausted");
+                chain = id + 1;
+                guards.rowGuards.push_back({"device_chains", {{"id", chain}}, std::nullopt});
+                OpRequest create;
+                create.opType = "chain.create";
+                create.payload = {
+                    {"id", chain}, {"track", *track}, {"ord", 0}, {"name", "Devices"}};
+                create.label = "Paste Device";
+                create.targetKind = "chain";
+                create.targetId = chain;
+                result.requests.push_back(std::move(create));
+            }
+            guards.rowGuards.push_back({"devices", {{"id", newId}}, std::nullopt});
+            const Payload devices = {{"chain_id", chain}};
+            guards.rowSetGuards.push_back(
+                {"devices", devices, detail::captureGuardRows(store, "devices", devices)});
+            if (copy.reference)
+                guards.rowGuards.push_back(
+                    {"plugin_refs",
+                     {{"id", copy.reference->id}},
+                     detail::captureRow(store.db(), "plugin_refs", "id", copy.reference->id)});
+        } else {
+            SQLite::Statement target(store.db(), "SELECT 1 FROM device_chains WHERE id=?");
+            target.bind(1, chain);
+            if (!target.executeStep())
+                throw std::runtime_error("destination chain is missing");
+        }
+        result.chainId = chain;
         std::vector<std::pair<std::int64_t,std::int64_t>> order;
         SQLite::Statement existing(store.db(),"SELECT id,ord FROM devices WHERE chain_id=? ORDER BY ord,id");existing.bind(1,chain);
         while(existing.executeStep())order.emplace_back(existing.getColumn(0).getInt64(),existing.getColumn(1).getInt64());
@@ -111,9 +165,25 @@ PreparedDevicePaste prepareDevicePaste(Store& store,const DeviceCopy& copy,std::
         OpRequest insert;insert.opType="device.insert";insert.payload=copy.insert;
         insert.payload["id"]=newId;insert.payload["chain"]=chain;insert.payload["ord"]=static_cast<std::int64_t>(position);
         insert.label="Paste Device";insert.targetKind="device";insert.targetId=newId;result.requests.push_back(std::move(insert));
+        if (track) {
+            auto packet =
+                CapturedTransactionAccess::seal(appliedSource(store), *result.options.expectHead,
+                                                result.requests, std::move(guards));
+            for (auto &request : result.requests)
+                request.capturedTransaction = packet;
+        }
         result.ok=true;
     } catch(const std::exception& error){result.error=error.what();}
     return result;
+}
+} // namespace
+PreparedDevicePaste prepareDevicePaste(Store &store, const DeviceCopy &copy, std::int64_t newId,
+                                       std::int64_t chain, std::optional<std::int64_t> before) {
+    return preparePaste(store, copy, newId, chain, before, std::nullopt);
+}
+PreparedDevicePaste prepareDevicePasteForTrack(Store &store, const DeviceCopy &copy,
+                                               std::int64_t newId, std::int64_t track) {
+    return preparePaste(store, copy, newId, 0, std::nullopt, track);
 }
 CommitResult commitDevicePaste(Store& store,const PreparedDevicePaste& prepared,Actor actor) {
     CommitResult result;

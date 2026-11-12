@@ -61,10 +61,40 @@ struct Fixture {
         store->db().exec("INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'candidate','audio.wav','wav');"
                         "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,2000000000);"
                         "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,96000)");
+        rebuild();
+    }
+    void rebuild() {
+        clips.reset();
         clips=std::make_unique<ClipPlayback>(readClipProject(*store,rows::readModel(*store)),live,48000,2,blockFrames);
         if(!clips->problems().empty())throw std::runtime_error(clips->problems().front());
     }
 };
+// Holds the disk worker at a probe point, once, until the test moves the
+// phase on from `from`+1.
+void holdOnce(void* context,int from) noexcept {
+    auto& phase=*static_cast<std::atomic<int>*>(context);
+    int expected=from;
+    if(!phase.compare_exchange_strong(expected,from+1,std::memory_order_acq_rel))return;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(phase.load(std::memory_order_acquire)==from+1 && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+bool waitPhase(const std::atomic<int>& phase,int wanted) {
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+    while(phase.load(std::memory_order_acquire)!=wanted && std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return phase.load(std::memory_order_acquire)==wanted;
+}
+template <typename Narrow,typename Wide>
+bool rendered(Precision precision,const Narrow& narrow,const Wide& wide,const Transport& target) {
+    bool exact=true;
+    for(std::int32_t frame=0;frame<blockFrames;++frame)for(int channel=0;channel<2;++channel) {
+        const double value=precision==Precision::Float64?wide[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]:
+            static_cast<double>(narrow[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]);
+        exact=exact && value==sample(target.sampleAt(frame),channel);
+    }
+    return exact;
+}
 void immutableCandidate(bool looped,Precision precision) {
     Fixture fixture;
     Transport target;
@@ -178,9 +208,14 @@ void callbackReadiness(Precision precision) {
     check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,
           "callback source admission and rendering allocate/free/read nothing");
     fixture.clips.reset();
+    // The last loop render already left this position's samples in the
+    // buffers; clear them so only the post-retirement render can pass.
+    for(auto& channel:narrow)channel.fill(0.0f);
+    for(auto& channel:wide)channel.fill(0.0);
     bool retained=false;
     {audio::CallbackScope callback;retained=ready(target,blockFrames);if(retained)sources.front()->process(io);}
-    check(retained,"graph-owned readiness closure retains the actual source after its owner wrapper retires");
+    check(retained && rendered(precision,narrow,wide,target),
+          "graph-owned readiness closure retains the actual source after its owner wrapper retires and renders it sample exact");
 }
 void staleWorkerSnapshot(Precision precision) {
     struct ProbeState {std::atomic<int> phase{0};} state;
@@ -243,6 +278,90 @@ void staleWorkerSnapshot(Precision precision) {
     check(exact && fixture.clips->underrunSamples()==0,"stale worker request cannot evict a page admitted by a newer callback request");
     check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,
           "render after stale-worker refusal remains callback allocation/free/I-O free");
+    // The newer request's lookahead page 4 was only cached, not admitted, so
+    // only the stale worker's request recheck kept it from being replaced.
+    // The worker is still stalled: a lost page cannot come back.
+    target.locate(4*8192);fixture.live=target;
+    for(auto& channel:narrow)channel.fill(0.0f);
+    for(auto& channel:wide)channel.fill(0.0);
+    const auto underruns=fixture.clips->underrunSamples();
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    check(rendered(precision,narrow,wide,target) && fixture.clips->underrunSamples()==underruns,
+          "stale worker request cannot evict the newer request's cached lookahead page");
+}
+void transientWorkerClaim(Precision precision,bool looped,bool ownerPrimed) {
+    struct ProbeState {std::atomic<int> phase{0};} state;
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&state;
+    probe.beforePageClaim=[](void* context,std::int64_t oldPage,std::int64_t requestedPage)noexcept {
+        if(oldPage!=0 || requestedPage!=8)return;
+        auto& phase=static_cast<ProbeState*>(context)->phase;int expected=1;
+        if(!phase.compare_exchange_strong(expected,2,std::memory_order_acq_rel))return;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(phase.load(std::memory_order_acquire)==2 && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    probe.afterPageClaimAttempt=[](void* context,std::int64_t oldPage,std::int64_t requestedPage,bool)noexcept {
+        if(oldPage!=0 || requestedPage!=8)return;
+        auto& phase=static_cast<ProbeState*>(context)->phase;int expected=3;
+        if(!phase.compare_exchange_strong(expected,4,std::memory_order_acq_rel))return;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(phase.load(std::memory_order_acquire)==4 && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    Fixture fixture;Transport target;
+    if(looped){target.loop(8128,8224);target.locate(8150);}else target.locate(17);
+    target.play();fixture.live=target;
+    if(!fixture.clips->primeAt(target,std::chrono::seconds(2)))throw std::runtime_error("prime transient page");
+    auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("transient source");
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;
+    if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    // Consume owner preparation first; the old page is genuinely cached and
+    // available before a different request starts replacing the cache.
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);state.phase.store(1,std::memory_order_release);
+    Transport other;other.locate(8*8192);other.play();
+    {audio::CallbackScope callback;(void)ready(other,blockFrames);}
+    const auto waitFor=[&](int phase){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);while(state.phase.load(std::memory_order_acquire)!=phase && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));return state.phase.load(std::memory_order_acquire)==phase;};
+    const bool paused=waitFor(2);bool admitted=false;
+    if(ownerPrimed)admitted=fixture.clips->primeAt(target,std::chrono::milliseconds(0));
+    else {audio::CallbackScope callback;admitted=ready(target,blockFrames);}
+    const auto beforeAllocations=allocations.load(),beforeFrees=frees.load();const auto beforeIo=audio::callbackFileIo.load();
+    if(looped){io.frames=48;{audio::CallbackScope callback;sources.front()->process(io);}io.frames=blockFrames-48;io.blockOffset=48;}
+    fixture.clips->stallForTest(true);state.phase.store(3,std::memory_order_release);const bool attempted=waitFor(4);
+    check(paused && admitted && attempted,"native race pauses replacement before its page claim, admits the cached target and holds the real claim attempt");
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    state.phase.store(5,std::memory_order_release);
+    bool exact=true;for(std::int32_t frame=0;frame<blockFrames;++frame)for(int channel=0;channel<2;++channel){const double value=precision==Precision::Float64?wide[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]:static_cast<double>(narrow[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]);exact=exact && value==sample(target.sampleAt(frame),channel);}
+    check(exact && fixture.clips->underrunSamples()==0,"an admitted native buffer remains sample exact even during a stale worker's transient page claim");
+    check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,"true page reservation and consumption remain callback allocation/free/I-O free");
+}
+void reservationTurnover(Precision precision) {
+    struct ProbeState {std::atomic<int> phase{0};} state;
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&state;
+    probe.afterSnapshot=[](void* context,std::int64_t firstPage)noexcept {if(firstPage!=3)return;auto& phase=static_cast<ProbeState*>(context)->phase;int expected=0;(void)phase.compare_exchange_strong(expected,1,std::memory_order_acq_rel);};
+    probe.afterService=[](void* context)noexcept {auto& phase=static_cast<ProbeState*>(context)->phase;int expected=1;(void)phase.compare_exchange_strong(expected,2,std::memory_order_acq_rel);};
+    Fixture fixture;Transport first,alternate;
+    first.loop(0,50000);first.locate(40000);first.play();alternate.loop(60000,96000);alternate.locate(88000);alternate.play();
+    // These owner targets fill all eight actual slots: 4,5,6,0 and 10,11,7,8.
+    const bool primed=fixture.clips->primeAt(first,alternate,std::chrono::seconds(2));
+    check(primed,"two looped owner adoption positions fill the bounded native page cache");if(!primed)return;
+    const auto sources=fixture.clips->sourcesFor(1);if(sources.size()!=1)throw std::runtime_error("turnover source");
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);Transport target;target.locate(3*8192+17);target.play();fixture.live=target;
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    // An ordinary unprepared seek requests page 3. No second readiness/prime
+    // call may rescue leaked reservations from the superseded owner target.
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);while(state.phase.load(std::memory_order_acquire)!=2 && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(state.phase.load(std::memory_order_acquire)==2,"the real worker completes the new ordinary playback request");
+    const auto underruns=fixture.clips->underrunSamples();const auto beforeAllocations=allocations.load(),beforeFrees=frees.load();const auto beforeIo=audio::callbackFileIo.load();
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    bool exact=true;for(std::int32_t frame=0;frame<blockFrames;++frame)for(int channel=0;channel<2;++channel){const double value=precision==Precision::Float64?wide[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]:static_cast<double>(narrow[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]);exact=exact && value==sample(target.sampleAt(frame),channel);}
+    check(exact && fixture.clips->underrunSamples()==underruns,"ordinary native playback releases obsolete reservations so all eight slots cannot starve a new page");
+    check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,"reservation turnover and native rendering allocate/free/read nothing on callback");
 }
 void alternatePrime(Precision precision) {
     Fixture fixture;
@@ -269,6 +388,123 @@ void alternatePrime(Precision precision) {
     }
     check(admitted && exact && fixture.clips->underrunSamples()==0,"both distant adoption buffers remain cached and sample exact with the worker stopped");
 }
+void alternateAdmission(Precision precision) {
+    std::atomic<int> phase{0};
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&phase;
+    probe.beforePageClaim=[](void* context,std::int64_t oldPage,std::int64_t requestedPage)noexcept {
+        if(oldPage==7 && requestedPage==10)holdOnce(context,1);
+    };
+    probe.afterPageClaimAttempt=[](void* context,std::int64_t oldPage,std::int64_t requestedPage,bool)noexcept {
+        if(oldPage==7 && requestedPage==10)holdOnce(context,3);
+    };
+    Fixture fixture;
+    Transport current,alternate;
+    current.locate(1000);current.play();alternate.locate(65000);alternate.play();
+    // The alternate alone first, so its page 7 is in the first slot the
+    // worker will try to reuse; then both targets, pages 0-2 and 7-9.
+    if(!fixture.clips->primeAt(alternate,std::chrono::seconds(2)))throw std::runtime_error("alternate admission prime");
+    if(!fixture.clips->primeAt(current,alternate,std::chrono::seconds(2)))throw std::runtime_error("alternate admission union");
+    const auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("alternate admission source");
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);phase.store(1,std::memory_order_release);
+    // A different request makes the worker replace a cached page for page 10.
+    Transport other;other.locate(10*8192);other.play();
+    {audio::CallbackScope callback;(void)ready(other,blockFrames);}
+    const bool paused=waitPhase(phase,2);
+    // Only primeAt's admission of the alternate's pages now protects page 7.
+    const bool primed=fixture.clips->primeAt(current,alternate,std::chrono::milliseconds(0));
+    fixture.clips->stallForTest(true);phase.store(3,std::memory_order_release);
+    const bool attempted=waitPhase(phase,4);
+    check(paused && primed && attempted,"worker is held at its claim of the alternate's cached page after both targets are primed");
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;
+    if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    fixture.live=alternate;
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    phase.store(5,std::memory_order_release);
+    check(rendered(precision,narrow,wide,alternate) && fixture.clips->underrunSamples()==0,
+          "primeAt admits the alternate target's pages, so a worker claim cannot take one before it is rendered");
+}
+void workerOwnRequestPage(Precision precision) {
+    std::atomic<int> phase{0};
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&phase;
+    // The worker loads page 4 for the request {2,3,4}. Hold it inside a claim
+    // of a cached page of that same request if it ever takes one, or else
+    // just before it claims the slot it may really replace.
+    probe.beforePageClaim=[](void* context,std::int64_t oldPage,std::int64_t requestedPage)noexcept {
+        if(requestedPage==4 && oldPage!=2 && oldPage!=3)holdOnce(context,1);
+    };
+    probe.afterPageClaimAttempt=[](void* context,std::int64_t oldPage,std::int64_t requestedPage,bool claimed)noexcept {
+        if(requestedPage==4 && claimed && (oldPage==2 || oldPage==3))holdOnce(context,1);
+    };
+    Fixture fixture;
+    Transport first;first.locate(17);first.play();
+    Transport second;second.locate(8192+17);second.play();
+    // Pages 0,1,2 in the first three slots, then page 3 replaces page 0.
+    if(!fixture.clips->primeAt(first,std::chrono::seconds(2)) || !fixture.clips->primeAt(second,std::chrono::seconds(2)))
+        throw std::runtime_error("own request prime");
+    const auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("own request source");
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);phase.store(1,std::memory_order_release);
+    Transport third;third.locate(2*8192+17);third.play();
+    {audio::CallbackScope callback;(void)ready(third,blockFrames);}
+    const bool paused=waitPhase(phase,2);
+    // This block crosses from page 2 into page 3: both are cached.
+    Transport target;target.locate(3*8192-64);target.play();fixture.live=target;
+    bool admitted=false;
+    {audio::CallbackScope callback;admitted=ready(target,blockFrames);}
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;
+    if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    const bool exact=rendered(precision,narrow,wide,target);
+    phase.store(3,std::memory_order_release);
+    check(paused,"worker is held while it loads the one missing page of its request");
+    check(admitted,"callback readiness admits cached pages while the worker loads another page of the same request");
+    check(exact && fixture.clips->underrunSamples()==0,"playback reads cached pages while the worker loads another page of the same request");
+}
+void silentAfterEnd(Precision precision) {
+    Fixture fixture;
+    // End at 40000 frames (120 bpm) with the source end still pinned to the
+    // whole file, as an import followed by moving Start leaves it. The clip
+    // plays silence from End to its arrangement end.
+    fixture.store->db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,9609600);"
+                             "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,2000000000)");
+    fixture.rebuild();
+    fixture.clips->stallForTest(true);
+    const auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("silent tail source");
+    Transport target;target.locate(50000);target.play();fixture.live=target;
+    bool admitted=false;
+    {audio::CallbackScope callback;admitted=ready(target,blockFrames);}
+    const bool primed=fixture.clips->primeAt(target,std::chrono::milliseconds(0));
+    check(admitted && primed,"no page past End is needed: readiness and priming in the silent tail wait for nothing");
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    for(auto& channel:narrow)channel.fill(1.0f);
+    for(auto& channel:wide)channel.fill(1.0);
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;
+    if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    bool silent=true;
+    for(std::size_t channel=0;channel<2;++channel)for(std::size_t frame=0;frame<blockFrames;++frame)
+        silent=silent && (precision==Precision::Float64?wide[channel][frame]==0.0:narrow[channel][frame]==0.0f);
+    check(silent && fixture.clips->underrunSamples()==0,"the tail after End renders silence without underruns");
+}
+void mutedOpensNothing() {
+    Fixture fixture;
+    fixture.store->db().exec("UPDATE clips SET muted=1 WHERE id=1");
+    const auto project=readClipProject(*fixture.store,rows::readModel(*fixture.store));
+    // The audit counts file access only on a callback thread; borrow that
+    // mark to see whether building the muted clip touches its media.
+    const auto beforeIo=audio::callbackFileIo.load();
+    std::unique_ptr<ClipPlayback> muted;
+    {audio::CallbackScope mark;muted=std::make_unique<ClipPlayback>(project,fixture.live,48000,2,blockFrames);}
+    check(audio::callbackFileIo.load()==beforeIo && muted->sourcesFor(1).empty() && muted->problems().empty(),
+          "a muted clip is dropped before any of its media is opened");
+}
 }
 int main() {
     try {
@@ -277,9 +513,18 @@ int main() {
             immutableCandidate(true,precision);
             callbackReadiness(precision);
             staleWorkerSnapshot(precision);
+            transientWorkerClaim(precision,false,false);
+            transientWorkerClaim(precision,true,false);
+            transientWorkerClaim(precision,false,true);
+            transientWorkerClaim(precision,true,true);
             alternatePrime(precision);
+            alternateAdmission(precision);
+            workerOwnRequestPage(precision);
+            silentAfterEnd(precision);
+            reservationTurnover(precision);
         }
         refusalAndRetry();
+        mutedOpensNothing();
     }catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);
     return failures?1:0;

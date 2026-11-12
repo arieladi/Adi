@@ -88,7 +88,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Waits (N17) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Partial (E1): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy and silence over a range, and Insert and Delete Time wait (N17) |
 | Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
@@ -110,7 +110,7 @@ MR § is the Master Reference's section.
 | A drag on a control is one undo step | 9.1 | Built (`window/strip-param-undo`, N7): Begin, Values and End through `ParamOps::uiEvent`, one step with its opener; the undone value reaches the plug-in at the next load only (N44) |
 | A plug-in's own window, floating, from the wrench | 3.4 | Built (D3, N8): the wrench on a plug-in's title bar, the hosted editor at its own size, never scaled; Ctrl/Cmd+Alt+P; Multiple, Auto-Hide and Always on Top followed. Missing: Auto-Open (no device insert from the window yet) |
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
-| Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
+| Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Built (D5, N28, #414): the Impulse tile beside Color Cab's controls takes a file from the desktop or the browser's Samples, in any format the browser lists; it shows the empty and the missing-file marks; Clear empties it; each is one undo step, and the live device takes the new state. Missing: undo and redo of an assignment reach the file, not the live device, until N47; the file is decoded on the message thread |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
 | The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
 | The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |

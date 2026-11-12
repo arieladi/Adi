@@ -127,7 +127,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 62> kTables{{
+    static constexpr auto kTables = std::to_array<TableCoverage>({
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -162,6 +162,11 @@ std::span<const TableCoverage> coverage() {
         {"controller_maps", Coverage::Excluded, "Layer 3"},
         {"snapshots", Coverage::Excluded, "Layer 3"},
         {"history_checkpoint", Coverage::Excluded, "Layer 3: replay baseline (ADR-0203 d13)"},
+        {"history_state_rows", Coverage::Excluded, "Layer 3: content-addressed checkpoint rows (HI-02)"},
+        {"history_state_manifests", Coverage::Excluded, "Layer 3: checkpoint content manifests (HI-02)"},
+        {"history_checkpoint_content", Coverage::Excluded, "Layer 3: checkpoint content reference (HI-02)"},
+        {"history_roots", Coverage::Excluded, "Layer 3: stored history baselines (HI-02)"},
+        {"history_origin_root", Coverage::Excluded, "Layer 3: oldest available history baseline (HI-02)"},
         {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"agent_requests", Coverage::Excluded, "Layer 3: log metadata beside a txn, like the ops rows (ADR-0146)"},
         {"op_clients", Coverage::Excluded, "Layer 3: who wrote the log, not the project (ADR-0161)"},
@@ -202,7 +207,7 @@ std::span<const TableCoverage> coverage() {
         {"key_map_degrees", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
         {"media_blobs", Coverage::Excluded, "retired and locked since 1.1 (ADR-0136); a 1.0 file's bytes are not projected"},
         {"extensions", Coverage::Excluded, "digest projection not designed"},
-    }};
+    });
     return kTables;
 }
 

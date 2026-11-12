@@ -91,6 +91,9 @@ fs::path captureProject(const Job &job, const Stage &stage) {
 void validateNiStems(const Job &job) {
     if (!job.niStems)
         return;
+    if (job.normalization.mode != NormalizeMode::Off)
+        throw std::invalid_argument(
+            "NI Stems normalization is unavailable until the encoded audio can be verified; choose Off");
     const auto &ni = *job.niStems;
     if (ni.stems.empty() || ni.stems.size() > 4 || job.session.channels != 2 ||
         (job.session.sampleRate != 44100 && job.session.sampleRate != 48000) || ni.bitRate < 64000 ||

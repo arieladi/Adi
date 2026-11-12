@@ -2,7 +2,9 @@
 
 **Status:** framework complete and **implemented** — machinery in
 `src/adi/ops.{hpp,cpp}`, catalogue in `src/adi/ops_catalog.cpp`, undo in
-`src/adi/history.{hpp,cpp}`.
+`src/adi/history.{hpp,cpp}`. The tables also record intended vocabulary that
+has no native handler yet; a catalogue row is not an implementation claim.
+`adi_tool ops` is the current registered vocabulary.
 
 The implemented ops have handlers and inverses, covering most of the
 P0 editing surface. `adi_tool ops` lists them. Roughly half are generated from a
@@ -11,19 +13,27 @@ old value", and 24 textually identical handlers is 24 chances to get a `WHERE`
 clause wrong. Generated, that failure mode does not exist and the 25th is one
 line.
 
-Every one is covered by `adi_catalog_tests` — applied, then undone, then checked
-that the world came back, which exercises the inverse the way undo actually will
-rather than inspecting the stored blob. And all of them are in the round-trip
-corpus (ADR-0021 §7.4, `adi_replay_tests`), which is the only test that can catch
-a handler reading ambient state.
+`adi_catalog_tests` exercises native handlers by applying and undoing them,
+then checking that the state came back. The round-trip corpus
+(`adi_replay_tests`, ADR-0021 §7.4) and the feature suites check captured input
+and replay without ambient reads. A planned row's presence in this document
+proves neither handler coverage nor measured Live parity.
 
 The contracts in §1–§8 are the part that is expensive to change.
 
-Every mutation to an `.adi` project is an **op**: a typed, scoped, attributed,
+Every durable project-material edit is an **op**: a typed, scoped, attributed,
 invertible command appended to the `ops` table in the same transaction that
-performs it (SPEC §8.1, ADR-0003). This document defines what an op *is*.
+performs it (SPEC §8.1, ADR-0003). History naming/navigation and UI/session
+metadata use their stated metadata APIs; they do not invent undo operations.
+This document defines the editing contract and the intended vocabulary.
 
-This is the last design document before code.
+Optional history retention (ADR-0213, SPEC §8.3) has a separate savepoint inside
+`OpJournal::commit`. A recoverable checkpoint/pruning failure returns a successful
+edit with `CommitResult::retentionWarning`; the edit's rows, journal clocks,
+caller hook and applied-batch delivery still complete. A final caller hook may
+reject the entire transaction as before. Protected history above its budget also
+reports through the warning; callers can surface that deferral without treating
+the edit as failed. Compaction does not append an undo operation.
 
 ---
 
@@ -202,12 +212,40 @@ Where an inverse would still exceed a threshold (proposed: 4 MB), the op is
 marked `lossy_undo` and the user is told **before** it commits. Silently dropping
 undo is not acceptable; neither is a 2 GB op log.
 
-### 6.4 Coalescing
+### 6.4 Gestures: preview, then one committed action
 
-Ops marked `coalescable` merge with the immediately preceding op when actor,
-target and `txn_id` match and they fall inside a window (proposed: 300 ms). The
-**first** op's inverse is kept — that is the one that returns to where the drag
-started. Coalescing happens before the log is written, never after.
+ADR-0216 supersedes the proposed 300 ms journal merge. `GestureSession`
+(`adi::gesture::Session`) owns one begin/update/commit/cancel lifetime, one
+actor and one frozen label. Updates carry absolute input and derive requests
+from the captured origin and the current committed base; a preview never becomes
+the next update's origin. A foreign commit triggers reapplication on its new
+base, or a named suspension if the captured target no longer matches.
+
+Continuous scalars publish live values without journal writes. Structural
+preview runs the real handlers in a scratch transaction, captures owned model
+and presentation data, then rolls back before preparing or publishing it.
+Unsupported topology or mixed preview composition refuses explicitly. Preview
+and cancellation never append ops or leave state blobs in the project.
+
+Commit executes one `OpJournal` transaction, capturing inverses from the
+committed state being replaced. A semantic no-op creates no transaction.
+Cancel clears only this owner's preview and preserves newer committed edits;
+a refused restoration remains owned for retry. SQL durability and later runtime
+presentation are separate outcomes: a runtime failure cannot resubmit an
+already durable edit. Open gestures, undrained callback reservations and capture
+faults fence Undo, Redo, revert and branch/source replacement.
+
+`ParamOps` and native controls use this same lifetime; surface and control
+clients must adopt it when they bind gestures. A quiet interval may detect the end of input without a release; it
+never merges committed transactions or implements Undo-and-recommit. The
+`coalescable` descriptor remains a symmetric-inverse capability, not a timer or
+permission to discard arbitrary captured state. A gesture writes automation
+only through the separately armed AU-03 recording path.
+
+[ENGINE-GESTURES.md](ENGINE-GESTURES.md) documents the built coordinator,
+submission capability, runtime ownership, explicit retry and current adapter
+limits. Live interaction-label parity remains NOT RUN until the measurement
+seat records it.
 
 ---
 
@@ -410,8 +448,6 @@ the five existing relational scale tables. No schema/binary-layout change.
 | `track.setTimeBase` | e | S | sym | P0 |
 | `track.setAutomationMode` | e | N | sym | P2 |
 | `track.setLocked` | e | N | sym | P1 |
-| `track.freeze` | e | G | pair `track.unfreeze` | P1 |
-| `track.unfreeze` | e | G | cap | P1 |
 | `lane.create` | e | S | pair `lane.delete` | P1 |
 | `lane.delete` | e | S | cap | P1 |
 | `lane.reorder` | e | S | sym | P1 |
@@ -1333,12 +1369,16 @@ selection. An existing ID refuses creation instead of overwriting the lane.
 
 Delete and clear payloads contain `id`; setters contain `id` and `value` (boolean
 for enable/visibility, finite double within lane bounds for default value).
-Clear removes points from every arrangement/clip stream while retaining data-row
-IDs, clip addresses, header version/stride/flags and trailers. An unreadable
-stream refuses the whole transaction, including any earlier clears. Delete
+Clear removes points and their `automation_segment_ranges` rows from every
+arrangement/clip stream while retaining data-row IDs, clip addresses, header
+version/stride/flags and trailers. An unreadable stream refuses the whole transaction, including any earlier clears. Delete
 cascades all streams. `automation.restoreLane` captures a `state` object holding
 the exact original row or null and every data row (`id`, `clip`, CBOR binary
-`bytes`), and restores its own inverse. Legacy scalar metadata and malformed
+`bytes`, and `ranges` containing each complete typed `automation_segment_ranges`
+row), and restores its own inverse. Range IDs, nullable clip addresses, source
+values, progress intervals and unknown SQLite columns survive exactly. Historical
+packets without `ranges` restore their recorded bytes but cannot reconstruct
+curve metadata that was never captured. Legacy scalar metadata and malformed
 opaque stream bytes are preserved by deletion undo, without applying new-lane
 validation to the captured state. Explicit row/stream ID collisions fail within
 the journal transaction. Each setter currently captures the full lane rather
@@ -1368,16 +1408,26 @@ No handler generates IDs, reads UI selection, or consults the grid.
   uint64 IDs. setCurve also carries curve and tension. A duplicate or missing
   selection refuses the whole edit. Empty resulting streams remain addressed.
 - `restoreData`: internal inverse packet with the same address, object `state` containing boolean
-  `present` and CBOR binary `bytes`; restores original bytes or row absence.
-  It captures its own inverse and does not normalize the original stream.
+  `present`, CBOR binary `bytes` and an array `ranges` of complete typed range
+  rows; restores original bytes, range cells and IDs, or row absence. It captures
+  its own inverse and does not normalize the original stream. Range addresses
+  must match the data row and clip. Legacy packets without `ranges` clear the
+  addressed range rows rather than applying stale ordinals to restored bytes.
 
 Edits sort whole records stably by time, including coincident-point order. Known
 prefix edits and deletion retain header version/flags, per-record opaque suffixes,
 reserved bytes and trailing data. Insertion into a wider, newer or unknown-flag
 stream is refused because unknown fields cannot be invented. Duplicate/zero
 stored point IDs and unreadable streams refuse edits. Undo/redo retains the exact
-original layout even across reordering. Caller beforeCommit rejection rolls back
-stream and journal together. Caller-provided shape points use the existing six
+original layout even across reordering. Retained curve ranges follow the actual
+point identity to its new record index. A slice survives time-only movement
+while its endpoint identities, values and outgoing curve/tension remain the
+same; insertion, deletion, changed adjacency or endpoint values invalidate the
+replaced segments, and a curve edit invalidates its old source domain. Unrelated
+slices and all their unknown columns survive. Invalid stored range addresses or
+ordinals refuse point edits atomically; clear can remove their rows. Caller
+beforeCommit rejection rolls back streams, range rows and journal together.
+Caller-provided shape points use the existing six
 curve formulas; this increment adds no Live shape preset or parity claim, Automation Arm, clip-envelope playback, or automated send levels.
 
 `automation_shapes.hpp` adds owner-thread shape generation and prepared inclusive
@@ -1595,6 +1645,25 @@ with an asynchronous result; cross-project state/ref import and nested rack
 images are not supplied and return explicit refusals. The reader still exposes
 a rack's root metadata and hasNestedChains. Flush pending host edit capture
 before reading if the clipboard should include that gesture.
+
+`prepareDevicePasteForTrack(Store&, copy, newId, track)` (N51) appends through
+the track's first top-level chain in `(ord,id)` order. If none exists it stages
+`chain.create` before `device.insert`, with no preparation writes. Both are one
+undoable transaction: Undo removes the new device and its new chain; Redo restores
+the same identities. `PreparedDevicePaste::chainId` reports the selected/staged
+chain. The existing chain/before-device API retains its insertion behavior.
+The track-target packet carries the expected head, source connection, exact
+track/chain/device destination guards (including absent sets/identities), and
+plug-in-reference row through the common captured submission path. Submit that
+packet intact with `commitDevicePaste` or the ordinary journal/submitter;
+partial/tampered/appended packets refuse, and an invalid partial offer does not
+poison the authentic offer. Same-head external target changes refuse before any
+order move or chain write. All owned state/parameters remain the stored clipboard
+image; nested-rack and cross-project limitations still apply. The caller refreshes
+Session/ProjectView after commit; the window binds the new append API when it
+has a track destination without a selected device. Preparation uses the existing
+bounded native MAX-id strategy; shared allocator consolidation is the M2 follow-up.
+
 
 The browser calls prepareBuiltinInsert(store, uid, track, beforeDevice) then
 commitBuiltinInsert with its captured expected head. Preparation allocates all
@@ -1897,6 +1966,8 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setLoop` | t | S | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
+| `transport.setCountIn` | t | S | — | P1 |
+| `transport.setSongStart` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
 | `controller.unbind` | e | N | pair `controller.bind` | P1 |
 | `controller.map` | h | N | pair `controller.unmap` | P2 |
@@ -1938,6 +2009,31 @@ compensated output latency, including loop wraps. Default output is the first st
 pair, outside Main's device/fader chain; N23 routes it through Cue Out/volume. Offline
 export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
+
+`transport.setCountIn {bars}` saves one of `0` (None), `1`, `2`, `4`.
+`transport.setSongStart {on, start?}` saves a nonnegative musical tick when on;
+`on:false` clears the override. Both use session metadata, Snapshot impact and
+the same ephemeral/audit/batch-rollback rules as loop/click. A missing song start
+uses the insert marker or active time selection supplied by the caller.
+
+The driver calls `Session::RenderBlock::startPlayback(insertMarkerTick, recording)`
+between slices using its pinned generation. The saved song start wins over that
+fallback. Ordinary Play starts immediately; only a record start uses Count-In.
+Prepare the armed recorder on the owner before the driver command. During the
+lead-in the timeline is held, input monitoring runs and no clip/recording timeline
+advances. Count-In clicks use the launch's effective tempo and meter, through
+Cue Out/volume, even when the ordinary metronome is off. The callback splits at
+the exact launch sample, preserving the suffix's input/output pointers and
+physical stream timestamp. No lead-in audio is written to a take. Stop, explicit
+Play, locate, a device format change or a device stop (`Session::release`) cancels
+the pending lead-in. Direct
+`transport().locate/play` is the explicit-seek path and bypasses default-start
+policy; the window must marshal these commands to the driver, not mutate it
+concurrently. Offline `performanceState=false` ignores both saved start choices.
+The count-in split supports64 physical input channels (the recorder's existing
+limit) and output widths through `max(64, SessionSpec::channels)`; an invalid
+slice format refuses before rendering either half. The UI binding and measured
+Live count-in/punch behavior remain separate from this native start contract.
 
 `controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
 14 non-id columns of `controller_maps`, including explicit nulls. It inserts
@@ -2080,9 +2176,17 @@ in one native transaction. It adds no opcode or schema table. The master is
 retained in the container, excluded from the playing stem group. Document
 identity/generation/head guards and no-clobber file publication precede the
 commit point; one Undo removes the whole group. NI export remains application
-queue state, without project operations.
+queue state, without project operations. NI Stems normalization must be Off:
+Queue add/update and direct rendering refuse Peak/Loudness before source,
+codec or staging work until encoded AAC verification exists (PLAN EX-10).
+Ordinary WAV normalization remains supported.
 
 ### Whole-track freeze state
+
+Freeze and Unfreeze are user commands composed by the native producers from
+`track.setFreeze`, with `group.setFreezeScope` for a captured group. There are
+no registered `track.freeze` or `track.unfreeze` opcodes. Both directions use
+explicit before/after state and the existing media/material operations.
 
 track.setFreeze carries id, before and after objects. Each captured state holds
 armed, frozen, media and render (the complete frozen_renders row or null). The
@@ -2110,3 +2214,14 @@ bypass, baked input-gain reset and optional disarm. Both play Warp off and use
 one undo transaction with project/document/head guards. No new opcode or schema
 is required. In-place preparation refuses partial extents or live incoming
 main/send audio rather than applying a baked mix twice.
+
+### Stored history baselines (schema 1.21)
+
+`history.root` is internal history metadata with a single required Text field,
+`state_hash`. Its Read descriptor has no apply handler or inverse: journal
+submission is refused. It is excluded from the editing catalogue count above.
+Compaction may replace an old transaction boundary with this hash reference or
+allocate an origin metadata record. Neither is a user edit or undo step.
+`history_roots` verifies the reference; named snapshots and dead ends keep their
+existing sequence references when their step history is compacted. All roots
+are hidden from `recent`, Undo/Redo steps and the timeline's step list.

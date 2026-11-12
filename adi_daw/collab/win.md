@@ -6,6 +6,82 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-12 — two outside reviews verified and fixed; the Mix View seat and ADiJ ruled; #512 green and still held
+
+**For the engine seat — read first.**
+- **Win pushed onto three of your branches.** Fetch before touching them again.
+  - `engine/clip-trim` (#530): `ffeec650` on your `e9712ecb`. It covers three things:
+    - `captureSampleDefaults` measures a linear clip from `pos_ns` and clamps the tick fallback at 0, because the ns→tick round trip could give −1 and refuse the save;
+    - `trimFrozenStart` treats a left extension of a clip already at source zero as a true no-op;
+    - it refuses `begin >= end`, and refuses a Start at or past an unlooped MIDI or warped clip's End marker.
+  - `engine/library-scan-cancel` (#533): `56d976cb` on your `953e15cd`. A file that vanishes between enumeration and stat is skipped, not a failed scan. A publication that throws reports no counts.
+  - `engine/transport-start` (#527, merged): a device stop (`Session::release`) cancels a pending count-in.
+- **Merged into `engine/log`** (`783f7c66`): main with #515 to #533, #527, #529 and ADR-0235 to 0237. Your next branches include them.
+- **Yours to take, verified but not fixed by win:**
+  1. **End-marker rounding.** `TempoMap::secondsToTicks` truncates, and `ticksToSeconds`/`nanos` round, so a linear clip's End that lands exactly on a tick can come back one tick short (the outside review's B1, found on #531). Summing `pos_ns + length_ns` as int64 in `defaultEnd`/`readClipDetails` fixes only some tempos. The real fix is in the conversion: snap when within a few ulps, or convert exactly for step maps. Also compute ClipPlayback's pinned `playEnd` from absolute endpoints, not a rounded duration: about 12.5 % of arbitrary linear clips lose their tail sample on a pinned End today.
+  2. `clip.setStartMarker` should clear or recompute `source_end_ns` when it pins End, so End and the source-end pin cannot disagree.
+  3. `ProgressiveDecoder`: when the last lease of a still-queued job goes, drop the job and release its admission at once.
+  4. `Index::scan`: a throw after `tx.commit()` (in the post-commit enqueue) is reported as a rollback with zero counts. And a subdirectory that vanishes mid-walk still fails the scan; walk it with `increment(ec)`.
+  5. #530's linear B2 test uses a zero ns offset, so it proves only the clamp. Add a case with a one-sample offset.
+  6. Count-in clicks are not on the latency-compensated clock (outside review 3.2), so with a latency-reporting plug-in, bar 1 lands that many samples after the count-in's grid. When the latency exceeds a beat, it needs a decision: extend the count-in, or let the metronome emit count-in beats. Measure Live first.
+
+**The outside reviews (Gemini via Antigravity), each claim checked twice against the code with probes:**
+- **Round 2,** on #520, #522 and #527: 8 claims; 5 real or partly real (all minor), 1 false, 2 harmless. Fixed in #529 (deferred foreign keys leaking out of compaction's rolled-back probe; leftover files on a failed project creation) and on #527 (count-in on device stop).
+- **Round 3,** on #515 and #530 to #533: 17 claims; 15 real or partly real (all minor), 2 false.
+  - #535 fixes #515's follow-ups: the worker no longer claims a ready page of its own request; reservations stop at End; a muted clip opens nothing; three tests now prove what they say.
+  - #530 and #533 are fixed on their branches.
+  - Not changed: A3 (not reachable), A4 and B5 (false), B6 (unreachable now, and a full-row guard would over-refuse).
+
+**Merged today:** #519, #520 (with win's Windows replace fix), #515–#518, #521–#529, #531, #532, #534 (ADR-0235 ADiJ stays light; ADR-0236 the Mix View seat; ADR-0237 his first Mix View answers; the Fable reviewer prompt for Sunday).
+
+**The Mix View seat.** It is a local Codex Pro session, with its mission in the director's private prompts folder. It builds the Mix View across the lanes, starting with a decision guide. Its branches are `mixview/…` and its log is `collab/mixview.md` on `mixview/log`.
+
+**#512** (the control MCP slice): main merged in (`ca55ceb1`, the ADR count now 237), all 21 checks green. Still held for the director's Q-O ruling, consent before AGT-03, and his go.
+
+---
+
+## 2026-11-11 (afternoon) — the MCP slice waits for the director; FilmCraft cancelled; six engine PRs; a Windows replace fix; the runner outage
+
+**For the engine seat — read first.**
+- **`engine/project-replace` moved: win pushed `501bc849` on top of your `a052a897` (#520).** On
+  MSVC, 8 of the 34 project-replace checks failed: `replaceFile` holds the destination's exclusive
+  lease handle while it renames over it, and `MoveFileExW` / `std::filesystem::rename` refuse any
+  replace target with an open handle, even one sharing delete. Windows now renames through
+  `FileRenameInfoEx` with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. That replaces a target held only by
+  delete-sharing handles (our lease) and still refuses one held by SQLite or a Store's shared lease.
+  A volume without POSIX rename (SMB, FAT/exFAT) reports `operation_not_supported` once, rather than
+  retrying a classic rename the lease itself refuses. `renameReplacing` is now in `publish_file.hpp`,
+  and the test's `delayed` hook calls it. POSIX code is unchanged. Fetch before you touch that
+  branch again.
+- **A race in `poolBounds` (test_progressive_decode.cpp), already on main.** It failed once on
+  ubuntu arm64 in #517, which does not touch decoding. After `files.clear()` the test sets
+  `release=true` at once. A fake codec that sees `release` before its stop request is visible leaves
+  its loop without counting a stop, so `stops==2` misses. Please make the check independent of that
+  ordering, e.g. set `release` only after the stops are observed, or count stops by the token alone.
+
+**Engine PRs opened and retargeted to main (all independent; every pair, and each with #512,
+merges cleanly):** #515 clip-page admission, #516 automation range Undo, #517 history cap, #518 strip
+held peak (N48), #519 window-state spec, #520 project replace (N45). #519 was green and is merged.
+The rest land when green. #517 also touches `ops.hpp`/`ops.cpp`, but only for `CommitResult` and
+compaction, so #512's schema export is unaffected. Window #514 (Color Cab's Impulse tile) is merged.
+
+**The runner outage.** From about 14:00 UTC, GitHub's hosted Ubuntu runners could not resolve
+`azure.archive.ubuntu.com` (actions/runner-images#15297, #15296; `archive.ubuntu.com` too).
+Every job that installs packages with apt failed on every PR and on main: the GUI shell on Ubuntu,
+i386 ILP32, the s390x big-endian guard, and the fuzz job. These are infrastructure failures, not
+code; win reruns them as the mirror recovers and merges nothing on a red leg.
+
+**#512, the control MCP slice (ADR-0233), is held for the director.** Its head `5eab55a4` passes
+every leg that ran, apart from the outage legs above. It waits for his rulings on Q-O (where the token lives)
+and on consent before AGT-03 (ADR-0233 d8), and for his go. His Antigravity (Gemini) round was
+verified claim by claim: the real findings are fixed in `5eab55a4`; the rest were misreadings.
+
+**FilmCraft (ADR-0234, #513).** At the director's word, the FilmCraft integration plans are
+cancelled: ADI cannot rely on another project doing work for it. Kept from ADR-0206: d6 only,
+i.e. OTIO/AAF interchange with a clean-room AAF writer and the integer time base with SMPTE.
+
+---
+
 ## 2026-11-09 to 11 — the lanes split; the chain of nine and the window seat's screens land; CI runs in parallel; a scanner race
 
 **The director's lane split (9 November).** He stopped the Codex engine seat because it had drained

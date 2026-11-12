@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/media/publish_file.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/track_recording.hpp"
@@ -101,6 +103,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {18, {"frozen_groups"}},
         // 1.19 (ADR-0203 d13): retained undo root and replay checkpoint.
         {19, {"history_checkpoint"}},
+        {20, {"history_state_rows", "history_state_manifests", "history_checkpoint_content"}},
+        {21, {"history_roots", "history_origin_root"}},
     };
     return steps;
 }
@@ -228,8 +232,9 @@ bool isClientId(const std::string& id) {
 }
 }  // namespace
 
-Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro)
-    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {
+Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro,
+             std::shared_ptr<media::ProjectFileLease> lease)
+    : fileLease_(std::move(lease)), db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {
     appliedDomain_ = detail::makeAppliedDomain(*this);
 }
 
@@ -273,9 +278,10 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
         store->db().exec("INSERT INTO project(id,name) VALUES(1,'Untitled')");
         return store;
     } catch (const SQLite::Exception&) {
+        const auto lease=store->fileLease_;
         store.reset();
         std::error_code ec;
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
@@ -323,9 +329,10 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
         root.commit();
         return store;
     } catch (const SQLite::Exception&) {
+        const auto lease=store->fileLease_;
         store.reset();
         std::error_code ec;
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
@@ -340,15 +347,21 @@ void Store::failNextCreateBeforeCommitForTest() noexcept {
 }
 
 std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, StoreError& err) {
+    if(audio::onAudioThread){err=StoreError::CannotCreate;return nullptr;}
     std::error_code ec;
+    std::shared_ptr<media::ProjectFileLease> lease;
     if (std::filesystem::exists(path, ec)) {
         err = StoreError::AlreadyExists;
         return nullptr;
     }
 
     try {
+        if(!path.empty() && path!=std::filesystem::path(":memory:")){
+            lease=media::ProjectFileLease::createShared(path,ec);
+            if(!lease){err=ec==std::errc::file_exists?StoreError::AlreadyExists:StoreError::CannotCreate;return nullptr;}
+        }
         auto db = std::make_unique<SQLite::Database>(
-            sqlitePath(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+            sqlitePath(lease?lease->path():path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
 
         // SPEC §3.1. page_size must be set before the first write, so it goes
         // first — after any table exists it is silently ignored, which is the
@@ -393,8 +406,14 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             throw SQLite::Exception("injected create fault (test seam)", 1 /* SQLITE_ERROR */);
         create.commit();
 
-        auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false));
+        auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false,lease));
         if (!store->applySessionPragmas()) {
+            // As the catch below: no schema-only file left at the user's path.
+            // Close SQLite first (on Windows it holds the file without
+            // FILE_SHARE_DELETE); removeCreated still keeps a file another
+            // reader has already opened.
+            store.reset();
+            if(lease)(void)lease->removeCreated(ec);
             err = StoreError::SqlError;
             return nullptr;
         }
@@ -402,7 +421,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
         return store;
     } catch (const SQLite::Exception&) {
         // Do not leave a half-built file behind for someone to open later.
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
@@ -410,10 +429,17 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
                                    bool readOnly) {
+    if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
+    std::shared_ptr<media::ProjectFileLease> lease;
+    std::error_code leaseError;
+    if(!path.empty() && path!=std::filesystem::path(":memory:")){
+        lease=media::ProjectFileLease::openShared(path,leaseError);
+        if(!lease){err=StoreError::CannotOpen;return nullptr;}
+    }
     std::unique_ptr<SQLite::Database> db;
     try {
         db = std::make_unique<SQLite::Database>(
-            sqlitePath(path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
+            sqlitePath(lease?lease->path():path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
     } catch (const SQLite::Exception&) {
         err = StoreError::CannotOpen;
         return nullptr;
@@ -494,7 +520,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
         }
     }
 
-    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly));
+    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly,lease));
     store->major_ = major;
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
@@ -527,6 +553,7 @@ bool Store::closeFinalized() {
 
     if (readOnly_) {
         db_.reset();
+        fileLease_.reset();
         return true;
     }
 
@@ -549,6 +576,7 @@ bool Store::closeFinalized() {
         ok = false;
     }
     db_.reset();
+    fileLease_.reset();
     return ok;
 }
 

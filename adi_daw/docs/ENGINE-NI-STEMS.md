@@ -109,3 +109,9 @@ edit durations. FFmpeg's raw PCM command retains final AAC packet padding
 (619/815 frames for those two fixtures); consumers must respect the audible
 container duration. ADI's decoded imports trim it explicitly and test the exact
 frame count, rather than treating all 1024 samples in the last packet as content.
+
+Normalization must be Off. Peak or Loudness is refused at Queue add/update and
+by direct `renderNiStems` before any source, codec or staging work. PLAN EX-10
+keeps this refusal until encoded AAC output can be checked against its target;
+normalization is never silently ignored. WAV jobs support their existing Peak
+and Loudness modes.
