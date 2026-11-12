@@ -2712,8 +2712,11 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     sel.track = 2;
     sel.start = bar / 2;
     sel.end = bar;
+    root.frame();
+    picture("adi-split-selection-before.png");
     check(root.command(AppCommands::Split), "Split on a selection inside 1 MIDI's clip");
     root.frame();
+    picture("adi-split-selection-after.png");
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}} &&
               clipsOf(3).size() == 1,
           "three clips at the selection's edges; the unselected track is untouched");
