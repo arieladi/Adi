@@ -297,6 +297,45 @@ void scanCancellationAndProgress() {
     check(f.index->scan(f.volume, "inside").ok,
           "existing two-argument scan remains available after cancellations and observer errors");
 }
+void vanishedDuringDiscovery() {
+    Fixture f;
+    fs::create_directory(f.root / "churn");
+    const std::vector<std::string> names{"a", "b", "c"};
+    for (const auto &name : names) write(f.root / "churn" / name, name);
+    bool removed = false;
+    // After the first file is staged, delete all three. Entries the iterator
+    // already enumerated now fail their stat with "not found".
+    const auto scan = f.index->scan(f.volume, "churn", {}, [&](const auto &state) {
+        if (!removed && state.phase == library::ScanProgress::Phase::Discovering && state.files == 1) {
+            removed = true;
+            for (const auto &name : names) fs::remove(f.root / "churn" / name);
+        }
+    });
+    check(removed && scan.ok && !scan.cancelled && scan.files == 1 && scan.queued == 1 &&
+              f.index->entries().size() == 1,
+          "files deleted between enumeration and stat are skipped instead of failing the scan");
+}
+void failedPublicationReportsNoCounts() {
+    Fixture f;
+    write(f.root / "a", "alpha");
+    write(f.root / "z", "zulu");
+    check(f.scan().ok, "seed two files before a failed publication");
+    const auto before = f.index->entries();
+    fs::remove(f.root / "z");
+    write(f.root / "b", "beta");
+    {
+        SQLite::Database side(media::pathUtf8(f.dir.path() / "index.sqlite"), SQLite::OPEN_READWRITE);
+        side.exec("CREATE TRIGGER fail_missing BEFORE UPDATE OF present ON files WHEN NEW.present=0 "
+                  "BEGIN SELECT RAISE(ABORT,'injected publication failure'); END;");
+    }
+    const auto failed = f.scan();
+    check(!failed.ok && !failed.cancelled &&
+              failed.error.find("injected publication failure") != std::string::npos,
+          "a database fault during publication fails the scan");
+    check(failed.files == 0 && failed.unchanged == 0 && failed.queued == 0 &&
+              sameEntries(before, f.index->entries()),
+          "a rolled-back publication reports no committed rows or hash jobs");
+}
 
 } // namespace
 int main() {
@@ -308,6 +347,8 @@ int main() {
         cancellation();
         foreignDatabases();
         scanCancellationAndProgress();
+        vanishedDuringDiscovery();
+        failedPublicationReportsNoCounts();
     } catch (const std::exception &e) {
         check(false, e.what());
     }

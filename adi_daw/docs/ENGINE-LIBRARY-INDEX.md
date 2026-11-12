@@ -27,6 +27,12 @@ The previous complete index, missing flags and hash queue survive. A later scan
 can retry normally. The commit is the completion boundary; a later stop does not
 undo published metadata or suppress its hashing queue.
 
+Any other failure (filesystem, SQLite or observer) also returns `ok=false` with
+zero counters: the transaction rolled back and queued nothing. A file deleted or
+renamed between enumeration and its metadata read is skipped, not a failure; it
+stays out of the scan, so publication marks a previously indexed copy missing.
+Every other filesystem error still fails the scan.
+
 Cancellation is cooperative between filesystem/SQLite operations; it does not
 interrupt an operating-system call already in progress. Hashing, source default
 annotations, relative-folder confinement, normalization/collision checks and the

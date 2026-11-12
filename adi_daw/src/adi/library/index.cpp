@@ -12,7 +12,9 @@
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <system_error>
 #include <thread>
 namespace adi::library {
 namespace fs = std::filesystem;
@@ -75,11 +77,26 @@ auto systemTime(std::chrono::time_point<Clock, Duration> value) {
     }
 }
 struct Metadata { std::int64_t size, time; };
-Metadata metadata(const fs::path& path) {
-    const auto size = fs::file_size(path);
+// True when the entry vanished after enumeration; every other error throws.
+bool vanished(const std::error_code& ec, const char* operation, const fs::path& path) {
+    if (!ec) return false;
+    if (ec == std::errc::no_such_file_or_directory) return true;
+    throw fs::filesystem_error(operation, path, ec);
+}
+// Empty when the file was deleted or renamed after enumeration.
+std::optional<Metadata> presentMetadata(const fs::path& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (vanished(ec, "file_size", path)) return std::nullopt;
     if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())) throw std::runtime_error("file too large");
-    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(systemTime(fs::last_write_time(path)).time_since_epoch()).count();
-    return {static_cast<std::int64_t>(size), time};
+    const auto written = fs::last_write_time(path, ec);
+    if (vanished(ec, "last_write_time", path)) return std::nullopt;
+    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(systemTime(written).time_since_epoch()).count();
+    return Metadata{static_cast<std::int64_t>(size), time};
+}
+Metadata metadata(const fs::path& path) {
+    if (const auto found = presentMetadata(path)) return *found;
+    throw fs::filesystem_error("file metadata", path, std::make_error_code(std::errc::no_such_file_or_directory));
 }
 bool sameTime(std::int64_t a, std::int64_t b) {
     // Avoid signed subtraction overflow for malformed/extreme timestamps.
@@ -248,7 +265,11 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
         for (const auto& file : fs::recursive_directory_iterator(start)) {
             checkpoint();
             ++progress.visited;
-            if (file.is_symlink() || !file.is_regular_file()) {
+            std::error_code ec;
+            const bool isLink = file.is_symlink(ec);
+            const bool gone = vanished(ec, "is_symlink", file.path());
+            const bool regular = !gone && !isLink && file.is_regular_file(ec);
+            if (gone || isLink || vanished(ec, "is_regular_file", file.path()) || !regular) {
                 report();
                 continue;
             }
@@ -264,8 +285,14 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
                 continue;
             }
             const auto key = normalized(rel,volume.caseSensitive);
+            // A file gone since enumeration stays out of keys: publication marks it missing.
+            const auto meta = presentMetadata(path);
+            if (!meta) {
+                report();
+                continue;
+            }
             if (!keys.insert(key).second) throw std::runtime_error("ambiguous normalized filenames: " + rel);
-            items.push_back({rel,key,metadata(path)});
+            items.push_back({rel,key,*meta});
             ++progress.files;
             report();
         }
@@ -334,6 +361,8 @@ ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std
         result.error = "Library scan cancelled";
         return result;
     } catch (const std::exception &e) {
+        // A failed publication rolled back: no rows were committed or queued.
+        result.files = result.unchanged = result.queued = 0;
         result.error = e.what();
         return result;
     }
