@@ -13,6 +13,17 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-12 — MX23 relative selection active: focused555, final controls rerunning; no seat stop
+
+**Active:** uncommitted `engine/relative-mixer-gestures`, independent base **engine/log `f546c277d7ff6ca46a9021f565df546b421f80b0`**, `/workspace/wt-engine-project-replace`. Four owned files: gesture_producers.hpp/.cpp, native test_gesture_playback.cpp, new ENGINE-RELATIVE-MIXER-GESTURES.md. Public relativeScalarProducer takes one copied driver/selection/domain, latest absolute coordinate; reuses all eight existing scalar adapters, their captured typed rows, topology guards, claims and ordinary ops through the existing common coordinator. No UI, schema/opcode, new recorder/timer/Delay DSP. All six protected control files byte-identical to base; remote main still ecbc7f24, #512 absent/held. Explicit ls-remote confirms prior HI03/log heads despite stale engine/log tracking ref from this worktree's fetch mapping.
+
+**So far:** first focused553/0, actual grouped gain/pan PCM float32/64, reversal, fixed selection, no-op End, one Undo/Redo, foreign same-row pan composition, opaque future BLOB preservation, claims on every member and late second-member SQL rollback. Strict GCC extra Wshadow/Clang1 prod/3 tests clean; initial Clang2301 (553 native,778 gesture,970 live replay). Native full build320 targets exit0. Two fixture expectations corrected: empty End has an admitted successful durable result, and ordinary refresh/Undo rebuilding is distinct from preview rebuilding; raw initial535/4 retained. Nine initial compiled controls ordinary-fail the full553, but **canonicalize-unchanged-silence survived553**: the driver fixture was already canonical -150, so did not prove the exact raw -70 driver case. No credit for that control. Added raw-floor unchanged/leave-floor cases, native and Clang **555/0**, serialized final rebuild2 targets exit0. Final strict review/15 controls rerun on the new object; production unchanged. Initial commands/inputs/artifacts remain in review-initial; final review frozen separately, identical cold core hard-linked for proof without a second disk copy. Full test_all still pending; no release/PR claim yet.
+
+**Retention/resource:** exact reconstructed old gzip + member SHA verified for sample-defaults28, stem-results32 and external-tempo24 archives; manifests beside each in /workspace/engine-review. No evidence/debug data discarded. Additional analysis archive repack in progress; finish/pause all archival jobs and restore about3GiB headroom before decoder-containing gate, keep unchanged2GiB guard. Current evidence `/workspace/adi-cloud/relative-mixer-gestures/`: both fixture/build versions, strict reviews, initial surviving control and final controls. Do not count initial controls as final-input closure.
+
+**Continue in this turn:** final controls/strict review, retain immutable proof, full native gate + four validators/layout, release audit, commit/push/log. Then SRF02's remaining unbracketed quiet-window end detection through the same existing common session (explicit source clock/window, no merge/undo-recommit and no implicit automation writes). AU03 write-pass, Track Delay preview, AU05 material policy and Crop geometry remain explicitly open. No waiting for CI/director, no main checkout, no seat stop.
+
+
 
 
 
