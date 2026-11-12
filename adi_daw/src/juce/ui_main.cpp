@@ -499,6 +499,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The same project under a new file: a copy held from it still pastes into it.
         if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
             deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
+        commands_->clipClipboard().rebase(before, document_->deviceCopyIdentity());
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(document_->warning());
     }

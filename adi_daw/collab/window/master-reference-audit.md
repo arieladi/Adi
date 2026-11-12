@@ -144,7 +144,7 @@ MR § is the Master Reference's section.
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |
-| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Partial: on devices (D2, N18): Ctrl/Cmd+X, C, V and D on the focused device, Paste also at the chain's end; Select All in the Arrangement. Missing: clips and time on the clipboard (N17); a paste onto a track with no chain yet (N51) |
+| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Partial: on devices (D2, N18): Ctrl/Cmd+X, C, V and D on the focused device, Paste also at the chain's end; Select All in the Arrangement. On clips and time selections (E2, N17): Ctrl/Cmd+X, C, V and D on the chosen clip or the time selection, Paste at the insert marker, a range onto as many tracks as it came from, each one undo step. Missing: several picked clips as one copy; the …Time commands (E3); a paste onto a track with no chain yet (N51) |
 | Create: Insert Audio / MIDI Track | — | Built |
 | Create: Insert Return Track; Import MIDI File | 8.2, V.2 §5 | Insert Return Track built (`window/return-commands`); Import MIDI File later (P2) |
 | View: Undo History (Ctrl+Alt+Z / Cmd+Option+Z), newest on top, pick a line to go back, with ADI's branches and snapshots; any node opens read-only in a silent tab | 1.6, 11.1, V.4 §4 | Waits: `History` lists branches and snapshots, but no undo steps (new Need) |

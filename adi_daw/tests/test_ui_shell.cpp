@@ -2974,6 +2974,166 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// E2: Cut, Copy, Paste and Duplicate in the Arrangement (Live 12 manual 6.9, 41.5; N17).
+void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "clipboard.adi", true, {}, error);
+    check(document != nullptr, "a project for the clipboard");
+    if (!document)
+        return;
+    const auto bar = textproj::kWhole;
+    std::vector<OpRequest> make(2);
+    make[0].opType = "clip.create";
+    make[0].payload = {{"id", 50}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", bar}};
+    make[1].opType = "clip.create";
+    make[1].payload = {{"id", 51}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", bar / 2}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a bar on 1 MIDI, half a bar on 2 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clipboard");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    commands.clipClipboard().held = std::monostate{};
+    using Clips = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    const auto clipsOf = [&](std::int64_t track) {
+        Clips out; // (pos, length)
+        if (const auto *t = root.reader().findTrack(track))
+            for (const auto &c : t->clips)
+                out.emplace_back(c->posTicks, c->lengthTicks);
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    auto &sel = root.arrangement.geometry.selection;
+    const auto clickClip = [&](std::int64_t track, std::int64_t clip, std::int64_t pos, std::int64_t length) {
+        sel = {};
+        sel.track = track;
+        sel.clip = clip;
+        sel.start = sel.insert = pos;
+        sel.end = pos + length;
+        sel.marked = true;
+    };
+    const auto marker = [&](std::int64_t track, std::int64_t at) {
+        sel = {};
+        sel.track = track;
+        sel.start = sel.end = sel.insert = at;
+        sel.marked = true;
+    };
+    const juce::KeyPress copyKey('c', juce::ModifierKeys::commandModifier, 0), cutKey('x', juce::ModifierKeys::commandModifier, 0),
+        pasteKey('v', juce::ModifierKeys::commandModifier, 0), duplicateKey('d', juce::ModifierKeys::commandModifier, 0);
+    // Nothing held: Paste says what to do.
+    marker(3, 2 * bar);
+    check(!root.command(AppCommands::Paste) && !root.error().empty(), "Paste with nothing copied says to copy first");
+    // Copy a clip, Paste on another track at the marker: a new clip, one undo step, chosen.
+    clickClip(2, 50, 0, bar);
+    check(root.keyPressed(copyKey) && !commands.clipClipboard().empty(), "Ctrl/Cmd+C on 1 MIDI's clip");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}}, "Copy leaves the clip where it is");
+    marker(3, 2 * bar);
+    const auto before = document->ops().nextUndo();
+    check(root.keyPressed(pasteKey), "Ctrl/Cmd+V on 2 MIDI at bar 3");
+    root.frame();
+    check(clipsOf(3) == Clips{{0, bar / 2}, {2 * bar, bar}}, "the copy lands on 2 MIDI at the marker");
+    check(sel.clip != 0 && sel.clip != 50 && sel.track == 3 && sel.start == 2 * bar && sel.end == 3 * bar,
+          "the pasted clip, with a new id, is chosen");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(3) == Clips{{0, bar / 2}} && document->ops().nextUndo() && before &&
+              document->ops().nextUndo()->txnId == before->txnId,
+          "one undo takes the paste back");
+    // Cut a clip: gone, and its copy held; Paste brings it back elsewhere.
+    clickClip(2, 50, 0, bar);
+    check(root.keyPressed(cutKey), "Ctrl/Cmd+X on 1 MIDI's clip");
+    root.frame();
+    check(clipsOf(2).empty(), "Cut removes the clip");
+    marker(3, 2 * bar);
+    check(root.keyPressed(pasteKey), "Paste the cut clip on 2 MIDI");
+    root.frame();
+    check(clipsOf(3) == Clips{{0, bar / 2}, {2 * bar, bar}}, "the cut clip lands on 2 MIDI");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the paste and the cut");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}} && clipsOf(3) == Clips{{0, bar / 2}}, "both as they were");
+    // The window as drawn, for the PR's picture (ADI_UI_PARITY).
+    const auto picture = [&](const char *name) {
+        const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (folder.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(image, out);
+    };
+    // A range cut across two tracks and pasted at bar 3 comes back in its order.
+    sel = {};
+    sel.track = 2;
+    sel.toTrack = 3;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
+    picture("adi-clipboard-range.png");
+    check(root.keyPressed(cutKey), "Ctrl/Cmd+X over bar 1 on both tracks");
+    root.frame();
+    check(clipsOf(2).empty() && clipsOf(3).empty(), "the range is cut from both tracks");
+    marker(2, 2 * bar);
+    check(root.keyPressed(pasteKey), "Paste the range at bar 3 from 1 MIDI");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && clipsOf(3) == Clips{{2 * bar, bar / 2}},
+          "each track's material comes back on the track in its place, in order");
+    check(sel.track == 2 && sel.toTrack == 3 && sel.start == 2 * bar && sel.end == 3 * bar && sel.clip == 0,
+          "the pasted range is the time selection");
+    picture("adi-clipboard-pasted.png");
+    check(root.command(AppCommands::Undo), "undo the paste");
+    root.frame();
+    // From a track with too few below it, the range does not fit.
+    // MIDI material does not go on audio tracks; from the last track, a two-track range does not fit.
+    marker(4, 4 * bar);
+    check(!root.command(AppCommands::Paste) && root.error().find("MIDI track") != std::string::npos &&
+              clipsOf(4).empty() && clipsOf(5).empty(),
+          "a MIDI range onto the audio tracks is refused, and says why");
+    marker(5, 4 * bar);
+    check(!root.command(AppCommands::Paste) && root.error().find("reaches 2 tracks") != std::string::npos,
+          "a two-track range from the last track says it does not fit");
+    marker(4, 4 * bar);
+    clickClip(2, 50, 0, bar);
+    check(root.command(AppCommands::Copy), "copy 1 MIDI's clip");
+    marker(4, 0);
+    check(!root.command(AppCommands::Paste) && root.error().find("MIDI track") != std::string::npos && clipsOf(4).empty(),
+          "a MIDI clip onto an audio track is refused, and says why");
+    check(root.command(AppCommands::Undo), "undo the cut");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}} && clipsOf(3) == Clips{{0, bar / 2}}, "both as they were again");
+    // Duplicate a time selection: the copy after it, and the selection on the copy.
+    sel = {};
+    sel.track = 2;
+    sel.start = 0;
+    sel.end = bar;
+    check(root.keyPressed(duplicateKey), "Ctrl/Cmd+D over bar 1 on 1 MIDI");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}, {bar, bar}}, "the copy is placed at the selection's end");
+    check(sel.start == bar && sel.end == 2 * bar, "the selection moves onto the copy");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Duplicate a clip: right after it, chosen.
+    clickClip(3, 51, 0, bar / 2);
+    check(root.keyPressed(duplicateKey), "Ctrl/Cmd+D on 2 MIDI's clip");
+    root.frame();
+    check(clipsOf(3) == Clips{{0, bar / 2}, {bar / 2, bar / 2}} && sel.clip != 51 && sel.start == bar / 2,
+          "the duplicate follows the clip and is chosen");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // With nothing chosen, Copy says what to choose.
+    marker(2, 0);
+    check(!root.command(AppCommands::Copy) && !root.error().empty(), "Copy with no clip or time selection says what to select");
+    commands.clipClipboard().held = std::monostate{};
+    commands.detach(root);
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -8491,6 +8651,7 @@ int main(int argc, char **argv) {
     audioDrop(commands, temp.path());
     browserDevices(commands, temp.path());
     splitAndRangeEdits(commands, settings, temp.path());
+    clipClipboard(commands, temp.path());
     colorCabTile(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
