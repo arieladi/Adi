@@ -21,6 +21,8 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -301,6 +303,284 @@ void scalars(Precision precision) {
     f.clean("scalar native gate");
 }
 
+void relativeScalars(Precision precision) {
+    Fixture f(precision);
+    f.store->db().exec("UPDATE mixer_strip SET volume_db=-10 WHERE track_id=2;"
+                       "UPDATE routing SET gain_db=0 WHERE id=3");
+    require(f.session.refresh(*f.store), "refresh relative selection seed");
+    f.view.refresh(*f.store);
+    const auto head = OpJournal(*f.store).headSeq();
+    const auto count = OpJournal(*f.store).count();
+    const auto sequence = appliedSource(*f.store).sequence();
+    const auto rebuilds = f.session.stats().rebuilds;
+    const auto beginGain = std::pow(10.0, -10.0 / 20.0);
+    f.sound(.25 * (1 + beginGain), .5 * (1 + beginGain), "relative origin");
+    g::RelativeScalarSelection selection{g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}};
+    auto volume = f.begin(g::relativeScalarProducer(selection));
+    selection.selected = {9}; // Caller-owned selection cannot change this gesture.
+    f.update(*volume, std::make_unique<g::RelativeScalarInput>(-20), "relative volume -20");
+    const auto quietReturn = std::pow(10.0, -30.0 / 20.0);
+    f.sound(.025 * (1 + quietReturn), .05 * (1 + quietReturn), "two relative volume overlays");
+    check(f.view.current()->findTrack(1)->volumeDb == -20 &&
+              f.view.current()->findTrack(2)->volumeDb == -30 &&
+              f.view.current()->findTrack(9)->volumeDb == 0,
+          "captured selection changes both targets and excludes later selection");
+    f.update(*volume, std::make_unique<g::RelativeScalarInput>(-10),
+             "relative reverse toward origin");
+    f.sound(.25 * beginGain * 1.1, .5 * beginGain * 1.1,
+            "latest absolute coordinate, not prior preview");
+    check(f.view.current()->findTrack(2)->volumeDb == -20,
+          "relative reversal retains original offset");
+    f.update(*volume, std::make_unique<g::RelativeScalarInput>(0),
+             "return relative volume to Begin");
+    const auto unchanged = volume->commit();
+    check(unchanged.status.ok() && unchanged.semanticNoOp && unchanged.durable &&
+              unchanged.durable->ok,
+          "return-to-origin selection commits nothing");
+    check(OpJournal(*f.store).headSeq() == head && OpJournal(*f.store).count() == count &&
+              appliedSource(*f.store).sequence() == sequence,
+          "relative previews and empty End publish no journal batch");
+    f.sound(.25 * (1 + beginGain), .5 * (1 + beginGain),
+            "empty relative End restores committed sound");
+
+    check(f.session.stats().rebuilds == rebuilds, "relative gain previews never rebuild the graph");
+    auto durable =
+        f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}}));
+    f.update(*durable, std::make_unique<g::RelativeScalarInput>(-20), "durable relative preview");
+    const auto committed = durable->commit();
+    check(committed.status.ok() && committed.durable && committed.durable->ok &&
+              OpJournal(*f.store).count() == count + 2,
+          "one relative End submits exactly two existing scalar operations");
+    check(History(*f.store).undo().ok, "relative transaction releases navigation lease");
+    check(f.coordinator->drain(601).status.ok(), "native owner adopts relative Undo");
+    check(f.store->db()
+                      .execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id=1")
+                      .getDouble() == 0 &&
+              f.store->db()
+                      .execAndGet("SELECT volume_db FROM mixer_strip WHERE track_id=2")
+                      .getDouble() == -10,
+          "one Undo restores both starting values");
+    f.sound(.25 * (1 + beginGain), .5 * (1 + beginGain), "one relative Undo restores native PCM");
+    check(History(*f.store).redo().ok, "one relative Redo succeeds");
+    check(f.coordinator->drain(602).status.ok(), "native owner adopts relative Redo");
+    f.sound(.025 * (1 + quietReturn), .05 * (1 + quietReturn),
+            "one relative Redo restores both audible gains");
+    check(History(*f.store).undo().ok, "restore origin before pan selection");
+    require(f.coordinator->drain(603).status.ok(), "drain origin restore");
+    f.store->db().exec("UPDATE mixer_strip SET pan=-1 WHERE track_id=2");
+    require(f.session.refresh(*f.store), "refresh relative pan seed");
+    f.view.refresh(*f.store);
+    const auto panRebuilds = f.session.stats().rebuilds;
+    auto pan =
+        f.begin(g::relativeScalarProducer({g::ScalarKind::TrackPan, 1, {1, 2}, {-1, 1, {}}}));
+    f.update(*pan, std::make_unique<g::RelativeScalarInput>(1), "relative pan");
+    check(f.view.current()->findTrack(1)->pan == 1 && f.view.current()->findTrack(2)->pan == 0,
+          "pan selection preserves the captured offset");
+    f.sound(0, .5 * (1 + beginGain), "relative source and return balance heard");
+    f.cancel(*pan, "cancel relative pan");
+    f.sound(.25 * (1 + beginGain), .5, "relative pan cancel restores both actual balances");
+    check(f.session.stats().rebuilds == panRebuilds,
+          "relative pan previews never rebuild the graph");
+    f.clean("relative native gate");
+}
+
+// Lower-level producer arithmetic tests supplement the sealed coordinator and
+// actual PCM tests above. A Proposal here alone is not journal admission.
+void relativeScalarOrigins() {
+    Fixture f(Precision::Float64);
+    const g::Base base{appliedSource(*f.store), OpJournal(*f.store).headSeq(),
+                       appliedSource(*f.store).sequence()};
+    const auto capture = [&](g::RelativeScalarSelection selection) {
+        auto producer = g::relativeScalarProducer(std::move(selection));
+        auto origin = producer->captureOrigin(*f.store, base);
+        require(origin.status.ok() && origin.value,
+                "capture relative arithmetic origin: " + origin.status.message);
+        return std::pair{std::move(producer), std::move(origin.value)};
+    };
+    const auto values = [&](g::Producer &producer, const g::Origin &origin, double input,
+                            const std::map<std::int64_t, double> &expected,
+                            const std::string &label) {
+        const auto result = producer.prepare(*f.store, base, origin, g::RelativeScalarInput(input));
+        bool matches = result.status.ok() && result.value.requests.size() == expected.size();
+        std::map<std::int64_t, double> actual;
+        for (const auto &request : result.value.requests) {
+            const auto &payload = request.payload;
+            const auto field = payload.contains("db") ? "db" : "pan";
+            matches =
+                actual
+                    .emplace(payload.at("id").get<std::int64_t>(), payload.at(field).get<double>())
+                    .second &&
+                matches;
+        }
+        for (const auto &[id, value] : expected)
+            matches = actual.contains(id) && std::abs(actual.at(id) - value) < 1e-12 && matches;
+        check(matches, label);
+    };
+    f.store->db().exec("UPDATE mixer_strip SET volume_db=CASE track_id WHEN 1 THEN -10 WHEN 2 THEN "
+                       "-20 ELSE 0 END");
+    auto [volume, origin] = capture({g::ScalarKind::TrackVolume, 2, {2, 1}, {-70, 6, -150}});
+    const auto claims = volume->targetClaims(*origin);
+    check(claims.size() == 2 && std::all_of(claims.begin(), claims.end(),
+                                            [](const auto &item) {
+                                                return item.kind == g::ClaimKind::ScalarEndpoint &&
+                                                       item.endpoint == "mixer.setVolume";
+                                            }),
+          "relative selection claims every existing endpoint");
+    values(*volume, *origin, -15, {{1, -5}, {2, -15}},
+           "driver need not be first in canonical ID order");
+    values(*volume, *origin, 6, {{1, 6}, {2, 6}}, "gain upper clipping is per target");
+    values(*volume, *origin, -69, {{1, -59}, {2, -69}},
+           "leaving clipping recomputes from original offsets");
+    values(*volume, *origin, -70, {{1, -60}, {2, -150}}, "driver floor maps to stored silence");
+    values(*volume, *origin, -20, {}, "unchanged raw origin emits no operations");
+    auto [single, singleOrigin] = capture({g::ScalarKind::TrackVolume, 1, {2}, {-70, 6, -150}});
+    values(*single, *singleOrigin, -5, {{1, -5}}, "unselected driver acts alone");
+    f.store->db().exec("UPDATE mixer_strip SET volume_db=-150 WHERE track_id=1;"
+                       "UPDATE mixer_strip SET volume_db=-70 WHERE track_id=2");
+    auto [floor, floorOrigin] = capture({g::ScalarKind::TrackVolume, 1, {1, 2}, {-70, 6, -150}});
+    values(*floor, *floorOrigin, -50, {{1, -50}},
+           "driver can leave silence; other floored gain stays parked");
+    values(*floor, *floorOrigin, -70, {},
+           "return to floor restores exact distinct raw silence values");
+    auto [rawFloor, rawFloorOrigin] =
+        capture({g::ScalarKind::TrackVolume, 2, {1, 2}, {-70, 6, -150}});
+    values(*rawFloor, *rawFloorOrigin, -70, {},
+           "unchanged driver stored at display floor keeps its exact raw value");
+    values(*rawFloor, *rawFloorOrigin, -50, {{2, -50}},
+           "driver leaves its raw display floor without unparking a silent member");
+    f.store->db().exec("UPDATE mixer_strip SET volume_db=CASE track_id WHEN 1 THEN -65 WHEN 2 THEN "
+                       "-60 ELSE 0 END");
+    auto [down, downOrigin] = capture({g::ScalarKind::TrackVolume, 2, {1, 2}, {-70, 6, -150}});
+    values(*down, *downOrigin, -65, {{1, -150}, {2, -65}},
+           "other gain entering floor maps to silence");
+    values(*down, *downOrigin, -64, {{1, -69}, {2, -64}},
+           "floored preview does not park an originally audible member");
+
+    f.store->db().exec(
+        "UPDATE mixer_strip SET pan=CASE track_id WHEN 1 THEN 0.2 WHEN 2 THEN -0.3 ELSE 0 END;"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,pan) "
+        "VALUES(4,'track',2,'track',9,'send',-20,-0.3);"
+        "UPDATE routing SET gain_db=-10,pan=0.2 WHERE id=3;"
+        "INSERT INTO group_summing(track_id,drive_db) VALUES(9,20);"
+        "UPDATE tracks SET kind='group' WHERE id=2;"
+        "INSERT INTO group_summing(track_id,drive_db) VALUES(2,0)");
+    for (const auto kind : {g::ScalarKind::TrackPan, g::ScalarKind::RoutingPan}) {
+        const auto a = kind == g::ScalarKind::TrackPan ? 1 : 3;
+        const auto b = kind == g::ScalarKind::TrackPan ? 2 : 4;
+        auto [producer, before] = capture({kind, a, {b, a}, {-1, 1, {}}});
+        values(*producer, *before, 1, {{a, 1}, {b, .5}},
+               "relative pan native upper bound and offset");
+        values(*producer, *before, -1, {{a, -1}, {b, -1}}, "relative pan lower saturation");
+        values(*producer, *before, 0, {{a, 0}, {b, -.5}},
+               "relative pan reverses without accumulated clipping");
+    }
+    for (const auto kind : {g::ScalarKind::TrackPanLeft, g::ScalarKind::TrackPanRight}) {
+        auto [producer, before] = capture({kind, 1, {1, 2}, {-1, 1, {}}});
+        values(*producer, *before, 0, {{1, 0}, {2, 0}},
+               "absent split-pan rows use existing native defaults");
+    }
+    auto [send, sendOrigin] = capture({g::ScalarKind::RoutingGain, 3, {4, 3}, {-70, 6, -150}});
+    values(*send, *sendOrigin, -5, {{3, -5}, {4, -15}},
+           "relative send IDs address their captured routes");
+    auto [input, inputOrigin] =
+        capture({g::ScalarKind::TrackInputGain, 1, {2, 1}, {-70, 24, -150}});
+    values(*input, *inputOrigin, 6, {{1, 6}, {2, 6}},
+           "relative input-gain endpoints use existing operations");
+    auto [drive, driveOrigin] =
+        capture({g::ScalarKind::GroupSummingDrive, 2, {9, 2}, {-12, 24, {}}});
+    values(*drive, *driveOrigin, 10, {{2, 10}, {9, 24}},
+           "relative summing drive clamps at native ceiling");
+    values(*drive, *driveOrigin, -12, {{2, -12}, {9, 8}},
+           "summing drive reverses from original values");
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    for (const double invalid : {nan, std::numeric_limits<double>::infinity(), -71.0, 7.0})
+        check(
+            single->prepare(*f.store, base, *singleOrigin, g::RelativeScalarInput(invalid)).status.error == g::Error::InvalidInput,
+            "invalid relative coordinate refuses before operations");
+    check(!volume->prepare(*f.store, base, *origin, g::ScalarInput(0)).status.ok(),
+          "wrong absolute input type refuses");
+    for (const auto &selection : std::vector<g::RelativeScalarSelection>{
+             {g::ScalarKind::TrackVolume, 1, {1, 1}, {-70, 6, -150}},
+             {g::ScalarKind::TrackVolume, 1, {999}, {-70, 6, -150}},
+             {g::ScalarKind::TrackVolume, 999, {}, {-70, 6, -150}},
+             {g::ScalarKind::TrackVolume, 1, {}, {0, 0, {}}},
+             {g::ScalarKind::TrackVolume, 1, {}, {nan, 6, {}}},
+             {g::ScalarKind::TrackVolume, 1, {}, {-70, 6, -60}},
+             {g::ScalarKind::TrackPan, 1, {}, {-2, 1, {}}},
+             {g::ScalarKind::TrackPan, 1, {}, {-1, 1, -150}},
+             {g::ScalarKind::GroupSummingDrive, 9, {}, {-12, 25, {}}},
+             {g::ScalarKind::RoutingGain, 1, {}, {-70, 6, -150}}}) {
+        auto invalid = g::relativeScalarProducer(selection);
+        const auto rejected = invalid->captureOrigin(*f.store, base);
+        check(!rejected.status.ok() && !rejected.value,
+              "invalid relative selection/domain refuses capture");
+    }
+    f.store->db().exec("UPDATE routing SET dst_id=1 WHERE id=4");
+    const auto stale = send->prepare(*f.store, base, *sendOrigin, g::RelativeScalarInput(-5));
+    check(!stale.status.ok() && stale.value.requests.empty(),
+          "one retargeted send refuses the entire proposal");
+}
+
+void relativeScalarAtomicFailure(Precision precision) {
+    Fixture f(precision);
+    auto gesture =
+        f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}}));
+    f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-10),
+             "healthy grouped preview before trigger");
+    const auto head = OpJournal(*f.store).headSeq();
+    const auto digest = digestProject(*f.store).text;
+    const auto sequence = appliedSource(*f.store).sequence();
+    f.store->db().exec(
+        "CREATE TEMP TRIGGER fail_relative_second BEFORE UPDATE OF volume_db ON mixer_strip "
+        "WHEN NEW.track_id=2 BEGIN SELECT RAISE(ABORT,'late relative member'); END");
+    const auto refused = gesture->commit();
+    check(!refused.status.ok() && (!refused.durable || !refused.durable->ok),
+          "late second-member SQL failure refuses End");
+    check(OpJournal(*f.store).headSeq() == head && digestProject(*f.store).text == digest &&
+              appliedSource(*f.store).sequence() == sequence,
+          "late member rolls back all values, journal and applied publication");
+    f.store->db().exec("DROP TRIGGER fail_relative_second");
+    const auto cancelled = gesture->cancel();
+    check(cancelled.status.ok(), "failed grouped End can restore and release owner");
+    f.sound(.25, .5, "failed relative batch restores current committed PCM");
+}
+
+void relativeScalarForeign(Precision precision) {
+    Fixture f(precision);
+    f.store->db().exec("ALTER TABLE mixer_strip ADD COLUMN future_control BLOB;"
+                       "UPDATE mixer_strip SET future_control=X'00FF80' WHERE track_id=2");
+    auto gesture =
+        f.begin(g::relativeScalarProducer({g::ScalarKind::TrackVolume, 1, {2, 1}, {-70, 6, -150}}));
+    g::Spec spec;
+    spec.strategy = g::Strategy::LiveValues;
+    const auto overlap =
+        f.coordinator->begin(spec, g::scalarProducer({g::ScalarKind::TrackVolume, 2}));
+    check(!overlap.status.ok() && !overlap.session,
+          "selection owns the second member's endpoint too");
+    f.update(*gesture, std::make_unique<g::RelativeScalarInput>(-10),
+             "relative preview before unrelated commit");
+    OpRequest foreign;
+    foreign.opType = "mixer.setPan";
+    foreign.payload = {{"id", 1}, {"pan", 1.0}};
+    require(OpJournal(*f.store).commit(foreign).ok, "foreign pan during relative volume");
+    check(f.coordinator->drain(701).status.ok(),
+          "relative batch rebases over unrelated same-row control");
+    f.sound(0, .5 * std::pow(10.0, -10.0 / 20.0),
+            "relative gain composes with committed foreign pan");
+    const auto committed = gesture->commit();
+    check(committed.status.ok() && committed.durable && committed.durable->ok,
+          "rebased relative batch commits once");
+    check(History(*f.store).undo().ok, "one Undo of rebased relative selection");
+    require(f.coordinator->drain(702).status.ok(), "drain rebased relative Undo");
+    f.sound(0, .5, "relative Undo preserves foreign pan and restores both gains");
+    check(f.store->db()
+                      .execAndGet("SELECT hex(future_control) FROM mixer_strip WHERE track_id=2")
+                      .getString() == "00FF80" &&
+              f.store->db()
+                      .execAndGet("SELECT typeof(future_control) FROM mixer_strip WHERE track_id=2")
+                      .getString() == "blob",
+          "group commit and Undo preserve opaque future row columns and SQL kinds");
+}
 void switches(Precision precision) {
     Fixture f(precision);
     auto activation = f.begin(g::trackSwitchProducer({g::TrackSwitchKind::Activation, 1, {1, 2}, false, false}));
@@ -740,11 +1020,12 @@ void performedTempoAcrossGesture(Precision precision) {
 } // namespace
 int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
-        try { scalars(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
+        try { scalars(precision); relativeScalars(precision); relativeScalarAtomicFailure(precision); relativeScalarForeign(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }
     try { endpointLifetimes(); } catch (const std::exception& exception) { check(false, std::string("unexpected endpoint fixture exception: ") + exception.what()); }
     try { readOnlyInspection(); } catch (const std::exception& exception) { check(false, std::string("unexpected read-only fixture exception: ") + exception.what()); }
+    try { relativeScalarOrigins(); } catch (const std::exception& exception) { check(false, std::string("unexpected relative-origin fixture exception: ") + exception.what()); }
     std::printf("gesture playback: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

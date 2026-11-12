@@ -28,6 +28,34 @@ public:
 /// this item does not invent a new width DSP implementation.
 std::unique_ptr<Producer> scalarProducer(ScalarTarget);
 
+/// The existing control's coordinate range, copied once at Begin. A gain
+/// control may map its bottom coordinate to a stored silence sentinel (for
+/// example the current fader's -70..6 coordinates and -150 stored silence).
+/// Native SQL constraints still apply; pan/drive domains cannot exceed them.
+struct ScalarControlDomain {
+    double minimum = 0, maximum = 1;
+    std::optional<double> silence;
+};
+struct RelativeScalarSelection {
+    ScalarKind kind;
+    std::int64_t driver;
+    std::vector<std::int64_t> selected;
+    ScalarControlDomain domain;
+};
+class RelativeScalarInput final : public Input {
+  public:
+    explicit RelativeScalarInput(double absoluteControlCoordinate)
+        : value(absoluteControlCoordinate) {}
+    const double value;
+};
+/// MX23: one fixed driver/selection, one origin-derived relative scalar batch.
+/// If driver is selected, affect the complete selection; otherwise driver only.
+/// IDs are tracks for track/group kinds and existing send-route IDs for routing
+/// kinds. The caller supplies control metadata and latest absolute coordinate,
+/// never per-target values, SQL, live selection or incremental preview deltas.
+/// Reuses scalarProducer's exact capture/admission/operations and the common
+/// gesture lifecycle. No new timer, automation recording pass or Delay preview.
+std::unique_ptr<Producer> relativeScalarProducer(RelativeScalarSelection);
 enum class TrackSwitchKind { Activation, Solo };
 struct TrackSwitchTarget {
     TrackSwitchKind kind;
