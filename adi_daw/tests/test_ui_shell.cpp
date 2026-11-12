@@ -2640,6 +2640,22 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(2).size() == 1, "one undo makes it whole again");
+    // The window as drawn, for the PR's picture (ADI_UI_PARITY).
+    const auto picture = [&](const char *name) {
+        const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (folder.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(image, out);
+    };
     // A clicked clip carries its own span as the selection: Split cuts it at the marker.
     sel = {};
     sel.track = 2;
@@ -2648,8 +2664,11 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     sel.end = 2 * bar;
     sel.insert = bar;
     sel.marked = true;
+    root.frame();
+    picture("adi-split-before.png");
     check(root.keyPressed(split), "Ctrl/Cmd+E with a clip clicked");
     root.frame();
+    picture("adi-split-after.png");
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1,
           "a clicked clip splits at the marker, not refused as a time selection");
     check(root.command(AppCommands::Undo), "undo");
