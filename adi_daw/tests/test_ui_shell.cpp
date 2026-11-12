@@ -2707,6 +2707,17 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2, "splits the clips under the marker on every track");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
     root.frame();
+    // A track the lanes do not show (the project view leaves it out) is passed over.
+    root.arrangement.geometry.hidden = {3};
+    sel = {};
+    sel.track = 2;
+    sel.insert = bar;
+    sel.marked = true;
+    check(root.command(AppCommands::Split), "Split with 2 MIDI left out of the view");
+    root.frame();
+    check(clipsOf(2).size() == 2 && clipsOf(3).size() == 1, "only the shown track's clip splits");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // Split on a time selection cuts at its edges: inside one clip, the two-point split, one step.
     sel = {};
     sel.track = 2;
@@ -2720,6 +2731,12 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}} &&
               clipsOf(3).size() == 1,
           "three clips at the selection's edges; the unselected track is untouched");
+    check(sel.clip != 0 && sel.clip != 50, "the part split out is selected, as Live leaves it");
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "Right moves the selected part");
+    root.frame();
+    check(clipsOf(2).size() == 3 && clipsOf(2)[1].first > bar / 2, "the part split out moved right by the grid");
+    check(root.command(AppCommands::Undo), "undo the move");
+    root.frame();
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(2).size() == 1, "one undo makes it whole");

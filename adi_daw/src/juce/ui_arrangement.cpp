@@ -2900,15 +2900,23 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (sel.start != sel.end) {
-        // A time selection moves by the grid when it holds no clip; moving part of a clip
-        // needs it split first.
+        // A time selection moves by the grid when it holds no clip. Part of a clip moves once Split
+        // has cut it there (which selects the part inside); a whole clip moves once selected.
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
-        if (track != nullptr)
-            for (const auto &c : track->clips)
-                if (c->posTicks < hi && c->posTicks + c->lengthTicks > lo) {
-                    view.root.say("The arrow keys move whole clips: split this one at the selection first (Ctrl/Cmd+E).");
-                    return true;
-                }
+        if (track != nullptr) {
+            bool crosses = false, holds = false;
+            for (const auto &c : track->clips) {
+                const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
+                if (a < hi && b > lo)
+                    (a < lo || b > hi ? crosses : holds) = true;
+            }
+            if (crosses || holds) {
+                view.root.say(crosses ? "The arrow keys move whole clips: split the clip at the selection first "
+                                        "(Ctrl/Cmd+E), which selects the part inside."
+                                      : "The arrow keys move a selected clip: click the clip to move it.");
+                return true;
+            }
+        }
         const auto delta = geo.nextGridLine(lo, forward) - lo;
         sel.start += delta;
         sel.end += delta;

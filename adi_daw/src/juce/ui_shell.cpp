@@ -1324,6 +1324,7 @@ bool AdiRootComponent::splitAtMarker() {
     struct Cut {
         std::int64_t clip = 0;
         std::vector<std::int64_t> at;
+        std::string track; // its track's name, for the Status Bar
     };
     std::vector<Cut> cuts;
     const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
@@ -1334,11 +1335,15 @@ bool AdiRootComponent::splitAtMarker() {
     for (const auto &t : current->tracks) {
         if (!t)
             continue;
-        const bool onTrack = everyTrack || std::find(selected.begin(), selected.end(), t->id) != selected.end();
+        // Every track the lanes show: not a track the project view leaves out, the returns while
+        // hidden, or the Reference track while hidden (a folded group's tracks are its own, and split
+        // with it).
+        const bool onTrack = everyTrack ? arrangement.geometry.inView(t->id)
+                                        : std::find(selected.begin(), selected.end(), t->id) != selected.end();
         for (const auto &c : t->clips) {
             if (!c)
                 continue;
-            Cut cut{c->id, {}};
+            Cut cut{c->id, {}, t->name};
             if (timeSelection) {
                 if (!onTrack)
                     continue;
@@ -1359,7 +1364,7 @@ bool AdiRootComponent::splitAtMarker() {
     // it, so their new pieces' identities cannot collide. A refused clip is reported, and the rest
     // still split.
     std::size_t done = 0, refused = 0;
-    std::string firstRefusal;
+    std::string firstRefusal, refusedOn;
     for (const auto &cut : cuts) {
         const auto now = view_.current();
         if (!now)
@@ -1378,15 +1383,26 @@ bool AdiRootComponent::splitAtMarker() {
                 sel.start = std::min(sel.start, sel.end);
                 sel.end = cut.at[0];
             }
+            // A time selection in one track, now exactly one clip's span, selects that clip, as
+            // Live leaves the part split out selected: the arrow keys and Delete then act on it.
+            if (timeSelection && sel.toTrack == 0)
+                if (const auto after = view_.current())
+                    if (const auto *t = track_edits_detail::find(after->tracks, sel.track))
+                        for (const auto &c : t->clips)
+                            if (c && c->posTicks == from && c->posTicks + c->lengthTicks == to)
+                                sel.clip = c->id;
         } else if (refused++ == 0) {
             firstRefusal = error_;
+            refusedOn = cut.track;
         }
     }
     if (refused > 0) {
         const auto clipsWord = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " clip" : " clips"); };
-        fail(done > 0 ? clipsWord(done) + " split, one undo step each; " + clipsWord(refused) +
-                            " not: " + firstRefusal
-                      : firstRefusal);
+        // The first refused clip's track and the engine's reason (an alias clip: "split needs alias
+        // resolution").
+        const auto why = "the clip on " + refusedOn + " is not split: " + firstRefusal +
+                         (refused > 1 ? " (and " + clipsWord(refused - 1) + " more)" : std::string{});
+        fail(done > 0 ? clipsWord(done) + " split, one undo step each; " + why : "Split: " + why);
         return done > 0;
     }
     arrangement.changed();

@@ -1426,7 +1426,20 @@ void rangeEditsSplitCrossingClips() {
         check(step2 && static_cast<std::size_t>(step2->opCount) == count, "one undo step");
         check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, middle) == -1,
               "undo puts the whole clip back");
-        // Over the edges of a clip beside a whole one: no split; the note says why.
+        // Over the edges of two clips, or of one beside a whole one: no split; the note says why.
+        engine::ClipNode first, second, whole;
+        first.id = 1, first.posTicks = 0, first.lengthTicks = 100;
+        second.id = 2, second.posTicks = 150, second.lengthTicks = 100;
+        whole.id = 3, whole.posTicks = 110, whole.lengthTicks = 20;
+        ui::RangeContent pair;
+        pair.crossing = 2;
+        pair.crossers = {&first, &second};
+        check(!ui::edgeSplit(pair, 50, 200), "0 over two clips' edges: no split");
+        ui::RangeContent beside;
+        beside.crossing = 1;
+        beside.crossers = {&first};
+        beside.inside = {&whole};
+        check(!ui::edgeSplit(beside, 50, 140), "0 over one clip's edge beside a whole clip: no split");
         check(ui::range_edits_detail::crossingNote(1).find("one clip") != std::string::npos,
               "the note names the limit: one clip, no whole one beside it");
     }
