@@ -12,7 +12,10 @@ target_link_libraries(adi_mix_clip PRIVATE juce::juce_dsp)
 target_compile_definitions(adi_mix_clip PRIVATE JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 if(TARGET adi_warnings)
-    target_link_libraries(adi_mix_clip PRIVATE adi_warnings)
+    # JUCE contributes module translation units to this target. Keep the
+    # project's strict warning policy on our code, not upstream module sources.
+    set_source_files_properties(Core.cpp Dsp.cpp PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 endif()
 if(MSVC)
     target_compile_options(adi_mix_clip PRIVATE /fp:precise /utf-8)

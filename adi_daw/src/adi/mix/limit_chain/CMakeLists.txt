@@ -14,7 +14,8 @@ target_include_directories(adi_mix_limit_chain PUBLIC "${CMAKE_CURRENT_SOURCE_DI
 target_compile_features(adi_mix_limit_chain PUBLIC cxx_std_20)
 target_link_libraries(adi_mix_limit_chain PRIVATE adi_mix_clip adi_mix_limiter)
 if(TARGET adi_warnings)
-    target_link_libraries(adi_mix_limit_chain PRIVATE adi_warnings)
+    set_source_files_properties(Core.cpp Backend.cpp PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 endif()
 if(MSVC)
     target_compile_options(adi_mix_limit_chain PRIVATE /fp:precise /utf-8)
