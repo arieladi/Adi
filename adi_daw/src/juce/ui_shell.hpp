@@ -16,6 +16,7 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
@@ -120,7 +121,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Paste,
         Duplicate,
         TogglePluginWindows,
-        LastId = TogglePluginWindows
+        Split,
+        LastId = Split
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -163,6 +165,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
     // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
     bool linkLoopToSelection() const noexcept { return linkLoop_; }
+    // editing.splitAllWithNoSelection: Split with no clip chosen splits every track at the marker.
+    bool splitAllWithNoSelection() const noexcept { return splitAll_; }
+    // The settings, read where an engine edit captures the editing policy (`edit_plan::capturePolicy`).
+    const settings::AppSettings &settings() const noexcept { return settings_; }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
     // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
     // and keeping a window's zoom there, saved at once.
@@ -185,6 +191,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool exclusiveSolo_ = true;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
+    bool splitAll_ = true;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -371,6 +378,20 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
     // Status Bar.
     bool submitEdits(std::vector<OpRequest> ops);
+    // An engine edit prepared against the store (`clip_edit::prepareSplit`, `prepareDeleteRange`;
+    // N17, #393) committed as one batch, with at most one op of the window's on its end: one undo
+    // step. The engine's refusal goes to the Status Bar.
+    bool commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended = std::nullopt);
+    // Live's Split (Ctrl/Cmd+E, the Edit menu, a clip's menu; manual 6.9, 41.5): a time selection
+    // cuts the clips on its tracks at its edges (inside one clip, at both); else the chosen clip at
+    // the insert marker; else the clips under the marker on the selected tracks, or on every track
+    // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
+    bool splitAtMarker();
+    // The rate an edit's seconds and ticks convert at: the device's, else the project's.
+    double editRate() const noexcept;
+    // The store an engine edit is prepared against, and the settings its policy is captured from.
+    Store &editStore() noexcept { return submitter_.store(); }
+    const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
