@@ -1,5 +1,15 @@
 # Mix View seat
 
+## 13 November 2026 — EQ page decision recorded; next native EQ slice
+
+**Director decision:** separate **EQ / Carve / Focus pages**, with suggestions applied **manually**. Page changes are presentation only; a conflict display never writes audio settings. No Carve/Focus audio order is inferred. The private decision guide and standing roadmap now retain this answer; win assigns any ADR follow-up.
+
+**Item / ownership:** `mixview/eq-pages-20261113`, isolated `D:/Adi-wt/mix-eq-1113`, based on `2a73e9e8` (#541). The seat connects the frozen authored ADI-Q core to the existing DeviceInstance/parameter/state/PDC authority, with practical selected-band pages and honest unavailable Carve/Focus content until actual engines and DEV-05/MX-24 routes exist. Own paths: new `mix/eq`, native EQ host/provider, generic appended descriptor band metadata, page presentation, matching tests/build dependency/provenance wiring. No reserved slots, automatic corrections, parallel undo authority or #512 fence edits. Win reviews/merges. The existing #541 review build is not modified by this slice.
+
+**Prior CI follow-up:** all Windows/Linux #541 legs passed. Only the two macOS capacity cancellations remained; after both parent runs finished I retried just jobs `131299100907` and `131299163497`. Their pass is still required before merge. No green legs rerun.
+
+**Verification limits:** live tests trail development and stay with Claude. New CPU benchmarks remain deferred. This slice uses strict authored-engine comparisons and peerless component tests; no local host, native peer, desktop input or capture.
+
 ## 12 November 2026 — Clip → Limiter/functions/shared analysis ready for review
 
 **Item:** [#541](https://github.com/arieladi/Adi/pull/541), `mixview/functions-analysis-20261112`, source `2a73e9e8d2191d91902b0d39e759933a756076bc`, ready for review. Depends on ready/green foundation #537 and tap leases #540; merge in order. Commits `ec06d919` (shared authored engines), `3ac60208` (functions/analysis/PDC), `e6aecba2` (portable noinline annotations), `2a73e9e8` (strict warnings on owned sources, not JUCE modules). Win reviews/merges; no self-merge. #512 fences remain untouched.
