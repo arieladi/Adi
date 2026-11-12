@@ -2,7 +2,7 @@
 actually worked ... use the images from cosmic rain some of them once in a while to drive the changes but mostly let
 deforum just run freely").
 
-usage: run_deforum.py <root>     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
+usage: run_deforum.py <root> [stills|continuous]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
 Method, from the archived Avastha project (QuantumAscent-Archive-20261030, deforum-section-050-123 + ending-184s):
   - the actual Deforum extension, SD1.5 DreamShaper8, A2000, D:/AvasthaAI/ActualDeforum/settings-8s.json unchanged
     (848x480 15 fps, DPM++ 2M 28 steps, cfg 6, 2D camera zoom 1.005 / angle 0.06 / x 0.12 / y -0.05, noise 0.02,
@@ -18,6 +18,10 @@ import json, os, subprocess, sys, time, traceback, urllib.request
 from pathlib import Path
 
 R = Path(sys.argv[1])
+# "stills" (default): the 0:50-2:03 way, stills ride the hybrid layer. "continuous": the 8-9 min ending way - one
+# picture deforming all the way, nothing composited after the entry; the stills only lend their subjects as themes.
+MODE = sys.argv[2] if len(sys.argv) > 2 else "stills"
+BATCH = "CosmicRain_Deforum_104_test" + ("" if MODE == "stills" else "_" + MODE)
 os.environ["CUDA_VISIBLE_DEVICES"] = "GPU-45dfd7ed-e572-42ff-2a7e-1c36684593f9"  # A2000, after Deforum is done
 import numpy as np, imageio_ffmpeg
 from PIL import Image, ImageOps
@@ -85,10 +89,12 @@ def prepare():
 
     s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
     alpha = {0: 1.0, 15: 0.70, 30: 0.25, 45: 0.05}
-    for x in stills:
+    for x in stills if MODE == "stills" else []:
         k = x["frame"]
         alpha.update({k - HALF: 0.05, k - 4: STILL_ALPHA, k + 4: STILL_ALPHA, k + HALF: 0.05})
     alpha[N - 1] = 0.05
+    if MODE == "continuous":
+        alpha.update({45: 0.0, N - 1: 0.0})
     strength = {0: .98, 15: .88, 30: .74}
     for base in range(45, N, 120):  # the approved envelope, every 120 frames
         for off, v in ((0, .62), (35, .55), (60, .48), (90, .55), (119, .60)):
@@ -98,7 +104,7 @@ def prepare():
     for x in stills:
         prompts[str(max(1, x["frame"] - 15))] = x["prompt"] + SUFFIX
     sched = lambda d: ", ".join(f"{k}:({v})" for k, v in sorted(d.items()))
-    s.update(batch_name="CosmicRain_Deforum_104_test", max_frames=N, init_image=str(R / "start.png"), use_init=True,
+    s.update(batch_name=BATCH, max_frames=N, init_image=str(R / "start.png"), use_init=True,
              video_init_path=str(R / "guide.mp4"), hybrid_generate_inputframes=True, hybrid_use_first_frame_as_init_image=True,
              hybrid_composite="Normal", hybrid_motion="None", hybrid_use_init_image=False, overwrite_extracted_frames=True,
              hybrid_comp_alpha_schedule=sched(alpha), strength_schedule=sched(strength),
@@ -111,7 +117,7 @@ def prepare():
 
 
 def frames_dir(job):
-    return Path(job["outdir"]) if job.get("outdir") else Path("D:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images") / "CosmicRain_Deforum_104_test"
+    return Path(job["outdir"]) if job.get("outdir") else Path("D:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images") / BATCH
 
 
 def generate():
