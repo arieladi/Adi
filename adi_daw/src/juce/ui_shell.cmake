@@ -1,5 +1,8 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
-target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp src/adi/ui/shared_analysis.cpp)
+add_executable(adi_ui_shared_analysis_tests tests/test_shared_analysis.cpp)
+target_link_libraries(adi_ui_shared_analysis_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ui_shared_analysis_tests COMMAND adi_ui_shared_analysis_tests)
 add_executable(adi_ui_document_tests tests/test_ui_document.cpp)
 target_link_libraries(adi_ui_document_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_document_tests COMMAND adi_ui_document_tests)
@@ -17,7 +20,7 @@ if(ADI_WITH_JUCE)
             message(FATAL_ERROR "Step 7 JUCE build needs a short Windows build path (under 100 characters).")
         endif()
     endif()
-    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp)
+    add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp)
     target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
     target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
     juce_add_console_app(adi_ui_shell_tests PRODUCT_NAME "adi_ui_shell_tests")
@@ -26,9 +29,15 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_ui_shell_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
     target_compile_definitions(adi_ui_shell_tests PRIVATE ADI_UI_REFERENCES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/ui")
     # Apply our warning policy to our code, not JUCE's module translation units.
-    set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/app_audio_page.cpp tests/test_ui_shell.cpp PROPERTIES
+    set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/app_audio_page.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
+    juce_add_console_app(adi_ui_shared_spectrum_tests PRODUCT_NAME "adi_ui_shared_spectrum_tests")
+    target_sources(adi_ui_shared_spectrum_tests PRIVATE tests/test_ui_shared_analysis.cpp)
+    target_link_libraries(adi_ui_shared_spectrum_tests PRIVATE adi_ui_shell)
+    set_source_files_properties(tests/test_ui_shared_analysis.cpp PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
+    add_test(NAME adi_ui_shared_spectrum_tests COMMAND adi_ui_shared_spectrum_tests)
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.

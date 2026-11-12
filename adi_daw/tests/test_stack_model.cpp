@@ -2494,6 +2494,120 @@ void adapter() {
     check(shownIds(m) == std::vector<TrackId>{1, 2, 3, 5}, "T45: the model shows 1, 2, 3 and Main");
 }
 
+void actualChainAdapter() {
+    section("Actual chain publication, identity and edit retention");
+    auto snapshot = std::make_shared<adi::engine::Snapshot>();
+    snapshot->seq = 23;
+    for (const auto id : {1, 2}) {
+        auto track = std::make_shared<adi::engine::TrackNode>();
+        track->id = id;
+        track->indexInParent = id;
+        track->kind = "audio";
+        track->name = "Same name"; // duplicate labels must not become identity
+        snapshot->tracks.push_back(std::move(track));
+    }
+    SnapshotReader reader{snapshot};
+    ArrangementGeometry geometry;
+    std::vector<TrackRow> rows;
+    rowsFromSnapshot(reader, rows);
+    geometry.order.build(reader, rows);
+    StubMixViewProvider provider;
+    std::vector<ChainDeviceInput> devices{
+        {2, 301, 4001, ItemClass::Plugin, "Same device"},
+        {1, 105, 2005, ItemClass::Plugin, "Same device"},
+        {999, 900, 9001, ItemClass::Plugin, "Unknown track"},
+        {1, 101, 2001, ItemClass::Eq, "First", true, false},
+        {1, 102, 2002, ItemClass::Missing, "Unavailable", false, true},
+        {1, 103, 0, ItemClass::Plugin, "Invalid identity"},
+        {1, 0, 2010, ItemClass::Plugin, "Invalid id"},
+    };
+    SnapshotRows out;
+    const auto refresh = [&] { tracksFromSnapshot(reader, geometry, provider, devices, out); };
+    refresh();
+    check(out.kinds.empty() && out.modules.empty(), "actual chains reserve no module columns");
+    check(out.tracks.size() == 2 && out.items.size() == 4 && out.tracks[0].itemBegin == 0 &&
+              out.tracks[0].itemCount == 3 && out.tracks[1].itemBegin == 3 && out.tracks[1].itemCount == 1,
+          "actual chain adapter groups interleaved owners, omitting unknown owners and invalid ids");
+    check(out.items[0].device == 105 && out.items[1].device == 101 && out.items[2].device == 102 &&
+              out.items[3].device == 301,
+          "chain order comes from the publication, not numeric device ids or duplicate names");
+    check(!out.items[1].enabled && out.items[1].available && !out.items[2].available && out.items[2].enabled,
+          "availability and Device Activator are independent publication fields");
+    audit = true;
+    allocations = 0;
+    refresh();
+    audit = false;
+    check(allocations == 0, "actual chain adapter reuses all scratch capacities on steady input");
+
+    StackModel model;
+    model.setViewport(1800, 600, 0);
+    model.setRows(out.input(reader.seq(), 1), 0);
+    const auto target = model.chainRef(1, 105);
+    model.focusItem(target, 1);
+    model.setSelection(2, 2);
+    const auto begin = model.beginCapture(CaptureKind::Drag, target, 200);
+    check(begin.refusal == CaptureRefusal::None, "an actual-device drag captures its instance");
+    const auto firstGeometry = model.row(*model.shownIndex(1));
+    const auto bypassed = model.resolve(model.chainRef(1, 101));
+    const auto missing = model.resolve(model.chainRef(1, 102));
+    check(bypassed && bypassed->available && !bypassed->enabled && bypassed->state == ModuleState::Dormant &&
+              missing && !missing->available && missing->enabled && missing->state == ModuleState::Absent,
+          "resolve exposes bypass and unavailable status without dropping either chain device");
+    bool sawBypass = false, sawMissing = false;
+    model.forEachChainItem(*model.shownIndex(1), [&](const ItemGeo &item) {
+        sawBypass = sawBypass || (item.ref.device == 101 && item.available && !item.enabled);
+        sawMissing = sawMissing || (item.ref.device == 102 && !item.available && item.enabled);
+    });
+    check(sawBypass && sawMissing, "realized chain geometry preserves per-device availability and activation");
+
+    devices[1].enabled = false;
+    refresh();
+    model.setRows(out.input(reader.seq(), 2), 205);
+    bool sawCurrentActivator = false;
+    model.forEachChainItem(*model.shownIndex(1), [&](const ItemGeo &item) {
+        if (item.ref.device == 105)
+            sawCurrentActivator = !item.enabled && item.available;
+    });
+    check(sawCurrentActivator && model.captureStatus(begin.ref) == CaptureStatus::Live,
+          "a captured lane freezes positions while showing current activator state");
+
+    std::swap(devices[1], devices[3]);
+    devices[3].name = "Renamed";
+    refresh();
+    const auto reorder = model.setRows(out.input(reader.seq(), 3), 210);
+    check(reorder.captureLost == CaptureStatus::Live && model.captureStatus(begin.ref) == CaptureStatus::Live &&
+              model.chainRef(1, 105) == target,
+          "reorder and rename preserve actual target identity during a drag");
+    check(model.focus().item == target && model.row(*model.shownIndex(2)).selected &&
+              near(model.row(*model.shownIndex(1)).top, firstGeometry.top),
+          "actual device refresh preserves separate focus/selection and the captured row anchor");
+    devices[3].identity = 9005;
+    refresh();
+    const auto replacement = model.setRows(out.input(reader.seq(), 4), 220);
+    check(replacement.captureLost == CaptureStatus::ItemReplaced && !model.live(target) &&
+              model.captureStatus(begin.ref) == CaptureStatus::ItemReplaced,
+          "same numeric device id with a new instance cancels the old drag exactly once");
+    check(model.setRows(out.input(reader.seq(), 5), 221).captureLost == CaptureStatus::Live,
+          "a replacement cancellation is not re-emitted on the next publication");
+
+    const auto replacementRef = model.chainRef(1, 105);
+    const auto menu = model.beginCapture(CaptureKind::Menu, replacementRef, 230);
+    const auto removed = devices[3];
+    devices.erase(devices.begin() + 3);
+    refresh();
+    const auto deletion = model.setRows(out.input(reader.seq(), 6), 240);
+    check(deletion.captureLost == CaptureStatus::ItemRemoved && !model.live(replacementRef),
+          "deleting an actual device ends its open menu and invalidates the edit target");
+    devices.insert(devices.begin() + 3, removed); // the document's undo restores the row
+    refresh();
+    model.setRows(out.input(reader.seq(), 7), 250);
+    check(!model.live(replacementRef) && model.live(model.chainRef(1, 105)) &&
+              model.captureStatus(menu.ref) == CaptureStatus::ItemRemoved,
+          "undo restores an editable device without resurrecting its old menu or stale handle");
+    check(model.resolve(model.chainRef(1, 105))->identity == 9005,
+          "the restored target carries the publication's identity rather than a name/index hash");
+}
+
 struct Trace {
     std::vector<TrackId> enlarged;
     std::vector<double> scrolls;
@@ -3385,6 +3499,7 @@ int main() {
     reference();
     viewStateRoundTrip();
     adapter();
+    actualChainAdapter();
     determinism();
     baseHeight();
     separateStates();

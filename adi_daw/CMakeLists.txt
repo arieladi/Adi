@@ -99,7 +99,8 @@ cmake_language(DEFER CALL adi_isolate_tests)
 # Dependencies, from third_party/ (see docs/EXTERNAL-CODE.md).
 # Both are MIT and GPLv3-compatible; neither is vendored into git.
 # ---------------------------------------------------------------------------
-set(ADI_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+set(ADI_THIRD_PARTY "${CMAKE_CURRENT_SOURCE_DIR}/third_party" CACHE PATH
+    "Pinned external dependency source tree (may be shared by isolated worktrees)")
 
 foreach(dep SQLiteCpp json)
     if(NOT EXISTS "${ADI_THIRD_PARTY}/${dep}/CMakeLists.txt")
@@ -116,8 +117,8 @@ set(SQLITECPP_INTERNAL_SQLITE  ON  CACHE BOOL "" FORCE)  # bundled sqlite3.c
 set(JSON_BuildTests            OFF CACHE BOOL "" FORCE)
 set(JSON_Install               OFF CACHE BOOL "" FORCE)
 
-add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
-add_subdirectory("${ADI_THIRD_PARTY}/json"      EXCLUDE_FROM_ALL SYSTEM)
+add_subdirectory("${ADI_THIRD_PARTY}/SQLiteCpp" "${CMAKE_BINARY_DIR}/third_party/SQLiteCpp" EXCLUDE_FROM_ALL SYSTEM)
+add_subdirectory("${ADI_THIRD_PARTY}/json" "${CMAKE_BINARY_DIR}/third_party/json" EXCLUDE_FROM_ALL SYSTEM)
 
 # ADR-0127: pinned C dependencies. BLAKE3's SIMD paths: see below.
 foreach(source BLAKE3/c/blake3.c miniz/miniz.c pffft/pffft.c)
@@ -631,7 +632,7 @@ set(PD_EXTRA              ON  CACHE BOOL "" FORCE)
 set(LIBPD_STATIC          ON  CACHE BOOL "" FORCE)
 set(LIBPD_SHARED          OFF CACHE BOOL "" FORCE)
 set(PD_BUILD_C_EXAMPLES   OFF CACHE BOOL "" FORCE)
-add_subdirectory("${ADI_THIRD_PARTY}/libpd" EXCLUDE_FROM_ALL SYSTEM)
+add_subdirectory("${ADI_THIRD_PARTY}/libpd" "${CMAKE_BINARY_DIR}/third_party/libpd" EXCLUDE_FROM_ALL SYSTEM)
 include(src/juce/pd_loader_fix.cmake)
 target_include_directories(adi_core SYSTEM PUBLIC
     "${ADI_THIRD_PARTY}/libpd/libpd_wrapper"
@@ -1349,7 +1350,7 @@ if(ADI_WITH_JUCE)
             "    bash adi_daw/tools/fetch_external.sh --with-juce")
     endif()
 
-    add_subdirectory("${ADI_JUCE_DIR}" EXCLUDE_FROM_ALL SYSTEM)
+    add_subdirectory("${ADI_JUCE_DIR}" "${CMAKE_BINARY_DIR}/third_party/JUCE" EXCLUDE_FROM_ALL SYSTEM)
 
     target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
     target_compile_definitions(adi_plugin_scanner PRIVATE

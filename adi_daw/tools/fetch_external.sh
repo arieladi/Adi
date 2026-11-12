@@ -111,7 +111,7 @@ THIRD_PARTY=(
   # the table now takes a full URL. Nothing here reaches into bungee's submodule
   # -- a dependency two levels down that nobody fetched is not a pin.
   "https://bitbucket.org/jpommier/pffft.git pffft PFFFT/FFTPACK-BSD v1.0.0 02fe7715a5bf8bfd914681c53429600f94e0f536  build"
-  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
+  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.5     d60b7a78030661574a615b586d9325ba7a7fa7dd  juce"
 )
 
 # NOTE: helio is helio-fm/helio-sequencer, NOT Ahornberg/helio-workstation --
