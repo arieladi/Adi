@@ -3,7 +3,13 @@
 #include <algorithm>
 #include <limits>
 namespace adi::engine {
-void Transport::locate(std::int64_t sample) noexcept { position_ = std::max<std::int64_t>(0, sample); streamed_=0;wrapped_=false;++revision_; }
+void Transport::locate(std::int64_t sample) noexcept {
+    countInLeft_ = 0;
+    position_ = std::max<std::int64_t>(0, sample);
+    streamed_ = 0;
+    wrapped_ = false;
+    ++revision_;
+}
 void Transport::loop(std::int64_t begin, std::int64_t end, bool enabled) noexcept {
     ++revision_;
     streamed_=0;wrapped_=false;
@@ -46,7 +52,25 @@ std::int64_t Transport::contiguousFrames(std::int64_t offset, std::int64_t count
     count = std::max<std::int64_t>(0, count);
     return looping_ ? std::min(count, end_ - sampleAt(offset)) : count;
 }
+void Transport::countIn(std::int64_t frames) noexcept {
+    countInTotal_ = countInLeft_ = std::max<std::int64_t>(0, frames);
+    playing_ = countInLeft_ == 0;
+    streamed_ = 0;
+    wrapped_ = false;
+    ++revision_;
+}
 void Transport::advance(std::int32_t frames) noexcept {
+    if (frames > 0 && countInLeft_ > 0) {
+        const auto consumed = std::min<std::int64_t>(frames, countInLeft_);
+        countInLeft_ -= consumed;
+        frames -= static_cast<std::int32_t>(consumed);
+        if (countInLeft_ > 0)
+            return;
+        playing_ = true;
+        streamed_ = 0;
+        wrapped_ = false;
+        ++revision_;
+    }
     if (playing_ && frames > 0) {
         if(looping_ && (position_>=end_ || frames>=end_-position_))wrapped_=true;
         position_ = sampleAt(frames);
