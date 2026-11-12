@@ -244,6 +244,80 @@ void staleWorkerSnapshot(Precision precision) {
     check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,
           "render after stale-worker refusal remains callback allocation/free/I-O free");
 }
+void transientWorkerClaim(Precision precision,bool looped,bool ownerPrimed) {
+    struct ProbeState {std::atomic<int> phase{0};} state;
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&state;
+    probe.beforePageClaim=[](void* context,std::int64_t oldPage,std::int64_t requestedPage)noexcept {
+        if(oldPage!=0 || requestedPage!=8)return;
+        auto& phase=static_cast<ProbeState*>(context)->phase;int expected=1;
+        if(!phase.compare_exchange_strong(expected,2,std::memory_order_acq_rel))return;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(phase.load(std::memory_order_acquire)==2 && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    probe.afterPageClaimAttempt=[](void* context,std::int64_t oldPage,std::int64_t requestedPage,bool)noexcept {
+        if(oldPage!=0 || requestedPage!=8)return;
+        auto& phase=static_cast<ProbeState*>(context)->phase;int expected=3;
+        if(!phase.compare_exchange_strong(expected,4,std::memory_order_acq_rel))return;
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+        while(phase.load(std::memory_order_acquire)==4 && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    Fixture fixture;Transport target;
+    if(looped){target.loop(8128,8224);target.locate(8150);}else target.locate(17);
+    target.play();fixture.live=target;
+    if(!fixture.clips->primeAt(target,std::chrono::seconds(2)))throw std::runtime_error("prime transient page");
+    auto ready=fixture.clips->readiness();const auto sources=fixture.clips->sourcesFor(1);
+    if(!ready || sources.size()!=1)throw std::runtime_error("transient source");
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
+    NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;
+    if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    // Consume owner preparation first; the old page is genuinely cached and
+    // available before a different request starts replacing the cache.
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);state.phase.store(1,std::memory_order_release);
+    Transport other;other.locate(8*8192);other.play();
+    {audio::CallbackScope callback;(void)ready(other,blockFrames);}
+    const auto waitFor=[&](int phase){const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);while(state.phase.load(std::memory_order_acquire)!=phase && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));return state.phase.load(std::memory_order_acquire)==phase;};
+    const bool paused=waitFor(2);bool admitted=false;
+    if(ownerPrimed)admitted=fixture.clips->primeAt(target,std::chrono::milliseconds(0));
+    else {audio::CallbackScope callback;admitted=ready(target,blockFrames);}
+    const auto beforeAllocations=allocations.load(),beforeFrees=frees.load();const auto beforeIo=audio::callbackFileIo.load();
+    if(looped){io.frames=48;{audio::CallbackScope callback;sources.front()->process(io);}io.frames=blockFrames-48;io.blockOffset=48;}
+    fixture.clips->stallForTest(true);state.phase.store(3,std::memory_order_release);const bool attempted=waitFor(4);
+    check(paused && admitted && attempted,"native race pauses replacement before its page claim, admits the cached target and holds the real claim attempt");
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    state.phase.store(5,std::memory_order_release);
+    bool exact=true;for(std::int32_t frame=0;frame<blockFrames;++frame)for(int channel=0;channel<2;++channel){const double value=precision==Precision::Float64?wide[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]:static_cast<double>(narrow[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]);exact=exact && value==sample(target.sampleAt(frame),channel);}
+    check(exact && fixture.clips->underrunSamples()==0,"an admitted native buffer remains sample exact even during a stale worker's transient page claim");
+    check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,"true page reservation and consumption remain callback allocation/free/I-O free");
+}
+void reservationTurnover(Precision precision) {
+    struct ProbeState {std::atomic<int> phase{0};} state;
+    ClipPlayback::RequestSnapshotProbeForTest probe;probe.context=&state;
+    probe.afterSnapshot=[](void* context,std::int64_t firstPage)noexcept {if(firstPage!=3)return;auto& phase=static_cast<ProbeState*>(context)->phase;int expected=0;(void)phase.compare_exchange_strong(expected,1,std::memory_order_acq_rel);};
+    probe.afterService=[](void* context)noexcept {auto& phase=static_cast<ProbeState*>(context)->phase;int expected=1;(void)phase.compare_exchange_strong(expected,2,std::memory_order_acq_rel);};
+    Fixture fixture;Transport first,alternate;
+    first.loop(0,50000);first.locate(40000);first.play();alternate.loop(60000,96000);alternate.locate(88000);alternate.play();
+    // These owner targets fill all eight actual slots: 4,5,6,0 and 10,11,7,8.
+    const bool primed=fixture.clips->primeAt(first,alternate,std::chrono::seconds(2));
+    check(primed,"two looped owner adoption positions fill the bounded native page cache");if(!primed)return;
+    const auto sources=fixture.clips->sourcesFor(1);if(sources.size()!=1)throw std::runtime_error("turnover source");
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);Transport target;target.locate(3*8192+17);target.play();fixture.live=target;
+    std::array<std::array<float,blockFrames>,2> narrow{};std::array<std::array<double,blockFrames>,2> wide{};
+    float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};NodeIo io;io.channels=2;io.frames=blockFrames;io.sampleRate=48000;if(precision==Precision::Float64)io.out64=out64;else io.out=out;
+    // An ordinary unprepared seek requests page 3. No second readiness/prime
+    // call may rescue leaked reservations from the superseded owner target.
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);while(state.phase.load(std::memory_order_acquire)!=2 && std::chrono::steady_clock::now()<deadline)std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    check(state.phase.load(std::memory_order_acquire)==2,"the real worker completes the new ordinary playback request");
+    const auto underruns=fixture.clips->underrunSamples();const auto beforeAllocations=allocations.load(),beforeFrees=frees.load();const auto beforeIo=audio::callbackFileIo.load();
+    {audio::CallbackScope callback;sources.front()->process(io);}
+    bool exact=true;for(std::int32_t frame=0;frame<blockFrames;++frame)for(int channel=0;channel<2;++channel){const double value=precision==Precision::Float64?wide[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]:static_cast<double>(narrow[static_cast<std::size_t>(channel)][static_cast<std::size_t>(frame)]);exact=exact && value==sample(target.sampleAt(frame),channel);}
+    check(exact && fixture.clips->underrunSamples()==underruns,"ordinary native playback releases obsolete reservations so all eight slots cannot starve a new page");
+    check(allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,"reservation turnover and native rendering allocate/free/read nothing on callback");
+}
 void alternatePrime(Precision precision) {
     Fixture fixture;
     Transport current,alternate;
@@ -277,7 +351,12 @@ int main() {
             immutableCandidate(true,precision);
             callbackReadiness(precision);
             staleWorkerSnapshot(precision);
+            transientWorkerClaim(precision,false,false);
+            transientWorkerClaim(precision,true,false);
+            transientWorkerClaim(precision,false,true);
+            transientWorkerClaim(precision,true,true);
             alternatePrime(precision);
+            reservationTurnover(precision);
         }
         refusalAndRetry();
     }catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}

@@ -145,6 +145,25 @@ struct StripConfig {
 /// No scope subscription, snapshot rebuild or SQL read is needed.
 struct StripMeter {
     std::atomic<float> peak{0}, rms{0};
+    /// Highest linear post-fader peak published since the previous take.
+    /// One consuming UI reader fans this value out to its widgets. Callback
+    /// boundaries, silence and stopping do not discard an unread transient.
+    [[nodiscard]] float takePeak() const noexcept {
+        return heldPeak_.exchange(0.0f, std::memory_order_relaxed);
+    }
+private:
+    friend class StripNode;
+    // One render producer; consumers only exchange zero. After a failed first
+    // strong CAS, a second attempt with zero cannot be disturbed by another
+    // clear. At most two CAS calls, with no callback retry loop.
+    void holdPeak(float value) noexcept {
+        auto previous = heldPeak_.load(std::memory_order_relaxed);
+        if (value <= previous) return;
+        if (heldPeak_.compare_exchange_strong(previous, value, std::memory_order_relaxed)) return;
+        if (value > previous)
+            (void)heldPeak_.compare_exchange_strong(previous, value, std::memory_order_relaxed);
+    }
+    mutable std::atomic<float> heldPeak_{0};
 };
 static_assert(std::atomic<float>::is_always_lock_free);
 

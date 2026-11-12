@@ -59,6 +59,37 @@ class WrenchButton final : public juce::Button {
     WrenchButton() : juce::Button("Plug-In Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// Color Cab's Impulse slot (MR 9.8; D5, N28, #414): a tile a sample file drops on, from the desktop
+// or from the browser's Samples; Clear empties it. It names the slot and shows whether it is empty,
+// holds a sample, or holds one whose file is missing, from the snapshot's sample slots.
+class SampleTile final : public juce::Component,
+                         public juce::SettableTooltipClient,
+                         public juce::FileDragAndDropTarget,
+                         public juce::DragAndDropTarget {
+  public:
+    SampleTile(DeviceChainStrip &, std::int64_t device, std::int32_t slot, juce::String slotName);
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    bool isInterestedInFileDrag(const juce::StringArray &files) override { return !files.isEmpty(); }
+    void filesDropped(const juce::StringArray &files, int x, int y) override;
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    // The slot as the snapshot holds it; none when it was never assigned (empty).
+    void show(const engine::SampleSlotNode *);
+    // A file dropped: assigns the slot (one undo step), or says why not.
+    bool drop(const juce::String &path);
+    enum class State { Empty, Loaded, Missing };
+    State state() const noexcept { return state_; }
+    juce::TextButton clear{"Clear"};
+    const std::int64_t device;
+    const std::int32_t slot;
+    const juce::String slotName;
+
+  private:
+    DeviceChainStrip &strip_;
+    State state_ = State::Empty;
+    std::string problem_;
+};
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component {
@@ -91,6 +122,9 @@ class DevicePanelView final : public juce::Component {
     WrenchButton wrench;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
+    // Color Cab's Impulse tile, beside its controls (D5); none on any other device.
+    std::unique_ptr<SampleTile> sample;
+    static constexpr int kTileWidth = 96;
     bool configuring = false;
 
   private:
@@ -145,10 +179,15 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     std::function<bool(std::int64_t track, std::optional<std::int64_t> before)> paste;
     std::function<bool(std::int64_t device, std::int64_t track, std::optional<std::int64_t> before)> duplicate;
     std::function<bool()> holdsCopy;
+    // The app's sample slot edits (D5): a file assigned to a device's slot, or the slot cleared;
+    // each one undo step, its refusal said in the Status Bar.
+    std::function<bool(std::int64_t device, std::int32_t slot, const std::string &path)> assignSample;
+    std::function<bool(std::int64_t device, std::int32_t slot)> clearSample;
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
     const DevicePanelData *dataOf(std::int64_t device) const;
+    void showSamples();
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;
     int end_ = 0; // where the chain ends, in the content's pixels

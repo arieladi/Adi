@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/automation_edits.hpp"
 #include "adi/blob.hpp"
+#include "adi/automation_range_rows.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <cmath>
@@ -14,7 +15,7 @@
 namespace adi::automation {
 namespace {
 using Bytes = std::vector<std::byte>;
-struct Data { bool present = false; Bytes bytes; };
+struct Data { bool present = false; Bytes bytes; Payload ranges=Payload::array(); };
 
 std::int64_t integer(const Payload& p) {
     if (!p.is_number_integer() || (p.is_number_unsigned() &&
@@ -61,6 +62,7 @@ Data read(OpContext& c, const Payload& p) {
     const auto col = q.getColumn(2);
     const auto* b = static_cast<const std::byte*>(col.getBlob());
     if (col.getBytes() > 0) result.bytes.assign(b, b + col.getBytes());
+    result.ranges=range_rows::capture(c.db,id);
     return result;
 }
 void store(OpContext& c, const Payload& p, const Bytes* bytes) {
@@ -83,7 +85,8 @@ bool capture(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
         const auto d = read(c, p); inv = address(p); inv["state"] = {{"present", d.present}};
         std::vector<std::uint8_t> bytes(d.bytes.size());
         if (!bytes.empty()) std::memcpy(bytes.data(), d.bytes.data(), bytes.size());
-        inv["state"]["bytes"] = Payload::binary(std::move(bytes)); return true;
+        inv["state"]["bytes"] = Payload::binary(std::move(bytes));
+        inv["state"]["ranges"] = d.ranges; return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 bool restore(OpContext& c, const Payload& p, std::string& err) {
@@ -92,7 +95,11 @@ bool restore(OpContext& c, const Payload& p, std::string& err) {
         const auto& bin = p.at("state").at("bytes").get_binary();
         Bytes bytes(bin.size());
         if (!bytes.empty()) std::memcpy(bytes.data(), bin.data(), bytes.size());
-        store(c, p, p.at("state").at("present").get<bool>() ? &bytes : nullptr); return true;
+        const bool present=p.at("state").at("present").get<bool>();
+        const auto ranges=p.at("state").value("ranges",Payload::array());
+        if(!present && !ranges.empty())throw std::runtime_error("automation: absent data with curve ranges");
+        store(c,p,present?&bytes:nullptr);
+        range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),ranges);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 enum class Edit { Write, Delete, Move, Curve };
@@ -109,8 +116,9 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
         const StreamReader<AutomationPoint> reader(d.bytes, FourCC::Automation);
         if (!reader.ok()) throw std::runtime_error("automation: unreadable AAUT stream");
         auto h = reader.header();
-        struct Record { AutomationPoint point; Bytes raw; };
+        struct Record { AutomationPoint point; Bytes raw; std::size_t original=SIZE_MAX; };
         std::vector<Record> records;
+        std::vector<AutomationPoint> originalPoints;
         std::map<std::uint64_t, std::size_t> indices;
         for (std::uint32_t n = 0; n < h.count; ++n) {
             Record r{};
@@ -120,7 +128,16 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
             std::memcpy(&r.point, r.raw.data(), sizeof r.point);
             if (!r.point.point_id || !indices.emplace(r.point.point_id, records.size()).second)
                 throw std::runtime_error("automation: ambiguous point IDs");
+            r.original=originalPoints.size();originalPoints.push_back(r.point);
             records.push_back(std::move(r));
+        }
+        std::map<std::size_t,Payload> originalRanges;
+        for(const auto& range:d.ranges){
+            const auto index=integer(range.at("record_index"));
+            if(index<0 || static_cast<std::uint64_t>(index)>=originalPoints.size() ||
+               range.at("clip_id")!=p.at("clip") ||
+               !originalRanges.emplace(static_cast<std::size_t>(index),range).second)
+                throw std::runtime_error("automation: invalid retained curve range");
         }
         const auto& items = p.at(edit == Edit::Delete || edit == Edit::Curve ? "ids" : "points");
         if (!items.is_array() || items.empty()) throw std::runtime_error("automation: empty selection");
@@ -167,7 +184,22 @@ template<Edit edit> bool apply(OpContext& c, const Payload& p, std::string& err)
         for (const auto& r : records) out.insert(out.end(), r.raw.begin(), r.raw.end());
         const auto tail = sizeof(StreamHeader) + static_cast<std::size_t>(reader.header().count) * h.rec_size;
         out.insert(out.end(), d.bytes.begin() + static_cast<std::ptrdiff_t>(tail), d.bytes.end());
-        store(c, p, &out); return true;
+        Payload retained=Payload::array();
+        for(std::size_t index=0;index<records.size();++index){
+            const auto& record=records[index];const auto old=originalRanges.find(record.original);
+            if(old==originalRanges.end())continue;
+            const auto& left=originalPoints[record.original];
+            if(record.point.value!=left.value || record.point.curve!=left.curve || record.point.tension!=left.tension)continue;
+            const bool oldNext=record.original+1<originalPoints.size(),newNext=index+1<records.size();
+            if(oldNext!=newNext)continue;
+            if(oldNext){
+                const auto& right=originalPoints[record.original+1];const auto& next=records[index+1].point;
+                if(next.point_id!=right.point_id || next.value!=right.value)continue;
+            }
+            auto range=old->second;range["record_index"]=static_cast<std::int64_t>(index);retained.push_back(std::move(range));
+        }
+        store(c,p,&out);
+        range_rows::replace(c.db,integer(p.at("id")),p.at("clip"),retained);return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 constexpr Field pointsFields[] = {{"id", FieldType::Int}, {"lane", FieldType::Int}, {"clip", FieldType::Int, false}, {"points", FieldType::Array}};

@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1019;          -- schema 1.19
+PRAGMA user_version   = 1021;          -- schema 1.21
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -161,9 +161,13 @@ Any number of readers MAY open the project read-only.
 ### 3.7 Save As and Save a Copy (ADR-0203 d6)
 
 `Store::saveCopy(path)` uses SQLite backup to capture committed WAL data; the
-source is unchanged. The destination must not exist and its parent must exist.
-A private stage is checkpointed/closed before no-replace publication. Missing
-media does not prevent a save. No save op is appended.
+source is unchanged. Its parent must exist. The default `StoreFileCollision::Fail`
+refuses an existing destination. After the caller obtains replacement consent,
+`saveCopy(path, StoreFileCollision::ReplaceConfirmed)` replaces a closed regular
+file. A private stage is checkpointed/closed, synced and atomically renamed;
+there is no visible copy fallback. Missing media does not prevent a save. No save
+op is appended. An existing SQLite WAL, SHM or rollback journal at the destination
+refuses the operation without deleting recovery material.
 
 For a supported major, relative media locations are rebased for the destination
 folder, including captured media.import/media.relink paths on **every history
@@ -179,11 +183,22 @@ The caller refreshes ProjectView/Session and its displayed filename after
 success. Project name, UUID, writer identity, history, snapshots and UI/session
 state are preserved. Owner-thread use requires no active SQL transaction or
 live SQL statements; old database references must not be retained across the
-switch. Existing destinations are never overwritten by these APIs.
+switch. `saveAs(path, StoreFileCollision::ReplaceConfirmed)` uses the same explicit
+replacement policy; the default still refuses an existing file. The active file,
+including hardlink and symlink aliases, cannot be its own destination. A shared
+native lease held before every Store opens SQLite and until it closes refuses
+replacement of another live Store, including a read-only Store. The lease travels
+with the database during Save As. This is replacement protection, not the future
+one-writer/session policy. See [ENGINE-PROJECT-REPLACE](../ENGINE-PROJECT-REPLACE.md)
+for native lease scope and durability limits.
 
 A failed copy leaves the source active; a copy that succeeded but could not be
 opened for switching is retained and reported as such. A successful switch can
 report a warning if another reader prevented the old WAL from being folded.
+A directory-sync failure after publication also returns success with a durability
+warning: the old file has already been replaced. Save As verifies the published
+file identity before switching; a different replacement in that interval keeps
+the original project active and reports that the copy could not be selected.
 An unknown newer major supports **Save a Copy** verbatim, without interpreting
 or relocating its media paths; it remains read-only. Save As into an editable
 Store refuses that major.
@@ -348,9 +363,20 @@ remaining kinds name a role in the signal graph and do bind.
 
 ### 6.2 Clips and lanes
 
-`clips` sit on a `(track_id, lane_id)` pair. `lanes` gives us take lanes and
-comping for free: a comp is a set of clips across lanes on the same track with an
-active-region selection, which is how both Ableton 11+ and Cubase model it.
+`clips` sit on a `(track_id, lane_id)` pair. Under ADR-0225, a NULL `lane_id`
+is the main lane. A comp is copies of chosen take segments on that main lane,
+as Live 12: the copies' own fades over their handles form any enabled crossfades.
+Take lanes are heard only while auditioned; one auditioned lane per track is
+session state, not an undo operation. REAPER's lane masking/play-all layering
+and Bitwig's comp-region sliding are not adopted.
+
+The existing `lanes` table and nullable clip address support this representation;
+they do not supply a comping engine by themselves. CT-01 still has to provide
+the single accessor for timeline clips that play and move every reader to it:
+main lane, or the auditioned take lane, never a Session slot. The current engine
+has no such lane filter. Loop recording, take selection/main-lane copying and
+their undo behavior remain CT-01 to CT-05 work. Live audition and crossfade
+boundary measurements remain NOT RUN.
 
 A track may hold clips of **several kinds at once** — an audio clip and a MIDI
 clip on one track is the normal case, not an edge case (ADR-0045). The device
@@ -1039,27 +1065,43 @@ these budgets. `adi_meta` keys `history.undo.max_transactions`,
 default local budgets. The obsolete `oplog_max_entries`/`oplog_max_age_days` keys
 remain readable extension metadata and do not control this implementation.
 
-Compaction runs inside the same SQLite transaction as a new journal commit,
-before its final caller hook. It can also be requested explicitly. It replaces
+Compaction runs in an optional savepoint inside the same SQLite transaction as
+a new journal commit, before its final caller hook. Recoverable retention failure
+rolls back only that savepoint and returns `CommitResult::retentionWarning`; the
+edit, clock rows, caller hook and applied-batch delivery continue. A final caller
+hook may still reject the whole edit. Explicit compaction returns its own failure
+result without modifying history. Fatal storage errors that prevent SQLite from
+committing remain actual write failures. Compaction can also be requested explicitly. It replaces
 an oldest complete prefix with one replayable checkpoint, retaining the prefix's
 last op as a root (`parent_seq`, `inverse` and `sel_before` NULL). The root is not
-an undo step. The newest complete transaction is retained even when that one
+an undo step. Compaction triggers only above a hard budget, then targets 90% of
+both limits (integer floor, at least one): 1,800 transactions and 900 decimal MB
+at the defaults. Whole transactions are removed; upload acknowledgement or the
+newest transaction can stop the pass before that low-water mark. The newest complete transaction is retained even when that one
 transaction alone exceeds the byte budget. No partial transaction is pruned.
 
-A named snapshot, any other existing persistent snapshot, a branch head, and a
-reachable fork point protect their positions. Compaction can stop AT an anchor
-but MUST NOT pass it. A root snapshot/branch protects the entire prefix. In
+ADR-0213 requires named snapshots and dead ends to remain openable/revertible as
+row-deduplicated stored states before compaction crosses their positions. The
+schema 1.21 implementation stores every crossed named snapshot and branch head,
+and every retained line's frontier, before pruning. A dead-end/redo tip without a
+branch receives a system branch name before its bridge is discarded. Named and
+origin snapshots remain openable and revertible independently of the active undo
+window. Their old edit steps may compact; their stored state never blocks the
+active budget. In
 collaboration mode no seq after the contiguous upload acknowledgement may be
 compacted; a missing acknowledgement protects the entire log. Protections can
 leave the active history above its budget; the API reports `protectedHistory`.
-Legacy embedded-media rows also protect the log until extraction, because the
+Automatic daily snapshots are compactable: they never stop a pass, and their
+metadata/daily reference is removed if its point is pruned. Legacy embedded-media
+rows also protect the log until extraction, because the
 current schema deliberately forbids reinserting their old embedded rows.
 
 The byte budget counts retained non-ephemeral payload, inverse and selection
 bytes, UTF-8 metadata bytes, and an 80-byte fixed allowance per op. It excludes
 the checkpoint, media/content pools and SQLite page/WAL overhead; it is not a
 limit on the whole project file. Ephemeral audit rows in a compacted prefix are
-removed only within the same safe uploaded/anchor boundary.
+removed only within the same safe uploaded boundary. Metadata roots are excluded
+from this accounting, including roots holding named snapshots or inactive branches.
 
 Schema 1.19 adds `history_checkpoint(id, base_seq, state)`, one row with id 1.
 The CBOR state envelope has format 1, the writer's schema major/minor, and typed
@@ -1069,27 +1111,90 @@ journal/audit metadata and locks are excluded. Checkpoint capture temporarily
 rewinds to the boundary inside a savepoint, reads the state, then rolls back the
 savepoint; the live project, head and UI remain unchanged. Checkpoint replacement,
 root retapping, old-op/clock pruning and orphan audit cleanup commit together.
-A checkpoint failure rolls back the edit as well as compaction.
+A recoverable checkpoint failure rolls back compaction, preserving the committed
+edit and reporting the deferral. No partial checkpoint, hash object, root change
+or pruning can escape the optional savepoint.
+
+Schema 1.20 adds immutable `history_state_rows(hash,data)` and
+`history_state_manifests(hash,data)`, plus `history_checkpoint_content(id,state_hash)`
+linking the current checkpoint to its content manifest. Keys are lowercase BLAKE3
+hashes of exact CBOR bytes. Rows retain the typed cell arrays; manifests carry
+format/schema version, table names, columns and sorted row hashes, preserving
+row multiplicity. Unchanged rows and repeated complete states are reused, and
+reads validate every referenced hash. These tables are history metadata excluded
+from the musical digest. The one format-1 whole-state image in `history_checkpoint`
+remains available to older replay readers; historical content does not require
+another whole-state copy per checkpoint.
+
+Schema 1.21 adds `history_roots(seq,state_hash)` and
+`history_origin_root(id,root_seq)`. A root is internal `history.root` metadata with
+CBOR `{state_hash: Text}`, no parent, inverse or selection. It reuses a complete
+old boundary's sequence or, for an original null origin, receives a synthetic
+metadata sequence and migration attribution/clock. The latter can be newer than
+its real edit descendants; only a root-parent edge may run backwards in numeric
+sequence order. Existing snapshot and branch references name these roots. Roots
+are structural metadata, never accepted journal submissions, and are hidden from
+Undo/Redo, `recent` and timeline steps. Branch/Snapshot DTOs expose optional
+`storedStateHash` for exact-root anchors. The current legacy checkpoint and its
+content link follow the current line's root; other roots have only shared row
+objects and manifests. Capture, normalization, verified restoration and all graph
+changes occur under the same retention savepoint. No domain or UI change escapes
+capture. Unreferenced old root records can be removed after references are moved;
+content object collection is separate from this active-log budget.
+
+Same-baseline Undo/Redo and navigation still apply the recorded real edits.
+Cross-baseline branch/snapshot navigation defaults to refusal before mutation,
+with `Result::sessionReloadRequired`. A caller that has stopped/fenced its Session
+may pass `StoredRestore::SessionReloadPrepared`; the engine installs the verified
+baseline and replays its retained ancestry atomically. It publishes one
+`ReplayBaseReset` without invented op records. This invalidates pending ParamOps;
+it does **not** instantiate or rehydrate plugins. The caller must reload the
+Document/Session before resuming audio. Existing UI callers must adopt this
+contract to open stored points. Target UI/session metadata is preserved. The
+immutable `state_blobs` pool is merged and collision-checked across restores,
+so a later branch's state hashes remain resolvable, as with ordinary Undo.
 
 For replay, hold one read transaction on the source while copying its checkpoint
 and retained log. `History::restoreReplayBase(source, emptyJournalTarget)`
 installs the domain state atomically, preserving target UI metadata, and returns
-`baseSeq`. Replay ONLY source ops strictly greater than `baseSeq`; the retained
-root's forward payload has already been folded into the checkpoint. With no
-checkpoint, baseSeq is zero and the existing full-log replay applies. A nonempty
+`baseSeq` and `retainedSeqs`. Replay exactly those current-ancestry sequences in
+returned order, excluding every metadata root, inactive branch and current redo
+tail. Numeric `seq > baseSeq` is insufficient for independent roots and synthetic
+origins. With no checkpoint, baseSeq is zero and the returned current ancestry
+starts at the original root. Immutable plugin resources needed by retained steps
+are copied as well. A nonempty
 or read-only target, malformed data or incompatible schema is refused without
-changing target state. Checkpoint bytes are content, never a new undo operation.
+changing target state. `restoreStoredSnapshot(source, snapshotId, emptyTarget)`
+opens an archived point from a writable or read-only source without moving its
+head; its verified stored root needs no retained replay. A point still inside
+the stepwise window is refused by that helper and uses ordinary copy/navigation.
+Checkpoint bytes are content, never a new undo operation.
 
 ### 8.4 UI and session state
 
-`ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
-scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
-their monitor identity*, mixer layout, visible panels, last-used tool.
+`ui_view` and `session_state` keep project-scoped view and performance state:
+track heights, fold states, zoom, scroll offsets, selection, playhead, loop,
+mixer layout, visible panels and the last-used tool. Floating and plug-in window
+places belong in `ui_view`, with their monitor identity and the display's area
+(ADR-0180 d3, d7). A restored rectangle alone is not a portable window place.
+
+The main window's and Settings window's places are application-scoped, in the
+App record `window.places`, not in the project: each entry carries
+`{display, area, rect, fullScreen}` (ADR-0203 d11, ADR-0129 d3; WIN-02).
+The schema's `window_state` table is reserved and currently has no writer; it is
+not the home of these application window places. This describes their assigned
+storage; WIN-02 owns the window's placement and display-change behavior.
 
 Reserved `session_state` keys for saved performance controls:
 `transport.metronome` is a JSON boolean; `transport.loop` is JSON
 `{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
-Absent keys mean click/loop off and an initial four-bar 4/4 window at zero.
+`transport.countIn` is a JSON integer in `0,1,2,4` bars (`0` is None).
+`transport.songStart` is a JSON nonnegative int64 tick; absence means the insert
+marker/active selection supplies the default start. Clearing the override removes
+its key. Count-In applies to recording starts only; it never shifts the saved
+song point. Readers reject nonintegral, out-of-range and malformed values.
+Absent keys mean click/loop off, no count-in/song-start override, and an initial
+four-bar 4/4 window at zero.
 These are session metadata, not undoable project edits; the ephemeral transport
 ops update them and their audit rows in one transaction. Readers ignore malformed
 session values and use defaults. `Snapshot::transport` exposes them without

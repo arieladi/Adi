@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/freeze_state.hpp"
 
-#include "adi/history.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/gesture_navigation_detail.hpp"
+#include "adi/history.hpp"
+#include "adi/history_roots.hpp"
 
 #include "adi/store.hpp"
 
@@ -57,9 +58,10 @@ std::vector<std::byte> blobOf(const SQLite::Column& c) {
 /// Every non-ephemeral op in a transaction, in seq order.
 std::vector<ChainOp> txnOps(SQLite::Database& db, std::int64_t txnId) {
     std::vector<ChainOp> out;
-    SQLite::Statement st(db,
+    SQLite::Statement st(
+        db,
         "SELECT seq, parent_seq, op_type, payload, inverse FROM ops "
-        "WHERE txn_id = ? AND tags <> 'ephemeral' ORDER BY seq ASC");
+        "WHERE txn_id = ? AND tags <> 'ephemeral' AND op_type<>'history.root' ORDER BY seq ASC");
     st.bind(1, txnId);
     while (st.executeStep()) {
         ChainOp o;
@@ -84,10 +86,10 @@ std::vector<ChainOp> txnOps(SQLite::Database& db, std::int64_t txnId) {
 /// cannot disagree about which line is live.
 std::optional<std::int64_t> childOf(SQLite::Database& db,
                                     std::optional<std::int64_t> head) {
-    SQLite::Statement st(db,
-        "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND "
-        "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
-        "ORDER BY seq DESC LIMIT 1");
+    SQLite::Statement st(
+        db, "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
+            "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
+            "ORDER BY seq DESC LIMIT 1");
     if (head) { st.bind(1, *head); st.bind(2, *head); }
     else      { st.bind(1);        st.bind(2); }
     if (!st.executeStep()) return std::nullopt;
@@ -179,6 +181,31 @@ bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
                  detail::AppliedBatchBuilder* notice = nullptr) {
     std::vector<ChainOp> down, up;
     if (!chainOf(ctx.db, from, down, err) || !chainOf(ctx.db, to, up, err)) return false;
+    const auto sourceRoot = history_detail::rootForPoint(ctx.db, from);
+    const auto targetRoot = history_detail::rootForPoint(ctx.db, to);
+    if (sourceRoot != targetRoot) {
+        const auto hash = history_detail::storedRootHash(ctx.db, targetRoot);
+        if (!hash) {
+            err = "target history baseline is missing";
+            return false;
+        }
+        history_detail::installCheckpoint(
+            ctx.store, history_detail::readCheckpointContent(ctx.db, *hash), true);
+        for (std::size_t i = up.size(); i-- > 0;) {
+            if (up[i].seq == targetRoot)
+                continue;
+            if (up[i].opType == "history.root") {
+                err = "history line crosses stored baselines";
+                return false;
+            }
+            // ReplayBaseReset invalidates the old runtime; do not invent an op
+            // sequence for the full-state transition or its reconstruction.
+            if (!applyOne(ctx, up[i], false, err, nullptr))
+                return false;
+            ++applied;
+        }
+        return true;
+    }
 
     std::vector<std::int64_t> onDown;
     onDown.reserve(down.size());
@@ -254,7 +281,8 @@ std::optional<History::Step> History::nextUndo() const {
         const auto ops = txnOps(db, s.txnId);
         if (ops.empty()) return std::nullopt;
         SQLite::Statement base(db, "SELECT base_seq FROM history_checkpoint WHERE id=1");
-        if (base.executeStep() && *h <= base.getColumn(0).getInt64())
+        if (!history_detail::hasStoredRoots(db) && base.executeStep() &&
+            *h <= base.getColumn(0).getInt64())
             return std::nullopt;
         s.firstSeq = ops.front().seq;
         s.lastSeq = ops.back().seq;
@@ -425,6 +453,8 @@ std::vector<History::Branch> History::branches() const {
             if (!st.getColumn(2).isNull()) b.headSeq = st.getColumn(2).getInt64();
             b.isCurrent = st.getColumn(3).getInt() != 0;
             b.createdUtc = st.getColumn(4).getInt64();
+            if (b.headSeq)
+                b.storedStateHash = history_detail::storedRootHash(store_.db(), *b.headSeq);
             out.push_back(std::move(b));
         }
     } catch (const std::exception&) {
@@ -432,7 +462,7 @@ std::vector<History::Branch> History::branches() const {
     return out;
 }
 
-History::Result History::switchToBranch(std::int64_t branchId) {
+History::Result History::switchToBranch(std::int64_t branchId, StoredRestore access) {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
     auto navigation = gesture::detail::beginNavigation(store_);
@@ -448,9 +478,18 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         if (!look.getColumn(0).isNull()) target = look.getColumn(0).getInt64();
 
         const auto here = head();
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
         if (here == target) {
             SQLite::Transaction txn(db);
-            detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::BranchSwitch, here);
+            detail::AppliedBatchBuilder applied(
+                store_,
+                (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::BranchSwitch), here);
             db.exec("UPDATE op_branches SET is_current = 0 WHERE is_current = 1");
             SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
             up.bind(1, branchId);
@@ -467,7 +506,9 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         // reachable; switching back is the same move in the other direction.
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
-        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::BranchSwitch, here);
+        detail::AppliedBatchBuilder applied(
+            store_, (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::BranchSwitch),
+            here);
         std::string err;
         if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {
             r.error = err;
@@ -478,6 +519,7 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
         up.bind(1, branchId);
         up.exec();
+        history_detail::syncCurrentRoot(store_);
         freeze::validate(store_);
         auto delivery = finishApplied(applied, store_, target);
         txn.commit();
@@ -609,6 +651,8 @@ std::vector<History::Snapshot> History::listSnapshots() const {
             s.branchId = st.getColumn(3).getInt64();
             s.createdUtc = st.getColumn(4).getInt64();
             s.automatic = st.getColumn(5).getInt() != 0;
+            if (s.opSeq)
+                s.storedStateHash = history_detail::storedRootHash(store_.db(), *s.opSeq);
             out.push_back(std::move(s));
         }
     } catch (const std::exception&) {
@@ -617,7 +661,8 @@ std::vector<History::Snapshot> History::listSnapshots() const {
     return out;
 }
 
-History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc) {
+History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc,
+                                          StoredRestore access) {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
     auto navigation = gesture::detail::beginNavigation(store_);
@@ -634,11 +679,20 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
         if (!look.getColumn(1).isNull()) target = look.getColumn(1).getInt64();
 
         const auto here = head();
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
         if (here == target) { r.ok = true; return r; }   // already there
 
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
-        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::SnapshotRevert, here);
+        detail::AppliedBatchBuilder applied(
+            store_, (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::SnapshotRevert),
+            here);
 
         // ADR-0128 d2: nothing is lost by clicking. The line the head is on
         // may run past the head (undone work still redoable); its TIP is what
@@ -691,8 +745,23 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
 
 namespace adi {
 namespace history_detail {
-Payload checkpointAt(Store &store, std::int64_t seq) {
+Payload checkpointAt(Store &store, std::optional<std::int64_t> seq) {
     auto &db = store.db();
+    // A move across stored baselines installs a checkpoint, which turns
+    // defer_foreign_keys on. SQLite clears that flag only when the OUTERMOST
+    // transaction ends; ROLLBACK TO restores the deferred-violation counters
+    // but not the flag. Unrestored, it outlived this rolled-back probe and
+    // deferred every FK check (RESTRICT included) for the rest of the edit's
+    // commit. Restore it right after ROLLBACK TO, as validatedContent does:
+    // the counters are then back at their entry values, so nothing pending is
+    // erased.
+    const bool deferred = db.execAndGet("PRAGMA defer_foreign_keys").getInt() != 0;
+    const auto restore = [&] {
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        if (!deferred)
+            db.exec("PRAGMA defer_foreign_keys=OFF");
+    };
     db.exec("SAVEPOINT adi_history_checkpoint");
     try {
         OpContext ctx{store, db};
@@ -701,12 +770,10 @@ Payload checkpointAt(Store &store, std::int64_t seq) {
         if (!moveBetween(ctx, OpJournal(store).headSeq(), seq, applied, error))
             throw std::runtime_error(error);
         auto state = checkpointState(store);
-        db.exec("ROLLBACK TO adi_history_checkpoint");
-        db.exec("RELEASE adi_history_checkpoint");
+        restore();
         return state;
     } catch (...) {
-        db.exec("ROLLBACK TO adi_history_checkpoint");
-        db.exec("RELEASE adi_history_checkpoint");
+        restore();
         throw;
     }
 }
@@ -748,8 +815,10 @@ UndoCompactionResult History::compactUndo() {
     }
     return result;
 }
-History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
-    ReplayBaseResult result;
+namespace {
+History::ReplayBaseResult restoreReplayPoint(const Store &source, Store &target, bool current,
+                                             std::optional<std::int64_t> point) {
+    History::ReplayBaseResult result;
     if (!mutationAllowed(target, result.error)) return result;
     auto navigation = gesture::detail::beginNavigation(target);
     if (!navigation.status.ok()) { result.error = navigation.status.message; return result; }
@@ -767,15 +836,53 @@ History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store 
         std::optional<detail::PreparedAppliedDelivery> delivery;
         if (OpJournal(target).count() != 0)
             throw std::runtime_error("replay target journal is not empty");
-        SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
-                              "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
-        if (row.executeStep()) {
-            std::string error;
-            auto state = decodeFromLog(blobOf(row.getColumn(1)), error);
-            if (!state)
-                throw std::runtime_error("invalid history checkpoint: " + error);
-            history_detail::installCheckpoint(target, *state);
-            result.baseSeq = row.getColumn(0).getInt64();
+        auto &sourceDb = const_cast<SQLite::Database &>(source.db());
+        const auto sourceHead = OpJournal(const_cast<Store &>(source)).headSeq();
+        if (current)
+            point = sourceHead;
+        std::vector<ChainOp> line;
+        std::string chainError;
+        if (!chainOf(sourceDb, point, line, chainError))
+            throw std::runtime_error(chainError);
+        const bool roots = history_detail::hasStoredRoots(sourceDb);
+        std::optional<Payload> state;
+        if (roots) {
+            result.baseSeq = history_detail::rootForPoint(sourceDb, point);
+            state = history_detail::readCheckpointContent(
+                sourceDb, *history_detail::storedRootHash(sourceDb, result.baseSeq));
+            if (result.baseSeq == history_detail::rootForPoint(sourceDb, sourceHead)) {
+                SQLite::Statement compatibility(
+                    sourceDb, "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+                std::string error;
+                if (!compatibility.executeStep() ||
+                    compatibility.getColumn(0).getInt64() != result.baseSeq)
+                    throw std::runtime_error("replay checkpoint baseline mismatch");
+                const auto legacy = decodeFromLog(blobOf(compatibility.getColumn(1)), error);
+                if (!legacy || *legacy != *state)
+                    throw std::runtime_error("replay checkpoint content mismatch");
+            }
+        } else {
+            SQLite::Statement row(sourceDb,
+                                  "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+            if (row.executeStep()) {
+                std::string error;
+                state = decodeFromLog(blobOf(row.getColumn(1)), error);
+                if (!state)
+                    throw std::runtime_error("invalid history checkpoint: " + error);
+                result.baseSeq = row.getColumn(0).getInt64();
+            }
+        }
+        if (state && !point)
+            throw std::runtime_error("snapshot precedes the available replay baseline");
+        for (std::size_t i = line.size(); i-- > 0;)
+            if (line[i].seq != result.baseSeq) {
+                if (line[i].opType == "history.root")
+                    throw std::runtime_error("unexpected replay baseline");
+                result.retainedSeqs.push_back(line[i].seq);
+            }
+        if (state) {
+            history_detail::copyCheckpointPools(source, target);
+            history_detail::installCheckpoint(target, *state, true);
             delivery = finishApplied(applied, target, OpJournal(target).headSeq());
         }
         transaction.commit();
@@ -785,5 +892,34 @@ History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store 
         result.error = error.what();
     }
     return result;
+}
+} // namespace
+History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
+    return restoreReplayPoint(source, target, true, std::nullopt);
+}
+History::ReplayBaseResult History::restoreStoredSnapshot(const Store &source, std::int64_t id,
+                                                         Store &target) {
+    ReplayBaseResult result;
+    if (!appliedSource(source).alive()) {
+        result.error = "source project is closed";
+        return result;
+    }
+    try {
+        SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
+                              "SELECT s.op_seq,r.seq FROM history_snapshots s LEFT JOIN "
+                              "history_roots r ON r.seq=s.op_seq WHERE s.id=?");
+        row.bind(1, id);
+        if (!row.executeStep())
+            throw std::runtime_error("no such snapshot");
+        if (row.getColumn(1).isNull())
+            throw std::runtime_error("snapshot is still in stepwise history");
+        std::optional<std::int64_t> point;
+        if (!row.getColumn(0).isNull())
+            point = row.getColumn(0).getInt64();
+        return restoreReplayPoint(source, target, false, point);
+    } catch (const std::exception &error) {
+        result.error = error.what();
+        return result;
+    }
 }
 } // namespace adi

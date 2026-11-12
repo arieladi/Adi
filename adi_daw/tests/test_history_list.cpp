@@ -146,68 +146,68 @@ void compactedTimeline() {
     const auto uncompacted = history.readTimeline();
     const auto policy = history.setUndoRetentionPolicy(budget(3));
     const auto compacted = history.compactUndo();
-    check(policy.ok && compacted.ok && compacted.baseSeq == 4 && journal.count() == 4,
-          "real compaction retains three transactions and their structural root");
+    check(policy.ok && compacted.ok && compacted.baseSeq == 5 && journal.count() == 3,
+          "real compaction retains the two-step low-water budget and structural root");
     const auto digest = digestProject(*f.store).text;
     const auto changes = f.store->db().execAndGet("SELECT total_changes()").getInt64();
     const auto view = history.readTimeline();
-    check(view.error.empty() && view.baseSeq == 4 && view.headSeq == 7 && view.steps.size() == 3 &&
+    check(view.error.empty() && view.baseSeq == 5 && view.headSeq == 7 && view.steps.size() == 2 &&
               std::all_of(view.steps.begin(), view.steps.end(), [](const auto& step) {
-                  return step.step.firstSeq > 4 && step.step.lastSeq > 4 && step.step.opCount == 1 &&
+                  return step.step.firstSeq > 5 && step.step.lastSeq > 5 && step.step.opCount == 1 &&
                       step.applied && step.onCurrentLine;
               }), "compacted timeline exposes its base and omits the retained root from undo steps");
-    if (!view.error.empty() || view.steps.size() != 3) return;
+    if (!view.error.empty() || view.steps.size() != 2) return;
     check(view.steps[0].step.label == "7" && view.steps[1].step.label == "6" &&
-              view.steps[2].step.label == "5" && view.steps[2].parentSeq == view.baseSeq,
+              view.steps[1].parentSeq == view.baseSeq,
           "visible steps preserve newest-first labels and the first visible parent is the hidden base");
-    check(f.store->db().execAndGet("SELECT count(*) FROM ops WHERE seq=4 AND parent_seq IS NULL AND inverse IS NULL").getInt() == 1,
+    check(f.store->db().execAndGet("SELECT count(*) FROM ops WHERE seq=5 AND parent_seq IS NULL AND inverse IS NULL").getInt() == 1,
           "omitted row remains a real inverse-less structural root in the persisted journal");
     (void)history.readTimeline();
-    check(f.store->db().execAndGet("SELECT total_changes()").getInt64() == changes && journal.count() == 4 &&
+    check(f.store->db().execAndGet("SELECT total_changes()").getInt64() == changes && journal.count() == 3 &&
               history.head() == view.headSeq && digestProject(*f.store).text == digest,
           "repeated compacted metadata reads perform zero SQL changes and preserve state, log and head");
     check(uncompacted.baseSeq == 0 && uncompacted.steps.size() == 7 && uncompacted.steps.back().step.firstSeq == 1,
           "a held pre-compaction value retains its original base and complete steps");
     bool undone = true;
-    for (int i = 0; i < 3; ++i) undone = history.undo().ok && undone;
+    for (int i = 0; i < 2; ++i) undone = history.undo().ok && undone;
     const auto atBase = history.readTimeline();
-    check(undone && atBase.error.empty() && atBase.baseSeq == 4 && atBase.headSeq == 4 &&
-              !history.canUndo() && !history.undo().ok && projectName(f) == "4",
+    check(undone && atBase.error.empty() && atBase.baseSeq == 5 && atBase.headSeq == 5 &&
+              !history.canUndo() && !history.undo().ok && projectName(f) == "5",
           "undo reaches the nonzero checkpoint head without offering its structural row");
-    check(atBase.steps.size() == 3 && std::all_of(atBase.steps.begin(), atBase.steps.end(), [](const auto& step) {
+    check(atBase.steps.size() == 2 && std::all_of(atBase.steps.begin(), atBase.steps.end(), [](const auto& step) {
                   return !step.applied && step.onCurrentLine && has(step.branchIds, 1);
-              }) && branch(atBase, 1) && branch(atBase, 1)->headSeq == 4 &&
-              history.nextRedo() && history.nextRedo()->firstSeq == 5,
-          "at-base branch head and all three visible redo steps remain usable");
+              }) && branch(atBase, 1) && branch(atBase, 1)->headSeq == 5 &&
+              history.nextRedo() && history.nextRedo()->firstSeq == 6,
+          "at-base branch head and both visible redo steps remain usable");
     bool redone = true;
-    for (int i = 0; i < 3; ++i) redone = history.redo().ok && redone;
+    for (int i = 0; i < 2; ++i) redone = history.redo().ok && redone;
     const auto restored = history.readTimeline();
-    check(redone && projectName(f) == "7" && restored.headSeq == 7 && restored.steps.size() == 3 &&
+    check(redone && projectName(f) == "7" && restored.headSeq == 7 && restored.steps.size() == 2 &&
               std::all_of(restored.steps.begin(), restored.steps.end(), [](const auto& step) { return step.applied; }),
           "redo returns every visible compacted step and the project to the original head");
-    (void)rename(f, "8");
+    (void)rename(f, "8"); (void)rename(f, "9");
     const auto advanced = history.readTimeline();
-    check(advanced.error.empty() && advanced.baseSeq == 5 && advanced.headSeq == 8 && advanced.steps.size() == 3 &&
-              advanced.steps.back().parentSeq == 5 && view.baseSeq == 4 && view.headSeq == 7 &&
-              view.steps.back().step.firstSeq == 5,
+    check(advanced.error.empty() && advanced.baseSeq == 7 && advanced.headSeq == 9 && advanced.steps.size() == 2 &&
+              advanced.steps.back().parentSeq == 7 && view.baseSeq == 5 && view.headSeq == 7 &&
+              view.steps.back().step.firstSeq == 6,
           "a later real compaction advances new reads without mutating a held timeline value");
     // Listing is deliberately metadata-only, including its new checkpoint read.
     // Navigation was exercised above before these opaque blobs were corrupted.
     f.store->db().exec("UPDATE history_checkpoint SET state=X'FF'");
-    f.store->db().exec("UPDATE ops SET payload=X'FF'");
+    f.store->db().exec("UPDATE ops SET payload=X'FF' WHERE op_type<>'history.root'");
     const auto metadata = history.readTimeline();
-    check(metadata.error.empty() && metadata.baseSeq == 5 && metadata.steps.size() == 3,
+    check(metadata.error.empty() && metadata.baseSeq == 7 && metadata.steps.size() == 2,
           "checkpoint state and forward payload blobs are not decoded by timeline listing");
     const auto path = f.store->path(); f.store.reset();
     StoreError error = StoreError::Ok; f.store = Store::open(path, error, true);
     if (!f.store) throw std::runtime_error(toString(error));
     const auto readonlyChanges = f.store->db().execAndGet("SELECT total_changes()").getInt64();
     const auto readonly = History(*f.store).readTimeline();
-    check(readonly.error.empty() && readonly.baseSeq == 5 && readonly.headSeq == 8 && readonly.steps.size() == 3 &&
-              readonly.steps.back().parentSeq == 5 && branch(readonly, 1) && branch(readonly, 1)->headSeq == 8,
+    check(readonly.error.empty() && readonly.baseSeq == 7 && readonly.headSeq == 9 && readonly.steps.size() == 2 &&
+              readonly.steps.back().parentSeq == 7 && branch(readonly, 1) && branch(readonly, 1)->headSeq == 9,
           "read-only reopen exposes the persisted compacted base, steps and branch head");
     check(f.store->db().execAndGet("SELECT total_changes()").getInt64() == readonlyChanges &&
-              OpJournal(*f.store).count() == 4 && view.baseSeq == 4 && view.steps.size() == 3,
+              OpJournal(*f.store).count() == 3 && view.baseSeq == 5 && view.steps.size() == 2,
           "read-only listing writes nothing and held values survive their original Store closing");
 }
 
@@ -226,100 +226,95 @@ void compactedTransactions() {
     }
     const auto compacted = history.compactUndo();
     const auto view = history.readTimeline();
-    check(compacted.ok && compacted.baseSeq == 6 && view.error.empty() && view.baseSeq == 6 &&
-              view.steps.size() == 2 && journal.count() == 5 && !find(view, committed[2].txnId),
+    check(compacted.ok && compacted.baseSeq == 8 && view.error.empty() && view.baseSeq == 8 &&
+              view.steps.size() == 1 && journal.count() == 3 && !find(view, committed[2].txnId),
           "a compacted two-op batch leaves no misleading one-op public undo step");
     const auto* newest = find(view, committed[4].txnId);
-    const auto* older = find(view, committed[3].txnId);
-    check(newest && older && newest->step.opCount == 2 && newest->step.firstSeq == 9 && newest->step.lastSeq == 10 &&
+    const auto* hidden = find(view, committed[3].txnId);
+    check(newest && !hidden && newest->step.opCount == 2 && newest->step.firstSeq == 9 && newest->step.lastSeq == 10 &&
               newest->step.label == "Batch 5" && newest->step.actor == "agent" &&
-              newest->step.actorDetail == "whole transaction" && older->step.opCount == 2 &&
-              older->step.firstSeq == 7 && older->step.lastSeq == 8 && older->parentSeq == 6,
+              newest->step.actorDetail == "whole transaction" && newest->parentSeq == 8,
           "retained batches preserve whole bounds, first-op metadata and hidden-root ancestry");
-    check(history.undo().opsApplied == 2 && history.undo().opsApplied == 2 && !history.canUndo() &&
-              projectName(f) == "6" && history.head() == 6,
+    check(history.undo().opsApplied == 2 && !history.canUndo() &&
+              projectName(f) == "8" && history.head() == 8,
           "each listed compacted batch is exactly one real undo step down to the base");
     const auto atBase = history.readTimeline();
-    check(atBase.error.empty() && atBase.baseSeq == 6 && atBase.steps.size() == 2 &&
+    check(atBase.error.empty() && atBase.baseSeq == 8 && atBase.steps.size() == 1 &&
               std::all_of(atBase.steps.begin(), atBase.steps.end(), [](const auto& step) {
                   return !step.applied && step.onCurrentLine && step.step.opCount == 2;
-              }) && history.redo().opsApplied == 2 && history.redo().opsApplied == 2 && projectName(f) == "10",
+              }) && history.redo().opsApplied == 2 && projectName(f) == "10",
           "whole batch redo flags at the checkpoint match real two-op replay");
 }
 
 void compactedAnchors() {
-    Fixture f("compacted_snapshot"); History history(*f.store);
-    names(f, 1, 2); const auto pinned = history.takeSnapshot("Pinned base", 1, 0); names(f, 3, 7);
+    Fixture f("compacted_snapshot");
+    History history(*f.store);
+    names(f, 1, 2);
+    const auto pinned = history.takeSnapshot("Pinned base", 1, 0);
+    names(f, 3, 7);
     const auto compacted = history.setUndoRetentionPolicy(budget(2));
     const auto view = history.readTimeline();
-    const auto* anchor = snapshot(view, pinned.id);
-    check(pinned.ok && compacted.ok && compacted.protectedHistory && compacted.baseSeq == 2 &&
-              view.error.empty() && view.baseSeq == 2 && view.steps.size() == 5 && anchor && anchor->opSeq == 2 &&
-              anchor->name == "Pinned base" && anchor->branchId == 1,
-          "an exact-base snapshot remains metadata even though its protected root is not a step");
-    check(std::none_of(view.steps.begin(), view.steps.end(), [&](const auto& step) {
-                  return step.step.firstSeq <= view.baseSeq || has(step.snapshotIds, pinned.id);
-              }), "the base snapshot is never misattached to a later visible transaction");
-    check(history.revertToSnapshot(pinned.id, 2).ok && projectName(f) == "2" && !history.canUndo(),
-          "a named snapshot at the hidden root remains a real navigable point");
+    const auto *anchor = snapshot(view, pinned.id);
+    check(pinned.ok && compacted.ok && !compacted.protectedHistory && compacted.baseSeq == 6 &&
+              view.error.empty() && view.steps.size() == 1 && anchor && anchor->opSeq == 2 &&
+              anchor->storedStateHash,
+          "stored snapshot stays named and addressable while only the active suffix appears as "
+          "undo steps");
+    check(std::none_of(view.steps.begin(), view.steps.end(),
+                       [&](const auto &step) { return has(step.snapshotIds, pinned.id); }),
+          "stored snapshot is never attached to an unrelated retained step");
+    check(
+        history.revertToSnapshot(pinned.id, 2, History::StoredRestore::SessionReloadPrepared).ok &&
+            projectName(f) == "2" && !history.canUndo(),
+        "prepared navigation restores stored snapshot without an undo step");
     const auto reverted = history.readTimeline();
-    check(reverted.error.empty() && reverted.baseSeq == 2 && reverted.headSeq == 2 &&
-              snapshot(reverted, pinned.id) && snapshot(reverted, pinned.id)->opSeq == 2 &&
-              reverted.steps.size() == 5 && std::all_of(reverted.steps.begin(), reverted.steps.end(), [](const auto& step) {
-                  return !step.applied && step.onCurrentLine;
-              }), "snapshot navigation to the base retains its anchor and the complete visible redo line");
-    Fixture root("uncompacted_root_snapshot"); History rootHistory(*root.store);
-    const auto beforeEdits = rootHistory.takeSnapshot("Before edits", 1, 0); names(root, 1, 5);
-    const auto protectedRoot = rootHistory.setUndoRetentionPolicy(budget(2));
-    const auto rootView = rootHistory.readTimeline();
-    check(beforeEdits.ok && protectedRoot.ok && protectedRoot.protectedHistory && protectedRoot.baseSeq == 0 &&
-              rootView.error.empty() && rootView.baseSeq == 0 && rootView.steps.size() == 5 &&
-              snapshot(rootView, beforeEdits.id) && !snapshot(rootView, beforeEdits.id)->opSeq,
-          "an ordinary null-root snapshot still protects the whole log and differs from a compacted base anchor");
+    check(
+        reverted.error.empty() && reverted.baseSeq == 2 && reverted.headSeq == 2 &&
+            snapshot(reverted, pinned.id)->storedStateHash && reverted.steps.size() == 1 &&
+            !reverted.steps[0].applied && !reverted.steps[0].onCurrentLine,
+        "stored point has its own baseline and leaves the other branch suffix visible as inactive");
+    Fixture origin("origin_snapshot");
+    History root(*origin.store);
+    const auto point = root.takeSnapshot("Before edits", 1, 0);
+    names(origin, 1, 5);
+    const auto cap = root.setUndoRetentionPolicy(budget(2));
+    const auto originView = root.readTimeline();
+    check(point.ok && cap.ok && !cap.protectedHistory && cap.baseSeq == 4 &&
+              originView.error.empty() && originView.steps.size() == 1 &&
+              snapshot(originView, point.id) && snapshot(originView, point.id)->storedStateHash,
+          "original null-root snapshot is stored independently and does not protect the whole log");
 }
-
 void compactedFork() {
-    Fixture f("compacted_fork"); History history(*f.store);
+    Fixture f("compacted_fork");
+    History history(*f.store);
     names(f, 1, 6);
-    check(history.undo().ok && history.undo().ok && history.undo().ok, "fork timeline rewinds to its future compacted base");
+    check(history.undo().ok && history.undo().ok && history.undo().ok, "fork timeline rewinds");
     const auto first = rename(f, "B1"), last = rename(f, "B2");
     const auto compacted = history.setUndoRetentionPolicy(budget(2));
     const auto view = history.readTimeline();
-    std::int64_t oldBranch = 0;
-    for (const auto& entry : view.branches) if (!entry.isCurrent) oldBranch = entry.id;
-    check(compacted.ok && compacted.protectedHistory && compacted.baseSeq == 3 && view.error.empty() &&
-              view.baseSeq == 3 && view.steps.size() == 5 && view.branches.size() == 2 && oldBranch != 0,
-          "a real fork compacts through its shared root while retaining both descendant branches");
-    const auto* b1 = find(view, first.txnId); const auto* b2 = find(view, last.txnId);
-    const auto oldFirst = std::find_if(view.steps.begin(), view.steps.end(), [](const auto& step) { return step.step.firstSeq == 4; });
-    check(b1 && b2 && b1->parentSeq == 3 && b1->applied && b2->applied && has(b1->branchIds, 1) &&
-              oldFirst != view.steps.end() && oldFirst->parentSeq == 3 && !oldFirst->applied &&
-              !oldFirst->onCurrentLine && has(oldFirst->branchIds, oldBranch),
-          "both first descendants name the hidden shared parent and retain correct active and alternate flags");
-    check(history.undo().ok && history.undo().ok && history.head() == 3 && !history.canUndo(),
-          "new branch undoes exactly to the compacted shared root");
-    const auto undone = history.readTimeline();
-    check(undone.error.empty() && undone.baseSeq == 3 && undone.headSeq == 3 && branch(undone, 1) &&
-              branch(undone, 1)->headSeq == 3 && find(undone, first.txnId) &&
-              find(undone, first.txnId)->onCurrentLine && !find(undone, first.txnId)->applied &&
-              std::none_of(undone.steps.begin(), undone.steps.end(), [](const auto& step) { return step.applied; }),
-          "a branch may point exactly at the hidden root while its newer redo tail remains visible");
-    check(oldBranch != 0 && history.switchToBranch(oldBranch).ok && projectName(f) == "6",
-          "switch to the older branch still replays through the compacted common ancestor");
+    std::int64_t old = 0;
+    for (const auto &entry : view.branches)
+        if (!entry.isCurrent)
+            old = entry.id;
+    const auto *newest = find(view, last.txnId);
+    check(compacted.ok && !compacted.protectedHistory && compacted.baseSeq == first.seqs.back() &&
+              view.error.empty() && view.steps.size() == 1 && old != 0 && newest &&
+              newest->applied && newest->parentSeq == first.seqs.back(),
+          "compacted fork exposes one active step and independently stored dead-end metadata");
+    check(history.undo().ok && !history.canUndo() && projectName(f) == "B1" && history.nextRedo() &&
+              history.nextRedo()->txnId == last.txnId,
+          "retained branch undoes to its own baseline and keeps real redo");
+    check(history.switchToBranch(old, History::StoredRestore::SessionReloadPrepared).ok &&
+              projectName(f) == "6",
+          "prepared branch navigation opens the stored dead end");
     const auto switched = history.readTimeline();
-    check(switched.error.empty() && switched.baseSeq == 3 && switched.currentBranchId == oldBranch &&
-              branch(switched, 1) && branch(switched, 1)->headSeq == 3 && find(switched, first.txnId) &&
-              !find(switched, first.txnId)->applied && !find(switched, first.txnId)->onCurrentLine &&
-              find(switched, first.txnId)->branchIds.empty(),
-          "an inactive branch at the base retains its stored anchor without claiming its former redo tail");
-    check(history.switchToBranch(1).ok && history.head() == 3 && history.nextRedo() &&
-              history.nextRedo()->txnId == first.txnId,
-          "switch back to the exact-base branch recovers the real highest-child redo path");
-    const auto returned = history.readTimeline();
-    check(returned.error.empty() && find(returned, first.txnId) && find(returned, last.txnId) &&
-              find(returned, first.txnId)->onCurrentLine && find(returned, last.txnId)->onCurrentLine &&
-              history.redo().ok && history.redo().ok && projectName(f) == "B2",
-          "reactivated compacted branch flags agree with replay of its retained redo tail");
+    check(switched.error.empty() && switched.baseSeq == 6 && switched.steps.size() == 1 &&
+              !switched.steps[0].applied && !switched.steps[0].onCurrentLine &&
+              branch(switched, old)->storedStateHash,
+          "stored dead end is not an applied undo step on the active suffix");
+    check(history.switchToBranch(1, History::StoredRestore::SessionReloadPrepared).ok &&
+              projectName(f) == "B1" && history.redo().ok && projectName(f) == "B2",
+          "returning to the retained branch restores its baseline and redo tail");
 }
 
 void checkpointErrors() {
@@ -337,7 +332,7 @@ void checkpointErrors() {
     for (const auto& corruption : corruptions) {
         Fixture f("checkpoint_error"); History history(*f.store);
         names(f, 1, 4);
-        const auto compacted = history.setUndoRetentionPolicy(budget(2));
+        const auto compacted = history.setUndoRetentionPolicy(budget(3));
         if (!compacted.ok || compacted.baseSeq != 2) throw std::runtime_error("invalid real compaction fixture");
         // Corrupt an actual compacted journal, not a synthetic happy-path
         // checkpoint. Foreign keys are disabled only to exercise broken files.

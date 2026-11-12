@@ -62,3 +62,9 @@ concurrently remains untouched. Queue retries create a fresh normal job.
 RMS targeting, a brickwall limiter, linked batch normalization, other containers
 and the broader REAPER export parity set remain separate increments. NI Stems
 uses its own subsequent codec/container work.
+
+NI Stems jobs require normalization Off until verification after AAC encoding
+exists (PLAN EX-10). Peak and Loudness are refused by the shared NI validator,
+including Queue add/update and direct `renderNiStems`, before opening the source,
+servicing a host or creating output. A refused queue edit leaves its pending job
+unchanged. Ordinary WAV normalization retains the behavior above.
