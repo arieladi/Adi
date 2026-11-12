@@ -2,7 +2,7 @@
 actually worked ... use the images from cosmic rain some of them once in a while to drive the changes but mostly let
 deforum just run freely").
 
-usage: run_deforum.py <root> [stills|continuous]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
+usage: run_deforum.py <root> [stills|continuous|ending]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
 Method, from the archived Avastha project (QuantumAscent-Archive-20261030, deforum-section-050-123 + ending-184s):
   - the actual Deforum extension, SD1.5 DreamShaper8, A2000, D:/AvasthaAI/ActualDeforum/settings-8s.json unchanged
     (848x480 15 fps, DPM++ 2M 28 steps, cfg 6, 2D camera zoom 1.005 / angle 0.06 / x 0.12 / y -0.05, noise 0.02,
@@ -40,6 +40,14 @@ STILL_ALPHA, HALF = 0.40, 12
 SUFFIX = ", visionary psychedelic painting, rich intricate detail, continuous organic transformation"
 OPEN_PROMPT = ("A luminous black hole surrounded by silver cosmic rain and cyan arcs, falling crystal droplets spiraling "
                "into the event horizon, deep layered cosmic space")
+# "ending" mode (Adi 2026-11-12: no Cosmic Rain photos, a simple test like the end of Quantum Ascent): themes in the
+# ending's own style, one every ~14 s.
+THEMES = [
+    "A luminous black hole drinking silver cosmic rain, cyan light arcs spiraling into a glowing crystalline event horizon, deep layered cosmic space",
+    "The silver rain becomes a vast luminous crystal ocean, bioluminescent waves curling into spiral shells, intricate golden reflections, deep layered alien seascape",
+    "The ocean spirals grow into an underwater forest of translucent jellyfish bells and coral cathedrals, turquoise light, intricate organic golden filaments",
+    "The coral cathedrals open into immense glowing rings of sacred geometry and falling silver rain, luminous violet galaxies, intricate fractal celestial architecture",
+]
 # (bar, Draft 1 slot whose approved still is shown): story order, on bar lines
 STILLS = [(8, "K005"), (16, "K009"), (24, "K011"), (30, "K013"), (32, "K015a"), (36, "K018")]
 
@@ -75,7 +83,22 @@ def prepare():
     opening = np.frombuffer(src, np.uint8).reshape(-1, 480, 848, 3)
     assert len(opening) == 15
     Image.fromarray(opening[0]).save(R / "start.png")
-    imgs = [np.array(ImageOps.fit(Image.open(x["image"]).convert("RGB"), (848, 480), method=Image.Resampling.LANCZOS)) for x in stills]
+    if MODE == "ending":
+        # Exactly the Avastha ending (deforum-ending-184s/worker.py): approved settings unchanged, one init image,
+        # the approved strength envelope repeated from frame 0, slowly evolving world themes. No photos, no hybrid.
+        s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
+        s.update(max_frames=N, batch_name=BATCH, init_image=str(R / "start.png"))
+        step = N // len(THEMES) + 1
+        s["prompts"] = {str(i * step): t + SUFFIX for i, t in enumerate(THEMES)}
+        keys = {}
+        for base in range(0, N, 120):
+            for off, v in ((0, .62), (35, .55), (60, .48), (90, .55), (119, .60)):
+                if base + off < N:
+                    keys[base + off] = v
+        s["strength_schedule"] = ", ".join(f"{k}:({v})" for k, v in sorted(keys.items()))
+        save("settings.json", s)
+        return s
+    imgs =[np.array(ImageOps.fit(Image.open(x["image"]).convert("RGB"), (848, 480), method=Image.Resampling.LANCZOS)) for x in stills]
     p = subprocess.Popen([FF, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "848x480", "-r", "15", "-i", "pipe:0",
                           "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(R / "guide.mp4")], stdin=subprocess.PIPE)
     for i in range(N):
