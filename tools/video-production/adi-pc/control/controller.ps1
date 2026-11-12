@@ -84,7 +84,10 @@ function Running {
         }
     }
     $jobs = @{}
-    foreach ($p in $all | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -match 'AvasthaAI' -and $svcIds -notcontains $_.ProcessId }) {
+    # Jobs: AI python processes, plus powershell queue scripts in a project folder (not this controller).
+    $isJob = { ($_.Name -eq 'python.exe' -and $_.CommandLine -match 'AvasthaAI') -or
+               ($_.Name -eq 'powershell.exe' -and $_.CommandLine -match 'AvasthaAI[\\/][^\\/]+[\\/][^\\/]+\.ps1' -and $_.CommandLine -notmatch '[\\/]control[\\/]') }
+    foreach ($p in $all | Where-Object $isJob | Where-Object { $svcIds -notcontains $_.ProcessId }) {
         $t = Top $all $p
         if ($svcIds -notcontains $t.ProcessId) { $jobs[[int]$t.ProcessId] = $t }
     }
@@ -104,9 +107,10 @@ function Park($ids) {
     $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
     foreach ($r in Get-ChildItem 'F:\AvasthaAI\*\anim\*\receipt.json' -ErrorAction SilentlyContinue) {
         $d = $r.Directory
-        if (Test-Path "$($d.FullName)\generated.json") { continue }
+        if ((Test-Path "$($d.FullName)\generated.json") -or (Test-Path "$($d.FullName)\generated.replaced.json")) { continue }
+        if ($ids -eq '*' -and $r.LastWriteTime -lt (Get-Date).AddDays(-2)) { continue }   # only takes from the run that was cut
         $pid_ = (Get-Content $r.FullName -Raw | ConvertFrom-Json).prompt_id
-        if ($ids -notcontains $pid_) { continue }
+        if ($ids -ne '*' -and $ids -notcontains $pid_) { continue }   # '*' after a restart: every unfinished take
         $dst = New-Item -ItemType Directory -Force "$($d.FullName)\interrupted-$ts"
         foreach ($f in 'receipt.json', 'submitting.json', 'workflow.json') {
             if (Test-Path "$($d.FullName)\$f") { Move-Item "$($d.FullName)\$f" $dst.FullName }
@@ -190,10 +194,32 @@ function DoContinue {
 }
 
 New-Item -ItemType Directory -Force $Q | Out-Null
+function Snapshot {
+    # While running, remember what runs (every minute), so a restart of the PC can be resumed with Continue.
+    if ((Get-Content "$C\state.json" -Raw | ConvertFrom-Json).state -ne 'running') { return }
+    $r = Running
+    @{ time = (Get-Date).ToString('s'); services = $r.services; jobs = @($r.jobs | ForEach-Object { @{ cmd = $_.CommandLine } }) } |
+        ConvertTo-Json -Depth 5 | Set-Content "$C\running.tmp" -Encoding UTF8
+    Move-Item "$C\running.tmp" "$C\running.json" -Force
+}
+
 Log 'controller started'
+$boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
 if (Test-Path "$C\stopped.json") { Save 'stopped' 'video AI is off (stopped before this controller started)' }
+elseif ((Test-Path "$C\running.json") -and (Get-Item "$C\running.json").LastWriteTime -lt $boot) {
+    # The PC restarted while video AI was running: treat it like a Stop, so Continue resumes it.
+    $snap = Get-Content "$C\running.json" -Raw | ConvertFrom-Json
+    Park '*'
+    @{ time = (Get-Date).ToString('s'); services = @($snap.services); jobs = @($snap.jobs); interrupted = 'PC restart' } |
+        ConvertTo-Json -Depth 5 | Set-Content "$C\stopped.json" -Encoding UTF8
+    Rename-Item "$C\running.json" ("running-before-restart-{0:yyyyMMdd-HHmmss}.json" -f (Get-Date))
+    Save 'stopped' 'the PC restarted while video AI was running - press Continue to resume it' @{ services = @($snap.services); jobs = @($snap.jobs) }
+    Log "restart detected (boot $boot); previous run saved for Continue: $(@($snap.jobs).Count) jobs"
+}
 else { $r = Running; Save 'running' 'controller started' @{ services = $r.services; jobs = @($r.jobs | ForEach-Object { @{ cmd = $_.CommandLine } }) } }
+$tick = 0
 while ($true) {
+    if (($tick++ % 20) -eq 0) { try { Snapshot } catch { Log "snapshot failed: $($_.Exception.Message)" } }
     $req = Get-ChildItem $Q -Filter '*.flag' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
     if ($req) {
         Get-ChildItem $Q -Filter '*.flag' | Remove-Item -Force
