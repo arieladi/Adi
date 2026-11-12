@@ -2031,6 +2031,12 @@ add_executable(adi_history_stored_tests tests/test_history_stored.cpp)
 target_link_libraries(adi_history_stored_tests PRIVATE adi_core adi_warnings adi_miniz Threads::Threads)
 add_test(NAME adi_history_stored_tests COMMAND adi_history_stored_tests)
 
+add_executable(adi_history_retention_fuzz_tests tests/test_history_retention_fuzz.cpp)
+target_link_libraries(adi_history_retention_fuzz_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_history_retention_fuzz_tests COMMAND adi_history_retention_fuzz_tests)
+# Scheduling estimate for the long corpus; COST changes order, never its deadline.
+set_tests_properties(adi_history_retention_fuzz_tests PROPERTIES COST 180)
+
 add_executable(adi_midi_controllers_tests tests/test_midi_controllers.cpp)
 target_link_libraries(adi_midi_controllers_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
