@@ -57,6 +57,26 @@ It's the real Deforum extension, not a custom recursive script and not Wan. Note
 - Never speed up the music.
 - Colour grading goes on Deforum footage only.
 
+## Two approved Deforum styles (Adi, 2026-11-12)
+
+Both styles are approved.
+
+### Section 0:50–2:03
+
+- **How it was made:** source footage is composited underneath at alpha 0.05 for the whole run.
+- **How Adi saw it:** much higher quality, with beautiful elements on black. Sometimes it looks like "frames of photos moving around before deforming". That's the composited source showing through.
+
+### Ending 6:50–9:54 (minutes 8–9)
+
+- **How it was made:** one init image, then 2,760 frames deforming continuously, with no hybrid layer.
+- **How Adi saw it:** "one big photo that started to deform and continued till the end". Adi rates this the better approach, but the execution was lower quality.
+- **What the review sheets show:** colours drifted to a pale, washed-out lavender, and shapes went soft.
+- **Likely cause:** LAB colour coherence locks every frame to the start frame's palette, and that start frame was pale.
+
+### Next step
+
+Run the continuous approach from a rich, high-contrast start frame, aiming for the ending's continuity at the 0:50–2:03 quality.
+
 ## Cosmic Rain test (2026-11-12)
 
 **Script:** `cosmic-deforum/run_deforum.py`. It applies exactly the method above to Cosmic Rain 0:00–1:04:
