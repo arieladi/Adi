@@ -367,6 +367,7 @@ add_library(adi_core STATIC
     src/adi/controller_maps.cpp
     src/adi/gesture_session.cpp
     src/adi/gesture_producers.cpp
+    src/adi/quiet_gesture.cpp
     src/adi/op_transaction_resources.cpp
     src/adi/history.cpp
     src/adi/history_list.cpp
@@ -1122,6 +1123,10 @@ add_test(NAME adi_gesture_graph_tests COMMAND adi_gesture_graph_tests)
 add_executable(adi_gesture_playback_tests tests/test_gesture_playback.cpp)
 target_link_libraries(adi_gesture_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_gesture_playback_tests COMMAND adi_gesture_playback_tests)
+
+add_executable(adi_quiet_gesture_tests tests/test_quiet_gesture.cpp)
+target_link_libraries(adi_quiet_gesture_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_quiet_gesture_tests COMMAND adi_quiet_gesture_tests)
 
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)
