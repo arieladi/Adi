@@ -747,6 +747,21 @@ namespace adi {
 namespace history_detail {
 Payload checkpointAt(Store &store, std::optional<std::int64_t> seq) {
     auto &db = store.db();
+    // A move across stored baselines installs a checkpoint, which turns
+    // defer_foreign_keys on. SQLite clears that flag only when the OUTERMOST
+    // transaction ends; ROLLBACK TO restores the deferred-violation counters
+    // but not the flag. Unrestored, it outlived this rolled-back probe and
+    // deferred every FK check (RESTRICT included) for the rest of the edit's
+    // commit. Restore it right after ROLLBACK TO, as validatedContent does:
+    // the counters are then back at their entry values, so nothing pending is
+    // erased.
+    const bool deferred = db.execAndGet("PRAGMA defer_foreign_keys").getInt() != 0;
+    const auto restore = [&] {
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        if (!deferred)
+            db.exec("PRAGMA defer_foreign_keys=OFF");
+    };
     db.exec("SAVEPOINT adi_history_checkpoint");
     try {
         OpContext ctx{store, db};
@@ -755,12 +770,10 @@ Payload checkpointAt(Store &store, std::optional<std::int64_t> seq) {
         if (!moveBetween(ctx, OpJournal(store).headSeq(), seq, applied, error))
             throw std::runtime_error(error);
         auto state = checkpointState(store);
-        db.exec("ROLLBACK TO adi_history_checkpoint");
-        db.exec("RELEASE adi_history_checkpoint");
+        restore();
         return state;
     } catch (...) {
-        db.exec("ROLLBACK TO adi_history_checkpoint");
-        db.exec("RELEASE adi_history_checkpoint");
+        restore();
         throw;
     }
 }
