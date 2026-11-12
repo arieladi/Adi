@@ -9,6 +9,8 @@ namespace adi::ui {
 struct ParameterGroupMetadata {
     std::string groupId, groupName;
     bool groupEnableControl = false;
+    std::int32_t bandIndex = -1;
+    std::string sectionId{}, sectionName{};
     bool operator==(const ParameterGroupMetadata &) const = default;
 };
 struct DevicePanelData {

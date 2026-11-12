@@ -47,8 +47,6 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
         gesture(engine::ParamEventKind::Value, v);
         gesture(engine::ParamEventKind::End, v);
     };
-    for (int i = 0; r.shape == panel::Shape::Menu && i < std::max(1, r.stepCount); ++i)
-        menu.addItem(juce::String(i + 1), i + 1);
     addChildComponent(slider);
     addChildComponent(toggle);
     addChildComponent(menu);
@@ -94,6 +92,15 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     slider.setVisible(r.shape == panel::Shape::Continuous);
     toggle.setVisible(r.shape == panel::Shape::Switch);
     menu.setVisible(r.shape == panel::Shape::Menu);
+    if (r.shape == panel::Shape::Menu && (menuSteps_ != std::max(1, r.stepCount) || menuLabels_ != r.choiceLabels)) {
+        menuSteps_ = std::max(1, r.stepCount); menuLabels_ = r.choiceLabels;
+        menu.clear(juce::dontSendNotification);
+        for (std::int32_t i = 0; i < menuSteps_; ++i) {
+            const auto at = static_cast<std::size_t>(i);
+            menu.addItem(at < menuLabels_.size() && !menuLabels_[at].empty() ? juce::String(menuLabels_[at])
+                                                                           : juce::String(i + 1), i + 1);
+        }
+    }
     if (!slider.isMouseButtonDown())
         slider.setValue(r.playing, juce::dontSendNotification);
     toggle.setToggleState(r.playing >= .5, juce::dontSendNotification);
@@ -235,6 +242,22 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
         wrench.setToggleState(strip.root.pluginWindowOpen(id), juce::dontSendNotification);
     };
     addChildComponent(search);
+    addChildComponent(functionBand);
+    addChildComponent(functionSection);
+    functionBand.setTitle("EQ band");
+    functionBand.setTooltip("Selects the band whose controls are shown. Selection does not change processing.");
+    functionSection.setTitle("EQ control section");
+    functionSection.setTooltip("Shows a section of the selected band's controls, or the global controls.");
+    functionBand.onChange = [this] {
+        const auto at = functionBand.getSelectedId() - 1;
+        if (at >= 0 && static_cast<std::size_t>(at) < functionBands_.size())
+            chooseFunctionBand(functionBands_[static_cast<std::size_t>(at)]);
+    };
+    functionSection.onChange = [this] {
+        const auto at = functionSection.getSelectedId() - 1;
+        if (at >= 0 && static_cast<std::size_t>(at) < functionSections_.size())
+            chooseFunctionSection(functionSections_[static_cast<std::size_t>(at)].first);
+    };
     enabled.setTitle("Device Activator");
     enabled.setTooltip("Switches the device on or off.");
     configureButton.setTooltip("Choose which of the plug-in's parameters the panel shows.");
@@ -349,6 +372,90 @@ bool DevicePanelView::editFunctionParameter(const std::string &parameter, engine
 int DevicePanelView::pageSelectorWidth(const ParameterPageControl &page) noexcept {
     return std::clamp(14 + 6 * static_cast<int>(std::min<std::size_t>(page.name.size(), 16)), 36, 110);
 }
+bool DevicePanelView::eqPresentation(const DevicePanelData &value) noexcept {
+    const auto *function = !value.plugin ? mix::functionForUid(value.uid) : nullptr;
+    return function && function->kind == mix::Function::Eq;
+}
+void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
+    if (!eqPresentation(next)) return;
+    if (data && eqPresentation(*data) && data->parameterGroups == next.parameterGroups) return;
+    std::vector<std::int32_t> bands;
+    std::vector<std::pair<std::string, std::string>> sections;
+    for (const auto &[parameter, metadata] : next.parameterGroups) {
+        (void)parameter;
+        if (metadata.groupId != "eq") continue;
+        if (metadata.bandIndex >= 0 &&
+            std::find(bands.begin(), bands.end(), metadata.bandIndex) == bands.end()) bands.push_back(metadata.bandIndex);
+        if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&](const auto &section) {
+                return section.first == metadata.sectionId;
+            })) sections.emplace_back(metadata.sectionId, metadata.sectionName.empty() ? metadata.sectionId : metadata.sectionName);
+    }
+    std::sort(bands.begin(), bands.end());
+    const auto sectionOrder = [](const std::string &section) {
+        return section == "basic" ? 0 : section == "dynamics" ? 1 : section == "detector" ? 2 :
+               section == "spectral" ? 3 : section == "global" ? 4 : 5;
+    };
+    std::stable_sort(sections.begin(), sections.end(), [&](const auto &a, const auto &b) {
+        const auto ao = sectionOrder(a.first), bo = sectionOrder(b.first);
+        return ao != bo ? ao < bo : a.first < b.first;
+    });
+    if (!bands.empty() && std::find(bands.begin(), bands.end(), selectedBand_) == bands.end()) selectedBand_ = bands.front();
+    if (std::none_of(sections.begin(), sections.end(), [&](const auto &section) { return section.first == selectedSection_; }))
+        selectedSection_ = sections.empty() ? std::string() : sections.front().first;
+    if (bands != functionBands_) {
+        functionBands_ = std::move(bands);
+        functionBand.clear(juce::dontSendNotification);
+        for (std::size_t i = 0; i < functionBands_.size(); ++i)
+            functionBand.addItem("Band " + juce::String(functionBands_[i] + 1), static_cast<int>(i + 1));
+    }
+    if (sections != functionSections_) {
+        functionSections_ = std::move(sections);
+        functionSection.clear(juce::dontSendNotification);
+        for (std::size_t i = 0; i < functionSections_.size(); ++i)
+            functionSection.addItem(functionSections_[i].second, static_cast<int>(i + 1));
+    }
+    const auto band = std::find(functionBands_.begin(), functionBands_.end(), selectedBand_);
+    functionBand.setSelectedId(band == functionBands_.end() ? 0 : static_cast<int>(band - functionBands_.begin() + 1), juce::dontSendNotification);
+    const auto section = std::find_if(functionSections_.begin(), functionSections_.end(), [&](const auto &s) { return s.first == selectedSection_; });
+    functionSection.setSelectedId(section == functionSections_.end() ? 0 : static_cast<int>(section - functionSections_.begin() + 1), juce::dontSendNotification);
+}
+bool DevicePanelView::chooseFunctionBand(std::int32_t band) {
+    if (!eqPresentation() || !validTarget() ||
+        std::find(functionBands_.begin(), functionBands_.end(), band) == functionBands_.end()) return false;
+    if (selectedBand_ == band) return true;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    cancelInteractions();
+    if (!safe || !safe->validTarget()) return false;
+    const auto selected = std::find(functionBands_.begin(), functionBands_.end(), band);
+    if (selected == functionBands_.end()) return false;
+    selectedBand_ = band;
+    functionBand.setSelectedId(static_cast<int>(selected - functionBands_.begin() + 1), juce::dontSendNotification);
+    present(*data);
+    if (!safe) return false;
+    strip.resized(); repaint();
+    return true;
+}
+bool DevicePanelView::chooseFunctionSection(const std::string &section) {
+    const auto requested = section;
+    if (!eqPresentation() || !validTarget() || std::none_of(functionSections_.begin(), functionSections_.end(),
+        [&](const auto &s) { return s.first == requested; })) return false;
+    if (selectedSection_ == requested) return true;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    cancelInteractions();
+    if (!safe || !safe->validTarget()) return false;
+    const auto selected = std::find_if(functionSections_.begin(), functionSections_.end(), [&](const auto &s) { return s.first == requested; });
+    if (selected == functionSections_.end()) return false;
+    selectedSection_ = requested;
+    functionSection.setSelectedId(static_cast<int>(selected - functionSections_.begin() + 1), juce::dontSendNotification);
+    present(*data);
+    if (!safe) return false;
+    strip.resized(); repaint();
+    return true;
+}
+std::string_view DevicePanelView::parameterPageUnavailableReason() const {
+    const auto page = std::find_if(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == selectedPage_; });
+    return page == parameterPages.end() ? std::string_view() : std::string_view(page->unavailableReason);
+}
 const panel::Record *DevicePanelView::pageEnableRecord(const ParameterPageControl &page) const {
     if (!data || page.enableParameter.empty()) return nullptr;
     const auto declared = std::find_if(data->declared.begin(), data->declared.end(), [&](const auto &p) {
@@ -359,19 +466,46 @@ const panel::Record *DevicePanelView::pageEnableRecord(const ParameterPageContro
     return at != data->records.end() && !at->missing ? &*at : nullptr;
 }
 bool DevicePanelView::parameterShown(const std::string &parameter) const {
-    if (!data || parameterPages.empty()) return true;
-    const auto group = data->parameterGroups.find(parameter);
-    return group == data->parameterGroups.end() || group->second.groupId.empty() ||
-        (!group->second.groupEnableControl && group->second.groupId == selectedPage_);
+    return !data || parameterShown(*data, parameter);
+}
+bool DevicePanelView::parameterShown(const DevicePanelData &next, const std::string &parameter) const {
+    if (parameterPages.empty()) return true;
+    if (!parameterPageUnavailableReason().empty()) return false;
+    const auto group = next.parameterGroups.find(parameter);
+    if (group == next.parameterGroups.end() || group->second.groupId.empty()) return true;
+    const auto &metadata = group->second;
+    if (metadata.groupEnableControl || metadata.groupId != selectedPage_) return false;
+    if (!eqPresentation(next)) return true;
+    if (!metadata.sectionId.empty() && metadata.sectionId != selectedSection_) return false;
+    return metadata.bandIndex < 0 || metadata.bandIndex == selectedBand_;
+}
+bool DevicePanelView::controlsMatch(const DevicePanelData &next) const {
+    if (!eqPresentation(next)) {
+        if (controls.size() != next.resolved.entries.size()) return false;
+        for (std::size_t i = 0; i < controls.size(); ++i)
+            if (controls[i]->parameter != next.resolved.entries[i].id) return false;
+        return true;
+    }
+    std::size_t index = 0;
+    for (const auto &record : next.records) {
+        if (!parameterShown(next, record.id)) continue;
+        if (index >= controls.size() || controls[index]->parameter != record.id) return false;
+        ++index;
+    }
+    return index == controls.size();
 }
 bool DevicePanelView::chooseParameterPage(const std::string &page) {
-    if (!validTarget() || std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == page; })) return false;
-    if (selectedPage_ == page) return true;
+    const auto requested = page;
+    if (!validTarget() || std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == requested; })) return false;
+    if (selectedPage_ == requested) return true;
     const auto safe = SafePointer<DevicePanelView>(this);
     cancelInteractions();
     if (!safe || !safe->validTarget()) return false;
-    selectedPage_ = page;
+    if (std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == requested; })) return false;
+    selectedPage_ = requested;
     for (auto &p : parameterPages) p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
+    if (eqPresentation()) present(*data);
+    if (!safe) return false;
     resized(); strip.resized(); repaint();
     return true;
 }
@@ -393,8 +527,8 @@ bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) 
     return accepted;
 }
 bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
-    if (data && data->parameterGroups == next.parameterGroups) return true;
-    struct Page { std::string id, name, enable; };
+    if (data && eqPresentation(*data) == eqPresentation(next) && data->parameterGroups == next.parameterGroups) return true;
+    struct Page { std::string id, name, enable; std::string unavailable{}; };
     std::vector<Page> pages;
     for (const auto &r : next.records) {
         const auto metadata = next.parameterGroups.find(r.id);
@@ -406,11 +540,18 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
         }
         if (m.groupEnableControl && at->enable.empty()) at->enable = r.id;
     }
+    if (eqPresentation(next)) {
+        if (std::none_of(pages.begin(), pages.end(), [](const auto &page) { return page.id == "eq"; }))
+            pages.push_back({"eq", "EQ", {}});
+        pages.push_back({"carve", "Carve", {}, "Carve is not available yet. Its processing core and device sidechain route are not connected."});
+        pages.push_back({"focus", "Focus", {}, "Focus is not available yet. Its processing core, analysis proposals and device sidechain route are not connected."});
+    }
     const auto order = [](const std::string &id) { return id == "clip" ? 0 : id == "limiter" ? 1 : 2; };
     std::stable_sort(pages.begin(), pages.end(), [&](const auto &a, const auto &b) { return order(a.id) < order(b.id); });
     bool same = pages.size() == parameterPages.size();
     if (same) for (std::size_t i = 0; i < pages.size(); ++i)
-        if (pages[i].id != parameterPages[i].id || pages[i].name != parameterPages[i].name || pages[i].enable != parameterPages[i].enableParameter) { same = false; break; }
+        if (pages[i].id != parameterPages[i].id || pages[i].name != parameterPages[i].name || pages[i].enable != parameterPages[i].enableParameter ||
+            pages[i].unavailable != parameterPages[i].unavailableReason) { same = false; break; }
     if (same) return true;
     const auto safe = SafePointer<DevicePanelView>(this);
     cancelInteractions();
@@ -424,9 +565,11 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     for (const auto &page : pages) {
         ParameterPageControl p;
         p.id = page.id; p.name = page.name; p.enableParameter = page.enable;
+        p.unavailableReason = page.unavailable;
         p.selector = std::make_unique<juce::TextButton>(page.name);
         p.selector->setTitle(page.name + " parameters");
-        p.selector->setTooltip("Shows " + juce::String(page.name) + " controls. Page selection does not change processing.");
+        p.selector->setTooltip(page.unavailable.empty() ? "Shows " + juce::String(page.name) + " controls. Page selection does not change processing."
+                                                      : juce::String(page.unavailable));
         p.selector->setColour(juce::TextButton::buttonColourId, look::button);
         p.selector->setColour(juce::TextButton::buttonOnColourId, look::accent);
         p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
@@ -452,6 +595,7 @@ void DevicePanelView::visibilityChanged() {
 }
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
+    presentFunctionSelection(d);
     data = &d;
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
@@ -477,10 +621,18 @@ void DevicePanelView::present(const DevicePanelData &d) {
         wrench.setVisible(d.plugin && !strip.folded(id));
         resized();
     }
-    bool same = controls.size() == d.resolved.entries.size();
+    // Native EQ uses its declared stable band/section metadata, not the ordinary
+    // plug-in Configure cap. Construct only this small visible control set.
+    std::vector<panel::Entry> eqEntries;
+    if (eqPresentation()) {
+        for (const auto &record : d.records)
+            if (parameterShown(record.id)) eqEntries.push_back({record.id, record.missing});
+    }
+    const auto &entries = eqPresentation() ? eqEntries : d.resolved.entries;
+    bool same = controls.size() == entries.size();
     if (same)
         for (std::size_t i = 0; i < controls.size(); ++i)
-            if (controls[i]->parameter != d.resolved.entries[i].id) {
+            if (controls[i]->parameter != entries[i].id) {
                 same = false;
                 break;
             }
@@ -491,13 +643,22 @@ void DevicePanelView::present(const DevicePanelData &d) {
         return found == d.defaults.end() ? 0.0 : found->second;
     };
     if (!same) {
+        const auto safe = SafePointer<DevicePanelView>(this);
         endFunctionParameter();
+        if (!safe) return;
+        ++controlsEpoch_;
+        for (auto &control : controls) {
+            control->slider.onDragStart = {}; control->slider.onValueChange = {}; control->slider.onDragEnd = {};
+            control->toggle.onClick = {}; control->menu.onChange = {};
+        }
         controls.clear();
-        for (const auto &e : d.resolved.entries)
+        const auto epoch = controlsEpoch_;
+        for (const auto &e : entries)
             for (const auto &r : d.records)
                 if (r.id == e.id) {
                     auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
-                    c->parameterGesture = [this](const std::string &param, engine::ParamEventKind kind, double v) {
+                    c->parameterGesture = [this, epoch](const std::string &param, engine::ParamEventKind kind, double v) {
+                        if (epoch != controlsEpoch_) return false;
                         if (kind != engine::ParamEventKind::End && !parameterShown(param)) return false;
                         if (nativeFunction() || !parameterPages.empty()) return editFunctionParameter(param, kind, v);
                         if (kind == engine::ParamEventKind::End && parameterGesture)
@@ -519,6 +680,8 @@ void DevicePanelView::present(const DevicePanelData &d) {
                     return p.id == r.id;
                 });
                 c->setEnabled(!r.missing && declared != d.declared.end() && declared->modifiable);
+                if (nativeFunction() && !r.missing && declared != d.declared.end() && !declared->modifiable)
+                    c->setTooltip("Read-only in this device tier. The current setting is retained; editing is not connected.");
                 break;
             }
     for (auto &page : parameterPages) {
@@ -531,7 +694,8 @@ void DevicePanelView::present(const DevicePanelData &d) {
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
-    const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight);
+    const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight) +
+                    (eqPresentation() && selectedPage_ == "eq" ? kPageHeight : 0);
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
     const auto count = static_cast<std::size_t>(std::count_if(controls.begin(), controls.end(), [&](const auto &c) { return parameterShown(c->parameter); }));
     const int columns = static_cast<int>((count + static_cast<std::size_t>(rows) - 1) /
@@ -539,18 +703,19 @@ int DevicePanelView::widthFor(int height) const noexcept {
     // Wide enough for the title bar's switches, a name and Configure; and a sample tile beside.
     int pageWidth = 12;
     for (const auto &page : parameterPages) pageWidth += pageSelectorWidth(page) + (page.enableParameter.empty() ? 0 : 18) + 3;
-    return std::max({150, pageWidth, columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
+    return std::max({eqPresentation() ? 270 : 150, pageWidth,
+                     columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
-    configureButton.setVisible(!isFolded);
+    configureButton.setVisible(!isFolded && !eqPresentation());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - 58), 15);
+    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() ? 4 : 58)), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (sample) {
         sample->setVisible(!isFolded);
@@ -569,6 +734,14 @@ void DevicePanelView::resized() {
         page.selector->setBounds(pageX, top + 1, width, kPageHeight - 3); pageX += width + 3;
     }
     if (!parameterPages.empty()) top += kPageHeight;
+    const bool eqControls = !isFolded && eqPresentation() && selectedPage_ == "eq";
+    functionBand.setVisible(eqControls && !functionBands_.empty());
+    functionSection.setVisible(eqControls && !functionSections_.empty());
+    functionBand.setEnabled(selectedSection_ != "global" && validTarget());
+    functionSection.setEnabled(validTarget());
+    functionBand.setBounds(6, top + 1, 98, kPageHeight - 3);
+    functionSection.setBounds(108, top + 1, std::max(0, std::min(150, getWidth() - 114)), kPageHeight - 3);
+    if (eqControls) top += kPageHeight;
     const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
     int visible = 0;
     for (auto &control : controls) {
@@ -607,7 +780,13 @@ void DevicePanelView::paint(juce::Graphics &g) {
         g.drawText(juce::String(data->name), kTitleHeight + 2, getHeight() + 4,
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
-    } else if (data && data->resolved.showsConfigureHint) {
+    } else if (data && !parameterPageUnavailableReason().empty()) {
+        g.setColour(look::text);
+        g.setFont(look::font(12.f));
+        g.drawFittedText(juce::String(parameterPageUnavailableReason().data(), parameterPageUnavailableReason().size()),
+                        10, kTitleHeight + kPageHeight + 8, std::max(0, getWidth() - 20),
+                        std::max(0, getHeight() - kTitleHeight - kPageHeight - 16), juce::Justification::centred, 5);
+    } else if (data && data->resolved.showsConfigureHint && !eqPresentation()) {
         g.setColour(look::text);
         g.drawFittedText("Choose parameters with Configure", 8, kTitleHeight + 6, getWidth() - 16,
                          36, juce::Justification::centred, 2);
@@ -705,13 +884,15 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
-    m.addSeparator();
-    m.addItem("Configure", [safe, epoch] {
-        if (!safe || safe->menuEpoch_ != epoch) return;
-        if (safe) safe->endInteraction(Interaction::Menu);
-        if (safe && safe->validTarget())
-            safe->configure();
-    });
+    if (!eqPresentation()) {
+        m.addSeparator();
+        m.addItem("Configure", [safe, epoch] {
+            if (!safe || safe->menuEpoch_ != epoch) return;
+            if (safe) safe->endInteraction(Interaction::Menu);
+            if (safe && safe->validTarget())
+                safe->configure();
+        });
+    }
     return m;
 }
 void DevicePanelView::contextMenu(juce::Point<int> where) {
@@ -748,7 +929,7 @@ void DevicePanelView::endRename(bool commit) {
     endInteraction(Interaction::Text);
 }
 void DevicePanelView::configure() {
-    if (!data || !validTarget())
+    if (!data || !validTarget() || eqPresentation())
         return;
     if (!configuring) {
         // The first press shows the search; the menu lists what it finds.
@@ -982,12 +1163,17 @@ void DeviceChainStrip::showSamples() {
         }
 }
 void DeviceChainStrip::frame(std::int64_t track) {
+    const auto safe = SafePointer<DeviceChainStrip>(this);
+    const auto epoch = ++frameEpoch_;
+    const auto current = [&safe, epoch] { return safe && safe->frameEpoch_ == epoch; };
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
             p->wrench.setToggleState(root.pluginWindowOpen(p->id), juce::dontSendNotification);
     showSamples();
-    auto next = publication ? publication() : nullptr;
+    const auto getPublication = publication;
+    auto next = getPublication ? getPublication() : nullptr;
+    if (!current()) return;
     if (next == presented && track == selectedTrack)
         return;
     if (track != selectedTrack) {
@@ -1010,9 +1196,26 @@ void DeviceChainStrip::frame(std::int64_t track) {
                 break;
             }
     if (!same) {
+        // End can synchronously close this root or reconcile a newer publication.
+        // Keep panels under strip ownership during cancellation: if the strip
+        // dies, its normal teardown owns every panel and no local survivor has
+        // a dangling strip reference.
+        for (std::size_t i = 0; i < panels.size(); ++i) {
+            panels[i]->cancelInteractions();
+            if (!current()) return;
+        }
+        // A native EQ's chosen band/section belongs to its stable authored runtime,
+        // not its chain ordinal. Reuse that presentation when adjacent devices move.
+        // Ordinary plug-in rebuilding retains its existing behavior.
+        auto previous = std::move(panels);
         panels.clear();
         for (auto *d : visible) {
-            auto p = std::make_unique<DevicePanelView>(*this, *d);
+            const auto retained = std::find_if(previous.begin(), previous.end(), [&](const auto &p) {
+                return p && p->eqPresentation() && p->id == d->id && p->presentedInstance() == d->instance &&
+                    p->data && p->data->track == d->track && p->data->chain == d->chain &&
+                    p->data->uid == d->uid && !d->plugin;
+            });
+            auto p = retained == previous.end() ? std::make_unique<DevicePanelView>(*this, *d) : std::move(*retained);
             if (p->nativeFunction()) {
                 const auto expected = *d;
                 p->targetValid = [this, expected] { return validExpected(expected); };
@@ -1024,8 +1227,10 @@ void DeviceChainStrip::frame(std::int64_t track) {
             panels.push_back(std::move(p));
         }
     }
-    for (std::size_t i = 0; i < panels.size(); ++i)
+    for (std::size_t i = 0; i < panels.size(); ++i) {
         panels[i]->present(*visible[i]);
+        if (!current()) return;
+    }
     presented = std::move(next);
     addTab.setVisible(addFunction && selectedTrack > 0);
     // The panels just made show their sample slots in this frame, not the next.

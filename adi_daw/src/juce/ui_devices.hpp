@@ -7,6 +7,8 @@
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <string_view>
+#include <utility>
 namespace adi::ui {
 // A view that draws on its window's frame clock and never drives its own repaint
 // (ADR-0180 d1): the floating host calls frame() from the window's VBlank.
@@ -47,6 +49,8 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    std::int32_t menuSteps_ = 0;
+    std::vector<std::string> menuLabels_;
 };
 // The Device Activator: Live's round switch at the left of a device's title bar,
 // orange when the device is on.
@@ -135,15 +139,24 @@ class DevicePanelView final : public juce::Component {
     std::vector<std::unique_ptr<ParameterControl>> controls;
     struct ParameterPageControl {
         std::string id, name, enableParameter;
+        std::string unavailableReason{};
         std::unique_ptr<juce::TextButton> selector;
         std::unique_ptr<ActivatorButton> enabled;
     };
-    // Only backend-provided groups appear. A pure Limiter descriptor never invents Clip.
+    // Processing controls require backend groups. EQ's deferred Carve/Focus pages
+    // explicitly show their missing dependencies and never expose processing controls.
     std::vector<ParameterPageControl> parameterPages;
     const std::string &selectedParameterPage() const noexcept { return selectedPage_; }
     bool chooseParameterPage(const std::string &);
     bool setParameterPageEnabled(const std::string &, bool);
     bool parameterShown(const std::string &) const;
+    bool controlsMatch(const DevicePanelData &) const;
+    juce::ComboBox functionBand, functionSection;
+    std::int32_t selectedFunctionBand() const noexcept { return selectedBand_; }
+    const std::string &selectedFunctionSection() const noexcept { return selectedSection_; }
+    bool chooseFunctionBand(std::int32_t);
+    bool chooseFunctionSection(const std::string &);
+    std::string_view parameterPageUnavailableReason() const;
     // Color Cab's Impulse tile, beside its controls (D5); none on any other device.
     std::unique_ptr<SampleTile> sample;
     static constexpr int kTileWidth = 96;
@@ -176,6 +189,15 @@ class DevicePanelView final : public juce::Component {
     bool editingBegan_ = false;
     std::string selectedPage_;
     std::uint64_t pageEpoch_ = 0;
+    std::uint64_t controlsEpoch_ = 0;
+    std::int32_t selectedBand_ = 0;
+    std::string selectedSection_;
+    std::vector<std::int32_t> functionBands_;
+    std::vector<std::pair<std::string, std::string>> functionSections_;
+    static bool eqPresentation(const DevicePanelData &) noexcept;
+    bool parameterShown(const DevicePanelData &, const std::string &) const;
+    bool eqPresentation() const noexcept { return data && eqPresentation(*data); }
+    void presentFunctionSelection(const DevicePanelData &);
     bool presentParameterPages(const DevicePanelData &);
     const panel::Record *pageEnableRecord(const ParameterPageControl &) const;
     static int pageSelectorWidth(const ParameterPageControl &) noexcept;
@@ -261,6 +283,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;
     std::uint64_t addMenuEpoch_ = 0;
+    std::uint64_t frameEpoch_ = 0;
 };
 // The strip's top edge: drag it up to grow the strip (ADR-0184), never below its floor.
 class DockResizer final : public juce::Component {

@@ -144,9 +144,7 @@ void StackRow::present(const stack::RowGeo &geo) {
         found->view->setExplicitFocusOrder(static_cast<int>(item.index + 1));
         if (const auto cap = stack_.model().capture(); cap && cap->target == item.ref &&
             cap->kind == stack::CaptureKind::Drag) {
-            bool sameControls = found->view->controls.size() == data->resolved.entries.size();
-            for (std::size_t i = 0; sameControls && i < found->view->controls.size(); ++i)
-                sameControls = found->view->controls[i]->parameter == data->resolved.entries[i].id;
+            const bool sameControls = found->view->controlsMatch(*data);
             const bool parameterLive = data->available && std::any_of(data->records.begin(), data->records.end(),
                 [&](const auto &record) { return record.id == stack_.state_->parameter && !record.missing; });
             if (!sameControls || !parameterLive) stack_.endInteraction();

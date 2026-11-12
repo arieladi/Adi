@@ -60,7 +60,8 @@ void ParameterFeed::publish(engine::Session &session) {
                                              d->automatable});
                     data.defaults[d->id] = d->defaultValue.normalized;
                     if (!d->groupId.empty())
-                        data.parameterGroups[d->id] = {d->groupId, d->groupName, d->groupEnableControl};
+                        data.parameterGroups[d->id] = {d->groupId, d->groupName, d->groupEnableControl,
+                                                      d->bandIndex, d->sectionId, d->sectionName};
                     panel::Record r;
                     r.id = d->id;
                     r.name = d->name;
@@ -75,6 +76,7 @@ void ParameterFeed::publish(engine::Session &session) {
                     r.text = instance->paramText(d->id, r.playing);
                     r.shape = static_cast<panel::Shape>(d->shape);
                     r.stepCount = d->stepCount;
+                    if (d->shape == device::ParamShape::Menu) r.choiceLabels = d->choiceLabels;
                     // The lane's ref is decimal where a CLAP id is hex (ADR-0165): the session's
                     // own spelling, so a CLAP parameter's lane is found as its override is.
                     const auto *lanes = session.deviceAutomation();
@@ -100,7 +102,7 @@ void ParameterFeed::publish(engine::Session &session) {
                 // aggregate 64-control Configure threshold must not empty a two-stage page.
                 data.resolved.entries.clear();
                 for (const auto &parameter : data.declared)
-                    if (parameter.modifiable) data.resolved.entries.push_back({parameter.id, false});
+                    data.resolved.entries.push_back({parameter.id, false});
                 data.resolved.showsConfigureHint = false;
             }
             // Suite identity, not a name match against a user's renamed device.
