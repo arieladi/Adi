@@ -18137,3 +18137,195 @@ nothing from them and is trivial. The bridge is neither trivial nor needed, so i
 | ADR-0207 | its FilmCraft contribution item is withdrawn |
 | PLAN TM-IC-01, IC-03, TM-IC-04, take IC10 | the FilmCraft time base, the link tables and the bridge are struck; the AAF writer is clean-room |
 | FEATURES, BUILD-BRIEF 7e and 19-20, LANES §3 item 3 and its gates | marked cancelled |
+
+## ADR-0235 — ADiJ stays light: no Mix View and no unified built-in plug-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; REFINES ADR-0105 d4 AND NARROWS ADR-0187 d4**
+
+**The ruling, in his words (12 November).** "ADIJ doesn't get the new mixview and all this plugins
+and abelites adij while do support clap and vst3 , the daw side of it should be very simple to
+combine automations with the dj play so we can set things to happen in advanced and having them
+still on the time line even if we slow the tempo or whatever because it will sit on top of the wav
+meta data and will run on the same engine right ? ) but we defiantly do not need an extensive adi
+daw features in adij the daw in there should be pretty lightweight and all very cpu efficient as it
+meant for playing as dj on cdj and alike". Win answered his question yes: one engine, and automation
+placed on the beat grid follows any tempo (d4, d5).
+
+### Decisions
+
+1. **Not in ADiJ:** the Mix View (ADR-0209, ADR-0212, ADR-0236) and the unified built-in feature
+   made from the director's plug-ins (ADR-0212). His plug-ins' ordinary VST3 and CLAP builds load in
+   ADiJ like any plug-in (d2).
+2. **CLAP and VST3 are hosted** for effects and instruments, as ADR-0105 d4 and ADR-0133 d1 already
+   say, through the same hosts in `adi_core` and the shared plug-in capability record (ADR-0149 d2,
+   ADR-0203 d22).
+3. **The DAW side is small.** ADR-0105 d4's Mini DAW mode is the whole of it: a few automation lanes
+   per deck, drawn on the deck's waveform beside the grid, set in advance. It is not ADI's
+   arrangement, Session view, device area or mixer.
+4. **Automation is anchored to the track's beat grid, not to seconds.** A point says "bar 33,
+   beat 1" on that track's grid. Pitch, tempo changes, sync and keylock move the automation with the
+   music; editing the grid (moving the downbeat) moves it too. The grid and the automation are a
+   record in ADiJ's library keyed by the audio's BLAKE3 hash, beside the track's analysis (ADR-0104
+   d1, ADR-0147). "On top of the wav meta data" therefore means on top of the track's grid record:
+   nothing is written into the audio file (ADR-0105 d4), because changing its bytes would change its
+   hash and orphan its analysis.
+   - *Format note.* The project format's automation is in ticks against one tempo map, or ns
+     (`automation_lanes.time_base`). A deck needs its own time base: either a mapping through the
+     track's grid onto ticks, or a new `time_base` value (a schema minor). The engine lane decides
+     which, with the first ADiJ format work; ADR-0105 d4's "the DAW's automation lanes and ops, not
+     new ones" holds either way.
+5. **One engine** (ADR-0105 d2, ADR-0188 d8, ADR-0190 d2): ADiJ is a shell over `adi_core`, and its
+   automation runs on the same graph and the same automation code as ADI.
+6. **CPU is a requirement.** ADiJ is for playing live with CDJs and similar hardware: a deck's
+   audio path, its stems (ADR-0191 d4) and its automation must stay cheap and must never glitch;
+   analysis and separation stay off the deck, at analysis time. ADR-0187 d4's "aDiJ should match
+   [Mixxx's] feature set" is narrowed accordingly: DJ features, yes; DAW breadth, no.
+7. **Unchanged:** the USB export still strips plug-ins and automation (ADR-0105 d5), so automation
+   plays only while ADiJ itself plays the deck, for example CDJs with a laptop running ADiJ
+   (ADR-0205 d8); ADR-0191 d1 to d4; FEATURES §10.6 priorities; roadmap step 13.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0105 d4 | Mini DAW mode confirmed as the whole DAW side; automation anchored to the track's grid (d3, d4) |
+| ADR-0187 d4 | "match its feature set" covers DJ features, not DAW breadth (d6) |
+| ADR-0209, ADR-0212 | ADI only; not in ADiJ (d1) |
+| FEATURES §10.6 | a row for the grid-anchored automation and the CPU rule, with the next FEATURES pass |
+
+## ADR-0236 — The Mix View seat: his plug-in list is in, so the unified feature's design starts; a dedicated Codex session builds the Mix View across the lanes, starting with a decision guide; his tab model is the baseline — `DECIDED` (2026-11-12) — **DIRECTOR'S DIRECTION; OPENS ADR-0212's GATE; AMENDS ADR-0208 d2's NAME AND LANES §2**
+
+**The direction (12 November), in his words.** "please give codex a mission of creating the mix view
+for us from all his research and knowledge have it advance in the engine lane window lane and
+control lane (and any other lanes needed) i want a codex session in my codex pro 500 that is about
+putting all its work into adi new mix view". Then: "i need to understand how we intend to integrate
+all the 10 plugins i want to put in the mix view, i want codex to guide me with the decision making
+on how to combine them all into this mix view and its standalones. i am thinking in the Ableton like
+device area - to have like tabs of enabled mixview function - lets say i chose to enable the EQ and
+Limiter on the mix view for a channel that channel then shows at the end of the chain in the device
+area a tab for EQ and then a TAB for LIMITER (eq default first other tools - clipper then limiter
+last) in this case we only enabled EQ and Limiter so - EQ is in the end of the device chain and
+after it there is a limiter but we can move those tabs to put those elements in between vst3 or
+clap plugins in the chain if we want the limiter before any processing we can if we want eq in the
+middle after an soothe2 and then limiter and then some other vst after we can.. those tabs move the
+elements from mix view in the device area".
+
+### Decisions
+
+1. **ADR-0212's gate opens.** His list is the product table of his 9 November roadmap: ADI-Q,
+   ADI-L, ADI-Clip and ADI Still (built), and ADI-View (the analysers combined), ADI-FUSE
+   (Trackspacer- and FUSER-class), ADI-C (Pro-C 3-class compressor), ADI-DS and ADI-G (to build);
+   he speaks of ten. The seat's first act is to confirm the ten with him. The unified feature is
+   written from their source and never hosts their VST3 (ADR-0212 d2 stands).
+2. **His tab model is the baseline**, to be confirmed through the decision guide (d4), not designed
+   around: each Mix View function enabled on a channel appears as a tab in that track's device area,
+   at the end of the chain by default in a fixed order (EQ first, clipper then limiter last), and
+   each tab can be moved anywhere among the track's VST3 and CLAP devices. A tab is the device-like
+   window ADR-0212 asked for; the Mix View row shows the same functions in chain order. Nothing is
+   enabled by default and nothing reserves a slot (ADR-0212 d1 stands).
+3. **A dedicated Codex Mix View seat**, local to his PC (his plug-in source and research are not in
+   any repository), owns the Mix View end to end: the unified feature's engine side, the Mix View
+   and device-area windows, the control-lane methods the Mix View needs (the AI Mix Radar's
+   proposals through the changeset, ADR-0148, ADR-0232), and the standalones. It works on branches
+   `mixview/…`, logs in `collab/mixview.md` on `mixview/log`, and lands through win like the other
+   seats. The engine and window seats keep their own queues; where a Mix View item touches their
+   paths, the seats coordinate through their logs (ADR-0208 d3's path ownership, amended by this
+   seat).
+4. **The first deliverable is a decision guide** for the director: every choice the unified feature
+   and its standalones need, each with options, costs and a recommendation, including at least: his
+   ten; disabling a function (settings kept or lost); analysers and visualisers as taps rather than
+   chain positions; Mix-Unmask's sidechain key; latency of moved tabs; more than one of a function
+   per channel; presets and new-track defaults; the standalones (one app or one per plug-in, and
+   how they share the code); what the Mix View row shows for third-party plug-ins; the open ADI-View
+   decisions D1 to D13; how a compressor and a gate as opt-in functions sit with ADR-0203 d14 ("no
+   compressor, no gate" on channels); per-row loudness versus ADR-0203 d14's Main-only metering;
+   the JUCE versions; the shipped code that still draws the withdrawn slots
+   (`ui/mix_view_provider.hpp`, `juce/ui_stack.cpp`).
+5. **Names.** ADI-Clip is the clipper and ADI-C the Pro-C 3-class compressor, as his roadmap names
+   them; ADR-0208 d2's "ADI-C" clipper is renamed ADI-Clip (ADR-0212 d3 left the name his call).
+6. **Not in ADiJ** (ADR-0235 d1).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0212 | its gate opens (d1); d1, d2 and d4's rules (no slots, never host the VST3) stand |
+| ADR-0208 d2 | the clipper is ADI-Clip; ADI-C is the compressor (d5) |
+| ADR-0209 d12 | ADI-View and ADI-FUSE are products with their own cores, per his roadmap; the guide reconciles d12's "parity passes" (d4) |
+| LANES §2 | a `mixview/` prefix and a Mix View seat (d3) |
+| PLAN MX-20, MX-21, MX-31, MX-36 | their "waits for the list" parts are unblocked, through the guide's answers |
+
+## ADR-0237 — The Mix View's first answers: one of each function per channel, added and removed like Live devices; EQ carries the unmasking; the limiter carries the clipper; analysers live in the Info box and a Mix View tab, and cost nothing unseen — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; ANSWERS ADR-0236 d4's FIRST QUESTIONS**
+
+**His answers, in his words (12 November),** to the eight questions win put to him from ADR-0236 d4:
+
+- Disabling: "as deleting a Live device does but we can undo of curse"
+- Analysers and visualisers: "mostly meant to run on the master unless comparison between channels
+  like psyscope - we need a very efficient way of handling the mix view while is not apparent (if
+  someone choosing to look at it in second screen all the time so be it but if its not visible it
+  should not use cpu at all) visualizers from adi mixview shuld sit in the info box in a boxed
+  version.. not as tabs in the device area"
+- Second inputs: "to enable this function one needs to go into mix view and enable this function
+  with all its goodness on modulation and routing and easy sidechaining to the kick and so on, so if
+  one use that function he can then see a tab (this abilities of trackspacer and fuser should go into
+  the EQ window the rest need to have there own new designs like pro-c pro-ds pro-g clones and the
+  adi-clip can be part of the adi-L as another mode or tab"
+- Latency: "if one hover on the tab to look for info it then show it in the info box for a sec until
+  not hovering on it anymore then it goes back to boxed version analyzers.."
+- Two of the same: "no this part of the mix view is for easy broad changes on all instance for vca
+  trick or clip2zero method - easy routing and AI assistant friendly across all channels if someone
+  wants another EQ he can load ADI-Q or a fabfilter PRO-Q or pulsar massive or whatever they want"
+- Presets and defaults: "both, nothing starts defult on a track one dose need to enable it from the
+  mix view or from an add tabs the tabs will show the mix view functions we can add from the device
+  area like adding a clipper (adi-clip) wich its defaults is like kclip defaults."
+- Standalones: "an ADI-View-style app showing the current channel I'm on and act as the full
+  analyzer suite for that channel we can then from there go to mix view and still be on that channel
+  and then add whatever , the mix view will have the fabfilter instance view like interface for the
+  processing plugins while all the analizer and visualizer will live in a separate tab within the mix
+  view where we have a master view of span + smexoscope and so on.. and a compare where we have a
+  psyscope like and a multi channel phase compare and so on.."
+- The Mix View row: "like what the device area show but without modulation and as a compacted (like
+  dabble clicking in Ableton on a device to shrink it so it wont take a lot of space - we need to see
+  the name and be able to disable or enable if we want like in device view)"
+
+### Decisions
+
+1. **One of each function per channel.** The Mix View's functions are for broad changes across all
+   channels at once (the VCA trick, clip-to-zero), easy routing, and work the AI assistant can do
+   across channels. A second EQ on a channel is an ordinary plug-in: ADI-Q's VST3, Pro-Q, Pulsar
+   Massive or anything else.
+2. **The functions.** The EQ (ADI-Q), which also carries the Trackspacer- and FUSER-class unmasking
+   (ADI-FUSE) inside its window; the compressor (ADI-C), the de-esser (ADI-DS) and the gate (ADI-G),
+   each with a new design of its own; the limiter (ADI-L), with the clipper (ADI-Clip) as one of its
+   modes or tabs. Default order at the chain's end: EQ first, the others between, the limiter (with
+   its clipper) last (ADR-0236 d2). ADI Still's place is to be confirmed.
+3. **Added and removed like Live devices.** Nothing is enabled on a new track. A function is added
+   from the Mix View or from the device area's add-tab control, which lists the Mix View functions;
+   it starts at its reference's defaults (the clipper at KClip's). Disabling removes it, as deleting
+   a Live device does, and Undo brings it back. A function that needs a second input (the EQ's
+   unmasking keyed from the kick) is enabled and routed in the Mix View, with its modulation and
+   routing there; its tab then appears in the device area.
+4. **Presets at both levels:** a channel's whole set, and each function.
+5. **Analysers and visualisers are not chain functions and never device-area tabs.** They run on Main
+   mostly, and across channels only for comparison (a Psyscope-class view, a multi-channel phase
+   compare). They live in two places: boxed in the Info box, and in a tab of their own inside the Mix
+   View with a master view (SPAN- and sMexoscope-class and the rest) and a compare view. The Mix View
+   itself keeps the FabFilter instance-list interface for the processing functions.
+6. **Nothing unseen costs CPU.** When the Mix View and the analysers are not visible they use no CPU
+   at all (no taps fed, no workers running); visible on a second screen all the time is the user's
+   choice.
+7. **Hovering a tab** shows its information, latency included, in the Info box while the pointer is
+   on it; then the Info box returns to the boxed analysers.
+8. **A Mix View row** shows what the device area shows for that track, without modulation, folded
+   compact as a double-click folds a Live device: each device's name and its on/off switch.
+9. **The analyser window ("standalone").** An ADI-View-style window follows the channel you are on
+   and is that channel's full analyser suite; from it you go to the Mix View on the same channel and
+   add functions. Win reads this as a window of ADI, possibly on a second screen; whether separate
+   standalone apps are also wanted is for the seat to confirm with him.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0236 d4 | questions 2 to 8, 10 and 11 of the guide answered (d1 to d9); the guide carries the rest |
+| ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
+| ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
+| ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
