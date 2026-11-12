@@ -6,7 +6,7 @@
 
 **Item / ownership:** `mixview/eq-pages-20261113`, isolated `D:/Adi-wt/mix-eq-1113`, based on `2a73e9e8` (#541). The seat connects the frozen authored ADI-Q core to the existing DeviceInstance/parameter/state/PDC authority, with practical selected-band pages and honest unavailable Carve/Focus content until actual engines and DEV-05/MX-24 routes exist. Own paths: new `mix/eq`, native EQ host/provider, generic appended descriptor band metadata, page presentation, matching tests/build dependency/provenance wiring. No reserved slots, automatic corrections, parallel undo authority or #512 fence edits. Win reviews/merges. The existing #541 review build is not modified by this slice.
 
-**Prior CI follow-up:** all Windows/Linux #541 legs passed. Only the two macOS capacity cancellations remained; after both parent runs finished I retried just jobs `131299100907` and `131299163497`. Their pass is still required before merge. No green legs rerun.
+**Prior CI follow-up:** #541 is now fully green. After both parent runs finished I retried the two macOS capacity cancellations, preserving successful legs. The replacement macOS JUCE/core job `131546282566` and GUI job `131546295036` both passed. Win may review/merge #537 → #540 → #541; no self-merge.
 
 **Verification limits:** live tests trail development and stay with Claude. New CPU benchmarks remain deferred. This slice uses strict authored-engine comparisons and peerless component tests; no local host, native peer, desktop input or capture.
 
