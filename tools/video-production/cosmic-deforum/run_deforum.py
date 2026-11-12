@@ -2,7 +2,7 @@
 actually worked ... use the images from cosmic rain some of them once in a while to drive the changes but mostly let
 deforum just run freely").
 
-usage: run_deforum.py <root> [stills|continuous|ending]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
+usage: run_deforum.py <root> [stills|continuous|ending|remake]     (resumable; D:/AvasthaAI/venv python; the Deforum service on 7865 must be up)
 Method, from the archived Avastha project (QuantumAscent-Archive-20261030, deforum-section-050-123 + ending-184s):
   - the actual Deforum extension, SD1.5 DreamShaper8, A2000, D:/AvasthaAI/ActualDeforum/settings-8s.json unchanged
     (848x480 15 fps, DPM++ 2M 28 steps, cfg 6, 2D camera zoom 1.005 / angle 0.06 / x 0.12 / y -0.05, noise 0.02,
@@ -33,6 +33,7 @@ TRACK = Path("D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav")
 LUT = Path("D:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
 LUT_SHA = "847229a33fca2012b0a69f453cab6e906d55a343e77287cd1cac3a588586c48a"
 FULL = Path("D:/AvasthaAI/CosmicRainFull-20261027")
+DRAFT1 = FULL / "Cosmic Rain - full track keyframe edit - with music.mp4"
 END, START, FPS = 64.0, 7.0, 15
 N = round((END - START) * FPS)
 BAR, PHASE = 240 / 143, 0.0215
@@ -98,17 +99,26 @@ def prepare():
         s["strength_schedule"] = ", ".join(f"{k}:({v})" for k, v in sorted(keys.items()))
         save("settings.json", s)
         return s
+    if MODE == "remake":
+        # As section 0:50-2:03 was made: existing footage of the same minutes rides underneath at alpha 0.05 the
+        # whole run. For Cosmic Rain that is Draft 1 (Adi's favourite, the 43 h run) from 0:07, no stills.
+        subprocess.run([FF, "-v", "error", "-y", "-ss", str(START), "-i", str(DRAFT1), "-t", f"{END - START:.3f}",
+                        "-vf", "fps=15,scale=848:480:flags=lanczos", "-an", "-c:v", "libx264", "-crf", "12",
+                        "-pix_fmt", "yuv420p", str(R / "guide.mp4")], check=True)
+        stills = []
     imgs =[np.array(ImageOps.fit(Image.open(x["image"]).convert("RGB"), (848, 480), method=Image.Resampling.LANCZOS)) for x in stills]
-    p = subprocess.Popen([FF, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "848x480", "-r", "15", "-i", "pipe:0",
-                          "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(R / "guide.mp4")], stdin=subprocess.PIPE)
-    for i in range(N):
+    p = None if MODE == "remake" else subprocess.Popen(
+        [FF, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "848x480", "-r", "15", "-i", "pipe:0",
+         "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(R / "guide.mp4")], stdin=subprocess.PIPE)
+    for i in range(N if p else 0):
         if i < 15:
             f = opening[i]
         else:
             shown = [k for k, x in enumerate(stills) if x["frame"] - HALF - 2 <= i]
             f = imgs[shown[-1]] if shown else opening[-1]
         p.stdin.write(np.ascontiguousarray(f).tobytes())
-    p.stdin.close(); assert p.wait() == 0
+    if p:
+        p.stdin.close(); assert p.wait() == 0
 
     s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
     alpha = {0: 1.0, 15: 0.70, 30: 0.25, 45: 0.05}
@@ -124,6 +134,8 @@ def prepare():
             if base + off < N:
                 strength[base + off] = v
     prompts = {"0": OPEN_PROMPT + SUFFIX}
+    if MODE == "remake":
+        prompts = {str(i * (N // len(THEMES) + 1)): t + SUFFIX for i, t in enumerate(THEMES)}
     for x in stills:
         prompts[str(max(1, x["frame"] - 15))] = x["prompt"] + SUFFIX
     sched = lambda d: ", ".join(f"{k}:({v})" for k, v in sorted(d.items()))
