@@ -195,6 +195,15 @@
       "eye": "real drumming/strikes in M01, M04, M09, M11, M13, M15; dancing M12; near-still M05, M14, M17 (eyes never opened); morphs between start and landing M07, M16; glitter on goddess M08; odd hand M06",
       "status": "sent to Adi 2026-11-11 14:30, awaiting verdict",
       "adi_pc_control": "F:/AvasthaAI/control controller + Studio desktop Stop/Continue video AI buttons (2026-11-11)"
+    },
+    "deforum_tests_20261112": {
+      "recipe": "AVASTHA-DEFORUM-RECIPE.md",
+      "A_stills": "D:/AvasthaAI/CosmicDeforum-20261112 - 0:50-2:03 method with 6 Cosmic stills on the hybrid layer; Adi: terrible, a mess",
+      "B_continuous_stills_themes": "stopped by Claude after Adi asked for no Cosmic photos",
+      "C_ending": "D:/AvasthaAI/CosmicDeforumEnding-20261112 - exactly the Avastha ending recipe from the opening's 7 s frame, 4 world themes; sent 2026-11-12 12:58, stays deep blue, no wash-out",
+      "D_remake": "D:/AvasthaAI/CosmicDeforumRemake-20261112 - 0:50-2:03 way, Draft 1 0:07-1:04 under at alpha 0.05, same 4 themes; sent 2026-11-12 ~14:40",
+      "timing": "Deforum ~4.3 s/frame on A2000 at 848x480 (855 frames ~62 min) + ~10 min LUT/ESRGAN/RIFE",
+      "status": "C and D awaiting Adi's verdict"
     }
   },
   "avastha": {
