@@ -12,6 +12,14 @@
 #include <emmintrin.h>
 #endif
 
+#if defined(_MSC_VER)
+#define ADI_MIX_LIMITER_CLEAR_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define ADI_MIX_LIMITER_CLEAR_NOINLINE __attribute__((noinline))
+#else
+#define ADI_MIX_LIMITER_CLEAR_NOINLINE
+#endif
+
 namespace adi::mix::limiter
 {
 class ClearUnpairedEnvelope
@@ -54,7 +62,7 @@ public:
     // Internal block path: all five source arrays are disjoint from output,
     // interleaved stereo, and use the same rate/local-sample clock.
     template<bool ShareCoefficient, bool ConstantInput>
-    __declspec(noinline) static void processStereo(ClearUnpairedEnvelope& left, ClearUnpairedEnvelope& right,
+    ADI_MIX_LIMITER_CLEAR_NOINLINE static void processStereo(ClearUnpairedEnvelope& left, ClearUnpairedEnvelope& right,
         double& leftValue, double& rightValue, float sampleRate, std::size_t frames,
         const float* input, float inputScalar, const float* attack, const float* release,
         const float* releaseShape, const float* releaseSmoothing, float* output, bool nearestExp) noexcept
@@ -215,3 +223,5 @@ private:
     float cachedSmoothing = 1.0f;
 };
 }
+
+#undef ADI_MIX_LIMITER_CLEAR_NOINLINE

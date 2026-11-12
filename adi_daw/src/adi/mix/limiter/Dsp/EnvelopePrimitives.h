@@ -10,6 +10,14 @@
 #include <immintrin.h>
 #endif
 
+#if defined(_MSC_VER)
+#define ADI_MIX_LIMITER_ENVELOPE_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define ADI_MIX_LIMITER_ENVELOPE_NOINLINE __attribute__((noinline))
+#else
+#define ADI_MIX_LIMITER_ENVELOPE_NOINLINE
+#endif
+
 namespace adi::mix::limiter
 {
 inline constexpr float envelopeEpsilon = std::numeric_limits<float>::epsilon();
@@ -417,7 +425,7 @@ private:
     }
 
     template<bool Linear>
-    __declspec(noinline) static void processUnpairedStereo(AdaptiveEnvelope& left, AdaptiveEnvelope& right,
+    ADI_MIX_LIMITER_ENVELOPE_NOINLINE static void processUnpairedStereo(AdaptiveEnvelope& left, AdaptiveEnvelope& right,
         std::size_t frames, const std::array<StereoBlockView, 7>& views, float* output) noexcept
     {
         auto state = _mm_set_pd(right.value, left.value);
@@ -875,3 +883,5 @@ private:
     int previousDirection = 1;
 };
 }
+
+#undef ADI_MIX_LIMITER_ENVELOPE_NOINLINE
