@@ -744,6 +744,10 @@ add_executable(adi_track_delete_tests tests/test_track_delete.cpp)
 target_link_libraries(adi_track_delete_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_track_delete_tests COMMAND adi_track_delete_tests)
 
+add_executable(adi_history_move_tests tests/test_history_move.cpp)
+target_link_libraries(adi_history_move_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_history_move_tests COMMAND adi_history_move_tests)
+
 add_executable(adi_history_tests tests/test_history.cpp)
 target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_history_tests COMMAND adi_history_tests)
