@@ -15,8 +15,8 @@ namespace adi::ui {
 // is one batch, so one undo step, from the snapshot the key lands on (ADR-0201).
 //
 // A clip wholly inside the selection is acted on as it is. A clip that crosses the selection's edge
-// would be split there, as Live splits it; there is no split op yet (window log, N17), so such a clip
-// is left as it is, and `crossing` says how many were.
+// is split there, as Live splits it, by the engine's prepared edits (E1); where the window cannot
+// (`edgeSplit`), it is left as it is, and `crossing` says how many were.
 struct RangeContent {
     std::vector<const engine::ClipNode *> inside;
     std::size_t crossing = 0;
@@ -43,13 +43,14 @@ inline RangeContent rangeContent(const SnapshotTracks &tracks, const std::vector
             }
     return out;
 }
-// 0 over a selection that crosses one edge of one clip, holding no whole clip (E1; manual 6.9): the
-// clip splits at the selection's edge inside it and the part inside the selection is deactivated.
-// None when the selection lies inside the clip (both its edges in it: the two-point split, N17's
-// open part) or reaches more than one clip.
+// 0 over a selection that reaches into one clip and holds no whole clip (E1; manual 6.9): the clip
+// splits at the selection's edges inside it, and the part inside the selection is deactivated. One
+// edge inside the clip is a split at that point; both edges inside it is the two-point split, the
+// middle piece inside. None when the selection reaches more than one clip, or holds a whole one.
 struct EdgeSplit {
     std::int64_t clip = 0, at = 0;
-    bool insideIsRight = false; // the part after the split is the one in the selection
+    std::int64_t second = 0;    // the second cut, when the selection lies inside the clip; else 0
+    bool insideIsRight = false; // one cut: the part after it is the one in the selection
 };
 inline std::optional<EdgeSplit> edgeSplit(const RangeContent &content, std::int64_t start, std::int64_t end) {
     if (content.crossers.size() != 1 || !content.inside.empty())
@@ -57,17 +58,22 @@ inline std::optional<EdgeSplit> edgeSplit(const RangeContent &content, std::int6
     const auto *c = content.crossers.front();
     const auto from = std::min(start, end), to = std::max(start, end);
     const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
+    if (from > a && to < b)
+        return EdgeSplit{c->id, from, to, false};
     if (from > a && from < b && to >= b)
-        return EdgeSplit{c->id, from, true};
+        return EdgeSplit{c->id, from, 0, true};
     if (to > a && to < b && from <= a)
-        return EdgeSplit{c->id, to, false};
+        return EdgeSplit{c->id, to, 0, false};
     return std::nullopt;
 }
 namespace range_edits_detail {
 inline std::string crossingNote(std::size_t crossing) {
+    // Splitting a clip and deactivating its part is one prepared edit with one op appended
+    // (`OpSubmitter::commitPrepared`); several clips, or one beside whole ones, cannot ride one
+    // undo step yet.
     return std::to_string(crossing) + (crossing == 1 ? " clip crosses" : " clips cross") +
-           " the selection's edges and stays as it is: a selection inside a clip, or 0 over more than one clip's "
-           "edge, waits for the engine's two-point split (N17).";
+           " the selection's edges and stays as it is: 0 splits a clip at the selection only when the "
+           "selection reaches that one clip and holds no whole one.";
 }
 } // namespace range_edits_detail
 // Delete on a time selection: the clips wholly inside it, on every selected track.

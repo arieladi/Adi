@@ -1302,54 +1302,96 @@ bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
     if (!current)
         return fail("Splitting needs an open project.");
-    const auto &sel = arrangement.geometry.selection;
+    auto &sel = arrangement.geometry.selection;
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
     // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
     // selection, and Split cuts it at the marker.
-    bool clipSpan = false;
+    const engine::ClipNode *chosen = nullptr;
     if (sel.clip != 0)
         for (const auto &t : current->tracks)
             if (t)
                 for (const auto &c : t->clips)
-                    if (c && c->id == sel.clip && std::min(sel.start, sel.end) == c->posTicks &&
-                        std::max(sel.start, sel.end) == c->posTicks + c->lengthTicks)
-                        clipSpan = true;
-    if (sel.start != sel.end && !clipSpan)
-        // Live's Split of a selection cuts at both of its edges: the two-point split (N17's open part).
-        return fail("Splitting at a time selection's edges waits for the engine's two-point split (N17); "
-                    "place the insert marker in a clip and split there.");
-    if (!sel.marked)
+                    if (c && c->id == sel.clip && from == c->posTicks && to == c->posTicks + c->lengthTicks)
+                        chosen = c.get();
+    const bool timeSelection = from != to && chosen == nullptr;
+    if (!timeSelection && !sel.marked)
         return fail("Place the insert marker inside a clip to split it.");
-    const auto at = sel.insert;
-    // Which clips: the chosen one; else those under the marker on the chosen track, or on every
-    // track when nothing is chosen and the setting says so.
-    std::vector<std::int64_t> clips;
-    const auto strictlyInside = [at](const engine::ClipNode &c) {
+    // Each clip and the points it is cut at, strictly inside it (Live 12 manual 6.9): a time
+    // selection cuts every clip on its tracks at its edges, one clip at both of them when the
+    // selection lies inside it (the two-point split); else the marker cuts the chosen clip, or with
+    // no clip chosen the clips under it on the selected tracks, or on every track when
+    // `editing.splitAllWithNoSelection` is on.
+    struct Cut {
+        std::int64_t clip = 0;
+        std::vector<std::int64_t> at;
+    };
+    std::vector<Cut> cuts;
+    const auto inside = [](const engine::ClipNode &c, std::int64_t at) {
         return at > c.posTicks && at < c.posTicks + c.lengthTicks;
     };
+    const auto selected = arrangement.geometry.selectedTracks(reader());
+    const bool everyTrack = !timeSelection && chosen == nullptr && commands_.splitAllWithNoSelection();
     for (const auto &t : current->tracks) {
         if (!t)
             continue;
-        const bool onTrack = sel.clip == 0 && (sel.track == t->id || (sel.track == 0 && commands_.splitAllWithNoSelection()));
-        for (const auto &c : t->clips)
-            if (c && strictlyInside(*c) && (c->id == sel.clip || onTrack))
-                clips.push_back(c->id);
+        const bool onTrack = everyTrack || std::find(selected.begin(), selected.end(), t->id) != selected.end();
+        for (const auto &c : t->clips) {
+            if (!c)
+                continue;
+            Cut cut{c->id, {}};
+            if (timeSelection) {
+                if (!onTrack)
+                    continue;
+                for (const auto at : {from, to})
+                    if (inside(*c, at))
+                        cut.at.push_back(at);
+            } else if ((chosen != nullptr ? c.get() == chosen : onTrack) && inside(*c, sel.insert)) {
+                cut.at.push_back(sel.insert);
+            }
+            if (!cut.at.empty())
+                cuts.push_back(std::move(cut));
+        }
     }
-    if (clips.empty())
-        return fail("Place the insert marker inside a clip to split it.");
-    // One clip is one undo step; each further clip is a step of its own.
-    std::size_t done = 0;
-    for (const auto id : clips) {
+    if (cuts.empty())
+        return fail(timeSelection ? "No clip crosses the time selection's edges: there is nothing to split."
+                                  : "Place the insert marker inside a clip to split it.");
+    // One clip is one undo step: each clip's split is prepared on the project as the last one left
+    // it, so their new pieces' identities cannot collide. A refused clip is reported, and the rest
+    // still split.
+    std::size_t done = 0, refused = 0;
+    std::string firstRefusal;
+    for (const auto &cut : cuts) {
         const auto now = view_.current();
         if (!now)
             break;
-        auto prepared = clip_edit::prepareSplit(submitter_.store(), id, audio_drop_detail::newClipId(*now),
-                                                clip_edit::TimePoint{0, at}, editRate());
-        if (!commitEdit(std::move(prepared)))
-            return done > 0;
-        ++done;
+        const auto middle = audio_drop_detail::newClipId(*now);
+        auto prepared = cut.at.size() == 2
+                            ? clip_edit::prepareSplit(submitter_.store(), cut.clip, middle, middle + 1,
+                                                      clip_edit::TimePoint{0, cut.at[0]},
+                                                      clip_edit::TimePoint{0, cut.at[1]}, editRate())
+                            : clip_edit::prepareSplit(submitter_.store(), cut.clip, middle,
+                                                      clip_edit::TimePoint{0, cut.at[0]}, editRate());
+        if (commitEdit(std::move(prepared))) {
+            ++done;
+            // The chosen clip keeps its identity as the left piece, and stays chosen as that.
+            if (chosen != nullptr && cut.clip == sel.clip) {
+                sel.start = std::min(sel.start, sel.end);
+                sel.end = cut.at[0];
+            }
+        } else if (refused++ == 0) {
+            firstRefusal = error_;
+        }
     }
+    if (refused > 0) {
+        const auto clipsWord = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " clip" : " clips"); };
+        fail(done > 0 ? clipsWord(done) + " split, one undo step each; " + clipsWord(refused) +
+                            " not: " + firstRefusal
+                      : firstRefusal);
+        return done > 0;
+    }
+    arrangement.changed();
     if (done > 1)
-        say(std::to_string(done) + " clips split at the insert marker, one undo step each.");
+        say(std::to_string(done) + " clips split, one undo step each.");
     return true;
 }
 bool AdiRootComponent::edited(const SubmitResult &result) {
@@ -2450,9 +2492,10 @@ const std::vector<MenuEntries> &menuBar() {
 #endif
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
-        // Edit menu is to be read on Live.
-        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::Split, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
-                  C::SelectLoop, 0,
+        // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
+        // clipboard's and the selection's, where Consolidate and Crop will join it.
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+                  C::SelectLoop, 0, C::Split, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place
         // in Live 12's Create menu is to be read on Live.

@@ -165,7 +165,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
     // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
     bool linkLoopToSelection() const noexcept { return linkLoop_; }
-    // editing.splitAllWithNoSelection: Split with no clip and no track chosen splits every track.
+    // editing.splitAllWithNoSelection: Split with no clip chosen splits every track at the marker.
     bool splitAllWithNoSelection() const noexcept { return splitAll_; }
     // The settings, read where an engine edit captures the editing policy (`edit_plan::capturePolicy`).
     const settings::AppSettings &settings() const noexcept { return settings_; }
@@ -382,9 +382,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // N17, #393) committed as one batch, with at most one op of the window's on its end: one undo
     // step. The engine's refusal goes to the Status Bar.
     bool commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended = std::nullopt);
-    // Live's Split (Ctrl/Cmd+E; manual 6.12, 41.5): the chosen clip at the insert marker; else the
-    // clips under the marker on the selected track, or on every track when nothing is chosen and
-    // editing.splitAllWithNoSelection is on. A selection inside one clip waits (N17's open part).
+    // Live's Split (Ctrl/Cmd+E, the Edit menu, a clip's menu; manual 6.9, 41.5): a time selection
+    // cuts the clips on its tracks at its edges (inside one clip, at both); else the chosen clip at
+    // the insert marker; else the clips under the marker on the selected tracks, or on every track
+    // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
     bool splitAtMarker();
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;

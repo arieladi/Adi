@@ -1348,7 +1348,7 @@ void audioDropAsOneStep() {
 }
 
 void rangeEditsSplitCrossingClips() {
-    section("E1: Delete over half a clip trims it; 0 over a clip's right edge splits it and deactivates the right part");
+    section("E1: Delete over half a clip trims it; 0 over a clip's right edge, or inside it, splits it and deactivates the part inside");
     {
         adi::test::TempDirectory temp("ui_seams", "range-delete");
         auto store = clipProject(temp.path() / "p.adi");
@@ -1402,10 +1402,33 @@ void rangeEditsSplitCrossingClips() {
         check(step && static_cast<std::size_t>(step->opCount) == ops, "one undo step");
         check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, right) == -1 && !clipMuted(*store, 7),
               "undo puts the whole clip back, playing");
-        // A selection inside the clip (both edges in it) has no edge split: it waits for N17's open part.
+        // A selection inside the clip (both edges in it): the two-point split, the middle deactivated,
+        // one batch.
         view.refresh(*store);
         const auto inside = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks / 2, kHalfTicks);
-        check(!ui::edgeSplit(inside, kHalfTicks / 2, kHalfTicks), "a selection inside one clip waits for the two-point split");
+        const auto two = ui::edgeSplit(inside, kHalfTicks / 2, kHalfTicks);
+        check(two && two->clip == 7 && two->at == kHalfTicks / 2 && two->second == kHalfTicks,
+              "a selection inside one clip cuts at both of its edges");
+        const auto middle = ui::audio_drop_detail::newClipId(*view.current());
+        auto both = clip_edit::prepareSplit(*store, 7, middle, middle + 1, {0, kHalfTicks / 2}, {0, kHalfTicks}, 48000);
+        OpRequest off;
+        off.opType = "clip.setMute";
+        off.payload = {{"id", middle}, {"muted", true}};
+        off.label = "Deactivate Clip";
+        const auto count = both.requests.size() + 1;
+        const auto r2 = sub.commitPrepared(std::move(both), &clip_edit::commitPrepared, std::move(off));
+        check(r2.ok && r2.seqs.size() == count, "the two cuts and the deactivation in one batch");
+        check(clipLength(*store, 7) == kHalfTicks / 2 && clipLength(*store, middle) == kHalfTicks / 2 &&
+                  clipLength(*store, middle + 1) == kClipTicks - kHalfTicks && clipMuted(*store, middle) &&
+                  !clipMuted(*store, 7) && !clipMuted(*store, middle + 1),
+              "three pieces, the middle one deactivated");
+        const auto step2 = sub.nextUndo();
+        check(step2 && static_cast<std::size_t>(step2->opCount) == count, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, middle) == -1,
+              "undo puts the whole clip back");
+        // Over the edges of a clip beside a whole one: no split; the note says why.
+        check(ui::range_edits_detail::crossingNote(1).find("one clip") != std::string::npos,
+              "the note names the limit: one clip, no whole one beside it");
     }
 }
 void rangeEditsAsBatches() {

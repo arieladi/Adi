@@ -1412,6 +1412,11 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
+        // A clip's menu: Split at where it was clicked (Live 12 manual 6.9), above the lanes' items.
+        if (geometry.selection.clip != 0) {
+            menu.addCommandItem(&commands.manager, AppCommands::Split);
+            menu.addSeparator();
+        }
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).
@@ -2544,9 +2549,10 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     const auto &sel = view.geometry.selection;
     const auto selected = view.geometry.selectedTracks(view.reader());
     const auto content = rangeContent(current->tracks, selected, sel.start, sel.end);
-    // A clip crossing the selection's edge (E1, N17): Delete trims it there (`prepareDeleteRange`,
-    // with the settings' editing policy); 0 over one clip's edge splits it and deactivates the part
-    // inside, one batch. A selection inside one clip still waits for the two-point split.
+    // A clip crossing the selection's edge (E1, N17): Delete trims it there, or cuts the middle out
+    // of a clip the selection lies inside (`prepareDeleteRange`, with the settings' editing policy);
+    // 0 over one clip splits it at the selection's edges inside it and deactivates the part inside,
+    // one batch.
     if (content.crossing > 0 && !deactivate) {
         clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
         const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
@@ -2576,9 +2582,14 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     if (deactivate)
         if (const auto split = edgeSplit(content, sel.start, sel.end)) {
             const auto right = audio_drop_detail::newClipId(*current);
-            auto prepared = clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
-                                                    clip_edit::TimePoint{0, split->at}, view.root.editRate());
-            const auto inside = split->insideIsRight ? right : split->clip;
+            // Two cuts: the middle piece is `right`, the last one the next identity.
+            auto prepared = split->second != 0
+                                ? clip_edit::prepareSplit(view.root.editStore(), split->clip, right, right + 1,
+                                                          clip_edit::TimePoint{0, split->at},
+                                                          clip_edit::TimePoint{0, split->second}, view.root.editRate())
+                                : clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
+                                                          clip_edit::TimePoint{0, split->at}, view.root.editRate());
+            const auto inside = split->second != 0 || split->insideIsRight ? right : split->clip;
             // 0 toggles, as on whole clips: a clip already deactivated has its inside part activated.
             bool wasOff = false;
             for (const auto *c : content.crossers)
@@ -2895,7 +2906,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         if (track != nullptr)
             for (const auto &c : track->clips)
                 if (c->posTicks < hi && c->posTicks + c->lengthTicks > lo) {
-                    view.root.say("Moving part of a clip waits for the engine's split (window log, N17).");
+                    view.root.say("The arrow keys move whole clips: split this one at the selection first (Ctrl/Cmd+E).");
                     return true;
                 }
         const auto delta = geo.nextGridLine(lo, forward) - lo;

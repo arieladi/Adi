@@ -2626,7 +2626,11 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
         return out;
     };
     auto &sel = root.arrangement.geometry.selection;
-    // Ctrl/Cmd+E inside a clip: two clips, one undo step.
+    // Ctrl/Cmd+E inside a clip, editing.splitAllWithNoSelection off: the selected track's clip, two
+    // clips, one undo step.
+    std::string why;
+    check(settings.set("editing.splitAllWithNoSelection", false, {}, why) && (commands.reload(), !commands.splitAllWithNoSelection()),
+          "editing.splitAllWithNoSelection off");
     sel = {};
     sel.track = 2;
     sel.insert = bar;
@@ -2640,6 +2644,20 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(2).size() == 1, "one undo makes it whole again");
+    // Both tracks selected (the selection's far track), the setting still off: each one's clip.
+    sel = {};
+    sel.track = 2;
+    sel.toTrack = 3;
+    sel.insert = bar;
+    sel.marked = true;
+    check(root.command(AppCommands::Split), "Split over two selected tracks");
+    root.frame();
+    check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2 && root.error().find("one undo step each") != std::string::npos,
+          "each selected track's clip splits, and the Status Bar says each is its own step");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    root.frame();
+    check(settings.set("editing.splitAllWithNoSelection", true, {}, why) && (commands.reload(), commands.splitAllWithNoSelection()),
+          "editing.splitAllWithNoSelection back on (its default)");
     // The window as drawn, for the PR's picture (ADI_UI_PARITY).
     const auto picture = [&](const char *name) {
         const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
@@ -2670,18 +2688,45 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     root.frame();
     picture("adi-split-after.png");
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1,
-          "a clicked clip splits at the marker, not refused as a time selection");
-    check(root.command(AppCommands::Undo), "undo");
+          "a clicked clip splits at the marker, not refused as a time selection; the other track's clip stays whole");
+    check(sel.clip == 50 && sel.start == 0 && sel.end == bar, "the chosen clip stays chosen as the left piece");
+    sel.insert = bar / 2;
+    check(root.keyPressed(split), "Ctrl/Cmd+E again, the marker in the left piece");
     root.frame();
-    // Nothing chosen, editing.splitAllWithNoSelection on (its default): every track splits.
+    check(clipsOf(2).size() == 3, "the left piece splits again");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    root.frame();
+    // No clip chosen, the setting on (its default): every track's clip under the marker, though a
+    // lane click chose a track.
     sel = {};
+    sel.track = 2;
     sel.insert = bar;
     sel.marked = true;
-    check(commands.splitAllWithNoSelection() && root.command(AppCommands::Split), "Split with nothing chosen");
+    check(root.command(AppCommands::Split), "Split with no clip chosen");
     root.frame();
     check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2, "splits the clips under the marker on every track");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
     root.frame();
+    // Split on a time selection cuts at its edges: inside one clip, the two-point split, one step.
+    sel = {};
+    sel.track = 2;
+    sel.start = bar / 2;
+    sel.end = bar;
+    check(root.command(AppCommands::Split), "Split on a selection inside 1 MIDI's clip");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}} &&
+              clipsOf(3).size() == 1,
+          "three clips at the selection's edges; the unselected track is untouched");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(2).size() == 1, "one undo makes it whole");
+    // A selection with no clip edge-crossing says there is nothing to split.
+    sel = {};
+    sel.track = 2;
+    sel.start = 3 * bar;
+    sel.end = 4 * bar;
+    check(!root.command(AppCommands::Split) && root.error().find("nothing to split") != std::string::npos,
+          "a selection crossing no clip says there is nothing to split");
     // A marker outside every clip says where to put it.
     sel = {};
     sel.track = 2;
@@ -2700,6 +2745,18 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}}, "the clip is trimmed at the selection");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+    // Delete over a selection inside the clip cuts the middle out, one step.
+    sel = {};
+    sel.track = 2;
+    sel.start = bar / 2;
+    sel.end = bar;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete inside 1 MIDI's clip");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar, bar}},
+          "the middle is cut out; the two ends stay as clips");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(2).size() == 1, "one undo makes it whole");
     // 0 over 2 MIDI's clip's right edge: split there, the right part deactivated, one step.
     sel = {};
     sel.track = 3;
@@ -2755,7 +2812,6 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
         check(document->ops().submit(std::move(inside)).ok && document->synchronise(), "a short clip in bar 4 on 1 MIDI");
         root.frame();
     }
-    std::string why;
     check(settings.set("editing.mutedClipsAsDeleted", true, {}, why), "editing.mutedClipsAsDeleted on");
     sel = {};
     sel.track = 2;
@@ -2769,14 +2825,27 @@ void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, 
     settings.set("editing.mutedClipsAsDeleted", false, {}, why);
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    // 0 inside one clip waits for the two-point split.
+    // 0 inside one clip: the two-point split, the middle deactivated, one step.
     sel = {};
     sel.track = 3;
     sel.start = bar / 2;
     sel.end = bar;
-    canvas.keyPressed(juce::KeyPress('0'));
-    check(clipsOf(3).size() == 1 && root.error().find("two-point split") != std::string::npos,
-          "0 inside one clip says it waits for the two-point split");
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 inside 2 MIDI's clip");
+    root.frame();
+    bool middleOff = false, endsOn = true;
+    if (const auto *t = root.reader().findTrack(3))
+        for (const auto &c : t->clips) {
+            if (c->posTicks == bar / 2)
+                middleOff = c->muted;
+            else
+                endsOn = endsOn && !c->muted;
+        }
+    check(clipsOf(3) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar / 2}, {bar / 2, bar / 2}, {bar, bar}} &&
+              middleOff && endsOn,
+          "three clips, the middle one deactivated");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
     commands.detach(root);
     document->release();
 }
@@ -6286,11 +6355,11 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::Split, 0, C::RenameTrack, C::EditInfoText,
-                                                C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::GroupTracks,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+                                                C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, 0, C::GroupTracks,
                                                 C::UngroupTracks},
-              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Split (41.5), before Rename (§18.2) and Select All, then Loop Selection "
-              "and Select Loop (§6.6), then Group and Ungroup Tracks");
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
+              "and Select Loop (§6.6), then Split heading the clip commands (6.9), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
         // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
