@@ -1346,9 +1346,18 @@ bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     if (!current)
         return false;
     const auto &sel = arrangement.geometry.selection;
-    if (command == ClipCommand::Paste)
-        return !commands_.clipClipboard().empty() && sel.track != 0;
-    return chosenClip(*current, sel).clip != nullptr || sel.start != sel.end;
+    if (command == ClipCommand::Paste) {
+        const auto *track = reader().findTrack(sel.track);
+        return !commands_.clipClipboard().empty() && track != nullptr && holdsClips(*track);
+    }
+    if (chosenClip(*current, sel).clip != nullptr)
+        return true;
+    if (sel.start == sel.end)
+        return false;
+    for (const auto id : arrangement.geometry.selectedTracks(reader()))
+        if (const auto *t = reader().findTrack(id); t != nullptr && holdsClips(*t))
+            return true;
+    return false;
 }
 bool AdiRootComponent::clipClipboard(ClipCommand command) {
     const auto current = view_.current();
@@ -1410,6 +1419,9 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return fail(copy.error);
             board.held = std::move(copy);
         }
+        // Copy writes nothing, so nothing else clears an earlier refusal from the Status Bar.
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
         commands_.manager.commandStatusChanged();
         return true;
     }
@@ -1440,10 +1452,10 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             return fail("Copy a clip or a time selection first.");
         // At the insert marker, or a time selection's start.
         const auto at = from != to ? from : sel.marked ? sel.insert : 0;
+        const auto *track = reader().findTrack(sel.track);
+        if (track == nullptr || !holdsClips(*track))
+            return fail("Select an audio or MIDI track to paste on.");
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
-            const auto *track = reader().findTrack(sel.track);
-            if (track == nullptr || !holdsClips(*track))
-                return fail("Select an audio or MIDI track to paste the clip on.");
             // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
             if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
                 return fail("The copied clip goes on " + kindWord(kind) + " track: " + track->name + " is " +
@@ -1467,7 +1479,8 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             }
             if (targets.size() < wanted)
                 return fail("The copy reaches " + std::to_string(wanted) + " tracks: select a track with " +
-                            std::to_string(wanted - 1) + " more below it that can hold clips.");
+                            std::to_string(wanted - 1) + (wanted == 2 ? " more" : " more tracks") +
+                            " below it that can hold clips.");
             // Each source track's material onto a track of its kind: the source's kind from the
             // project, else from its copied clips.
             for (std::size_t i = 0; i < wanted; ++i) {

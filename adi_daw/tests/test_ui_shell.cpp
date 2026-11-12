@@ -3099,15 +3099,30 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     marker(5, 4 * bar);
     check(!root.command(AppCommands::Paste) && root.error().find("reaches 2 tracks") != std::string::npos,
           "a two-track range from the last track says it does not fit");
-    marker(4, 4 * bar);
-    clickClip(2, 50, 0, bar);
-    check(root.command(AppCommands::Copy), "copy 1 MIDI's clip");
-    marker(4, 0);
-    check(!root.command(AppCommands::Paste) && root.error().find("MIDI track") != std::string::npos && clipsOf(4).empty(),
-          "a MIDI clip onto an audio track is refused, and says why");
+    // A track that cannot hold clips (a return) takes no paste.
+    marker(6, 4 * bar);
+    check(!root.command(AppCommands::Paste) && root.error().find("audio or MIDI track") != std::string::npos,
+          "a return selected: Paste says to select an audio or MIDI track");
     check(root.command(AppCommands::Undo), "undo the cut");
     root.frame();
     check(clipsOf(2) == Clips{{0, bar}} && clipsOf(3) == Clips{{0, bar / 2}}, "both as they were again");
+    // A clip's copy: MIDI does not go on an audio track.
+    clickClip(2, 50, 0, bar);
+    check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::ClipCopy>(commands.clipClipboard().held),
+          "copy 1 MIDI's clip: the clipboard holds a clip");
+    marker(4, 0);
+    check(!root.command(AppCommands::Paste) && root.error().find("The copied clip goes on a MIDI track") != std::string::npos &&
+              clipsOf(4).empty(),
+          "a MIDI clip onto an audio track is refused, and says why");
+    // A Copy that works clears that refusal from the Status Bar.
+    clickClip(2, 50, 0, bar);
+    check(root.command(AppCommands::Copy) && root.error().empty(), "a Copy that works clears the Status Bar");
+    // A time selection only on tracks that cannot hold clips has nothing to copy.
+    sel = {};
+    sel.track = 6;
+    sel.start = 0;
+    sel.end = bar;
+    check(!root.canClipClipboard(AdiRootComponent::ClipCommand::Copy), "a time selection on a return offers no Copy");
     // Duplicate a time selection: the copy after it, and the selection on the copy.
     sel = {};
     sel.track = 2;
