@@ -503,7 +503,8 @@ void StackTab::mouseMove(const juce::MouseEvent &e) {
 void StackTab::mouseEnter(const juce::MouseEvent &e) { mouseMove(e); }
 void StackTab::mouseExit(const juce::MouseEvent &e) {
     const auto p = modelPoint(e);
-    if (p.x < 0 || p.y < 0 || p.x >= listArea().getWidth() || p.y >= listArea().getHeight())
+    if (p.x < 0 || p.y < 0 || p.x >= static_cast<float>(listArea().getWidth()) ||
+        p.y >= static_cast<float>(listArea().getHeight()))
         effects(model().pointerExit(clockNow()), false);
 }
 void StackTab::mouseDown(const juce::MouseEvent &e) {
