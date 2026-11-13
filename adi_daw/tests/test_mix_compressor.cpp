@@ -2,6 +2,7 @@
 // Generated signals and authored component contracts; no external assets.
 #include "adi/mix/compressor/ControlMapping.hpp"
 #include "adi/mix/compressor/Core.hpp"
+#include "adi/mix/compressor/detail/HoldPeak.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -14,6 +15,7 @@
 
 namespace {
 bool inAudio = false, failAllocation = false;
+int allocationsUntilFailure = -1;
 std::size_t allocations = 0, deallocations = 0;
 } // namespace
 void *operator new(std::size_t bytes) {
@@ -21,6 +23,11 @@ void *operator new(std::size_t bytes) {
         ++allocations;
     if (failAllocation)
         throw std::bad_alloc();
+    if (allocationsUntilFailure >= 0) {
+        if (allocationsUntilFailure == 0)
+            throw std::bad_alloc();
+        --allocationsUntilFailure;
+    }
     if (void *p = std::malloc(bytes ? bytes : 1))
         return p;
     throw std::bad_alloc();
@@ -414,6 +421,144 @@ void precisionAndStaticLaws() {
     check(ok && std::abs(dc[1].back() - expected) < 2e-6 && std::abs(dc[0].back() - expected * .1) < 2e-7,
           "linked steady DC follows analytic threshold ratio law");
 }
+
+void holdWindow() {
+    c::detail::HoldPeak peak;
+    peak.prepare(2);
+    check(peak.push(5) == 5 && peak.push(0) == 5 && peak.push(0) == 5 && peak.push(0) == 0,
+          "Hold maximum retains the inclusive endpoint and expires on the following sample");
+    peak.reset();
+    check(peak.push(5) == 5 && peak.push(1) == 5 && peak.push(5) == 5 && peak.push(0) == 5 &&
+              peak.push(0) == 5 && peak.push(0) == 0,
+          "an equal new peak renews its own inclusive endpoint");
+    peak.push(100);
+    peak.reset();
+    check(peak.push(0) == 0, "Hold reset clears every retained maximum");
+    for (const std::uint32_t window : {0U, 1U, 2U, 31U, 257U}) {
+        peak.prepare(window);
+        std::vector<float> input(count);
+        std::uint32_t seed = 12345;
+        for (std::size_t j = 0; j < count; ++j) {
+            seed = seed * 1664525U + 1013904223U;
+            input[j] = j < 500    ? static_cast<float>(500 - j)
+                       : j < 1000 ? static_cast<float>(j - 500)
+                       : j < 1500 ? 12.0f
+                                  : static_cast<float>(seed & 255U);
+        }
+        bool ok = true;
+        for (std::size_t j = 0; j < count; ++j) {
+            const auto start = j > window ? j - window : 0;
+            const float expected = *std::max_element(input.begin() + static_cast<std::ptrdiff_t>(start),
+                                                     input.begin() + static_cast<std::ptrdiff_t>(j + 1));
+            AudioCall guard;
+            ok = (peak.push(input[j]) == expected) && ok;
+        }
+        comparedSamples += count;
+        check(ok, "prepared Hold queue matches an independent inclusive interval maximum through wraps");
+    }
+    check(c::holdMsFromNormalized(0).value() == 0 && c::holdMsFromNormalized(1).value() == 500 &&
+              c::holdMsFromNormalized(.5f).value() == 40 && c::holdMsFromNormalized(.8f).value() == 200,
+          "Hold normalized mapping endpoints and physical landmarks");
+    check(!c::holdMsFromNormalized(-1) && !c::holdMsFromNormalized(1.1f) &&
+              !c::holdMsFromNormalized(std::numeric_limits<float>::quiet_NaN()),
+          "Hold normalized mapping refuses invalid controls");
+}
+
+void fixedHold() {
+    auto s = compress();
+    for (const float invalid :
+         {-1.0f, 501.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+        s.holdMs = invalid;
+        check(!c::validSettings(s), "invalid physical Hold refused");
+    }
+    s.holdMs = 10;
+    for (int kind = 0; kind < 5; ++kind) {
+        auto unsupported = s;
+        if (kind == 0)
+            unsupported.keySource = c::KeySource::External;
+        if (kind == 1)
+            unsupported.stereoLink = .5f;
+        if (kind == 2)
+            unsupported.autoRelease = true;
+        if (kind == 3)
+            unsupported.autoGain = true;
+        c::Core core;
+        check(core.prepare({48000, 256, kind == 4 ? 1 : 2}, unsupported) ==
+                      c::Status::UnsupportedConfiguration &&
+                  !core.isPrepared(),
+              "positive Hold refuses unadmitted route and Auto combinations");
+    }
+    for (const float hold : {1.0f, 10.0f, 100.00001525878906f, 500.0f}) {
+        s.holdMs = hold;
+        c::Core a, b;
+        auto x = signal<float>(false), y = x;
+        check(a.prepare({48000, 256, 2}, s) == c::Status::Ok &&
+                  b.prepare({48000, 256, 2}, s) == c::Status::Ok && render(a, x, s, 256) &&
+                  render(b, y, s, 17) && equal(x, y),
+              "fixed Hold retains identical output across physical callback partitions");
+        const auto fresh = x;
+        x = signal<float>(false);
+        a.reset();
+        check(render(a, x, s) && equal(x, fresh), "reset clears Hold maximum and post-envelope histories");
+        x = signal<float>(false);
+        check(a.prepare({48000, 256, 2}, s) == c::Status::Ok && render(a, x, s) && equal(x, fresh),
+              "stopped reprepare reproduces a fresh fixed Hold stream");
+    }
+    s.holdMs = 10;
+    c::Core a, b;
+    check(a.prepare({48000, 256, 2}, s) == c::Status::Ok && b.prepare({48000, 256, 2}, s) == c::Status::Ok,
+          "fixed Hold refusal references prepared");
+    auto x = signal<float>(false), y = x;
+    float *xp[]{x[0].data(), x[1].data()}, *yp[]{y[0].data(), y[1].data()};
+    const auto ca = a.beginBlock(256), cb = b.beginBlock(256);
+    auto changed = s;
+    changed.holdMs = 20;
+    {
+        AudioCall guard;
+        check(a.process(ca, 0, 256, xp, nullptr, 0, changed) == c::Status::UnsupportedConfiguration &&
+                  equal(x, y),
+              "running Hold change refuses the complete segment without audio mutation");
+        check(a.process(ca, 0, 97, xp, nullptr, 0, s) == c::Status::Ok &&
+                  a.process(ca, 97, 159, xp, nullptr, 0, s) == c::Status::Ok &&
+                  b.process(cb, 0, 256, yp, nullptr, 0, s) == c::Status::Ok && equal(x, y),
+              "refused Hold update advances no history or cursor and segmented continuation is exact");
+    }
+    allocationsUntilFailure = 1; // Impl succeeds, the prepared Hold queue then fails.
+    const auto failed = a.prepare({96000, 256, 2}, s);
+    allocationsUntilFailure = -1;
+    check(failed == c::Status::AllocationFailed && a.isPrepared(),
+          "failed prepared Hold queue allocation leaves the running stream admitted");
+    x = signal<float>(false, count);
+    y = x;
+    check(render(a, x, s) && render(b, y, s) && equal(x, y),
+          "failed Hold prepare preserves queue and post-envelope continuation");
+    auto newEpoch = s;
+    newEpoch.holdMs = 37;
+    x = signal<float>(false);
+    y = x;
+    check(a.prepare({96000, 256, 2}, newEpoch) == c::Status::Ok &&
+              b.prepare({96000, 256, 2}, newEpoch) == c::Status::Ok && render(a, x, newEpoch) &&
+              render(b, y, newEpoch) && equal(x, y),
+          "changed rate and Hold clear old maximum post-envelope and coefficient-cache epochs");
+    auto zero = compress(), tiny = zero;
+    zero.keySource = tiny.keySource = c::KeySource::External;
+    zero.stereoLink = tiny.stereoLink = .5f;
+    zero.autoRelease = tiny.autoRelease = true;
+    tiny.holdMs = std::numeric_limits<float>::epsilon() * .5f;
+    c::Core dry, nearZero;
+    x = signal<float>();
+    y = x;
+    const auto key = signal<float>();
+    check(dry.prepare({48000, 256, 2}, zero) == c::Status::Ok &&
+              nearZero.prepare({48000, 256, 2}, tiny) == c::Status::Ok && render(dry, x, &key, 2, zero) &&
+              render(nearZero, y, &key, 2, tiny) && equal(x, y),
+          "constant near-zero Hold uses the exact old path and retains old route admissions");
+    s.holdMs = 500;
+    c::Core maximum;
+    x = signal<float>(false);
+    check(maximum.prepare({384000, 256, 2}, s) == c::Status::Ok && render(maximum, x, s),
+          "maximum rate and Hold prepare bounded storage and render without callback allocation");
+}
 } // namespace
 
 int main() {
@@ -423,6 +568,8 @@ int main() {
     splitsAndControls<double>();
     keyAndLink();
     precisionAndStaticLaws();
+    holdWindow();
+    fixedHold();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");
     std::printf("Mix compressor: %d checks, %d failures; %llu compared samples; audio allocations %zu/%zu\n",
                 checks, failures, static_cast<unsigned long long>(comparedSamples), allocations,
