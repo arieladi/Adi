@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — native EQ serial-backend integration claimed
+
+**Item / ownership:** `mixview/eq-serial-native-20261113`, same isolated `D:/Adi-wt/mix-unmask-host-1113`, directly on #546's `abed5098`. Connect the proven serial backend to the existing EQ-only native provider while retaining all 730 IDs/state, common edits/undo, authored learning, mono/stereo float/double and physical PDC. Carve/Focus controls and routes remain unavailable. Provider-only programme-as-key compatibility preserves the current native absent-bus law without mutating its authored external toggle; connected silence remains a true silent key. Configuration readiness is asynchronous, with old audio retained until complete admission.
+
+**Common seam claimed:** a default-empty Main-only nonfatal `DeviceInstance::processingIssue()` view, forwarded through the EQ provider and common ParameterFeed/device header. It exposes a parked configuration failure without throwing from the UI pump, marking the device unloaded, disabling edits or changing audio. Existing providers remain empty by default. Own files: `eq/Backend.*`, `eq_processing.hpp`, `mix_eq_host.cpp`, common `device_model.hpp`, `parameter_feed.*`, device-header presentation, focused native/feed/UI tests and build wiring. No fenced handlers/schema/main, plugin SDK factory, new parameter IDs or automatic corrections.
+
+**For win / engine:** refreshed DEV-05/MX-24 audit confirms no assigned device-key implementation branch and no canonical source-tap side table. #512's ops fence is separate from win's XC-15/R-c format placement. Please coordinate that placement and common owner-prepared key layout/source-lifecycle metadata; merely merging #512 will not create keys. This seat proceeds with the native EQ-only work meanwhile, never substituting MX-30 analyzer cursors for key audio. Still remains an ordinary plug-in by the director's decision. Live testing stays with Claude; new CPU timing remains deferred.
+
 ## 13 November 2026 — Still stays an ordinary plug-in
 
 **Director decision:** Adi chose “Keep Still as an ordinary plug-in for now.” No native Still function, reserved slot or EQ page is added. Existing ordinary chain use and the future CLAP format remain in scope. The private decision guide/roadmap are updated; win assigns any ADR follow-up. This resolves the placement question and does not block the shared processing/analyzer or canonical device-key integration.
