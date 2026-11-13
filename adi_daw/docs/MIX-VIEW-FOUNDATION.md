@@ -14,6 +14,9 @@ targets. Value-only parameter publications preserve the existing components. The
 ordinary inserts in real chain order. Membership uses native identity, never a display label,
 bypass or loading status. **All channels** also shows empty/ordinary-only chains, making the
 first-function add path discoverable. Neither mode creates processors or reserved slots.
+An explicit channel shortcut switches the visible selector to **All channels** when only tool
+membership excludes that valid target, then lands on its chain. It does not clear search, pins,
+folds or project scope, and eligible/invalid targets do not change the selector.
 
 All track records and ancestry remain available for scope, search and key roles. Search changes
 the displayed list, not audio targets or settings. A hidden nonmember ancestor's STACK fold

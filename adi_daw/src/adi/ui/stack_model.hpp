@@ -701,6 +701,9 @@ class StackModel {
     bool live(const stack::ItemRef &) const noexcept; // compares generations, never the device
     std::optional<stack::Resolved> resolve(const stack::ItemRef &) const noexcept;
     stack::RowRef rowRef(stack::TrackId) const noexcept;
+    // An explicit channel shortcut may visibly switch to All channels to reach
+    // an empty/ordinary chain. Search, pins, folds and project scope still apply.
+    bool hiddenOnlyByToolScope(stack::TrackId) const noexcept;
     stack::ItemRef chainRef(stack::TrackId, stack::DeviceId) const noexcept;
     stack::ItemRef moduleRef(stack::TrackId, std::uint32_t kindKey) const noexcept;
 
@@ -880,6 +883,7 @@ class StackModel {
     bool member(std::uint32_t rec) const noexcept;
     bool computeMatch(std::uint32_t rec) const noexcept;
     bool computeUnderFold(std::uint32_t rec) const noexcept;
+    bool computeUnderFold(std::uint32_t rec, stack::ChannelScope) const noexcept;
     std::optional<std::size_t> shownOfRec(std::uint32_t rec) const noexcept;
     void rebuildShown();
     void editShown(std::uint32_t rec, bool memberNow);

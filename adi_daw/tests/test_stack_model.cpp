@@ -2883,6 +2883,62 @@ void channelMembership() {
     held.endCapture(nextCapture.ref, ++now);
 }
 
+void channelShortcutScope() {
+    section("Explicit channel shortcut scope");
+    Fixture f;
+    f.kinds.clear();
+    f.add(1, "Bus", 0, 0, kGroupKind);
+    f.track(1).group = true;
+    f.add(2, "Ordinary child", 1, 1);
+    f.add(3, "Empty");
+    f.add(4, "Native");
+    f.add(5, "Reference");
+    f.track(5).reference = true;
+    f.add(6, "Project hidden");
+    f.track(6).inView = false;
+    for (auto &track : f.tracks)
+        track.hasMixFunction = track.id == 4;
+    f.item(2, 21, ItemClass::Plugin, "Ordinary insert");
+    auto m = model(f, 1600, 900);
+    TimeMs now = 0;
+    check(m.hiddenOnlyByToolScope(2) && m.hiddenOnlyByToolScope(3),
+          "an ordinary chain and an empty channel are reachable by an explicit All channels switch");
+    check(!m.hiddenOnlyByToolScope(4) && !m.hiddenOnlyByToolScope(999) &&
+              !m.hiddenOnlyByToolScope(5) && !m.hiddenOnlyByToolScope(6),
+          "eligible invalid reference and project-hidden targets cannot change the scope");
+    check(m.windowView().channelScope == ChannelScope::WithTools && shownIds(m) == std::vector<TrackId>{4},
+          "the shortcut query changes no membership focus selection or settings");
+    m.setSearch("empty", ++now);
+    check(m.hiddenOnlyByToolScope(3) && !m.hiddenOnlyByToolScope(2),
+          "Filter search still decides whether the shortcut can reveal an ordinary channel");
+    m.setSearchMode(SearchMode::Jump, ++now);
+    check(m.hiddenOnlyByToolScope(2), "Jump search does not hide nonmatching rows");
+    m.setSearch("", ++now);
+    m.setFilterPinned(true, ++now);
+    check(!m.hiddenOnlyByToolScope(2), "an unpinned target cannot override a pinned-only filter");
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    check(m.hiddenOnlyByToolScope(2), "a pinned ordinary target can request All channels");
+    m.setFilterPinned(false, ++now);
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    m.toggleFold(m.rowRef(1), ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(!m.hiddenOnlyByToolScope(2),
+          "a saved tool-free ancestor fold remains an independent All channels exclusion");
+    m.setSearchMode(SearchMode::Filter, ++now);
+    m.setSearch("ordinary", ++now);
+    check(m.hiddenOnlyByToolScope(2), "matching Filter search retains its existing fold override");
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(!m.hiddenOnlyByToolScope(2) && m.shownIndex(2),
+          "an already All channels scope never requests another switch");
+    const auto capture = m.beginCapture(CaptureKind::Menu, m.chainRef(2, 21), ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(capture.refusal == CaptureRefusal::None && m.shownIndex(2) && !m.hiddenOnlyByToolScope(2),
+          "an ordinary row retained by an edit is already reachable and cannot change scope");
+    m.endCapture(capture.ref, ++now);
+    check(!m.shownIndex(2) && m.hiddenOnlyByToolScope(2),
+          "the same ordinary row can request All channels once its retained edit ends");
+}
+
 void channelScopeJumpPins() {
     section("Jump matches follow pin-filter membership");
     Fixture f;
@@ -3941,6 +3997,7 @@ int main() {
     adapter();
     actualChainAdapter();
     channelMembership();
+    channelShortcutScope();
     channelScopeJumpPins();
     jumpCapturePublicationChanges();
     determinism();

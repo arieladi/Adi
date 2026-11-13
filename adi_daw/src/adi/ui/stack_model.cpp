@@ -1025,11 +1025,15 @@ bool StackModel::computeMatch(std::uint32_t rec) const noexcept {
 }
 
 bool StackModel::computeUnderFold(std::uint32_t rec) const noexcept {
+    return computeUnderFold(rec, view_.channelScope);
+}
+
+bool StackModel::computeUnderFold(std::uint32_t rec, ChannelScope scope) const noexcept {
     std::uint32_t up = rows_[rec].parentRec;
     for (std::size_t steps = 0; up != kNoRec && steps <= rows_.size(); ++steps) {
         // A group omitted by With tools has no fold affordance in this list.
         // Keep its saved fold for All channels without hiding eligible children.
-        if ((view_.channelScope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
+        if ((scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
             std::binary_search(view_.folded.begin(), view_.folded.end(), rows_[up].id))
             return true;
         up = rows_[up].parentRec;
@@ -3927,6 +3931,18 @@ std::optional<Resolved> StackModel::resolve(const ItemRef &ref) const noexcept {
 RowRef StackModel::rowRef(TrackId id) const noexcept {
     const Rec *r = recFor(id);
     return r == nullptr ? RowRef{} : RowRef{r->id, r->gen};
+}
+
+bool StackModel::hiddenOnlyByToolScope(TrackId id) const noexcept {
+    if (view_.channelScope != ChannelScope::WithTools || shownIndex(id))
+        return false;
+    const auto rec = recOf(id);
+    if (rec == kNoRec || !inScope(rows_[rec]) || rows_[rec].hasMixFunction)
+        return false;
+    const Rec &r = rows_[rec];
+    const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
+    return (searching ? r.match : !computeUnderFold(rec, ChannelScope::AllChannels)) &&
+           (!view_.filterPinned || pinned(id));
 }
 
 ItemRef StackModel::chainRef(TrackId id, DeviceId device) const noexcept {

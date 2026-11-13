@@ -5635,6 +5635,26 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
           "STACK starts with tool channels and explains how to add the first tool");
     {
+        const auto selectionBefore = root.arrangement.geometry.selection;
+        const auto opsBefore = store->db().execAndGet("SELECT count(*) FROM ops").getInt();
+        panel.stack.focus(999);
+        check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  panel.stack.channelScope.getSelectedId() == 1,
+              "an invalid channel shortcut leaves the default tool scope unchanged");
+        root.arrangement.geometry.selection.track = 10;
+        check(root.command(AppCommands::ShowChannelEq) && panel.stack.focused() == 10 &&
+                  panel.stack.model().shownIndex(10) &&
+                  panel.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                  panel.stack.channelScope.getSelectedId() == 2,
+              "an explicit channel shortcut visibly selects All channels and lands on an empty chain");
+        check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore &&
+                  panel.stack.model().moduleKindCount() == 0,
+              "landing before the first tool creates no processor or undo operation");
+        panel.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
+    }
+    {
         const auto previousPublication = root.devices.publication;
         const auto selectionBefore = root.arrangement.geometry.selection;
         const auto undoBefore = root.undoTitle(false);
@@ -5664,6 +5684,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(order == std::vector<std::int64_t>{101, 102, 103},
               "eligible channel retains every actual insert in chain order");
         const auto original = surface.model().chainRef(10, 102);
+        surface.focus(10);
+        check(surface.focused() == 10 &&
+                  surface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  surface.channelScope.getSelectedId() == 1,
+              "an eligible native channel shortcut preserves With tools");
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
         publication = std::make_shared<ParameterPublication>(*publication);
         (*publication)[1].name = "Another display name";
         (*publication)[1].enabled = true;

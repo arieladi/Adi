@@ -722,7 +722,20 @@ void StackTab::suspendParameters(bool suspended) {
         if (safe) updateParameterDemand({});
     }
 }
-void StackTab::focus(std::int64_t track) { effects(model().openFromChip(track, {}, clockNow())); layoutRows(); }
+void StackTab::focus(std::int64_t track) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto time = clockNow();
+    // The channel's explicit shortcut must still reach a chain before its first
+    // tool is added. Change the visible scope instead of inventing membership or
+    // creating a processor; other deliberate filters remain in force.
+    if (model().hiddenOnlyByToolScope(track)) {
+        effects(model().setChannelScope(stack::ChannelScope::AllChannels, time), false);
+        if (!alive) return;
+    }
+    effects(model().openFromChip(track, {}, time));
+    if (!alive) return;
+    layoutRows();
+}
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {
     const auto time = clockNow();
