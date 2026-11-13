@@ -71,3 +71,6 @@ __pycache__/
 # directory they run from, so a full tools/test_all.sh run leaves them in adi_daw/
 # (window lane need N35). Nothing reads them back.
 adi_daw/*-render.wav
+
+# Private DAW research (director, 13 Nov 2026): kept locally on his PCs, never committed.
+/adi_daw/docs/daws/
