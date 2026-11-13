@@ -1,4 +1,5 @@
 #include "adi/mix/eq/Core.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -319,6 +320,102 @@ void lifecycle() {
               c.learnedThreshold(24) == 0,
           "bounded learned-control readouts are available without visual copies");
 }
+void latencyCapacity() {
+    eq::Core core;
+    check(core.maximumLatencySamples() == 0, "unprepared EQ has no key-delay capacity");
+    std::uint64_t block = 1;
+    for (const double rate : {44100., 48000., 96000., 192000.}) {
+        eq::Settings settings;
+        core.prepare({rate, 256, 2}, settings);
+        const auto capacity = core.maximumLatencySamples();
+        check(capacity > 0 && core.latencySamples() == 0,
+              "prepared key capacity does not change admitted latency");
+        std::int32_t largestOffer = 0;
+        bool bounded = true;
+        for (int structure = 0; structure < 6; ++structure)
+            for (int resolution = 0; resolution < 3; ++resolution)
+                for (const bool spectral : {false, true}) {
+                    settings.structure = static_cast<eq::Structure>(structure);
+                    settings.spectralResolution = static_cast<eq::Resolution>(resolution);
+                    settings.lookaheadMs = 20;
+                    settings.bands[0].status = eq::Status::On;
+                    settings.bands[0].spectralOn = spectral;
+                    (void)begin(core, block++, core.latencySamples(), settings);
+                    const auto offer = core.pendingLatencyChange();
+                    if (offer.token) {
+                        bounded = bounded && offer.samples <= capacity;
+                        largestOffer = std::max(largestOffer, offer.samples);
+                        bounded = bounded && begin(core, block++, offer.samples, settings).generation != 0;
+                    }
+                    bounded = bounded && core.maximumLatencySamples() == capacity &&
+                              core.latencySamples() <= capacity;
+                }
+        check(bounded && largestOffer == capacity,
+              "all prepared EQ plans fit the exact serial key-transport bound");
+    }
+}
+void compoundAdmission() {
+    eq::Core core;
+    eq::Settings settings;
+    check(!core.requestConfiguration(settings), "unprepared EQ refuses a structural request");
+    core.prepare({48000, 256, 2}, settings);
+    settings.structure = eq::Structure::SVF;
+    check(core.requestConfiguration(settings), "request-only EQ metadata needs no audio block");
+    const auto offer = core.pendingLatencyChange();
+    check(offer.token && offer.samples == 0, "same-latency EQ structural change has a real offer");
+    auto held = core.beginBlock(1, 0, settings, false);
+    Audio audio;
+    audio.signal(0);
+    check(held.generation && run(core, audio, 256, settings, held) &&
+              core.pendingLatencyChange().token == offer.token,
+          "compound owner can hold an EQ offer while continuing audio");
+    held = core.beginBlock(2, 0, settings, false);
+    check(held.generation && held.block != 0 && core.pendingLatencyChange().token == offer.token,
+          "fresh physical contexts do not force same-latency child admission");
+    const auto admitted = core.beginBlock(3, 0, settings, true);
+    check(admitted.generation && core.pendingLatencyChange().token == 0,
+          "compound admission consumes the selected EQ offer once ready");
+    settings.lookaheadMs = 10;
+    check(core.requestConfiguration(settings), "new delay offer can follow a held plan");
+    const auto delayed = core.pendingLatencyChange();
+    check(delayed.token && delayed.samples > 0, "delay request exposes actual child latency");
+    check(!core.beginBlock(4, delayed.samples, settings, false).generation && core.latencySamples() == 0,
+          "holding child admission refuses a prematurely changed configured latency");
+    check(core.beginBlock(5, delayed.samples, settings, true).generation &&
+              core.latencySamples() == delayed.samples,
+          "delayed EQ plan admits at the aggregate owner's next physical boundary");
+}
+void pinCompoundControls() {
+    eq::Settings plan, controls;
+    plan.structure = eq::Structure::Matched;
+    plan.lookaheadMs = 7;
+    plan.spectralResolution = eq::Resolution::Low;
+    controls.structure = eq::Structure::Zero;
+    controls.lookaheadMs = 20;
+    controls.spectralResolution = eq::Resolution::High;
+    controls.outputGainDb = -4;
+    controls.bands[0].status = eq::Status::On;
+    controls.bands[0].spectralOn = true;
+    controls.bands[1].status = eq::Status::On;
+    controls.bands[1].gainDb = 8;
+    const auto held = eq::pinPlanSettings(controls, plan);
+    check(held.structure == plan.structure && held.lookaheadMs == 7 &&
+              held.spectralResolution == eq::Resolution::Low && !held.bands[0].spectralOn,
+          "compound settings retain the full offered EQ latency topology");
+    check(held.outputGainDb == -4 && held.bands[1].gainDb == 8 && held.bands[1].status == eq::Status::On,
+          "compound pinning keeps unrelated gain and band controls live");
+    plan.bands[0].status = eq::Status::On;
+    plan.bands[0].spectralOn = true;
+    controls.bands[0].status = eq::Status::Off;
+    controls.bands[0].spectralOn = false;
+    const auto retained = eq::pinPlanSettings(controls, plan);
+    check(retained.bands[0].spectralOn && retained.bands[0].status == eq::Status::On,
+          "compound pinning cannot silently remove the offered spectral latency");
+    controls.bands[1].spectralOn = true;
+    const auto sameTopology = eq::pinPlanSettings(controls, plan);
+    check(!sameTopology.bands[0].spectralOn && sameTopology.bands[1].spectralOn,
+          "unchanged spectral latency permits ordinary eligible-band changes");
+}
 } // namespace
 int main() {
     try {
@@ -329,6 +426,9 @@ int main() {
         transientLearnedState();
         spectralPlans();
         lifecycle();
+        latencyCapacity();
+        compoundAdmission();
+        pinCompoundControls();
         check(allocations == 0, "zero callback C++ allocations");
         check(deallocations == 0, "zero callback C++ deallocations");
     } catch (const std::exception &e) {

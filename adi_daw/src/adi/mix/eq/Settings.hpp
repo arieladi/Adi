@@ -61,5 +61,8 @@ struct Settings {
 // Resolves the existing main→linked-side control dependency. The owner persists
 // returned side values through its normal edit/gesture path. No host is called.
 Settings resolveLinkedChanges(const Settings &previous, Settings desired) noexcept;
+// Retain an immutable latency/topology plan while applying current scalar
+// controls. Does not create a request, mutate state or admit audio processing.
+Settings pinPlanSettings(Settings controls, const Settings &plan) noexcept;
 bool valid(const Settings &) noexcept;
 } // namespace adi::mix::eq
