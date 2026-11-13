@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — channel-grouped instance view clarified; presentation slice claimed
+
+**Director answer:** the Mix View shows channels with its opt-in functions, grouped by channel (e.g. guitar EQ/Clip/Limiter, vocal EQ/Focus), with channel selection and search like Pro-Q's Instance List. The newly supplied Gemini image is a starting reference, explicitly cluttered; smooth focus/hover enlargement is required instead of every tile being permanently expanded. The private guide retains the exact image identity and old/new reference relationship. This does not authorize every search result as an audio-edit target, a relative/absolute bulk law, reserved slots, per-row loudness, or all mocked modulation/analyzer panels.
+
+**Item:** `mixview/channel-groups-20261113`, existing isolated `D:/Adi-wt/mix-analysis-1113`, based on #551 `749fd4b1`. Own StackModel/actual-chain presentation membership, matching ui_stack controls, stable search/selection/capture behavior and focused model/software-peer tests. Default channel rows have an actual native function; ordinary inserts remain in their real order inside eligible channels. An explicit all-channel view preserves discovery/add-first-function without hidden device creation. Full project ancestry/source identity is retained; no parallel device/edit/undo authority. Item-level focus emphasis is audited separately before its geometry change. No fenced handlers/schema/main or new DSP/CPU timing/live work. Win reviews/merges; Claude live work trails.
+
 ## 13 November 2026 — unregistered Clean compressor component supplied
 
 **Item:** draft [#552](https://github.com/arieladi/Adi/pull/552), `76ec1072c2c1478c0de0388a0eb24d070d0ea5e0`, directly on #548. Framework-free base-rate Clean kernel, Settings/ControlMapping, physical-block/contiguous-segment contract and generated tests. No native factory/controller availability or existing audio path changes. Other styles, quality/OS, lookahead, hold, key EQ, audition and wet/dry are absent; prepared source/link/mode is fixed and unsupported Auto Gain+M/S is rejected. Double I/O uses the float engine with double envelopes and widened output. Strong prepare failure, runtime continuation, pointer preflight/aliases and exact segment ownership are explicit.
