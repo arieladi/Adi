@@ -75,7 +75,7 @@ Status validate(const Settings &s) noexcept {
         (s.band != Band::Wide && s.band != Band::Split) ||
         (s.quality != Quality::BaseRate && s.quality != Quality::Times2 && s.quality != Quality::Times4))
         return Status::InvalidSettings;
-    if (!std::isfinite(s.thresholdDb) || s.thresholdDb < -60 || s.thresholdDb > 0 ||
+    if (!std::isfinite(s.thresholdDb) || s.thresholdDb < -180 || s.thresholdDb > 0 ||
         !std::isfinite(s.rangeDb) || s.rangeDb < 0 || s.rangeDb > 24 || !std::isfinite(s.highPassHz) ||
         s.highPassHz < 1999.99f || s.highPassHz > 20000.01f || !std::isfinite(s.lowPassHz) ||
         s.lowPassHz < 1999.99f || s.lowPassHz > 20000.01f || !unit(s.stereoLink) ||
@@ -84,8 +84,8 @@ Status validate(const Settings &s) noexcept {
         s.inputPan > 1 || !std::isfinite(s.outputPan) || s.outputPan < -1 || s.outputPan > 1 ||
         !std::isfinite(s.lookaheadMs) || s.lookaheadMs < 0 || s.lookaheadMs > 15)
         return Status::InvalidSettings;
-    if (s.band != Band::Wide || s.quality != Quality::BaseRate || s.lookaheadMs != 0 || s.thresholdDb < -48 ||
-        s.thresholdDb == 0 || s.rangeDb == 0 || (s.mode == Mode::SingleVocal && s.stereoLink > .5f))
+    if (s.band != Band::Wide || s.quality != Quality::BaseRate || s.lookaheadMs != 0 ||
+        (s.mode == Mode::SingleVocal && s.stereoLink > .5f))
         return Status::UnsupportedConfiguration;
     return Status::Ok;
 }
@@ -280,9 +280,12 @@ struct Core::Impl {
                 return Status::UnsupportedConfiguration;
             const float normalized = s.rangeDb / 24.0f, squared = normalized * normalized;
             const float attackSeconds = f(.012 * squared), releaseSeconds = f(.0075 + .0025 * squared);
-            attack = 1.0f - exp32(f(-std::numbers::ln10) / (attackSeconds * rate));
+            attack =
+                attackSeconds == 0 ? 1.0f : 1.0f - exp32(f(-std::numbers::ln10) / (attackSeconds * rate));
             release = 1.0f - exp32(f(-std::numbers::ln10) / (releaseSeconds * rate));
-            scale = s.rangeDb / s.thresholdDb;
+            scale = std::abs(s.thresholdDb) <= std::numeric_limits<float>::epsilon()
+                        ? 0.0f
+                        : s.rangeDb / s.thresholdDb;
             if (s.mode == Mode::SingleVocal) {
                 const float fc = std::min(hp, f(std::log2(10000.0)));
                 const float fa =

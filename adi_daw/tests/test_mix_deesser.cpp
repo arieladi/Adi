@@ -88,9 +88,10 @@ bool run(d::Core &core, Audio<T> &main, const Audio<T> *key, const d::Settings &
 }
 void mappings() {
     check(d::thresholdFromNormalized(.5f) == -30, "threshold physical mapping");
-    check(!d::thresholdFromNormalized(.1f) && !d::thresholdFromNormalized(1) &&
-              d::thresholdFromNormalized(.2f) == -48,
-          "unclosed threshold region not extrapolated");
+    check(d::thresholdFromNormalized(0) == -180 && d::thresholdFromNormalized(.01f) == -135 &&
+              d::thresholdFromNormalized(.02f) == -90 && d::thresholdFromNormalized(.2f) == -48 &&
+              d::thresholdFromNormalized(1) == 0,
+          "full piecewise threshold and finite endpoints");
     check(d::rangeFromNormalized(.5f) == 12, "range physical mapping");
     check(d::panFromNormalized(0) == -1 && d::panFromNormalized(.5f) == 0 && d::panFromNormalized(1) == 1,
           "pan endpoints");
@@ -106,6 +107,138 @@ void mappings() {
               !d::frequencyFromNormalized(std::numeric_limits<float>::quiet_NaN()) &&
               !d::panFromNormalized(2),
           "invalid mappings refuse");
+}
+void scalarAdmission() {
+    constexpr float epsilon = std::numeric_limits<float>::epsilon();
+    auto threshold = d::ScalarControlState::threshold();
+    auto range = d::ScalarControlState::range();
+    auto level = d::ScalarControlState::level();
+    auto pan = d::ScalarControlState::pan();
+    check(threshold.rawValue() == .4f && threshold.physicalValue() == -36 && range.rawValue() == 6 &&
+              range.physicalValue() == 6 && range.normalizedValue() == .25f && level.rawValue() == 0 &&
+              level.physicalValue() == 1 && pan.rawValue() == 0 && pan.physicalValue() == 0,
+          "individual scalar factories retain exact raw defaults");
+    check(threshold.admitNormalized(.4f + epsilon) == d::Admission::Unchanged &&
+              threshold.rawValue() == .4f &&
+              threshold.admitNormalized(.4f + 2 * epsilon) == d::Admission::Changed,
+          "threshold raw epsilon boundary is strict");
+    check(threshold.admitNormalized(.7f) == d::Admission::Changed &&
+              threshold.admitNormalized(.7f + epsilon) == d::Admission::Unchanged &&
+              threshold.rawValue() == .7f &&
+              threshold.admitNormalized(.7f + 2 * epsilon) == d::Admission::Changed,
+          "deadband compares current admitted target, not factory default");
+    check(range.admitNormalized(0) == d::Admission::Changed &&
+              range.admitNormalized(epsilon / 24) == d::Admission::Unchanged && range.rawValue() == 0 &&
+              range.admitNormalized(epsilon / 12) == d::Admission::Changed && range.rawValue() == 2 * epsilon,
+          "range admission operates in raw dB, not unit space");
+    check(
+        level.admitNormalized(.5f + epsilon * .5f) == d::Admission::Unchanged && level.physicalValue() == 1 &&
+            level.admitNormalized(.5f + epsilon) == d::Admission::Changed && level.physicalValue() > 1 &&
+            pan.admitNormalized(.5f + epsilon * .5f) == d::Admission::Unchanged && pan.physicalValue() == 0 &&
+            pan.admitNormalized(.5f + epsilon) == d::Admission::Changed && pan.rawValue() == 2 * epsilon,
+        "bipolar raw deadband preserves fresh level and pan");
+    const auto retained = threshold.rawValue();
+    check(threshold.admitNormalized(-1) == d::Admission::Invalid &&
+              threshold.admitNormalized(std::numeric_limits<float>::infinity()) == d::Admission::Invalid &&
+              threshold.admitNormalized(std::numeric_limits<float>::quiet_NaN()) == d::Admission::Invalid &&
+              threshold.rawValue() == retained,
+          "invalid admission preserves current scalar target");
+    threshold.reset();
+    range.reset();
+    level.reset();
+    pan.reset();
+    check(threshold.rawValue() == .4f && range.rawValue() == 6 && level.rawValue() == 0 &&
+              pan.rawValue() == 0,
+          "explicit scalar reset restores individual defaults");
+    bool monotonic = true;
+    float previous = -180;
+    for (int i = 0; i <= 4096; ++i) {
+        const float value = static_cast<float>(i) / 4096;
+        const auto db = d::thresholdFromNormalized(value);
+        monotonic = monotonic && db && std::isfinite(*db) && *db >= previous && *db <= 0;
+        if (db)
+            previous = *db;
+    }
+    check(monotonic, "complete threshold curve is finite and monotone across all pieces");
+    bool edges = true;
+    for (const float knot : {.02f, .1f, .2f}) {
+        const float below = *d::thresholdFromNormalized(std::nextafter(knot, 0.0f));
+        const float at = *d::thresholdFromNormalized(knot);
+        const float above = *d::thresholdFromNormalized(std::nextafter(knot, 1.0f));
+        edges = edges && below <= at && at <= above && above - below < .0001f;
+    }
+    check(edges, "adjacent floats preserve continuity at every threshold knot");
+    for (auto control : {d::ScalarControlState::threshold(), d::ScalarControlState::range(),
+                         d::ScalarControlState::level(), d::ScalarControlState::pan()}) {
+        const auto before = allocations;
+        audio = true;
+        const auto zero = control.admitNormalized(0);
+        const auto one = control.admitNormalized(1);
+        const float value = control.physicalValue();
+        audio = false;
+        check(zero == d::Admission::Changed && one == d::Admission::Changed && std::isfinite(value) &&
+                  control.normalizedValue() == 1 && allocations == before,
+              "scalar endpoints require no allocation");
+    }
+}
+void endpoints() {
+    for (const auto mode : {d::Mode::Allround, d::Mode::SingleVocal}) {
+        for (const auto &point : {std::array<float, 2>{-180, 12},
+                                  {-135, 12},
+                                  {-90, 12},
+                                  {0, 12},
+                                  {-30, 0},
+                                  {-180, 0},
+                                  {-std::numeric_limits<float>::epsilon(), 24}}) {
+            d::Settings s;
+            s.mode = mode;
+            s.stereoLink = .25f;
+            s.thresholdDb = point[0];
+            s.rangeDb = point[1];
+            d::Core a, b;
+            check(a.prepare({}, s) == d::Status::Ok && b.prepare({}, s) == d::Status::Ok,
+                  "threshold and range endpoints prepare");
+            const auto original = signal<float>();
+            auto unityGraph = original;
+            for (std::size_t i = 0; i < count; ++i) {
+                const float side = (original[1][i] - original[0][i]) * .5f;
+                const float mid = side + original[0][i];
+                unityGraph[0][i] = mid - side;
+                unityGraph[1][i] = side + mid;
+            }
+            auto x = original, y = original;
+            check(run(a, x, static_cast<const Audio<float> *>(nullptr), s) &&
+                      run(b, y, static_cast<const Audio<float> *>(nullptr), s, 137, true) && equal(x, y),
+                  "endpoint full output is block and segment invariant");
+            bool finite = true;
+            for (const auto &plane : x)
+                for (const float value : plane)
+                    finite = finite && std::isfinite(value);
+            const bool neutral =
+                s.rangeDb == 0 || std::abs(s.thresholdDb) <= std::numeric_limits<float>::epsilon();
+            check(finite && (!neutral || equal(x, unityGraph)),
+                  "endpoint gains remain finite and zero scale preserves unity M/S reconstruction");
+            check(a.restore(s) == d::Status::Ok && b.restore(s) == d::Status::Ok,
+                  "endpoint identical restore retains stream");
+            x = signal<float>(count);
+            y = x;
+            check(run(a, x, static_cast<const Audio<float> *>(nullptr), s) &&
+                      run(b, y, static_cast<const Audio<float> *>(nullptr), s) && equal(x, y),
+                  "endpoint history continues after identical restore");
+        }
+        d::Settings s;
+        s.mode = mode;
+        s.monitor = d::Monitor::Sidechain;
+        auto zero = s;
+        zero.thresholdDb = 0;
+        zero.rangeDb = 0;
+        d::Core a, b;
+        auto x = signal<float>(), y = x;
+        check(a.prepare({}, s) == d::Status::Ok && b.prepare({}, zero) == d::Status::Ok &&
+                  run(a, x, static_cast<const Audio<float> *>(nullptr), s) &&
+                  run(b, y, static_cast<const Audio<float> *>(nullptr), zero) && equal(x, y),
+              "neutral endpoints preserve filtered sidechain monitor graph");
+    }
 }
 void queue() {
     for (const std::uint32_t window : {0u, 1u, 7u, 240u}) {
@@ -277,11 +410,15 @@ void refusalAndLifecycle() {
     check(a.prepare({}, settings) == d::Status::UnsupportedConfiguration,
           "unclosed Vocal selective link rejected");
     settings = s;
-    settings.rangeDb = 0;
-    check(a.prepare({}, settings) == d::Status::UnsupportedConfiguration, "zero range rejected");
+    settings.rangeDb = -1;
+    check(a.prepare({}, settings) == d::Status::InvalidSettings, "negative range rejected");
     settings = s;
     settings.thresholdDb = std::numeric_limits<float>::quiet_NaN();
     check(a.restore(settings) == d::Status::InvalidSettings, "nonfinite settings rejected");
+    settings.thresholdDb = -181;
+    check(a.restore(settings) == d::Status::InvalidSettings, "threshold below finite floor rejected");
+    settings.thresholdDb = 1;
+    check(a.restore(settings) == d::Status::InvalidSettings, "positive threshold rejected");
 
     a.reset();
     b.reset();
@@ -378,6 +515,8 @@ void selectiveAndFilters() {
 } // namespace
 int main() {
     mappings();
+    scalarAdmission();
+    endpoints();
     queue();
     splitsAndPrecision();
     aliasesAndRoutes();

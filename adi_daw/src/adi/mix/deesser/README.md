@@ -21,13 +21,25 @@ Allround also supports selective Mid/Side linking above 100%. Single Vocal above
 100% is explicitly unsupported in this tier.
 
 Other units are physical: threshold/range in dB, cutoffs in Hz, linear gain and
-bipolar balance pan. The present admission is threshold `[-48,0)` dB, positive
-range up to 24 dB, approximately 2..20 kHz cutoffs, finite linear gains 0..64 and
+bipolar balance pan. Admission is threshold `[-180,0]` dB, range 0..24 dB,
+approximately 2..20 kHz cutoffs, finite linear gains 0..64 and
 pan -1..1. Invalid arguments are distinguished from unsupported capabilities.
-The normalized threshold helper refuses the unclosed lower piecewise region.
-Conversion helpers are stateless; controller deadbands and host setter history
-are not part of these helpers. Singular/unsupported coefficient designs fail
-preparation without replacing the previous stream.
+The normalized threshold helper covers the complete piecewise curve. Its lower
+endpoint is finite -180 dB, even if a presentation labels that endpoint as silence.
+Zero Range and zero Threshold produce unity reduction while preserving the
+active graph, histories and audition routing. Singular/unsupported coefficient
+designs fail preparation without replacing the previous stream.
+
+Conversion helpers are stateless. `ScalarControlState` separately tracks an
+admitted raw target for Threshold, Range, Level or Pan, with an absolute float
+epsilon deadband. It compares each request with the current target and retains
+that target when ignored. Individual defaults are raw Threshold 0.4, Range 6 dB,
+Level 0 and Pan 0; the last two have a bipolar raw domain. These are distinct from
+the convenience defaults in `Settings`. The utility does not own UI/undo state,
+host serialization, smoothing or audio automation. Its normalized getter is the
+raw target's normalization, not an inverse display-text conversion. The complete
+threshold curve preserves interpolation rounding, which can differ from the
+previous helper's algebraically simplified upper branch.
 
 Accepted sample rates are 44.1..96 kHz; coefficients use the float-rounded rate.
 Generated checks exercise 44.1, 48 and 96 kHz, plus equal-rounded fractional
