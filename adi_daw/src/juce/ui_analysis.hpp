@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/analysis_palettes.hpp"
+#include "adi/ui/spectrum_slope.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <limits>
@@ -53,6 +54,8 @@ class SharedSpectrumView final : public juce::Component,
     void setPalette(std::string_view id, bool reverse = false);
     std::string_view palette() const noexcept { return palettes::id(paletteIndex_); }
     bool paletteReversed() const noexcept { return paletteReversed_; }
+    void setSpectrumSlope(SpectrumSlope);
+    SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -76,6 +79,7 @@ class SharedSpectrumView final : public juce::Component,
     std::shared_ptr<const SharedAnalysis::Result> snapshot() const noexcept { return shown_; }
     std::int64_t track() const noexcept { return track_; }
   private:
+    friend struct SharedSpectrumViewTestAccess;
     bool eligible() const noexcept;
     void updateDemand() noexcept;
     void armFreshBoundary() noexcept;
@@ -88,6 +92,7 @@ class SharedSpectrumView final : public juce::Component,
     void componentBeingDeleted(juce::Component &) override;
     struct Raster;
     void updateRaster();
+    void updateSpectrumProjection();
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
@@ -110,6 +115,8 @@ class SharedSpectrumView final : public juce::Component,
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
     SharedAnalysis::Lease::SourcePosition sourcePosition_;
     bool freshRequired_ = false;
+    SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
+    SpectrumSlopeCache spectrumProjection_;
 };
 
 // A full analyzer and the compact Info renderer use SharedSpectrumView above. Controls are
@@ -135,9 +142,13 @@ class AnalysisPane final : public juce::Component {
     void restorePaletteControls(std::string_view id, bool reverse);
     std::string_view requestedPalette() const noexcept;
     std::function<void()> onPaletteChange;
+    void setSpectrumSlope(SpectrumSlope);
+    void restoreSlopeControls(SpectrumSlope);
+    SpectrumSlope requestedSpectrumSlope() const noexcept;
+    std::function<void()> onSpectrumSlopeChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox;
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:

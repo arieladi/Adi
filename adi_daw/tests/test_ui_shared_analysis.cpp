@@ -15,6 +15,11 @@ using adi::engine::ScopePoint;
 using adi::engine::ScopeTap;
 using adi::ui::SharedAnalysis;
 using adi::ui::SharedSpectrumView;
+namespace adi::ui {
+struct SharedSpectrumViewTestAccess {
+    static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
+};
+}
 namespace {
 int checks = 0, failures = 0;
 void check(bool value, const char *what) {
@@ -606,8 +611,8 @@ void palettesAndFrozenRaster() {
           "palette menu shows every family and selected/reversed state");
     for (const int width : {240, 332, 500}) {
         pane.setSize(width, 420);
-        const std::array<juce::Component *, 9> controls{&pane.modeBox, &pane.sourceBox, &pane.pointBox, &pane.channelBox,
-            &pane.paletteBox, &pane.reverseButton, &pane.freezeButton, &pane.resetButton, &pane.expandButton};
+        const std::array<juce::Component *, 10> controls{&pane.modeBox, &pane.sourceBox, &pane.pointBox, &pane.channelBox,
+            &pane.paletteBox, &pane.slopeBox, &pane.reverseButton, &pane.freezeButton, &pane.resetButton, &pane.expandButton};
         bool fits = true;
         for (std::size_t i = 0; i < controls.size(); ++i) {
             fits = fits && pane.getLocalBounds().contains(controls[i]->getBounds()) &&
@@ -754,12 +759,98 @@ void backlogAndLifecycleFreshness() {
           "broker shutdown revokes even a lease-free Frozen publication without creating demand");
 }
 
+void spectrumSlopeProjection() {
+    using namespace adi::ui;
+    constexpr std::array<std::array<double, 2>, 5> points{{{250., -9.}, {500., -4.5}, {1000., 0.}, {2000., 4.5}, {4000., 9.}}};
+    for (const auto &point : points)
+        check(spectrumDisplayOffset(SpectrumSlope::Tilt45, point[0]) == point[1] &&
+                  spectrumDisplayOffset(SpectrumSlope::Flat, point[0]) == 0,
+              "display slope has the explicit octave/pivot law while Flat remains exact zero");
+    check(spectrumDisplayOffset(SpectrumSlope::Tilt45, 1000.) == 0 &&
+              spectrumDisplayOffset(SpectrumSlope::Tilt45, 0.) == 0 &&
+              spectrumDisplayOffset(SpectrumSlope::Tilt45, -1.) == 0 &&
+              spectrumDisplayOffset(SpectrumSlope::Tilt45, std::numeric_limits<double>::infinity()) == 0 &&
+              spectrumDisplayOffset(SpectrumSlope::Tilt45, std::numeric_limits<double>::quiet_NaN()) == 0,
+          "pivot is exact and DC/nonpositive/nonfinite frequencies never enter a logarithm");
+    SpectrumSlopeCache cache;
+    check(!cache.prepare(SpectrumSlope::Flat, 48000, 1024, 513) && cache.offsets().empty(),
+          "the default Flat projection allocates no offset storage");
+    check(cache.prepare(SpectrumSlope::Tilt45, 64000, 1024, 513) && cache.offsets().size() == 513 &&
+              cache.offsets()[0] == 0 && cache.offsets()[16] == 0,
+          "prepared slope uses actual Fs/N bin frequencies including unmodified DC and exact pivot");
+    const auto *storage = cache.offsets().data();
+    check(!cache.prepare(SpectrumSlope::Tilt45, 64000, 1024, 513) && cache.offsets().data() == storage,
+          "unchanged projection setup returns before allocation or logarithm recomputation");
+    const auto old = cache.offsets()[32];
+    check(cache.prepare(SpectrumSlope::Tilt45, 128000, 1024, 513) && cache.offsets()[32] == old + 4.5f,
+          "rate replacement updates the display-frequency offsets");
+    check(cache.prepare(SpectrumSlope::Tilt45, 128000, 2048, 1025) && cache.offsets()[32] == old,
+          "FFT-size replacement restores the corresponding calibrated bin frequencies");
+    check(cache.prepare(SpectrumSlope::Tilt45, 48000, 65536, 32769) && cache.offsets().size() == 32769 &&
+              cache.prepare(SpectrumSlope::Tilt45, 48000, 65568, 32785) && cache.offsets().empty(),
+          "projection cache obeys the existing maximum FFT bound and rejects oversized metadata");
+    check(spectrumSlopeFromId("unknown") == SpectrumSlope::Flat && !validSpectrumSlopeId("unknown") &&
+              spectrumSlopeId(SpectrumSlope::Tilt45) == "tilt45",
+          "stable slope IDs validate persistence and fall back honestly for unknown input");
+
+    Fixture f;
+    Root root; root.setBounds(0, 0, 660, 340); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView full, info;
+    full.setBounds(0, 0, 300, 300); info.setBounds(330, 0, 300, 300);
+    root.addAndMakeVisible(full); root.addAndMakeVisible(info); full.present(f.broker, 1); info.present(f.broker, 1);
+    writeFrames(f, 1024); f.broker->pump(); full.frame(); info.frame();
+    const auto original = softwarePicture(full), compact = softwarePicture(info);
+    const auto snapshot = full.snapshot();
+    check(snapshot && snapshot == info.snapshot() && samePixels(original, compact),
+          "slope fixture begins with exact shared calibrated data and identical Flat pictures");
+    const auto raw = snapshot ? snapshot->binsDbfs : std::vector<float>{};
+    full.freeze(true); const auto frozenFlat = softwarePicture(full); const auto before = f.broker->stats();
+    full.setSpectrumSlope(SpectrumSlope::Tilt45); const auto tilted = softwarePicture(full);
+    check(snapshot && !samePixels(frozenFlat, tilted) && full.snapshot() == snapshot && full.frozen() &&
+              snapshot->binsDbfs == raw && samePixels(compact, softwarePicture(info)),
+          "Frozen Spectrum reprojects locally without mutating its retained bins or another consumer");
+    for (int i = 0; i < 4; ++i) { full.frame(); (void)softwarePicture(full); }
+    const auto after = f.broker->stats();
+    check(after.transforms == before.transforms && after.analysisWindows == before.analysisWindows &&
+              after.publications == before.publications && after.cursorReads == before.cursorReads &&
+              after.consumers == before.consumers && after.domains == before.domains && after.taps == before.taps,
+          "slope changes and unchanged Frozen frames create no measurement, transform or demand work");
+    full.setSpectrumSlope(SpectrumSlope::Flat);
+    check(samePixels(frozenFlat, softwarePicture(full)) && full.snapshot() == snapshot && snapshot->binsDbfs == raw,
+          "returning Flat restores the exact original pixels and raw measurement");
+    full.setSpectrumSlope(SpectrumSlope::Tilt45); full.freeze(false); writeFrames(f, 256); f.broker->pump(); full.frame(); info.frame();
+    check(full.snapshot() && full.snapshot() == info.snapshot() && f.broker->stats().domains == 1 &&
+              f.broker->stats().taps == 1 && f.broker->stats().spectralPlans == 1,
+          "differing live display slopes still share one compatible result, source and FFT");
+    full.setMode(SharedSpectrumView::Mode::Meters); f.broker->pump(); full.frame();
+    check(full.snapshot() && full.snapshot()->outputs & SharedAnalysis::Meters,
+          "meter-isolation oracle uses a real shared meter publication");
+    const auto meterFlat = softwarePicture(full); full.setSpectrumSlope(SpectrumSlope::Flat);
+    check(samePixels(meterFlat, softwarePicture(full)), "Spectrum slope never modifies raw sample peak/RMS presentation");
+    check(SharedSpectrumViewTestAccess::offsetCount(full) == 0,
+          "choosing Flat releases prior offsets immediately even outside Spectrum mode");
+    full.setMode(SharedSpectrumView::Mode::Spectrum); f.broker->pump(); full.frame(); full.setSpectrumSlope(SpectrumSlope::Tilt45);
+    check(SharedSpectrumViewTestAccess::offsetCount(full) == 513, "visible tilted Spectrum owns a prepared bounded projection");
+    full.setVisible(false); full.setSpectrumSlope(SpectrumSlope::Flat);
+    check(SharedSpectrumViewTestAccess::offsetCount(full) == 0,
+          "choosing Flat while hidden releases the prepared projection without a future frame");
+
+    AnalysisPane pane; pane.setSpectrumSlope(SpectrumSlope::Tilt45);
+    for (const auto mode : {SharedSpectrumView::Mode::Spectrum, SharedSpectrumView::Mode::Scope,
+                           SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase, SharedSpectrumView::Mode::Spectrogram}) {
+        pane.setMode(mode);
+        check(pane.slopeBox.isEnabled() == (mode == SharedSpectrumView::Mode::Spectrum) &&
+                  pane.view.spectrumSlope() == SpectrumSlope::Tilt45 && pane.requestedSpectrumSlope() == SpectrumSlope::Tilt45,
+              "slope control is Spectrum-only while retaining its local preference across other modes");
+    }
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); }
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

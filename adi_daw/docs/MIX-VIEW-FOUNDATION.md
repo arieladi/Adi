@@ -116,6 +116,15 @@ contain at least one newly written post-action sample; it need not be entirely p
 or aligned with another view. A new view may reuse a valid compatible initial stopped
 picture. Source replacement re-arms admission, and shutdown revokes retained frozen pictures.
 
+Spectrum also offers optional display slope: Flat (the unchanged ADI default) or
++4.5 dB/octave around 1 kHz. This changes only plotted bins, never raw calibrated
+results, comparison bins, sample peak/RMS or Main aggregate loudness/true peak.
+DC has no logarithmic correction. Owner configuration/frame work prepares bounded
+frequency offsets outside paint; unchanged metadata reuses them. A visible frozen
+Spectrum can be reprojected without requesting audio or analysis. The parent choice
+persists per window, Info follows, and floating analysis inherits then changes locally.
+The selector is disabled in other modes; spectrogram palettes and units are unchanged.
+
 The document supplies MX-30 leased source/device endpoints with independent consumer cursors,
 negotiated history, source generations and safe storage retirement. Unusable old-rate taps are
 unavailable rather than displayed with a false frequency scale. DEV-05/MX-24 own compensated

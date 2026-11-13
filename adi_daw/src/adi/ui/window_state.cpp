@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window_state.hpp"
 #include "analysis_palettes.hpp"
+#include "spectrum_slope.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -81,6 +82,8 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
         state.analysisPalette = knownPalette ? palette : "adi";
         state.analysisPaletteReverse = knownPalette && j.value("analysisPaletteReverse", false);
+        const auto slope = j.value("analysisSpectrumSlope", std::string("flat"));
+        state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
         state.follow = j.value("follow", false);
@@ -138,7 +141,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             state.mixAnalyzerSource < 0 || state.mixAnalyzerSource > 1 ||
             state.mixAnalyzerPoint < 0 || state.mixAnalyzerPoint > 2 ||
             state.mixAnalyzerChannel < 0 || state.mixAnalyzerChannel > 4 ||
-            palettes::id(palettes::find(state.analysisPalette)) != state.analysisPalette) {
+            palettes::id(palettes::find(state.analysisPalette)) != state.analysisPalette ||
+            !validSpectrumSlopeId(state.analysisSpectrumSlope)) {
             error = "Invalid view geometry";
             return false;
         }
@@ -167,6 +171,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixAnalyzerChannel", state.mixAnalyzerChannel},
                             {"analysisPalette", state.analysisPalette},
                             {"analysisPaletteReverse", state.analysisPaletteReverse},
+                            {"analysisSpectrumSlope", state.analysisSpectrumSlope},
                             {"showReference", state.showReference},
                             {"hideReturns", state.hideReturns},
                             {"follow", state.follow},

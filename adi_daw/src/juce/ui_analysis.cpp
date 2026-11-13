@@ -133,6 +133,18 @@ void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
     }
     repaint();
 }
+void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
+    slope = spectrumSlopeFromId(spectrumSlopeId(slope));
+    if (slope == SpectrumSlope::Flat) spectrumProjection_.reset();
+    if (spectrumSlope_ == slope) return;
+    spectrumSlope_ = slope;
+    try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
+    repaint();
+}
+void SharedSpectrumView::updateSpectrumProjection() {
+    if (mode_ != Mode::Spectrum || !shown_) return;
+    spectrumProjection_.prepare(spectrumSlope_, shown_->sampleRate, shown_->request.fftSize, shown_->binsDbfs.size());
+}
 void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
     if (!mainMeterSource_.owner_before(source) && !source.owner_before(mainMeterSource_)) return;
     mainMeterSource_ = source;
@@ -284,6 +296,7 @@ void SharedSpectrumView::frame() noexcept {
     }
     updateMainMeter();
     try { updateRaster(); } catch (...) { raster_.reset(); }
+    try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
 }
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
@@ -481,16 +494,25 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     }
     juce::Path curve;
     bool started = false;
-    if (mode_ == Mode::Spectrum) for (std::size_t i = 1; i < shown_->binsDbfs.size(); ++i) {
+    const auto offsets = spectrumProjection_.offsets();
+    const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
+    const bool projectionReady = !tilted || offsets.size() == shown_->binsDbfs.size();
+    if (mode_ == Mode::Spectrum && projectionReady) for (std::size_t i = 1; i < shown_->binsDbfs.size(); ++i) {
         const double hz = static_cast<double>(i) * shown_->sampleRate / shown_->request.fftSize;
         if (hz < 20 || hz > topHz) continue;
-        const auto value = std::isfinite(shown_->binsDbfs[i]) ? shown_->binsDbfs[i] : floorDb;
+        auto value = std::isfinite(shown_->binsDbfs[i]) ? shown_->binsDbfs[i] : floorDb;
+        if (tilted) value += offsets[i];
         const auto x = xFor(hz), y = heightFor(value, plot);
         if (!started) { curve.startNewSubPath(x, y); started = true; }
         else curve.lineTo(x, y);
     }
     g.setColour(look::value);
     g.strokePath(curve, juce::PathStrokeType(1.4f));
+    if (mode_ == Mode::Spectrum && tilted) {
+        g.setFont(look::font(9.f));
+        g.drawText(projectionReady ? "Display +4.5 dB/oct @ 1 kHz" : "Spectrum display unavailable",
+                   plot.withHeight(12.f), juce::Justification::topRight, true);
+    }
     for (std::size_t channel = 0; channel < 2; ++channel) {
         const float x = plot.getRight() + 5.f + static_cast<float>(channel) * 6.f;
         g.setColour(look::outline);
@@ -537,6 +559,14 @@ AnalysisPane::AnalysisPane() {
     modeBox.setTitle("Analysis mode"); sourceBox.setTitle("Analysis channel source");
     pointBox.setTitle("Analysis tap point"); channelBox.setTitle("Spectrum channel");
     paletteBox.setTitle("Spectrogram palette"); reverseButton.setTitle("Reverse spectrogram palette");
+    slopeBox.addItemList({"Slope: Flat", "+4.5 dB/oct @ 1k"}, 1);
+    slopeBox.setTitle("Spectrum display slope");
+    slopeBox.setTooltip("Display tilt around 1 kHz only. Raw sine-calibrated dBFS, peak/RMS and comparison bins are unchanged.");
+    slopeBox.onChange = [this] {
+        if (onSpectrumSlopeChange) onSpectrumSlopeChange();
+        else setSpectrumSlope(requestedSpectrumSlope());
+    };
+    restoreSlopeControls(SpectrumSlope::Flat); addAndMakeVisible(slopeBox);
     static const auto previews = [] {
         std::array<juce::Image, palettes::count> images;
         for (std::size_t i = 0; i < images.size(); ++i) {
@@ -583,6 +613,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     channelBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::Spectrogram);
     paletteBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
     reverseButton.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
+    slopeBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrum);
 }
 void AnalysisPane::setSource(Source source) {
     source_ = source; sourceBox.setSelectedId(source == Source::Selected ? 2 : 1, juce::dontSendNotification);
@@ -601,11 +632,20 @@ void AnalysisPane::restorePaletteControls(std::string_view id, bool reverse) {
 void AnalysisPane::setPalette(std::string_view id, bool reverse) {
     view.setPalette(id, reverse); restorePaletteControls(view.palette(), reverse);
 }
+SpectrumSlope AnalysisPane::requestedSpectrumSlope() const noexcept {
+    return slopeBox.getSelectedId() == 2 ? SpectrumSlope::Tilt45 : SpectrumSlope::Flat;
+}
+void AnalysisPane::restoreSlopeControls(SpectrumSlope slope) {
+    slopeBox.setSelectedId(slope == SpectrumSlope::Tilt45 ? 2 : 1, juce::dontSendNotification);
+}
+void AnalysisPane::setSpectrumSlope(SpectrumSlope slope) {
+    view.setSpectrumSlope(slope); restoreSlopeControls(view.spectrumSlope());
+}
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 9> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox,
+    const std::array<juce::Component *, 10> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
         &reverseButton, &freezeButton, &resetButton, &expandButton};
     const int columns = std::clamp(getWidth() / 96, 1, 4);
     const int rows = (static_cast<int>(controls.size()) + columns - 1) / columns;
