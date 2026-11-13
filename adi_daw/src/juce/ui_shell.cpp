@@ -1305,7 +1305,9 @@ struct ChosenClip {
     const engine::ClipNode *clip = nullptr;
 };
 ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
-    if (sel.clip == 0)
+    // A selection widened to other tracks (a drag across lanes, Shift or Ctrl/Cmd on a title) is a
+    // time selection, whatever clip the press began on.
+    if (sel.clip == 0 || (sel.toTrack != 0 && sel.toTrack != sel.track) || !sel.picked.empty())
         return {};
     const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
     for (const auto &t : current.tracks)
@@ -1425,6 +1427,13 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         sel.end = b;
         sel.marked = true;
     };
+    // A command that worked clears an earlier refusal: an empty edit commits nothing, so nothing
+    // else would.
+    const auto succeeded = [&] {
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
+        arrangement.changed();
+    };
     switch (command) {
     case ClipCommand::Copy: {
         if (chosen.clip != nullptr) {
@@ -1463,7 +1472,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             board.held = std::move(cut.copy);
         }
         commands_.manager.commandStatusChanged();
-        arrangement.changed();
+        succeeded();
         return true;
     }
     case ClipCommand::Paste: {
@@ -1491,7 +1500,11 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
                 return fail("The copied clip goes on " + kindWord(kind) + " track: " + track->name + " is " +
                             kindWord(track->kind) + " track.");
-            const auto id = audio_drop_detail::newClipId(*current);
+            // A new identity, never the copied clip's own: after a Cut of the newest clip, the
+            // project's next free id is the one the copy still carries.
+            auto id = audio_drop_detail::newClipId(*current);
+            if (copy->image.contains("id") && copy->image["id"].is_number_integer())
+                id = std::max(id, copy->image["id"].get<std::int64_t>() + 1);
             if (!commitEdit(clip_edit::preparePaste(store, *copy, id, track->id, {0, at}, options)))
                 return false;
             chooseClip(id);
@@ -1532,7 +1545,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
             timeSelection(targets.front(), targets.back(), at, at + length);
         }
-        arrangement.changed();
+        succeeded();
         return true;
     }
     case ClipCommand::Duplicate: {
@@ -1551,7 +1564,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             sel.end = to + length;
             sel.clip = 0;
         }
-        arrangement.changed();
+        succeeded();
         return true;
     }
     }

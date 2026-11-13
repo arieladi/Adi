@@ -3174,6 +3174,30 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     marker(2, 2 * bar);
     check(!root.command(AppCommands::Paste) && root.error().find("another project") != std::string::npos,
           "a copy from another project is refused, and says so");
+    // Cut the newest clip (the largest id) and paste it back: a new identity, not the copy's own.
+    clickClip(3, 51, 0, bar / 2);
+    check(root.keyPressed(cutKey), "Ctrl/Cmd+X on 2 MIDI's clip, the newest");
+    root.frame();
+    marker(3, bar);
+    check(root.keyPressed(pasteKey), "paste the newest clip back");
+    root.frame();
+    check(clipsOf(3) == Clips{{bar, bar / 2}} && sel.clip > 51, "it lands, with an id past the cut one's");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the paste and the cut");
+    root.frame();
+    // A clip's selection widened to another track is a time selection: Copy takes the range.
+    clickClip(2, 50, 0, bar);
+    sel.toTrack = 3;
+    check(root.command(AppCommands::Copy) && std::holds_alternative<clip_edit::RangeCopy>(commands.clipClipboard().held),
+          "a clip's span on two tracks copies as a range");
+    // A Duplicate over empty time works, and clears an earlier refusal.
+    marker(6, 0);
+    root.command(AppCommands::Paste);
+    check(!root.error().empty(), "a refusal on the Status Bar");
+    sel = {};
+    sel.track = 2;
+    sel.start = 6 * bar;
+    sel.end = 7 * bar;
+    check(root.command(AppCommands::Duplicate) && root.error().empty(), "an empty Duplicate clears the Status Bar");
     // With nothing chosen, Copy says what to choose.
     marker(2, 0);
     check(!root.command(AppCommands::Copy) && !root.error().empty(), "Copy with no clip or time selection says what to select");
