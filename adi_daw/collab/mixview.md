@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — independent compressor core slice claimed
+
+**Item:** `mixview/compressor-core-20261113`, isolated `D:/Adi-wt/mix-compressor-1113`, based on #548 `7faf25c1`. Implement an authored framework-free base-rate Clean compressor kernel with explicit parameter/ramp/reset/restore/prepare state, key/channel-link handling, generated-signal tests and a separately injectable adapter as the contracts permit. New files under `src/adi/mix/compressor/`, matching tests and narrow CMake wiring only. It is an unregistered component slice: no native Compressor availability until explicit per-kind factory dispatch, complete controller/state and quality/style paths pass. The existing factory's availability guard must not be bypassed or allowed to fall through to LimiterDevice for a newly enabled kind.
+
+**Boundaries:** no imported vendor code, private observations in public sources/tests, host SDK, fenced handlers/schema/main, live desktop or new CPU timing. Existing sound is unchanged because the new core is not registered. Strict numerical/lifecycle checks and callback work/allocation accounting precede review. Broader C/DS/G cores remain later slices; no whole-product/reference parity is inferred from one kernel. Native DEV-05/MX-24 routes still require owner coordination. Win reviews/merges and Claude's live work trails development.
+
 ## 13 November 2026 — native EQ serial adapter delivered for review
 
 **Item:** draft [#548](https://github.com/arieladi/Adi/pull/548), `7faf25c10cc4595f5ad99899d2e1f6a317b1ab38`, directly on #546 `abed5098`. The existing native EQ now calls the proven serial backend with only EQ enabled. All 730 IDs/state and common edit/undo paths remain stable. Provider-only absent-key programme fallback preserves the current native law; connected silence stays silent. Authored learning survives stopped reprepare, complete PDC admission stays physical-boundary owned and a Main-only default-empty nonfatal issue reaches the common header/tooltip. No new native Carve/Focus controller/route availability or reserved slot is introduced.
