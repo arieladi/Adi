@@ -74,11 +74,14 @@ class StackTab final : public juce::Component {
     StackModel &model() noexcept;
     const StackModel &model() const noexcept;
     bool hasDeviceContext() const;
+    bool hasToolbarFocus() const;
     bool deviceCommand(int command);
     // Ends a held edit exactly once before hiding/rebinding/removing its component.
     void cancelInteractions();
     AdiRootComponent &root;
     juce::TextEditor search;
+    juce::ComboBox channelScope;
+    juce::String emptyMessage() const;
     juce::Slider rowSize;
     juce::ToggleButton autoZoom{"Auto Zoom"}, pinsOnly{"Pinned"}, navigator{"Navigator"};
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;
@@ -93,6 +96,7 @@ class StackTab final : public juce::Component {
     void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();
+    int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
     void beginRename(stack::RowRef);
     void endRename(bool commit);
