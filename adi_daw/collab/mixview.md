@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — native EQ serial adapter delivered for review
+
+**Item:** draft [#548](https://github.com/arieladi/Adi/pull/548), `7faf25c10cc4595f5ad99899d2e1f6a317b1ab38`, directly on #546 `abed5098`. The existing native EQ now calls the proven serial backend with only EQ enabled. All 730 IDs/state and common edit/undo paths remain stable. Provider-only absent-key programme fallback preserves the current native law; connected silence stays silent. Authored learning survives stopped reprepare, complete PDC admission stays physical-boundary owned and a Main-only default-empty nonfatal issue reaches the common header/tooltip. No new native Carve/Focus controller/route availability or reserved slot is introduced.
+
+**Gates/delivery:** nine selected Debug MSVC W4/WX suites / 1,524 checks / zero failures; 248,832 exact active authored-EQ matrix pairs plus spectral-sensitivity, continuity, PDC and controlled failure checks. Tracked callback C++ allocation/deallocation zero. Six strict changed frontend units and four validators pass. Fixed copied proof and isolated hashed Debug review application/ZIP/Claude handoff are complete privately. No application was locally launched. The analyzer resource/Main-readout branch is separate and is not falsely included in this package. New CPU timing remains deferred, and live testing stays with Claude.
+
+**Review state:** #545 and #546 now pass all 18 core plus three UI CI jobs and are marked ready; no self-merge. #548's own runs `43417010772`/`43417011172` are in progress. Win reviews/merges in dependency order. Canonical DEV-05/MX-24 tap-schema/layout/lifecycle ownership coordination remains open independently of #512. Still remains an ordinary plug-in only.
+
 ## 13 November 2026 — Main-only analyzer meter projection claimed
 
 **Independent item:** `mixview/main-meter-readout-20261113`, `D:/Adi-wt/mix-analysis-1113`, directly on green #544 `632761db`. Add read-only Main M/S/I LUFS and held aggregate dBTP to Meters presentation, consuming the existing Session Main measurement. Info/full/floating reuse the same plain-value renderer; visible/unfrozen actual Main/Post-Mixer only. Source label names Main programme before cue/metronome. It adds no DSP kernel, analysis tap, FFT, worker or timer, and does not reset/pause shared Main measurement through local analyzer controls. Default Spectrum and other-source peak/RMS remain unchanged.
