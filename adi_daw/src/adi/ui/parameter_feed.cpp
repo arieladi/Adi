@@ -52,6 +52,8 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
             data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&
                              entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
             data.latency = data.available ? instance->latencySamples() : 0;
+            if (data.available)
+                data.processingIssue = instance->processingIssue();
             auto &identity = identities_[row.id];
             const bool runtimeSame = identity.runtime.sameInstance(data.runtime) &&
                                      session.resolveDevice(identity.runtime) == instance;

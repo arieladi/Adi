@@ -645,12 +645,18 @@ void DevicePanelView::present(const DevicePanelData &d) {
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
     if (nativeFunction()) hint += "\nNative Mix View function; drag the header to move it within this channel.";
+    if (!d.processingIssue.empty()) {
+        hint += "\nConfiguration failed: " + juce::String(d.processingIssue);
+        hint += "\nReload the device to retry.";
+    }
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
                                                           : "Switches the device on or off.");
     if (enabled.getTooltip() != activatorHint) enabled.setTooltip(activatorHint);
-    if (title.getButtonText() != juce::String(d.name)) {
-        title.setButtonText(d.name);
+    const auto caption = d.processingIssue.empty() ? juce::String(d.name)
+                                                  : "Configuration failed: " + juce::String(d.name);
+    if (title.getButtonText() != caption) {
+        title.setButtonText(caption);
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
     // Color Cab's Impulse slot, its one declared sample slot (ENGINE-SAMPLE-SLOTS.md).
@@ -825,7 +831,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
         juce::Graphics::ScopedSaveState saved(g);
         g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
                                                        static_cast<float>(getHeight())));
-        g.drawText(juce::String(data->name), kTitleHeight + 2, getHeight() + 4,
+        g.drawText(title.getButtonText(), kTitleHeight + 2, getHeight() + 4,
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
     } else if (data && !parameterPageUnavailableReason().empty()) {
