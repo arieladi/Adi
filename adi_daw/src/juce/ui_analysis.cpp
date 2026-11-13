@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_analysis.hpp"
 #include "ui_look.hpp"
+#include "adi/engine/main_loudness.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -16,34 +17,80 @@ juce::String level(float value) {
 float heightFor(float value, juce::Rectangle<float> area) {
     return area.getY() + area.getHeight() * std::clamp(value / floorDb, 0.f, 1.f);
 }
+juce::String meterNumber(float value) {
+    return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
+}
 } // namespace
+std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudness &meter,
+                                                     std::int64_t track, double sampleRate) noexcept {
+    const auto expected = meter.preparedFormatSequence();
+    const auto &readout = meter.readout();
+    const auto before = readout.formatSequence.load(std::memory_order_acquire);
+    if (track <= 0 || !std::isfinite(sampleRate) || sampleRate <= 0 || expected == 0 || before != expected) return {};
+    MainMeterSnapshot result;
+    result.track = track;
+    result.sampleRate = sampleRate;
+    result.formatSequence = before;
+    result.momentaryLufs = readout.momentaryLufs.load(std::memory_order_relaxed);
+    result.shortTermLufs = readout.shortTermLufs.load(std::memory_order_relaxed);
+    result.integratedLufs = readout.integratedLufs.load(std::memory_order_relaxed);
+    result.truePeakDb = readout.truePeakDb.load(std::memory_order_relaxed);
+    if (readout.formatSequence.load(std::memory_order_acquire) != before) return {};
+    return result;
+}
 SharedSpectrumView::SharedSpectrumView() {
     setTitle("Channel spectrum");
     setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
-               "Phase is L/R correlation, not a loudness measurement.");
+               "Phase is L/R correlation, not a loudness measurement. Meters on Main/Post Mixer "
+               "also show the existing programme loudness before cue/metronome: momentary, "
+               "short-term and integrated LUFS, plus the held aggregate Main true peak. "
+               "Freeze/Reset affect this view only, never the shared Main measurement.");
     setInterceptsMouseClicks(false, false);
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
-    lease_.reset(); shown_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     mode_ = mode; updateDemand(); repaint();
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
-    lease_.reset(); shown_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     point_ = point; device_ = device; updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
-    lease_.reset(); shown_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     channel_ = channel; updateDemand(); repaint();
+}
+void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
+    if (!mainMeterSource_.owner_before(source) && !source.owner_before(mainMeterSource_)) return;
+    mainMeterSource_ = source;
+    mainMeter_.reset();
+    repaint();
+}
+juce::String SharedSpectrumView::mainMeterText() const {
+    if (!mainMeter_) return {};
+    return "Main aggregate programme / pre-cue\nM " + meterNumber(mainMeter_->momentaryLufs) +
+           "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(mainMeter_->integratedLufs) +
+           " LUFS\nTP (held) " + meterNumber(mainMeter_->truePeakDb) + " dBTP";
 }
 void SharedSpectrumView::freeze(bool value) {
     if (frozen_ == value) return;
     frozen_ = value;
     if (value) lease_.reset();
-    else { shown_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0; updateDemand(); }
+    else {
+        const auto main = mainMeterSource_.lock();
+        const bool projectedMain = mode_ == Mode::Meters && point_ == engine::ScopePoint::PostFader &&
+                                   device_ == 0 && main && main->track == track_;
+        // Another visible view may keep the broker's old interval alive. Main
+        // numbers resume only with a new interval, not that cached picture.
+        if (projectedMain && shown_) {
+            clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
+            clearedColumn_ = shown_->historySerial;
+        } else if (!projectedMain) clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+        shown_.reset(); mainMeter_.reset(); updateDemand();
+    }
     repaint();
 }
 void SharedSpectrumView::clear() {
@@ -53,7 +100,7 @@ void SharedSpectrumView::clear() {
         clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
         clearedColumn_ = shown_->historySerial;
     }
-    shown_.reset(); spectrogram_ = {};
+    shown_.reset(); mainMeter_.reset(); spectrogram_ = {};
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
 SharedSpectrumView::~SharedSpectrumView() {
@@ -64,6 +111,7 @@ void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::in
     if (broker_ != broker || track_ != track) {
         lease_.reset();
         shown_.reset();
+        mainMeter_.reset();
         spectrogram_ = {};
         broker_ = std::move(broker);
         track_ = track;
@@ -85,12 +133,15 @@ bool SharedSpectrumView::eligible() const noexcept {
 }
 void SharedSpectrumView::updateDemand() noexcept {
     const auto previous = status_;
+    const bool hadMainMeter = mainMeter_.has_value();
     if (!eligible()) {
         lease_.reset();
         shown_.reset();
+        mainMeter_.reset();
         status_ = Status::Detached;
     } else if (frozen_) {
         lease_.reset();
+        if (mainMeterSource_.expired()) mainMeter_.reset();
     } else {
         if (!lease_) {
             SharedAnalysis::Request request{track_, point_, 1024, channel_, dsp::Window::Hann};
@@ -107,12 +158,13 @@ void SharedSpectrumView::updateDemand() noexcept {
         }
         if (!lease_ || !lease_.available()) {
             shown_.reset();
+            mainMeter_.reset();
             status_ = Status::Unavailable;
         } else {
             status_ = shown_ ? Status::Ready : Status::Waiting;
         }
     }
-    if (previous != status_) repaint();
+    if (previous != status_ || (hadMainMeter && !mainMeter_)) repaint();
 }
 void SharedSpectrumView::frame() noexcept {
     updateDemand();
@@ -125,9 +177,28 @@ void SharedSpectrumView::frame() noexcept {
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
     if (next != shown_) {
         shown_ = std::move(next);
+        mainMeter_.reset();
         status_ = shown_ ? Status::Ready : Status::Waiting;
         repaint();
     }
+    updateMainMeter();
+}
+void SharedSpectrumView::updateMainMeter() noexcept {
+    std::optional<MainMeterSnapshot> next;
+    if (mode_ == Mode::Meters && point_ == engine::ScopePoint::PostFader && device_ == 0 && shown_ &&
+        !frozen_ && eligible()) {
+        if (const auto source = mainMeterSource_.lock(); source && source->track == track_ && source->read) {
+            try {
+                next = source->read();
+                const auto validLevel = [](float value) { return std::isfinite(value) || value == -std::numeric_limits<float>::infinity(); };
+                if (next && (next->track != track_ || !std::isfinite(next->sampleRate) ||
+                    next->sampleRate != shown_->sampleRate || next->formatSequence == 0 || !validLevel(next->momentaryLufs) ||
+                    !validLevel(next->shortTermLufs) || !validLevel(next->integratedLufs) || !validLevel(next->truePeakDb)))
+                    next.reset();
+            } catch (...) { next.reset(); }
+        }
+    }
+    if (mainMeter_ != next) { mainMeter_ = next; repaint(); }
 }
 void SharedSpectrumView::suspend(bool value) noexcept {
     if (suspended_ != value) { suspended_ = value; updateDemand(); }
@@ -152,7 +223,7 @@ void SharedSpectrumView::componentVisibilityChanged(juce::Component &) { updateD
 void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
-    lease_.reset(); shown_.reset(); status_ = Status::Detached;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); status_ = Status::Detached;
     unwatchAncestors();
 }
 void SharedSpectrumView::paint(juce::Graphics &g) {
@@ -165,7 +236,9 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};
     g.drawText(juce::String(names[static_cast<int>(mode_)]) + " / " + points[static_cast<int>(point_)] +
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
-    auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f).withTrimmedRight(18.f);
+    const bool mainMeter = mode_ == Mode::Meters && mainMeter_.has_value();
+    const auto meterHeight = mainMeter ? 38.f : 0.f;
+    auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
     if (mode_ == Mode::Spectrum || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
@@ -340,7 +413,16 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
                    (shown_->budgetLimited ? " / Catching up" : "") +
                    (shown_->historyLimited ? " / History memory limit" : "") +
                    (shown_->droppedHistoryColumns ? " / History gaps " + juce::String(static_cast<juce::int64>(shown_->droppedHistoryColumns)) : ""),
-               footer.withTrimmedTop(12.f), juce::Justification::centredLeft, true);
+               mainMeter ? footer.withTrimmedTop(12.f).withHeight(12.f) : footer.withTrimmedTop(12.f),
+               juce::Justification::centredLeft, true);
+    if (mainMeter) {
+        const auto lines = juce::StringArray::fromLines(mainMeterText());
+        auto strip = area.withTrimmedTop(area.getHeight() - meterHeight);
+        g.setColour(look::textOnBand);
+        g.setFont(look::font(9.f));
+        for (const auto &line : lines)
+            g.drawText(line, strip.removeFromTop(12.f), juce::Justification::centredLeft, true);
+    }
 }
 
 AnalysisPane::AnalysisPane() {

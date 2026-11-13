@@ -3,9 +3,33 @@
 #include "adi/ui/shared_analysis.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
+#include <limits>
+#include <optional>
 #include <vector>
 
+namespace adi::engine { class MainLoudness; }
 namespace adi::ui {
+// Presentation of the existing persistent Main service, not another meter.
+// Values have independent measurement intervals; this is not a sample-synchronous
+// publication. The owner callback is read only and owns no audio/session pointer.
+struct MainMeterSnapshot {
+    std::int64_t track = 0;
+    double sampleRate = 0;
+    std::uint64_t formatSequence = 0;
+    float momentaryLufs = -std::numeric_limits<float>::infinity();
+    float shortTermLufs = -std::numeric_limits<float>::infinity();
+    float integratedLufs = -std::numeric_limits<float>::infinity();
+    float truePeakDb = -std::numeric_limits<float>::infinity();
+    bool operator==(const MainMeterSnapshot &) const = default;
+};
+struct MainMeterSource {
+    std::int64_t track = 0;
+    std::function<std::optional<MainMeterSnapshot>()> read;
+};
+// Owner-thread projection of one existing service; validates format adoption
+// around independent value reads without requesting audio work or a reset.
+std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudness &,
+                                                     std::int64_t track, double sampleRate) noexcept;
 // The same calibrated publication in the boxed Info area and the full Mix View. This component
 // owns no timer, FFT or worker. Its owner calls frame on the window's clock. Ancestor visibility
 // listeners release demand even when the hidden window's clock has stopped.
@@ -23,6 +47,11 @@ class SharedSpectrumView final : public juce::Component,
     engine::ScopePoint point() const noexcept { return point_; }
     void setChannel(SharedAnalysis::Channel);
     SharedAnalysis::Channel channel() const noexcept { return channel_; }
+    // Weak owner token: closing/replacing the document revokes future reads.
+    // Main-only eligibility is checked before invoking the callback.
+    void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
+    std::optional<MainMeterSnapshot> mainMeterSnapshot() const noexcept { return mainMeter_; }
+    juce::String mainMeterText() const;
     void freeze(bool);
     void clear();
     bool frozen() const noexcept { return frozen_; }
@@ -43,6 +72,7 @@ class SharedSpectrumView final : public juce::Component,
   private:
     bool eligible() const noexcept;
     void updateDemand() noexcept;
+    void updateMainMeter() noexcept;
     void watchAncestors();
     void unwatchAncestors() noexcept;
     void componentVisibilityChanged(juce::Component &) override;
@@ -53,6 +83,8 @@ class SharedSpectrumView final : public juce::Component,
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
+    std::weak_ptr<const MainMeterSource> mainMeterSource_;
+    std::optional<MainMeterSnapshot> mainMeter_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
     Status status_ = Status::Detached;
     bool suspended_ = false;
