@@ -1,5 +1,17 @@
 # Mix View seat
 
+## 13 November 2026 — Carve/key core slice supplied; Focus configuration and device-key continuation
+
+**Item:** [draft #543](https://github.com/arieladi/Adi/pull/543), `mixview/unmask-cores-20261113`, `2e861b269f0cdaa9646a2021ec5a7efbbe18c8cc`, based directly on #542's `a0548d3c`. Eight files: authored framework-free Carve, reusable aligned-key transport, generated-signal tests and CMake wiring. Explicit independent key planes survive mono-main layout, delayed disconnect tails, nonuniform callback slices and an in-place upstream main writer. Disabled processing skips work; inactive contributions release and reach exact dry. This core slice does not enable the still-unconnected Carve/Focus pages or invent a device route.
+
+**Gates:** standalone CMake/MSVC strict component build: 2 suites / 129 checks / zero failures (78 Carve, 51 key), guarded zero C++ callback allocations/deallocations. Strict Clang diagnostics/frontend gates and four repository validators pass. No CPU timing, local desktop/input/capture/native host, installed plug-in or daily-install change. CI must pass independently before win's merge; the draft stays separate from Focus work.
+
+**Parent correction:** #542 `a0548d3c` removes a copied pure publication getter that allocated on unchanged Linux frames. Immediate SafePointer/epoch and interaction End/destruction guards remain. Its refreshed isolated package again passes 19 selected suites / 5,055 checks / zero failures; UI CI Windows/Linux/macOS is green, exact-head core jobs trail this log. Private handoff/package manifest are refreshed; original audio/extraction seals are unchanged.
+
+**Next branch:** `mixview/focus-core-20261113` in the same isolated worktree, based on #543. Focus keeps complete immutable offers until physical admission, including equal-latency generations; bounded CAS-leased mailbox publication coalesces the latest unbuilt state. IIR-only requests avoid unused FIR planning. A remaining audible compatibility choice is with the director; native admission and state are not claimed complete. Shared analysis suggestions remain manual.
+
+**For win / device-key seam:** the seat is auditing DEV-05/MX-24 next. Stored routing already permits a device endpoint, but the planner rejects it, the realizer's nonzero routing ID means a send, and a device-key history needs more than a track pair. Exact Session device nodes and audio tap interfaces exist. Direct device deletion also needs reversible polymorphic route/tap cleanup. No schema/ops registration or fenced handler is changed yet; a prepared captured helper may avoid the #512 fence, but tap storage/format ownership must remain coordinated. Analyzer taps are not key routes. Win reviews/merges the stack; no reserved slots return.
+
 ## 13 November 2026 — independent EQ → Carve → Focus decided; unmasking cores continuation
 
 **Director decision:** EQ, Carve and Focus are independently enabled in fixed **EQ → Carve → Focus** audio order. All may run together. Separate pages and manual application of analysis suggestions remain settled; selecting a page is view-only. The private decision guide/roadmap retain the answer. Win assigns any superseding ADR; no reserved slots return.
