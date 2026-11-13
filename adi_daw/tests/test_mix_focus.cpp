@@ -63,7 +63,8 @@ void mailboxConcurrency() {
         if(!mailbox.read(snapshot,version))continue;
         ++reads;const auto n=static_cast<std::uint64_t>(snapshot.nodes[0].frequencyHz-1000.);
         if(!(snapshot==signature(n)))++mixed;
-        if(version<last)++mixed;last=version;
+        if(version<last)++mixed;
+        last=version;
     }
     producer.join();f::Settings final;std::uint64_t version=0;
     check(mailbox.read(final,version)&&final==signature(100000)&&version==100001,"mailbox latest complete snapshot converges");
@@ -552,7 +553,7 @@ void pinnedCandidateWithMovingScalars() {
             a[c][i]=.1*std::sin(.13*t)+.04*std::cos(.37*t);key[c][i]=.23*std::cos(.17*t);
         }
         b=a;
-        for(const auto range:{std::pair<std::size_t,std::int32_t>{0,17},{17,47}}) {
+        for(const auto& range:{std::pair<std::size_t,std::int32_t>{0,17},{17,47}}) {
             std::array<double*,2>ma{a[0].data()+range.first,a[1].data()+range.first},mb{b[0].data()+range.first,b[1].data()+range.first};
             std::array<const double*,2>keys{key[0].data()+range.first,key[1].data()+range.first};
             {AudioScope scope;const auto ca=held.beginBlock(block,1024,pinned,false);const auto cb=control.beginBlock(block,1024,expected);
