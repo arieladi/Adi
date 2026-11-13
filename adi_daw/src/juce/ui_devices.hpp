@@ -7,6 +7,7 @@
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <map>
 #include <string_view>
 #include <utility>
 namespace adi::ui {
@@ -143,8 +144,8 @@ class DevicePanelView final : public juce::Component {
         std::unique_ptr<juce::TextButton> selector;
         std::unique_ptr<ActivatorButton> enabled;
     };
-    // Processing controls require backend groups. EQ's deferred Carve/Focus pages
-    // explicitly show their missing dependencies and never expose processing controls.
+    // Processing controls require backend groups. Missing EQ-family groups show
+    // their unavailable placeholder rather than inventing processing controls.
     std::vector<ParameterPageControl> parameterPages;
     const std::string &selectedParameterPage() const noexcept { return selectedPage_; }
     bool chooseParameterPage(const std::string &);
@@ -192,8 +193,12 @@ class DevicePanelView final : public juce::Component {
     std::uint64_t controlsEpoch_ = 0;
     std::int32_t selectedBand_ = 0;
     std::string selectedSection_;
+    struct FunctionSelection { std::int32_t band = 0; std::string section; };
+    std::map<std::string, FunctionSelection> functionSelectionByPage_;
+    std::string functionSelectionPage_;
     std::vector<std::int32_t> functionBands_;
     std::vector<std::pair<std::string, std::string>> functionSections_;
+    std::vector<std::string> functionBandSections_;
     static bool eqPresentation(const DevicePanelData &) noexcept;
     bool parameterShown(const DevicePanelData &, const std::string &) const;
     bool eqPresentation() const noexcept { return data && eqPresentation(*data); }

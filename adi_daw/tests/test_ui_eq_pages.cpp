@@ -49,6 +49,33 @@ DevicePanelData eqData(std::int64_t id, bool plugin = false) {
     data.resolved.modifiableCount = data.declared.size(); data.resolved.showsConfigureHint = true;
     return data;
 }
+DevicePanelData combinedData(std::int64_t id) {
+    auto data = eqData(id);
+    const auto add = [&](std::string parameter, const char *group, const char *name, bool enable,
+                         std::int32_t band = -1, const char *section = "", const char *sectionName = "") {
+        data.declared.push_back({parameter, name, true, true});
+        panel::Record record; record.id = parameter; record.name = name;
+        record.playing = record.stored = enable ? (std::string(group) == "eq" ? 1. : 0.) : .25;
+        record.text = "Synthetic value";
+        data.records.push_back(record); data.defaults[parameter] = record.playing;
+        const auto groupName = std::string(group) == "eq" ? "EQ" : std::string(group) == "focus" ? "Focus" : "Carve";
+        data.parameterGroups[parameter] = {group, groupName, enable, band, section, sectionName};
+    };
+    add("eq-enable", "eq", "EQ enabled", true);
+    add("carve-enable", "carve", "Carve enabled", true);
+    add("carve-amount", "carve", "Amount", false);
+    add("carve-attack", "carve", "Attack", false);
+    add("carve-release", "carve", "Release", false);
+    add("focus-enable", "focus", "Focus enabled", true);
+    add("focus-wet", "focus", "Wet", false, -1, "global", "Global");
+    for (std::int32_t node = 0; node < 10; ++node) {
+        const auto base = "node-" + std::to_string(node);
+        add(base + "-frequency", "focus", "Frequency", false, node, "basic", "Basic");
+        add(base + "-q", "focus", "Q", false, node, "basic", "Basic");
+        add(base + "-threshold", "focus", "Threshold", false, node, "detector", "Detector");
+    }
+    return data;
+}
 struct Event { std::int64_t device; std::string parameter; engine::ParamEventKind kind; double value; std::uint64_t instance; };
 void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
@@ -192,6 +219,130 @@ void exercise(AppCommands &commands, const std::filesystem::path &directory) {
           "a new runtime begins a fresh presentation instead of inheriting another instance's selection");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void groupSelections(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / "function-groups.adi", true, {}, error);
+    check(document != nullptr, "group fixture opens without a host"); if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "function-groups");
+    root.setSize(1200, 800);
+    UiPeerRoot peer; peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0); peer.addAndMakeVisible(root);
+    auto publication = std::make_shared<ParameterPublication>(); publication->push_back(combinedData(70));
+    auto &strip = root.devices; strip.setVisible(true); strip.publication = [&] { return publication; };
+    strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance) {
+        return publication->front().id == id && publication->front().instance == instance;
+    };
+    std::vector<Event> events; int actions = 0; bool changePageOnEnd = false;
+    DevicePanelView *panel = nullptr;
+    strip.guardedGesture = [&](std::int64_t id, const std::string &parameter, engine::ParamEventKind kind,
+                                double value, const engine::DeviceRuntimeToken &, std::uint64_t instance) {
+        events.push_back({id, parameter, kind, value, instance});
+        if (changePageOnEnd && kind == engine::ParamEventKind::End) {
+            changePageOnEnd = false; panel->chooseParameterPage("eq");
+        }
+        return true;
+    };
+    strip.submit = [&](const std::string &, Payload) { ++actions; return true; };
+    strip.frame(2); panel = strip.panels.front().get();
+    const auto find = [&](const std::string &parameter) -> ParameterControl * {
+        const auto at = std::find_if(panel->controls.begin(), panel->controls.end(), [&](const auto &c) { return c->parameter == parameter; });
+        return at == panel->controls.end() ? nullptr : at->get();
+    };
+    check(panel->parameterPages.size() == 3 && panel->parameterPages[0].id == "eq" &&
+          panel->parameterPages[1].id == "carve" && panel->parameterPages[2].id == "focus" &&
+          std::all_of(panel->parameterPages.begin(), panel->parameterPages.end(), [](const auto &page) {
+              return page.unavailableReason.empty() && !page.enableParameter.empty();
+          }), "real group metadata replaces placeholders without duplicate pages or invented unavailable status");
+    panel->chooseFunctionBand(23); panel->chooseFunctionSection("spectral");
+    check(panel->chooseParameterPage("focus") && panel->functionBand.getNumItems() == 10 &&
+          panel->functionBand.getItemText(9) == "Node 10" && panel->selectedFunctionBand() == 0 &&
+          panel->selectedFunctionSection() == "basic" && panel->controls.size() == 2 && find("node-0-frequency"),
+          "Focus begins with its own ten-node metadata rather than EQ's band and section selection");
+    check(!panel->chooseFunctionBand(23) && panel->chooseFunctionBand(9) && panel->chooseFunctionSection("detector") &&
+          panel->controls.size() == 1 && find("node-9-threshold"), "Focus node and section choices expose only their own stable fields");
+    check(panel->chooseParameterPage("carve") && panel->controls.size() == 3 && find("carve-amount") &&
+          !panel->functionBand.isVisible() && !panel->functionSection.isVisible() && panel->selectedFunctionSection().empty(),
+          "Carve's global metadata survives an EQ or Focus section without inheriting hidden node filters");
+    panel->chooseParameterPage("eq");
+    check(panel->selectedFunctionBand() == 23 && panel->selectedFunctionSection() == "spectral" &&
+          panel->functionBand.getNumItems() == 24 && panel->controls.size() == 4 && find("band-23-29"),
+          "returning to EQ restores its own band and section independently");
+    panel->chooseParameterPage("focus");
+    check(panel->selectedFunctionBand() == 9 && panel->selectedFunctionSection() == "detector" &&
+          panel->functionBand.getNumItems() == 10 && find("node-9-threshold") && events.empty() && actions == 0,
+          "returning to Focus restores its node with no parameter, state or journal writes");
+    auto *held = find("node-9-threshold"); const auto late = held->parameterGesture;
+    held->slider.onDragStart(); held->slider.setValue(.7, juce::sendNotificationSync);
+    panel->chooseParameterPage("carve");
+    check(events.size() == 3 && events.back().parameter == "node-9-threshold" &&
+          events.back().kind == engine::ParamEventKind::End && events.back().value == .7 &&
+          !late("node-9-threshold", engine::ParamEventKind::Value, .9),
+          "group change ends the exact held node and rejects a delayed disposed-control value");
+    events.clear(); panel->chooseParameterPage("focus"); panel->chooseFunctionSection("global");
+    check(panel->controls.size() == 1 && find("focus-wet") && !panel->functionBand.isEnabled(),
+          "global Focus fields use their own section and disable the irrelevant node selector");
+    panel->chooseFunctionSection("detector");
+    panel->setParameterPageEnabled("focus", true); panel->setParameterPageEnabled("eq", false);
+    check(events.size() == 6 && events[1].parameter == "focus-enable" && events[1].value == 1. &&
+          events[4].parameter == "eq-enable" && events[4].value == 0.,
+          "real independent group activators retain bounded common begin/value/end paths");
+    events.clear();
+    publication = std::make_shared<ParameterPublication>(*publication);
+    std::reverse(publication->front().records.begin(), publication->front().records.end());
+    std::reverse(publication->front().declared.begin(), publication->front().declared.end()); strip.frame(2);
+    check(strip.panels.front().get() == panel && panel->selectedParameterPage() == "focus" &&
+          panel->selectedFunctionBand() == 9 && panel->selectedFunctionSection() == "detector" &&
+          panel->parameterPages[0].id == "eq" && panel->parameterPages[1].id == "carve" &&
+          panel->parameterPages[2].id == "focus" && find("node-9-threshold") && events.empty(),
+          "record reorder keeps stable group order and each selected logical node/section");
+    const auto complete = publication;
+    publication = std::make_shared<ParameterPublication>(*publication);
+    auto &missing = publication->front();
+    std::erase_if(missing.records, [&](const auto &r) { return missing.parameterGroups.at(r.id).groupId == "focus"; });
+    std::erase_if(missing.declared, [&](const auto &r) { return missing.parameterGroups.at(r.id).groupId == "focus"; });
+    std::erase_if(missing.parameterGroups, [](const auto &entry) { return entry.second.groupId == "focus"; });
+    strip.frame(2);
+    check(panel->selectedParameterPage() == "focus" && panel->controls.empty() &&
+          !panel->parameterPageUnavailableReason().empty() && !panel->functionBand.isVisible() &&
+          panel->parameterPages.size() == 3, "a missing real group returns to one honest placeholder without fake controls");
+    publication = complete; strip.frame(2);
+    check(panel->selectedFunctionBand() == 9 && panel->selectedFunctionSection() == "detector" &&
+          panel->parameterPageUnavailableReason().empty() && panel->controls.size() == 1 && find("node-9-threshold"),
+          "same-runtime metadata return restores the retained Focus selection");
+    events.clear(); find("node-9-threshold")->slider.onDragStart(); changePageOnEnd = true;
+    check(!panel->chooseFunctionBand(0) && panel->selectedParameterPage() == "eq" && panel->selectedFunctionBand() == 23 &&
+          panel->selectedFunctionSection() == "spectral" && events.size() == 2 && events.back().kind == engine::ParamEventKind::End,
+          "an End callback changing groups cannot apply the old node request to another group's selection");
+    peer.removeChildComponent(&root); peer.removeFromDesktop();
+}
+void destructionDuringSelection(AppCommands &commands, const std::filesystem::path &directory, int action) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / ("group-destroy-" + std::to_string(action) + ".adi"), true, {}, error);
+    check(document != nullptr, "group destruction fixture opens without a host"); if (!document) return;
+    auto root = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(), commands,
+                                                  document->views(), document->sessionState(), "group-destruction");
+    root->setSize(1200, 800);
+    UiPeerRoot peer; peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0); peer.addAndMakeVisible(*root);
+    const juce::Component::SafePointer<AdiRootComponent> observed(root.get());
+    auto publication = std::make_shared<ParameterPublication>(); publication->push_back(combinedData(80));
+    auto *strip = &root->devices; strip->setVisible(true); strip->publication = [&] { return publication; };
+    strip->targetCurrent = [](std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t) { return true; };
+    int begins = 0, ends = 0; bool destroy = false;
+    strip->guardedGesture = [&](std::int64_t, const std::string &, engine::ParamEventKind kind,
+                                 double, const engine::DeviceRuntimeToken &, std::uint64_t) {
+        if (kind == engine::ParamEventKind::Begin) ++begins;
+        if (kind == engine::ParamEventKind::End) { ++ends; if (destroy) root.reset(); }
+        return true;
+    };
+    strip->frame(2); auto *panel = strip->panels.front().get();
+    panel->chooseParameterPage("focus"); panel->chooseFunctionBand(9);
+    panel->controls.front()->slider.onDragStart(); destroy = true;
+    const bool changed = action == 0 ? panel->chooseParameterPage("carve") :
+                         action == 1 ? panel->chooseFunctionBand(0) : panel->chooseFunctionSection("detector");
+    check(!changed && !root && !observed && begins == 1 && ends == 1,
+          "group, node and section selection stop safely when held End destroys their complete owner");
+    peer.removeFromDesktop();
+}
 void destructionDuringFrame(AppCommands &commands, const std::filesystem::path &directory, bool reorder) {
     std::string error;
     auto document = ProjectDocument::open(directory / (reorder ? "eq-destroy-reorder.adi" : "eq-destroy-present.adi"), true, {}, error);
@@ -244,6 +395,8 @@ int main() {
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
     exercise(commands, temporary.path());
+    groupSelections(commands, temporary.path());
+    for (int action = 0; action < 3; ++action) destructionDuringSelection(commands, temporary.path(), action);
     destructionDuringFrame(commands, temporary.path(), true);
     destructionDuringFrame(commands, temporary.path(), false);
     std::printf("%d checks, %d failures (software-peer EQ presentation)\n", checks, failures);
