@@ -867,7 +867,7 @@ void coherentOppositeLatencyRequests() {
             eqContext = equalizer.beginBlock(physical, eqDelay, eqControls, !held);
             focusContext = focuser.beginBlock(physical, focusDelay, focusControls, !held);
         }
-        for (const auto part : {std::pair<std::int32_t, std::int32_t>{0, 17}, {17, 47}}) {
+        for (const auto &part : {std::pair<std::int32_t, std::int32_t>{0, 17}, {17, 47}}) {
             if (physical == 1 && part.first == 17) {
                 latest.eq.outputGainDb = -8.f;
                 latest.focus.nodes[0].differenceDb = -9.;
