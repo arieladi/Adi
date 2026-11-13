@@ -4,7 +4,10 @@ usage: deforum_video.py <root>        (reads <root>/video.json; resumable; D:/Av
 video.json:
   {"title": "...", "start_image": "<rich, dark, colourful still>", "seconds": 60, "bpm": 142,
    "themes": [[<bar>, "<world or scene>"], ...],          bar 0 = first frame; a theme takes over on its bar line
-   "track": "<optional wav>", "track_start": 0.0, "output": "<name>.mp4"}
+   "track": "<optional wav>", "track_start": 0.0, "output": "<name>.mp4",
+   "hold": 0.08, "camera": "still"}     optional, for people: the start picture stays underneath at alpha "hold" (the
+                                          approved 0:50-2:03 hybrid way) and the camera does not travel, so the scene
+                                          keeps its people while Deforum transforms them
 Same as run_deforum.py mode "ending" (Adi approved test C, 2026-11-13), without the Cosmic Rain opening: the approved
 settings-8s.json unchanged, the approved strength envelope from frame 0, the approved LUT, RealESRGAN + RIFE to
 1280x720 24 fps. Without a track the video is silent and the music is added later.
@@ -54,6 +57,16 @@ def prepare():
             if base + off < N:
                 keys[base + off] = v
     s["strength_schedule"] = ", ".join(f"{k}:({v})" for k, v in sorted(keys.items()))
+    if V.get("hold"):
+        guide = R / "guide.mp4"
+        subprocess.run([FF, "-v", "error", "-y", "-loop", "1", "-i", str(R / "start.png"), "-frames:v", str(N), "-r", "15",
+                        "-c:v", "libx264", "-crf", "12", "-pix_fmt", "yuv420p", str(guide)], check=True)
+        h = V["hold"]
+        s.update(video_init_path=str(guide), hybrid_generate_inputframes=True, hybrid_use_first_frame_as_init_image=True,
+                 hybrid_composite="Normal", hybrid_motion="None", hybrid_use_init_image=False, overwrite_extracted_frames=True,
+                 hybrid_comp_alpha_schedule=f"0:(1.0), 15:(0.70), 30:(0.25), 45:({h}), {N - 1}:({h})")
+    if V.get("camera") == "still":
+        s.update(zoom="0:(1.0)", angle="0:(0)", translation_x="0:(0)", translation_y="0:(0)")
     save("settings.json", s)
     return s
 
