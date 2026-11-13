@@ -250,12 +250,12 @@ void lifecycleAndFailure() {
     a = signal<float>();
     b = a;
     check(run(live, s, a) && run(reference, s, b) && equal(a, b),
-          "reset equals fresh initial gain and detector state");
+          "generated reset stimulus matches fresh initial gain and detector state");
     check(live.reprepare({48000.0001, 511, 2}) == g::Status::Ok, "same float-rounded rate reprepare");
     reference.reset();
     a = signal<float>();
     b = a;
-    check(run(live, s, a) && run(reference, s, b) && equal(a, b), "reprepare equals fresh histories");
+    check(run(live, s, a) && run(reference, s, b) && equal(a, b), "reprepare matches stopped reset");
     for (const auto style :
          {g::Style::Clean, g::Style::Vocal, g::Style::Guitar, g::Style::Upward, g::Style::Ducking}) {
         auto unsupported = s;
@@ -356,16 +356,14 @@ void stateAndBoundaries() {
     g::Core live, reference;
     check(live.prepare({48000, 257, 2}, s) == g::Status::Ok &&
               reference.prepare({48000, 257, 2}, s) == g::Status::Ok,
-          "reprepare failure fixtures prepare");
-    for (int stage = 0; stage < 3; ++stage) {
-        failAfter = stage;
-        const auto status = live.reprepare({48000, 511, 2});
-        failAfter = -1;
-        check(status == g::Status::AllocationFailed, "reprepare allocation failure caught");
+          "reprepare refusal fixtures prepare");
+    const std::array<g::PrepareSpec, 3> refused{{{48000, 0, 2}, {96000, 511, 2}, {48000, 511, 1}}};
+    for (const auto &spec : refused) {
+        check(live.reprepare(spec) != g::Status::Ok, "invalid reprepare refuses");
         programme = signal<float>();
         other = programme;
         check(run(live, s, programme, &key) && run(reference, s, other, &key) && equal(programme, other),
-              "failed reprepare preserves exact running stream");
+              "refused reprepare preserves exact running stream");
     }
     auto invalid = s;
     invalid.thresholdDb = std::numeric_limits<float>::quiet_NaN();
@@ -485,6 +483,58 @@ void smoothingBoundary() {
               run(split, above, b, static_cast<const Audio<float> *>(nullptr), 257, true) && equal(a, b),
           "above smoothing boundary retains segment cadence");
 }
+template <class T> void retainedResetLifecycle() {
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        g::Settings s;
+        s.keySource = g::KeySource::External;
+        s.leftKeyMix = -1;
+        s.rightKeyMix = 1;
+        s.attackSeconds = 0;
+        s.releaseSeconds = .005f;
+        s.holdMs = 30;
+        g::Core reset, restarted;
+        check(reset.prepare({rate, 257, 2}, s) == g::Status::Ok &&
+                  restarted.prepare({rate, 257, 2}, s) == g::Status::Ok,
+              "retained-cache lifecycle prepares independent channels");
+        auto a = signal<T>(), b = a, key = signal<T>(91);
+        check(run(reset, s, a, &key) && run(restarted, s, b, &key) && equal(a, b),
+              "retained-cache lifecycle warms equal histories");
+        const auto stale = restarted.beginBlock(257);
+        audioCall = true;
+        failAfter = 0;
+        const auto status = restarted.reprepare({rate, 511, 2});
+        const bool noAllocationAttempt = failAfter == 0;
+        failAfter = -1;
+        reset.reset();
+        audioCall = false;
+        check(status == g::Status::Ok && noAllocationAttempt,
+              "stopped same-rate capacity change and reset need no allocation");
+        a = signal<T>(147);
+        b = a;
+        T *p[]{b[0].data(), b[1].data()};
+        const T *k[]{key[0].data(), key[1].data()};
+        check(restarted.process(stale, 0, 257, p, k, 2, s) == g::Status::InvalidBlock && equal(a, b),
+              "reprepare invalidates old block without consuming pending initialization");
+        auto changed = s;
+        changed.thresholdDb = -12;
+        const auto context = restarted.beginBlock(257);
+        check(restarted.process(context, 0, 257, p, k, 2, changed) == g::Status::UnsupportedConfiguration &&
+                  equal(a, b),
+              "unsupported controls preserve pending initialization and audio");
+        check(restarted.process(context, 0, 7, p, k, 2, s) == g::Status::Ok &&
+                  restarted.process(context, 7, 250, p, k, 2, s) == g::Status::Ok,
+              "corrected segments consume pending initialization once");
+        // Replay the same first block separately, then continue both streams.
+        T *q[]{a[0].data(), a[1].data()};
+        const auto otherContext = reset.beginBlock(257);
+        check(reset.process(otherContext, 0, 257, q, k, 2, s) == g::Status::Ok && equal(a, b),
+              "retained-cache reset and reprepare agree across segment splits");
+        a = signal<T>(301);
+        b = a;
+        check(run(reset, s, a, &key) && run(restarted, s, b, &key, 257, true) && equal(a, b),
+              "retained-cache continuation preserves physical cadence in both precisions");
+    }
+}
 } // namespace
 int main() {
     mappingsAndHold();
@@ -497,6 +547,8 @@ int main() {
     commonGainOracle<double>();
     environmentPolicy();
     smoothingBoundary();
+    retainedResetLifecycle<float>();
+    retainedResetLifecycle<double>();
     check(allocations == 0 && deallocations == 0, "callback allocation and deallocation counts remain zero");
     std::printf(
         "gate: %d checks, %d failures; %llu compared samples; callback allocations %zu, deallocations %zu\n",
