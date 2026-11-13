@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — explicit empty-channel navigation repair
+
+[#553](https://github.com/arieladi/Adi/pull/553) now points to `6920f815b087276b7e192ab3573eaa3d0eb93a82`. The first CI head compiled on all UI platforms but failed two existing explicit channel-shortcut assertions: With tools hid an empty target. An explicit shortcut now visibly selects All channels only when membership alone excludes an otherwise reachable target, preserving search, pins, folds and project scope and creating no processor. Invalid/eligible targets retain their scope. Callback-bearing focus effects have lifetime guards.
+
+The isolated parent repair passes **581 model checks, zero failures**, four strict frontend units, four validators and independent source review. Four added focused software UI checks await the combined child/hosted gate and are not counted as executed. New exact-head CI is `43435574213`/`43435574200`, pending. Root verified 17 fixed artifacts and six source/archive identities privately. The separate item-focus child is integrating this parent before final validation; no live/native/default-shell local execution, new CPU timing, audio change or self-merge.
+
 ## 13 November 2026 — grouped channel view supplied; item focus claimed
 
 **Supplied:** draft [#553](https://github.com/arieladi/Adi/pull/553), `78407d69e35364580dbb9506b525ba6b7a0fd4b7`, on #551. With tools/All channels, stable native membership, full chains/ancestry, fold recovery, Jump/pin/capture refresh and toolbar command ownership pass **569 model +134 software-peer Mix View checks (703 unique), zero failures**. Five strict frontend units and four validators pass. Independent review caught stale Jump indices on structural capture cancellation before publication; the final fix carries pre-mutation track identity and tests deletion, reorder, successor capture and one-shot cleanup. Eight sources/40 fixed evidence records verify privately. No native/live/default-shell path, new CPU timing, DSP change or self-merge. CI trails this head.
