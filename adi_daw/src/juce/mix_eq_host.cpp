@@ -176,6 +176,7 @@ public:
     }
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return true;}
+    std::string_view processingIssue() const noexcept override {return backend_->processingIssue();}
     bool processesDouble() const noexcept override {return backend_->supportsDouble();}
     void prepare(double rate,std::int32_t maximum) override {
         const ReactivationGate::Hold hold(gate_);

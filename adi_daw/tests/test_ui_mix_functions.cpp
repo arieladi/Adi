@@ -189,6 +189,75 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
           "ancestor hiding ends a native gesture without a frame or native input");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void processingIssuePresentation(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / "processing-issue.adi", true, {}, error);
+    check(document != nullptr, "processing issue component project opens without a native host");
+    if (!document) return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "processing-issue");
+    root.setSize(1200, 800);
+    UiPeerRoot peer;
+    peer.setSize(1200, 800); peer.setVisible(true); peer.addToDesktop(0);
+    peer.addAndMakeVisible(root);
+    auto publication = std::make_shared<ParameterPublication>();
+    publication->push_back(makePanel(20, false, "A long authored device name retained through configuration failure"));
+    auto &strip = root.devices;
+    strip.setVisible(true);
+    strip.publication = [&] { return publication; };
+    strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t stamp) {
+        return publication->front().id == id && publication->front().instance == stamp &&
+               publication->front().available;
+    };
+    std::vector<engine::ParamEventKind> events;
+    strip.guardedGesture = [&](std::int64_t, const std::string &, engine::ParamEventKind kind,
+                                double, const engine::DeviceRuntimeToken &, std::uint64_t) {
+        events.push_back(kind);
+        return true;
+    };
+    strip.frame(2);
+    check(strip.panels.size() == 1 && strip.panels.front()->controls.size() == 1,
+          "processing issue fixture has one real editable control");
+    if (strip.panels.size() != 1 || strip.panels.front()->controls.size() != 1) return;
+    auto *panel = strip.panels.front().get();
+    auto *control = panel->controls.front().get();
+    const auto titleBounds = panel->title.getBounds();
+    const auto panelWidth = panel->widthFor(160);
+    const auto ordinaryTooltip = panel->title.getTooltip();
+    check(panel->title.getButtonText() == juce::String(publication->front().name) &&
+              !ordinaryTooltip.contains("Configuration failed"),
+          "ordinary processing has no failure warning");
+    control->slider.onDragStart();
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->front().processingIssue = "The configuration worker could not start.";
+    strip.frame(2);
+    check(strip.panels.front().get() == panel && panel->controls.front().get() == control &&
+              panel->presentedInstance() == 71 && control->isEnabled() && panel->enabled.isEnabled(),
+          "nonfatal processing issue retains the exact panel, runtime, control and activator");
+    check(panel->title.getButtonText().startsWith("Configuration failed") &&
+              panel->title.getButtonText().contains(juce::String(publication->front().name)) &&
+              panel->title.getTooltip().contains("The configuration worker could not start.") &&
+              panel->title.getTooltip().contains("Reload the device to retry.") &&
+              panel->title.getTooltip().contains("476 samples"),
+          "header puts configuration failure first and retains the device name and detailed latency tooltip");
+    check(panel->title.getBounds() == titleBounds && panel->widthFor(160) == panelWidth &&
+              events == std::vector<engine::ParamEventKind>{engine::ParamEventKind::Begin},
+          "status publication neither expands layout nor ends an active gesture");
+    strip.frame(2);
+    control->slider.setValue(.4, juce::sendNotificationSync); control->slider.onDragEnd();
+    check(events == std::vector<engine::ParamEventKind>{engine::ParamEventKind::Begin,
+                  engine::ParamEventKind::Value, engine::ParamEventKind::End},
+          "repeated failed-status presentation still permits the ordinary exact-owner edit");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->front().processingIssue.clear();
+    strip.frame(2);
+    check(strip.panels.front().get() == panel && panel->controls.front().get() == control &&
+              panel->title.getButtonText() == juce::String(publication->front().name) &&
+              panel->title.getTooltip() == ordinaryTooltip && panel->widthFor(160) == panelWidth &&
+              control->isEnabled() && events.size() == 3,
+          "recovery removes status text without rebuilding controls or emitting another edit");
+    peer.removeChildComponent(&root); peer.removeFromDesktop();
+}
 DevicePanelData makePagedPanel() {
     auto data = makePanel(30, false, "Clip / Limiter");
     data.declared.clear(); data.resolved.entries.clear(); data.records.clear(); data.defaults.clear();
@@ -329,6 +398,7 @@ int main() {
     settings::AppSettings settings(appdata::App::Daw, temporary.path() / "settings.json");
     AppCommands commands(settings);
     functions(commands, temporary.path());
+    processingIssuePresentation(commands, temporary.path());
     parameterPages(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
