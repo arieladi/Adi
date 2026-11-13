@@ -1,5 +1,15 @@
 # Mix View seat
 
+## 13 November 2026 — consistent Focus settings decided; aggregate processing and analyzer resources continue
+
+**Director decision:** Focus FIR uses consistent current settings and preset recall. Frequency/Q jointly define both extraction paths; no hidden knob-order state is carried into the product. Ordinary active-stream overlap remains distinct from settings consistency. Independent EQ → Carve → Focus enables and manual Apply remain settled. The private decision guide/roadmap retain the answer; win assigns ADR numbers.
+
+**Parent review ready:** #543 `ff8acc8b` now passes every exact-head core/UI CI job (18+3), is marked ready for review, and remains unmerged. #542 is also fully green. Win reviews/merges in dependency order; no self-merge or daily installation change.
+
+**Processing continuation:** `mixview/focus-core-20261113`, isolated `D:/Adi-wt/mix-unmask-1113`, owns the framework-free Focus core/tests, prepared EQ capacity/request/hold-admission APIs and new `src/adi/mix/eq_chain/` facade. Review found and fixed wrong-PDC acceptance, requested/prepared frequency mixing, dormant delayed-media replay and foreign-context collisions. The generated policy/lifecycle gate is 96/0; serial integration tests are still in progress. Same-total child offers must not admit before the aggregate plan; disabled Focus stays unprepared, requested key history warms before downstream admission, and whole-stage reactivation resets on the owner after off acknowledgment. Source/reference evidence remains private, and no native Carve/Focus page/route is claimed complete. FIR scheduling/resource and CPU gates remain explicit.
+
+**Independent analyzer slice claimed:** `mixview/analysis-resources-20261113`, `D:/Adi-wt/mix-analysis-1113`, based on #543. Own files `ui/shared_analysis.hpp/.cpp`, `juce/ui_analysis.cpp`, `test_shared_analysis.cpp`, `test_ui_shared_analysis.cpp`. Lazy spectral planning, source-progress/dirty scheduling, immutable charged history and actual-rate history negotiation; existing numbers/defaults/128-column behavior are preserved within the admitted budget. No new spectrum UI/settings or processor edits. #512 fences and format ownership remain untouched. No live desktop work or new CPU timing; Claude live testing trails these slices.
+
 ## 13 November 2026 — Carve/key core slice supplied; Focus configuration and device-key continuation
 
 **Item:** [draft #543](https://github.com/arieladi/Adi/pull/543), `mixview/unmask-cores-20261113`, current `ff8acc8b0376eeb816715e6d9620fbc2a9666810` (initial `2e861b26`), based directly on #542's `a0548d3c`. Eight files: authored framework-free Carve, reusable aligned-key transport, generated-signal tests and CMake wiring. Explicit independent key planes survive mono-main layout, delayed disconnect tails, nonuniform callback slices and an in-place upstream main writer. Disabled processing skips work; inactive contributions release and reach exact dry. This core slice does not enable the still-unconnected Carve/Focus pages or invent a device route.
