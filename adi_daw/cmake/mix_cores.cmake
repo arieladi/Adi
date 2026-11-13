@@ -10,6 +10,7 @@ add_subdirectory(src/adi/mix/carve)
 add_subdirectory(src/adi/mix/focus)
 add_subdirectory(src/adi/mix/eq_chain)
 add_subdirectory(src/adi/mix/filters)
+add_subdirectory(src/adi/mix/key_eq)
 target_sources(adi_mix_eq PRIVATE src/adi/mix/eq/Backend.cpp)
 target_link_libraries(adi_core PRIVATE adi_mix_eq)
 target_sources(adi_core PRIVATE src/adi/mix_functions.cpp src/adi/mix_function_edit.cpp
@@ -39,3 +40,7 @@ add_test(NAME adi_mix_eq_chain_backend_tests COMMAND adi_mix_eq_chain_backend_te
 add_executable(adi_mix_filters_tests tests/test_mix_filters.cpp)
 target_link_libraries(adi_mix_filters_tests PRIVATE adi_mix_filters adi_warnings)
 add_test(NAME adi_mix_filters_tests COMMAND adi_mix_filters_tests)
+
+add_executable(adi_mix_key_eq_tests tests/test_mix_key_eq.cpp)
+target_link_libraries(adi_mix_key_eq_tests PRIVATE adi_mix_key_eq adi_warnings)
+add_test(NAME adi_mix_key_eq_tests COMMAND adi_mix_key_eq_tests)
