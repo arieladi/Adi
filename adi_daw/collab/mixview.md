@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 13 November 2026 — grouped-view keyboard ownership guard
+
+The active `mixview/channel-groups-20261113` slice additionally owns a narrow `ui_shell.cpp` command/menu guard with `ui_stack` toolbar focus. Scope/search/row-size/button focus must not fall through from a stale focused-device context to track/device Cut/Delete/Duplicate actions. Native text/choice navigation keeps its local handling; ordinary project Undo authority is unchanged. A software-peer repro and regression accompany the guard. This is not a fenced `src/main.cpp`/op edit or a change to audio/bulk-edit semantics.
+
 ## 13 November 2026 — channel-grouped instance view clarified; presentation slice claimed
 
 **Director answer:** the Mix View shows channels with its opt-in functions, grouped by channel (e.g. guitar EQ/Clip/Limiter, vocal EQ/Focus), with channel selection and search like Pro-Q's Instance List. The newly supplied Gemini image is a starting reference, explicitly cluttered; smooth focus/hover enlargement is required instead of every tile being permanently expanded. The private guide retains the exact image identity and old/new reference relationship. This does not authorize every search result as an audio-edit target, a relative/absolute bulk law, reserved slots, per-row loudness, or all mocked modulation/analyzer panels.
