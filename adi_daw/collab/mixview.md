@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 13 November 2026 — shared palette controls supplied
+
+Draft [#559](https://github.com/arieladi/Adi/pull/559), `5218e657`, on #556 supplies46 public palette families plus ADI's exact old default, preview strips/Reverse and per-window parent preference. Info follows; floating analyzers initially copy then retain local lifetime choices. Visible frozen recoloring retains measurement/demand, and paint reads an owner-prepared raster. A common analyzer-control focus guard protects detached/floating controls; reset-on-discard fixes two causally reproduced stale-raster counter collisions. **986 checks/0**, nine strict units, four root validators and independent source review pass. Root verifies49 fixed records/19 source/archive identities plus executed binary/log identities. Exact source pins/full notices accompany data. No audio algorithm/broker/FFT/worker/timer change or new CPU timing; shared-view freshness while another consumer stays live is explicitly a later combined follow-up. Compile/link-only review package preparation is separate; Claude's current Dock ZIP/brief stays unchanged. CI trails; win reviews/merges, no self-merge.
+
 ## 13 November 2026 — next invariant key-filter and de-esser slices claimed
 
 `mixview/keyeq-policy-20261113`, isolated `D:/Adi-wt/mix-compressor-1113`, starts from #558 `d40550ac`. Own new `mix/key_eq` settings/policy/fixed bank, generated tests/docs and minimal `cmake/mix_cores.cmake` wiring. First tier is stopped/fixed base-rate stereo source-derived ordered shape/prototype/anchor policy over the precise filter primitive; moving scheduling, separate bilinear/quality paths and native admission remain explicit later gates. No changes to the sealed primitive or compressor sources.
