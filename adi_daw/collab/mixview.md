@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 13 November 2026 — native EQ serial integration CI green
+
+[#548](https://github.com/arieladi/Adi/pull/548), exact source `7faf25c10cc4595f5ad99899d2e1f6a317b1ab38`, now passes **all 18 core and three UI jobs**, runs `43417010772`/`43417011172`. Marked ready for win, unmerged by this seat. The isolated functional package/source/hashes are unchanged. Live acceptance remains Claude's; no local application launch or new CPU timing. Independent #551 `749fd4b1` is draft with its own CI queued/running; its local 252-check gate does not substitute for that matrix. Unregistered compressor component work continues in its isolated worktree.
+
 ## 13 November 2026 — Main meter projection supplied independently
 
 **Item:** draft [#551](https://github.com/arieladi/Adi/pull/551), `749fd4b1511e3e0a5b46fca6f1f4a1ff6621533e`, directly on #544 `632761db`. Meters mode projects the existing persistent Main M/S/I LUFS and held aggregate dBTP into Info/full/floating views, clearly named programme/pre-cue. No new meter DSP/FFT/tap/worker/timer. Weak per-document bindings are revoked before teardown; prepared versus audio-adopted format IDs suppress stale values; local Freeze/Reset never pause/reset the shared Main service. Non-Main/device/other tap sources cannot display Main readings. The numerical DSP block is unchanged and the four fields remain independently timed, not a coherent whole-field snapshot or per-row LUFS claim.
