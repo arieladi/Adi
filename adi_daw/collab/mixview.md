@@ -1,5 +1,15 @@
 # Mix View seat
 
+## 13 November 2026 — analyzer/processing continuation; dock CI closed
+
+**Director instruction:** continue the remaining shared processing cores and analyzer modes while Claude tests the supplied dock. Preserve sound and resource efficiency. The live gate trails these independent slices; no local desktop/host/capture work or new CPU timing.
+
+**Dock CI:** #556 `01992652432d31f4ec909599ba9ade6d3d482541` now passes all 18 core and three UI jobs, runs `43499079545` / `43499079980`. Marked ready for win, unmerged by this seat. The sealed Dock ZIP and Claude brief remain unchanged.
+
+**Declared independent work:** `mixview/analyzer-palettes-20261113` in `D:/Adi-wt/mix-analysis-1113`, on #556, owns palette data/selector/reverse and software raster lifecycle, preserving the existing ADI default and demand. `mixview/reference-compare-20261113` in separate `D:/Adi-wt/mix-compare-1113`, on #556, owns a framework-free independent/held spectral comparison model and generated tests/build registration. It makes no sample-aligned waveform, Sync, loudness-match or null claim and adds no UI route or audio work. These analyzer branches are independent until reviewed.
+
+**Processing CI repair first:** #555's actual Windows Debug `/WX` C4702 failure is reproduced. A minimal constexpr `else` repair is isolated on `mixview/compressor-hold-ci-20261113`; fixed Debug compilation passes and its test execution is being diagnosed before calling the repair verified. The mathematical expressions are unchanged. Only after the repair and original audio-preservation gates pass will `mixview/matched-filters-20261113` continue the common coefficient/DFI primitive. Full C/DS/G/native key routing is not claimed complete or enabled. Win reviews/merges; no self-merge.
+
 ## 13 November 2026 — optional dock and unregistered fixed Hold supplied
 
 **Dock:** draft [#556](https://github.com/arieladi/Adi/pull/556), `01992652432d31f4ec909599ba9ade6d3d482541`, on #554. Optional right Meters/Phase/Spectrum column starts hidden/Main, retains the separate analyzer tab and persists per-window preferences. Compatible views share domain/tap/cursor/FFT; only Main meters use the existing weak loudness projection. Responsive layout preserves the actual STACK/header rectangle through drag/text/menu capture; hiding/insufficient room releases demand. Failed saves retain frozen pictures, and analyzer-control focus protects against destructive command fallthrough.
