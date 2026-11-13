@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 13 November 2026 — Main readouts and Clean component CI green
+
+[#551](https://github.com/arieladi/Adi/pull/551) `749fd4b1` and [#552](https://github.com/arieladi/Adi/pull/552) `76ec1072` each now pass **all 18 core plus three UI exact-head jobs** and are marked ready for win, unmerged by this seat. #551 runs `43420569228`/`43420569234`; #552 runs `43423036270`/`43423036303`. Source, local gates and fixed private evidence are unchanged. #548 is also fully green/ready. The active grouped-view presentation slice has not yet been published; independent review caught a Jump/capture stale-index issue before release, now fixed through pre-mutation stable identity with deletion/reorder regressions under final validation. No live work, new CPU timing or self-merge.
+
 ## 13 November 2026 — grouped-view keyboard ownership guard
 
 The active `mixview/channel-groups-20261113` slice additionally owns a narrow `ui_shell.cpp` command/menu guard with `ui_stack` toolbar focus. Scope/search/row-size/button focus must not fall through from a stale focused-device context to track/device Cut/Delete/Duplicate actions. Native text/choice navigation keeps its local handling; ordinary project Undo authority is unchanged. A software-peer repro and regression accompany the guard. This is not a fenced `src/main.cpp`/op edit or a change to audio/bulk-edit semantics.
