@@ -164,14 +164,17 @@ struct EnvelopePlan {
 struct Envelope {
     double state = 0, releaseCoefficient = 0;
     float previousDelta = 0, cachedLut = 1, previousN = -1;
-    void reset(float initial) noexcept {
-        state = initial;
-        releaseCoefficient = 0;
-        previousDelta = 0;
-        cachedLut = 1;
-        previousN = -1;
+    float resetInitial = 0;
+    bool resetPending = true;
+    void requestReset(float initial) noexcept {
+        resetInitial = initial;
+        resetPending = true;
     }
     float step(float input, const EnvelopePlan &p, const ExpTable &table, std::int32_t offset) noexcept {
+        if (resetPending) {
+            state = resetInitial;
+            resetPending = false;
+        }
         const double delta = static_cast<double>(input) - state;
         if (!p.general) {
             state += delta * (delta > 0 ? p.simpleAttack : p.simpleRelease);
@@ -305,11 +308,11 @@ struct Core::Impl {
     }
     void reset() noexcept {
         for (std::size_t i = 0; i < 2; ++i) {
-            pre[i].reset(0);
+            pre[i].requestReset(0);
             hold[i].reset();
             detector[i] = {};
-            reduction[i].reset(initial);
-            gain[i].reset(std::min(initial, 0.0f));
+            reduction[i].requestReset(initial);
+            gain[i].requestReset(std::min(initial, 0.0f));
         }
         epoch = nextEpoch();
         sequence = 0;
@@ -395,7 +398,11 @@ Status Core::reprepare(const PrepareSpec &p) noexcept {
         return status;
     if (f(p.sampleRate) != impl_->rate || p.mainChannels != impl_->spec.mainChannels)
         return Status::UnsupportedConfiguration;
-    return prepare(p, impl_->settings);
+    // Capacity does not own audio scratch. A stopped processing restart keeps
+    // the prepared graph and its adaptive caches, just as reset does.
+    impl_->spec = p;
+    impl_->reset();
+    return Status::Ok;
 }
 void Core::reset() noexcept {
     if (impl_)

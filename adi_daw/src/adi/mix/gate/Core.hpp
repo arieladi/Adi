@@ -48,10 +48,13 @@ class Core final {
     // the entire previous stream. Accepted sample rates: 44.1..96 kHz, rounded
     // to float. Generated test coverage uses 44.1/48/96 kHz, not every rate.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
-    // Same float-rounded rate/layout, retained settings, fresh DSP histories;
-    // capacity may change. Failure preserves the old stream.
+    // Stopped processing restart at the same float-rounded rate/layout. Keeps
+    // settings and adaptive caches, resets signal histories as reset does.
+    // Capacity may change without allocation. Refusal preserves the old stream.
     [[nodiscard]] Status reprepare(const PrepareSpec &) noexcept;
-    // Clears envelopes, holds, hysteresis and block context to initial values.
+    // Clears holds, hysteresis and block context; envelope baselines are applied
+    // at the next processed sample. Adaptive lookup/coefficient caches survive.
+    // The incremental API does not implement whole-request near-baseline aliasing.
     void reset() noexcept;
     // Identical settings retain all history. Changed controls are unsupported.
     [[nodiscard]] Status restore(const Settings &) noexcept;

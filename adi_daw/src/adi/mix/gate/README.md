@@ -32,11 +32,16 @@ Attack/Release conversion helpers are stateless; Settings defaults are useful
 component defaults, not a device factory preset.
 
 `prepare` creates a fresh stream and offers a strong failure guarantee.
-`reprepare` accepts the same float-rounded rate and layout, retains settings,
-and clears DSP history; changing capacity is allowed. `reset` clears all
-envelope, hold and detector histories to the Classic silence baseline. An
-identical settings restore retains history. Preparation, reset and destruction
-require stopped audio; processing has one serialized owner.
+`reprepare` models a stopped processing restart at the same float-rounded rate
+and layout, retaining settings and the prepared graph. It updates capacity and
+requests the same reset without allocating. It is not a processing-setup call
+alone. `reset` clears hold and detector histories and requests the Classic
+silence baseline for each envelope's next processed sample. Adaptive release
+lookup and coefficient caches survive reset/reprepare; fresh `prepare` starts
+them from their initial values. Reset therefore need not equal fresh preparation
+for every signal. An identical settings restore retains all history.
+Preparation, reprepare, reset and destruction require stopped audio; processing
+has one serialized owner.
 
 Two distinct main planes are required. An explicit external key has two complete
 planes, or zero planes for temporary silence on that same route. It never falls
@@ -51,6 +56,13 @@ pointers address the physical block start. Segments retain the physical block's
 change that cadence; arbitrary block-size bit identity is not promised.
 Contexts are invalidated by reset and successful preparation. IO precision is
 fixed until reset/preparation. Invalid calls preserve the current segment cursor.
+
+The incremental API processes only the supplied segment. It does not implement
+the reference's whole-request near-baseline alias predicate (the envelope and
+every stage input within 1e-9 of the baseline), which can defer pending envelope initialization.
+No per-sample silence shortcut, future-segment read or added latency substitutes
+for that predicate. Exact equivalence in that quiet boundary and its CPU behavior
+remain unverified; the component is not a whole-plugin equivalence claim.
 
 The accepted rate range is 44.1–96 kHz, with float-rounded internal rate.
 Validation covers generated signals at 44.1, 48 and 96 kHz; it does not establish
