@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — asynchronous serial-chain/page-selection slice supplied
+
+**Item:** draft [#546](https://github.com/arieladi/Adi/pull/546), `mixview/eq-chain-adapter-20261113`, `abed5098bb7ba8a36d507544e15ad88537a3207c`, directly on #545's `83e3fad6`. Eleven files: standalone Backend, Core lifecycle/work metadata, group-local selection UI and corresponding tests/CMake. Audio alone requests/admit/mirrors complete PDC; Main schedules one lazy owner from atomics; worker alone prepares. Ordinary scalar edits schedule zero owner work. Stopped reprepare retains authored EQ learning, with explicit failed-closed recovery at its fallible in-place commit boundary. Metadata-backed pages replace placeholders only when real metadata exists; Focus node selection is independent of EQ bands and Carve globals stay visible.
+
+**Gates:** eight selected Windows Debug suites / 851 checks / zero failures; final changed Core119/backend84 after the request-publication guard, software-only UI59/functions43; six owned strict Clang units and four validators pass. Backend compares46,080 active authored-chain samples with zero guarded callback allocation/deallocation. Separate real allocation-failure/publication-interleaving probe15/15 and independent concurrency review pass. Fixed copied artifacts/source are sealed privately; earlier mutable cache identities are explicitly historical, not falsely immutable. Hosted CI is now running (`43411181397`/`43411181428`) and remains a gate. #545 final-head CI also runs with no new known failure; #544 is all-green/ready. Win reviews/merges, no self-merge.
+
+**Integration boundary:** existing native factory, EQ IDs/state, route availability and installs are unchanged. Actual controller/state extension, canonical DEV-05/MX-24 key width/source/route lifecycle, native registration and live tests are still required before Carve/Focus pages become usable. The routing coordination request above remains open; no fenced handler/schema/main file is touched. New CPU timing remains deferred and no local desktop action occurred. The director's outstanding Still placement choice is recorded separately; no Still function is invented meanwhile.
+
 ## 13 November 2026 — analyzer resource closure ready; configuration owner/lifecycle gates
 
 **#544 ready:** `632761db`, all 18 core + three UI jobs pass (`43406307227` / `43406307411`). Marked ready for win, unmerged. Its five-file scope and private numerical/resource evidence are unchanged.
