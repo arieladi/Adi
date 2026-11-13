@@ -1,0 +1,42 @@
+{
+  "config": {
+    "input": "D:/AvasthaAI/ActualDeforum/webui/outputs/img2img-images/Avastha_ActualDeforum_8s/20261023184226.mp4",
+    "output": "D:/AvasthaAI/EnhancerV2/Avastha-Deforum-New-Renderer-4K60.mp4",
+    "model": "D:/AvasthaAI/Temp/wan30-models/RealESRGAN_x4plus.pth",
+    "rife_root": "D:/AvasthaAI/Tools/RIFE426",
+    "order": "upscale-first",
+    "upscale_device": "GPU-5e287f99-46c5-350a-0c85-50e9588f1795",
+    "rife_device": "GPU-5e287f99-46c5-350a-0c85-50e9588f1795",
+    "fps": "60",
+    "width": 3840,
+    "height": 2160,
+    "fp16": true,
+    "compile": false,
+    "extra_arches": false,
+    "tile": 384,
+    "tile_padding": 32,
+    "min_tile": 64,
+    "queue_depth": 3,
+    "pinned_gb": 2.0,
+    "flow_scale": 0.5,
+    "cut_threshold": 0.3,
+    "encoder": "libx264",
+    "encode_device": 0,
+    "quality": 17,
+    "ffmpeg": "auto",
+    "max_frames": 0
+  },
+  "stats": {
+    "decoded": 120,
+    "encoded": 480,
+    "cuts": 0,
+    "upscale_seconds": 294.7471150999918,
+    "rife_seconds": 131.35619320014666,
+    "final_tile": 384,
+    "wall_seconds": 319.4504422000027,
+    "output_fps_throughput": 1.5025804838281607
+  },
+  "sha256": "793eadb442dc4f00063d3525d4745196f7ab342d30aa8e825e8f5f8f995fc5e8",
+  "upscale_gpu": "Quadro RTX 4000",
+  "rife_gpu": "Quadro RTX 4000"
+}
