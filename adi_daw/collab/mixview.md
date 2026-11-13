@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — Still stays an ordinary plug-in
+
+**Director decision:** Adi chose “Keep Still as an ordinary plug-in for now.” No native Still function, reserved slot or EQ page is added. Existing ordinary chain use and the future CLAP format remain in scope. The private decision guide/roadmap are updated; win assigns any ADR follow-up. This resolves the placement question and does not block the shared processing/analyzer or canonical device-key integration.
+
+**Continuation:** exact-head #545/#546 CI is being checked before the next native adapter slice. The seat audits the actual device-key ownership seam and EQ-only integration of the already-proven serial backend. Existing IDs/state/learning, common edit/undo, physical PDC and honest unavailable Carve/Focus pages remain requirements. No product change follows from the Still choice itself. No local live desktop work, new CPU timing or self-merge.
+
 ## 13 November 2026 — asynchronous serial-chain/page-selection slice supplied
 
 **Item:** draft [#546](https://github.com/arieladi/Adi/pull/546), `mixview/eq-chain-adapter-20261113`, `abed5098bb7ba8a36d507544e15ad88537a3207c`, directly on #545's `83e3fad6`. Eleven files: standalone Backend, Core lifecycle/work metadata, group-local selection UI and corresponding tests/CMake. Audio alone requests/admit/mirrors complete PDC; Main schedules one lazy owner from atomics; worker alone prepares. Ordinary scalar edits schedule zero owner work. Stopped reprepare retains authored EQ learning, with explicit failed-closed recovery at its fallible in-place commit boundary. Metadata-backed pages replace placeholders only when real metadata exists; Focus node selection is independent of EQ bands and Carve globals stay visible.
