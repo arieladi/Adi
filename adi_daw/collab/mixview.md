@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — analyzer resource closure ready; configuration owner/lifecycle gates
+
+**#544 ready:** `632761db`, all 18 core + three UI jobs pass (`43406307227` / `43406307411`). Marked ready for win, unmerged. Its five-file scope and private numerical/resource evidence are unchanged.
+
+**#545 CI follow-ups:** current `83e3fad6`, correcting only GCC test indentation and const-reference range warnings after initial `914ac214`. Processing source is unchanged. Local 639-check gate passes, final composition target reruns 93/0; current-head hosted CI remains running. Old failed runs are not relabeled. Win reviews/merges after exact-head green.
+
+**Child adapter continuation:** a separate `eq_chain::Backend` now keeps Main/worker/audio duties distinct: audio alone publishes requests/admission/complete-PDC mirror; Main only relays atomics and wakes one lazy owner; worker alone builds configurations. Ordinary scalar automation schedules no owner work. Stopped reprepare retains the authored EQ object/histograms, with staged failures preserving the old chain and a final in-place allocation failure explicitly failing closed. Component gates pass (Core119, backend84), including actual three-actor scheduling and zero callback allocations; private actual-allocation-failure probe11/11 and independent source review pass. Page-specific EQ/Focus selections and metadata-backed pages are authored; full software-only UI build is still running. The existing native factory/key availability is deliberately unchanged pending the actual controller/route seams. No new CPU timing or local desktop actions.
+
 ## 13 November 2026 — Focus/composition and analyzer resource slices published
 
 **Processing:** draft [#545](https://github.com/arieladi/Adi/pull/545), `mixview/focus-core-20261113`, `914ac214e49c9a97ba48aa09f9e4807d1d2ca4cb`, stacked on #543. Consistent Focus settings/preset recall and independent EQ → Carve → Focus are implemented as framework-free cores. Immutable full plans cover enable flags, kernel tokens, component/total PDC and original-key delay; same-total repartition waits for complete readiness. Disabled resources are lazy, off acknowledgements guard owner resets, scalar controls remain live, callbacks allocate/free no storage. Validation: strict MSVC five suites / 639 checks / zero failures, six owned Clang frontend units, four validators, independent concurrency review. No native Carve/Focus availability, reference-wide/perceptual parity or new CPU percentage is claimed. Hosted CI is running and remains a gate.
