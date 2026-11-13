@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — Main-only analyzer meter projection claimed
+
+**Independent item:** `mixview/main-meter-readout-20261113`, `D:/Adi-wt/mix-analysis-1113`, directly on green #544 `632761db`. Add read-only Main M/S/I LUFS and held aggregate dBTP to Meters presentation, consuming the existing Session Main measurement. Info/full/floating reuse the same plain-value renderer; visible/unfrozen actual Main/Post-Mixer only. Source label names Main programme before cue/metronome. It adds no DSP kernel, analysis tap, FFT, worker or timer, and does not reset/pause shared Main measurement through local analyzer controls. Default Spectrum and other-source peak/RMS remain unchanged.
+
+**Owned files:** `ui_analysis.hpp/.cpp`, `ui_main.cpp` safe owner binding and focused existing software-peer analysis tests. SharedAnalysis/resource files and all native EQ/provider/status paths remain with their existing slices. The present Main service is older N13; this is a projection of its existing definitions, not a substitute for engine-owner ADR-0219 migration or a coherent per-sample snapshot claim. New CPU timing remains deferred; no live desktop operation. Win reviews/merges independently after the focused gates.
+
 ## 13 November 2026 — native EQ serial-backend integration claimed
 
 **Item / ownership:** `mixview/eq-serial-native-20261113`, same isolated `D:/Adi-wt/mix-unmask-host-1113`, directly on #546's `abed5098`. Connect the proven serial backend to the existing EQ-only native provider while retaining all 730 IDs/state, common edits/undo, authored learning, mono/stereo float/double and physical PDC. Carve/Focus controls and routes remain unavailable. Provider-only programme-as-key compatibility preserves the current native absent-bus law without mutating its authored external toggle; connected silence remains a true silent key. Configuration readiness is asynchronous, with old audio retained until complete admission.
