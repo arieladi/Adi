@@ -5,16 +5,16 @@
 
 namespace adi::mix::key_eq {
 enum class Shape : std::uint8_t {
-    Bell,
-    LowShelf,
-    HighCut,
-    HighShelf,
-    LowCut,
-    Notch,
-    BandPass,
-    Tilt,
-    FlatTilt,
-    AllPass
+    Bell = 0,
+    LowShelf = 1,
+    LowCut = 2,
+    HighShelf = 3,
+    HighCut = 4,
+    Notch = 5,
+    BandPass = 6,
+    Tilt = 7,
+    FlatTilt = 8,
+    AllPass = 9
 };
 enum class Placement : std::uint8_t { Stereo, Mid, Side };
 struct Band {

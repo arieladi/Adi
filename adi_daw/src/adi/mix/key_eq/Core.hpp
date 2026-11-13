@@ -12,6 +12,8 @@ struct Preparation {
 // Fixed, prepared stereo key path. The caller owns mutable planar key samples
 // separately from the programme and serializes prepare/reset/process. Running
 // control changes, other layouts and quality conversion are not admitted here.
+// The caller supplies finite float key samples. Even an all-bands-off prepared
+// bank retains this path's M/S roundtrip; a facade true bypass is separate.
 class Core final {
   public:
     Core() noexcept;
