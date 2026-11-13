@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 13 November 2026 — fixed Hold Debug repair supplied
+
+[#555](https://github.com/arieladi/Adi/pull/555) now points to `2c4358b134abefdd07ab1467d895ddcd1bc00b4b`, fast-forward from c756. Minimal constexpr `else` fixes actual Debug C4702; prepared fixed queue storage also fixes a reproduced hidden Debug container-allocation failure while preserving inclusive ring arithmetic and strong failed-prepare continuation. **137/0** generated checks in both Debug/Release, 495,616 scalar comparisons, exact1/2 prepare-allocation assertions and callback allocation/free0/0. Two strict units/four validators/source review pass; original saved-output preservation gates pass privately. Root verified552 fixed records and8 canonical archive/source identities, preserving prior seals. Three post-commit checkout newline conversions are recorded separately. New exact-head CI `43506151695`/`43506151829` trails; win reviews/merges. The filter child starts from repaired2c4358b1. No new native registration, sound/CPU-percentage claim, timing, live work or installation change.
+
 ## 13 November 2026 — analyzer/processing continuation; dock CI closed
 
 **Director instruction:** continue the remaining shared processing cores and analyzer modes while Claude tests the supplied dock. Preserve sound and resource efficiency. The live gate trails these independent slices; no local desktop/host/capture work or new CPU timing.
