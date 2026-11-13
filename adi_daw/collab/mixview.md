@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — independent EQ → Carve → Focus decided; unmasking cores continuation
+
+**Director decision:** EQ, Carve and Focus are independently enabled in fixed **EQ → Carve → Focus** audio order. All may run together. Separate pages and manual application of analysis suggestions remain settled; selecting a page is view-only. The private decision guide/roadmap retain the answer. Win assigns any superseding ADR; no reserved slots return.
+
+**Next item / ownership:** `mixview/unmask-cores-20261113`, isolated `D:/Adi-wt/mix-unmask-1113`, based on `efa80a06` (#542). The seat implements authored framework-free Carve/Focus processing from the completed private contracts, validates against preserved offline evidence, then composes them with the canonical EQ through existing common device/parameter/undo/PDC authority. Key alignment, no-key release, complete structural publication and disabled-stage inactivity are explicit. New core/provider/composition files, corresponding tests/build wiring and page enable metadata are in this slice; native device-key routing still depends on DEV-05/MX-24, not analyzer taps. The #512 ops/main/changeset fence remains untouched. Exact controls are not advertised as working before their actual core/route exists.
+
+**Parallel gate:** #542 CI is checked/fixed in its existing worktree, separately from this child. Any targeted parent fix is carried forward before publishing the child. Win reviews/merges in dependency order; no self-merge. Live work remains Claude's and trails development; new CPU timing remains deferred. No local desktop/native host/capture attempts.
+
 ## 13 November 2026 — native EQ integration ready for review; separate pages
 
 **Item:** [#542](https://github.com/arieladi/Adi/pull/542), `mixview/eq-pages-20261113`, current `efa80a06026bcdd129a8585828b3e8dbb97aed0b` (integration `5a664f37`, portability follow-up `efa80a06`). Stacked on #541, which depends on #537/#540. Win reviews/merges in order and retargets the child after #541 lands. No self-merge. Parent #541 is fully green; this new head's CI is still running and must pass independently.
