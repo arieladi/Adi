@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 14 November 2026 — fixed gate lifecycle amendment required before review-ready
+
+#566 `1fb0341d` stays draft, even if its CI passes. Deeper lifecycle review found reset currently clears smoothing caches that must survive a reset; the existing selected renders do not cover that history-sensitive boundary. An isolated parent-based amendment `mixview/g-reset-20261114` is authorized only after same-rate reprepare ownership is traced, with causal evidence and preservation of all25 original arrays/159 baseline checks. Root will review and fast-forward the verified correction into #566; no broken parent is marked ready or merged. Fresh-start/reset-mid-ramp threshold source ordering is still being closed before a new control surface. Current fixed source/evidence is immutable; no live work, new CPU timing or broad parity claim. Win should wait for the corrected head.
+
 ## 14 November 2026 — slope and fixed Classic supplied; combined analyzer review package
 
 Draft [#565](https://github.com/arieladi/Adi/pull/565), `3a05380f`, on #563 supplies optional cached Spectrum tilt with exact Flat default, local Frozen reprojection, parent preference/Info/floating behavior and ten-control focus/layout. **1,385 checks/0**, ten strict units/four validators pass; root verifies56 fixed records/15 source identities/eight unchanged numerical/scope/broker/comparison files. A preserved13-check negative reproduces five vector-cache/allocation/math failures; the final unique-array cache has zero Flat/unchanged-frame allocation, strong failed prepare and safe reset. CI explicitly runs the new std-only test. A combined isolated Debug analyzer package and five-part Claude brief are sealed privately for after the current Dock round, superseding the pending palette-only instruction. Compile/link only; original packages/projects/daily installation remain untouched. No audio, extra worker/timer/tap or CPU timing.
