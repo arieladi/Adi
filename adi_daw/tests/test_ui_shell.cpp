@@ -3213,6 +3213,138 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+// E3: the …Time commands and Insert Silence (Live 12 manual 6.11, 41.5; N17): across every track,
+// locators and the loop moving with the time.
+void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "time.adi", true, {}, error);
+    check(document != nullptr, "a project for the …Time commands");
+    if (!document)
+        return;
+    const auto bar = textproj::kWhole;
+    std::vector<OpRequest> make(3);
+    make[0].opType = "clip.create";
+    make[0].payload = {{"id", 50}, {"track", 2}, {"kind", "midi"}, {"pos", 2 * bar}, {"length", bar}};
+    make[1].opType = "clip.create";
+    make[1].payload = {{"id", 51}, {"track", 3}, {"kind", "midi"}, {"pos", 4 * bar}, {"length", bar}};
+    make[2].opType = "marker.create";
+    make[2].payload = {{"id", 70}, {"pos", 4 * bar}, {"kind", "position"}, {"name", "1"}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+          "a clip at bar 3 on 1 MIDI, one at bar 5 on 2 MIDI, a locator at bar 5");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "time");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    commands.clipClipboard().held = std::monostate{};
+    using Clips = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    const auto clipsOf = [&](std::int64_t track) {
+        Clips out;
+        if (const auto *t = root.reader().findTrack(track))
+            for (const auto &c : t->clips)
+                out.emplace_back(c->posTicks, c->lengthTicks);
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const auto locator = [&] {
+        const auto all = locatorsOf(*document->view().current());
+        return all.empty() ? std::int64_t{-1} : all.front().pos;
+    };
+    auto &sel = root.arrangement.geometry.selection;
+    const auto select = [&](std::int64_t a, std::int64_t b) {
+        sel = {};
+        sel.track = 2;
+        sel.start = sel.insert = a;
+        sel.end = b;
+        sel.marked = true;
+    };
+    // The loop over bars 5 to 6.
+    select(4 * bar, 5 * bar);
+    check(root.command(AppCommands::LoopSelection), "loop bars 5 to 6");
+    root.frame();
+    const auto loopStart = [&] { return root.reader().transport().loopStartTicks; };
+    check(loopStart() == 4 * bar, "the loop starts at bar 5");
+    // Insert Silence over bars 2 to 4: every later clip, the locator and the loop two bars on, one step.
+    select(bar, 3 * bar);
+    const juce::KeyPress insertKey('i', juce::ModifierKeys::commandModifier, 0);
+    check(root.keyPressed(insertKey), "Ctrl/Cmd+I over bars 2 to 4");
+    root.frame();
+    check(clipsOf(2) == Clips{{4 * bar, bar}} && clipsOf(3) == Clips{{6 * bar, bar}},
+          "both tracks' later clips move two bars on");
+    check(locator() == 6 * bar && loopStart() == 6 * bar, "the locator and the loop move two bars on");
+    check(sel.start == bar && sel.end == 3 * bar, "the silence stays selected");
+    const auto step = document->ops().nextUndo();
+    // Delete Time pulls them back.
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Ctrl/Cmd+Shift+Delete over the silence");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar &&
+              loopStart() == 4 * bar,
+          "Delete Time pulls every clip, the locator and the loop back");
+    check(root.command(AppCommands::Undo), "undo Delete Time");
+    root.frame();
+    check(step && document->ops().nextUndo() && document->ops().nextUndo()->txnId == step->txnId,
+          "Insert Silence was one undo step");
+    check(root.command(AppCommands::Undo), "undo Insert Silence");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && locator() == 4 * bar, "as before");
+    // The window as drawn, for the PR's picture (ADI_UI_PARITY).
+    const auto picture = [&](const char *name) {
+        const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (folder.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(image, out);
+    };
+    // Cut Time over bars 3 to 4, then Paste Time at the same place, restores the arrangement.
+    select(2 * bar, 3 * bar);
+    root.frame();
+    picture("adi-cut-time-before.png");
+    check(root.keyPressed(juce::KeyPress('x', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Ctrl/Cmd+Shift+X over bar 3");
+    root.frame();
+    picture("adi-cut-time-after.png");
+    check(clipsOf(2).empty() && clipsOf(3) == Clips{{3 * bar, bar}} && locator() == 3 * bar,
+          "the bar is cut out of every track; later material, the locator and the loop close up");
+    check(std::holds_alternative<clip_edit::TimeCopy>(commands.clipClipboard().held), "the clipboard holds the time");
+    select(2 * bar, 2 * bar);
+    check(root.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Ctrl/Cmd+Shift+V at bar 3");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}} && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar &&
+              loopStart() == 4 * bar,
+          "Paste Time at the same place restores the arrangement");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the paste and the cut");
+    root.frame();
+    // Copy Time and Duplicate Time.
+    select(2 * bar, 3 * bar);
+    check(root.keyPressed(juce::KeyPress('c', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) &&
+              clipsOf(2) == Clips{{2 * bar, bar}},
+          "Copy Time leaves the arrangement as it was");
+    check(root.keyPressed(juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+          "Ctrl/Cmd+Shift+D over bar 3");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}, {3 * bar, bar}} && clipsOf(3) == Clips{{5 * bar, bar}} && locator() == 5 * bar,
+          "Duplicate Time inserts a copy of the bar after it; later material moves on");
+    check(sel.start == 3 * bar && sel.end == 4 * bar, "the selection moves onto the copy");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Nothing selected: the …Time commands say what to do.
+    select(bar, bar);
+    check(!root.command(AppCommands::DeleteTime) && !root.error().empty(), "Delete Time with no time selected says so");
+    commands.clipClipboard().held = std::monostate{};
+    commands.detach(root);
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -6930,10 +7062,18 @@ int main(int argc, char **argv) {
                       exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
-                      C::LastId == C::Split,
+                      C::LastId == C::InsertSilence,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
-                  "Show/Hide Plug-In Windows, then Split (the last id), each named");
+                  "Show/Hide Plug-In Windows, Split, then the …Time commands and Insert Silence (the last id), each named");
+            juce::ApplicationCommandInfo cutTime(C::CutTime), insert(C::InsertSilence), deleteTime(C::DeleteTime);
+            commands.getCommandInfo(C::CutTime, cutTime);
+            commands.getCommandInfo(C::InsertSilence, insert);
+            commands.getCommandInfo(C::DeleteTime, deleteTime);
+            check(cutTime.shortName == "Cut Time" &&
+                      cutTime.defaultKeypresses.contains(juce::KeyPress('x', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) &&
+                      insert.shortName == "Insert Silence" && keyed(insert, 'i') && deleteTime.shortName == "Delete Time",
+                  "Cut Time on Ctrl/Cmd+Shift+X, Insert Silence on Ctrl/Cmd+I, Delete Time named (manual 41.5)");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -6943,11 +7083,14 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0,
+                                                C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
+                                                C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, 0, C::GroupTracks,
                                                 C::UngroupTracks},
-              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
-              "and Select Loop (§6.6), then Split heading the clip commands (6.9), then Group and Ungroup Tracks");
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), then the …Time commands and Insert Silence "
+              "(6.11), before Rename (§18.2) and Select All, then Loop Selection and Select Loop (§6.6), then Split heading the "
+              "clip commands (6.9), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
         // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
@@ -9068,6 +9211,7 @@ int main(int argc, char **argv) {
     browserDevices(commands, temp.path());
     splitAndRangeEdits(commands, settings, temp.path());
     clipClipboard(commands, temp.path());
+    timeCommands(commands, temp.path());
     colorCabTile(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());

@@ -144,7 +144,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows", "Split"};
+                                  "Show Plug-In Windows", "Split", "Cut Time", "Copy Time", "Paste Time",
+                                  "Duplicate Time", "Delete Time", "Insert Silence"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -357,6 +358,24 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->canClipboard(static_cast<int>(id))));
         break;
     }
+    // Live's …Time commands (manual 6.11, 41.5): Ctrl/Cmd+Shift with X, C, V, D and Delete; Insert
+    // Silence on Ctrl/Cmd+I.
+    case CutTime:
+    case CopyTime:
+    case PasteTime:
+    case DuplicateTime:
+        info.addDefaultKeypress(id == CutTime ? 'x' : id == CopyTime ? 'c' : id == PasteTime ? 'v' : 'd', cmd | shift);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
+        break;
+    case DeleteTime:
+        info.addDefaultKeypress(juce::KeyPress::deleteKey, cmd | shift);
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd | shift);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
+        break;
+    case InsertSilence:
+        info.addDefaultKeypress('i', cmd);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
+        break;
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
         info.addDefaultKeypress('e', cmd);
         info.setActive(active_ != nullptr);
@@ -1504,14 +1523,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         // At the insert marker, or a time selection's start.
         const auto at = from != to ? from : sel.marked ? sel.insert : 0;
         // A copy from another project: the engine refuses it, so say so before reading its tracks.
-        const auto heldFile = std::visit(
-            [](const auto &copy) -> std::string {
-                if constexpr (std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
-                    return {};
-                else
-                    return copy.sourceFile;
-            },
-            board.held);
+        const auto heldFile = board.sourceFile();
         if (!heldFile.empty() && heldFile != projectFile(store))
             return fail("The clipboard holds a copy from another project: copy again in this one.");
         const auto origin = pasteOrigin();
@@ -1532,7 +1544,9 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return false;
             chooseClip(id);
         } else {
-            const auto &rangeCopy = std::get<clip_edit::RangeCopy>(board.held);
+            // A Time copy pastes its material as a range: Paste Time is what inserts the time.
+            const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held);
+            const auto &rangeCopy = time != nullptr ? time->material : std::get<clip_edit::RangeCopy>(board.held);
             // As many tracks as the copy came from, in order, from the selected one: the shown
             // tracks that can hold clips.
             const auto wanted = rangeCopy.selection.tracks.size();
@@ -1592,6 +1606,109 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     }
     }
     return false;
+}
+bool AdiRootComponent::canTimeCommand(int id) const {
+    if (!view_.current())
+        return false;
+    const auto &sel = arrangement.geometry.selection;
+    if (id == AppCommands::PasteTime) {
+        const auto &held = commands_.clipClipboard().held;
+        return (std::holds_alternative<clip_edit::TimeCopy>(held) || std::holds_alternative<clip_edit::RangeCopy>(held)) &&
+               (sel.marked || sel.start != sel.end);
+    }
+    return sel.start != sel.end;
+}
+bool AdiRootComponent::timeCommand(int id) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The …Time commands need an open project.");
+    auto &sel = arrangement.geometry.selection;
+    auto &board = commands_.clipClipboard();
+    auto &store = submitter_.store();
+    const auto rate = editRate();
+    const auto from = std::max<std::int64_t>(0, std::min(sel.start, sel.end)), to = std::max(sel.start, sel.end);
+    const auto length = to - from;
+    if (id != AppCommands::PasteTime && length <= 0)
+        return fail("Select the time to act on first: drag across the lanes.");
+    // The selection after an edit: a span of time on the tracks it was on, or the marker.
+    const auto select = [&](std::int64_t a, std::int64_t b) {
+        sel.clip = 0;
+        sel.pickedClips.clear();
+        sel.insert = sel.start = a;
+        sel.end = b;
+        sel.marked = true;
+    };
+    const auto done = [&] {
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
+        commands_.manager.commandStatusChanged();
+        arrangement.changed();
+        return true;
+    };
+    switch (id) {
+    case AppCommands::CopyTime: {
+        auto copy = clip_edit::copyTime(store, from, to, rate);
+        if (!copy.ok)
+            return fail(copy.error);
+        board.held = std::move(copy);
+        return done();
+    }
+    case AppCommands::CutTime: {
+        // The copy is kept only once the cut is in.
+        auto cut = clip_edit::prepareCutTime(store, from, to, rate);
+        if (!cut.copy.ok)
+            return fail(cut.copy.error);
+        if (!commitEdit(std::move(cut.edit)))
+            return false;
+        board.held = std::move(cut.copy);
+        select(from, from);
+        return done();
+    }
+    case AppCommands::PasteTime: {
+        // At the insert marker, or the selection's start: the copy's time is inserted there.
+        const auto at = from != to ? from : sel.marked ? sel.insert : 0;
+        if (board.empty())
+            return fail("Copy Time first (Ctrl/Cmd+Shift+C).");
+        if (const auto file = board.sourceFile(); !file.empty() && file != projectFile(store))
+            return fail("The clipboard holds a copy from another project: copy again in this one.");
+        if (const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held)) {
+            if (!commitEdit(clip_edit::preparePasteTime(store, *time, at, rate)))
+                return false;
+            select(at, at + time->ticks);
+            return done();
+        }
+        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held)) {
+            // A plain copy's material, with its length of time inserted on every track first; it
+            // lands on the tracks it came from.
+            if (!commitEdit(clip_edit::preparePasteRange(store, *range, range->selection.tracks, {0, at}, rate, true)))
+                return false;
+            select(at, at + (range->selection.end.value - range->selection.begin.value));
+            return done();
+        }
+        return fail("A clip's copy has no time to paste: use Paste (Ctrl/Cmd+V), or Copy Time.");
+    }
+    case AppCommands::DuplicateTime: {
+        if (!commitEdit(clip_edit::prepareDuplicateTime(store, from, to, rate)))
+            return false;
+        select(to, to + length);
+        return done();
+    }
+    case AppCommands::DeleteTime: {
+        if (!commitEdit(clip_edit::prepareDeleteTime(store, from, to, rate)))
+            return false;
+        select(from, from);
+        return done();
+    }
+    case AppCommands::InsertSilence: {
+        // The selection's length at its start (manual 6.11); the silence stays selected.
+        if (!commitEdit(clip_edit::prepareInsertSilence(store, from, length, rate)))
+            return false;
+        select(from, to);
+        return done();
+    }
+    default:
+        return false;
+    }
 }
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
@@ -2696,6 +2813,13 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::Split:
         return splitAtMarker();
+    case AppCommands::CutTime:
+    case AppCommands::CopyTime:
+    case AppCommands::PasteTime:
+    case AppCommands::DuplicateTime:
+    case AppCommands::DeleteTime:
+    case AppCommands::InsertSilence:
+        return timeCommand(id);
     case AppCommands::TogglePluginWindows:
         // Every plug-in window hidden, or shown again where it stood (Auto-Hide still applies).
         pluginWindowsShown_ = !pluginWindowsShown_;
@@ -2817,7 +2941,8 @@ const std::vector<MenuEntries> &menuBar() {
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
         // clipboard's and the selection's, where Consolidate and Crop will join it.
-        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::CutTime, C::CopyTime,
+                  C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
                   C::SelectLoop, 0, C::Split, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place

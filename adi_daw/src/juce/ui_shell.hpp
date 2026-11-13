@@ -125,7 +125,13 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Duplicate,
         TogglePluginWindows,
         Split,
-        LastId = Split
+        CutTime,
+        CopyTime,
+        PasteTime,
+        DuplicateTime,
+        DeleteTime,
+        InsertSilence,
+        LastId = InsertSilence
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -176,17 +182,22 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
     // the device clipboard is, so it outlives a window; the engine refuses it in another project.
     struct ClipClipboard {
-        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy> held;
+        // A Time copy (E3: Cut and Copy Time) shares it: the selected time across the whole Set.
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy, clip_edit::TimeCopy> held;
         bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
+        // The project file a copy names; a Time copy names it by its material.
+        static std::string *fileOf(clip_edit::ClipCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(clip_edit::RangeCopy &c) { return &c.sourceFile; }
+        static std::string *fileOf(clip_edit::TimeCopy &c) { return &c.material.sourceFile; }
+        static std::string *fileOf(std::monostate &) { return nullptr; }
+        std::string sourceFile() {
+            auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held);
+            return file != nullptr ? *file : std::string{};
+        }
         // After Save As, a copy held from the project names the new file, as the device copy does.
         void rebase(const std::string &from, const std::string &to) {
-            std::visit(
-                [&](auto &copy) {
-                    if constexpr (!std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
-                        if (copy.sourceFile == from)
-                            copy.sourceFile = to;
-                },
-                held);
+            if (auto *file = std::visit([](auto &copy) { return fileOf(copy); }, held); file != nullptr && *file == from)
+                *file = to;
         }
     };
     ClipClipboard &clipClipboard() noexcept { return clipClipboard_; }
@@ -425,6 +436,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
     // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
     std::int64_t pasteOrigin() const;
+    // Live's …Time commands and Insert Silence (manual 6.11, 41.5; E3): across every track, from the
+    // time selection (Paste Time at the insert marker). Locators, time signature markers, the loop
+    // and global automation move as the engine moves them. One undo step each. `canTimeCommand`
+    // says whether there is something to act on.
+    bool timeCommand(int commandId);
+    bool canTimeCommand(int commandId) const;
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.
