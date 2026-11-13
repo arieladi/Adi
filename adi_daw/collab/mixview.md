@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — optional right analyzer dock decided; prior CI green
+
+**Director answer:** optional right dock with show/hide; retain the separate analyzer tab. The active `mixview/analyzer-dock-20261113` child on #554 `e577b0e9` owns compact shared Meters/Phase/Spectrum presentation, explicit Main/Selected, per-window view-state preference/width and responsive header/body layout. Default off/Main. Compatible views share domain/tap/cursor/FFT; no new analysis worker, timer or DSP. Requested versus applied layout is separated through a held STACK edit, while whole-surface hide/tab/detach/minimise keep immediate cleanup. Scope: Mix View/analyzer UI, window-state JSON and matching software tests plus the existing weak Main meter owner wiring. No op/schema/fenced main file edits. Claude alone verifies live flow.
+
+**Independent core continuation:** `mixview/compressor-hold-20261113`, isolated `D:/Adi-wt/mix-compressor-1113`, on #552 `76ec1072`, owns a fixed Clean post-Hold component with narrow initial positive-Hold admission. Preserve every existing zero-Hold prediction, existing resource guarantees and strict saved-output gates. It remains unregistered; no C/DS/G native availability or limiter-fallback dispatch changes. Native reference research stays private. No new CPU timing or native execution.
+
+**CI closure:** #553 `6920f815` and #554 `e577b0e9` each pass all 18 core plus three UI exact-head jobs, now marked ready for win and unmerged by this seat. Runs #553 `43435574213`/`43435574200`, #554 `43437502275`/`43437502378`. Their source/evidence/review package is unchanged; the previous Flow ZIP excludes the new dock/Hold work. No self-merge or daily installation change.
+
 ## 13 November 2026 — per-tool flow supplied with isolated review package
 
 **Supplied:** draft [#554](https://github.com/arieladi/Adi/pull/554), `e577b0e941ec31d30523b23cccb324e00bbdad74`, on repaired #553 `6920f815`. One inspected item enlarges while neighboring items stay compact, preserving existing row fisheye and actual device/page identities. Bounded transitions use the existing clock, retain pointer anchoring and give explicit keyboard focus priority. Paint, canvas hits and drag/text/menu capture use the last complete displayed pose; reentrant callbacks cannot commit an interrupted partial presentation. Common parameter/gesture/undo authority is unchanged. No DSP, analyzer demand, worker or timer added.
