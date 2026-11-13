@@ -1171,8 +1171,10 @@ void DeviceChainStrip::frame(std::int64_t track) {
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
             p->wrench.setToggleState(root.pluginWindowOpen(p->id), juce::dontSendNotification);
     showSamples();
-    const auto getPublication = publication;
-    auto next = getPublication ? getPublication() : nullptr;
+    // Do not copy this std::function on every frame: a heap-stored target in
+    // the standard library would allocate even for an unchanged
+    // publication. No strip member is touched after the callback until checked.
+    auto next = publication ? publication() : nullptr;
     if (!current()) return;
     if (next == presented && track == selectedTrack)
         return;
