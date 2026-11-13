@@ -484,10 +484,12 @@ struct ParamOps::Runtime::DevicePresentation final : gesture::Presentation {
         if(!owner || !task)return result(gesture::PresentationState::Detached);
         if(owner->replay_->life.expired() || !owner->replay_->session)return result(gesture::PresentationState::Detached);
         const auto found=owner->devices_.find(task->deviceId);
+        // An obsolete runtime cannot become current by waiting for its own capture barrier.
+        // Retiring its exact owner needs no SDK access, including after a format interruption.
+        if(found==owner->devices_.end() || !owner->replay_->session->resolveDevice(task->input.token))return result(gesture::PresentationState::Detached,"captured device instance ended");
         const bool recovering=task->cancelRequested && found!=owner->devices_.end() && found->second.detached &&
             found->second.inst && found->second.inst->captureCallbacksQuiescent();
         if(!recovering && !owner->presentationReady(next.source,next.sequence))return result(gesture::PresentationState::Pending,"older device delivery or capture is still pending");
-        if(found==owner->devices_.end() || !owner->replay_->session->resolveDevice(task->input.token))return result(gesture::PresentationState::Detached,"captured device instance ended");
         try {committed=committedImage(store,found->second.committed);base=next;return result(gesture::PresentationState::Current);}
         catch(const std::exception& error){return result(gesture::PresentationState::Refused,error.what());}
     }

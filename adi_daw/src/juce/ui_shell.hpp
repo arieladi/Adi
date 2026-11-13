@@ -18,6 +18,7 @@
 #include "ui_look.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
+#include "ui_analysis.hpp"
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -352,6 +353,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     MixerPanel mixerView{*this, true};
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
     MixViewPanel mixViewPanel{*this};
+    SharedSpectrumView infoSpectrum;
+    std::shared_ptr<SharedAnalysis> sharedAnalysis;
+    std::int64_t analysisTrack() const noexcept;
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
     // Where the Mix View stands docked, open or not: the arrangement's place and its track controls'.
     // Its first window opens over it, on the screen (detachMixView).
@@ -621,6 +625,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     juce::MenuBarModel *menu() noexcept;
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
+    void minimisationStateChanged(bool) override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }

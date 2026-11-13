@@ -10,6 +10,12 @@ struct DevicePanelData {
     std::int64_t id = 0, track = 0;
     // The track's device chain holding it (`device_chains.id`): where a paste in front of it goes.
     std::int64_t chain = 0;
+    // A monotonic instance stamp, never derived from a display name or memory address.
+    // Reusing a numeric device row for a new runtime invalidates retained surface targets.
+    std::uint64_t instance = 0;
+    engine::DeviceRuntimeToken runtime;
+    bool available = false;
+    std::int32_t latency = 0;
     std::string name;
     bool enabled = true;
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).
@@ -38,6 +44,16 @@ class ParameterFeed {
     }
 
   private:
+    struct Identity {
+        engine::DeviceRuntimeToken runtime;
+        std::optional<std::int64_t> pluginRef;
+        std::string uid;
+        std::uint64_t stamp = 0;
+        std::uint64_t seen = 0;
+    };
+    std::map<std::int64_t, Identity> identities_;
+    std::uint64_t nextIdentity_ = 0;
+    std::uint64_t publication_ = 0;
     std::map<std::pair<std::int64_t, std::string>, panel::Source> touched_;
     std::shared_ptr<const ParameterPublication> current_ = std::make_shared<ParameterPublication>();
 };

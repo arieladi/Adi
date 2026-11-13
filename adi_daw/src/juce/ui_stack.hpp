@@ -1,73 +1,105 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/mix_view_provider.hpp"
-#include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/parameter_feed.hpp"
+#include "adi/ui/stack_model.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
+#include <optional>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 class StackTab;
-// One channel of STACK (ADR-0209 d11; FabFilter Pro-Q's instance list): its colour and name, then
-// its three slots, ADI-Q, the sidechain slot and ADI-L, each drawn dimmed, a flat line, while off.
-// The row under the mouse grows: ADI-Q's graph to edit, and the two other slots as drawers beside
-// it.
+// A realised row of StackModel. Geometry and target identity belong to the model;
+// the row owns only the ordinary device panels currently realised inside it.
 class StackRow final : public juce::Component, public juce::SettableTooltipClient {
   public:
     StackRow(StackTab &, std::int64_t track);
+    ~StackRow() override;
     void paint(juce::Graphics &) override;
     void mouseEnter(const juce::MouseEvent &) override;
     void mouseExit(const juce::MouseEvent &) override;
     void mouseDown(const juce::MouseEvent &) override;
     std::int64_t track() const noexcept { return track_; }
     bool zoomed() const noexcept;
-    // Where each slot is drawn, in the row's coordinates: ADI-Q's graph, then the two drawers.
+    // Compatibility queries for the legacy off drawings; empty in the actual-chain adapter.
     juce::Rectangle<int> eqArea() const noexcept;
     juce::Rectangle<int> sidechainArea() const noexcept;
     juce::Rectangle<int> limiterArea() const noexcept;
-    // ADI-L's mode (ADR-0204 d1): full on Main's row, light on every other channel's.
     const char *mode() const noexcept;
-    static constexpr int kHeight = 30, kZoomedHeight = 168, kNameWidth = 176, kDrawerWidth = 128;
+    static constexpr int kHeight = 100, kZoomedHeight = 190, kNameWidth = 128, kDrawerWidth = 128;
 
   private:
+    friend class StackTab;
+    struct State;
+    void present(const stack::RowGeo &);
     StackTab &stack_;
     std::int64_t track_;
+    std::unique_ptr<State> state_;
 };
-// The Mix View's STACK tab, ADR-0204 d1's one window (ADR-0209 d11): every channel the window's
-// project view shows (its group, or the whole project), in the arrangement's order, under one
-// display where every engaged ADI-Q's curve is drawn in its track's colour. The slots are read
-// through the root's MixViewProvider: the stub until the engine writes them (window log, N16).
-// The ★ Reference track is the Mix View's strip's, not a row of STACK's.
+// The visible STACK surface is a projection of the pure StackModel. It reads the
+// same parameter publication and uses the same gesture/undo authority as Device View.
 class StackTab final : public juce::Component {
   public:
     explicit StackTab(AdiRootComponent &);
-    // Rows follow the shown channels; a frame that changes none of them builds nothing.
+    ~StackTab() override;
     void frame(const SnapshotReader &);
+    // Deterministic component-test entry; normal frames use the window's monotonic clock.
+    void frameAt(const SnapshotReader &, stack::TimeMs);
     void paint(juce::Graphics &) override;
     void resized() override;
-    // A channel shown selected: from a click, or the mixer's Q or L.
+    void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseEnter(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    bool keyPressed(const juce::KeyPress &) override;
+    void focusGained(FocusChangeType) override;
+    void focusLost(FocusChangeType) override;
+    void focusOfChildComponentChanged(FocusChangeType) override;
     void focus(std::int64_t track);
-    std::int64_t focused() const noexcept { return focused_; }
-    // The row under the mouse, zoomed; 0 for none.
+    std::int64_t focused() const noexcept;
     void hover(std::int64_t track);
-    std::int64_t hovered() const noexcept { return hovered_; }
+    std::int64_t hovered() const noexcept;
     const std::vector<std::unique_ptr<StackRow>> &rows() const noexcept { return rows_; }
-    // The shared display above the rows.
     juce::Rectangle<int> display() const noexcept;
-    // The slots, through the root's provider (AdiRootComponent::mixProvider).
+    juce::Rectangle<int> listArea() const noexcept;
     const MixViewProvider &provider() const noexcept;
-    // What the rows show: "Project", or the name of the group the project view shows.
     juce::String scope() const;
+    StackModel &model() noexcept;
+    const StackModel &model() const noexcept;
+    bool hasDeviceContext() const;
+    bool deviceCommand(int command);
+    // Ends a held edit exactly once before hiding/rebinding/removing its component.
+    void cancelInteractions();
     AdiRootComponent &root;
-    static constexpr int kDisplayHeight = 120, kHeaderHeight = 22;
+    juce::TextEditor search;
+    juce::Slider rowSize;
+    juce::ToggleButton autoZoom{"Auto Zoom"}, pinsOnly{"Pinned"}, navigator{"Navigator"};
+    static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;
 
   private:
-    void layoutRows();
+    friend class StackRow;
+    struct State;
+    std::unique_ptr<State> state_;
     std::vector<std::unique_ptr<StackRow>> rows_;
-    std::vector<std::int64_t> wanted_; // the shown channels, refilled in place each frame
-    std::uint64_t shown_ = 0;          // the snapshot generation the rows were built from
-    std::int64_t focused_ = 0, hovered_ = 0;
-    juce::Viewport scroll_;
-    juce::Component list_;
+    void effects(const stack::Effects &, bool takeFocus = true);
+    void layoutRows();
+    void refreshRows(const SnapshotReader &, stack::TimeMs);
+    void syncScroll();
+    void focusTile(const stack::ItemRef &);
+    void beginRename(stack::RowRef);
+    void endRename(bool commit);
+    bool beginInteraction(const stack::ItemRef &, stack::CaptureKind);
+    void endInteraction();
+    bool editParameter(const stack::ItemRef &, const std::string &, engine::ParamEventKind, double);
+    bool validTarget(const stack::ItemRef &) const;
+    const DevicePanelData *device(std::int64_t) const noexcept;
+    juce::Point<float> modelPoint(const juce::MouseEvent &) const;
+    bool fromList(const juce::MouseEvent &) const;
 };
 } // namespace adi::ui

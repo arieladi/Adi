@@ -136,6 +136,11 @@ struct NodeIo {
     double* const* out64 = nullptr;
     const double* const* sidechain64 = nullptr;
 
+    /// One physical callback, shared by every transport/event segment, including stopped
+    /// callbacks and seeks. No device/SDK query is needed at the processing boundary.
+    std::uint64_t renderBlock = 0;
+    std::int32_t configuredLatency = 0; ///< this graph publication's cached slot latency
+
     /// This call is at full width: `out64` is the buffer to write.
     [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
 };
@@ -214,13 +219,22 @@ public:
     /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
 
-    /// Session retains every tap until audio stops, including after close.
-    void setInputTap(ScopeTap* tap) noexcept { inputTap_.store(tap, std::memory_order_release); }
+    /// Capture ports have a lifetime independent of the node. A retired graph can release
+    /// its node before a later callback detaches its old scope publication safely.
+    struct ScopePorts {
+        std::atomic<ScopeTap*> input{nullptr}, output{nullptr};
+    };
+    [[nodiscard]] std::shared_ptr<ScopePorts> scopePorts() const { return scopePorts_; }
+    void setInputTap(ScopeTap* tap) noexcept { scopePorts_->input.store(tap, std::memory_order_release); }
     [[nodiscard]] ScopeTap* inputTap() const noexcept {
         // Synchronize construction directly with the publishing release.
         // One acquire load also gives worker-thread race tools the same
         // happens-before edge, without a separate conditional fence.
-        return inputTap_.load(std::memory_order_acquire);
+        return scopePorts_->input.load(std::memory_order_acquire);
+    }
+    void setOutputTap(ScopeTap* tap) noexcept { scopePorts_->output.store(tap, std::memory_order_release); }
+    [[nodiscard]] ScopeTap* outputTap() const noexcept {
+        return scopePorts_->output.load(std::memory_order_acquire);
     }
 
     /// Prepared source events, once per block BEFORE forwarding/splitting.
@@ -403,7 +417,7 @@ private:
         bool known = false, ready = false;
     } preparation_;
     HeldNotes held_;
-    std::atomic<ScopeTap*> inputTap_{nullptr};
+    const std::shared_ptr<ScopePorts> scopePorts_ = std::make_shared<ScopePorts>();
     std::atomic<EventSource*> eventSource_{nullptr};
     std::shared_ptr<void> eventSourceOwner_;
 };
@@ -1316,6 +1330,7 @@ private:
     bool prepared_ = false;
     NodePreparePolicy nodePreparePolicy_ = NodePreparePolicy::PrepareAll;
     std::int32_t renderedFrames_ = 0;
+    std::uint64_t renderBlock_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;

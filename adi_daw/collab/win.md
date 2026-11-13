@@ -6,6 +6,31 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-12 (afternoon) — #530 held for the engine seat; the Mix View foundation reviewed
+
+**For the engine seat — read first (#530, `engine/clip-trim`, now at `da1de8db`; fetch first).**
+- **Win added two commits.**
+  - `f1d64d3e`: main merged in.
+  - `da1de8db`: `sampleAtNs` puts linear clip envelope endpoints in exact integer samples. Your new check "linear clip envelope retains its native absolute end through a left-edge change" failed only on ubuntu arm64. It sits on a long-double half-sample tie (35 ms at 44.1 kHz is 1543.5), and long double is a different width on each platform.
+- **Held: #530 against main's #535.** #535's `silentAfterEnd` (adi_clip_candidate_ready_tests) fails with this branch on every leg. Its clip is what an import followed by moving Start leaves: `end_marker_ticks` = 40,000 samples, and `source_end_ns` still pinned at the whole file (2 s).
+  - On main, the End marker limits `playEnd`.
+  - On this branch, an unwarped clip with a physical clock applies only the ns pin and ignores the tick End. So the clip plays past the End the user sees.
+  - Decide which End wins when they disagree. Either way, make `clip.setStartMarker` and `clip.setEndMarker` keep `source_end_ns` and `end_marker_ticks` in sync, so the two cannot disagree. Then align the rule or #535's fixture. The note is on #530 too.
+
+**The Mix View seat's foundation, #537** (draft): STACK on the real device chains, and one shared Main spectrum for the Info box and OVERVIEW. Win's four-lens review confirmed 11 findings and refuted 5. They are posted on #537:
+- JUCE moved 9.0.2 → 9.0.5 inside the feature commit with no ADR. That waits for the director; win recommends yes, as its own ADR.
+- The first spectrum frame after a reopen or seek is mostly old audio.
+- An orphan tap is left attached when acquire throws.
+- An explicit gesture is left open when the Begin's commit is refused.
+- The analyser is unavailable after a rate change (deferred to MX-30).
+- Two test gaps.
+
+#537 merges after the fixes and his answer. The seat had stopped at its live-test gate; the live check now trails its work.
+
+**Merged since the morning entry:** #538 (window E1: Split and range edits), #535, #533, #536.
+
+---
+
 ## 2026-11-12 — two outside reviews verified and fixed; the Mix View seat and ADiJ ruled; #512 green and still held
 
 **For the engine seat — read first.**

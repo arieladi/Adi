@@ -286,6 +286,7 @@ bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
         return false;
     }
     AudioIo block = io;
+    block.renderBlock = serial_;
     if (const auto* state = snapshot_->transportState()) block.transport = state->beginBlock();
     snapshot_->graph().graph().process(block);
     host_.fadeIn(io);
