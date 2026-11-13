@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — per-tool flow supplied with isolated review package
+
+**Supplied:** draft [#554](https://github.com/arieladi/Adi/pull/554), `e577b0e941ec31d30523b23cccb324e00bbdad74`, on repaired #553 `6920f815`. One inspected item enlarges while neighboring items stay compact, preserving existing row fisheye and actual device/page identities. Bounded transitions use the existing clock, retain pointer anchoring and give explicit keyboard focus priority. Paint, canvas hits and drag/text/menu capture use the last complete displayed pose; reentrant callbacks cannot commit an interrupted partial presentation. Common parameter/gesture/undo authority is unchanged. No DSP, analyzer demand, worker or timer added.
+
+**Validation:** clean exact-head **614 model +150 explicit Mix View software checks =764, zero failures**; five owned strict frontend units, four root validators, clean diff and independent final review pass. The full prior focused path executes; a diagnostic candidate's skipped conditional assertions were rejected, then fixture timing/restoration was corrected and guarded before final validation. Root verified 20 fixed evidence records plus seven source/archive identities. Eight transition slots use the existing counted snap policy at saturation; captured row geometry is exact, other rows stop at current model pose. No native/default-shell local execution or CPU timing.
+
+**Delivery:** app compiled/linked only; an isolated Debug Flow ZIP, hashes and concise six-part Claude handoff are complete in the private current checkpoint. The package includes #544/#551 ancestry and existing EQ/L, excludes independent #548/#552, and enables no native Carve/Focus/C/DS/G. Daily install/projects remain unchanged. #554 exact-head CI runs `43437502275`/`43437502378` trail; live flow/pictures remain Claude's. Win reviews/merges; no self-merge. Remaining engine/analyzer work is not called complete.
+
 ## 13 November 2026 — explicit empty-channel navigation repair
 
 [#553](https://github.com/arieladi/Adi/pull/553) now points to `6920f815b087276b7e192ab3573eaa3d0eb93a82`. The first CI head compiled on all UI platforms but failed two existing explicit channel-shortcut assertions: With tools hid an empty target. An explicit shortcut now visibly selects All channels only when membership alone excludes an otherwise reachable target, preserving search, pins, folds and project scope and creating no processor. Invalid/eligible targets retain their scope. Callback-bearing focus effects have lifetime guards.
