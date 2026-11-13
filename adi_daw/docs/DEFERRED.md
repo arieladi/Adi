@@ -55,6 +55,12 @@ cut out of something that already shipped or was ruled.
 | DF-E7 | On main: `resizeFrozenEnd` refuses `end <= first`; split's `keepRight` End-marker check | engine seat | follow-up |
 | DF-E8 | The Gemini round on #518, #528, #516 (prompt ready: `D:\Gemini\2026-11-12-round4\2-engine-merged.txt`) | win | when Gemini is available |
 
+### Repository
+
+| Id | What | Owner | Trigger / before |
+|---|---|---|---|
+| DF-R1 | Clean the repository's text and history of the private research-tool references the director named on 13 November (his option 3: back up, rewrite history clean, he recreates the GitHub repository, win pushes, reopens the open PRs, restores the site and re-points every worktree) | win, with the director for the GitHub steps | after the Mix View seat's current run, when he says go |
+
 ## Done
 
 | Id | What | Closed by |
