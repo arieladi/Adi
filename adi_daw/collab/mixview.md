@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — next invariant key-filter and de-esser slices claimed
+
+`mixview/keyeq-policy-20261113`, isolated `D:/Adi-wt/mix-compressor-1113`, starts from #558 `d40550ac`. Own new `mix/key_eq` settings/policy/fixed bank, generated tests/docs and minimal `cmake/mix_cores.cmake` wiring. First tier is stopped/fixed base-rate stereo source-derived ordered shape/prototype/anchor policy over the precise filter primitive; moving scheduling, separate bilinear/quality paths and native admission remain explicit later gates. No changes to the sealed primitive or compressor sources.
+
+Independent `mixview/ds-wide-core-20261113`, new `D:/Adi-wt/mix-ds-1113`, also starts from #558. Own new `mix/deesser` core/control mapping, generated tests/docs and separate-worktree CMake wiring. The bounded first tier is base-rate Wide processing with explicit source/link configuration and genuine reset/restore/classifier-state policies, using eligible preserved output gates. No incomplete DS function is enabled. Shared filter/key-policy deduplication requires strict proof; no cross-owner source edits by inference. No live/native work, new CPU timing, invented device keys or #512 fence changes. Win reviews/merges; Claude's dock review trails independently.
+
 ## 13 November 2026 — shared comparison and precise filter components supplied
 
 Draft [#557](https://github.com/arieladi/Adi/pull/557), `596d5df9`, on #556 supplies explicit independent/held spectrum comparison. Per-endpoint identity/calibration/intervals, bounded copied bins, owner-token replacement, local demand release, shutdown and real newly-written-sample resume barriers are explicit. No automatic alignment, reference player, gain/loudness matching or UI wiring. Debug/Release237 unique checks/0, three strict units/four validators and126-configuration generated complete-result byte preservation pass. Root verifies89 fixed records/seven sources. Prepared scratch removes one temporary gain allocation without changing results. CI trails.
