@@ -348,7 +348,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress(id == Cut ? 'x' : id == Copy ? 'c' : id == Paste ? 'v' : 'd', cmd);
         using Clip = DeviceChainStrip::Clip;
         const auto clip = id == Cut ? Clip::Cut : id == Copy ? Clip::Copy : id == Paste ? Clip::Paste : Clip::Duplicate;
-        info.setActive(active_ != nullptr && active_->devices.canClipboard(clip));
+        const bool stack = active_ && active_->mixViewPanel.stack.hasDeviceContext();
+        const bool copied = active_ && active_->devices.holdsCopy && active_->devices.holdsCopy();
+        info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->devices.canClipboard(clip)));
         break;
     }
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
@@ -638,6 +640,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(aiTab);
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
+    addChildComponent(infoSpectrum);
     addAndMakeVisible(dockResizer);
     addAndMakeVisible(mixer);
     addAndMakeVisible(strip);
@@ -827,6 +830,10 @@ void AdiRootComponent::frame() noexcept {
     }
     if (infoShown_)
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
+    infoSpectrum.setBounds(infoArea_.reduced(look::border));
+    infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
+    infoSpectrum.present(sharedAnalysis, analysisTrack());
+    infoSpectrum.frame();
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
     if (state_.follow && playing_ && !arrangement.followPaused &&
@@ -852,6 +859,8 @@ void AdiRootComponent::frame() noexcept {
         repaint();
 }
 void AdiRootComponent::hover(juce::Component *c) {
+    // A boxed analyzer never replaces itself with its own Info tooltip.
+    if (c == &infoSpectrum || (c && infoSpectrum.isParentOf(c))) c = nullptr;
     if (c != nullptr && c != this && !isParentOf(c))
         c = nullptr;
     // The nearest element that can describe itself, as Live's Info View does.
@@ -878,8 +887,10 @@ bool AdiRootComponent::locate(std::int64_t tick) {
     const double rate = mailbox_.sampleRate() > 0 ? mailbox_.sampleRate() : current->sampleRate;
     if (!current->tempo || !mailbox_.hasRoom())
         return false;
-    return mailbox_.post(TransportMailbox::Command::Locate,
-                         static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
+    const bool posted = mailbox_.post(TransportMailbox::Command::Locate,
+                                      static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
+    if (posted && sharedAnalysis) sharedAnalysis->refreshSources(true);
+    return posted;
 }
 bool AdiRootComponent::playFrom(std::int64_t tick) {
     const bool start = !mailbox_.desiredPlaying();
@@ -1242,6 +1253,11 @@ bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t now
     arrangement.followPaused = paused;
     return done;
 }
+std::int64_t AdiRootComponent::analysisTrack() const noexcept {
+    for (const auto &track : reader().tracks())
+        if (track->kind == "master") return track->id;
+    return 0;
+}
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
     state_.mixView = open;
@@ -1251,6 +1267,7 @@ bool AdiRootComponent::setMixView(bool open, bool detached) {
         state_.mixViewDetached = wasDetached;
         return fail(error_);
     }
+    if (!open || wasDetached != detached) mixViewPanel.stack.cancelInteractions();
     resized();
     return true;
 }
@@ -1261,6 +1278,8 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
         state_.mixViewTab = was;
         return fail(error_);
     }
+    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was)
+        mixViewPanel.stack.cancelInteractions();
     dirty_.mark(DirtySet::Layout);
     return true;
 }
@@ -2140,6 +2159,13 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
+    if (id == AppCommands::Undo || id == AppCommands::Redo)
+        mixViewPanel.stack.cancelInteractions();
+    if (mixViewPanel.stack.hasDeviceContext()) {
+        if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
+            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack)
+            return mixViewPanel.stack.deviceCommand(id);
+    }
     // The application's own: files and Settings.
     // In a window of its own, the Mix View is the application's to open and close (its floating
     // host); docked, the root's.
@@ -2666,6 +2692,12 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 void AdiWindow::moved() {
     DocumentWindow::moved();
     root_->followDisplay();
+}
+void AdiWindow::minimisationStateChanged(bool minimised) {
+    root_->infoSpectrum.suspend(minimised);
+    if (root_->mixViewPanel.getParentComponent() == root_)
+        root_->mixViewPanel.spectrum.suspend(minimised);
+    if (minimised) root_->mixViewPanel.stack.cancelInteractions();
 }
 AdiWindow::~AdiWindow() {
 #if JUCE_MAC

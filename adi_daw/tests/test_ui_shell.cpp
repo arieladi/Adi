@@ -263,8 +263,15 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                 if (image.getPixelAt(x, y) != expected.getPixelAt(x, y))
                     ++differences;
     check(equal && differences == 0, name);
-    if (differences)
+    if (differences) {
         std::printf("%s: %d differing pixels\n", name, differences);
+        const auto diagnostic = output.getSiblingFile(juce::String(name) + "-masked-actual.png");
+        if (auto stream = diagnostic.createOutputStream()) {
+            stream->setPosition(0);
+            stream->truncate();
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        }
+    }
 }
 // A menu as the window's look draws one, at twice its size, for a picture beside Live's: a
 // PopupMenu shows only on the desktop, which the tests never touch, so its rows are drawn here
@@ -993,8 +1000,9 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         auto stackIds = [&root] {
             std::vector<std::int64_t> out;
-            for (const auto &r : root.mixViewPanel.stack.rows())
-                out.push_back(r->track());
+            const auto &model = root.mixViewPanel.stack.model();
+            for (std::size_t i = 0; i < model.shownCount(); ++i)
+                out.push_back(model.shownTrack(i));
             return out;
         };
         check(stackIds() == std::vector<std::int64_t>{10, 11, 12, 13, 14, 15, 16, 17, 18, 1},
@@ -5312,7 +5320,7 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
-void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
+void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
@@ -5369,7 +5377,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
                              MixViewPanel::kTabNames[static_cast<std::size_t>(i)];
     check(named && panel.tabs[1]->getButtonText() == "STACK", "OVERVIEW, STACK, SCOPE & PHASE, SPECTROGRAM, CTZ CASCADE");
     check(panel.tab() == MixViewPanel::Tab::Stack && panel.tabs[1]->getToggleState() && panel.stack.isVisible() &&
-              panel.stack.rows().size() == 4,
+              panel.stack.model().shownCount() == 4,
           "STACK shows, lit, with a row for each channel");
     check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
           "under the tabs");
@@ -5377,7 +5385,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
               panel.tabs[0]->getToggleState() && !panel.tabs[1]->getToggleState(),
-          "a click on OVERVIEW shows it, drawn empty until after the first window (d11)");
+          "a click on OVERVIEW shows its shared-analysis view");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
     check(root.chooseMixViewTab(1), "back to STACK");
@@ -5396,70 +5404,85 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     pad.label = "Create track";
     check(submitter.submit(std::move(pad)).ok, "a new track");
     root.frame();
-    check(panel.stack.rows().size() == 5, "and STACK has a row for it at the next frame");
-    // STACK (ADR-0209 d11; Pro-Q's instance list): the row under the mouse opens, dormant slots are
-    // flat dimmed lines, a slot says what it waits for, and the window's group decides the rows.
+    check(panel.stack.model().shownCount() == 5, "and STACK has a model row for it at the next frame");
+    // The visible surface uses the same model for layout, hit testing and selection.
     {
-        auto &stack = panel.stack;
-        auto rowOf = [&stack](std::int64_t id) -> StackRow * {
-            for (const auto &r : stack.rows())
-                if (r->track() == id)
-                    return r.get();
+        auto &surface = panel.stack;
+        auto &model = surface.model();
+        const auto base = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+        auto rowOf = [&surface](std::int64_t id) -> StackRow * {
+            for (const auto &r : surface.rows()) if (r->track() == id) return r.get();
             return nullptr;
         };
-        auto *kick = rowOf(10), *bass = rowOf(11);
-        check(kick != nullptr && bass != nullptr && kick->getHeight() == StackRow::kHeight &&
-                  bass->getY() == kick->getBottom(),
-              "rows of one height, one under another");
-        kick->mouseEnter(pressAt(*kick, {40.f, 10.f}));
-        check(stack.hovered() == 10 && kick->zoomed() && kick->getHeight() == StackRow::kZoomedHeight &&
-                  bass->getY() == kick->getBottom(),
-              "the row under the mouse opens, the rows below move down");
-        check(kick->eqArea().getHeight() > 120 && kick->sidechainArea().getRight() < kick->limiterArea().getX() &&
-                  kick->eqArea().getRight() < kick->sidechainArea().getX(),
-              "ADI-Q's graph to edit, the sidechain slot and ADI-L as drawers beside it");
-        kick->mouseExit(pressAt(*kick, {40.f, 10.f}));
-        check(stack.hovered() == 0 && kick->getHeight() == StackRow::kHeight, "and closes when the mouse leaves");
-        // Dormant: the 0 dB line dimmed, never the track's colour.
-        auto pixelAt = [](juce::Component &c, juce::Point<int> at) {
-            juce::Image image(juce::Image::ARGB, c.getWidth(), c.getHeight(), true, juce::SoftwareImageType{});
-            {
-                juce::Graphics g(image);
-                c.paintEntireComponent(g, true);
-            }
-            return image.getPixelAt(at.x, at.y);
-        };
-        const auto flat = juce::Point<int>(kick->eqArea().getCentreX(), kick->eqArea().getCentreY());
-        const auto kickColour = root.arrangement.colourFor(0);
-        check(pixelAt(*kick, flat) != kickColour && !stack.provider().live(), "a dormant ADI-Q: a flat line, dimmed");
-        // Engaged, as the engine's slots will report: the line in the track's colour, the drawer lit.
-        struct Engaged final : MixViewProvider {
-            ChannelSlots slots(const engine::TrackNode &t) const noexcept override {
-                ChannelSlots s;
-                s.eq = t.id == 10;
-                s.sidechain = t.id == 10 ? SidechainMode::Rmsc : SidechainMode::Off;
-                return s;
-            }
-            bool live() const noexcept override { return true; }
-        } engaged;
-        const auto &own = root.mixProvider(); // the root's stub, which outlives this block
-        root.setMixProvider(engaged);
-        const auto lit = kick->sidechainArea().getTopLeft() + juce::Point<int>(2, 2);
-        check(pixelAt(*kick, flat) == kickColour && pixelAt(*kick, lit) != pixelAt(*bass, lit),
-              "engaged: Kick's line in its colour, its sidechain drawer lit, Bass's not");
-        root.setMixProvider(own);
-        // A slot says what it waits for; elsewhere a click selects the channel's track.
-        bass->mouseDown(pressAt(*bass, bass->sidechainArea().getCentre().toFloat()));
-        check(stack.focused() == 11 && root.error().find("sidechain") != std::string::npos,
-              "a click on the sidechain slot focuses Bass and says it waits for the engine's slots");
-        bass->mouseDown(pressAt(*bass, {40.f, 10.f}));
-        check(root.arrangement.geometry.selection.track == 11, "a click on its name selects Bass's track");
-        // The View menu's Channel EQ, and a track row's Q, open STACK on the selected track.
+        auto *kick = rowOf(10);
+        const auto kickIndex = model.shownIndex(10);
+        check(kick && kickIndex && kick->getHeight() == model.windowView().baseHeight &&
+                  model.lane(*kickIndex).count == 0 && model.moduleKindCount() == 0,
+              "actual-chain rows use the model's base height; no reserved slot columns");
+        if (kickIndex) {
+            const auto before = model.row(*kickIndex);
+            model.pointerMove(8, before.top + before.height / 2, false, base);
+            surface.frameAt(root.reader(), base + 61);
+            surface.frameAt(root.reader(), base + 230);
+            kick = rowOf(10);
+            const auto enlarged = model.row(*model.shownIndex(10));
+            check(kick && model.enlarged().track == 10 && kick->zoomed() &&
+                      kick->getHeight() == static_cast<int>(std::round(enlarged.height)) &&
+                      enlarged.height > model.windowView().baseHeight,
+                  "dwell and easing enlarge the hovered model row, rendered at its model height");
+            const auto chip = model.chip(*model.shownIndex(11)).chip;
+            const auto hit = model.hitTest(chip.x + chip.w / 2, chip.y + chip.h / 2);
+            check(hit.row.track == 11 && hit.part == stack::HitPart::Chip,
+                  "the visible chip and model hit test address the same stable track");
+            model.pointerExit(base + 240);
+            surface.frameAt(root.reader(), base + 800);
+            check(model.enlarged().track == 0, "leave deadline restores the list instead of immediate row jumps");
+        }
+        if (auto *bass = rowOf(11)) {
+            const auto chip = model.chip(*model.shownIndex(11)).chip;
+            const auto at = juce::Point<float>(static_cast<float>(chip.x + chip.w / 2),
+                                              static_cast<float>(chip.y - model.row(*model.shownIndex(11)).top + chip.h / 2));
+            bass->mouseDown(pressAt(*bass, at));
+            surface.mouseUp(pressAt(*bass, at));
+            root.frame();
+            check(root.arrangement.geometry.selection.track == 11 && model.selection() == 11,
+                  "the actual chip click publishes Bass through the one track selection");
+        }
+        const auto ref = model.rowRef(10);
+        model.pin(ref, {}, base + 810);
+        check(model.pinned(10), "the model owns pins");
+        model.setSearch("Bass", base + 820);
+        surface.frameAt(root.reader(), base + 820);
+        check(model.shownCount() == 1 && model.shownTrack(0) == 11,
+              "the visible list follows model filtering, not an independent placeholder list");
+        model.setSearch("", base + 830);
+        surface.frameAt(root.reader(), base + 830);
+        check(model.shownCount() == 5 && model.pinned(10), "clearing search restores the scope and preserves pins");
+        {
+            const auto seenChip = model.chip(*model.shownIndex(10)).chip;
+            const auto seenPoint = surface.listArea().getPosition().toFloat() +
+                juce::Point<float>(static_cast<float>(seenChip.x + seenChip.w / 2),
+                                   static_cast<float>(seenChip.y + seenChip.h / 2));
+            OpRequest moved;
+            moved.opType = "track.reorder";
+            moved.payload = {{"id", 10}, {"index", 99}};
+            moved.label = "Move track between frames";
+            check(submitter.submit(std::move(moved)).ok, "reorder a track after presentation and before a click");
+            surface.mouseDown(pressAt(surface, seenPoint));
+            surface.mouseUp(pressAt(surface, seenPoint));
+            check(root.arrangement.geometry.selection.track == 10 && surface.focused() == 10,
+                  "a click retains the seen track identity instead of hitting unseen reordered geometry");
+            root.frame();
+            check(model.shownTrack(0) != 10, "the next frame then presents the new track order");
+            check(root.command(AppCommands::Undo), "undo the between-frame reorder");
+            root.frame();
+            check(model.shownTrack(0) == 10, "undo restores that order through the same model adapter");
+        }
         check(root.chooseMixViewTab(0), "on another tab");
         root.arrangement.geometry.selection.track = 12;
-        check(root.command(AppCommands::ShowChannelEq) && root.state().mixViewTab == 1 && stack.focused() == 12,
-              "Channel EQ opens STACK, Lead's row focused (ADR-0204 d1's one window)");
-        check(stack.scope() == "Project", "the rows: the whole project, the project view showing it");
+        check(root.command(AppCommands::ShowChannelEq) && root.state().mixViewTab == 1 && surface.focused() == 12,
+              "the existing channel command lands on the real model row");
+        check(surface.scope() == "Project", "the rows follow the project scope");
     }
     // The ★ Reference (ADR-0209 §4, d9, d11): its strip in the Mix View, hidden from the project view
     // until [Reference Track] shows it, [REF] and Shift+R, a tap to latch, a hold to audition.
@@ -5517,7 +5540,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
               "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
         root.frame();
         check(panel.ref.getToggleState(), "[REF] lit while it is on");
-        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // Lead with two clips, the Reference latched, for the picture; undone after.
             int made = 0;
             for (const auto &[clipId, pos, length] : {std::tuple{900, 0, 8}, std::tuple{901, 10, 6}}) {
@@ -5570,16 +5593,16 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     // While it is closed the project changes; opened, it shows the change on its first picture, before
     // any frame (the director's R3: no flash of what it held before).
     {
-        const auto before = panel.stack.rows().size();
+        const auto before = panel.stack.model().shownCount();
         OpRequest padTrack;
         padTrack.opType = "track.create";
         padTrack.payload = {{"id", 15}, {"kind", "midi"}, {"name", "Pad"}, {"index", 4}};
         padTrack.label = "Create track";
         check(submitter.submit(std::move(padTrack)).ok, "a track while the Mix View is closed");
         root.frame();
-        const bool stale = panel.stack.rows().size() == before;
+        const bool stale = panel.stack.model().shownCount() == before;
         root.transport.mix.onClick();
-        check(stale && panel.isVisible() && panel.stack.rows().size() == before + 1,
+        check(stale && panel.isVisible() && panel.stack.model().shownCount() == before + 1,
               "opened, it is drawn from the project as it is now, before the next frame");
         check(root.command(AppCommands::Undo), "the track undone");
         root.transport.mix.onClick();
@@ -5621,11 +5644,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         keys.label = "Create track";
         check(submitter.submit(std::move(keys)).ok, "another track");
         host.frame("Mix View");
-        check(panel.stack.rows().size() == 6 && host.drains("Mix View") == 2, "the window's own clock frames it");
+        check(panel.stack.model().shownCount() == 6 && host.drains("Mix View") == 2, "the window's own clock frames it");
         root.frame();
         // Moved and resized, it keeps that place (on a desktop with a display to keep it on).
         const juce::Rectangle<int> moved(180, 140, 760, 430);
-        const bool displays = !currentMonitors().empty();
+        const bool displays = !headlessOnly && !currentMonitors().empty();
         if (displays)
             host.window("Mix View")->setBounds(moved);
         check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.count() == 0 &&
@@ -5658,7 +5681,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         syncMixView(host, root, true);
         check(host.content("Mix View") == &panel, "at startup it opens in its window again");
         check(persistence.load("mix", {}).mixViewDetached, "where it opens is kept with the window's view");
-        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); !headlessOnly && out.isNotEmpty()) {
             // The main window with the arrangement back, and the Mix View's window, for the picture.
             host.frame("Mix View");
             root.mark(DirtySet::All);
@@ -5688,8 +5711,315 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
         root.applicationCommand = nullptr;
     }
+    // A real document and its shared feed, using only the headless Knobs fixture.
+    {
+        std::string error;
+        auto document = ProjectDocument::open(dir / "mixview-devices.adi", true, test::knobsLoader(), error);
+        check(document != nullptr, "a document for actual-chain Mix View controls");
+        if (document) {
+            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(30,'clap','") +
+                                        test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(3);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            for (std::size_t i = 1; i < make.size(); ++i) {
+                make[i].opType = "device.insert";
+                make[i].payload = {{"id", 29 + static_cast<std::int64_t>(i)}, {"chain", 30},
+                                   {"ord", static_cast<std::int64_t>(i - 1)}, {"ref", 30},
+                                   {"name", i == 1 ? "First knobs" : "Second knobs"}, {"latency", 0}};
+            }
+            check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+                  "two actual ordered devices on one track");
+            AdiRootComponent actual(document->view(), document->ops(), document->mailbox(), commands,
+                                    document->views(), document->sessionState(), "mix-devices");
+            // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
+            UiPeerRoot fake;
+            fake.setSize(1440, 900);
+            fake.addAndMakeVisible(actual);
+            fake.setVisible(true);
+            fake.addToDesktop(0);
+            check(dynamic_cast<UiFakePeer *>(fake.getPeer()) && fake.getPeer()->getNativeHandle() == nullptr,
+                  "Mix View focus dispatch uses a fake peer with no native window");
+            actual.afterEdit = [&] { document->synchronise(); };
+            actual.devices.publication = [&] { return document->parameterFeed().current(); };
+            actual.devices.submit = [&](const std::string &op, Payload p) {
+                return document->deviceAction(op, std::move(p));
+            };
+            int begins = 0, ends = 0;
+            actual.devices.guardedGesture = [&](std::int64_t id, const std::string &parameter,
+                  engine::ParamEventKind kind, double v, const engine::DeviceRuntimeToken &token, std::uint64_t stamp) {
+                if (kind == engine::ParamEventKind::Begin) ++begins;
+                if (kind == engine::ParamEventKind::End) ++ends;
+                return document->parameterGestureExpected(id, parameter, kind, v, token, stamp);
+            };
+            actual.devices.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &token,
+                                                std::uint64_t stamp) {
+                return document->deviceTargetCurrent(id, token, stamp);
+            };
+            std::int64_t copiedDevice = 0;
+            actual.devices.copy = [&](std::int64_t id, bool) { copiedDevice = id; return true; };
+            actual.setSize(1440, 900);
+            actual.arrangement.geometry.selection.track = 2;
+            document->tick(0);
+            actual.frame();
+            check(actual.setMixView(true, false), "open actual chains");
+            actual.frame();
+            auto &surface = actual.mixViewPanel.stack;
+            auto findPanel = [&](std::int64_t id) -> DevicePanelView * {
+                const auto visit = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                    if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == id) return p;
+                    for (int i = 0; i < component.getNumChildComponents(); ++i)
+                        if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                    return nullptr;
+                };
+                return visit(visit, surface);
+            };
+            const auto row = surface.model().shownIndex(2);
+            std::vector<std::int64_t> order;
+            if (row) surface.model().forEachChainItem(*row, [&](const stack::ItemGeo &i) { order.push_back(i.ref.device); });
+            auto *first = findPanel(30);
+            check(row && order == std::vector<std::int64_t>{30, 31} && first && first->controls.size() == 2,
+                  "the visible model and generic panels show actual device order and the shared parameter feed");
+            if (first && first->controls.size() == 2) {
+                const auto stable = surface.model().chainRef(2, 30);
+                auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(30));
+                const auto beforeUndo = actual.undoTitle(false);
+                auto &slider = first->controls[0]->slider;
+                slider.onDragStart();
+                slider.setValue(.7, juce::sendNotificationSync);
+                slider.setValue(.8, juce::sendNotificationSync);
+                check(surface.model().capture().has_value() && begins == 1 && ends == 0 && knobs &&
+                          std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+                          actual.undoTitle(false) == beforeUndo && actual.arrangement.geometry.selection.track == 2,
+                      "a tile drag captures its stable target, edits the existing runtime and writes no intermediate undo");
+                document->tick(10);
+                actual.frame();
+                check(findPanel(30) == first && surface.model().chainRef(2, 30) == stable &&
+                          surface.model().capture().has_value(),
+                      "new live parameter publications preserve the tile and capture identity");
+                slider.onDragEnd();
+                document->tick(20);
+                actual.frame();
+                check(!surface.model().capture() && begins == 1 && ends == 1 &&
+                          actual.undoTitle(false) == "Undo UI knobs: Cutoff",
+                      "tile release balances one host gesture and commits one undo step");
+                check(actual.command(AppCommands::Undo), "undo the tile drag");
+                document->tick(30); actual.frame();
+                check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
+                          actual.undoTitle(false) == beforeUndo,
+                      "one undo restores the untouched parameter through the shared authority");
+                const auto compactTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                surface.model().setAutoZoom(false, compactTime);
+                surface.model().setBaseHeight(44, compactTime);
+                surface.frameAt(actual.reader(), compactTime + 200);
+                stack::ItemGeo folded;
+                if (const auto i = surface.model().shownIndex(2))
+                    surface.model().forEachChainItem(*i, [&](const auto &item) { if (item.ref.device == 30) folded = item; });
+                check(folded.pill && !findPanel(30), "compact tiers fold a plug-in without leaving hidden controls active");
+                if (folded.pill) {
+                    const auto geo = surface.model().row(*surface.model().shownIndex(2));
+                    const auto p = surface.listArea().getPosition().toFloat() +
+                        juce::Point<float>(static_cast<float>(folded.x + folded.width / 2), static_cast<float>(geo.top + 6));
+                    surface.mouseDown(pressAt(surface, p));
+                    surface.mouseUp(pressAt(surface, p));
+                    document->tick(35); actual.frame();
+                    check(value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "0" &&
+                              surface.model().chainRef(2, 30) == stable,
+                          "the folded tile's activator switches the exact device off without changing identity");
+                    check(actual.command(AppCommands::Undo), "undo the folded activator");
+                    document->tick(36); actual.frame();
+                    check(value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "1",
+                          "one undo restores the folded device activator");
+                }
+                surface.model().setBaseHeight(100, compactTime + 210);
+                surface.model().setAutoZoom(true, compactTime + 210);
+                surface.frameAt(actual.reader(), compactTime + 400);
+                first = findPanel(30);
+                if (first) {
+                    first->grabKeyboardFocus();
+                    check(surface.hasDeviceContext() && actual.command(AppCommands::Copy) && copiedDevice == 30,
+                          "global Copy dispatch keeps the Mix View's device context");
+                    check(actual.command(AppCommands::RenameTrack) && first->rename.isVisible() &&
+                              surface.model().capture().has_value(),
+                          "global Rename opens the exact device editor rather than the track editor");
+                    first->rename.setText("Renamed knobs", false);
+                    first->rename.onCommit();
+                    document->tick(37); actual.frame();
+                    check(value(document->store(), "SELECT name FROM devices WHERE id=30") == "Renamed knobs" &&
+                              !surface.model().capture() && surface.model().chainRef(2, 30) == stable,
+                          "name commit uses the existing undo path and preserves device identity");
+                    check(actual.command(AppCommands::Undo), "undo embedded device rename");
+                    document->tick(38); actual.frame();
+                    first = findPanel(30);
+                    if (first && first->beginRename()) {
+                        first->rename.setText("Discarded name", false);
+                        first->rename.onCancel();
+                    }
+                    check(value(document->store(), "SELECT name FROM devices WHERE id=30") == "First knobs" &&
+                              !surface.model().capture(),
+                          "name cancellation writes no replacement value and releases capture");
+                }
+                first = findPanel(30);
+                if (first) {
+                    check(first->beginInteraction(DevicePanelView::Interaction::Menu), "a tile menu captures its target");
+                    auto oldMenu = first->commands();
+                    surface.cancelInteractions();
+                    check(!surface.model().capture() && first->beginInteraction(DevicePanelView::Interaction::Menu),
+                          "owner cancellation resets local menu state so reopening acquires fresh retention");
+                    const auto reopened = surface.model().capture();
+                    auto invoke = [](juce::PopupMenu &menu, const char *name) {
+                        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                            if (it.getItem().text == name && it.getItem().action) {
+                                it.getItem().action();
+                                return true;
+                            }
+                        return false;
+                    };
+                    check(invoke(oldMenu, "Rename") && !first->rename.isVisible() &&
+                              surface.model().capture() == reopened,
+                          "a stale menu action cannot mutate or end the reopened menu's capture");
+                    auto freshMenu = first->commands();
+                    check(invoke(freshMenu, "Rename") && first->rename.isVisible() &&
+                              surface.model().capture() && surface.model().capture()->kind == stack::CaptureKind::Text,
+                          "a current menu action ends its own retention and opens the exact name editor");
+                    surface.cancelInteractions();
+                    check(!first->rename.isVisible() && !surface.model().capture() && first->beginRename(),
+                          "owner cancellation resets local text state and permits a fresh name capture");
+                    first->rename.onCancel();
+                    check(!surface.model().capture() && first->beginInteraction(DevicePanelView::Interaction::Menu),
+                          "cancelling that name editor permits another clean menu capture");
+                    surface.search.setText("nothing-matches", false);
+                    surface.search.onTextChange();
+                    actual.frame();
+                    check(surface.model().capture().has_value() && surface.model().shownIndex(2).has_value(),
+                          "filtering cannot discard the row of an open menu");
+                    first->endInteraction(DevicePanelView::Interaction::Menu);
+                    actual.frame();
+                    check(!surface.model().capture() && !surface.model().shownIndex(2),
+                          "dismissing the menu releases retention and the filter applies");
+                    surface.search.clear();
+                    surface.search.onTextChange();
+                    actual.frame();
+                }
+                first = findPanel(30);
+                if (first && !first->controls.empty()) {
+                    first->controls[0]->slider.onDragStart();
+                    first->controls[0]->slider.setValue(.6, juce::sendNotificationSync);
+                    check(actual.setMixView(false, false), "close Mix View during a drag");
+                    document->tick(40); actual.frame();
+                    check(!surface.model().capture() && begins == 2 && ends == 2,
+                          "closing commits/releases the held gesture exactly once");
+                    actual.setMixView(true, false); actual.frame();
+                    first = findPanel(30);
+                    check(first && first->targetValid(), "reopen presents a current target");
+                    if (first && knobs && !first->controls.empty()) {
+                        auto &held = first->controls[0]->slider;
+                        held.onDragStart();
+                        held.setValue(.65, juce::sendNotificationSync);
+                        knobs->refuse = true;
+                        held.setValue(.7, juce::sendNotificationSync);
+                        check(!surface.model().capture() && begins == 3 && ends == 3 &&
+                                  std::abs(knobs->getParam("cutoff").normalized - .65) < 1e-9,
+                              "a rejected value releases capture once and keeps the last accepted parameter value");
+                        knobs->refuse = false;
+                        held.onDragEnd();
+                        check(ends == 3, "late mouse-up after rejection cannot end a second gesture");
+                        document->tick(45); actual.frame();
+                        first = findPanel(30);
+                    }
+                    if (first && !first->controls.empty()) {
+                        auto &held = first->controls[0]->slider;
+                        const int beganBefore = begins, endedBefore = ends;
+                        held.onDragStart();
+                        held.setValue(.66, juce::sendNotificationSync);
+                        held.onDragStart(); // reset/new control begins before the old release arrives
+                        held.setValue(.68, juce::sendNotificationSync);
+                        held.onDragEnd();
+                        check(begins == beganBefore + 2 && ends == endedBefore + 2 && !surface.model().capture(),
+                              "a second Begin ends the exact previous gesture before installing its new owner");
+                        held.onDragEnd();
+                        check(ends == endedBefore + 2, "a late release after the superseded drag is ignored");
+                        document->tick(46); actual.frame();
+                        first = findPanel(30);
+                    }
+                    if (first) {
+                        // Keep the old tile alive while delete/undo changes its runtime between frames.
+                        check(document->deviceAction("device.remove", {{"id", 30}}),
+                              "remove the actual device between surface frames");
+                        check(!first->targetValid(), "an old tile rejects the removed runtime before the next frame");
+                        check(actual.command(AppCommands::Undo), "undo device removal");
+                        document->tick(50);
+                        check(!first->targetValid(), "undo with the same row id cannot revive a stale runtime handle");
+                        actual.frame();
+                        check(findPanel(30) && surface.model().chainRef(2, 30) != stable,
+                              "the next frame creates a fresh tile generation for the restored device");
+                    }
+                }
+            }
+            actual.mixViewPanel.stack.cancelInteractions();
+            actual.afterEdit = nullptr;
+            fake.removeChildComponent(&actual);
+            fake.removeFromDesktop();
+            document->release();
+        }
+    }
+    {
+        // Publication admission may reject Values, but an End still has to reach the
+        // document's exact-old-owner cancellation path after a runtime/stamp change.
+        DeviceChainStrip gateway(root);
+        auto publication = std::make_shared<ParameterPublication>();
+        DevicePanelData expected;
+        expected.id = 700;
+        expected.instance = 71;
+        expected.available = true;
+        publication->push_back(expected);
+        gateway.publication = [&] { return publication; };
+        int started = 0, ended = 0, values = 0;
+        gateway.guardedGesture = [&](std::int64_t id, const std::string &parameter, engine::ParamEventKind kind,
+                                      double, const engine::DeviceRuntimeToken &, std::uint64_t stamp) {
+            check(id == 700 && parameter == "cutoff" && stamp == 71,
+                  "the gesture gateway forwards the original target, parameter and stamp");
+            if (kind == engine::ParamEventKind::Begin) { ++started; return true; }
+            if (kind == engine::ParamEventKind::Value) ++values;
+            if (kind == engine::ParamEventKind::End) ++ended;
+            return false; // a real document retires the old owner without setting the new runtime
+        };
+        check(gateway.editExpected(expected, "cutoff", engine::ParamEventKind::Begin, .5) && started == 1,
+              "an admitted Begin reaches the guarded authority");
+        publication = std::make_shared<ParameterPublication>(*publication);
+        publication->front().instance = 72;
+        check(!gateway.editExpected(expected, "cutoff", engine::ParamEventKind::Value, .9) && values == 0,
+              "a changed publication refuses stale Values before any SDK gesture");
+        check(!gateway.editExpected(expected, "cutoff", engine::ParamEventKind::End, .5) && ended == 1,
+              "one stale End reaches exact-owner cleanup despite the changed publication");
+        expected.name = "Retained knobs";
+        adi::panel::Record record;
+        record.id = "cutoff";
+        record.name = "Cutoff";
+        record.playing = .5;
+        expected.records.push_back(record);
+        expected.resolved.entries.push_back({"cutoff", false});
+        DevicePanelView retained(gateway, expected);
+        bool valid = true;
+        int panelBegins = 0, panelEnds = 0;
+        retained.targetValid = [&] { return valid; };
+        retained.parameterGesture = [&](const std::string &, engine::ParamEventKind kind, double) {
+            if (kind == engine::ParamEventKind::Begin) ++panelBegins;
+            if (kind == engine::ParamEventKind::End) ++panelEnds;
+            return true;
+        };
+        check(retained.controls.size() == 1, "a retained panel for the first gesture gateway");
+        if (!retained.controls.empty()) {
+            auto &held = retained.controls.front()->slider;
+            held.onDragStart();
+            valid = false;
+            held.onDragEnd();
+            check(panelBegins == 1 && panelEnds == 1,
+                  "panel End still reaches its original owner after target validation turns stale");
+        }
+    }
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
-    if (folder.isNotEmpty()) {
+    if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
         root.mark(DirtySet::All);
         root.frame();
@@ -5725,6 +6055,13 @@ int main(int argc, char **argv) {
     engine::Transport driver;
     settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
     AppCommands commands(settings);
+    if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
+        // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
+        // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
+        mixViewShell(commands, temp.path(), true);
+        std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     ViewStateStore persistence(*store);
     SessionState session(*store);
     AdiRootComponent a(view, submitter, mailbox, commands, persistence, session, "main"),
@@ -7840,22 +8177,21 @@ int main(int argc, char **argv) {
         audit = false;
         check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
         // Live's Mixer View (manual 6.1 p. 162, 18.1; §41.1): vertical strips, left to right.
-        // ADI's one channel window (ADR-0204 d1), the Mix View's STACK (ADR-0209 d11): every
-        // channel's ADI-Q, sidechain slot and ADI-L in one view.
+        // STACK keeps every channel's actual chain in model order, while realizing only the
+        // viewport plus retained interactions. The withdrawn reserved-slot runtime is not used.
         {
+            const auto selectionBeforeStack = integrated.arrangement.geometry.selection;
             StackTab eqView(integrated);
             eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
             const auto all = laneOrder(integrated);
-            bool ordered = !all.empty() && eqView.rows().size() == all.size();
+            bool ordered = !all.empty() && eqView.model().shownCount() == all.size();
             for (std::size_t i = 0; ordered && i < all.size(); ++i)
-                ordered = eqView.rows()[i]->track() == all[i];
+                ordered = eqView.model().shownTrack(i) == all[i];
             check(ordered, "STACK lists every channel, in the arrangement's order");
-            bool modes = !eqView.rows().empty();
-            for (const auto &eqRow : eqView.rows())
-                modes = modes && std::string(eqRow->mode()) == (eqRow->track() == 1 ? "Full" : "Light");
-            check(modes, "ADI-L is full on Main's row and light on every other channel's");
+            check(eqView.model().moduleKindCount() == 0 && !eqView.rows().empty() && eqView.rows().size() < all.size(),
+                  "actual chains use no reserved slot columns and realize a bounded viewport");
             allocations = 0;
             audit = true;
             eqView.frame(eqReader);
@@ -7863,10 +8199,16 @@ int main(int argc, char **argv) {
             check(allocations == 0, "a frame that changes no channel builds nothing");
             if (eqView.rows().size() >= 2) {
                 auto &second = *eqView.rows()[1];
-                second.mouseDown(pressAt(second, second.eqArea().getCentre().toFloat()));
-                check(eqView.focused() == second.track() && !integrated.error().empty() &&
-                          !integrated.mixProvider().slots(*integrated.reader().findTrack(second.track())).eq,
-                      "a click on a slot focuses its channel, says what it waits for, and the slot stays off");
+                const auto shownModelTrack = *eqView.model().shownIndex(second.track());
+                const auto geo = eqView.model().row(shownModelTrack);
+                const auto chip = eqView.model().chip(shownModelTrack).chip;
+                const auto at = juce::Point<float>(static_cast<float>(chip.x + chip.w / 2),
+                                                   static_cast<float>(chip.y - geo.top + chip.h / 2));
+                second.mouseDown(pressAt(second, at));
+                eqView.mouseUp(pressAt(second, at));
+                check(eqView.focused() == second.track() && arrangement.geometry.selection.track == second.track() &&
+                          eqView.model().moduleKindCount() == 0,
+                      "a model chip selects its channel without activating any reserved processor");
             }
             MixerStrip *strip = nullptr;
             for (const auto &s : mixer.strips())
@@ -7885,6 +8227,9 @@ int main(int argc, char **argv) {
                 integrated.arrangement.geometry.selection.track = selectedBefore;
                 integrated.publishSelection();
             }
+            // Keep this independent selection exercise out of the later Mixer View fixture.
+            integrated.arrangement.geometry.selection = selectionBeforeStack;
+            integrated.publishSelection();
         }
         auto &mixerView = integrated.mixerView;
         mixerView.meter = mixer.meter;

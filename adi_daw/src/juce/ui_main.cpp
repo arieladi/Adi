@@ -261,12 +261,24 @@ class AdiApplication final : public juce::JUCEApplication,
         root_ = root.get();
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
+        root->sharedAnalysis = document_->analysis();
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
+        };
+        root->devices.guardedGesture = [this](std::int64_t id, const std::string &param,
+                                             engine::ParamEventKind kind, double value,
+                                             const engine::DeviceRuntimeToken &expected, std::uint64_t instance) {
+            const bool ok = document_->parameterGestureExpected(id, param, kind, value, expected, instance);
+            if (!ok && root_) root_->say(document_->error());
+            return ok;
+        };
+        root->devices.targetCurrent = [this](std::int64_t id, const engine::DeviceRuntimeToken &expected,
+                                            std::uint64_t instance) {
+            return document_->deviceTargetCurrent(id, expected, instance);
         };
         root->devices.submit = [this](const std::string &op, Payload p) {
             const bool ok = document_->deviceAction(op, std::move(p));
