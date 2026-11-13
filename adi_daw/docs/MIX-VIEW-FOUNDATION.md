@@ -72,6 +72,29 @@ through the common device publication and shown in the header with recovery guid
 not mark the device unloaded, disable controls or end a gesture. Ordinary pending work has no
 failure indication; the empty-status presentation is unchanged.
 
+## Unregistered compressor component
+
+`mix::compressor::Core` supplies Clean compression at the input rate with zero latency. It is
+a framework-free component, not an available native Compressor function. The factory, channel
+catalog and existing processing paths are unchanged. Other styles, quality conversion,
+lookahead, hold, key EQ, audition and wet/dry mixing are not accepted component settings.
+
+Validated settings and complete pointer/context/layout checks precede each contiguous segment.
+Threshold, ratio, knee, range, attack/release and automatic controls retain running envelope
+history. Prepare/reset start a new stream; settings-only restore does not rewind it. Key
+source, link amount and M/S mode are fixed for that prepared stream; unsupported combinations
+are rejected explicitly. A temporarily absent external key means silence on the same route
+(`keyChannels=0`); partial/null planes are rejected. This is not a fabricated key source or
+arbitrary live route migration.
+
+The processing rate is rounded to float. Double I/O uses the same float engine and widens its
+output; it is not a double-precision engine. Finite audio within float range is a caller
+precondition, avoiding a redundant whole-buffer scan. Curve storage is prepared off audio,
+coefficients use a bounded per-instance cache, invariant control work is retained, and a fixed
+fully linked stream evaluates its identical detector envelope once. These are structural work
+properties, not a measured CPU or whole-product parity claim. The component remains unregistered
+until the complete controller/state/style/quality and real key-route paths are ready.
+
 ## Build and verification
 
 JUCE is pinned to 9.0.5 / d60b7a78030661574a615b586d9325ba7a7fa7dd. CMake accepts an
