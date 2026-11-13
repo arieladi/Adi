@@ -527,7 +527,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     default:
         break;
     }
-    if (active_ && active_->mixViewPanel.stack.hasToolbarFocus() && deviceOrTrackEditCommand(id))
+    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
@@ -665,6 +665,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addChildComponent(mixerView);
     addChildComponent(mixerViewResizer);
     addChildComponent(mixViewPanel);
+    mixViewPanel.adoptViewState();
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -2459,7 +2460,7 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    if (mixViewPanel.stack.hasToolbarFocus() && deviceOrTrackEditCommand(id))
+    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();

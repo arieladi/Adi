@@ -58,6 +58,29 @@ Release resumes from the retained pose through the common gesture and undo autho
 
 ## Shared track analysis
 
+### Optional right dock
+
+The Mix View can show a right analyzer dock beside STACK or OVERVIEW while retaining the
+separate analyzer tab. It starts hidden with Main selected. Meters, Phase and Spectrum use
+the existing views and broker; compatible source, tap and channel settings share one domain,
+cursor and spectral transform. Only the meter view reads the existing weak Main loudness
+projection. Selected follows the current channel; a missing selection does not fall back to Main.
+
+Visibility, requested width and source settings are per-window view preferences, not audio
+parameters or project undo entries. Controls wrap within the compact column. Insufficient
+space hides the dock and releases its demand while preserving the requested preference.
+Hidden, frozen, suspended and closed presentations reuse the existing demand-release paths.
+The existing analyzer service and clock remain shared; audio algorithms and analyzer numerical
+kernels are unchanged.
+
+Requested dock/header layout changes wait while a STACK drag, text editor or menu owns its
+capture. The applied STACK rectangle and header geometry stay fixed through the edit; the
+latest request applies after release. Whole-surface hide, tab changes and minimization retain
+their existing immediate cleanup. Failed preference saves restore controls without discarding
+a frozen picture or changing its analysis demand. Analyzer controls own their edit-command
+context, preventing destructive keys from reaching an unrelated channel or device; ordinary
+project Undo retains its existing authority.
+
 The document owns SharedAnalysis. Visible consumers hold scoped leases keyed by track, tap point,
 FFT size, window and channel basis. Compatible consumers read the same immutable result and
 perform one transform. Different configurations share their underlying tap attachment without

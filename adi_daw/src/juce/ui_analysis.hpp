@@ -121,4 +121,30 @@ class AnalysisPane final : public juce::Component {
   private:
     Source source_ = Source::Main;
 };
+
+// Optional compact projection of the same broker: identical source/configuration
+// lets these output modes share one domain, cursor and spectral transform.
+class AnalysisDock final : public juce::Component {
+  public:
+    AnalysisDock();
+    void restoreControls(int source, int point, int channel, int width);
+    void configure(int source, int point, int channel, int width);
+    int source() const noexcept { return sourceBox.getSelectedId() - 1; }
+    int point() const noexcept { return pointBox.getSelectedId() - 1; }
+    int channel() const noexcept { return channelBox.getSelectedId() - 1; }
+    int requestedWidth() const noexcept { return widthBox.getSelectedId() > 0 ? widthBox.getSelectedId() : width_; }
+    void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
+    void suspend(bool) noexcept;
+    void resized() override;
+    void paint(juce::Graphics &) override;
+    std::function<void()> onChange;
+    std::function<void(std::int64_t)> onExpand;
+    SharedSpectrumView meters, phase, spectrum;
+    juce::ComboBox sourceBox, pointBox, channelBox, widthBox;
+    juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
+    static constexpr int kControlsHeight = 75;
+  private:
+    void changed();
+    int width_ = 300;
+};
 } // namespace adi::ui
