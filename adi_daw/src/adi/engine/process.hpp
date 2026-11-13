@@ -59,6 +59,10 @@ struct AudioIo {
     /// a device driver, which is float, leaves it null. Both may be set, and
     /// both are then written.
     double* const* out64 = nullptr;
+    /// GraphHost pins this once per physical callback, across every split process call.
+    /// Direct Graph callers may supply a stable nonzero ID across their own segments;
+    /// zero asks Graph for a unique direct-call ID (separate high-bit namespace).
+    std::uint64_t renderBlock = 0;
 };
 
 /// What an audio device drives. The graph implements it.
