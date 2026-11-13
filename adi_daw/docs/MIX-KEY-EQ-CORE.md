@@ -10,6 +10,7 @@ frequency, gain, Q, shape and slope. It applies the explicit float boundaries,
 first-section Q floors, section-specific extrema/prominence, anchor selection
 and response-matching policy before using the common precise DFI stages. The
 ordinary Bell, shelves, cuts, Notch, Band Pass and Tilt paths are supported.
+Low Cut is high-pass; High Cut is low-pass.
 Flat Tilt, All Pass and the separate brickwall-cut path are explicitly refused.
 Non-cut shapes retain their bounded slope-clamping law.
 
@@ -27,12 +28,14 @@ Reset clears recursive histories; no serialized-state restore or running
 enable/topology transition contract is implied. Other layouts, quality conversion,
 moving controls and compressor gain remain separate implementation gates.
 
-The caller owns mutable planar key buffers separately from programme audio and
+The caller supplies finite float audio, owns mutable planar key buffers separately from programme audio and
 serializes lifecycle calls. In-place M/S conversion and one precise span call per
 section/channel/segment avoid extra always-allocated scratch or per-sample
 external dispatch. Coefficients are built only in preparation; processing has no
 allocation, locks, atomics or worker. Paired-state/SIMD optimization and full graph
 CPU comparisons require later numerical and timing gates.
+An all-bands-off prepared bank still performs its defined M/S roundtrip; it is
+distinct from a facade's true disabled bypass.
 
 Generated tests cover configuration boundaries, bounded section counts, strong
 failed-prepare behavior, invalid buffer calls, split blocks, reset/reprepare,

@@ -99,6 +99,19 @@ void policy() {
     band.slope = 1.5f;
     check(k::build(48000, band, hi) == k::Status::Ok && hi.count == 2,
           "fractional public slope boundary follows float nearest selection");
+    band = {};
+    band.shape = k::Shape::LowCut;
+    const auto highpass = k::build(48000, band, lo);
+    band.shape = k::Shape::HighCut;
+    const auto lowpass = k::build(48000, band, hi);
+    const auto dc = [](const auto &c) { return std::abs((c.b0 + c.b1 + c.b2) / (1 + c.a1 + c.a2)); };
+    const auto nyquist = [](const auto &c) { return std::abs((c.b0 - c.b1 + c.b2) / (1 - c.a1 + c.a2)); };
+    check(highpass == k::Status::Ok && lo.count == 1 && dc(lo.sections[0]) < 1e-9 &&
+              nyquist(lo.sections[0]) > .99,
+          "named Low Cut is high-pass: rejects DC and passes high frequencies");
+    check(lowpass == k::Status::Ok && hi.count == 1 && std::abs(dc(hi.sections[0]) - 1) < 1e-9 &&
+              nyquist(hi.sections[0]) < .01,
+          "named High Cut is low-pass: passes DC and rejects high frequencies");
     const auto saved = co;
     for (int kind = 0; kind < 5; ++kind) {
         band = {};
