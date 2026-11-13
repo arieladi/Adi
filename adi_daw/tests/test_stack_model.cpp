@@ -551,7 +551,7 @@ void widths() {
     widthsAt(44, w);
     check(w.size() == 3 && !w[1].first && w[1].second == 160 && w[2].first, "T7: at 44 the analyser is 160, ADI Still a pill");
     m.setBaseHeight(68, 0);
-    m.focusRow(m.rowRef(1), 0);
+    m.focusItem(m.chainRef(1, 11), 0);
     m.advance(500);
     m.forEachChainItem(0, [&](const ItemGeo &g) {
         if (g.index == 0)
@@ -719,6 +719,214 @@ void cells() {
     check(cellAt(3, 0).place == ModulePlace::Card, "B3: card cells say so");
 }
 
+void itemFocusGeometry() {
+    section("Item focus: stable target, independent geometry and edit retention");
+    Fixture f; f.kinds.clear();
+    for (TrackId id = 1; id <= 4; ++id) f.add(id, "Tool channel");
+    f.item(1, 11, ItemClass::Eq, "EQ");
+    f.item(1, 12, ItemClass::AdiL, "Limiter");
+    f.item(1, 13, ItemClass::Plugin, "Ordinary");
+    const auto item = [](StackModel &m, DeviceId id) {
+        ItemGeo result;
+        if (const auto row = m.shownIndex(1))
+            m.forEachChainItem(*row, [&](const ItemGeo &g) { if (g.ref.device == id) result = g; });
+        return result;
+    };
+    auto m = model(f, 1500, 700);
+    const auto a = item(m, 11), b = item(m, 12);
+    const double px = a.x + 120, py = a.top + 20;
+    const auto hover = m.pointerMove(px, py, false, 0);
+    m.advance(59);
+    check(!m.emphasizedItem().row.valid() && !hover.select, "item dwell neither selects nor promotes early");
+    m.advance(60); m.advance(220);
+    const auto enlarged = item(m, 11), compact = item(m, 12);
+    check(m.emphasizedItem() == m.chainRef(1, 11) && enlarged.height == 190 && enlarged.width == 495 &&
+          compact.height == 100 && compact.width == b.width && item(m, 13).height == 100,
+          "only inspected tool grows; siblings retain compact height, width and tier");
+    check(m.hitTest(compact.x + 20, compact.top + 130).part == HitPart::RowSpace &&
+          m.hitTest(enlarged.x + 20, enlarged.top + 130).item == enlarged.ref,
+          "item hit geometry includes independent vertical bounds, leaving real space below compact siblings");
+    for (TimeMs t = 221; t < 500; t += 7) { m.pointerMove(px, py, false, t); m.advance(t); }
+    check(m.emphasizedItem() == enlarged.ref, "same-coordinate synthetic moves and own geometry never transfer item ownership");
+    m.focusItem(m.chainRef(1, 12), 510); m.advance(700);
+    m.pointerMove(px, py, false, 710);
+    check(m.emphasizedItem() == m.chainRef(1, 12), "keyboard target wins over an unmoved pointer");
+    m.pointerMove(px + 1, py, false, 720); m.advance(779);
+    check(m.emphasizedItem() == m.chainRef(1, 12), "real handback to old hover candidate restarts a full item dwell");
+    m.advance(780);
+    check(m.emphasizedItem() == m.chainRef(1, 11), "real motion reclaims item emphasis at its new dwell boundary");
+    m.pointerMove(-5, -5, false, 790); m.pointerMove(px, py, false, 800);
+    m.focusItem(m.chainRef(1, 12), 810); m.pointerMove(px + 1, py, false, 820); m.advance(850);
+    const auto held = item(m, 12);
+    const auto dragCapture = m.beginCapture(CaptureKind::Drag, m.chainRef(1, 12), 850);
+    m.advance(1800); m.setViewport(600, 400, 1801);
+    check(dragCapture.refusal == CaptureRefusal::None && item(m, 12) == held,
+          "drag freezes complete intermediate item rect/tier through time and viewport resize");
+    std::swap(f.chains[0][0], f.chains[0][2]); ++f.generation; m.setRows(f.input(), 1802);
+    m.setSearch("nothing", 1803);
+    check(item(m, 12) == held && m.capture().has_value(), "reorder and filtering retain captured item rectangle and identity");
+    m.endCapture(dragCapture.ref, 1810); m.setSearch("", 1820); m.advance(2100);
+    TimeMs editTime = 2200;
+    for (const auto kind : {CaptureKind::Text, CaptureKind::Menu}) {
+        m.focusItem(m.chainRef(1, 12), editTime); m.advance(editTime + 60);
+        const auto before = item(m, 12);
+        const auto capture = m.beginCapture(kind, m.chainRef(1, 12), editTime + 60);
+        m.advance(editTime + 300);
+        check(capture.refusal == CaptureRefusal::None && item(m, 12) == before,
+              "text and asynchronous menu captures freeze the same full geometry as a drag");
+        m.endCapture(capture.ref, editTime + 310);
+        editTime += 400;
+    }
+    m.setViewport(1500, 700, 3100); m.focusItem(m.chainRef(1, 12), 3110); m.advance(3300);
+    f.chains[0][1].identity += 123; ++f.generation; m.setRows(f.input(), 3310);
+    check(m.emphasizedItem() != held.ref, "same-ID replacement invalidates item emphasis without a row membership change");
+    // Exercise frame schedules against exact common event times, including a mid-animation retarget.
+    struct ItemTrace {
+        ItemRef target;
+        std::array<ItemGeo, 3> items;
+        LaneGeo lane;
+        std::optional<CaptureRef> capture;
+        bool operator==(const ItemTrace &) const = default;
+    };
+    const auto trace = [&](int rate) {
+        auto x = model(f, 1500, 700);
+        std::vector<ItemTrace> samples;
+        std::int64_t frame = 1;
+        const auto to = [&](TimeMs until) {
+            if (rate > 0) while (frame * 1000 / rate < until) x.advance(frame++ * 1000 / rate);
+            x.advance(until);
+            ItemTrace state{x.emphasizedItem(), {}, x.lane(*x.shownIndex(1)), x.capture()};
+            for (std::size_t j = 0; j < state.items.size(); ++j)
+                state.items[j] = item(x, static_cast<DeviceId>(11 + j));
+            samples.push_back(state);
+        };
+        const auto first = item(x, 11);
+        x.pointerMove(first.x + 30, first.top + 10, false, 0);
+        to(61); to(110); x.focusItem(x.chainRef(1, 12), 110);
+        to(130); to(173); x.focusItem(x.chainRef(1, 13), 173);
+        to(200); const auto capture = x.beginCapture(CaptureKind::Text, x.chainRef(1, 13), 200);
+        to(250); x.endCapture(capture.ref, 270); to(310);
+        to(410); x.pointerMove(first.x + 31, first.top + 10, false, 410);
+        to(440); to(500); to(900);
+        return samples;
+    };
+    const auto expected = trace(0);
+    check(trace(30) == expected && trace(60) == expected && trace(144) == expected,
+          "30/60/144 Hz and event-only schedules give identical full item rects, tiers, clipping and lane anchors");
+    for (const auto kind : {CaptureKind::Drag, CaptureKind::Text, CaptureKind::Menu}) {
+        auto posed = model(f, 1500, 700);
+        const auto target = posed.chainRef(1, 12);
+        posed.focusItem(target, 0); posed.advance(80);
+        const auto rowPose = posed.row(*posed.shownIndex(1));
+        const auto lanePose = posed.lane(*posed.shownIndex(1));
+        std::vector<ItemGeo> items;
+        posed.forEachChainItem(*posed.shownIndex(1), [&](const auto &g) { items.push_back(g); });
+        const auto before = item(posed, 12);
+        posed.focusItem(target, 87); // child focus advanced unseen geometry seven ms after the frame
+        const auto captured = posed.beginCapturePresented(kind, target, rowPose, lanePose, items, 87);
+        posed.advance(160);
+        check(captured.refusal == CaptureRefusal::None && item(posed, 12) == before &&
+              posed.row(*posed.shownIndex(1)).height == rowPose.height,
+              "presented-pose capture retains the visible t rectangle rather than the unseen t+7 pose");
+        posed.endCapture(captured.ref, 170);
+        const auto released = item(posed, 12);
+        check(released.x == before.x && released.top == before.top && released.width == before.width &&
+              released.height == before.height, "first release frame resumes from the displayed pose without an item jump");
+        posed.advance(400);
+        check(item(posed, 12).height == 190, "release completes the existing easing from the retained displayed pose");
+    }
+    {
+        auto posed = model(f, 1500, 700);
+        posed.focusItem(posed.chainRef(1, 12), 0); posed.advance(220);
+        const auto rowPose = posed.row(*posed.shownIndex(1));
+        const auto lanePose = posed.lane(*posed.shownIndex(1));
+        std::vector<ItemGeo> items;
+        posed.forEachChainItem(*posed.shownIndex(1), [&](const auto &g) { items.push_back(g); });
+        const auto shownSibling = item(posed, 12);
+        posed.focusItem(posed.chainRef(1, 13), 230); posed.advance(450); // old sibling entry is now retired
+        const auto target = posed.chainRef(1, 11);
+        posed.focusItem(target, 460);
+        const auto cap = posed.beginCapturePresented(CaptureKind::Text, target, rowPose, lanePose, items, 470);
+        posed.endCapture(cap.ref, 480);
+        check(cap.refusal == CaptureRefusal::None && item(posed, 12).height == shownSibling.height &&
+              item(posed, 12).x == shownSibling.x,
+              "release reconstructs a displayed sibling weight even if unpresented retargeting already retired its animation slot");
+        posed.advance(700);
+        check(item(posed, 12).height == 100 && item(posed, 11).height == 190,
+              "reconstructed sibling shrinks smoothly while the current edit target grows");
+    }
+    Fixture longChain; longChain.kinds.clear();
+    longChain.add(1, "Long chain"); longChain.add(2, "Other"); longChain.add(3, "Other");
+    for (DeviceId id = 11; id < 17; ++id) longChain.item(1, id, ItemClass::Eq, "EQ");
+    {
+        auto posed = model(longChain, 800, 700);
+        posed.scrollLane(posed.rowRef(1), 5, 0); posed.advance(60);
+        const auto rowPose = posed.row(*posed.shownIndex(1));
+        const auto lanePose = posed.lane(*posed.shownIndex(1));
+        std::vector<ItemGeo> items;
+        posed.forEachChainItem(*posed.shownIndex(1), [&](const auto &g) { items.push_back(g); });
+        const auto before = item(posed, 16);
+        posed.focusItem(posed.chainRef(1, 16), 67);
+        const auto cap = posed.beginCapturePresented(CaptureKind::Menu, posed.chainRef(1, 16), rowPose, lanePose, items, 67);
+        posed.endCapture(cap.ref, 80);
+        check(cap.refusal == CaptureRefusal::None && item(posed, 16).x == before.x &&
+              posed.lane(*posed.shownIndex(1)).offset == lanePose.offset,
+              "release retains a displayed end-of-lane pose with legitimate blank slack instead of clamping it into a jump");
+    }
+    auto anchored = model(longChain, 800, 700);
+    auto first = item(anchored, 11);
+    anchored.pointerMove(first.x + 250, first.top + 20, false, 0); anchored.advance(220);
+    const auto anchoredLane = anchored.lane(*anchored.shownIndex(1));
+    check(anchoredLane.first == 0 && anchoredLane.left && anchoredLane.offset > 0,
+          "interior pointer anchoring can expose a left arrow while the logical first item is zero");
+    anchored.pointerDown(anchoredLane.leftChevron.x + 4, anchoredLane.leftChevron.y + 4, Button::Left, {}, 1, 230);
+    anchored.pointerUp(anchoredLane.leftChevron.x + 4, anchoredLane.leftChevron.y + 4, 231);
+    anchored.advance(351);
+    check(anchored.lane(*anchored.shownIndex(1)).offset == 0,
+          "visible left arrow clears pointer anchoring and reaches the first item even from logical zero");
+    first = item(anchored, 11);
+    anchored.pointerMove(first.x + 251, first.top + 20, false, 360); anchored.advance(600);
+    const auto beforeRight = anchored.lane(*anchored.shownIndex(1)).offset;
+    anchored.scrollLane(anchored.rowRef(1), 1, 610); anchored.advance(670);
+    check(anchored.lane(*anchored.shownIndex(1)).offset >= beforeRight,
+          "explicit right navigation starts at the actual pixel pose and never initially jumps backward");
+    anchored.advance(800); anchored.focusItem(anchored.chainRef(1, 16), 810); anchored.advance(1100);
+    const auto last = item(anchored, 16);
+    check(last.ref == anchored.chainRef(1, 16) && !anchored.lane(*anchored.shownIndex(1)).right,
+          "rightmost focused device is reachable and has no inoperative next-device arrow");
+    anchored.setViewport(500, 700, 1110); anchored.advance(1300);
+    check(item(anchored, 16).clipped && item(anchored, 16).width > anchored.lane(*anchored.shownIndex(1)).width,
+          "an oversized inspected tool retains its actual size with honest viewport clipping");
+    anchored.setViewport(1700, 700, 1310); anchored.setAutoZoom(false, 1320); anchored.advance(1500);
+    const auto viewState = anchored.viewState(); anchored.applyViewState(viewState, 1510); anchored.advance(1800);
+    check(anchored.emphasizedItem() == anchored.chainRef(1, 16),
+          "AutoZoom-off view restore derives emphasis from current focus rather than serializing transient item state");
+    const auto countBefore = allocations.load();
+    audit = true;
+    for (TimeMs t = 2000; t < 2300; t += 10) {
+        anchored.focusItem(anchored.chainRef(1, (t / 10) % 6 + 11), t);
+        anchored.advance(t + 5);
+        anchored.forEachChainItem(*anchored.shownIndex(1), [](const auto &) {});
+    }
+    audit = false;
+    check(allocations.load() == countBefore, "item retargeting, easing and geometry queries allocate nothing after setRows");
+    std::array<ItemGeo, 8> poseItems{};
+    std::size_t poseCount = 0;
+    const auto poseRow = anchored.row(*anchored.shownIndex(1));
+    const auto poseLane = anchored.lane(*anchored.shownIndex(1));
+    anchored.forEachChainItem(*anchored.shownIndex(1), [&](const auto &g) {
+        if (poseCount < poseItems.size()) poseItems[poseCount++] = g;
+    });
+    const auto captureAllocations = allocations.load();
+    audit = true;
+    const auto retained = anchored.beginCapturePresented(CaptureKind::Menu, poseItems[0].ref, poseRow, poseLane,
+        std::span<const ItemGeo>(poseItems.data(), poseCount), 2400);
+    anchored.endCapture(retained.ref, 2410);
+    audit = false;
+    check(poseCount > 0 && retained.refusal == CaptureRefusal::None && allocations.load() == captureAllocations,
+          "presented-pose admission, bounded weight reconstruction and release allocate nothing after setRows");
+}
+
 void laneAndChevrons() {
     section("T11 the lane and its chevrons");
     Fixture f = laneFixture();
@@ -749,7 +957,7 @@ void laneAndChevrons() {
     check(l.right && l.rightChevron.x == 668 && l.left && l.leftChevron == Rect{138, top + 38, 20, 24},
           "T11: both chevrons once scrolled");
     m.scrollLane(m.rowRef(1), -1, t + 200);
-    m.focusRow(m.rowRef(1), t + 400);
+    m.focusItem(m.chainRef(1, 101), t + 400);
     m.advance(t + 1000);
     l = m.lane(0);
     collect();
@@ -3961,6 +4169,7 @@ int main() {
     widthBudget();
     positions();
     cells();
+    itemFocusGeometry();
     laneAndChevrons();
     rowsAndScope();
     dwell();

@@ -98,6 +98,7 @@ class StackTab final : public juce::Component {
     void syncScroll();
     int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
+    stack::Hit presentedHit(double x, double y) const;
     void beginRename(stack::RowRef);
     void endRename(bool commit);
     bool beginInteraction(const stack::ItemRef &, stack::CaptureKind);
