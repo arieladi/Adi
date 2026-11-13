@@ -18562,3 +18562,42 @@ elements from mix view in the device area".
 | ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
 | ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
 | ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
+
+## ADR-0239 — The control stack's two open questions answered: the token both ways, the user's choice; the standalone adi-mcp ships first; and every deferral is a tracked row until it is done — `DECIDED` (2026-11-13) — **DIRECTOR'S RULING; ANSWERS Q-O AND ADR-0233 d8; AMENDS ADR-0039 d4**
+
+**His answers, in his words (13 November):**
+- Q-O: "we want both - present the 2 options to the users either Shown in ADI, and you paste it
+  into each AI tool. or install in a folder readable only by your Windows account."
+- Consent before AGT-03: "ship the standalone version first. but dont count on me to remember to move
+  things you keep for later, document all and make sure we will do everything in the end result
+  after all the tests for the things that comes first of cures."
+- Merging: "i never merge you merge tell me what the options and your recommendation."
+
+### Decisions
+
+1. **The session token, both ways; the user chooses** (Q-O, CTL-05). When ADI's own listener is
+   switched on, ADI offers:
+   - **shown in ADI**, to copy into each AI tool (ADR-0039 d4's model), or
+   - **a discovery file in the user's profile, readable only by that Windows account** (owner-only
+     ACL on Windows, mode 0600 in a 0700 folder on macOS and Linux), which AI tools find on their
+     own; it exists only while the listener is on and is removed when it stops.
+   The token is never written into the `.adi`. ADR-0039 d4 is amended to allow the second option.
+2. **The standalone `adi-mcp` ships first** (ADR-0233 d8 confirmed). The user's MCP host
+   configuration, which names the project, is the opt-in. `--connect`, ADI's listener and the
+   in-app host wait for AGT-03's consent.
+3. **Nothing deferred is left to memory.** Every piece of work a ruling, review or slice postpones is
+   a row in `docs/DEFERRED.md`, added in the same change, closed only by the PR that does it.
+   No release, and no milestone marked complete, while one of its rows is open, unless he re-rules
+   that row by name. Win keeps the register and re-reads it at every gate.
+4. **Win merges; he decides.** Win lands PRs. Where a merge needs his decision, win brings him the
+   options and a recommendation, never a request to merge.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0039 d4 | a token may also live in an owner-only discovery file, the user's choice (d1) |
+| ADR-0232 d8, ADR-0233 d7 | Q-O answered (d1) |
+| ADR-0233 d8 | confirmed: standalone first (d2) |
+| PLAN CTL-05 | both options, user's choice |
+| `docs/DEFERRED.md` | new: the register (d3) |

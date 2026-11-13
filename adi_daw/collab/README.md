@@ -276,6 +276,7 @@ subject, say so in your log instead of writing it twice.
 | 0235 | win | `win/adr-0235-0236` | ADiJ stays light: no Mix View and no unified built-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid; CPU is a requirement (director) | used |
 | 0236 | win | `win/adr-0235-0236` | the Mix View seat: his plug-in list is in, ADR-0212's gate opens; a dedicated local Codex seat builds the Mix View across the lanes, starting with a decision guide; his device-area tab model is the baseline; ADI-Clip is the clipper, ADI-C the compressor (director) | used |
 | 0237 | win | `win/adr-0235-0236` | the Mix View's first answers: one of each function per channel, added and removed like Live devices (undo), nothing on by default; EQ carries the unmasking, the limiter the clipper; analysers boxed in the Info box and in a Mix View tab, no CPU when unseen; compact rows (director) | used |
+| 0239 | win | `control/mcp-slice` | the control stack's open questions answered: the token both ways, the user's choice; standalone adi-mcp first; every deferral a row in docs/DEFERRED.md until done, the release gate; win merges, he decides (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

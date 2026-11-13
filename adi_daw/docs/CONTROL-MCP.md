@@ -8,10 +8,10 @@ on the branch `control/mcp-slice`:
 - the telemetry board;
 - a headless `adi-mcp` over stdio (CTL-08's `--project` backend).
 
-The loopback WebSocket (CTL-04), `--connect` and the app host (CTL-09) come next. Two questions
-stay the director's:
-- Q-O, where the session token lives;
-- whether headless `adi-mcp` may run before AGT-03's consent ledger exists (§8).
+The loopback WebSocket (CTL-04), `--connect` and the app host (CTL-09) come next. The director
+answered both open questions (ADR-0239): the session token both ways, the user's choice (shown in
+ADI to paste, or an owner-only file in the user's profile); and headless `adi-mcp` ships first,
+before AGT-03's consent ledger. What waits is tracked in `docs/DEFERRED.md` (DF-C1 to DF-C4).
 
 Sources: ADR-0039, ADR-0148, ADR-0168, ADR-0222, ADR-0232 and ADR-0233; `docs/AI-AGENT.md`;
 `docs/PLAN.md` (cards CTL-01 to CTL-09 and AGT-01 to AGT-08). Protocol facts are from the
@@ -528,8 +528,9 @@ the row truthfully, and the projection shows it as a sidechain row.
     (`control::secureEquals` is built and tested now);
   - checked for `Origin` before the 101.
 
-  **Where the session token lives is the director's question (Q-O)**. This slice writes no token
-  and no discovery file.
+  **Where the session token lives (Q-O), answered by ADR-0239:** both ways, the user's choice —
+  shown in ADI to paste into each AI tool, or an owner-only discovery file in the user's profile
+  that exists only while the listener is on. This slice writes neither (DF-C1).
 
 ---
 
@@ -565,7 +566,7 @@ Elsewhere:
 - CTL-04: the WebSocket, with cpp-httplib v0.64.0 pinned by win;
 - `adi-mcp --connect`, through the discovery record;
 - CTL-09: the app host, the window's PR;
-- pairing, after Q-O.
+- pairing: both token options of ADR-0239 d1 (DF-C1), after AGT-03's consent (DF-C2).
 
 **Later:**
 - CTL-06 and CTL-07 (P2): parameter subscriptions and streamed arrays. The binary meter and
