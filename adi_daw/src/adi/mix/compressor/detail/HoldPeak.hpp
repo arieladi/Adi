@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
-#include <vector>
 
 namespace adi::mix::compressor::detail {
 
@@ -18,8 +19,9 @@ class HoldPeak final {
         const auto n = static_cast<std::size_t>(window);
         if (n == std::numeric_limits<std::size_t>::max())
             throw std::length_error("Hold window too large");
-        std::vector<Entry> replacement(n + 1);
+        auto replacement = std::make_unique<Entry[]>(n + 1);
         entries_.swap(replacement);
+        capacity_ = n + 1;
         window_ = window;
         reset();
     }
@@ -28,9 +30,9 @@ class HoldPeak final {
         position_ = 0;
     }
     float push(float value) noexcept {
-        if (entries_.empty())
+        if (!entries_)
             return value;
-        const auto capacity = entries_.size();
+        const auto capacity = capacity_;
         while (size_ != 0 && position_ - entries_[head_].position > window_) {
             if (++head_ == capacity)
                 head_ = 0;
@@ -58,10 +60,10 @@ class HoldPeak final {
         std::uint64_t position = 0;
         float value = 0;
     };
-    std::vector<Entry> entries_;
+    std::unique_ptr<Entry[]> entries_;
     std::uint64_t position_ = 0;
     std::uint32_t window_ = 0;
-    std::size_t head_ = 0, size_ = 0;
+    std::size_t head_ = 0, size_ = 0, capacity_ = 0;
 };
 
 } // namespace adi::mix::compressor::detail

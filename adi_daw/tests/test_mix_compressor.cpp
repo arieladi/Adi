@@ -15,12 +15,16 @@
 
 namespace {
 bool inAudio = false, failAllocation = false;
+bool countPrepareAllocations = false;
 int allocationsUntilFailure = -1;
 std::size_t allocations = 0, deallocations = 0;
+std::size_t prepareAllocations = 0;
 } // namespace
 void *operator new(std::size_t bytes) {
     if (inAudio)
         ++allocations;
+    if (countPrepareAllocations)
+        ++prepareAllocations;
     if (failAllocation)
         throw std::bad_alloc();
     if (allocationsUntilFailure >= 0) {
@@ -466,6 +470,20 @@ void holdWindow() {
 
 void fixedHold() {
     auto s = compress();
+    c::Core bypassed, active;
+    prepareAllocations = 0;
+    countPrepareAllocations = true;
+    const auto bypassedStatus = bypassed.prepare({48000, 256, 2}, s);
+    countPrepareAllocations = false;
+    check(bypassedStatus == c::Status::Ok && prepareAllocations == 1,
+          "zero Hold prepares only Impl without hidden queue or metadata allocation");
+    s.holdMs = 10;
+    prepareAllocations = 0;
+    countPrepareAllocations = true;
+    const auto activeStatus = active.prepare({48000, 256, 2}, s);
+    countPrepareAllocations = false;
+    check(activeStatus == c::Status::Ok && prepareAllocations == 2,
+          "active Hold prepares exactly Impl and bounded queue storage");
     for (const float invalid :
          {-1.0f, 501.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         s.holdMs = invalid;

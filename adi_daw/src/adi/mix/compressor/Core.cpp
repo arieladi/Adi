@@ -381,8 +381,9 @@ struct Core::Impl {
             const double difference = static_cast<double>(held) - holdEnvelope;
             holdEnvelope += (difference > 0 ? 1.0 : static_cast<double>(holdCoefficient)) * difference;
             return amplitudeFromLog(-static_cast<float>(holdEnvelope) * .115129254758358f);
+        } else {
+            return amplitudeFromLog(-static_cast<float>(y) * .115129254758358f);
         }
-        return amplitudeFromLog(-static_cast<float>(y) * .115129254758358f);
     }
 
     template <class T, bool HoldEnabled>
