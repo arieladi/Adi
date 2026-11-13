@@ -47,7 +47,8 @@ template <class Sample> class AlignedKey final {
         maximumDelay_ = maximumDelay;
         maximumFrames_ = maximumFrames;
         prepared_ = true;
-        position_ = remaining_ = 0;
+        position_ = 0;
+        remaining_ = 0;
         statistics_ = {};
         for (std::int32_t ch = 0; ch < 2; ++ch)
             pointers_[static_cast<std::size_t>(ch)] = scratch_[static_cast<std::size_t>(ch)].data();
@@ -57,7 +58,8 @@ template <class Sample> class AlignedKey final {
         for (auto &channel : history_)
             for (auto &sample : channel)
                 sample = 0;
-        position_ = remaining_ = 0;
+        position_ = 0;
+        remaining_ = 0;
         statistics_ = {};
     }
 
