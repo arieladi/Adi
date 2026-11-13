@@ -18329,3 +18329,34 @@ elements from mix view in the device area".
 | ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
 | ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
 | ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
+
+## ADR-0238 — JUCE moves from 9.0.2 to 9.0.5 — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; SUPERSEDES ADR-0048's PIN; ANSWERS ADI-VIEW D7**
+
+**The ruling, in his words (12 November):** "yes ADI should move from JUCE 9.0.2 to 9.0.5".
+
+**Why it came up.** The Mix View seat's foundation PR (#537) moved the pin inside a feature
+commit. Win's review held that for him: ADR-0024 needs a named reason for a pin change, and the
+JUCE version was one of his open ADI-View questions (D7).
+
+### Decisions
+
+1. **The pin is `juce-framework/JUCE` 9.0.5, commit `d60b7a78030661574a615b586d9325ba7a7fa7dd`**,
+   still under AGPLv3 and still never a hard dependency (ADR-0048 otherwise stands).
+2. **The named reason (ADR-0024):** the Mix View takes the source of his plug-ins (ADR-0212,
+   ADR-0236, ADR-0237). ADI-Clip is built on 9.0.5, ADI-Q and ADI-L on 9.0.4, and 9.0.5 is the
+   newest stable release. One JUCE for the DAW and the code it takes.
+3. **ADI-Q's hash-guarded JUCE peer patches stay ADI-Q's.** They are not applied to the DAW, and
+   whatever the Mix View needs from them is ported as ADI code.
+4. **Where the change lands:** with #537. That PR carries the fetch script, the EXTERNAL-CODE row,
+   the CMake updates and the fake-peer signature that 9.0.5's peer interface needs; its CI passes
+   on every platform. This entry and BUILD-BRIEF §3 record it.
+5. **Shared checkouts:** `tools/fetch_external.sh` moves an existing `third_party/JUCE` to the
+   new tag in place, so every worktree that links a shared `third_party` moves with it.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0048 | the pin: 9.0.2 / `72782788` becomes 9.0.5 / `d60b7a78` |
+| BUILD-BRIEF §3 | JUCE 9.0.5 |
+| ADI-View D7 | answered |
