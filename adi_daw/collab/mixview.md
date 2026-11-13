@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 13 November 2026 — unregistered Clean compressor component supplied
+
+**Item:** draft [#552](https://github.com/arieladi/Adi/pull/552), `76ec1072c2c1478c0de0388a0eb24d070d0ea5e0`, directly on #548. Framework-free base-rate Clean kernel, Settings/ControlMapping, physical-block/contiguous-segment contract and generated tests. No native factory/controller availability or existing audio path changes. Other styles, quality/OS, lookahead, hold, key EQ, audition and wet/dry are absent; prepared source/link/mode is fixed and unsupported Auto Gain+M/S is rejected. Double I/O uses the float engine with double envelopes and widened output. Strong prepare failure, runtime continuation, pointer preflight/aliases and exact segment ownership are explicit.
+
+**Gates/work:** 96 unique generated checks / 335,872 compared scalar samples / zero failures in standalone and full-project Release; callback C++ allocation/free0/0. Two unique strict frontend units and four validators pass; independent review has no blocker in this bounded tier. Curves are owner-prepared, invariant control work retained, coefficients bounded-cached and identical fully linked envelope work reused. Separate fixed numerical evidence is sealed privately with eight source identities; no private observations/fixtures enter public source/tests. Whole-product sound/CPU parity is not claimed, no new timing or live work, no self-merge. Win reviews/merges after this head's CI.
+
+**Continuation:** #548 is all21 CI green/ready, #551 is a separate 252-check draft with CI trailing. The director's next question is broad-edit target scope (explicit group vs selected vs filtered); no answer is inferred. DEV-05/MX-24 route ownership remains a coordination dependency, not a new director design question. Broader compressor styles/quality, DS/G and full analyzer-product features remain later work; Still stays an ordinary plug-in.
+
 ## 13 November 2026 — native EQ serial integration CI green
 
 [#548](https://github.com/arieladi/Adi/pull/548), exact source `7faf25c10cc4595f5ad99899d2e1f6a317b1ab38`, now passes **all 18 core and three UI jobs**, runs `43417010772`/`43417011172`. Marked ready for win, unmerged by this seat. The isolated functional package/source/hashes are unchanged. Live acceptance remains Claude's; no local application launch or new CPU timing. Independent #551 `749fd4b1` is draft with its own CI queued/running; its local 252-check gate does not substitute for that matrix. Unregistered compressor component work continues in its isolated worktree.
