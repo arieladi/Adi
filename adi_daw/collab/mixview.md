@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 14 November 2026 — All Pass supplied; policy CI green
+
+Draft [#564](https://github.com/arieladi/Adi/pull/564), `0600be7c`, on #561 adds a separate prepared All Pass mirrored-root/bilinear path. Debug/Release118 generated checks, three strict units/four validators and callback allocation/free0/0 pass. Prior static predictions remain byte-identical; new selected fixed-output/coefficient gates pass unchanged. Root verifies1,328 fixed records/nine source/archive identities and13 unchanged implementation files. No existing plug-in/compressor/DFI/primitive change, new CPU timing, native execution or live test. Moving controls are a separate next tier. #561 `2ebc3f3b` now passes all18 core+3 UI jobs and is marked ready, unmerged; runs `43517622960`/`43517622961`. #564 exact-head CI trails.
+
+`mixview/spectrum-slope-20261114` in `D:/Adi-wt/mix-analysis-1113` starts from #563 `f0ee200c`, owns optional Flat(default)/+4.5dB/octave Spectrum display preference and cached projection, existing parent/window/Info/floating wiring and matching tests/docs. Raw bins/broker/FFT/comparison/audio are unchanged; Frozen reprojection and narrow responsive/focus/rollback gates precede publication. No new worker/timer, dock selector, per-row LUFS or native analyzer default is inferred. Main-only aggregate loudness stays settled. No overlap with ongoing G Classic core ownership or prior immutable delivery packages. Win reviews/merges; live work stays with Claude.
+
 ## 14 November 2026 — endpoint controls and analyzer freshness supplied; Classic core claimed
 
 **Supplied:** draft [#562](https://github.com/arieladi/Adi/pull/562), `25864088`, extends #560's fixed Wide de-esser to full threshold and zero-range controls, preserving filter/classifier/M/S histories. A distinct last-admitted-target helper models scalar admission without claiming host readback or active automation. Debug/Release216 generated checks/1,409,024 scalar comparisons, callback allocation/free0/0, three strict units and four validators pass. Root independently verifies528 fixed records/12 source/archive identities,92 byte-preserved prior predictions and20 new headless processor-only endpoint cases. The latter execute no editor/window/device/timing path. No live UI or new CPU measurement.
