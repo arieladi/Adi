@@ -25,6 +25,9 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxWindowsPerFrame = 16;
     static constexpr std::size_t kMaxSamplesPerFrame = 262144;
     static constexpr std::size_t kMaxReadsPerFrame = 256;
+    // Immutable spectrogram-bin payload, including buffers retained by frozen
+    // snapshots. This is not a limit on FFT/tap/allocator or client metadata.
+    static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16 };
@@ -43,11 +46,11 @@ class SharedAnalysis final {
     struct Column {
         std::uint64_t serial = 0;
         std::int64_t firstStamp = 0;
-        std::vector<float> binsDbfs;
+        std::shared_ptr<const std::vector<float>> binsDbfs;
     };
     struct Result {
         Request request;
-        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0;
+        std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
         std::int64_t firstStamp = 0, firstSequence = 0;
         double sampleRate = 0, coherentGain = 0;
         std::int32_t hopSize = 0;
@@ -60,14 +63,17 @@ class SharedAnalysis final {
         // Bounded newest columns. Serial and sourceEpoch expose missed or reset history.
         std::vector<Column> columns;
         std::uint64_t gapCount = 0, overrunCount = 0;
+        std::uint64_t historySerial = 0, droppedHistoryColumns = 0;
         std::size_t nonFiniteSamples = 0;
         std::int64_t pendingFrames = 0;
-        bool advancing = false, discontinuity = false, budgetLimited = false;
+        bool advancing = false, discontinuity = false, budgetLimited = false, historyLimited = false;
     };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
         std::uint64_t transforms = 0, publications = 0, frameRequests = 0, workerPasses = 0;
         std::uint64_t cursorReads = 0, analysisWindows = 0;
+        std::size_t spectralPlans = 0, historyBytes = 0, historyPeakBytes = 0;
+        std::uint64_t droppedHistoryColumns = 0;
     };
     class Lease {
       public:
@@ -94,8 +100,10 @@ class SharedAnalysis final {
     using ReleaseSourceTap = std::function<void(engine::ScopeSource)>;
     using AcquireTap = std::function<std::shared_ptr<const engine::ScopeTap>(std::int64_t, engine::ScopePoint)>;
     using ReleaseTap = std::function<void(std::int64_t, engine::ScopePoint)>;
-    SharedAnalysis(AcquireSourceTap, ReleaseSourceTap, Mode = Mode::Worker);
-    SharedAnalysis(AcquireTap, ReleaseTap, Mode = Mode::Worker);
+    SharedAnalysis(AcquireSourceTap, ReleaseSourceTap, Mode = Mode::Worker,
+                   std::size_t historyByteLimit = kMaxHistoryBytes);
+    SharedAnalysis(AcquireTap, ReleaseTap, Mode = Mode::Worker,
+                   std::size_t historyByteLimit = kMaxHistoryBytes);
     ~SharedAnalysis();
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;

@@ -237,10 +237,66 @@ void pendingSourceLease() {
     view.setVisible(false);
     check(releases == 2 && broker->stats().consumers == 0, "resolved pending source also releases at final demand");
 }
+void cappedFrozenHistoryAndIdleReset() {
+    auto tap = std::make_shared<ScopeTap>(48000, 1.);
+    constexpr std::size_t bytes = 513 * sizeof(float);
+    auto broker = std::make_shared<SharedAnalysis>([&](std::int64_t, ScopePoint) { return tap; },
+        [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual, bytes);
+    Root root; root.setBounds(0, 0, 400, 340); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView live, frozen;
+    live.setMode(SharedSpectrumView::Mode::Spectrogram); frozen.setMode(SharedSpectrumView::Mode::Spectrogram);
+    // Exactly one raster pixel per hop and one raster pixel per logarithmic row.
+    live.setBounds(0, 0, 156, 311); frozen.setBounds(180, 0, 156, 311);
+    root.addAndMakeVisible(live); root.addAndMakeVisible(frozen);
+    live.present(broker, 1); frozen.present(broker, 1);
+    const auto write = [&](int frames, std::int64_t stamp) {
+        std::vector<float> samples(static_cast<std::size_t>(frames));
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = .5f * static_cast<float>(std::sin(2 * std::numbers::pi * 16 * static_cast<double>(i) / 1024));
+        tap->write(samples.data(), samples.data(), frames, stamp, true);
+    };
+    write(1024, 0); broker->pump(); live.frame(); frozen.frame(); frozen.freeze(true);
+    check(live.snapshot() && live.snapshot() == frozen.snapshot() && broker->stats().historyBytes == bytes,
+          "two views and Freeze retain one charged immutable history payload");
+    write(256, 1024); broker->pump(); live.frame();
+    write(256, 1280); broker->pump(); live.frame();
+    check(live.snapshot()->historyLimited && live.snapshot()->historySerial == 3 && live.snapshot()->columns.empty() &&
+          frozen.snapshot()->historySerial == 1 && broker->stats().historyBytes == bytes,
+          "frozen renderer retention caps live history honestly without overwriting its picture");
+    frozen.setVisible(false);
+    const auto before = broker->stats();
+    broker->pump(); live.frame();
+    check(live.snapshot() && !live.snapshot()->historyLimited && live.snapshot()->columns.size() == 1 &&
+          live.snapshot()->columns.back().serial == 3 && broker->stats().transforms == before.transforms,
+          "hiding the frozen picture frees capacity and resumes a pending hop without source audio or FFT");
+    juce::Image image(juce::Image::RGB, 156, 311, true);
+    { juce::Graphics graphics(image); live.paint(graphics); }
+    bool missingBlank = true, currentVisible = false;
+    const auto background = image.getPixelAt(0, 0);
+    for (int y = 21; y < 277; ++y) {
+        missingBlank = missingBlank && image.getPixelAt(131, y) == background;
+        currentVisible = currentVisible || image.getPixelAt(132, y) != background;
+    }
+    check(missingBlank && currentVisible,
+          "software spectrogram leaves the missing hop blank instead of compressing history time");
+    live.clear();
+    SharedAnalysis::Request scope{1}; scope.outputs = SharedAnalysis::Scope;
+    auto extra = broker->acquire(scope); broker->pump(); live.frame();
+    check(!live.snapshot() && live.status() == SharedSpectrumView::Status::Waiting,
+          "local Reset cannot redisplay the old interval after an idle output-demand publication");
+    const auto idle = broker->stats();
+    for (int i = 0; i < 8; ++i) { broker->pump(); live.frame(); }
+    check(broker->stats().analysisWindows == idle.analysisWindows && broker->stats().workerPasses == idle.workerPasses,
+          "visible idle component frames have no repeated analysis or aggregation");
+    extra.reset(); root.setVisible(false);
+    check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0 && broker->stats().historyBytes == 0,
+          "hidden analysis and released frozen views leave no spectral plan or history backing");
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); }
+    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
