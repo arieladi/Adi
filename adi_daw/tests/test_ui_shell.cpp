@@ -5794,6 +5794,23 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(panel.setAnalyzerDock(false), "restore default hidden dock after geometry checks");
         panel.setBounds(before); panel.frame(root.reader());
     }
+    {
+        const auto operations = value(*store, "SELECT count(*) FROM ops");
+        panel.analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+        panel.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("viridis")) + 1, juce::sendNotificationSync);
+        panel.analysis.reverseButton.setToggleState(true, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
+        root.frame();
+        check(root.state().analysisPalette == "viridis" && root.state().analysisPaletteReverse &&
+                  persistence.load("mix").analysisPalette == "viridis" && persistence.load("mix").analysisPaletteReverse,
+              "palette controls save the parent's per-window visual choice");
+        check(root.infoSpectrum.palette() == "viridis" && root.infoSpectrum.paletteReversed() &&
+                  root.infoSpectrum.mode() == panel.analysis.mode() && root.infoSpectrum.point() == panel.analysis.point(),
+              "compact Info follows the parent's analyzer mode, source point and palette");
+        check(value(*store, "SELECT count(*) FROM ops") == operations, "palette choices never create audio edits or undo operations");
+        panel.analysis.paletteBox.setSelectedId(1, juce::sendNotificationSync);
+        panel.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
+        panel.analysis.setMode(SharedSpectrumView::Mode::Spectrum); root.frame();
+    }
     panel.tabs[0]->onClick();
     root.frame();
     check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
@@ -6764,6 +6781,66 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                           value(document->store(), "SELECT count(*) FROM tracks") == oldTracks &&
                           value(document->store(), "SELECT count(*) FROM devices") == oldDevices && actual.undoTitle(false) == oldUndo,
                       "analyzer controls protect menu and direct track/device actions without changing audio edits or Undo");
+                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
+                mix.analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+                mix.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("viridis")) + 1, juce::sendNotificationSync);
+                mix.analysis.reverseButton.setToggleState(true, juce::dontSendNotification); mix.analysis.reverseButton.onClick();
+                mix.frame(actual.reader());
+                tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 1024, true);
+                broker->pump(); mix.frame(actual.reader());
+                mix.analysis.freezeButton.setToggleState(true, juce::dontSendNotification); mix.analysis.freezeButton.onClick();
+                const auto spectralPicture = mix.analysis.view.snapshot(); const auto spectralBefore = broker->stats();
+                const auto image = [&] {
+                    juce::Image picture(juce::Image::RGB, mix.analysis.view.getWidth(), mix.analysis.view.getHeight(), true);
+                    juce::Graphics graphics(picture); mix.analysis.view.paint(graphics); return picture;
+                };
+                const auto beforeImage = image();
+                check(spectralPicture && mix.analysis.view.frozen(), "palette rollback fixture retains a frozen spectrogram");
+                actual.state().zoom = 0;
+                mix.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("plasma")) + 1, juce::sendNotificationSync);
+                mix.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); mix.analysis.reverseButton.onClick();
+                const auto afterImage = image(); bool pixelsEqual = beforeImage.getBounds() == afterImage.getBounds();
+                for (int y = 0; y < beforeImage.getHeight(); ++y) for (int x = 0; x < beforeImage.getWidth(); ++x)
+                    pixelsEqual = pixelsEqual && beforeImage.getPixelAt(x, y) == afterImage.getPixelAt(x, y);
+                check(mix.analysis.view.palette() == "viridis" && mix.analysis.view.paletteReversed() &&
+                          mix.analysis.requestedPalette() == "viridis" && mix.analysis.reverseButton.getToggleState() &&
+                          mix.analysis.view.snapshot() == spectralPicture && pixelsEqual &&
+                          broker->stats().transforms == spectralBefore.transforms && broker->stats().consumers == spectralBefore.consumers,
+                      "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
+                actual.state().zoom = oldZoom;
+                {
+                    // A separate software component tree reproduces floating
+                    // key forwarding without creating a native window.
+                    AnalysisPane detached;
+                    fake.addAndMakeVisible(detached); detached.setBounds(0, 0, 500, 420);
+                    detached.setMode(SharedSpectrumView::Mode::Spectrogram);
+                    detached.setPalette(mix.analysis.view.palette(), mix.analysis.view.paletteReversed());
+                    detached.paletteBox.setSelectedId(static_cast<int>(palettes::find("magma")) + 1, juce::sendNotificationSync);
+                    check(detached.view.palette() == "magma" && mix.analysis.view.palette() == "viridis" &&
+                              actual.state().analysisPalette == "viridis",
+                          "detached palette choice remains local after copying the parent presentation");
+                    bool protectedContext = true;
+                    commands.activate(actual);
+                    for (auto *control : std::array<juce::Component *, 9>{&detached.modeBox, &detached.sourceBox,
+                            &detached.pointBox, &detached.channelBox, &detached.paletteBox, &detached.reverseButton,
+                            &detached.freezeButton, &detached.resetButton, &detached.expandButton}) {
+                        control->grabKeyboardFocus();
+                        protectedContext = protectedContext && AnalysisPane::anyControlsFocused();
+                        for (const int id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
+                                              AppCommands::Duplicate, AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                            juce::ApplicationCommandInfo analysisCommandInfo(id); commands.getCommandInfo(id, analysisCommandInfo);
+                            protectedContext = protectedContext && !actual.command(id) &&
+                                (analysisCommandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                        }
+                    }
+                    check(protectedContext && value(document->store(), "SELECT count(*) FROM ops") == oldOps &&
+                              value(document->store(), "SELECT count(*) FROM tracks") == oldTracks &&
+                              value(document->store(), "SELECT count(*) FROM devices") == oldDevices &&
+                              actual.undoTitle(false) == oldUndo,
+                          "detached analyzer control keys/menu cannot edit the stale main track or device context");
+                }
+                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)); mix.frame(actual.reader());
+                mix.analysis.freezeButton.setToggleState(false, juce::dontSendNotification); mix.analysis.freezeButton.onClick();
                 dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
                 actual.sharedAnalysis = savedBroker; mix.setAnalyzerDock(false); mix.frame(actual.reader());
                 mix.setBounds(mixBounds); mix.frame(actual.reader()); surface.grabKeyboardFocus();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window_state.hpp"
+#include "analysis_palettes.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -76,6 +77,10 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
         state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        const auto palette = j.value("analysisPalette", std::string("adi"));
+        const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
+        state.analysisPalette = knownPalette ? palette : "adi";
+        state.analysisPaletteReverse = knownPalette && j.value("analysisPaletteReverse", false);
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
         state.follow = j.value("follow", false);
@@ -132,7 +137,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             state.mixAnalyzerWidth < 240 || state.mixAnalyzerWidth > 420 ||
             state.mixAnalyzerSource < 0 || state.mixAnalyzerSource > 1 ||
             state.mixAnalyzerPoint < 0 || state.mixAnalyzerPoint > 2 ||
-            state.mixAnalyzerChannel < 0 || state.mixAnalyzerChannel > 4) {
+            state.mixAnalyzerChannel < 0 || state.mixAnalyzerChannel > 4 ||
+            palettes::id(palettes::find(state.analysisPalette)) != state.analysisPalette) {
             error = "Invalid view geometry";
             return false;
         }
@@ -159,6 +165,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixAnalyzerSource", state.mixAnalyzerSource},
                             {"mixAnalyzerPoint", state.mixAnalyzerPoint},
                             {"mixAnalyzerChannel", state.mixAnalyzerChannel},
+                            {"analysisPalette", state.analysisPalette},
+                            {"analysisPaletteReverse", state.analysisPaletteReverse},
                             {"showReference", state.showReference},
                             {"hideReturns", state.hideReturns},
                             {"follow", state.follow},

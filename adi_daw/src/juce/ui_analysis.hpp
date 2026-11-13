@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/shared_analysis.hpp"
+#include "adi/ui/analysis_palettes.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <limits>
@@ -30,6 +31,8 @@ struct MainMeterSource {
 // around independent value reads without requesting audio work or a reset.
 std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudness &,
                                                      std::int64_t track, double sampleRate) noexcept;
+// Immutable display lookup; sample is the existing quantized 0..255 intensity.
+juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, bool reverse = false) noexcept;
 // The same calibrated publication in the boxed Info area and the full Mix View. This component
 // owns no timer, FFT or worker. Its owner calls frame on the window's clock. Ancestor visibility
 // listeners release demand even when the hidden window's clock has stopped.
@@ -47,6 +50,9 @@ class SharedSpectrumView final : public juce::Component,
     engine::ScopePoint point() const noexcept { return point_; }
     void setChannel(SharedAnalysis::Channel);
     SharedAnalysis::Channel channel() const noexcept { return channel_; }
+    void setPalette(std::string_view id, bool reverse = false);
+    std::string_view palette() const noexcept { return palettes::id(paletteIndex_); }
+    bool paletteReversed() const noexcept { return paletteReversed_; }
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -79,6 +85,8 @@ class SharedSpectrumView final : public juce::Component,
     void componentParentHierarchyChanged(juce::Component &) override;
     void componentMovedOrResized(juce::Component &, bool, bool) override;
     void componentBeingDeleted(juce::Component &) override;
+    struct Raster;
+    void updateRaster();
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
@@ -93,8 +101,9 @@ class SharedSpectrumView final : public juce::Component,
     engine::ScopePoint point_ = engine::ScopePoint::PostFader;
     std::int64_t device_ = 0;
     SharedAnalysis::Channel channel_ = SharedAnalysis::Channel::Mid;
-    juce::Image spectrogram_;
-    std::uint64_t rasterRevision_ = 0, rasterEpoch_ = 0, rasterColumn_ = 0;
+    std::unique_ptr<Raster> raster_;
+    std::size_t paletteIndex_ = palettes::defaultIndex;
+    bool paletteReversed_ = false;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
 };
 
@@ -105,6 +114,9 @@ class AnalysisPane final : public juce::Component {
   public:
     enum class Source { Main, Selected };
     AnalysisPane();
+    // A detached pane forwards app commands through its owning main window.
+    // Guard the focused pane's ancestry, independently of that window's tree.
+    static bool anyControlsFocused() noexcept;
     void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
     void resized() override;
     void setMode(SharedSpectrumView::Mode);
@@ -114,9 +126,14 @@ class AnalysisPane final : public juce::Component {
     void setPoint(engine::ScopePoint);
     engine::ScopePoint point() const noexcept { return view.point(); }
     void suspend(bool value) { view.suspend(value); }
+    void setPalette(std::string_view id, bool reverse = false);
+    void restorePaletteControls(std::string_view id, bool reverse);
+    std::string_view requestedPalette() const noexcept;
+    std::function<void()> onPaletteChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox;
+    juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:
     Source source_ = Source::Main;

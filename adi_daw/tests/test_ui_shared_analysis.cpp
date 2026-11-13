@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
+#include "../src/juce/ui_look.hpp"
 #include "ui_fake_peer.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include <array>
@@ -48,6 +49,7 @@ struct Fixture {
         tap->write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true);
     }
 };
+bool originalRasterPixels(SharedSpectrumView &, const SharedAnalysis::Result &);
 void sharingAndVisibility() {
     Fixture f;
     Root root;
@@ -282,6 +284,7 @@ void cappedFrozenHistoryAndIdleReset() {
     }
     check(missingBlank && currentVisible,
           "software spectrogram leaves the missing hop blank instead of compressing history time");
+    check(originalRasterPixels(live, *live.snapshot()), "default capped/gapped raster pixels match the original display law");
     live.clear();
     SharedAnalysis::Request scope{1}; scope.outputs = SharedAnalysis::Scope;
     auto extra = broker->acquire(scope); broker->pump(); live.frame();
@@ -496,11 +499,153 @@ void compactAnalyzerDock() {
     check(f.broker->stats().consumers == 0 && !dock.spectrum.snapshot(), "document replacement releases the old dock publication");
 }
 
+juce::Image softwarePicture(SharedSpectrumView &view) {
+    juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true);
+    juce::Graphics graphics(image); view.paint(graphics); return image;
+}
+bool samePixels(const juce::Image &a, const juce::Image &b) {
+    if (a.getBounds() != b.getBounds()) return false;
+    for (int y = 0; y < a.getHeight(); ++y) for (int x = 0; x < a.getWidth(); ++x)
+        if (a.getPixelAt(x, y) != b.getPixelAt(x, y)) return false;
+    return true;
+}
+// Independent pixel oracle for the original ADI rendering law (01992652).
+// Fixed view bounds below map one displayed hop/row to one software pixel.
+bool originalRasterPixels(SharedSpectrumView &view, const SharedAnalysis::Result &result) {
+    const auto image = softwarePicture(view);
+    const auto top = std::min(20000., result.sampleRate * .5);
+    for (int x = 0; x < 128; ++x) for (int y = 0; y < 256; ++y) {
+        auto expected = adi::ui::look::display;
+        const auto distance = static_cast<std::uint64_t>(127 - x);
+        if (distance <= result.historySerial) {
+            const auto serial = result.historySerial - distance;
+            for (const auto &column : result.columns) if (column.serial == serial && column.binsDbfs) {
+                const int row = 255 - y;
+                const auto low = 20. * std::pow(top / 20., static_cast<double>(row) / 256);
+                const auto high = 20. * std::pow(top / 20., static_cast<double>(row + 1) / 256);
+                const auto first = std::max<std::size_t>(1, static_cast<std::size_t>(low * result.request.fftSize / result.sampleRate));
+                const auto last = std::max(first + 1, static_cast<std::size_t>(high * result.request.fftSize / result.sampleRate) + 1);
+                float peak = -96;
+                for (auto bin = first; bin < std::min(column.binsDbfs->size(), last); ++bin)
+                    peak = std::max(peak, (*column.binsDbfs)[bin]);
+                const auto index = static_cast<int>(std::clamp((peak + 96.f) / 96.f, 0.f, 1.f) * 255.f);
+                const float t = static_cast<float>(index) / 255.f;
+                expected = adi::ui::look::display.interpolatedWith(adi::ui::look::value, t)
+                    .interpolatedWith(adi::ui::look::accent, std::max(0.f, (t - .7f) / .3f));
+            }
+        }
+        if (image.getPixelAt(x + 5, y + 21) != expected) return false;
+    }
+    return true;
+}
+void palettesAndFrozenRaster() {
+    using namespace adi::ui;
+    check(palettes::count == 47 && palettes::id(0) == "adi" && palettes::find("missing") == 0,
+          "palette inventory includes original ADI plus all46 public families with safe fallback");
+    bool lookup = true;
+    for (std::size_t p = 1; p < palettes::count; ++p) {
+        lookup = lookup && palettes::find(palettes::id(p)) == p;
+        for (std::size_t q = p + 1; q < palettes::count; ++q) lookup = lookup && palettes::id(p) != palettes::id(q);
+        for (int i = 0; i < 256; ++i)
+            lookup = lookup && analysisPaletteColour(p, static_cast<std::uint8_t>(i), true) ==
+                analysisPaletteColour(p, static_cast<std::uint8_t>(255 - i));
+    }
+    check(lookup, "every family has stable unique identity and exact reverse table indexing");
+    check(palettes::rgb(palettes::find("viridis"), 0) == 0x440154 &&
+              palettes::rgb(palettes::find("viridis"), 255) == 0xfde725 &&
+              palettes::rgb(palettes::find("gray"), 0) == 0 && palettes::rgb(palettes::find("gray"), 255) == 0xffffff,
+          "public viridis and gray endpoints retain their known RGB8 values");
+    bool original = true;
+    for (int i = -100; i <= 1100; ++i) {
+        const float db = -96.f + static_cast<float>(i) * 96.f / 1000.f;
+        const auto index = static_cast<std::uint8_t>(std::clamp((db + 96.f) / 96.f, 0.f, 1.f) * 255.f);
+        const float t = static_cast<float>(index) / 255.f;
+        const auto expected = look::display.interpolatedWith(look::value, t)
+            .interpolatedWith(look::accent, std::max(0.f, (t - .7f) / .3f));
+        original = original && analysisPaletteColour(0, index) == expected;
+    }
+    check(original, "default colors preserve the original quantized law for1201 arbitrary dB values and clipping");
+    Fixture f;
+    Root root; root.setBounds(0, 0, 500, 420); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView view; view.setMode(SharedSpectrumView::Mode::Spectrogram);
+    root.addAndMakeVisible(view); view.setBounds(0, 0, 156, 311); view.present(f.broker, 1); view.frame();
+    bool pixels = true;
+    for (int block = 0; block < 4; ++block) {
+        f.write(block * 1024); f.broker->pump(); view.frame();
+        pixels = pixels && view.snapshot() && originalRasterPixels(view, *view.snapshot());
+    }
+    check(pixels, "actual default raster pixels match old frequency aggregation/color/gap law across advancing columns");
+    const auto snapshot = view.snapshot(); view.freeze(true);
+    const auto before = f.broker->stats(); const auto picture = softwarePicture(view);
+    view.setPalette("viridis"); const auto colored = softwarePicture(view);
+    check(!samePixels(picture, colored) && view.snapshot() == snapshot && view.frozen(),
+          "palette selection recolors the existing frozen raster without replacing its measurement");
+    view.setPalette("gray", true); const auto gray = softwarePicture(view);
+    check(!samePixels(colored, gray) && gray.getPixelAt(5, 21) == look::display,
+          "reverse and grayscale recolor valid pixels while missing history remains background");
+    view.setPalette("adi");
+    check(samePixels(picture, softwarePicture(view)), "returning to original palette restores every frozen displayed pixel");
+    for (int i = 0; i < 4; ++i) { view.frame(); (void)softwarePicture(view); }
+    const auto after = f.broker->stats();
+    check(after.transforms == before.transforms && after.analysisWindows == before.analysisWindows &&
+              after.cursorReads == before.cursorReads && after.workerPasses == before.workerPasses &&
+              after.domains == before.domains && after.taps == before.taps && after.frameRequests == before.frameRequests &&
+              after.historyBytes == before.historyBytes && after.consumers == 0,
+          "palette changes/unchanged frozen paints create no FFT, reads, subscriptions or history work");
+    view.freeze(false); f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds);
+    f.broker->refreshSources(true); f.write(); f.broker->pump(); view.frame();
+    check(view.snapshot() && view.snapshot()->sampleRate == 44100 && originalRasterPixels(view, *view.snapshot()),
+          "format/source epoch replacement removes old pixels and retains default calibration");
+    AnalysisPane pane;
+    pane.setMode(SharedSpectrumView::Mode::Spectrogram); pane.setPalette("rocket", true);
+    check(pane.paletteBox.getNumItems() == 47 && pane.requestedPalette() == "rocket" && pane.reverseButton.getToggleState(),
+          "palette menu shows every family and selected/reversed state");
+    for (const int width : {240, 332, 500}) {
+        pane.setSize(width, 420);
+        const std::array<juce::Component *, 9> controls{&pane.modeBox, &pane.sourceBox, &pane.pointBox, &pane.channelBox,
+            &pane.paletteBox, &pane.reverseButton, &pane.freezeButton, &pane.resetButton, &pane.expandButton};
+        bool fits = true;
+        for (std::size_t i = 0; i < controls.size(); ++i) {
+            fits = fits && pane.getLocalBounds().contains(controls[i]->getBounds()) &&
+                controls[i]->getBottom() <= pane.view.getY();
+            for (std::size_t j = i + 1; j < controls.size(); ++j)
+                fits = fits && !controls[i]->getBounds().intersects(controls[j]->getBounds());
+        }
+        check(fits && pane.view.getHeight() > 250, "analysis controls wrap responsively with useful plot space");
+    }
+    view.setVisible(false);
+    check(f.broker->stats().consumers == 0, "palette-enabled spectrogram still releases hidden demand");
+}
+void restartedRasterDomain() {
+    for (const bool useFreeze : {false, true}) {
+        Fixture f;
+        Root root; root.setBounds(0, 0, 400, 340); root.setVisible(true); root.addToDesktop(0);
+        SharedSpectrumView view; view.setMode(SharedSpectrumView::Mode::Spectrogram);
+        root.addAndMakeVisible(view); view.setBounds(0, 0, 156, 311); view.present(f.broker, 1); view.frame();
+        f.write(); f.broker->pump(); view.frame();
+        const auto first = view.snapshot(); const auto firstImage = softwarePicture(view);
+        if (useFreeze) { view.freeze(true); view.freeze(false); }
+        else { view.setVisible(false); view.setVisible(true); }
+        view.frame(); // renew the sole cursor before supplying fresh audio
+        std::array<float, 1024> silence{};
+        f.tap->write(silence.data(), silence.data(), static_cast<std::int32_t>(silence.size()), 1024, true);
+        f.broker->pump(); view.frame();
+        const auto second = view.snapshot();
+        check(first && second && first != second && first->sourceEpoch == second->sourceEpoch &&
+                  first->revision == second->revision && first->historySerial == second->historySerial &&
+                  !first->columns.empty() && !second->columns.empty() &&
+                  *first->columns.back().binsDbfs != *second->columns.back().binsDbfs,
+              "restarted sole spectrogram domain reuses counters on the same tap but carries fresh different audio");
+        check(second && !samePixels(firstImage, softwarePicture(view)) && originalRasterPixels(view, *second),
+              "hide or Freeze/Resume cannot reuse old raster pixels when new-domain counters repeat");
+    }
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); }
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

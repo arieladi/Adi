@@ -89,6 +89,16 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : ref(root), stack(root), roo
     analyzerDock.onChange = [this] { persistAnalyzerSettings(); };
     analyzerDock.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
     analysis.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
+    analysis.onPaletteChange = [this] {
+        auto &state = root_.state();
+        const auto before = state.analysisPalette; const bool wasReversed = state.analysisPaletteReverse;
+        state.analysisPalette = analysis.requestedPalette(); state.analysisPaletteReverse = analysis.reverseButton.getToggleState();
+        if (!root_.persist()) {
+            state.analysisPalette = before; state.analysisPaletteReverse = wasReversed;
+            analysis.restorePaletteControls(before, wasReversed); return;
+        }
+        analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
+    };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
 void MixViewPanel::adoptViewState() {
@@ -96,10 +106,11 @@ void MixViewPanel::adoptViewState() {
     const auto &state = root_.state();
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
                            state.mixAnalyzerWidth);
+    analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
     resized();
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
-    return analyzerToggle.hasKeyboardFocus(true) ||
+    return AnalysisPane::anyControlsFocused() || analyzerToggle.hasKeyboardFocus(true) ||
         (analyzerDock.isVisible() && analyzerDock.hasKeyboardFocus(true)) ||
         (analysis.isVisible() && analysis.hasKeyboardFocus(true));
 }

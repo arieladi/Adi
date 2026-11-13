@@ -93,22 +93,36 @@ components have no worker or timer of their own. Hidden, empty, clipped-out and 
 release demand; a detached visible Mix View keeps its own demand independently of the main
 window. Document shutdown revokes the service before Session is destroyed.
 
-Both presentations currently select Main only: PostFader, Mid, Hann, 1024 samples. Track selection,
-reference comparison and the rest of the combined analyzer modes remain later slices.
+The full analyzer selects Main or Selected, tap point and channel basis, with Spectrum, Scope,
+Meters, Phase and Spectrogram modes. Compact Info follows that presentation. Compatible requests
+retain the same Hann/1024 domain; Reference/Compare remains a separate implementation slice.
 
-This is an adapter over the existing newest-window track ScopeTap API. MX-30 still owns device
-taps, gapless consumer cursors, negotiated history and safe storage retirement. An old-rate tap
-is unavailable after a format change rather than being displayed with a false frequency scale.
-DEV-05/MX-24 own compensated device-specific key routes. These are separate from visual demand.
+Spectrogram offers the original ADI palette plus 46 public scientific palette families,
+preview strips and Reverse. Source pins, full licenses and the RGB8 conversion summary are in
+`third_party_notices/analysis_palettes/`; no other application's lookup table is claimed.
+Parent palette/reverse preferences persist per window. Compact Info follows them, while a new
+floating analyzer initially copies the parent and can make its own lifetime-local choice.
+
+Palette changes recolor cached intensity/gap indices, including a visible frozen picture,
+without changing its measurement or analysis demand. The original default's 256-color lookup
+and intensity indexing are retained. Owner frames prepare the raster; painting reads that
+image without regenerating palette or raster data. Discarding a measurement also discards its
+raster so recreated-domain counters cannot alias old pixels. Embedded and floating analyzer
+control focus protects the common app edit-command context. A source-time freshness barrier
+for resume while another consumer keeps the domain alive remains a separate follow-up.
+
+The document supplies MX-30 leased source/device endpoints with independent consumer cursors,
+negotiated history, source generations and safe storage retirement. Unusable old-rate taps are
+unavailable rather than displayed with a false frequency scale. DEV-05/MX-24 own compensated
+device-specific key routes. These are separate from visual demand.
 
 ## Processing integration
 
 Actual devices continue through the established Session/Graph chain and shared parameter
-authority. The next processing slice supplies the opt-in native function cores from ADR-0237:
-EQ with unmasking, compressor, de-esser, gate, and limiter with clipping. Their movable device-area
-tabs and Mix View rows must address those same nodes. ADI Still remains an ordinary plug-in for
-now; separate standalone applications remain a guide question. Analyzers stay outside the
-processing chain.
+authority. Native EQ and independently enabled Clip-to-Limiter processing are wired through
+that same chain; device-area pages and Mix View rows address the same nodes. Unmasking,
+compressor, de-esser and gate native admission remain later slices, not substitute processing.
+ADI Still remains an ordinary plug-in. Analyzers stay outside the processing chain.
 
 ## Main meter readouts
 
