@@ -3142,6 +3142,38 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
           "the duplicate follows the clip and is chosen");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+    // An upward selection (anchored on 2 MIDI, reaching 1 MIDI) pastes from its top track, in order.
+    sel = {};
+    sel.track = 3;
+    sel.toTrack = 2;
+    sel.start = 0;
+    sel.end = bar;
+    check(root.command(AppCommands::Copy), "copy an upward selection over bar 1");
+    marker(2, 2 * bar);
+    sel.track = 3;
+    sel.toTrack = 2;
+    check(root.command(AppCommands::Paste), "paste with an upward selection");
+    root.frame();
+    check(clipsOf(2) == Clips{{0, bar}, {2 * bar, bar}} && clipsOf(3) == Clips{{0, bar / 2}, {2 * bar, bar / 2}},
+          "1 MIDI's material back on 1 MIDI, 2 MIDI's on 2 MIDI: from the top track, not the anchor");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // A track the lanes do not show is left out of a range's copy, as Paste leaves it out.
+    root.arrangement.geometry.hidden = {3};
+    sel = {};
+    sel.track = 2;
+    sel.toTrack = 4;
+    sel.start = 0;
+    sel.end = bar;
+    check(root.command(AppCommands::Copy) &&
+              std::get<clip_edit::RangeCopy>(commands.clipClipboard().held).selection.tracks == std::vector<std::int64_t>{2, 4},
+          "a hidden track between the selection's ends is not in the copy");
+    root.arrangement.geometry.hidden.clear();
+    // A copy from another project says so, not a kind it reads off this project's tracks.
+    std::get<clip_edit::RangeCopy>(commands.clipClipboard().held).sourceFile = "/elsewhere/other.adi";
+    marker(2, 2 * bar);
+    check(!root.command(AppCommands::Paste) && root.error().find("another project") != std::string::npos,
+          "a copy from another project is refused, and says so");
     // With nothing chosen, Copy says what to choose.
     marker(2, 0);
     check(!root.command(AppCommands::Copy) && !root.error().empty(), "Copy with no clip or time selection says what to select");

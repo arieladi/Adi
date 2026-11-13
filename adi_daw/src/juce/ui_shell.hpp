@@ -419,6 +419,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // or in the Arrangement; and whether the device chain takes it first.
     bool canClipboard(int commandId) const;
     bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
+    // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
+    std::int64_t pasteOrigin() const;
     // The rate an edit's seconds and ticks convert at: the device's, else the project's.
     double editRate() const noexcept;
     // The store an engine edit is prepared against, and the settings its policy is captured from.

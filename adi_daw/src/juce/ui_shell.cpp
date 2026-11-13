@@ -8,6 +8,8 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
+#include "adi/store.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1341,21 +1343,37 @@ bool AdiRootComponent::canClipboard(int id) const {
                                                     : ClipCommand::Duplicate;
     return devices.canClipboard(clip) || canClipClipboard(command);
 }
+namespace {
+// The project file a clipboard copy names (`sourceFile`), as the engine reads the store's.
+std::string projectFile(Store &store) {
+    SQLite::Statement row(store.db(), "PRAGMA database_list");
+    while (row.executeStep())
+        if (row.getColumn(1).getString() == "main")
+            return row.getColumn(2).getString();
+    return {};
+}
+} // namespace
+std::int64_t AdiRootComponent::pasteOrigin() const {
+    // The top selected track that can hold clips, in the lanes' order, whichever way the selection
+    // was made (an upward drag keeps the lower track as its anchor).
+    for (const auto id : arrangement.geometry.selectedTracks(reader()))
+        if (const auto *t = reader().findTrack(id); t != nullptr && arrangement.geometry.shown(id) && holdsClips(*t))
+            return id;
+    return 0;
+}
 bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
     const auto current = view_.current();
     if (!current)
         return false;
     const auto &sel = arrangement.geometry.selection;
-    if (command == ClipCommand::Paste) {
-        const auto *track = reader().findTrack(sel.track);
-        return !commands_.clipClipboard().empty() && track != nullptr && holdsClips(*track);
-    }
+    if (command == ClipCommand::Paste)
+        return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
     if (chosenClip(*current, sel).clip != nullptr)
         return true;
     if (sel.start == sel.end)
         return false;
     for (const auto id : arrangement.geometry.selectedTracks(reader()))
-        if (const auto *t = reader().findTrack(id); t != nullptr && holdsClips(*t))
+        if (const auto *t = reader().findTrack(id); t != nullptr && arrangement.geometry.shown(id) && holdsClips(*t))
             return true;
     return false;
 }
@@ -1372,11 +1390,12 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     const auto chosen = chosenClip(*current, sel);
     const bool range = chosen.clip == nullptr && from != to;
     clip_edit::RangeSelection selection{arrangement.geometry.selectedTracks(reader()), {0, from}, {0, to}};
-    // The time selection's tracks that can hold clips, in the lanes' order.
+    // The time selection's tracks the lanes show that can hold clips, in the lanes' order: the
+    // same rule Paste puts a range back by, so a range returns onto the tracks it came from.
     selection.tracks.erase(std::remove_if(selection.tracks.begin(), selection.tracks.end(),
                                           [&](std::int64_t id) {
                                               const auto *t = reader().findTrack(id);
-                                              return t == nullptr || !holdsClips(*t);
+                                              return t == nullptr || !arrangement.geometry.shown(id) || !holdsClips(*t);
                                           }),
                            selection.tracks.end());
     if (command != ClipCommand::Paste && chosen.clip == nullptr && (!range || selection.tracks.empty()))
@@ -1452,7 +1471,19 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             return fail("Copy a clip or a time selection first.");
         // At the insert marker, or a time selection's start.
         const auto at = from != to ? from : sel.marked ? sel.insert : 0;
-        const auto *track = reader().findTrack(sel.track);
+        // A copy from another project: the engine refuses it, so say so before reading its tracks.
+        const auto heldFile = std::visit(
+            [](const auto &copy) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
+                    return {};
+                else
+                    return copy.sourceFile;
+            },
+            board.held);
+        if (!heldFile.empty() && heldFile != projectFile(store))
+            return fail("The clipboard holds a copy from another project: copy again in this one.");
+        const auto origin = pasteOrigin();
+        const auto *track = reader().findTrack(origin);
         if (track == nullptr || !holdsClips(*track))
             return fail("Select an audio or MIDI track to paste on.");
         if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
@@ -1472,7 +1503,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
             std::vector<std::int64_t> targets;
             bool reached = false;
             for (const auto row : arrangement.geometry.rows(reader())) {
-                reached = reached || row.track->id == sel.track;
+                reached = reached || row.track->id == origin;
                 if (reached && targets.size() < wanted && arrangement.geometry.shown(row.track->id) &&
                     holdsClips(*row.track))
                     targets.push_back(row.track->id);
