@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 13 November 2026 — Main meter projection supplied independently
+
+**Item:** draft [#551](https://github.com/arieladi/Adi/pull/551), `749fd4b1511e3e0a5b46fca6f1f4a1ff6621533e`, directly on #544 `632761db`. Meters mode projects the existing persistent Main M/S/I LUFS and held aggregate dBTP into Info/full/floating views, clearly named programme/pre-cue. No new meter DSP/FFT/tap/worker/timer. Weak per-document bindings are revoked before teardown; prepared versus audio-adopted format IDs suppress stale values; local Freeze/Reset never pause/reset the shared Main service. Non-Main/device/other tap sources cannot display Main readings. The numerical DSP block is unchanged and the four fields remain independently timed, not a coherent whole-field snapshot or per-row LUFS claim.
+
+**Gates:** pure SharedAnalysis108, MainLoudness57 and fresh software-peer presentation87 = **252 checks / zero failures**. Five owned strict frontend units and four validators pass; full app compiles/links only. Source/executables and logs are fixed-copy sealed privately; all 33 records and eight source identities verify. No new CPU timing, application launch/live desktop work, daily install change or self-merge. This independent branch is not included in the native EQSerial review package. Win reviews/merges after CI; Claude's live review trails the merged build. Latest main `c88131a8` merges #537/#540 ancestors and does not require rebasing these isolated child stacks now.
+
 ## 13 November 2026 — independent compressor core slice claimed
 
 **Item:** `mixview/compressor-core-20261113`, isolated `D:/Adi-wt/mix-compressor-1113`, based on #548 `7faf25c1`. Implement an authored framework-free base-rate Clean compressor kernel with explicit parameter/ramp/reset/restore/prepare state, key/channel-link handling, generated-signal tests and a separately injectable adapter as the contracts permit. New files under `src/adi/mix/compressor/`, matching tests and narrow CMake wiring only. It is an unregistered component slice: no native Compressor availability until explicit per-kind factory dispatch, complete controller/state and quality/style paths pass. The existing factory's availability guard must not be bypassed or allowed to fall through to LimiterDevice for a newly enabled kind.
