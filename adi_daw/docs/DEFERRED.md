@@ -39,6 +39,8 @@ cut out of something that already shipped or was ruled.
 | DF-M8 | Held PRs: #541 (automatable latency-changing controls abort export; a 2 ms background thread per limiter), #542 (≈3 ms of UI-thread work per 20 ms per EQ while unseen; Carve/Focus tabs before they are enabled), #545 (Focus FIR over the callback budget; fixed 44.1 kHz) | Mix View seat | before they merge |
 | DF-M9 | Minor findings on #543, #544, #546 (mono Pan/Audition in Carve; three tests that cannot fail) | Mix View seat | follow-up |
 | DF-M10 | STACK pins, search and row size persist across launches | Mix View seat | before the Mix View is called done |
+| DF-M11 | DEV-05/MX-24 device sidechain keys (assigned by win to the Mix View seat on 13 November): routing tap storage as schema minor 1.22, destination device identity, key width, route lifecycle, planner and realizer, reversible cleanup on device delete; Carve and Focus stay unavailable until then; the engine seat reviews | Mix View seat | before Carve/Focus ship |
+| DF-M12 | Focus's audible compatibility choice, for the director through the decision guide | Mix View seat → director | with DF-M2 |
 
 ### Engine (win's log of 12 November)
 
