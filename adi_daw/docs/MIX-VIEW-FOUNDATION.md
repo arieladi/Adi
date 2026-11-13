@@ -108,8 +108,13 @@ without changing its measurement or analysis demand. The original default's 256-
 and intensity indexing are retained. Owner frames prepare the raster; painting reads that
 image without regenerating palette or raster data. Discarding a measurement also discards its
 raster so recreated-domain counters cannot alias old pixels. Embedded and floating analyzer
-control focus protects the common app edit-command context. A source-time freshness barrier
-for resume while another consumer keeps the domain alive remains a separate follow-up.
+control focus protects the common app edit-command context. Resume, local Reset and reshow
+after discarding a picture fence the source's completed sample count. Cached publications,
+output-mask republication and processing an entirely pre-action backlog do not satisfy that
+barrier, even while another consumer retains the shared domain. A completed window must
+contain at least one newly written post-action sample; it need not be entirely post-action
+or aligned with another view. A new view may reuse a valid compatible initial stopped
+picture. Source replacement re-arms admission, and shutdown revokes retained frozen pictures.
 
 The document supplies MX-30 leased source/device endpoints with independent consumer cursors,
 negotiated history, source generations and safe storage retirement. Unusable old-rate taps are
