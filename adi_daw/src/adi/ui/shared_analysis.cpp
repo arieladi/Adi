@@ -454,6 +454,7 @@ struct SharedAnalysis::State {
     std::atomic<bool> queued{false};
     std::atomic<std::uint64_t> transforms{0}, publications{0}, frameRequests{0}, workerPasses{0};
     std::atomic<std::uint64_t> cursorReads{0}, analysisWindows{0};
+    std::atomic<std::uint64_t> successfulEnqueues{0};
 };
 struct SharedAnalysis::Scheduler {
     std::mutex mutex;
@@ -480,7 +481,11 @@ struct SharedAnalysis::Scheduler {
     static Scheduler &instance() { static Scheduler scheduler; return scheduler; }
     void request(const std::shared_ptr<State> &state) {
         if (state->queued.exchange(true, std::memory_order_acq_rel)) return;
-        { std::lock_guard lock(mutex); pending.emplace_back(state); }
+        {
+            std::lock_guard lock(mutex);
+            pending.emplace_back(state);
+            state->successfulEnqueues.fetch_add(1, std::memory_order_relaxed);
+        }
         changed.notify_one();
     }
 };
@@ -610,6 +615,7 @@ SharedAnalysis::Stats SharedAnalysis::stats() const {
         state_->transforms.load(std::memory_order_relaxed), state_->publications.load(std::memory_order_relaxed),
         state_->frameRequests.load(std::memory_order_relaxed), state_->workerPasses.load(std::memory_order_relaxed),
         state_->cursorReads.load(std::memory_order_relaxed), state_->analysisWindows.load(std::memory_order_relaxed)};
+    result.successfulEnqueues = state_->successfulEnqueues.load(std::memory_order_relaxed);
     for (const auto &[key, domain] : state_->domains) {
         (void)key;
         result.spectralPlans += static_cast<std::size_t>(domain->spectrum != nullptr);

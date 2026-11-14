@@ -74,6 +74,8 @@ class SharedAnalysis final {
         std::uint64_t cursorReads = 0, analysisWindows = 0;
         std::size_t spectralPlans = 0, historyBytes = 0, historyPeakBytes = 0;
         std::uint64_t droppedHistoryColumns = 0;
+        // Successful insertions into this broker's shared scheduler queue.
+        std::uint64_t successfulEnqueues = 0;
     };
     class Lease {
       public:

@@ -41,6 +41,8 @@ struct Fixture {
 };
 void sharing() {
     Fixture f;
+    f.broker.requestFrame();
+    check(f.broker.stats().successfulEnqueues == 0, "Manual mode never inserts scheduler work");
     check(f.broker.pump() == 0 && f.broker.stats().transforms == 0, "no demand runs no transform");
     auto full = f.broker.acquire({1});
     auto compact = f.broker.acquire({1});
@@ -198,6 +200,9 @@ void workerLifecycle() {
     int acquired = 0, released = 0;
     SharedAnalysis broker([&](std::int64_t, ScopePoint) { ++acquired; return tap; },
                           [&](std::int64_t, ScopePoint) { ++released; });
+    broker.requestFrame();
+    check(broker.stats().successfulEnqueues == 0 && acquired == 0,
+          "zero-consumer worker frame requests enqueue no scheduler work");
     auto lease = broker.acquire({1});
     tone(*tap);
     check(broker.stats().transforms == 0 && !lease.read(), "acquiring/writing alone starts no worker or autonomous polling");
@@ -207,12 +212,36 @@ void workerLifecycle() {
     while (!lease.read() && std::chrono::steady_clock::now() < limit) std::this_thread::yield();
     check(acquired == 2 && lease.read() && near(lease.read()->binsDbfs[16], -6.020599913),
           "a visible frame request makes the process worker publish without message-thread FFT");
-    while (broker.stats().analysisWindows == 0 && std::chrono::steady_clock::now() < limit) std::this_thread::yield();
+    const auto completed = [&] {
+        const auto stats = broker.stats();
+        const auto result = lease.read();
+        return result && result->pendingFrames == 0 && stats.analysisWindows == 1 &&
+               stats.transforms == 1 && stats.publications == 1 && stats.cursorReads > 0;
+    };
+    while (!completed() && std::chrono::steady_clock::now() < limit) std::this_thread::yield();
+    check(completed(), "the actual worker completes and consumes its initial source window");
     const auto settled = broker.stats();
+    check(settled.successfulEnqueues == 1, "one actual frame request inserts one scheduler item");
     for (int i = 0; i < 64; ++i) broker.requestFrame();
-    check(broker.stats().workerPasses == settled.workerPasses && broker.stats().cursorReads == settled.cursorReads &&
-          broker.stats().analysisWindows == settled.analysisWindows && broker.stats().publications == settled.publications,
-          "visible unchanged-source frames resolve leases but enqueue no worker analysis pass");
+    const auto unchanged = broker.stats();
+    check(unchanged.successfulEnqueues == settled.successfulEnqueues,
+          "64 unchanged-source frame requests synchronously insert no scheduler items");
+    check(unchanged.workerPasses == settled.workerPasses && unchanged.cursorReads == settled.cursorReads &&
+          unchanged.analysisWindows == settled.analysisWindows && unchanged.publications == settled.publications,
+          "unchanged-source requests also preserve useful analysis counters");
+    const auto previous = lease.read();
+    tone(*tap, 256, .25f, 1.f, 1024);
+    broker.requestFrame();
+    check(broker.stats().successfulEnqueues == settled.successfulEnqueues + 1,
+          "one new written hop accepts one genuine scheduler insertion");
+    const auto hopLimit = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto nextHop = [&] {
+        const auto result = lease.read();
+        return result && previous && result->revision > previous->revision && result->pendingFrames == 0 &&
+               broker.stats().analysisWindows == settled.analysisWindows + 1;
+    };
+    while (!nextHop() && std::chrono::steady_clock::now() < hopLimit) std::this_thread::yield();
+    check(nextHop(), "genuine queued hop produces and completes a later publication");
     const auto oldGeneration = lease.read()->generation;
     tap = std::make_shared<ScopeTap>(96000, .25);
     broker.requestFrame();
@@ -223,7 +252,10 @@ void workerLifecycle() {
     check(lease.read() && lease.read()->generation != oldGeneration && lease.read()->sampleRate == 96000,
           "the global worker follows renegotiated rate/history rather than an old retained ring");
     broker.shutdown();
-    check(released == 1 && !lease && !lease.read(), "worker shutdown joins before the source owner is released");
+    const auto closed = broker.stats().successfulEnqueues;
+    broker.requestFrame();
+    check(released == 1 && !lease && !lease.read() && broker.stats().successfulEnqueues == closed,
+          "broker shutdown waits for work, releases its source and permits no later enqueue");
     lease.reset();
     check(released == 1, "worker lease cannot call owner after shutdown");
 }
