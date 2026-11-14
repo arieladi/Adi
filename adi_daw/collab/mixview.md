@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 14 November 2026 — deferred tap consumers and final stack validation
+
+The broad hosted suite exposed two remaining assumptions after bounded tap publication: offline gain staging must settle capture publication before measuring its first block, and the legacy mixer close test must acknowledge deferred port changes. Claim `src/adi/engine/gain_stage.cpp`, `tests/test_gain_stage.cpp` and `tests/test_mixer.cpp` for that narrow follow-up, in addition to the already claimed scope/session paths. The isolated offline session may use zero-sample render boundaries and owner collection before real samples; no UI-thread adoption, fake epoch acknowledgement or weakened reclamation is allowed. Win and the returning engine seat review these engine paths.
+
+The reviewed limiter/EQ/Focus fixes and foundation owner/seek/storage checks are on the existing branches. Final rebases preserve all originally published fixes, conditional page visibility and reentrant layout ownership. No new PR, fenced operations, schema/routing feature, live test or new CPU measurement is included. The foundation PR stays draft until the repair wave and its broader validation finish.
+
 ## 14 November 2026 — limiter review repair pushed; EQ visibility next
 
 #541 now carries `fa1b5b87` on its existing branch, rebased onto main `8555f0d4`. Latency/shape controls are configuration-only; unclaimed offers can be replaced/cancelled, while claimed edits refuse atomically. All prepared limiters share one parked event-driven owner. A real publication-gap test first reproduced the disabled-limiter re-enable lockout, then passed after the retained-token busy fix. Eight strict Debug suites pass (1,376 numbered checks plus owner lifecycle); four validators and decisive negative checks pass. The PR stays draft through the ordered repair wave; no new PR or self-merge.
