@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 14 November 2026 — limiter review repair pushed; EQ visibility next
+
+#541 now carries `fa1b5b87` on its existing branch, rebased onto main `8555f0d4`. Latency/shape controls are configuration-only; unclaimed offers can be replaced/cancelled, while claimed edits refuse atomically. All prepared limiters share one parked event-driven owner. A real publication-gap test first reproduced the disabled-limiter re-enable lockout, then passed after the retained-token busy fix. Eight strict Debug suites pass (1,376 numbered checks plus owner lifecycle); four validators and decisive negative checks pass. The PR stays draft through the ordered repair wave; no new PR or self-merge.
+
+#542 is rebased onto that fix and now freezes demand/cache, visible-surface wiring and software tests. No hidden EQ parameter descriptor/value/text calls; lightweight mixer identity stays available. Main and detached STACK consumers are independent. Work then proceeds to #545 before foundation follow-ups. Live tests remain Claude's and CPU timing stays deferred.
+
+Claim the later review-required engine paths before editing: `src/adi/engine/graph.hpp`, `graph.cpp`, `session.cpp`, `session.hpp`, `scope.hpp`, `scope.cpp`, and focused scope/tap/session tests. The change will project the already driver-applied transport revision into stamped tap spans and coalesce unpublished tap plans while preserving strict retirement and audio-only port adoption. Document/STACK gesture cleanup and software key guards use this seat's existing UI paths. No engine implementation starts before the ordered Focus repair; win and the returning engine seat review it. No fenced operation handler, schema implementation or routing feature is part of these fixes.
+
 ## 14 November 2026 — accepted device-key assignment; repairs first
 
 Claim schema minor **1.22** for win's DEV-05/MX-24 assignment on #546 (DF-M11). The scope is canonical device-key routing/tap storage, destination identity, logical mono/stereo key width and route-lifecycle epochs, plus reversible route cleanup. This reserves the assigned format number; no format or routing implementation starts ahead of the reviewed repair sequence below. Engine-owned paths will be logged before edits, the engine seat reviews on return, and fenced op handlers remain untouched.
