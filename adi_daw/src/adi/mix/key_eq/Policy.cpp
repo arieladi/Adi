@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Policy.hpp"
+#include "detail/Prototype.hpp"
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -24,22 +25,8 @@ struct Roots {
     std::array<Root, 4> values{};
     std::size_t count = 0;
 };
-struct Analog {
-    Polynomial n{}, d{};
-    int kind = -1;
-    float damping = 0;
-    double scale = 1;
-};
-struct AnalogCascade {
-    std::array<Analog, 16> sections{};
-    std::size_t count = 0;
-    bool append(const Analog &section) noexcept {
-        if (count == sections.size())
-            return false;
-        sections[count++] = section;
-        return true;
-    }
-};
+using detail::Analog;
+using detail::AnalogCascade;
 Complex reciprocal(Complex z) noexcept {
     if (std::abs(z.real()) >= std::abs(z.imag())) {
         const double ratio = z.imag() / z.real(), den = z.real() + z.imag() * ratio;
@@ -97,7 +84,9 @@ Roots bandRoots(const Roots &source, double bandwidth, float &norm) noexcept {
 }
 double powerAtOne(const Polynomial &n, const Polynomial &d) noexcept {
     const double den = (d[2] - d[0]) * (d[2] - d[0]) + d[1] * d[1];
-    return std::abs(f(den)) > epsilon ? std::sqrt(((n[2] - n[0]) * (n[2] - n[0]) + n[1] * n[1]) / den) : 1;
+    return std::abs(f(den)) > epsilon
+               ? std::sqrt(((n[2] - n[0]) * (n[2] - n[0]) + n[1] * n[1]) / den)
+               : 1;
 }
 bool lowBandPrototype(double order, float mappedQ, AnalogCascade &out) noexcept {
     const double g = f(std::exp(static_cast<double>(f(f(order) * -15.f)) * .1151292546497023));
@@ -140,7 +129,9 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
     const double fraction = static_cast<double>(f(f(order) - f(ceiling))) + 1;
     const double g = f(std::exp(static_cast<double>(gainDb) * .1151292546497023));
     const bool gainShape = shape >= 1 && shape <= 7 && shape != 3;
-    const double baseGain = shape == 6 ? g : (shape == 2 || shape == 5 || shape == 7) ? std::sqrt(g) : g;
+    const double baseGain = shape == 6                                 ? g
+                            : (shape == 2 || shape == 5 || shape == 7) ? std::sqrt(g)
+                                                                       : g;
     const double factor = std::pow(baseGain, 1 / order);
     const double bandwidth = f(1.f / mappedQ);
     const float qFactor = f(rootHalf / mappedQ);
@@ -161,7 +152,8 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
         double norm = 1;
         const bool lastFraction = order != std::floor(order) && j == (ceiling + 1) / 2 - 1;
         if (lastFraction && gainShape) {
-            const double remaining = std::pow(factor, -(ceiling - (ceiling % 2 != 0 ? 1 : 2))) * baseGain;
+            const double remaining =
+                std::pow(factor, -(ceiling - (ceiling % 2 != 0 ? 1 : 2))) * baseGain;
             if (ceiling % 2 != 0) {
                 roots.count = zeros.count = 1;
                 roots.values[0] = {{-1, 0}, false};
@@ -173,8 +165,10 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
                 damping = 1;
             } else {
                 const double a = 1 / std::sqrt(remaining);
-                const double loga = std::log2(std::sin((.5 / ceiling) * (j * (2 * pi) + pi)) * (a + a));
-                const double inverseRemaining = 1 / remaining, logb = std::log2(inverseRemaining + 1);
+                const double loga =
+                    std::log2(std::sin((.5 / ceiling) * (j * (2 * pi) + pi)) * (a + a));
+                const double inverseRemaining = 1 / remaining,
+                             logb = std::log2(inverseRemaining + 1);
                 const double linear = std::pow(2.0, f(fraction) * (loga - logb) + logb);
                 const double disc = linear * linear - inverseRemaining * 4;
                 const double real = std::sqrt((std::abs(disc) + disc) * .5) * .5;
@@ -186,8 +180,9 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
                     roots.values[0] = {first, false};
                     roots.values[1] = {std::conj(first), false};
                     zeros.values[0] = {zFirst, std::abs(f(zFirst.imag())) <= epsilon};
-                    zeros.values[1] = std::abs(f(zFirst.imag())) > epsilon ? Root{std::conj(zFirst), false}
-                                                                           : Root{zFirst, false};
+                    zeros.values[1] = std::abs(f(zFirst.imag())) > epsilon
+                                          ? Root{std::conj(zFirst), false}
+                                          : Root{zFirst, false};
                 } else {
                     roots.values[0] = {factor > 1 ? first : second, false};
                     roots.values[1] = {factor > 1 ? second : first, false};
@@ -197,9 +192,10 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
                 norm = f(shape == 6 ? inverseRemaining : 1);
             }
         } else if (lastFraction) {
-            const double value = ceiling % 2 != 0 ? 1 / runningNorm
-                                                  : (pole.real() * pole.real() + pole.real() * pole.real()) *
-                                                        (1 / runningNorm);
+            const double value =
+                ceiling % 2 != 0
+                    ? 1 / runningNorm
+                    : (pole.real() * pole.real() + pole.real() * pole.real()) * (1 / runningNorm);
             const double extra = value - 1 >= 0 ? std::sqrt(value - 1) : 0;
             norm = std::abs(f(extra)) > epsilon ? extra : 1;
             const Root zero{{std::abs(f(extra)) > epsilon ? -1 / extra : 0, 0},
@@ -220,7 +216,8 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
                     roots.values[i].value *= 1 / factor;
             }
             if (shape == 6)
-                norm = 1 / (std::abs(f(roots.values[0].value.imag())) > epsilon ? factor * factor : factor);
+                norm = 1 / (std::abs(f(roots.values[0].value.imag())) > epsilon ? factor * factor
+                                                                                : factor);
         } else {
             runningNorm *= .25 / (pole.real() * pole.real());
         }
@@ -281,7 +278,8 @@ bool prototypes(double order, int shape, float gainDb, float mappedQ, AnalogCasc
                 d[1] = static_cast<double>(std::max(f(std::abs(d[1]) * qFactor), qFloor)) *
                        std::copysign(1.0, d[1]);
             }
-            if (!out.append({n, d, roots.count <= 2 ? -1 : static_cast<int>(k / 2), sectionDamping, 1}))
+            if (!out.append(
+                    {n, d, roots.count <= 2 ? -1 : static_cast<int>(k / 2), sectionDamping, 1}))
                 return false;
         }
     }
@@ -302,7 +300,8 @@ Magnitude magnitude(const Analog &s, double w) noexcept {
         if (!quadratic)
             return Polynomial{0, p[1] * p[1], p[2] * p[2] * w2};
         const double constant = p[2] * w2;
-        return Polynomial{p[0] * p[0], (p[1] * p[1] - (p[0] + p[0]) * p[2]) * w2, constant * constant};
+        return Polynomial{p[0] * p[0], (p[1] * p[1] - (p[0] + p[0]) * p[2]) * w2,
+                          constant * constant};
     };
     return {cache(s.n), cache(s.d), quadratic};
 }
@@ -377,7 +376,8 @@ bool anchors(const Analog &s, double w, int shape, float qinv, filters::MatchReq
         float ratio = std::min(1.f, ratioBase);
         if (s.kind == -1) {
             nyq = clamp(E * 1.2, 2.827433388230814, pi);
-            const double blend = clamp(f(static_cast<double>(bias) * bias * .25 + adjustedDamping), .1f, .8f);
+            const double blend =
+                clamp(f(static_cast<double>(bias) * bias * .25 + adjustedDamping), .1f, .8f);
             b = (1 - blend) * E;
             c = (1 - blend * .05) * E;
         } else {
@@ -428,7 +428,8 @@ bool anchors(const Analog &s, double w, int shape, float qinv, filters::MatchReq
                 a = std::max(ratio * proposed, W * .5);
                 c = std::max(static_cast<double>(f(ratio * ratio)) * .999 * a, W * .02);
                 const float inverseRatio = std::min(1.f, f(1.f / ratioBase));
-                b = std::max((.995 - static_cast<double>(f(inverseRatio * inverseRatio)) * .9) * c, W * .001);
+                b = std::max((.995 - static_cast<double>(f(inverseRatio * inverseRatio)) * .9) * c,
+                             W * .001);
             } else {
                 a = std::min((.9998 - static_cast<double>(f(bias * bias)) * .001) * E, cap1);
                 nyq = clamp(a * 1.2, 2.9845130209103035, pi);
@@ -439,15 +440,17 @@ bool anchors(const Analog &s, double w, int shape, float qinv, filters::MatchReq
         } else {
             nyq = s.kind == -1 ? clamp(E * 1.25, 2.670353755551324, pi)
                                : clamp(E * 1.5, 2.827433388230814, 3.1101767270538954);
-            c = (.999 - (1 - static_cast<double>(ratio)) * (1 - static_cast<double>(ratio)) * .5) * E;
+            c = (.999 - (1 - static_cast<double>(ratio)) * (1 - static_cast<double>(ratio)) * .5) *
+                E;
             b = E * .01;
         }
     } else if (shelf) {
-        const double blend = clamp(f(static_cast<double>(bias) * bias * .25 + adjustedDamping), .1f, .8f);
+        const double blend =
+            clamp(f(static_cast<double>(bias) * bias * .25 + adjustedDamping), .1f, .8f);
         if (retained.count == 2 && E < 2.9845130209103035 && shape != 6) {
             const double anchor = std::max(E, .7);
-            nyq = std::min(
-                pi, std::max((pi - E) * .1 + E, anchor * anchor * .06157521601035995 + 2.419026343264141));
+            nyq = std::min(pi, std::max((pi - E) * .1 + E,
+                                        anchor * anchor * .06157521601035995 + 2.419026343264141));
             const double separation = clamp(f(f(E - b) - .15f), 0, 1.f);
             cap1 -= static_cast<double>(f(f(separation) * .15f)) * pi;
             cap2 = cap1 * .95;
@@ -525,11 +528,10 @@ bool validBand(const Band &b) noexcept {
            static_cast<unsigned>(b.shape) <= 9 && static_cast<unsigned>(b.placement) <= 2;
 }
 
-Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
-    if (!std::isfinite(sampleRate) || sampleRate < 8000 || sampleRate > 384000 || !validBand(band))
-        return Status::InvalidArgument;
+namespace {
+Status prototype(const Band &band, int &shape, float &inverseQ, AnalogCascade &analog) noexcept {
     constexpr std::array<int, 10> shapes{7, 2, 3, 5, 0, 10, 8, 6, 12, 11};
-    const int shape = shapes[static_cast<std::size_t>(band.shape)];
+    shape = shapes[static_cast<std::size_t>(band.shape)];
     if (shape == 12)
         return Status::UnsupportedConfiguration;
     int selected = static_cast<int>(f(band.slope + .5f));
@@ -548,13 +550,15 @@ Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
     } else {
         mappedQ = f(band.q * rootHalf);
     }
-    const float hz = f(std::exp(static_cast<double>(f(std::log2(static_cast<double>(band.frequencyHz)))) *
-                                std::numbers::ln2));
-    const double w = f(static_cast<double>(f(hz + hz)) * pi / f(sampleRate));
-    const float inverseQ = f(1.f / mappedQ);
-    AnalogCascade analog{};
+    inverseQ = f(1.f / mappedQ);
     if (!prototypes(order, shape, band.gainDb, mappedQ, analog))
         return Status::UnsupportedConfiguration;
+    return Status::Ok;
+}
+Status digital(double sampleRate, float log2Hz, int shape, float inverseQ,
+               const AnalogCascade &analog, Cascade &output) noexcept {
+    const float hz = f(std::exp(static_cast<double>(log2Hz) * std::numbers::ln2));
+    const double w = f(static_cast<double>(f(hz + hz)) * pi / f(sampleRate));
     Cascade candidate{};
     for (std::size_t i = 0; i < analog.count; ++i) {
         if (shape == 11) {
@@ -570,5 +574,90 @@ Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
     }
     output = candidate;
     return Status::Ok;
+}
+} // namespace
+Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
+    if (!std::isfinite(sampleRate) || sampleRate < 8000 || sampleRate > 384000 || !validBand(band))
+        return Status::InvalidArgument;
+    AnalogCascade analog{};
+    int shape = 0;
+    float inverseQ = 0;
+    const auto result = prototype(band, shape, inverseQ, analog);
+    if (result != Status::Ok)
+        return result;
+    return digital(sampleRate, f(std::log2(static_cast<double>(band.frequencyHz))), shape, inverseQ,
+                   analog, output);
+}
+bool mapTarget(MovingLane lane, float normalized, float &output) noexcept {
+    if (!std::isfinite(normalized) || normalized < 0 || normalized > 1)
+        return false;
+    float result = 0;
+    switch (lane) {
+    case MovingLane::FrequencyLog2: {
+        const float low = detail::minimumLogFrequency, high = detail::maximumLogFrequency;
+        result = f(f(f(high - low) * normalized) + low);
+        break;
+    }
+    case MovingLane::GainDb:
+        result = f(f(normalized * 60.f) - 30.f);
+        break;
+    case MovingLane::Q:
+        result = f(std::pow(40.0, f(f(normalized * 2.f) - 1.f)));
+        break;
+    default:
+        return false;
+    }
+    output = result;
+    return true;
+}
+Status detail::MappedDesigner::build(double rate, const Band &band, float log2Hz,
+                                     Cascade &output) noexcept {
+    if (!std::isfinite(rate) || rate < 8000 || rate > 384000 || !validBand(band) ||
+        !detail::validTarget(MovingLane::FrequencyLog2, log2Hz))
+        return Status::InvalidArgument;
+    constexpr std::array<int, 10> shapes{7, 2, 3, 5, 0, 10, 8, 6, 12, 11};
+    const int shape = shapes[static_cast<std::size_t>(band.shape)];
+    const bool unchanged = valid && band.shape == previous.shape && band.slope == previous.slope &&
+                           band.gainDb == previous.gainDb && band.q == previous.q;
+    AnalogCascade staged{};
+    float q = inverseQ;
+    const AnalogCascade *selected = &analog;
+    if (!unchanged) {
+        int selectedShape = 0;
+        const auto result = prototype(band, selectedShape, q, staged);
+        if (result != Status::Ok)
+            return result;
+        selected = &staged;
+    }
+    Cascade candidate{};
+    const auto result = digital(rate, log2Hz, shape, q, *selected, candidate);
+    if (result != Status::Ok)
+        return result;
+    if (!unchanged) {
+        analog = staged;
+        inverseQ = q;
+        previous = band;
+        valid = true;
+    }
+    output = candidate;
+    return Status::Ok;
+}
+Status detail::buildMapped(double rate, const Band &band, float log2Hz, Cascade &output) noexcept {
+    MappedDesigner designer;
+    return designer.build(rate, band, log2Hz, output);
+}
+bool detail::validTarget(MovingLane lane, float value) noexcept {
+    if (!std::isfinite(value))
+        return false;
+    switch (lane) {
+    case MovingLane::FrequencyLog2:
+        return value >= minimumLogFrequency && value <= maximumLogFrequency;
+    case MovingLane::GainDb:
+        return value >= -30 && value <= 30;
+    case MovingLane::Q:
+        return value >= .025f && value <= 40;
+    default:
+        return false;
+    }
 }
 } // namespace adi::mix::key_eq

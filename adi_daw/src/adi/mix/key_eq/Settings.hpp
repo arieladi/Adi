@@ -32,6 +32,17 @@ struct Settings {
     bool audition = false;
     bool operator==(const Settings &) const = default;
 };
-enum class Status { Ok, InvalidArgument, UnsupportedConfiguration, NotPrepared, AllocationFailed };
+enum class MovingLane : std::uint8_t { None, FrequencyLog2, GainDb, Q };
+enum class Status {
+    Ok,
+    InvalidArgument,
+    UnsupportedConfiguration,
+    NotPrepared,
+    AllocationFailed,
+    InvalidBlock
+};
+// A normalized target maps to the lane's exact float DSP coordinate. Values
+// outside [0,1], including nonfinite values, leave output unchanged.
+bool mapTarget(MovingLane, float normalized, float &output) noexcept;
 bool validBand(const Band &) noexcept;
 } // namespace adi::mix::key_eq
