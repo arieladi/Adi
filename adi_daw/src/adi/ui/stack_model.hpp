@@ -217,6 +217,9 @@ struct TrackInput {
     std::uint8_t roles = 0;   // role:: bits
     std::string_view name;    // copied
     std::uint32_t itemBegin = 0, itemCount = 0; // its chain in RowsInput::items
+    // Presentation membership supplied by the owner, independent of bypass or
+    // runtime availability. The full track remains for ancestry and key roles.
+    bool hasMixFunction = false;
 };
 // What setRows reads. `modules` holds tracks.size() x kinds.size() entries, track by track.
 // Call setRows when `generation` (ProjectView::generation) or the provider's revision moves: the
@@ -447,6 +450,7 @@ struct CaptureResult {
 // --- view state (ui_view) -------------------------------------------------------------------------
 
 enum class SearchMode : std::uint8_t { Filter, Jump };
+enum class ChannelScope : std::uint8_t { WithTools, AllChannels };
 enum class RowSpectrum : std::uint8_t { ProcessorInput, Off, TrackInput }; // carried for W5
 enum class CollisionRule : std::uint8_t { RolePartner, OpenedFrom, Focused };
 enum class Look : std::uint8_t { Live, Dark };                              // carried for W2
@@ -476,7 +480,7 @@ struct RangeEntry {
 // Per window, beside WindowState's Mix View fields. Keys in ui_view, under mixview.stack., each
 // named as its field: baseHeight, autoZoom, navigator, navigatorCollapsed, filterPinned, search,
 // searchMode, layout, moduleLayout, showChain, showDormant, rowSpectrum, collisionRule, overlay,
-// look, scroll, moduleRange, folded. W2's store writes these names, no translation between.
+// look, scroll, moduleRange, folded, channelScope. W2's store writes these names, no translation between.
 struct WindowViewState {
     int baseHeight = 100;
     bool autoZoom = true, navigator = true, navigatorCollapsed = false, filterPinned = false;
@@ -492,6 +496,7 @@ struct WindowViewState {
     ScrollAnchor scroll;
     std::vector<RangeEntry> moduleRange; // sorted by (track, module, device)
     std::vector<TrackId> folded;         // STACK's own group folds, sorted
+    ChannelScope channelScope = ChannelScope::WithTools;
     bool operator==(const WindowViewState &) const = default;
 };
 // Project scope, shared by the project's windows: pins, pinSets, mixview.comparePair.
@@ -580,6 +585,7 @@ struct ChainDeviceInput {
     ItemClass cls = ItemClass::Plugin;
     std::string_view name;
     bool available = true, enabled = true;
+    bool mixFunction = false; // stable native identity, never inferred from name
 };
 // The actual-chain surface (ADR-0236/0237): every real device, no reserved module columns. Track
 // order/scope/roles still come from the one snapshot. Unknown owners and invalid identities are
@@ -651,6 +657,7 @@ class StackModel {
     stack::Effects setShowDormant(bool, stack::TimeMs now);
     stack::Effects setNavigator(bool shown, bool collapsed, stack::TimeMs now);
     stack::Effects setFilterPinned(bool, stack::TimeMs now);
+    stack::Effects setChannelScope(stack::ChannelScope, stack::TimeMs now);
     stack::Effects setSearch(std::string_view, stack::TimeMs now); // allocates only past the reserved bound
     stack::Effects setSearchMode(stack::SearchMode, stack::TimeMs now);
     stack::Effects searchKey(stack::Key, stack::TimeMs now); // Up, Down, Enter, Escape while the field has focus
@@ -694,6 +701,9 @@ class StackModel {
     bool live(const stack::ItemRef &) const noexcept; // compares generations, never the device
     std::optional<stack::Resolved> resolve(const stack::ItemRef &) const noexcept;
     stack::RowRef rowRef(stack::TrackId) const noexcept;
+    // An explicit channel shortcut may visibly switch to All channels to reach
+    // an empty/ordinary chain. Search, pins, folds and project scope still apply.
+    bool hiddenOnlyByToolScope(stack::TrackId) const noexcept;
     stack::ItemRef chainRef(stack::TrackId, stack::DeviceId) const noexcept;
     stack::ItemRef moduleRef(stack::TrackId, std::uint32_t kindKey) const noexcept;
 
@@ -791,6 +801,7 @@ class StackModel {
         std::uint8_t roles = 0;
         bool valid = false, dup = false, group = false, main = false, ret = false, inView = false, reference = false;
         bool match = true, underFold = false; // the search, STACK's folds
+        bool hasMixFunction = false;
         std::uint32_t laneFirst = 0;
         stack::DeviceId laneFirstDevice = 0; // the lane's first item follows its device
         std::string name, nameFold, haystack;
@@ -872,6 +883,7 @@ class StackModel {
     bool member(std::uint32_t rec) const noexcept;
     bool computeMatch(std::uint32_t rec) const noexcept;
     bool computeUnderFold(std::uint32_t rec) const noexcept;
+    bool computeUnderFold(std::uint32_t rec, stack::ChannelScope) const noexcept;
     std::optional<std::size_t> shownOfRec(std::uint32_t rec) const noexcept;
     void rebuildShown();
     void editShown(std::uint32_t rec, bool memberNow);
@@ -965,8 +977,8 @@ class StackModel {
     stack::Effects collisionNow(const stack::RowRef &);
     stack::Effects toggleFoldNow(const stack::RowRef &, stack::TimeMs now);
     void freezeCapturedRow(std::size_t shown, double top, double height);
-    void finishCapture(stack::TimeMs now, stack::CaptureStatus);
-    void checkCapture(stack::TimeMs now, stack::Effects &);
+    void finishCapture(stack::TimeMs now, stack::CaptureStatus, stack::TrackId matchCursor);
+    void checkCapture(stack::TimeMs now, stack::Effects &, stack::TrackId matchCursor);
     void updateNavScroll() noexcept;
     std::uint64_t beginEvent() const noexcept;
     void endEvent(stack::Effects &, std::uint64_t epochBefore);

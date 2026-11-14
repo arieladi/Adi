@@ -120,6 +120,7 @@ struct Fixture {
         t.depth = depth;
         t.identity = identity;
         t.name = keep(name);
+        t.hasMixFunction = true; // geometry fixtures represent eligible tool channels
         tracks.push_back(t);
         chains.emplace_back();
         for (std::size_t k = 0; k < kinds.size(); ++k) {
@@ -2490,6 +2491,7 @@ void adapter() {
     check(allocations == 0, "T45: a second call allocates nothing");
     StackModel m;
     m.setViewport(1264, 600, 0);
+    m.setChannelScope(ChannelScope::AllChannels, 0);
     m.setRows(out.input(1), 0);
     check(shownIds(m) == std::vector<TrackId>{1, 2, 3, 5}, "T45: the model shows 1, 2, 3 and Main");
 }
@@ -2541,6 +2543,7 @@ void actualChainAdapter() {
 
     StackModel model;
     model.setViewport(1800, 600, 0);
+    model.setChannelScope(ChannelScope::AllChannels, 0);
     model.setRows(out.input(reader.seq(), 1), 0);
     const auto target = model.chainRef(1, 105);
     model.focusItem(target, 1);
@@ -2606,6 +2609,499 @@ void actualChainAdapter() {
           "undo restores an editable device without resurrecting its old menu or stale handle");
     check(model.resolve(model.chainRef(1, 105))->identity == 9005,
           "the restored target carries the publication's identity rather than a name/index hash");
+
+    // Eligibility is a stable publication field, independent of the whole chain's
+    // display classes, user labels, availability and activation.
+    auto native = std::find_if(devices.begin(), devices.end(), [](const ChainDeviceInput &d) { return d.device == 101; });
+    native->mixFunction = true;
+    refresh();
+    model.setRows(out.input(reader.seq(), 8), 260);
+    model.setChannelScope(ChannelScope::WithTools, 270);
+    check(out.tracks[0].hasMixFunction && !out.tracks[1].hasMixFunction &&
+              shownIds(model) == std::vector<TrackId>{1},
+          "channel membership uses the explicit function flag, including a bypassed native function");
+    std::vector<DeviceId> retainedOrder;
+    if (const auto row = model.shownIndex(1))
+        model.forEachChainItem(*row, [&](const ItemGeo &item) { retainedOrder.push_back(item.ref.device); });
+    check(retainedOrder == std::vector<DeviceId>{101, 105, 102} && model.live(model.chainRef(2, 301)),
+          "With tools retains ordinary and unavailable inserts in order and keeps hidden track records");
+    const auto nativeRef = model.chainRef(1, 101);
+    native->available = false;
+    native->enabled = true;
+    native->name = "User-renamed unavailable function";
+    refresh();
+    model.setRows(out.input(reader.seq(), 9), 280);
+    const auto resolvedNative = model.resolve(nativeRef);
+    check(model.shownIndex(1) && model.chainRef(1, 101) == nativeRef && resolvedNative &&
+              !resolvedNative->available && resolvedNative->enabled,
+          "rename, runtime unavailability and activator changes preserve native membership and target identity");
+    native->mixFunction = false;
+    for (auto &device : devices)
+        if (device.device == 103 || device.device == 0 || device.track == 999)
+            device.mixFunction = true;
+    refresh();
+    model.setRows(out.input(reader.seq(), 10), 290);
+    check(model.shownCount() == 0 && model.live(nativeRef) && out.items.size() == 4,
+          "invalid device identities and unknown owners cannot make a channel eligible");
+    model.setChannelScope(ChannelScope::AllChannels, 300);
+    check(shownIds(model) == std::vector<TrackId>{1, 2} && model.chainRef(1, 101) == nativeRef &&
+              model.selection() == 2,
+          "All channels restores ordinary-only rows without replacing devices or changing selection");
+}
+
+void channelMembership() {
+    section("Channel membership, hidden records and capture retention");
+    check(!TrackInput{}.hasMixFunction && !ChainDeviceInput{}.mixFunction &&
+              WindowViewState{}.channelScope == ChannelScope::WithTools,
+          "a fresh model requires explicit tool membership and defaults to With tools");
+
+    Fixture f;
+    f.kinds.clear();
+    f.add(1, "Family Bus", 0, 0, kGroupKind);
+    f.track(1).group = true;
+    f.add(2, "Match tools", 1, 1);
+    f.track(2).roles = role::Bass;
+    f.add(3, "Kick key");
+    f.track(3).roles = role::Kick;
+    f.add(4, "Match ordinary");
+    f.add(5, "Reference");
+    f.track(5).reference = true;
+    f.add(6, "Outside project view");
+    f.track(6).inView = false;
+    for (auto &track : f.tracks)
+        track.hasMixFunction = track.id == 2 || track.id == 5 || track.id == 6;
+    f.item(2, 21, ItemClass::Plugin, "Ordinary insert");
+    f.item(2, 22, ItemClass::View, "Native function");
+    f.item(4, 41, ItemClass::Plugin, "Ordinary only");
+    f.generation = 1;
+    auto m = model(f, 2400, 900);
+    TimeMs now = 0;
+    m.setAutoZoom(false, ++now);
+    const auto child = m.rowRef(2);
+    const auto ordinary = m.chainRef(4, 41);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.live(m.rowRef(1)) && m.live(m.rowRef(3)) &&
+              m.live(ordinary) && m.row(0).depth == 1,
+          "With tools filters shown membership while preserving full ancestry, role tracks and device refs");
+    check(m.collisionReference(child) == 3,
+          "an ordinary-only Kick remains the eligible Bass channel's role partner");
+    m.setSearch("family", ++now);
+    check(shownIds(m) == std::vector<TrackId>{2},
+          "a hidden tool-free ancestor still contributes its name to descendant search");
+    m.setSearch("", ++now);
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    m.toggleFold(m.rowRef(1), ++now);
+    check(!m.shownIndex(2) && m.row(*m.shownIndex(1)).folded,
+          "All channels applies a saved fold on a group without tools");
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.rowRef(2) == child,
+          "With tools ignores an ineligible ancestor's saved fold so its child remains reachable");
+    m.setSearch("family", ++now);
+    check(shownIds(m) == std::vector<TrackId>{2},
+          "the folded but ineligible ancestor still supplies descendant search text");
+    m.setSearch("", ++now);
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(!m.shownIndex(2) && m.row(*m.shownIndex(1)).folded && m.rowRef(2) == child,
+          "returning to All channels restores the saved ancestor fold without replacing the child");
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    f.track(1).hasMixFunction = true;
+    ++f.generation;
+    m.setRows(f.input(), ++now);
+    check(shownIds(m) == std::vector<TrackId>{1} && m.row(0).folded && m.rowRef(2) == child,
+          "a group gaining its first tool applies its existing fold to descendants in the same publication");
+    f.track(1).hasMixFunction = false;
+    ++f.generation;
+    m.setRows(f.input(), ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.rowRef(2) == child,
+          "a group losing its last tool releases the descendant fold without replacing child identity");
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(!m.shownIndex(2) && m.row(*m.shownIndex(1)).folded,
+          "eligibility changes preserve the saved fold for the All channels view");
+    m.toggleFold(m.rowRef(1), ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    const auto selected = m.setSelection(4, ++now);
+    check(m.selection() == 4 && !m.shownIndex(4) && selected.select == 0,
+          "an externally selected ordinary-only channel stays selected while hidden");
+    auto fx = m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(fx.windowViewChanged && !fx.sharedViewChanged && fx.select == 0 &&
+              shownIds(m) == std::vector<TrackId>{1, 2, 3, 4} && m.row(*m.shownIndex(4)).selected,
+          "explicit All channels restores rows but still excludes Reference and project-hidden tracks");
+    fx = m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(fx.select == 0 && m.selection() == 4 && m.rowRef(2) == child && m.chainRef(4, 41) == ordinary,
+          "scope changes preserve the selected track id and stable row/device generations");
+
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    m.pin(m.rowRef(4), Mods{}, ++now);
+    m.setFilterPinned(true, ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.pinned(4),
+          "pin membership does not override With tools and hidden pins remain stored");
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2, 4},
+          "All channels intersects with the existing pinned-only filter");
+    m.setFilterPinned(false, ++now);
+    m.setSearchMode(SearchMode::Jump, ++now);
+    m.setSearch("match", ++now);
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 4, "All channels includes an ordinary-only Jump match");
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(m.jumpTarget().track == 2, "With tools removes an ineligible current Jump match");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 2, "Jump traversal cannot retain an out-of-scope match");
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(m.jumpTarget().track == 2, "a surviving Jump cursor keeps its track across scope expansion");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 4, "scope expansion rebuilds the complete Jump match set");
+    const auto state = m.viewState();
+    auto restored = model(f, 2400, 900);
+    restored.applyViewState(state, ++now);
+    check(restored.windowView().channelScope == ChannelScope::AllChannels &&
+              shownIds(restored) == shownIds(m) && restored.pins() == m.pins(),
+          "explicit All channels round-trips alongside search and stored pins");
+    auto invalid = state;
+    invalid.window.channelScope = static_cast<ChannelScope>(255);
+    check(invalid.normalised(Constants{}).window.channelScope == ChannelScope::WithTools &&
+              m.setChannelScope(static_cast<ChannelScope>(255), ++now).refused &&
+              m.windowView().channelScope == ChannelScope::AllChannels,
+          "invalid restored scope normalises to With tools and an invalid command changes nothing");
+    const auto jumpCapture = m.beginCapture(CaptureKind::Menu, ordinary, ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(jumpCapture.refusal == CaptureRefusal::None && m.captureStatus(jumpCapture.ref) == CaptureStatus::Live &&
+              m.shownIndex(4) && m.jumpTarget().track == 4,
+          "a captured ordinary Jump match remains available during the scope change");
+    m.endCapture(jumpCapture.ref, ++now);
+    check(!m.shownIndex(4) && m.jumpTarget().track == 2 && m.shownIndex(m.jumpTarget().track),
+          "capture release removes the filtered row from Jump matches and selects a visible survivor");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 2,
+          "Jump Down after capture release cannot revisit the now-hidden ordinary channel");
+
+    // A device publication can move without changing the project generation.
+    Fixture updates;
+    updates.kinds.clear();
+    updates.add(1, "First");
+    updates.add(2, "Second");
+    updates.track(1).hasMixFunction = false;
+    for (auto &track : updates.tracks)
+        track.revision = 1;
+    updates.generation = 77;
+    StackModel incremental;
+    incremental.setViewport(1800, 600, 0);
+    const auto publish = [&](std::uint64_t revision) {
+        auto input = updates.input();
+        input.providerRevision = revision;
+        return incremental.setRows(input, ++now);
+    };
+    publish(1);
+    const auto first = incremental.rowRef(1);
+    const auto second = incremental.rowRef(2);
+    incremental.resetStats();
+    updates.track(1).hasMixFunction = true;
+    updates.track(1).revision = 2;
+    publish(2);
+    check(shownIds(incremental) == std::vector<TrackId>{1, 2} && incremental.rowRef(1) == first &&
+              incremental.rowRef(2) == second && incremental.stats().rowUpdates == 1 &&
+              incremental.stats().shownEdits == 1 && incremental.stats().fullPasses == 0,
+          "a provider-only eligibility update inserts one shown row without replacing records or a full pass");
+    updates.track(1).hasMixFunction = false;
+    updates.track(1).revision = 3;
+    publish(3);
+    check(shownIds(incremental) == std::vector<TrackId>{2} && incremental.live(first) &&
+              incremental.stats().rowUpdates == 2 && incremental.stats().shownEdits == 2,
+          "the last-tool flag removal hides one row but its retained record stays live");
+    const auto unchanged = publish(3);
+    check(!unchanged.repaint, "an unchanged generation/publication pair remains a no-op");
+    audit = true;
+    allocations = 0;
+    for (std::uint64_t revision = 4; revision < 12; ++revision)
+        publish(revision);
+    audit = false;
+    check(allocations == 0 && incremental.stats().rowUpdates == 2,
+          "steady provider refreshes with unchanged per-row tokens allocate nothing and update no rows");
+
+    // Losing the last function is a presentation filter. A still-existing ordinary
+    // target or chip retains its row; removal of the captured function is different.
+    Fixture captures;
+    captures.kinds.clear();
+    captures.add(1, "Tools");
+    captures.add(2, "Other tools");
+    captures.item(1, 11, ItemClass::Plugin, "Ordinary retained target");
+    captures.item(1, 12, ItemClass::View, "Last function");
+    captures.generation = 1;
+    auto held = model(captures, 2400, 600);
+    held.setAutoZoom(false, ++now);
+    const auto ordinaryTarget = held.chainRef(1, 11);
+    auto capture = held.beginCapture(CaptureKind::Menu, ordinaryTarget, ++now);
+    check(capture.refusal == CaptureRefusal::None, "an ordinary insert on an eligible channel can capture");
+    captures.chains[0].pop_back();
+    captures.track(1).hasMixFunction = false;
+    ++captures.generation;
+    fx = held.setRows(captures.input(), ++now);
+    const auto retainedRow = held.shownIndex(1);
+    check(fx.captureLost == CaptureStatus::Live && held.captureStatus(capture.ref) == CaptureStatus::Live &&
+              retainedRow && held.row(*retainedRow).retained && held.chainRef(1, 11) == ordinaryTarget,
+          "last-function deletion retains a live ordinary capture with its exact device id");
+    held.endCapture(capture.ref, ++now);
+    check(!held.shownIndex(1) && held.live(ordinaryTarget) && !held.capture(),
+          "ordinary capture release applies With tools without deleting its target record");
+    held.setChannelScope(ChannelScope::AllChannels, ++now);
+    const auto chipRow = held.rowRef(1);
+    capture = held.beginCapture(CaptureKind::Text, ItemRef{chipRow, ItemPlace::None, 0, 0, chipRow.gen}, ++now);
+    held.setChannelScope(ChannelScope::WithTools, ++now);
+    check(capture.refusal == CaptureRefusal::None && held.shownIndex(1) &&
+              held.captureStatus(capture.ref) == CaptureStatus::Live && held.rowRef(1) == chipRow,
+          "switching from All channels retains an ineligible chip text capture");
+    held.endCapture(capture.ref, ++now);
+    check(!held.shownIndex(1) && held.live(chipRow), "chip capture release reapplies the channel filter");
+    captures.item(1, 12, ItemClass::View, "Restored function");
+    captures.track(1).hasMixFunction = true;
+    ++captures.generation;
+    held.setRows(captures.input(), ++now);
+    const auto functionTarget = held.chainRef(1, 12);
+    capture = held.beginCapture(CaptureKind::Drag, functionTarget, ++now);
+    check(capture.refusal == CaptureRefusal::None, "the last function itself can capture");
+    captures.chains[0].pop_back();
+    captures.track(1).hasMixFunction = false;
+    ++captures.generation;
+    fx = held.setRows(captures.input(), ++now);
+    check(fx.captureLost == CaptureStatus::ItemRemoved && !held.capture() && !held.shownIndex(1) &&
+              !held.live(functionTarget) && held.captureStatus(capture.ref) == CaptureStatus::ItemRemoved,
+          "deleting the captured last function cancels that exact target and removes retained presentation");
+    ++captures.generation;
+    fx = held.setRows(captures.input(), ++now);
+    check(fx.captureLost == CaptureStatus::Live, "last-function deletion cancellation is emitted only once");
+    captures.item(1, 12, ItemClass::View, "Undo restored function");
+    captures.track(1).hasMixFunction = true;
+    ++captures.generation;
+    held.setRows(captures.input(), ++now);
+    const auto replacement = held.chainRef(1, 12);
+    const auto nextCapture = held.beginCapture(CaptureKind::Menu, replacement, ++now);
+    held.endCapture(capture.ref, ++now);
+    check(nextCapture.refusal == CaptureRefusal::None && !held.live(functionTarget) && held.live(replacement) &&
+              held.captureStatus(nextCapture.ref) == CaptureStatus::Live,
+          "undo restores membership with a fresh item generation and stale capture completion cannot end its successor");
+    held.endCapture(nextCapture.ref, ++now);
+}
+
+void channelShortcutScope() {
+    section("Explicit channel shortcut scope");
+    Fixture f;
+    f.kinds.clear();
+    f.add(1, "Bus", 0, 0, kGroupKind);
+    f.track(1).group = true;
+    f.add(2, "Ordinary child", 1, 1);
+    f.add(3, "Empty");
+    f.add(4, "Native");
+    f.add(5, "Reference");
+    f.track(5).reference = true;
+    f.add(6, "Project hidden");
+    f.track(6).inView = false;
+    for (auto &track : f.tracks)
+        track.hasMixFunction = track.id == 4;
+    f.item(2, 21, ItemClass::Plugin, "Ordinary insert");
+    auto m = model(f, 1600, 900);
+    TimeMs now = 0;
+    check(m.hiddenOnlyByToolScope(2) && m.hiddenOnlyByToolScope(3),
+          "an ordinary chain and an empty channel are reachable by an explicit All channels switch");
+    check(!m.hiddenOnlyByToolScope(4) && !m.hiddenOnlyByToolScope(999) &&
+              !m.hiddenOnlyByToolScope(5) && !m.hiddenOnlyByToolScope(6),
+          "eligible invalid reference and project-hidden targets cannot change the scope");
+    check(m.windowView().channelScope == ChannelScope::WithTools && shownIds(m) == std::vector<TrackId>{4},
+          "the shortcut query changes no membership focus selection or settings");
+    m.setSearch("empty", ++now);
+    check(m.hiddenOnlyByToolScope(3) && !m.hiddenOnlyByToolScope(2),
+          "Filter search still decides whether the shortcut can reveal an ordinary channel");
+    m.setSearchMode(SearchMode::Jump, ++now);
+    check(m.hiddenOnlyByToolScope(2), "Jump search does not hide nonmatching rows");
+    m.setSearch("", ++now);
+    m.setFilterPinned(true, ++now);
+    check(!m.hiddenOnlyByToolScope(2), "an unpinned target cannot override a pinned-only filter");
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    check(m.hiddenOnlyByToolScope(2), "a pinned ordinary target can request All channels");
+    m.setFilterPinned(false, ++now);
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    m.toggleFold(m.rowRef(1), ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(!m.hiddenOnlyByToolScope(2),
+          "a saved tool-free ancestor fold remains an independent All channels exclusion");
+    m.setSearchMode(SearchMode::Filter, ++now);
+    m.setSearch("ordinary", ++now);
+    check(m.hiddenOnlyByToolScope(2), "matching Filter search retains its existing fold override");
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    check(!m.hiddenOnlyByToolScope(2) && m.shownIndex(2),
+          "an already All channels scope never requests another switch");
+    const auto capture = m.beginCapture(CaptureKind::Menu, m.chainRef(2, 21), ++now);
+    m.setChannelScope(ChannelScope::WithTools, ++now);
+    check(capture.refusal == CaptureRefusal::None && m.shownIndex(2) && !m.hiddenOnlyByToolScope(2),
+          "an ordinary row retained by an edit is already reachable and cannot change scope");
+    m.endCapture(capture.ref, ++now);
+    check(!m.shownIndex(2) && m.hiddenOnlyByToolScope(2),
+          "the same ordinary row can request All channels once its retained edit ends");
+}
+
+void channelScopeJumpPins() {
+    section("Jump matches follow pin-filter membership");
+    Fixture f;
+    f.kinds.clear();
+    f.add(2, "Match two");
+    f.add(4, "Match four");
+    f.generation = 1;
+    auto m = model(f, 1800, 600);
+    TimeMs now = 0;
+    m.setChannelScope(ChannelScope::AllChannels, ++now);
+    m.setSearchMode(SearchMode::Jump, ++now);
+    m.setSearch("match", ++now);
+    m.searchKey(Key::Down, ++now);
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    check(m.jumpTarget().track == 4 && shownIds(m) == std::vector<TrackId>{2, 4},
+          "before pinned-only filtering, the current match can be an unpinned channel");
+    m.setFilterPinned(true, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.jumpTarget().track == 2,
+          "enabling pinned-only filtering drops an unpinned current Jump match");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 2, "Jump Down cannot revisit a match hidden by pinned-only filtering");
+
+    m.pin(m.rowRef(4), Mods{}, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2, 4} && m.jumpTarget().track == 2,
+          "pinning a hidden match expands Jump membership while preserving its surviving cursor");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 4, "a newly pinned matching channel is reachable by Jump Down");
+    m.pin(m.rowRef(4), Mods{}, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2} && m.jumpTarget().track == 2,
+          "unpinning the current match moves Jump to a remaining shown channel");
+
+    m.pin(m.rowRef(4), Mods{}, ++now);
+    Mods only;
+    only.alt = true;
+    m.pin(m.rowRef(4), only, ++now);
+    check(m.pins() == std::vector<TrackId>{4} && shownIds(m) == std::vector<TrackId>{4} &&
+              m.jumpTarget().track == 4,
+          "bulk pin-only replacement rebuilds Jump matches when the old cursor leaves");
+    m.searchKey(Key::Down, ++now);
+    check(m.jumpTarget().track == 4, "bulk pin replacement leaves no stale hidden Jump entry");
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    m.pin(m.rowRef(2), Mods{}, ++now);
+    check(shownIds(m) == std::vector<TrackId>{4} && m.jumpTarget().track == 4,
+          "pinning and unpinning another match preserves the current shown cursor");
+    m.setFilterPinned(false, ++now);
+    check(shownIds(m) == std::vector<TrackId>{2, 4} && m.jumpTarget().track == 4,
+          "disabling pinned-only filtering expands matches without moving a surviving cursor");
+    m.searchKey(Key::Up, ++now);
+    check(m.jumpTarget().track == 2, "Jump Up reaches a matching channel restored by disabling the pin filter");
+}
+
+void jumpCapturePublicationChanges() {
+    section("Jump cursor and captures survive record-vector mutation by stable ids");
+    const auto fixture = [] {
+        Fixture f;
+        f.kinds.clear();
+        f.add(10, "Match first");
+        f.add(20, "Match last");
+        f.item(10, 101, ItemClass::View, "First native function");
+        f.item(20, 201, ItemClass::Plugin, "Captured ordinary insert");
+        f.item(20, 202, ItemClass::View, "Last native function");
+        f.generation = 1;
+        return f;
+    };
+    {
+        auto f = fixture();
+        auto m = model(f, 2400, 600);
+        TimeMs now = 0;
+        m.setChannelScope(ChannelScope::AllChannels, ++now);
+        m.setSearchMode(SearchMode::Jump, ++now);
+        m.setSearch("match", ++now);
+        m.searchKey(Key::Down, ++now);
+        const auto survivor = m.rowRef(10);
+        const auto removedRow = m.rowRef(20);
+        const auto target = m.chainRef(20, 201);
+        const auto capture = m.beginCapture(CaptureKind::Menu, target, ++now);
+        check(m.jumpTarget().track == 20 && capture.refusal == CaptureRefusal::None,
+              "the final matching actual-chain row owns the Jump cursor and item capture");
+        f.erase(20);
+        ++f.generation;
+        auto fx = m.setRows(f.input(), ++now);
+        check(fx.captureLost == CaptureStatus::RowRemoved && !m.capture() && !m.live(removedRow) &&
+                  !m.live(target) && m.captureStatus(capture.ref) == CaptureStatus::RowRemoved,
+              "shrinking the records by deleting the captured final row cancels its exact target");
+        check(shownIds(m) == std::vector<TrackId>{10} && m.jumpTarget() == survivor && m.live(survivor),
+              "after the records shrink, Jump resolves the visible survivor without using the old final index");
+        ++f.generation;
+        fx = m.setRows(f.input(), ++now);
+        check(fx.captureLost == CaptureStatus::Live && m.jumpTarget() == survivor,
+              "row-deletion cancellation is emitted once and later publications keep the survivor cursor");
+        m.endCapture(capture.ref, ++now);
+        check(!m.capture() && m.jumpTarget() == survivor,
+              "a late end for the deleted row's capture cannot disturb the recovered Jump cursor");
+        const auto next = m.beginCapture(CaptureKind::Menu, m.chainRef(10, 101), ++now);
+        m.endCapture(capture.ref, ++now);
+        check(next.refusal == CaptureRefusal::None && m.captureStatus(next.ref) == CaptureStatus::Live &&
+                  m.jumpTarget() == survivor,
+              "the deleted row's stale completion cannot end a new capture on its surviving neighbour");
+        m.endCapture(next.ref, ++now);
+    }
+
+    for (const bool replace : {true, false}) {
+        auto f = fixture();
+        auto m = model(f, 2400, 600);
+        TimeMs now = 0;
+        m.setChannelScope(ChannelScope::AllChannels, ++now);
+        m.setSearchMode(SearchMode::Jump, ++now);
+        m.setSearch("match", ++now);
+        m.searchKey(Key::Down, ++now);
+        const auto trackedRow = m.rowRef(20);
+        const auto target = m.chainRef(20, 201);
+        const auto otherItem = m.chainRef(20, 202);
+        const auto capture = m.beginCapture(CaptureKind::Menu, target, ++now);
+        check(capture.refusal == CaptureRefusal::None && m.jumpTarget() == trackedRow,
+              replace ? "replacement case starts with the final row captured and targeted"
+                      : "removal case starts with the final row captured and targeted");
+        std::swap(f.tracks[0], f.tracks[1]);
+        std::swap(f.chains[0], f.chains[1]);
+        ++f.generation;
+        auto fx = m.setRows(f.input(), ++now);
+        check(fx.captureLost == CaptureStatus::Live && m.captureStatus(capture.ref) == CaptureStatus::Live &&
+                  shownIds(m) == std::vector<TrackId>{20, 10} && m.jumpTarget() == trackedRow &&
+                  m.chainRef(20, 201) == target,
+              replace ? "reordering before replacement preserves the live capture and cursor by track id"
+                      : "reordering before removal preserves the live capture and cursor by track id");
+
+        // Move the cursor's track back again: its old record index now names the
+        // other matching track. Cancellation must carry the pre-update track id.
+        std::swap(f.tracks[0], f.tracks[1]);
+        std::swap(f.chains[0], f.chains[1]);
+        auto &chain = f.chains[f.at(20)];
+        if (replace)
+            ++chain[0].identity;
+        else
+            chain.erase(chain.begin());
+        ++f.generation;
+        fx = m.setRows(f.input(), ++now);
+        const auto expected = replace ? CaptureStatus::ItemReplaced : CaptureStatus::ItemRemoved;
+        check(fx.captureLost == expected && m.captureStatus(capture.ref) == expected && !m.capture() &&
+                  !m.live(target) && m.rowRef(20) == trackedRow,
+              replace ? "same-count reorder plus replacement cancels the old device without replacing its row"
+                      : "same-count reorder plus item removal cancels the old device without replacing its row");
+        const auto current = m.chainRef(20, 201);
+        check((replace ? current.gen != 0 && current != target : current.gen == 0) &&
+                  m.chainRef(20, 202) == otherItem && m.live(otherItem),
+              replace ? "replacement gives the target a new generation while the neighbouring function remains stable"
+                      : "removal leaves no handle for the old target and retains the neighbouring native function");
+        check(shownIds(m) == std::vector<TrackId>{10, 20} && m.jumpTarget() == trackedRow,
+              replace ? "replacement cancellation preserves the cursor's track rather than its former record index"
+                      : "removal cancellation preserves the cursor's track rather than its former record index");
+        ++f.generation;
+        fx = m.setRows(f.input(), ++now);
+        check(fx.captureLost == CaptureStatus::Live && !m.capture() && m.jumpTarget() == trackedRow,
+              replace ? "replacement cancellation is not repeated on an unchanged follow-up publication"
+                      : "item-removal cancellation is not repeated on an unchanged follow-up publication");
+        const auto next = m.beginCapture(CaptureKind::Menu, otherItem, ++now);
+        m.endCapture(capture.ref, ++now);
+        check(next.refusal == CaptureRefusal::None && m.captureStatus(next.ref) == CaptureStatus::Live &&
+                  m.jumpTarget() == trackedRow,
+              replace ? "the replaced target's late completion cannot end its neighbour's new capture"
+                      : "the removed target's late completion cannot end its neighbour's new capture");
+        m.endCapture(next.ref, ++now);
+    }
 }
 
 struct Trace {
@@ -3500,6 +3996,10 @@ int main() {
     viewStateRoundTrip();
     adapter();
     actualChainAdapter();
+    channelMembership();
+    channelShortcutScope();
+    channelScopeJumpPins();
+    jumpCapturePublicationChanges();
     determinism();
     baseHeight();
     separateStates();

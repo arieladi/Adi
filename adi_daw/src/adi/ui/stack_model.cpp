@@ -389,6 +389,8 @@ ViewState ViewState::normalised(const Constants &c) const {
     w.baseHeight = std::clamp(w.baseHeight, c.baseMin, std::max(c.baseMin, c.baseMax));
     if (static_cast<unsigned>(w.searchMode) > static_cast<unsigned>(SearchMode::Jump))
         w.searchMode = SearchMode::Filter;
+    if (static_cast<unsigned>(w.channelScope) > static_cast<unsigned>(ChannelScope::AllChannels))
+        w.channelScope = ChannelScope::WithTools;
     if (static_cast<unsigned>(w.layout) > static_cast<unsigned>(RowLayout::ProcessorFirst))
         w.layout = RowLayout::ChainFirst;
     if (static_cast<unsigned>(w.moduleLayout) > static_cast<unsigned>(ModuleLayout::Card))
@@ -560,6 +562,7 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
             item.enabled = source.enabled;
             out.items.push_back(item);
             ++track.itemCount;
+            track.hasMixFunction = track.hasMixFunction || source.mixFunction;
         }
     }
 }
@@ -753,6 +756,14 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
         r.inView = t.inView;
         r.reference = t.reference;
         ch.any = ch.membership = true;
+    }
+    if (r.hasMixFunction != t.hasMixFunction) {
+        r.hasMixFunction = t.hasMixFunction;
+        ch.any = ch.membership = true;
+        // Its fold starts/stops applying to descendants in With tools. Rebuild
+        // their cached fold ancestry without changing any row/device identity.
+        if (r.group)
+            ch.structure = true;
     }
     if (r.colour != t.colour || r.roles != t.roles) {
         r.colour = t.colour;
@@ -979,6 +990,8 @@ bool StackModel::memberPlain(std::uint32_t rec) const noexcept {
     const Rec &r = rows_[rec];
     if (!inScope(r))
         return false;
+    if (view_.channelScope == ChannelScope::WithTools && !r.hasMixFunction)
+        return false;
     const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
     if (searching) {
         if (!r.match)
@@ -1012,9 +1025,16 @@ bool StackModel::computeMatch(std::uint32_t rec) const noexcept {
 }
 
 bool StackModel::computeUnderFold(std::uint32_t rec) const noexcept {
+    return computeUnderFold(rec, view_.channelScope);
+}
+
+bool StackModel::computeUnderFold(std::uint32_t rec, ChannelScope scope) const noexcept {
     std::uint32_t up = rows_[rec].parentRec;
     for (std::size_t steps = 0; up != kNoRec && steps <= rows_.size(); ++steps) {
-        if (std::binary_search(view_.folded.begin(), view_.folded.end(), rows_[up].id))
+        // A group omitted by With tools has no fold affordance in this list.
+        // Keep its saved fold for All channels without hiding eligible children.
+        if ((scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
+            std::binary_search(view_.folded.begin(), view_.folded.end(), rows_[up].id))
             return true;
         up = rows_[up].parentRec;
     }
@@ -1172,7 +1192,7 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     else
         for (std::size_t f = 0; f < flipCount; ++f)
             editShown(flips[f], member(flips[f]));
-    checkCapture(now, fx);
+    checkCapture(now, fx, matchCursor);
     if (shownVersion_ != versionBefore)
         afterShownChange(now, oldFocusShown);
     replan();
@@ -2735,7 +2755,7 @@ Effects StackModel::key(Key k, Mods mods, TimeMs now) {
             fx.consumed = true;
             const TrackId was = cap_.target.row.track;
             fx.captureEnded = cap_.token;
-            finishCapture(now, CaptureStatus::Ended);
+            finishCapture(now, CaptureStatus::Ended, jumpTarget().track);
             if (const auto at = shownIndex(was)) {
                 const bool back = mods.shift;
                 if ((back && *at > 0) || (!back && *at + 1 < shown_.size())) {
@@ -2958,8 +2978,34 @@ Effects StackModel::setFilterPinned(bool on, TimeMs now) {
     const auto before = beginEvent();
     now = advanceTo(now);
     if (view_.filterPinned != on) {
+        const TrackId cursor = jumpTarget().track;
         view_.filterPinned = on;
         membershipChanged(now, false);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
+        fx.windowViewChanged = true;
+    }
+    endEvent(fx, before);
+    return fx;
+}
+
+Effects StackModel::setChannelScope(ChannelScope scope, TimeMs now) {
+    Effects fx;
+    const auto before = beginEvent();
+    now = advanceTo(now);
+    if (static_cast<unsigned>(scope) > static_cast<unsigned>(ChannelScope::AllChannels)) {
+        fx.refused = true;
+    } else if (view_.channelScope != scope) {
+        const TrackId cursor = jumpTarget().track;
+        view_.channelScope = scope;
+        ++stats_.fullPasses;
+        for (std::uint32_t i = 0; i < rows_.size(); ++i)
+            rows_[i].underFold = computeUnderFold(i);
+        // Like search/pins, a still-live captured row stays until release.
+        // Deleting/replacing the captured item uses the ordinary cancellation.
+        membershipChanged(now, false);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
         fx.windowViewChanged = true;
     }
     endEvent(fx, before);
@@ -3200,8 +3246,11 @@ void StackModel::pinsChanged(TimeMs now, std::span<const TrackId> touched, bool 
     bump();
     if (!view_.filterPinned)
         return; // membership does not depend on pins: nothing to rebuild
+    const TrackId cursor = jumpTarget().track;
     if (bulk || touched.size() > kMaxTouched) {
         membershipChanged(now, false);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
         return;
     }
     const std::size_t oldFocusShown = focusRow_ != 0 ? shownIndex(focusRow_).value_or(kNpos) : kNpos;
@@ -3213,8 +3262,11 @@ void StackModel::pinsChanged(TimeMs now, std::span<const TrackId> touched, bool 
         if (rec != kNoRec && rows_[rec].valid)
             editShown(rec, member(rec));
     }
-    if (shownVersion_ != versionBefore)
+    if (shownVersion_ != versionBefore) {
         afterShownChange(now, oldFocusShown);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
+    }
     solveScroll();
     rehit(now);
     updateNavScroll();
@@ -3747,12 +3799,14 @@ Effects StackModel::endCapture(const CaptureRef &ref, TimeMs now) {
     const auto before = beginEvent();
     now = advanceTo(now);
     if (cap_.active && ref.token == cap_.token)
-        finishCapture(now, CaptureStatus::Ended);
+        finishCapture(now, CaptureStatus::Ended, jumpTarget().track);
     endEvent(fx, before);
     return fx;
 }
 
-void StackModel::finishCapture(TimeMs now, CaptureStatus status) {
+void StackModel::finishCapture(TimeMs now, CaptureStatus status, TrackId matchCursor) {
+    // setRows supplies the cursor captured before records moved. matches_ can
+    // still contain old record indices while a structural change cancels us.
     lastToken_ = cap_.token;
     lastStatus_ = status;
     const TrackId rowId = cap_.target.row.track;
@@ -3765,8 +3819,11 @@ void StackModel::finishCapture(TimeMs now, CaptureStatus status) {
     const auto versionBefore = shownVersion_;
     if (rec != kNoRec)
         editShown(rec, rows_[rec].valid && memberPlain(rec));
-    if (shownVersion_ != versionBefore)
+    if (shownVersion_ != versionBefore) {
         afterShownChange(now, oldFocusShown);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(matchCursor);
+    }
     captureEndAt_ = now;
     // the scroll comes back inside the list; the heights cut by the capture finish
     jump_ = Jump{};
@@ -3783,7 +3840,7 @@ void StackModel::finishCapture(TimeMs now, CaptureStatus status) {
     bump();
 }
 
-void StackModel::checkCapture(TimeMs now, Effects &fx) {
+void StackModel::checkCapture(TimeMs now, Effects &fx, TrackId matchCursor) {
     if (!cap_.active)
         return;
     const ItemRef &t = cap_.target;
@@ -3809,7 +3866,7 @@ void StackModel::checkCapture(TimeMs now, Effects &fx) {
     }
     if (lost == CaptureStatus::Live)
         return;
-    finishCapture(now, lost);
+    finishCapture(now, lost, matchCursor);
     fx.captureLost = lost;
 }
 
@@ -3874,6 +3931,18 @@ std::optional<Resolved> StackModel::resolve(const ItemRef &ref) const noexcept {
 RowRef StackModel::rowRef(TrackId id) const noexcept {
     const Rec *r = recFor(id);
     return r == nullptr ? RowRef{} : RowRef{r->id, r->gen};
+}
+
+bool StackModel::hiddenOnlyByToolScope(TrackId id) const noexcept {
+    if (view_.channelScope != ChannelScope::WithTools || shownIndex(id))
+        return false;
+    const auto rec = recOf(id);
+    if (rec == kNoRec || !inScope(rows_[rec]) || rows_[rec].hasMixFunction)
+        return false;
+    const Rec &r = rows_[rec];
+    const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
+    return (searching ? r.match : !computeUnderFold(rec, ChannelScope::AllChannels)) &&
+           (!view_.filterPinned || pinned(id));
 }
 
 ItemRef StackModel::chainRef(TrackId id, DeviceId device) const noexcept {

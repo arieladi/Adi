@@ -3,6 +3,7 @@
 #include "ui_devices.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include "adi/mix_functions.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -252,6 +253,18 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     search.onEscapeKey = [this] { search.clear(); };
     search.onReturnKey = [this] { effects(model().searchKey(stack::Key::Enter, clockNow())); layoutRows(); };
     addAndMakeVisible(search);
+    channelScope.setTitle("Channels shown");
+    channelScope.setTooltip("Choose channels containing native Mix View tools, or show every channel. This only changes the list.");
+    channelScope.addItem("With tools", 1);
+    channelScope.addItem("All channels", 2);
+    channelScope.setSelectedId(1, juce::dontSendNotification);
+    channelScope.onChange = [this] {
+        const auto scope = channelScope.getSelectedId() == 2 ? stack::ChannelScope::AllChannels
+                                                           : stack::ChannelScope::WithTools;
+        effects(model().setChannelScope(scope, clockNow()), false);
+        layoutRows();
+    };
+    addAndMakeVisible(channelScope);
     rowSize.setTitle("Channel height");
     rowSize.setSliderStyle(juce::Slider::LinearHorizontal);
     rowSize.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -294,11 +307,14 @@ StackTab::~StackTab() {
 StackModel &StackTab::model() noexcept { return state_->model; }
 const StackModel &StackTab::model() const noexcept { return state_->model; }
 const MixViewProvider &StackTab::provider() const noexcept { return root.mixProvider(); }
+int StackTab::toolbarHeight() const noexcept {
+    return kHeaderHeight * (getWidth() >= 720 ? 1 : getWidth() >= 370 ? 2 : 3);
+}
 juce::Rectangle<int> StackTab::display() const noexcept {
-    return {look::gap, kHeaderHeight, std::max(0, getWidth() - 2 * look::gap), kDisplayHeight};
+    return {look::gap, toolbarHeight(), std::max(0, getWidth() - 2 * look::gap), kDisplayHeight};
 }
 juce::Rectangle<int> StackTab::listArea() const noexcept {
-    const int top = kHeaderHeight + kDisplayHeight + look::gap;
+    const int top = toolbarHeight() + kDisplayHeight + look::gap;
     return {look::gap, top, std::max(0, getWidth() - 2 * look::gap - 8),
              std::max(0, getHeight() - top - look::gap)};
 }
@@ -336,7 +352,8 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
         if (state_->publication)
             for (const auto &d : *state_->publication)
                 state_->chain.push_back({d.track, d.id, d.instance,
-                    d.plugin ? stack::ItemClass::Plugin : stack::ItemClass::View, d.name, d.available, d.enabled});
+                    d.plugin ? stack::ItemClass::Plugin : stack::ItemClass::View, d.name, d.available, d.enabled,
+                    !d.plugin && mix::functionForUid(d.uid) != nullptr});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
         state_->generation = generation;
@@ -454,20 +471,38 @@ void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
         autoZoom.setToggleState(model().windowView().autoZoom, juce::dontSendNotification);
         pinsOnly.setToggleState(model().windowView().filterPinned, juce::dontSendNotification);
         navigator.setToggleState(model().windowView().navigator, juce::dontSendNotification);
+        channelScope.setSelectedId(model().windowView().channelScope == stack::ChannelScope::AllChannels ? 2 : 1,
+                                   juce::dontSendNotification);
         if (search.getText().toStdString() != model().windowView().search) search.setText(model().windowView().search, false);
     }
 }
 void StackTab::resized() {
     const int available = std::max(0, getWidth() - 2 * look::gap);
-    search.setBounds(look::gap, 4, std::max(50, std::min(230, available / 3)), 22);
-    rowSize.setBounds(search.getRight() + 8, 4, 90, 22);
-    autoZoom.setBounds(rowSize.getRight() + 6, 4, 94, 22);
-    pinsOnly.setBounds(autoZoom.getRight() + 4, 4, 78, 22);
-    navigator.setBounds(pinsOnly.getRight() + 4, 4, 100, 22);
+    const bool oneRow = toolbarHeight() == kHeaderHeight;
+    const bool compact = available < 476;
+    channelScope.setBounds(look::gap, 4, 120, 22);
+    search.setBounds(channelScope.getRight() + 6, 4,
+                     std::max(50, std::min(230, available - (oneRow ? 610 : 126))), 22);
+    const int secondY = oneRow ? 4 : kHeaderHeight + 4;
+    rowSize.setBounds(oneRow ? search.getRight() + 8 : look::gap, secondY, compact ? 60 : 90, 22);
+    autoZoom.setBounds(rowSize.getRight() + 6, secondY, compact ? 78 : 94, 22);
+    const bool thirdRow = toolbarHeight() == kHeaderHeight * 3;
+    const int lastY = thirdRow ? kHeaderHeight * 2 + 4 : secondY;
+    pinsOnly.setBounds(thirdRow ? look::gap : autoZoom.getRight() + 4, lastY, compact ? 62 : 78, 22);
+    navigator.setBounds(pinsOnly.getRight() + 4, lastY, compact ? 84 : 100, 22);
     state_->canvas.setBounds(listArea());
     state_->scrollbar.setBounds(listArea().getRight(), listArea().getY(), 8, listArea().getHeight());
     effects(model().setViewport(listArea().getWidth(), listArea().getHeight(), clockNow()), false);
     layoutRows();
+}
+juce::String StackTab::emptyMessage() const {
+    if (!search.getText().isEmpty())
+        return "No matching channels or devices.";
+    if (model().windowView().filterPinned)
+        return "No pinned channels in this view.";
+    if (model().windowView().channelScope == stack::ChannelScope::WithTools)
+        return "No channels with Mix View tools. Choose All channels, select a channel, then add a tool with + in Device View.";
+    return "No channels in this view.";
 }
 void StackTab::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -482,8 +517,7 @@ void StackTab::paint(juce::Graphics &g) {
                area.reduced(8, 5).withTrimmedTop(20), juce::Justification::centredLeft);
     if (model().shownCount() == 0) {
         g.setColour(look::textDim);
-        g.drawText(search.getText().isEmpty() ? "No channels in this view." : "No matching channels or devices.",
-                   listArea(), juce::Justification::centred);
+        g.drawFittedText(emptyMessage(), listArea().reduced(16), juce::Justification::centred, 3);
     }
     const auto nav = model().navigator();
     if (nav.shown) {
@@ -572,8 +606,12 @@ void StackTab::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelD
     effects(model().wheel(p.x, p.y, wheel, mods(e.mods), clockNow()), false);
     layoutRows();
 }
+bool StackTab::hasToolbarFocus() const {
+    return channelScope.hasKeyboardFocus(true) || search.hasKeyboardFocus(true) || rowSize.hasKeyboardFocus(true) ||
+           autoZoom.hasKeyboardFocus(true) || pinsOnly.hasKeyboardFocus(true) || navigator.hasKeyboardFocus(true);
+}
 bool StackTab::hasDeviceContext() const {
-    if (!hasKeyboardFocus(true) || search.hasKeyboardFocus(true) || state_->rename.isVisible()) return false;
+    if (!hasKeyboardFocus(true) || hasToolbarFocus() || state_->rename.isVisible()) return false;
     const auto target = model().focus().item;
     if (target.place != stack::ItemPlace::Chain) return false;
     for (const auto &row : rows_)
@@ -583,6 +621,7 @@ bool StackTab::hasDeviceContext() const {
     return true;
 }
 bool StackTab::deviceCommand(int command) {
+    if (hasToolbarFocus()) return false;
     const auto target = model().focus().item;
     if (target.place != stack::ItemPlace::Chain || !validTarget(target)) return false;
     using Clip = DeviceChainStrip::Clip;
@@ -600,6 +639,15 @@ bool StackTab::deviceCommand(int command) {
     return false;
 }
 bool StackTab::keyPressed(const juce::KeyPress &key) {
+    if (hasToolbarFocus()) {
+        const int code = key.getKeyCode();
+        const bool editShortcut = key.getModifiers().isCommandDown() &&
+            (code == 'x' || code == 'X' || code == 'c' || code == 'C' || code == 'v' || code == 'V' ||
+             code == 'd' || code == 'D' || code == 'r' || code == 'R');
+        // A toolbar's unhandled edit key must not reach a previously focused
+        // insert or fall through to an unrelated track-level edit.
+        return editShortcut || code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey;
+    }
     const auto target = model().focus().item;
     if (target.place == stack::ItemPlace::Chain) {
         const auto code = key.getKeyCode();
@@ -674,7 +722,20 @@ void StackTab::suspendParameters(bool suspended) {
         if (safe) updateParameterDemand({});
     }
 }
-void StackTab::focus(std::int64_t track) { effects(model().openFromChip(track, {}, clockNow())); layoutRows(); }
+void StackTab::focus(std::int64_t track) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto time = clockNow();
+    // The channel's explicit shortcut must still reach a chain before its first
+    // tool is added. Change the visible scope instead of inventing membership or
+    // creating a processor; other deliberate filters remain in force.
+    if (model().hiddenOnlyByToolScope(track)) {
+        effects(model().setChannelScope(stack::ChannelScope::AllChannels, time), false);
+        if (!alive) return;
+    }
+    effects(model().openFromChip(track, {}, time));
+    if (!alive) return;
+    layoutRows();
+}
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {
     const auto time = clockNow();

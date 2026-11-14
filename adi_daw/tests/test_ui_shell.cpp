@@ -1002,6 +1002,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
     {
         check(root.command(AppCommands::ToggleMixView), "the Mix View opens on the groups");
+        root.mixViewPanel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
         root.frame();
         auto stackIds = [&root] {
             std::vector<std::int64_t> out;
@@ -5629,6 +5630,114 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "the View menu's Mix View, on F4 (ADR-0209 d9)");
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
     root.frame();
+    check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+              panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+          "STACK starts with tool channels and explains how to add the first tool");
+    {
+        const auto selectionBefore = root.arrangement.geometry.selection;
+        const auto opsBefore = store->db().execAndGet("SELECT count(*) FROM ops").getInt();
+        panel.stack.focus(999);
+        check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  panel.stack.channelScope.getSelectedId() == 1,
+              "an invalid channel shortcut leaves the default tool scope unchanged");
+        root.arrangement.geometry.selection.track = 10;
+        check(root.command(AppCommands::ShowChannelEq) && panel.stack.focused() == 10 &&
+                  panel.stack.model().shownIndex(10) &&
+                  panel.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                  panel.stack.channelScope.getSelectedId() == 2,
+              "an explicit channel shortcut visibly selects All channels and lands on an empty chain");
+        check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore &&
+                  panel.stack.model().moduleKindCount() == 0,
+              "landing before the first tool creates no processor or undo operation");
+        panel.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
+    }
+    {
+        const auto previousPublication = root.devices.publication;
+        const auto selectionBefore = root.arrangement.geometry.selection;
+        const auto undoBefore = root.undoTitle(false);
+        auto publication = std::make_shared<ParameterPublication>();
+        const auto add = [&](std::int64_t id, std::int64_t track, const char *name, const char *uid, bool plugin) {
+            DevicePanelData data;
+            data.id = id; data.track = track; data.chain = track; data.instance = static_cast<std::uint64_t>(id);
+            data.name = name; data.uid = uid; data.plugin = plugin;
+            data.available = false; data.enabled = false;
+            publication->push_back(std::move(data));
+        };
+        add(101, 10, "Before", "ordinary", true);
+        add(102, 10, "Renamed shaping tool", "org.adidaw.mix.eq", false);
+        add(103, 10, "After", "ordinary", true);
+        add(104, 11, "EQ", "org.adidaw.mix.eq", true);
+        add(105, 1, "Finisher", "org.adidaw.mix.limiter", false);
+        root.devices.publication = [&] { return publication; };
+        auto &surface = panel.stack;
+        const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+        surface.frameAt(root.reader(), time);
+        check(surface.model().shownCount() == 2 && surface.model().shownTrack(0) == 10 &&
+                  surface.model().shownTrack(1) == 1,
+              "native identity includes renamed bypassed unavailable tools; a plug-in spoofing its UID stays excluded");
+        std::vector<std::int64_t> order;
+        if (const auto row = surface.model().shownIndex(10))
+            surface.model().forEachChainItem(*row, [&](const stack::ItemGeo &item) { order.push_back(item.ref.device); });
+        check(order == std::vector<std::int64_t>{101, 102, 103},
+              "eligible channel retains every actual insert in chain order");
+        const auto original = surface.model().chainRef(10, 102);
+        surface.focus(10);
+        check(surface.focused() == 10 &&
+                  surface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  surface.channelScope.getSelectedId() == 1,
+              "an eligible native channel shortcut preserves With tools");
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[1].name = "Another display name";
+        (*publication)[1].enabled = true;
+        (*publication)[1].available = true;
+        surface.frameAt(root.reader(), time + 1);
+        check(surface.model().shownCount() == 2 && surface.model().chainRef(10, 102) == original,
+              "rename bypass and load-state updates retain native membership and device identity");
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[1].plugin = true;
+        surface.frameAt(root.reader(), time + 2);
+        check(surface.model().shownCount() == 1 && surface.model().shownTrack(0) == 1,
+              "format identity changes invalidate membership even with a native-looking UID");
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[4].uid = "ordinary";
+        surface.frameAt(root.reader(), time + 3);
+        check(surface.model().shownCount() == 0, "last native UID disappearing removes its channel from With tools");
+        surface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+        check(surface.model().shownCount() == 4 && surface.model().moduleKindCount() == 0,
+              "All channels restores empty and ordinary chains without reserved modules");
+        surface.search.setText("Bass", false);
+        surface.search.onTextChange();
+        check(surface.model().shownCount() == 1 && surface.model().shownTrack(0) == 11 &&
+                  root.arrangement.geometry.selection == selectionBefore && root.undoTitle(false) == undoBefore,
+              "scope and search are presentation only and never select or edit all matches");
+        surface.search.setText({}, false);
+        surface.search.onTextChange();
+        root.devices.publication = previousPublication ? previousPublication
+            : [] { return std::shared_ptr<const ParameterPublication>{}; };
+        surface.frameAt(root.reader(), time + 4);
+        root.devices.publication = previousPublication;
+        const auto originalBounds = surface.getBounds();
+        for (const int width : {900, 720, 600, 520, 360, 320}) {
+            surface.setSize(width, 460);
+            bool contained = true;
+            const std::array<juce::Component *, 6> toolbar{&surface.channelScope, &surface.search, &surface.rowSize,
+                                                         &surface.autoZoom, &surface.pinsOnly, &surface.navigator};
+            for (const auto *control : toolbar)
+                contained = contained && surface.getLocalBounds().contains(control->getBounds()) &&
+                    control->getBottom() <= surface.display().getY();
+            for (std::size_t i = 0; i < toolbar.size(); ++i)
+                for (std::size_t j = i + 1; j < toolbar.size(); ++j)
+                    contained = contained && !toolbar[i]->getBounds().intersects(toolbar[j]->getBounds());
+            check(contained, "scope/search and existing toolbar controls fit narrow widths without overlap");
+        }
+        surface.setBounds(originalBounds);
+    }
+    panel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
     check(root.state().mixView && panel.isVisible() && !root.arrangement.isVisible() && !root.mixer.isVisible() &&
               panel.getBounds() == lanes.getUnion(controls),
           "in place of the arrangement and its track controls");
@@ -6033,6 +6142,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             document->tick(0);
             actual.frame();
             check(actual.setMixView(true, false), "open actual chains");
+            actual.mixViewPanel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
             actual.frame();
             auto &surface = actual.mixViewPanel.stack;
             auto findPanel = [&](std::int64_t id) -> DevicePanelView * {
@@ -6109,6 +6219,37 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     first->grabKeyboardFocus();
                     check(surface.hasDeviceContext() && actual.command(AppCommands::Copy) && copiedDevice == 30,
                           "global Copy dispatch keeps the Mix View's device context");
+                    const auto toolbarUndo = actual.undoTitle(false);
+                    const auto deviceCount = value(document->store(), "SELECT count(*) FROM devices");
+                    const auto trackCount = value(document->store(), "SELECT count(*) FROM tracks");
+                    surface.channelScope.grabKeyboardFocus();
+                    commands.activate(actual);
+                    check(surface.hasToolbarFocus() && !surface.hasDeviceContext(),
+                          "the channel selector owns focus without inheriting the last device target");
+                    bool blocked = true;
+                    for (const int command : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
+                                               AppCommands::Duplicate, AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                        juce::ApplicationCommandInfo commandInfo(command);
+                        commands.getCommandInfo(command, commandInfo);
+                        blocked = blocked && !actual.command(command) &&
+                            (commandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                    }
+                    check(blocked && surface.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                              surface.keyPressed(juce::KeyPress('x', juce::ModifierKeys::commandModifier, 0)) &&
+                              !surface.deviceCommand(AppCommands::DeleteTrack) &&
+                              value(document->store(), "SELECT count(*) FROM devices") == deviceCount &&
+                              value(document->store(), "SELECT count(*) FROM tracks") == trackCount &&
+                              actual.undoTitle(false) == toolbarUndo,
+                          "toolbar menu and direct edit keys cannot mutate the stale device or current track");
+                    surface.search.grabKeyboardFocus();
+                    surface.search.setText("abc", false);
+                    surface.search.selectAll();
+                    surface.search.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey));
+                    check(surface.search.getText().isEmpty() && surface.hasToolbarFocus(),
+                          "search keeps native local text editing while global device actions are blocked");
+                    surface.search.setText({}, false);
+                    surface.search.onTextChange();
+                    first->grabKeyboardFocus();
                     check(actual.command(AppCommands::RenameTrack) && first->rename.isVisible() &&
                               surface.model().capture().has_value(),
                           "global Rename opens the exact device editor rather than the track editor");
@@ -6309,7 +6450,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     const auto at = demands.find(owner);
                     return at != demands.end() && !at->second.empty();
                 };
-                check(has(&observed.devices) && has(&stackSurface),
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                          !stackSurface.model().shownIndex(2) && has(&observed.devices) && !has(&stackSurface),
+                      "With tools omits generic plug-in rows and requests no Stack parameters");
+                stackSurface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+                observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                          stackSurface.model().shownIndex(2) && has(&observed.devices) && has(&stackSurface),
                       "device strip and realised Stack controls own independent parameter demand");
                 window.minimisationStateChanged(true);observed.frame();
                 check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
@@ -8604,6 +8751,7 @@ int main(int argc, char **argv) {
         {
             const auto selectionBeforeStack = integrated.arrangement.geometry.selection;
             StackTab eqView(integrated);
+            eqView.channelScope.setSelectedId(2, juce::sendNotificationSync);
             eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);

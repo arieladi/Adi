@@ -9,8 +9,19 @@ publication stamp; a renamed display label is never its identity.
 
 StackModel owns geometry, hit testing, hover, focus, selection, search, pins, lane scrolling,
 navigator and capture retention. The surface realizes the visible margin and retained edit
-targets. Value-only parameter publications preserve the existing components. Empty tracks show
-an empty chain; actual-device rows allocate no reserved processing slots.
+targets. Value-only parameter publications preserve the existing components. The default
+**With tools** list contains channels with an actual native Mix View function, keeping their
+ordinary inserts in real chain order. Membership uses native identity, never a display label,
+bypass or loading status. **All channels** also shows empty/ordinary-only chains, making the
+first-function add path discoverable. Neither mode creates processors or reserved slots.
+An explicit channel shortcut switches the visible selector to **All channels** when only tool
+membership excludes that valid target, then lands on its chain. It does not clear search, pins,
+folds or project scope, and eligible/invalid targets do not change the selector.
+
+All track records and ancestry remain available for scope, search and key roles. Search changes
+the displayed list, not audio targets or settings. A hidden nonmember ancestor's STACK fold
+does not suppress eligible descendants; returning to All channels restores its saved fold.
+A still-live captured item retains its row through a presentation filter until release.
 
 Expanded tiles reuse DevicePanelView and the document's parameter publication. Folded tiles show
 the name and activator. Parameters use the existing ParamOps/ProjectDocument gesture and undo
@@ -22,6 +33,9 @@ tab change and teardown end its capture. Both the view and the document validate
 target before editing. A stale callback must neither write a replacement instance nor fall
 through to a track-level Delete/Rename command. Search, pins and row-size settings currently
 last for the window lifetime; serializing the full model view state is a later UI slice.
+Search, channel-scope, row-size and toolbar-button focus own their keyboard handling: a stale
+device focus must not make Cut/Delete/Duplicate fall through to another device or track.
+The toolbar wraps for constrained widths without changing the row geometry law.
 
 ## Shared track analysis
 
@@ -50,8 +64,9 @@ DEV-05/MX-24 own compensated device-specific key routes. These are separate from
 Actual devices continue through the established Session/Graph chain and shared parameter
 authority. The next processing slice supplies the opt-in native function cores from ADR-0237:
 EQ with unmasking, compressor, de-esser, gate, and limiter with clipping. Their movable device-area
-tabs and Mix View rows must address those same nodes. ADI Still's final placement and separate
-standalone applications remain guide questions. Analyzers stay outside the processing chain.
+tabs and Mix View rows must address those same nodes. ADI Still remains an ordinary plug-in for
+now; separate standalone applications remain a guide question. Analyzers stay outside the
+processing chain.
 
 ## Main meter readouts
 
