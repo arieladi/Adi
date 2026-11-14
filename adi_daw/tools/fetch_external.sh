@@ -219,8 +219,10 @@ fetch_pinned() {
     # A submodule is fetched only where the table asks. Shallow, like the parent:
     # the gitlink in the parent's tree names the exact commit, so depth 1 still
     # lands on it.
+    # A failed update must stop the script (set -e), not leave a stale or
+    # missing submodule behind a pin line that reads OK.
     if [ "$sub" = submodules ] && [ -d "$path/.git" ]; then
-        git -C "$path" submodule update --init --depth 1 --recursive -q 2>/dev/null || true
+        git -C "$path" submodule update --init --depth 1 --recursive -q
     fi
 
     # A tag is a mutable ref. Matching the tag name proves nothing about the
@@ -238,6 +240,14 @@ fetch_pinned() {
         echo "Either upstream moved the tag, or someone edited this table without" >&2
         echo "updating the commit beside it. Do not 'fix' this by copying the new" >&2
         echo "hash in -- moving a pin is a reviewed change. See ADR-0024." >&2
+        exit 1
+    fi
+    # The parent's commit pins its submodules by gitlink; verify they sit there
+    # ('-' uninitialised, '+' at another commit, 'U' conflicted).
+    if [ "$sub" = submodules ] && git -C "$path" submodule status --recursive | grep -q '^[-+U]'; then
+        printf 'MISMATCH\n'
+        echo "FATAL: $repo submodules are not at the gitlinks of its pinned commit:" >&2
+        git -C "$path" submodule status --recursive >&2
         exit 1
     fi
     printf '%s %s  %-9s [%s]\n' "${got:0:9}" "$(git -C "$path" log -1 --format='%cs')" "$tag" "$lic"
