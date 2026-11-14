@@ -535,6 +535,215 @@ template <class T> void retainedResetLifecycle() {
               "retained-cache continuation preserves physical cadence in both precisions");
     }
 }
+template <class T>
+bool requests(g::Core &core, const g::Settings &s, Audio<T> &a, const Audio<T> *key = nullptr,
+              bool regroup = false) {
+    constexpr std::array<int, 3> lengths{7, 14, 257};
+    bool ok = true;
+    std::size_t at = 0, request = 0;
+    while (at < count) {
+        // Enclosing callback groups do not enter the API. Exactly the same
+        // request sequence must survive different enclosing group sizes.
+        const int group = regroup ? 5 : 1;
+        for (int entry = 0; entry < group && at < count; ++entry) {
+            const int n =
+                static_cast<int>(std::min(count - at, static_cast<std::size_t>(lengths[request++ % 3])));
+            T *p[]{a[0].data() + at, a[1].data() + at};
+            const T *k[]{key ? (*key)[0].data() + at : nullptr, key ? (*key)[1].data() + at : nullptr};
+            audioCall = true;
+            ok &= core.processRequest(n, p, k, key ? 2 : 0, s) == g::Status::Ok;
+            audioCall = false;
+            at += static_cast<std::size_t>(n);
+        }
+    }
+    return ok;
+}
+template <class T> void completeRequestContinuity() {
+    for (const double rate : {44100.0, 48000.0, 96000.0}) {
+        for (const bool common : {false, true}) {
+            g::Settings s;
+            s.keySource = g::KeySource::External;
+            s.leftKeyMix = -1;
+            s.rightKeyMix = common ? -1.0f : 1.0f;
+            s.holdMs = 37;
+            s.kneeDb = 9;
+            const g::PrepareSpec spec{rate, 257, 2, g::ProcessingContract::CompleteRequests};
+            g::Core a, b;
+            check(a.prepare(spec, s) == g::Status::Ok && b.prepare(spec, s) == g::Status::Ok,
+                  "complete request prepares both precision/layout trajectories");
+            auto x = signal<T>(), y = x, key = signal<T>(93);
+            check(requests(a, s, x, &key) && requests(b, s, y, &key, true) && equal(x, y),
+                  "request sequence is independent of enclosing callback grouping");
+            check(a.restore(s) == g::Status::Ok, "identical request restore retains history");
+            x = signal<T>(109);
+            y = x;
+            check(requests(a, s, x, &key) && requests(b, s, y, &key) && equal(x, y),
+                  "request restore continuation is exact");
+            a.reset();
+            auto wider = spec;
+            wider.maximumFrames = 511;
+            check(b.reprepare(wider) == g::Status::Ok, "request scratch growth stopped restart");
+            x = signal<T>(211);
+            y = x;
+            check(requests(a, s, x, &key) && requests(b, s, y, &key) && equal(x, y),
+                  "request reset and grown reprepare retain equal adaptive caches");
+        }
+    }
+}
+template <class T> void completeRequestAliases() {
+    for (const bool crossed : {false, true}) {
+        g::Settings s;
+        s.keySource = g::KeySource::External;
+        s.leftKeyMix = -1;
+        s.rightKeyMix = 1;
+        g::Core a, b;
+        const g::PrepareSpec spec{48000, 257, 2, g::ProcessingContract::CompleteRequests};
+        check(a.prepare(spec, s) == g::Status::Ok && b.prepare(spec, s) == g::Status::Ok,
+              "request alias prepares");
+        auto x = signal<T>(), y = x, key = x;
+        if (crossed)
+            std::swap(key[0], key[1]);
+        bool ok = true;
+        for (std::size_t at = 0; at < count;) {
+            const int n = static_cast<int>(std::min(count - at, std::size_t{257}));
+            T *p[]{x[0].data() + at, x[1].data() + at};
+            T *q[]{y[0].data() + at, y[1].data() + at};
+            const T *alias[]{p[crossed ? 1 : 0], p[crossed ? 0 : 1]};
+            const T *copy[]{key[0].data() + at, key[1].data() + at};
+            audioCall = true;
+            ok &= a.processRequest(n, p, alias, 2, s) == g::Status::Ok;
+            ok &= b.processRequest(n, q, copy, 2, s) == g::Status::Ok;
+            audioCall = false;
+            at += static_cast<std::size_t>(n);
+        }
+        check(ok && equal(x, y), "complete key capture preserves own and crossed aliases");
+    }
+    g::Settings unity;
+    unity.ratio = 1;
+    g::Core core;
+    check(core.prepare({48000, 257, 2, g::ProcessingContract::CompleteRequests}, unity) == g::Status::Ok,
+          "request unity prepare");
+    auto a = signal<T>(), b = a;
+    check(requests(core, unity, a) && equal(a, b), "ordinary ratio one is exact unity");
+    core.reset();
+    check(requests(core, unity, a) && equal(a, b), "ratio one remains unity through pending reset");
+    std::array<T, 16> left{}, right{};
+    left.front() = right.front() = T{123};
+    left.back() = right.back() = T{-123};
+    T *p[]{left.data() + 1, right.data() + 1};
+    check(core.processRequest(14, p, nullptr, 0, unity) == g::Status::Ok && left.front() == T{123} &&
+              right.front() == T{123} && left.back() == T{-123} && right.back() == T{-123},
+          "request writes only the supplied span");
+    unity.ratio = std::nextafter(1.0f, 2.0f);
+    check(core.prepare({48000, 257, 2, g::ProcessingContract::CompleteRequests}, unity) == g::Status::Ok,
+          "request unity float-epsilon endpoint prepare");
+    a = signal<T>();
+    b = a;
+    check(requests(core, unity, a) && equal(a, b), "unity float-epsilon endpoint is exact unity");
+    core.reset();
+    check(requests(core, unity, a) && equal(a, b), "unity epsilon endpoint retains reset unity");
+
+    g::Settings external;
+    external.keySource = g::KeySource::External;
+    g::Core missing, connected;
+    const g::PrepareSpec spec{48000, 257, 2, g::ProcessingContract::CompleteRequests};
+    check(missing.prepare(spec, external) == g::Status::Ok &&
+              connected.prepare(spec, external) == g::Status::Ok,
+          "request missing-key and connected-silence prepare");
+    auto key = signal<T>();
+    for (auto &plane : key)
+        std::fill(plane.begin(), plane.end(), T{0});
+    a = signal<T>();
+    b = a;
+    check(requests(missing, external, a) && requests(connected, external, b, &key) && equal(a, b),
+          "request absent external key is connected silence, never programme fallback");
+    key = signal<T>(73);
+    a = signal<T>(47);
+    b = a;
+    check(requests(missing, external, a, &key) && requests(connected, external, b, &key) && equal(a, b),
+          "request missing and silent key wake retain identical history");
+    for (auto &plane : key)
+        std::fill(plane.begin(), plane.end(), T{0});
+    a = signal<T>(91);
+    b = a;
+    check(requests(missing, external, a) && requests(connected, external, b, &key) && equal(a, b),
+          "request disconnect preserves the same envelope tail as connected silence");
+}
+void completeRequestRefusal() {
+    g::Settings s;
+    const g::PrepareSpec spec{48000, 257, 2, g::ProcessingContract::CompleteRequests};
+    g::Core a, b, incremental;
+    check(a.prepare(spec, s) == g::Status::Ok && b.prepare(spec, s) == g::Status::Ok &&
+              incremental.prepare({48000, 257, 2}, s) == g::Status::Ok,
+          "request refusal prepares");
+    auto x = signal<float>(), y = x, key = signal<float>(41);
+    check(requests(a, s, x) && requests(b, s, y) && equal(x, y), "request refusal warms history");
+    x = signal<float>(13);
+    y = x;
+    float *p[]{x[0].data(), x[1].data()};
+    const float *k[]{key[0].data(), key[1].data()};
+    auto changed = s;
+    changed.thresholdDb = -12;
+    check(!a.beginBlock(257).valid() &&
+              a.process({}, 0, 257, p, k, 2, s) == g::Status::UnsupportedConfiguration &&
+              incremental.processRequest(257, p, k, 2, s) == g::Status::UnsupportedConfiguration,
+          "mixed processing contracts refuse atomically");
+    check(a.processRequest(0, p, k, 2, s) == g::Status::InvalidBlock &&
+              a.processRequest(258, p, k, 2, s) == g::Status::InvalidBlock &&
+              a.processRequest(257, p, k, 1, s) == g::Status::UnsupportedLayout &&
+              a.processRequest(257, p, k, 2, changed) == g::Status::UnsupportedConfiguration,
+          "request size layout and changed controls refuse");
+    const float *partial[]{p[0] + 1, k[1]};
+    const float *missing[]{k[0], nullptr};
+    float *overlap[]{p[0], p[0] + 1};
+    check(a.processRequest(257, p, partial, 2, s) == g::Status::InvalidBuffers &&
+              a.processRequest(257, p, missing, 2, s) == g::Status::InvalidBuffers &&
+              a.processRequest(257, overlap, k, 2, s) == g::Status::InvalidBuffers && equal(x, y),
+          "request partial planes and overlap refuse before writes");
+    auto invalid = spec;
+    invalid.contract = static_cast<g::ProcessingContract>(99);
+    check(a.prepare(invalid, s) == g::Status::InvalidSpec &&
+              a.reprepare({48000, 257, 2}) == g::Status::UnsupportedConfiguration,
+          "invalid contract and live contract replacement refuse");
+    check(requests(a, s, x) && requests(b, s, y) && equal(x, y),
+          "all refused requests preserve full continuation");
+    for (int failure = 0; failure < 4; ++failure) {
+        failAfter = failure;
+        const auto status = a.prepare(spec, s);
+        failAfter = -1;
+        check(status == g::Status::AllocationFailed, "fresh request preparation stages every allocation");
+        x = signal<float>(static_cast<std::size_t>(failure) + 29);
+        y = x;
+        check(requests(a, s, x) && requests(b, s, y) && equal(x, y),
+              "failed request prepare preserves prior history");
+    }
+    auto grown = spec;
+    grown.maximumFrames = 1024;
+    failAfter = 0;
+    const auto failure = a.reprepare(grown);
+    failAfter = -1;
+    check(failure == g::Status::AllocationFailed, "request scratch growth failure is reported");
+    x = signal<float>(191);
+    y = x;
+    check(requests(a, s, x) && requests(b, s, y) && equal(x, y),
+          "failed request growth preserves complete continuation");
+    auto smaller = spec;
+    smaller.maximumFrames = 14;
+    failAfter = 0;
+    const auto shrunk = a.reprepare(smaller);
+    const auto restored = a.reprepare(spec);
+    const bool noAttempt = failAfter == 0;
+    failAfter = -1;
+    check(shrunk == g::Status::Ok && restored == g::Status::Ok && noAttempt,
+          "request retained capacity restarts without allocation");
+    auto doubles = signal<double>();
+    double *d[]{doubles[0].data(), doubles[1].data()};
+    check(a.processRequest(14, d, nullptr, 0, s) == g::Status::Ok &&
+              a.processRequest(14, p, nullptr, 0, s) == g::Status::InvalidBlock,
+          "request precision is fixed until reset");
+    a.reset();
+    check(a.processRequest(14, p, nullptr, 0, s) == g::Status::Ok, "request reset permits a new precision");
+}
 } // namespace
 int main() {
     mappingsAndHold();
@@ -549,6 +758,11 @@ int main() {
     smoothingBoundary();
     retainedResetLifecycle<float>();
     retainedResetLifecycle<double>();
+    completeRequestContinuity<float>();
+    completeRequestContinuity<double>();
+    completeRequestAliases<float>();
+    completeRequestAliases<double>();
+    completeRequestRefusal();
     check(allocations == 0 && deallocations == 0, "callback allocation and deallocation counts remain zero");
     std::printf(
         "gate: %d checks, %d failures; %llu compared samples; callback allocations %zu, deallocations %zu\n",
