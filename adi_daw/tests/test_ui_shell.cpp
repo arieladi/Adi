@@ -6666,6 +6666,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     transient.reset();
                     actual.devices.publication = savedPublication;
                 }
+            }
             // Dock/header/narrow layout changes never relocate a held device control.
             const auto mixBounds = actual.mixViewPanel.getBounds();
             for (int kind = 0; kind < 3; ++kind) {
