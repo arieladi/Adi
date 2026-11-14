@@ -127,11 +127,22 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
         }
         auto tap=offline.openScope(track.id,1.0,ScopePoint::ChainInput);
         if (!tap) return fail("cannot tap track " + std::to_string(track.id));
-        latency=std::max(latency,static_cast<std::int64_t>(tap->latency()));
         meters.emplace_back(tap,spec_.sampleRate,options.measure);
         GainStageTrack measurement; measurement.trackId=track.id;
         result.tracks.push_back(measurement);
     }
+    // This isolated renderer owns the callback boundaries. Adopt every meter's
+    // latest tap plan before rendering any source samples or MIDI events.
+    for (int attempt=0; attempt<4; ++attempt) {
+        const auto pending=offline.scopeStats();
+        if (!pending.awaitingAudio && !pending.deferredPlans) break;
+        { auto boundary=offline.beginRender(); static_cast<void>(boundary); }
+        offline.collectScopeTaps();
+    }
+    const auto settled=offline.scopeStats();
+    if (settled.awaitingAudio || settled.deferredPlans) return fail("offline taps did not settle");
+    for (const auto& meter : meters)
+        latency=std::max(latency,static_cast<std::int64_t>(meter.tap->latency()));
     const int block = std::min(spec_.maxFrames,4096);
     if (block <= 0) return fail("invalid gain-stage block size");
     std::vector<float> l(static_cast<std::size_t>(block)), r(l.size()), output(2*l.size());
