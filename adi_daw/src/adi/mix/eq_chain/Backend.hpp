@@ -11,6 +11,9 @@ struct BackendStatus {
     bool prepared = false, workerStarted = false, ownerBusy = false;
     BackendFailure failure = BackendFailure::None;
     std::uint64_t requestedWork = 0, completedWork = 0, ownerPasses = 0, workerStarts = 0;
+    // Actual outer-loop visits and predicate-wait returns, not OS wake counts.
+    bool ownerParked = false;
+    std::uint64_t ownerLoopVisits = 0, ownerWaitReturns = 0;
 };
 // Framework-free processing adapter, not a device-route or parameter provider.
 // The caller supplies an actual key bus and its logical width. It must reset /

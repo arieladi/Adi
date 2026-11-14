@@ -144,8 +144,8 @@ class DevicePanelView final : public juce::Component {
         std::unique_ptr<juce::TextButton> selector;
         std::unique_ptr<ActivatorButton> enabled;
     };
-    // Processing controls require backend groups. Missing EQ-family groups show
-    // their unavailable placeholder rather than inventing processing controls.
+    // Processing controls and selectors require real backend groups. Missing
+    // EQ-family groups do not invent an unavailable page or processing controls.
     std::vector<ParameterPageControl> parameterPages;
     const std::string &selectedParameterPage() const noexcept { return selectedPage_; }
     bool chooseParameterPage(const std::string &);

@@ -14,10 +14,10 @@ struct Backend::Impl {
     explicit Impl(OwnerMode value) : mode(value) {}
     Core core;
     const OwnerMode mode;
-    std::atomic<bool> prepared{false}, started{false}, busy{false};
+    std::atomic<bool> prepared{false}, started{false}, busy{false}, parked{false};
     std::atomic<BackendFailure> failure{BackendFailure::None};
     std::atomic<std::int32_t> audioLatency{0}, advertised{0};
-    std::atomic<std::uint64_t> passes{0}, starts{0};
+    std::atomic<std::uint64_t> passes{0}, starts{0}, loopVisits{0}, waitReturns{0};
     // These primitives are touched only by Main and the owner, never by audio.
     std::mutex wakeMutex;
     std::condition_variable wake;
@@ -37,6 +37,7 @@ struct Backend::Impl {
         job = false;
         busy.store(false, std::memory_order_release);
         started.store(false, std::memory_order_release);
+        parked.store(false, std::memory_order_release);
     }
     bool workPending() const noexcept {
         return core.requestedWorkVersion() > core.completedWorkVersion();
@@ -57,9 +58,13 @@ struct Backend::Impl {
     }
     void runOwner() noexcept {
         for (;;) {
+            loopVisits.fetch_add(1, std::memory_order_relaxed);
             {
                 std::unique_lock lock(wakeMutex);
+                parked.store(true, std::memory_order_release);
                 wake.wait(lock, [this] { return stop || job; });
+                parked.store(false, std::memory_order_release);
+                waitReturns.fetch_add(1, std::memory_order_relaxed);
                 if (stop)
                     return;
                 job = false;
@@ -122,6 +127,8 @@ void Backend::prepare(PrepareSpec spec, const Settings &settings) {
     i.advertised.store(0, std::memory_order_release);
     i.passes.store(0, std::memory_order_relaxed);
     i.starts.store(0, std::memory_order_relaxed);
+    i.loopVisits.store(0, std::memory_order_relaxed);
+    i.waitReturns.store(0, std::memory_order_relaxed);
     if (i.core.isPrepared())
         i.core.reprepareStopped(spec, settings);
     else
@@ -152,10 +159,17 @@ std::int32_t Backend::advertisedLatency() const noexcept {
 }
 BackendStatus Backend::status() const noexcept {
     const auto &i = *impl_;
+    // An acquired completed busy=false precedes the park observation. This
+    // cannot reuse the pre-job parked=true after that job has completed.
+    const bool busy = i.busy.load(std::memory_order_acquire);
+    const bool parked = i.parked.load(std::memory_order_acquire);
+    const auto loopVisits = i.loopVisits.load(std::memory_order_relaxed);
+    const auto waitReturns = i.waitReturns.load(std::memory_order_relaxed);
     return {i.prepared.load(std::memory_order_acquire), i.started.load(std::memory_order_acquire),
-            i.busy.load(std::memory_order_acquire), i.failure.load(std::memory_order_acquire),
+            busy, i.failure.load(std::memory_order_acquire),
             i.core.requestedWorkVersion(), i.core.completedWorkVersion(),
-            i.passes.load(std::memory_order_relaxed), i.starts.load(std::memory_order_relaxed)};
+            i.passes.load(std::memory_order_relaxed), i.starts.load(std::memory_order_relaxed),
+            parked, loopVisits, waitReturns};
 }
 double Backend::learnedThreshold(std::size_t band) const noexcept {
     return impl_->core.learnedThreshold(band);

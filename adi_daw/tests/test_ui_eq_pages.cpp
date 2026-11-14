@@ -302,11 +302,10 @@ void groupSelections(AppCommands &commands, const std::filesystem::path &directo
     std::erase_if(missing.declared, [&](const auto &r) { return missing.parameterGroups.at(r.id).groupId == "focus"; });
     std::erase_if(missing.parameterGroups, [](const auto &entry) { return entry.second.groupId == "focus"; });
     strip.frame(2);
-    check(panel->selectedParameterPage() == "focus" && panel->controls.empty() &&
-          !panel->parameterPageUnavailableReason().empty() && !panel->functionBand.isVisible() &&
-          panel->parameterPages.size() == 3, "a missing real group returns to one honest placeholder without fake controls");
+    check(panel->selectedParameterPage() == "eq" && panel->parameterPages.size() == 2 &&
+          !panel->chooseParameterPage("focus"), "a missing real group has no unsupported placeholder selector");
     publication = complete; strip.frame(2);
-    check(panel->selectedFunctionBand() == 9 && panel->selectedFunctionSection() == "detector" &&
+    check(panel->chooseParameterPage("focus") && panel->selectedFunctionBand() == 9 && panel->selectedFunctionSection() == "detector" &&
           panel->parameterPageUnavailableReason().empty() && panel->controls.size() == 1 && find("node-9-threshold"),
           "same-runtime metadata return restores the retained Focus selection");
     events.clear(); find("node-9-threshold")->slider.onDragStart(); changePageOnEnd = true;

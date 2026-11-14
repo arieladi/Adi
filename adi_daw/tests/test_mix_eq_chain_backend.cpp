@@ -95,11 +95,29 @@ bool waitOwner(chain::Backend &backend) {
         const auto status = backend.status();
         if (status.failure != chain::BackendFailure::None)
             return false;
-        if (status.completedWork >= status.requestedWork && !status.ownerBusy)
+        if (status.completedWork >= status.requestedWork && !status.ownerBusy && status.ownerParked)
             return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return false;
+}
+bool remainsParked(chain::Backend &backend, const chain::BackendStatus &parked, int latency) {
+    // Functional scheduling window: expose missing waits or short timed polling,
+    // without deriving CPU use or claiming to exclude arbitrary polling periods.
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(30);
+    bool stable = true;
+    do {
+        backend.pumpMainThread();
+        const auto status = backend.status();
+        stable = stable && status.ownerParked && !status.ownerBusy &&
+                 status.ownerLoopVisits == parked.ownerLoopVisits &&
+                 status.ownerWaitReturns == parked.ownerWaitReturns &&
+                 status.ownerPasses == parked.ownerPasses && status.workerStarts == parked.workerStarts &&
+                 status.requestedWork == parked.requestedWork && status.completedWork == parked.completedWork &&
+                 status.failure == chain::BackendFailure::None && backend.advertisedLatency() == latency;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    } while (std::chrono::steady_clock::now() < end);
+    return stable;
 }
 chain::Settings bell() {
     chain::Settings settings;
@@ -192,8 +210,10 @@ void manualAdmission() {
           "a new physical callback admits the whole acknowledged latency plan");
     for (int i = 0; i < 12; ++i)
         backend.pumpMainThread();
-    check(backend.advertisedLatency() == 96 && backend.status().ownerPasses == 1,
-          "completion never reverts advertised latency or repeats idle owner work");
+    const auto manual = backend.status();
+    check(backend.advertisedLatency() == 96 && manual.ownerPasses == 1 && !manual.ownerParked &&
+              manual.ownerLoopVisits == 0 && manual.ownerWaitReturns == 0,
+          "manual completion retains latency and has no threaded loop or wait observations");
 }
 void workerLifecycle() {
     auto settings = bell();
@@ -201,8 +221,10 @@ void workerLifecycle() {
     backend.prepare({48000, frames, 2}, settings);
     for (int i = 0; i < 20; ++i)
         backend.pumpMainThread();
-    check(!backend.status().workerStarted && backend.status().workerStarts == 0,
-          "prepare and idle Main ticks do not start a worker");
+    auto status = backend.status();
+    check(!status.workerStarted && status.workerStarts == 0 && !status.ownerParked &&
+              status.ownerLoopVisits == 0 && status.ownerWaitReturns == 0,
+          "prepare and idle Main ticks do not start or visit an owner worker");
     settings.focusEnabled = true;
     settings.focus.nodes[0].enabled = true;
     settings.focus.phaseMode = focus::PhaseMode::Rotation;
@@ -212,11 +234,12 @@ void workerLifecycle() {
     key.signal(1, true);
     check(run(backend, audio, &key, settings, 1, 0) && !backend.status().workerStarted,
           "audio request does not start or notify a worker");
-    check(waitOwner(backend), "a real off-audio owner worker completes pending configuration");
-    auto status = backend.status();
-    check(status.workerStarted && status.workerStarts == 1 && status.ownerPasses == 1 &&
-              status.completedWork == status.requestedWork,
-          "one demand-driven worker publishes one complete candidate");
+    check(waitOwner(backend), "a real off-audio owner completes configuration and reaches its next wait");
+    const auto firstPark = backend.status();
+    check(firstPark.workerStarted && firstPark.workerStarts == 1 && firstPark.ownerPasses == 1 &&
+              firstPark.completedWork == firstPark.requestedWork && !firstPark.ownerBusy &&
+              firstPark.ownerParked && firstPark.ownerLoopVisits == 2 && firstPark.ownerWaitReturns == 1,
+          "one real request returns from one wait, services once, then parks in the next loop");
     check(!backend.serviceOwnerOnce(), "threaded mode refuses a second manual service owner");
     check(backend.advertisedLatency() == 0, "worker cannot publish latency ahead of audio readiness");
     audio.signal(2);
@@ -226,27 +249,44 @@ void workerLifecycle() {
     check(target == 1024, "ready phase target is mirrored as a complete aggregate");
     audio.signal(3);
     check(run(backend, audio, &key, settings, 3, target), "real-worker candidate admits on a new callback");
-    for (int i = 0; i < 20; ++i)
-        backend.pumpMainThread();
-    check(backend.status().ownerPasses == 1 && backend.advertisedLatency() == target,
-          "an idle parked worker neither polls nor changes admitted latency");
+    check(remainsParked(backend, firstPark, target),
+          "unchanged Main ticks leave actual owner loop visits and wait returns unchanged after admission");
     settings.focus.nodes[0].q = 2.9;
     audio.signal(4);
     check(run(backend, audio, &key, settings, 4, target) && waitOwner(backend),
           "the same sleeping worker handles a later equal-latency coefficient request");
-    check(backend.status().workerStarts == 1 && backend.status().ownerPasses == 2,
-          "later intent reuses one worker instead of dispatching per-frame jobs");
+    const auto secondPark = backend.status();
+    check(secondPark.workerStarts == 1 && secondPark.ownerPasses == firstPark.ownerPasses + 1 &&
+              secondPark.ownerWaitReturns == firstPark.ownerWaitReturns + 1 &&
+              secondPark.ownerLoopVisits == firstPark.ownerLoopVisits + 1 &&
+              secondPark.completedWork == secondPark.requestedWork && !secondPark.ownerBusy && secondPark.ownerParked,
+          "later intent wakes the same owner once and acknowledges a fresh park");
+    check(remainsParked(backend, secondPark, target),
+          "the second completed request also leaves the real worker parked through unchanged ticks");
     backend.release();
     status = backend.status();
-    check(!status.prepared && !status.workerStarted && !status.ownerBusy,
-          "stopped release joins the real owner before retiring its resources");
+    check(!status.prepared && !status.workerStarted && !status.ownerBusy && !status.ownerParked &&
+              status.ownerWaitReturns == secondPark.ownerWaitReturns + 1 &&
+              status.ownerLoopVisits == secondPark.ownerLoopVisits && status.ownerPasses == secondPark.ownerPasses,
+          "stopped release joins the parked owner and counts its stop return without another service pass");
     const auto before = audio;
     check(!run(backend, audio, &key, settings, 5, target) && audio == before,
           "released adapter refuses audio without modifying buffers");
     backend.prepare({44100, frames, 2}, bell());
-    check(backend.status().prepared && !backend.status().workerStarted &&
-              backend.status().failure == chain::BackendFailure::None,
-          "stopped reprepare starts with no stale worker or failure state");
+    status = backend.status();
+    check(status.prepared && !status.workerStarted && !status.ownerParked && !status.ownerBusy &&
+              status.ownerLoopVisits == 0 && status.ownerWaitReturns == 0 && status.ownerPasses == 0 &&
+              status.workerStarts == 0 && status.failure == chain::BackendFailure::None,
+          "stopped reprepare resets owner diagnostics only after joining the previous lifecycle");
+    audio.signal(1);
+    check(run(backend, audio, &key, settings, 1, 0) && waitOwner(backend),
+          "a re-prepared adapter can lazily start and complete fresh real owner work");
+    status = backend.status();
+    check(status.workerStarts == 1 && status.ownerPasses == 1 && status.ownerWaitReturns == 1 &&
+              status.ownerLoopVisits == 2 && status.ownerParked && !status.ownerBusy &&
+              status.completedWork == status.requestedWork,
+          "the fresh lifecycle reports its own single request rather than stale counters");
+    backend.release();
 }
 void scalarControlsStayIdle() {
     auto settings = bell();
@@ -285,7 +325,8 @@ void scalarControlsStayIdle() {
     }
     const auto status = backend.status();
     check(okay && status.requestedWork == 0 && status.completedWork == 0 &&
-              status.ownerPasses == 0 && status.workerStarts == 0 && !status.workerStarted,
+              status.ownerPasses == 0 && status.workerStarts == 0 && !status.workerStarted &&
+              !status.ownerParked && status.ownerLoopVisits == 0 && status.ownerWaitReturns == 0,
           "ordinary EQ, Carve and Focus scalar automation leaves the owner completely idle");
 }
 void threeActorConvergence() {
@@ -363,7 +404,7 @@ void threeActorConvergence() {
           "three-actor work versions complete exactly with one reusable parked worker");
     backend.release();
     const auto stopped = backend.status();
-    check(!stopped.prepared && !stopped.workerStarted && !stopped.ownerBusy,
+    check(!stopped.prepared && !stopped.workerStarted && !stopped.ownerBusy && !stopped.ownerParked,
           "three-actor teardown joins owner work after stopping its sole audio publisher");
 }
 void learnedStateContinuation() {

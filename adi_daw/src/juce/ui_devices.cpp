@@ -563,6 +563,8 @@ bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) 
     return accepted;
 }
 bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
+    // No demand means an identity-only row, not removal of a configured page.
+    if (next.groups().empty() && data && eqPresentation(*data) && eqPresentation(next)) return true;
     if (data && eqPresentation(*data) == eqPresentation(next) &&
         (&data->groups() == &next.groups() || data->groups() == next.groups())) return true;
     struct Page { std::string id, name, enable; std::string unavailable{}; };
@@ -596,9 +598,9 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     cancelInteractions();
     if (!safe) return false;
     ++pageEpoch_;
-    std::erase_if(functionSelectionByPage_, [&](const auto &selection) {
-        return std::none_of(pages.begin(), pages.end(), [&](const auto &page) { return page.id == selection.first; });
-    });
+    // Retain the bounded native page selections if a configured group temporarily
+    // disappears. Its selector still disappears; a future real group can restore
+    // that page's band/section without inventing an unavailable placeholder.
     parameterPages.clear();
     if (std::none_of(pages.begin(), pages.end(), [&](const auto &p) { return p.id == selectedPage_; })) {
         const auto limiter = std::find_if(pages.begin(), pages.end(), [](const auto &p) { return p.id == "limiter"; });
