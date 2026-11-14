@@ -400,6 +400,9 @@ void mainMetersSharedPresentation() {
     check(!full.mainMeterSnapshot(), "readout rate must match the current source publication");
     f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds); f.broker->refreshSources(true);
     f.write(); f.broker->pump(); full.frame();
+    // The first owner frame observes the replacement activation. Supply an
+    // interval containing post-activation audio before checking its projection.
+    f.write(1024); f.broker->pump(); full.frame();
     check(full.mainMeterSnapshot() == values && full.snapshot()->sampleRate == 44100,
           "new source format accepts only its matching adopted Main projection");
     values.momentaryLufs = values.shortTermLufs = values.integratedLufs = values.truePeakDb = -std::numeric_limits<float>::infinity();
@@ -594,6 +597,7 @@ void palettesAndFrozenRaster() {
           "palette changes/unchanged frozen paints create no FFT, reads, subscriptions or history work");
     view.freeze(false); f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds);
     f.broker->refreshSources(true); f.write(); f.broker->pump(); view.frame();
+    f.write(1024); f.broker->pump(); view.frame();
     check(view.snapshot() && view.snapshot()->sampleRate == 44100 && originalRasterPixels(view, *view.snapshot()),
           "format/source epoch replacement removes old pixels and retains default calibration");
     AnalysisPane pane;
@@ -641,11 +645,121 @@ void restartedRasterDomain() {
     }
 }
 
+void writeFrames(Fixture &fixture, int frames, bool parked = false) {
+    std::vector<float> samples(static_cast<std::size_t>(frames));
+    const auto start = fixture.tap->written();
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        samples[i] = .5f * static_cast<float>(std::sin(2 * std::numbers::pi * 16 *
+            static_cast<double>(start + static_cast<std::int64_t>(i)) / 1024));
+    fixture.tap->write(samples.data(), samples.data(), frames, parked ? 0 : start, !parked);
+}
+
+void freshActionsWithSharedConsumer() {
+    for (const auto mode : {SharedSpectrumView::Mode::Spectrum, SharedSpectrumView::Mode::Scope,
+                           SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase,
+                           SharedSpectrumView::Mode::Spectrogram}) {
+        for (int action = 0; action < 4; ++action) {
+            Fixture f;
+            Root root; root.setBounds(0, 0, 400, 340); root.setVisible(true); root.addToDesktop(0);
+            auto keeper = f.broker->acquire({1});
+            writeFrames(f, 1024, true); f.broker->pump();
+            const auto initial = keeper.read(); const auto beforeInitial = f.broker->stats();
+            SharedSpectrumView view; view.setMode(mode); view.setBounds(0, 0, 300, 300);
+            root.addAndMakeVisible(view); view.present(f.broker, 1);
+            f.broker->pump(); view.frame();
+            check(initial && view.snapshot() && view.snapshot()->firstSequence == initial->firstSequence &&
+                      f.broker->stats().analysisWindows == beforeInitial.analysisWindows &&
+                      f.broker->stats().transforms == beforeInitial.transforms,
+                  "a new view may reuse a correct compatible initial stopped interval without new audio or FFT");
+            const auto picture = view.snapshot();
+            if (action == 0) view.freeze(true);
+            else if (action == 1) view.setVisible(false);
+            else if (action == 3) view.suspend(true);
+            writeFrames(f, 255, true); // Entire backlog exists BEFORE the explicit fresh action.
+            const auto watermark = f.tap->written();
+            if (action == 0) view.freeze(false);
+            else if (action == 1) view.setVisible(true);
+            else if (action == 2) view.clear();
+            else view.suspend(false);
+            f.broker->pump(); view.frame();
+            check(!view.snapshot() && view.status() == SharedSpectrumView::Status::Waiting && keeper.read(),
+                  "Resume, reshow, Clear and unsuspend reject cached or output-republished pre-action intervals");
+            const auto idle = f.broker->stats();
+            for (int i = 0; i < 3; ++i) { f.broker->pump(); view.frame(); }
+            check(!view.snapshot() && f.broker->stats().analysisWindows == idle.analysisWindows &&
+                      f.broker->stats().transforms == idle.transforms,
+                  "fresh-data waiting is idle and does not promote a cached result on another owner frame");
+            writeFrames(f, 1, true); f.broker->pump(); view.frame();
+            const auto fresh = view.snapshot();
+            check(fresh && fresh != picture && fresh->firstSequence + fresh->request.fftSize > watermark &&
+                      fresh->firstStamp == 0 && fresh == keeper.read(),
+                  "one newly written sample admits a completed hop even with a parked transport stamp");
+            const auto resources = f.broker->stats();
+            check(resources.consumers == 2 && resources.domains == 1 && resources.taps == 1 &&
+                      resources.spectralPlans == 1,
+                  "freshness actions retain one compatible domain, tap, cursor and spectral plan");
+        }
+    }
+}
+
+void backlogAndLifecycleFreshness() {
+    Fixture f;
+    Root root; root.setBounds(0, 0, 500, 340); root.setVisible(true); root.addToDesktop(0);
+    auto keeper = f.broker->acquire({1});
+    SharedSpectrumView view; view.setBounds(0, 0, 300, 300); root.addAndMakeVisible(view); view.present(f.broker, 1);
+    writeFrames(f, 1024); f.broker->pump(); view.frame();
+    check(view.snapshot() != nullptr, "backlog fixture begins with a real displayed interval");
+    view.freeze(true); writeFrames(f, 4096); view.freeze(false);
+    const auto backlogEnd = f.tap->written();
+    for (int i = 0; i < 4; ++i) { f.broker->pump(); view.frame(); }
+    check(!view.snapshot() && keeper.read() &&
+              keeper.read()->firstSequence + keeper.read()->request.fftSize == backlogEnd,
+          "processing a complete pre-Resume backlog cannot satisfy the sample-position barrier");
+    writeFrames(f, 256); f.broker->pump(); view.frame();
+    check(view.snapshot() && view.snapshot()->firstSequence + view.snapshot()->request.fftSize > backlogEnd,
+          "the first completed post-Resume hop replaces the waiting picture");
+
+    const auto reshow = [&](auto hide, auto show) {
+        hide(); writeFrames(f, 256); f.broker->pump(); show(); view.frame();
+        check(!view.snapshot() && keeper.read(), "reshow rejects another consumer's newer but pre-show cached interval");
+        writeFrames(f, 256); f.broker->pump(); view.frame();
+        check(view.snapshot() && view.snapshot() == keeper.read(), "fresh post-show audio restores the same shared publication");
+    };
+    reshow([&] { root.setVisible(false); }, [&] { root.setVisible(true); });
+    reshow([&] { view.setTopLeftPosition(600, 0); }, [&] { view.setTopLeftPosition(0, 0); });
+    reshow([&] { root.removeChildComponent(&view); }, [&] { root.addAndMakeVisible(view); });
+
+    const auto previous = view.snapshot();
+    f.tap = std::make_shared<ScopeTap>(48000, SharedAnalysis::kTapSeconds);
+    writeFrames(f, 1024); f.broker->refreshSources(); view.frame();
+    check(!view.snapshot() && view.status() == SharedSpectrumView::Status::Waiting,
+          "tap replacement clears the old generation before its new admission");
+    writeFrames(f, 1024); f.broker->pump(); view.frame();
+    if (!view.snapshot()) { writeFrames(f, 256); f.broker->pump(); view.frame(); }
+    check(previous && view.snapshot() && previous->generation != view.snapshot()->generation,
+          "a replacement generation admits only after fresh replacement-source audio");
+    auto parent = std::make_unique<juce::Component>(); parent->setBounds(0, 0, 400, 320);
+    root.addAndMakeVisible(*parent); parent->addAndMakeVisible(view);
+    writeFrames(f, 256); f.broker->pump(); view.frame();
+    check(view.snapshot() != nullptr, "ancestor-retirement fixture begins from a current displayed picture");
+    parent.reset(); writeFrames(f, 256); f.broker->pump(); root.addAndMakeVisible(view); view.frame();
+    check(!view.snapshot() && keeper.read(),
+          "reattachment after ancestor destruction rejects retained pre-reattachment cached data");
+    writeFrames(f, 256); f.broker->pump(); view.frame();
+    check(view.snapshot() && view.snapshot() == keeper.read(),
+          "post-reattachment source audio restores the shared picture without a new domain");
+    view.freeze(true); const auto held = view.snapshot(); f.broker->shutdown(); view.frame();
+    check(held && !view.snapshot() && !view.subscribed() && view.status() == SharedSpectrumView::Status::Unavailable &&
+              f.broker->stats().consumers == 0,
+          "broker shutdown revokes even a lease-free Frozen publication without creating demand");
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain(); }
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

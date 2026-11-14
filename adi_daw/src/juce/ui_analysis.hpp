@@ -78,6 +78,7 @@ class SharedSpectrumView final : public juce::Component,
   private:
     bool eligible() const noexcept;
     void updateDemand() noexcept;
+    void armFreshBoundary() noexcept;
     void updateMainMeter() noexcept;
     void watchAncestors();
     void unwatchAncestors() noexcept;
@@ -105,6 +106,10 @@ class SharedSpectrumView final : public juce::Component,
     std::size_t paletteIndex_ = palettes::defaultIndex;
     bool paletteReversed_ = false;
     std::uint64_t clearedRevision_ = 0, clearedEpoch_ = 0, clearedColumn_ = 0;
+    // Owner-only source position, independent of parked stamps and worker backlog.
+    // Initial compatible pictures may be reused; explicit fresh actions fence them.
+    SharedAnalysis::Lease::SourcePosition sourcePosition_;
+    bool freshRequired_ = false;
 };
 
 // A full analyzer and the compact Info renderer use SharedSpectrumView above. Controls are

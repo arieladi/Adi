@@ -85,8 +85,16 @@ std::shared_ptr<const std::vector<float>> historyBuffer(const std::shared_ptr<Hi
 struct SharedAnalysis::Domain {
     explicit Domain(Request r) : request(r),
         ringLeft(static_cast<std::size_t>(r.fftSize)), ringRight(ringLeft.size()),
-        left(ringLeft.size()), right(left.size()),
-        gain(dsp::coherentGain(r.window, r.fftSize)) {}
+        left(ringLeft.size()), right(left.size()), gain([&] {
+            // Use prepared scratch for exactly coherentGain's float-window/double-sum
+            // law. Its standalone helper allocates inside noexcept; construction here
+            // keeps recoverable allocation failures outside that boundary.
+            dsp::fillWindow(r.window, left);
+            double sum = 0;
+            for (const float value : left) sum += static_cast<double>(value);
+            std::fill(left.begin(), left.end(), 0.f);
+            return sum / static_cast<double>(r.fftSize);
+        }()) {}
     Request request;
     std::unique_ptr<dsp::Spectrum> spectrum;
     std::vector<float> ringLeft, ringRight, left, right, scratch, linear, second;
@@ -508,6 +516,15 @@ std::shared_ptr<const SharedAnalysis::Result> SharedAnalysis::Lease::read() cons
     auto result = available() ? domain_->readResult() : nullptr;
     return result && (result->outputs & outputs_) == outputs_ ? result : nullptr;
 }
+SharedAnalysis::Lease::SourcePosition SharedAnalysis::Lease::sourcePosition() const noexcept {
+    const auto state = state_.lock();
+    if (!state || !domain_) return {};
+    state->ownerOnly();
+    std::lock_guard lock(domain_->mutex);
+    if (!domain_->active.load(std::memory_order_acquire) ||
+        !usable(domain_->tap, domain_->request.fftSize)) return {};
+    return {domain_->tap->generation(), domain_->tap->written()};
+}
 SharedAnalysis::SharedAnalysis(AcquireSourceTap a, ReleaseSourceTap r, Mode mode, std::size_t historyByteLimit)
     : state_(std::make_shared<State>(std::move(a), std::move(r), historyByteLimit)), mode_(mode) {}
 SharedAnalysis::SharedAnalysis(AcquireTap a, ReleaseTap r, Mode mode, std::size_t historyByteLimit)
@@ -515,6 +532,10 @@ SharedAnalysis::SharedAnalysis(AcquireTap a, ReleaseTap r, Mode mode, std::size_
           return a && !source.device ? a(source.track, source.point) : nullptr;
       }, [r = std::move(r)](engine::ScopeSource source) { if (r) r(source.track, source.point); }, mode, historyByteLimit) {}
 SharedAnalysis::~SharedAnalysis() { shutdown(); }
+bool SharedAnalysis::active() const noexcept {
+    state_->ownerOnly();
+    return !state_->closed;
+}
 void SharedAnalysis::shutdown() noexcept {
     state_->ownerOnly();
     std::lock_guard run(state_->runMutex);

@@ -107,16 +107,19 @@ SharedSpectrumView::SharedSpectrumView() {
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
     lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    sourcePosition_ = {}; freshRequired_ = false;
     mode_ = mode; updateDemand(); repaint();
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
     lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    sourcePosition_ = {}; freshRequired_ = false;
     point_ = point; device_ = device; updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
     lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    sourcePosition_ = {}; freshRequired_ = false;
     channel_ = channel; updateDemand(); repaint();
 }
 void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
@@ -147,15 +150,8 @@ void SharedSpectrumView::freeze(bool value) {
     frozen_ = value;
     if (value) lease_.reset();
     else {
-        const auto main = mainMeterSource_.lock();
-        const bool projectedMain = mode_ == Mode::Meters && point_ == engine::ScopePoint::PostFader &&
-                                   device_ == 0 && main && main->track == track_;
-        // Another visible view may keep the broker's old interval alive. Main
-        // numbers resume only with a new interval, not that cached picture.
-        if (projectedMain && shown_) {
-            clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
-            clearedColumn_ = shown_->historySerial;
-        } else if (!projectedMain) clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+        freshRequired_ = true; sourcePosition_ = {};
+        clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
         shown_.reset(); mainMeter_.reset(); raster_.reset(); updateDemand();
     }
     repaint();
@@ -167,6 +163,7 @@ void SharedSpectrumView::clear() {
         clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
         clearedColumn_ = shown_->historySerial;
     }
+    armFreshBoundary();
     shown_.reset(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
@@ -183,6 +180,7 @@ void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::in
         broker_ = std::move(broker);
         track_ = track;
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+        sourcePosition_ = {}; freshRequired_ = false;
         status_ = Status::Detached;
         repaint();
     }
@@ -202,11 +200,17 @@ void SharedSpectrumView::updateDemand() noexcept {
     const auto previous = status_;
     const bool hadMainMeter = mainMeter_.has_value();
     if (!eligible()) {
+        if (shown_ || lease_) freshRequired_ = true;
         lease_.reset();
+        sourcePosition_ = {};
         shown_.reset();
         raster_.reset();
         mainMeter_.reset();
         status_ = Status::Detached;
+    } else if (!broker_->active()) {
+        lease_.reset(); shown_.reset(); raster_.reset(); mainMeter_.reset();
+        sourcePosition_ = {}; freshRequired_ = true;
+        status_ = Status::Unavailable;
     } else if (frozen_) {
         lease_.reset();
         if (mainMeterSource_.expired()) mainMeter_.reset();
@@ -221,19 +225,30 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
             }
-            try { lease_ = broker_->acquire(request); }
+            try {
+                lease_ = broker_->acquire(request);
+                sourcePosition_ = lease_.sourcePosition();
+                clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+            }
             catch (...) { lease_.reset(); }
         }
         if (!lease_ || !lease_.available()) {
+            if (shown_ || sourcePosition_.generation) freshRequired_ = true;
+            sourcePosition_ = {};
             shown_.reset();
             raster_.reset();
             mainMeter_.reset();
             status_ = Status::Unavailable;
         } else {
+            if (!sourcePosition_.generation) sourcePosition_ = lease_.sourcePosition();
             status_ = shown_ ? Status::Ready : Status::Waiting;
         }
     }
     if (previous != status_ || (hadMainMeter && !mainMeter_)) repaint();
+}
+void SharedSpectrumView::armFreshBoundary() noexcept {
+    freshRequired_ = true;
+    sourcePosition_ = lease_.sourcePosition();
 }
 void SharedSpectrumView::frame() noexcept {
     updateDemand();
@@ -242,6 +257,20 @@ void SharedSpectrumView::frame() noexcept {
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
     auto next = lease_.read();
+    // Invalidation can replace a live source before its next publication. Fence
+    // at that activation, rather than accepting buffered replacement-source data.
+    if (!next && shown_) armFreshBoundary();
+    if (next && next->generation != sourcePosition_.generation) {
+        armFreshBoundary();
+        next.reset();
+    }
+    if (next && freshRequired_) {
+        const auto size = static_cast<std::int64_t>(next->request.fftSize);
+        if (!sourcePosition_.generation || size <= 0 || next->firstSequence < 0 ||
+            next->firstSequence > std::numeric_limits<std::int64_t>::max() - size ||
+            next->firstSequence + size <= sourcePosition_.written) next.reset();
+        else freshRequired_ = false;
+    }
     if (next && next->sourceEpoch == clearedEpoch_ && next->windowSerial <= clearedRevision_) next.reset();
     // A recreated domain may restart these counters. A discarded publication
     // cannot leave a raster that later aliases the new domain's first result.
@@ -356,6 +385,8 @@ void SharedSpectrumView::componentVisibilityChanged(juce::Component &) { updateD
 void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
+    if (shown_ || lease_) freshRequired_ = true;
+    sourcePosition_ = {};
     lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
     unwatchAncestors();
 }
