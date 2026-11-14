@@ -612,7 +612,8 @@ void firSampleBudget() {
         auto settings=firSettings(1.3);for(auto &node:settings.nodes)node.enabled=true;
         f::Core core;core.prepare({rate,1<<20,2},settings);
         const auto initial=core.statistics();const auto p=static_cast<std::size_t>(core.latencySamples()/3);
-        check(initial.firWorkQuota==373+22*(std::bit_width(p)-1),"prepared quota follows actual transform size");
+        const auto expectedQuota=std::uint64_t{373}+22*static_cast<std::uint64_t>(std::bit_width(p)-1);
+        check(initial.firWorkQuota==expectedQuota,"prepared quota follows actual transform size");
         bool bounded=true,okay=true;std::array<double,2> main{},key{.1,-.13};
         std::array<double*,2>m{&main[0],&main[1]};std::array<const double*,2>k{&key[0],&key[1]};
         for(std::size_t sample=0;sample<3*p+1;++sample) {
@@ -870,7 +871,8 @@ void sourceTaggedFirOracle() {
     }
     const GeneratedAudio source(count);auto actual=source;
     std::array<std::vector<double>,4> input,band;
-    for(auto&v:input)v.resize(count);for(auto&v:band)v.assign(count,0.);
+    for(auto&v:input) v.resize(count);
+    for(auto&v:band) v.assign(count,0.);
     for(std::size_t i=0;i<count;++i) {
         input[0][i]=source.main[0][i]+source.main[1][i];input[1][i]=source.main[0][i]-source.main[1][i];
         input[2][i]=source.key[0][i]+source.key[1][i];input[3][i]=source.key[0][i]-source.key[1][i];
@@ -878,7 +880,8 @@ void sourceTaggedFirOracle() {
     for(std::size_t stream=0;stream<4;++stream)for(std::size_t start=0;start+p<=count;start+=p) {
         std::copy_n(input[stream].data()+start,p,time.data());std::fill(time.begin()+static_cast<std::ptrdiff_t>(p),time.end(),0.);
         large.forward(time,spectrum);const auto&kernel=kernels[(start/p)%3];
-        for(std::size_t i=0;i<=h;++i)product[i]=spectrum[i]*kernel[i];large.inverse(product,time);
+        for(std::size_t i=0;i<=h;++i) product[i]=spectrum[i]*kernel[i];
+        large.inverse(product,time);
         for(std::size_t i=0;i<p+h-1&&start+h+i<count;++i)band[stream][start+h+i]+=time[i];
     }
     auto settings=firSettings(qualities[0]);settings.nodes[0].thresholdDb=-55.;settings.nodes[0].attackMs=7.;settings.nodes[0].releaseMs=90.;
