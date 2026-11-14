@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 14 November 2026 — reviewed fixes take priority; no new PRs
+
+The director pauses new PRs. Work now follows win's review order: #541 latency-control automation and limiter background ownership; #542 hidden EQ publication and conditional unmasking pages; #545 bounded FIR work and actual-rate arithmetic; then foundation gesture/seek/tap-retirement/test follow-ups. Fixes go to existing review branches, with dependent stacks rebased afterward. #537/#540 are already merged, so their follow-ups will be carried by the existing open stack rather than a new PR. No self-merge.
+
+Claimed #541 paths: `src/juce/mix_function_host.cpp`, `src/adi/mix/limit_chain/**`, `src/adi/mix/limiter/DspEngine.*` and its narrowly required kernel-work notification seam, focused tests/CMake. #542 will own parameter-feed demand/cache, visible-surface wiring and conditional page tests. #545 will own Focus scheduling/rate and its tests. The later engine-owned follow-up is limited to scope-plan retirement/Locate epoch paths and their tests; it is explicitly required by this review, and will be logged precisely before edits. Fenced op handlers are not part of these fixes.
+
+Current repair worktree is `D:/Adi-wt/mix-review-l-1114`, same #541 branch, rebased onto fetched main `8555f0d4`. The older checkout's untracked EQ extraction files are preserved on a local snapshot branch. Other owners are read-only until their ordered turn. All new public text follows the director's naming rule: refer only to measurement and the director's private research folder. Live tests stay with Claude; new CPU timing remains deferred. Existing release/review packages and sealed measurement artifacts stay unchanged.
+
 ## 14 November 2026 — director settles Versatile seed recall
 
 Adi chose to save each instance's seed with project/state for repeatable recall. The future ADI-C Versatile adapter must restore that identity instead of reseeding on project/editor/graph reopening. This resolves the initialization design question only; complete live-state snapshots, seed generation, schema migration and the actual Versatile engine still require source/state proof. No released audio, current core, provider, package or CPU claim changes. Root records the ruling in the private decision guide/roadmap/current checkpoint; win assigns any eventual ADR/schema change. Live tests stay with Claude.
