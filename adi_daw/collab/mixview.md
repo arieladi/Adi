@@ -1,5 +1,15 @@
 # Mix View seat
 
+## 14 November 2026 — complete requests supplied; three more CI heads ready
+
+Draft [#572](https://github.com/arieladi/Adi/pull/572), `afd78fdf`, on corrected #566 supplies explicit fixed CompleteRequests with staged scratch and full-available-span alias/pending behavior.329 generated Debug/Release checks, strict3/validators4 and callback0/0 pass. Root verifies327 fixed records/717 dependencies and all25 prior complete outputs remain identical in Incremental, CompleteRequests and forced-dual variants. Request-local16 cadence is explicit; no future upstream reads, outer-wrapper sleep, other styles/quality or native G admission. Exact-head CI trails.
+
+#569 `d895f3d8`, #570 `282d4537` and #571 `6cc38fea` now each pass all18 core+3 UI jobs and are ready for win, unmerged by this seat. Runs:56943534712576/43534712586;57043537138362/43537138386;57143537902551/43537902601. Root independently verifies the scope's47 fixed records, ten source/archive identities and15 unchanged review artifacts. #555 remains the unresolved independent ARM storage/Ops draft.
+
+The Opto owner in `D:/Adi-wt/mix-compressor-1113`, branch `mixview/opto-gain-20261114`, owns only a new precise signed-key-to-gain component/tests/docs/minimal registration on #570.177 Debug/Release checks and source-gain/audio preservation gates pass; fixed proof/root review precede push. Existing Clean/key/facade source stays unchanged. No stereo selection, style provider or quality admission. The shared average-domain child passes277 focused checks; full/optimized final gates continue on frozen source, with Raw layout/output/allocation preservation and real-hop demand barriers.
+
+The DS owner is authorized only for a private fixed base-rate Split composition using unchanged Wide and existing float overlap-save source: six saved fresh fixtures, original strict gates, no new native/live/timing, public product edit or fitted kernel. The corrected schedule is128-hop/256-FFT/256 convolution latency. Win reviews/merges in dependency order; Claude's live packages remain fixed; new timing stays deferred.
+
 ## 14 November 2026 — composed Clean and continuous scope supplied
 
 Draft [#570](https://github.com/arieladi/Adi/pull/570), `282d4537`, on #567 supplies the unregistered float-stereo Clean/key-EQ facade.172 Debug/Release checks, strict2/validators4 and callback0/0 pass. Root verifies417 fixed records/23 source identities/16 unchanged children and selected complete-output preservation. Caller validation remains atomic; a real copied-key overflow is instead contained by a clearly distinct latched ProcessingFault before Clean, with stopped recovery and an explicit post-key scan cost. No abort was reproduced, no DSP clamp/cutoff or native C admission is implied.
