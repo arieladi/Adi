@@ -554,6 +554,13 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     // (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the parameter's
     // automation lane for this run, which is what lights Re-Enable Automation.
     std::vector<OpRequest> requests;
+    // Dispatch can accept a new Begin while draining an older completed edit. If the
+    // older transaction is refused below, this caller reports failure and cannot
+    // subsequently own/End the new gesture. Track core-issued identities, never
+    // infer its owner from a device/parameter id after store reconciliation.
+    const auto before = kind == engine::ParamEventKind::Begin
+                            ? parameterOps_.pendingGestures()
+                            : std::vector<engine::PendingParameterGesture>{};
     // Explicit configuration uses this same owner, transaction and exact-runtime
     // path without treating the setting as automatable. Other non-automatable
     // parameters remain read-only.
@@ -568,8 +575,24 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     const bool taken = configuration
                            ? parameterOps_.uiConfigurationEvent(id, param, kind, normalized, captureNowMs(), requests)
                            : parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    std::shared_ptr<const gesture::OwnerToken> newOwner;
+    if (taken && kind == engine::ParamEventKind::Begin)
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.owner && pending.deviceId == id && pending.parameterId == param &&
+                std::none_of(before.begin(), before.end(), [&](const auto &old) {
+                    return old.owner && old.owner->sameOwner(*pending.owner);
+                })) {
+                newOwner = pending.owner;
+                break;
+            }
     const bool appended = !requests.empty();
     const bool committed = commitCaptured(requests); // error_ says why when the store refused
+    if (!committed && newOwner) {
+        // cancelPending retains a pending restoration if the exact runtime is busy;
+        // the normal owner pump retries it. Leave the older refusal and its error
+        // untouched, and never send an End to an authored id's replacement.
+        (void)parameterOps_.cancelPending(*newOwner, captureNowMs());
+    }
     // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
     // frame, so Re-Enable Automation lights with the knob's move.
     followOverrides();

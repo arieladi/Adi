@@ -896,7 +896,6 @@ bool AdiRootComponent::locate(std::int64_t tick) {
         return false;
     const bool posted = mailbox_.post(TransportMailbox::Command::Locate,
                                       static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
-    if (posted && sharedAnalysis) sharedAnalysis->refreshSources(true);
     return posted;
 }
 bool AdiRootComponent::playFrom(std::int64_t tick) {

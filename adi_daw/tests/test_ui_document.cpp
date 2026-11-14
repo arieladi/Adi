@@ -12,8 +12,12 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <thread>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -64,6 +68,85 @@ class SurfaceKnobs final : public device::DeviceInstance {
     std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
     test::Knobs controls;
 };
+
+void refusedBeginOwnership(const std::filesystem::path &dir) {
+    using engine::ParamEventKind;
+    for (const bool guarded : {false, true}) for (const bool configuration : {false, true}) {
+        std::string error;
+        const auto file = dir / (std::string("refused-begin-") + (guarded ? "guarded-" : "common-") +
+                                 (configuration ? "configuration.adi" : "automatable.adi"));
+        auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+        check(document != nullptr, "refused Begin: fresh headless document");
+        if (!document) continue;
+        try {
+            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+                  "refused Begin: loaded device");
+            document->tick(0);
+            auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+            check(knobs && knobs->hasParamSink(), "refused Begin: callback producer attached");
+            if (!knobs) continue;
+            knobs->configuration(configuration);
+            const auto publication = document->parameterFeed().current();
+            const auto shown = std::find_if(publication->begin(), publication->end(), [](const auto &p) { return p.id == 3; });
+            check(shown != publication->end(), "refused Begin: published exact target");
+            if (shown == publication->end()) continue;
+            const auto runtime = shown->runtime;
+            const auto stamp = shown->instance;
+            const auto event = [&](ParamEventKind kind, double v) {
+                return guarded ? document->parameterGestureExpected(3, "cutoff", kind, v, runtime, stamp)
+                               : document->parameterGesture(3, "cutoff", kind, v);
+            };
+            const auto count = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64(); };
+            const auto before = count();
+            const auto undoBefore = document->ops().nextUndo()->txnId;
+            // A completed SDK-window edit is queued without a timer tick. Begin must
+            // drain it and discover the SQL refusal only after accepting the new owner.
+            knobs->windowGesture(1, .6);
+            document->store().db().exec("CREATE TEMP TRIGGER refuse_older BEFORE INSERT ON main.ops "
+                "WHEN NEW.op_type='device.setParam' BEGIN SELECT RAISE(ABORT,'older gesture rejected'); END");
+            check(!event(ParamEventKind::Begin, .5) &&
+                      document->error().find("older gesture rejected") != std::string::npos &&
+                      count() == before && document->ops().nextUndo()->txnId == undoBefore,
+                  "refused Begin: reports older store failure without a journal/head change");
+            const auto pending = document->pendingParameterGestures();
+            const auto old = std::find_if(pending.begin(), pending.end(), [](const auto &p) {
+                return p.parameterId == "gain";
+            });
+            check(old != pending.end() && old->owner && old->submission == CapturedSubmissionPhase::Refused,
+                  "refused Begin: older refused transaction remains owned and inspectable");
+            const auto oldOwner = old != pending.end() ? old->owner : nullptr;
+            document->store().db().exec("DROP TRIGGER refuse_older");
+            document->tick(1);
+            document->tick(2);
+            const auto settled = document->pendingParameterGestures();
+            check(std::none_of(settled.begin(), settled.end(), [](const auto &p) {
+                      return p.parameterId == "cutoff";
+                  }) && std::any_of(settled.begin(), settled.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }) && count() == before,
+                  "refused Begin: new unclaimed owner retires; older refusal is never retried or cancelled");
+            check(event(ParamEventKind::Begin, .5) && event(ParamEventKind::Value, .75) &&
+                      event(ParamEventKind::End, .75) &&
+                      std::abs(knobs->getParam("cutoff").normalized - .75) < 1e-12,
+                  "refused Begin: first fresh same-parameter gesture accepts and releases its explicit bracket");
+            // Completed packets remain FIFO behind the deliberately unretried older
+            // refusal. Accepting the new edit must neither retry nor erase that packet.
+            const auto completed = document->pendingParameterGestures();
+            check(count() == before && std::any_of(completed.begin(), completed.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
+        } catch (const std::exception &e) { check(false, e.what()); }
+    }
+}
 
 void mixSurfacePublication(const std::filesystem::path &file) {
     using engine::ParamEventKind;
@@ -259,6 +342,14 @@ void mixSurfacePublication(const std::filesystem::path &file) {
 }
 } // namespace
 int main(int argc, char **argv) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc == 3 && std::string(argv[1]) == "--fixture") {
         std::string error;
         auto doc = ui::ProjectDocument::open(ui::pathFromUtf8(argv[2]), true, {}, error);
@@ -1089,6 +1180,7 @@ int main(int argc, char **argv) {
             check(false, e.what());
         }
     }
+    refusedBeginOwnership(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

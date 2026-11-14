@@ -89,6 +89,8 @@ struct TransportInfo {
     /// Immutable scalar automation bindings retained by this graph publication;
     /// null keeps the legacy owner-configured strip bindings.
     const StripLaneBindings* stripLanes = nullptr;
+    /// Driver-applied transport identity; seeks can be discontinuous even at equal stamps.
+    std::uint64_t transportRevision = 0;
 };
 
 /// What a node is handed for one SEGMENT of one block.

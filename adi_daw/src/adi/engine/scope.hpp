@@ -25,9 +25,10 @@
 // with equal stamps are heard at the same instant, and the scope compares
 // tracks as heard (ADR-0167 d3) by matching stamps, with nothing to correct.
 //
-// A tap nobody watches copies no samples. Session publishes capture-port bindings
-// separately from DSP graphs and retires buffers only after audio acknowledges
-// a newer publication; a slow UI consumer cannot block the writer.
+// A detached capture port copies no samples. Session publishes bindings separately
+// from DSP graphs, coalesces rapid demand behind an unacknowledged publication,
+// and retires buffers only after audio acknowledges a newer publication. The latest
+// demand follows that acknowledgement; a slow UI consumer cannot block the writer.
 
 #pragma once
 
@@ -63,12 +64,14 @@ public:
         std::int64_t next = 0;
         std::int64_t expectedStamp = 0;
         bool expectedAdvancing = false, hasExpected = false;
+        std::uint64_t expectedRevision = 0;
     };
     struct ReadResult {
         ReadStatus status = ReadStatus::NotReady;
         std::int32_t frames = 0;
         std::int64_t firstStamp = 0, firstSequence = 0;
         bool advancing = false;
+        std::uint64_t transportRevision = 0;
     };
     /// Message thread: `seconds` of stereo at `sampleRate`, allocated here.
     ScopeTap(double sampleRate, double seconds);
@@ -76,13 +79,14 @@ public:
     /// Audio thread, wait-free: `frames` frames; `stamp` is the heard timeline
     /// position of the first. `advancing` is false while the transport is
     /// parked: every frame then carries the same stamp. A null left channel
-    /// writes silence; a null right channel duplicates the left.
+    /// writes silence; a null right channel duplicates the left. The revision
+    /// identifies the transport actually applied by audio, even for a same-position seek.
     void write(const float* l, const float* r, std::int32_t frames, std::int64_t stamp,
-               bool advancing) noexcept;
+               bool advancing, std::uint64_t transportRevision = 0) noexcept;
     /// The same from a graph at 64 (ADR-0207 d2): the ring is float, a
     /// picture of the signal, so each frame is narrowed as it is stored.
     void write(const double* l, const double* r, std::int32_t frames, std::int64_t stamp,
-               bool advancing) noexcept;
+               bool advancing, std::uint64_t transportRevision = 0) noexcept;
 
     /// Any thread but the writer: the newest `l.size()` frames and the stamp of
     /// the first. False when fewer have been written, or the writer lapped the
@@ -112,13 +116,18 @@ private:
         std::atomic<std::uint64_t> version{0};
         std::atomic<std::int64_t> begin{0}, end{0}, stamp{0};
         std::atomic<bool> advancing{false};
+        std::atomic<std::uint64_t> transportRevision{0};
     };
-    struct Stamp { std::int64_t begin = 0, end = 0, stamp = 0; bool advancing = false; };
+    struct Stamp {
+        std::int64_t begin = 0, end = 0, stamp = 0;
+        bool advancing = false;
+        std::uint64_t transportRevision = 0;
+    };
     bool spanAt(std::int64_t sequence, Stamp&) const noexcept;
     bool loadSpan(std::int64_t record, Stamp&) const noexcept;
     template <typename T>
     void store(const T* l, const T* r, std::int32_t frames, std::int64_t stamp,
-               bool advancing) noexcept;
+               bool advancing, std::uint64_t transportRevision) noexcept;
 
     double sampleRate_;
     std::int64_t capacity_;
@@ -130,6 +139,7 @@ private:
     // Single writer only. Contiguous writes, including one-sample event segments, share a span.
     std::int64_t lastSpan_ = -1, lastBegin_ = 0, lastEnd_ = 0, lastStamp_ = 0;
     bool lastAdvancing_ = false;
+    std::uint64_t lastRevision_ = 0;
     std::atomic<std::int64_t> written_{0};    ///< frames complete, published with release
     std::atomic<std::int64_t> pending_{0};    ///< frames complete or being written now
     std::atomic<std::int32_t> latency_{0};

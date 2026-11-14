@@ -34,6 +34,8 @@ Export quality has explicit end-to-end intent: `SessionSpec::exporting` reaches 
 
 ## Shared analyzer contract
 
+If an accepted Begin drains an older transaction that the store refuses, the document cancels only the newly issued common owner before reporting failure. The older refused packet remains inspectable and is not silently retried. Delete and Backspace on refused or stale controls are consumed without falling through to device or track deletion.
+
 One process-wide worker sleeps until visible windows request a frame. There is no document/view polling analysis thread. Compatible consumers share a source cursor, overlap window, FFT plan and immutable result. Scope, meters and phase skip FFT unless a compatible spectrum/spectrogram consumer needs one. Spectrum calibration uses the existing DAW spectrum kernel; the basic meter is sample peak/RMS, not a second true-peak/loudness implementation. Persistent loudness remains the existing Main service, rather than a loudness engine on every channel row.
 
 The new Analysis tab is appended at index 5; stored indices 0–4 keep their meanings. It supplies Spectrum, Scope, Meters, Phase and Spectrogram views, Main/Selected sources, tap/channel selectors, Freeze, local Reset and a following analyzer window. Info reuses the same broker. Expanding the default Main analyzer preserves the current editing channel. Reset affects only that view's interval, not audio or another consumer. Freeze/hide releases demand. Spectrogram raster updates are bounded and cached per source epoch/revision.
@@ -46,9 +48,11 @@ The current views use 1024-sample Hann windows and an `N/4` hop. Scope displays 
 
 `ScopeSource` names a channel tap or a particular authored device's input/output. `ScopeLease` negotiates history and follows source, rate and history generations. Each reader has an independent sequence cursor; it receives explicit not-ready, generation-change, overrun or discontinuity status. Logical one-sample automation segments coalesce into contiguous timestamp spans rather than exhausting the timestamp ring.
 
-Capture observes the graph's effective active/bypass/suspended signal at float32 or float64 without modifying it. Heard timestamps use the cached graph compensation and device latency. Multiple logical sources at the same physical port share one writer. Last release disables capture, independently of enabled processing lifetime.
+Capture observes the graph's effective active/bypass/suspended signal at float32 or float64 without modifying it. Heard timestamps use the cached graph compensation and device latency. Each span also carries the audio-applied transport revision: even a same-position Locate breaks analysis continuity. UI intent does not relabel a callback already in flight; a fresh epoch requires a complete window from the newly applied revision. Multiple logical sources at the same physical port share one writer.
 
 Prepared capture publications retain buffers and independent port-state owners. The audio thread adopts a publication only at a physical callback boundary; collection obeys the publisher's strict epoch. A stalled callback keeps its old storage alive, and detaching a retired node never dereferences that node. The callback does not allocate, lock, change shared ownership or destroy a capture buffer.
+
+While adoption is unacknowledged, the owner coalesces changes into one latest deferred binding plan. Stopped hide/show cycles therefore retain a bounded set of internal plans, independent of cycle count; caller-held snapshots have their own lifetime. A restart may first adopt the already published plan, then the owner flushes the latest deferred plan for the following callback. Closing the last consumer follows that same safe sequence; it is not an owner-thread port mutation or immediate detachment claim.
 
 ## Validation and remaining gates
 

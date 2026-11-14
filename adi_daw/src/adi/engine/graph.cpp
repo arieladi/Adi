@@ -1696,6 +1696,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     ScopeTap* const outputTap = s.node->outputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
+    const auto transportRevision = transport != nullptr ? transport->transportRevision : 0;
     // With alignment off, scope input timestamps show the heard global time.
     // Physical maximum path latency remains cached for diagnostics.
     // One coherent audio-owned physical callback plan, shared by every slice.
@@ -1801,10 +1802,10 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     }
     if (suspend) {
         if (inputTap)
-            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing);
+            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing, transportRevision);
         if (outputTap)
             outputTap->write(static_cast<const float*>(nullptr), nullptr, frames,
-                             firstSample - static_cast<std::int64_t>(arrival) - configuredLatency, advancing);
+                             firstSample - static_cast<std::int64_t>(arrival) - configuredLatency, advancing, transportRevision);
         NodeIo silence;
         silence.frames = frames;
         silence.channels = channels_;
@@ -1905,11 +1906,11 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             if (wide)
                 inputTap->write(anyMain ? r.mixWidePtrs_[0] + begin : nullptr,
                                 anyMain && channels_ > 1 ? r.mixWidePtrs_[1] + begin : nullptr,
-                                n, stamp, advancing);
+                                n, stamp, advancing, transportRevision);
             else
                 inputTap->write(anyMain ? r.mixPtrs_[0] + begin : nullptr,
                                 anyMain && channels_ > 1 ? r.mixPtrs_[1] + begin : nullptr,
-                                n, stamp, advancing);
+                                n, stamp, advancing, transportRevision);
         }
 
         const Event* first = nullptr;
@@ -1982,8 +1983,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     // dry bypass, at graph precision. Latencies are this callback's cached values.
     if (outputTap && channels_ > 0) {
         const auto stamp = firstSample - static_cast<std::int64_t>(arrival) - configuredLatency;
-        if (wide) outputTap->write(s.widePtrs[0], channels_ > 1 ? s.widePtrs[1] : nullptr, frames, stamp, advancing);
-        else outputTap->write(s.chanPtrs[0], channels_ > 1 ? s.chanPtrs[1] : nullptr, frames, stamp, advancing);
+        if (wide) outputTap->write(s.widePtrs[0], channels_ > 1 ? s.widePtrs[1] : nullptr, frames, stamp, advancing, transportRevision);
+        else outputTap->write(s.chanPtrs[0], channels_ > 1 ? s.chanPtrs[1] : nullptr, frames, stamp, advancing, transportRevision);
     }
 
     // Is this node's output silent? Measured rather than declared: a node that

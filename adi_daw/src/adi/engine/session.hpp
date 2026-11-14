@@ -394,9 +394,13 @@ public:
     /// Scoped visual demand. Compatible logical endpoints share their physical capture and the
     /// longest requested history. Off-thread tap snapshots follow replacement generations.
     [[nodiscard]] ScopeLease requestScope(const ScopeRequest&);
-    /// Owner collection; never releases a tap used by a stalled physical callback.
+    /// Owner collection and latest deferred-plan publication after audio acknowledgement;
+    /// never releases a tap used by a stalled physical callback.
     std::size_t collectScopeTaps();
-    struct ScopeStats { std::size_t consumers = 0, sources = 0, retired = 0; };
+    struct ScopeStats {
+        std::size_t consumers = 0, sources = 0, retired = 0, deferredPlans = 0;
+        bool awaitingAudio = false;
+    };
     [[nodiscard]] ScopeStats scopeStats() const;
 
     /// ADR-0203 d3: how long a return's send into itself takes to come back,

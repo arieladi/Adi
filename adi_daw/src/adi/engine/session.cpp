@@ -107,8 +107,30 @@ struct Session::ScopeRuntime {
     std::map<PortKey, Binding> groups;
     std::map<ScopeSource, std::shared_ptr<ScopeTap>> bySource;
     SnapshotPublisher<Bindings> publisher;
+    std::unique_ptr<Bindings> deferred; // owner only; newest desired plan behind one unacknowledged publication
+    bool dirty = false; // owner only; a failed demand rebuild must reconcile before deferred publication
     const Bindings* audio = nullptr; // audio only, protected by publisher's strict epoch
     std::uint64_t next = 0;
+
+    bool awaitingAudio() const noexcept {
+        return publisher.publishedSeq() > publisher.inUseSeq();
+    }
+    void publishOrDefer(std::unique_ptr<Bindings>& plan) {
+        publisher.collect();
+        if (awaitingAudio()) {
+            deferred = std::move(plan);
+            return;
+        }
+        // Any publication failure preserves both the caller's candidate and
+        // the previous deferred demand. Acceptance below is nonthrowing.
+        publisher.publishPrepared(plan);
+        deferred.reset();
+    }
+    std::size_t collect() {
+        const auto freed = publisher.collect();
+        if (deferred && !awaitingAudio()) publisher.publishPrepared(deferred);
+        return freed;
+    }
 
     void adopt() noexcept {
         const auto* plan = publisher.peek();
@@ -1378,14 +1400,19 @@ ScopeLease Session::requestScope(const ScopeRequest& request) {
     return ScopeLease(std::move(state));
 }
 
-std::size_t Session::collectScopeTaps() { return scopeRuntime_->publisher.collect(); }
+std::size_t Session::collectScopeTaps() {
+    if (scopeRuntime_->dirty) attachTaps();
+    return scopeRuntime_->collect();
+}
 Session::ScopeStats Session::scopeStats() const {
     return {scopeRuntime_->requests.size() + scopeRuntime_->legacy.size(),
-            scopeRuntime_->groups.size(), scopeRuntime_->publisher.retainedCount()};
+            scopeRuntime_->groups.size(), scopeRuntime_->publisher.retainedCount(),
+            scopeRuntime_->deferred ? std::size_t{1} : std::size_t{0}, scopeRuntime_->awaitingAudio()};
 }
 void Session::beginScopeRead() noexcept { scopeRuntime_->adopt(); }
 
 void Session::attachTaps() {
+    scopeRuntime_->dirty = true;
     struct Demand {
         std::shared_ptr<Node::ScopePorts> ports;
         std::shared_ptr<const void> identity;
@@ -1463,15 +1490,24 @@ void Session::attachTaps() {
         plan->items.push_back(std::move(binding));
     }
     for (const auto& [source, key] : resolved) bySource.emplace(source, groups.at(key).tap);
-    if (changed) scopeRuntime_->publisher.publish(std::move(plan));
-    scopeRuntime_->groups = std::move(groups);
-    scopeRuntime_->bySource = std::move(bySource);
+    // Acquire every potentially throwing lease lock before accepting a plan.
+    // A requestScope rollback must not leave its failed request in a published
+    // or deferred plan because a later lease-state lock failed.
+    std::vector<std::unique_lock<std::mutex>> leaseLocks;
+    leaseLocks.reserve(scopeRuntime_->requests.size());
+    for (const auto& [id, request] : scopeRuntime_->requests) {
+        (void)id;
+        leaseLocks.emplace_back(request.state->mutex);
+    }
+    if (changed) scopeRuntime_->publishOrDefer(plan);
+    scopeRuntime_->groups.swap(groups);
+    scopeRuntime_->bySource.swap(bySource);
     for (const auto& [id, request] : scopeRuntime_->requests) {
         (void)id;
         const auto it = scopeRuntime_->bySource.find(request.source);
-        std::lock_guard lock(request.state->mutex);
         request.state->current = it != scopeRuntime_->bySource.end() ? it->second : nullptr;
     }
+    scopeRuntime_->dirty = false;
 }
 
 void Session::bindDeviceSources() {
@@ -1624,6 +1660,7 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     TransportInfo info;
     info.stripLanes = stripLanes.get();
     info.playing = transport.playing();
+    info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
     const auto ticks = tempo.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
     info.bpm = tempo.bpmAt(ticks);

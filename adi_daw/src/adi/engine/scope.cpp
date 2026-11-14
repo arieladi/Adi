@@ -27,13 +27,13 @@ ScopeTap::ScopeTap(double sampleRate, double seconds)
       spans_(std::make_unique<StampSpan[]>(static_cast<std::size_t>(spanCapacity_))) {}
 
 void ScopeTap::write(const float* l, const float* r, std::int32_t frames, std::int64_t stamp,
-                     bool advancing) noexcept { store(l, r, frames, stamp, advancing); }
+                     bool advancing, std::uint64_t transportRevision) noexcept { store(l, r, frames, stamp, advancing, transportRevision); }
 void ScopeTap::write(const double* l, const double* r, std::int32_t frames, std::int64_t stamp,
-                     bool advancing) noexcept { store(l, r, frames, stamp, advancing); }
+                     bool advancing, std::uint64_t transportRevision) noexcept { store(l, r, frames, stamp, advancing, transportRevision); }
 
 template <typename T>
 void ScopeTap::store(const T* l, const T* r, std::int32_t frames, std::int64_t stamp,
-                     bool advancing) noexcept {
+                     bool advancing, std::uint64_t transportRevision) noexcept {
     if (frames <= 0) return;
     const std::int64_t w = written_.load(std::memory_order_relaxed);
     pending_.store(w + frames, std::memory_order_relaxed);
@@ -47,14 +47,16 @@ void ScopeTap::store(const T* l, const T* r, std::int32_t frames, std::int64_t s
     // Timestamp records describe contiguous heard time, not UI frames or event segments.
     // One-sample segments with linear stamps extend one record instead of exhausting a side ring.
     const bool contiguous = lastSpan_ >= 0 && lastEnd_ == w && lastAdvancing_ == advancing &&
+        lastRevision_ == transportRevision &&
         stamp == lastStamp_ + (advancing ? w - lastBegin_ : 0);
     if (!contiguous) {
         ++lastSpan_;
-        lastBegin_ = w; lastStamp_ = stamp; lastAdvancing_ = advancing;
+        lastBegin_ = w; lastStamp_ = stamp; lastAdvancing_ = advancing; lastRevision_ = transportRevision;
         auto& span = spans_[static_cast<std::size_t>(lastSpan_ % spanCapacity_)];
         const auto version = span.version.load();
         span.version.store(version + 1);
         span.begin.store(w); span.end.store(w + frames); span.stamp.store(stamp); span.advancing.store(advancing);
+        span.transportRevision.store(transportRevision);
         span.version.store(version + 2);
         spanCount_.store(lastSpan_ + 1, std::memory_order_release);
     } else {
@@ -71,7 +73,8 @@ bool ScopeTap::loadSpan(std::int64_t record, Stamp& result) const noexcept {
     for (unsigned attempt = 0; attempt < 3; ++attempt) {
         const auto before = span.version.load();
         if (!before || (before & 1U)) continue;
-        Stamp value{span.begin.load(), span.end.load(), span.stamp.load(), span.advancing.load()};
+        Stamp value{span.begin.load(), span.end.load(), span.stamp.load(), span.advancing.load(),
+                    span.transportRevision.load()};
         if (span.version.load() == before) { result = value; return true; }
     }
     return false;
@@ -128,12 +131,14 @@ ScopeTap::ReadResult ScopeTap::read(Cursor& cursor, std::span<float> l, std::spa
     if (pending_.load(std::memory_order_relaxed) - start > capacity_) {
         cursor = cursorAtOldest(); result.status = ReadStatus::Overrun; return result;
     }
-    result.status = cursor.hasExpected && (cursor.expectedStamp != stamp || cursor.expectedAdvancing != span.advancing)
+    result.status = cursor.hasExpected && (cursor.expectedStamp != stamp || cursor.expectedAdvancing != span.advancing ||
+                                           cursor.expectedRevision != span.transportRevision)
         ? ReadStatus::Discontinuity : ReadStatus::Ready;
     result.frames = static_cast<std::int32_t>(count);
     result.firstStamp = stamp; result.firstSequence = start; result.advancing = span.advancing;
+    result.transportRevision = span.transportRevision;
     cursor.next += count; cursor.expectedStamp = stamp + (span.advancing ? count : 0);
-    cursor.expectedAdvancing = span.advancing; cursor.hasExpected = true;
+    cursor.expectedAdvancing = span.advancing; cursor.expectedRevision = span.transportRevision; cursor.hasExpected = true;
     return result;
 }
 bool ScopeTap::read(std::span<float> l, std::span<float> r, std::int64_t& firstStamp) const {
