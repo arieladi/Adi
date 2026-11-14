@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 14 November 2026 — next composition and continuous capture ownership
+
+`mixview/clean-key-facade-20261114` in `D:/Adi-wt/mix-compressor-1113` starts from #567 `52861576`, owning only new `mix/clean_key`, generated tests/docs and minimal core registration. Root independently verified the preceding private nine-case actual-child composition before authorizing this facade. It keeps the existing compressor/key/filter children unchanged, explicit prepared key scratch, fixed dynamics/Programme/internal source, boundary-only optional EQ motion and strong refusal. No native C capability flip, routing, running reset, monitoring or new CPU timing.
+
+Root owns `mixview/triggered-scope-20261114` in `D:/Adi-wt/mix-scope-1114`, based on #568 `32b334fd`: new framework-free continuous capture primitive/tests/docs/provenance and isolated CMake/CI only. The public GPL source informs trigger/holdoff/ordered-extrema mechanics; fixed prepared source-valued buffers replace pixel arrays and trigger copies. Actual original source is checked privately with a data-only shim; no native host/editor/device is involved. Existing latest-window Scope, broker, audio, UI, packages and Raw defaults remain unchanged. Shared continuous acquisition is a later slice; no fake trigger on sparse UI windows. Win reviews/merges, Claude owns live work, timing remains deferred.
+
 ## 14 November 2026 — corrected gate, moving key controls and average primitive supplied
 
 [#566](https://github.com/arieladi/Adi/pull/566) now points to corrected `33c64136`, fast-forward from its original head. Reset/stopped same-rate restart retain adaptive caches and defer signal baseline initialization until processing. Root independently verifies121 fixed records/145 dependencies/ten source/archive identities,207 Debug/Release checks,1,359,872 scalar comparisons and all25 old arrays byte-identical. A causal internal-state witness fails five assertions before the correction and passes afterward; its immediate float output is equal, not an audible/native comparison. The whole-request near-baseline alias predicate remains outside the incremental API and explicitly unclaimed. Draft until corrected-head CI; no native Gate enable or CPU-parity claim.
