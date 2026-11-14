@@ -86,6 +86,14 @@ FFT size, window and channel basis. Compatible consumers read the same immutable
 perform one transform. Different configurations share their underlying tap attachment without
 sharing incompatible results. The worker analyses only new samples and waits indefinitely with
 zero demand; the final consumer releases the audio tap.
+Stereo-power spectra omit an FFT only for an exactly zero sanitized lane, using the
+existing double-precision energy sum without another sample scan or a silence threshold.
+When one lane is active, the omitted lane's magnitude scratch is cleared before combining;
+complete silence retains the existing zero-output path without clearing unused scratch.
+The existing two-lane power combination,
+scope/meter samples and publication/history rules remain unchanged. Nonzero lanes, including
+subnormal input, keep the normal transform path. This is an analysis optimization, not an
+audio-processing shortcut or a CPU-percentage claim.
 
 The first presentation is a calibrated Main spectrum, with stereo peak/RMS, in the Mix View's
 OVERVIEW and boxed Info area. Hover information temporarily replaces the boxed analyzer. These
