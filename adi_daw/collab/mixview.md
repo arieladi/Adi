@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 14 November 2026 — Opto and shared average supplied
+
+Draft [#573](https://github.com/arieladi/Adi/pull/573), `7594f566`, on #570 supplies fixed signed-key-to-gain Opto:177 checks in Debug/Release/parent harness, strict3/validators4, zero callback allocation/free. Root verifies279 fixed records/seven owned source identities/20 unchanged child files, full selected audio and direct-gain preservation. Threshold/typed normalized times are stopped controls, ratio4/knee0/range60. It remains unregistered and does not infer stereo selection, other controls/quality or native C capability. The missing root SQLiteCpp configure is retained as a diagnostic; hosted exact-head CI trails.
+
+Draft [#574](https://github.com/arieladi/Adi/pull/574), `ebc790ea`, on #569 incorporates exact #568 through local merge `c9eeea44`, no Main merge. Six owned files overlap two inherited files, so PR has11 distinct files. Optional fixed1s linear-magnitude averaging shares real FFT hops, a coherent immutable sidecar and physical activation fences.1,839 unique checks plus691 optimized repeats pass, strict2/validators4. Root verifies102 fixed records/six source identities/eight inherited numerical sources/15 immutable artifacts;23,035,050 Raw replay bytes are identical in Debug+Release and300 Debug FFT/CRT rows exact. Raw Result layout/default and visible UI are unchanged. Causal266/6 pending-fence negative is retained. No new worker/timer/tap or audio work. Hosted CI trails.
+
+#572 `afd78fdf` now passes18 core+3 UI jobs, runs43540626826/43540626796, and is ready for win, unmerged here. #573/#574 are draft pending their own CI. The DS fixed Split private candidate passes six selected complete arrays with original strict gates; Debug/source/proof closure continues before any public admission. No public DS edit or new native/timing occurred. The next continuous-scope acquisition plan is peer reviewed only, not a broker/UI implementation. Current Claude packages remain fixed; live work stays with Claude; new timing remains deferred.
+
 ## 14 November 2026 — complete requests supplied; three more CI heads ready
 
 Draft [#572](https://github.com/arieladi/Adi/pull/572), `afd78fdf`, on corrected #566 supplies explicit fixed CompleteRequests with staged scratch and full-available-span alias/pending behavior.329 generated Debug/Release checks, strict3/validators4 and callback0/0 pass. Root verifies327 fixed records/717 dependencies and all25 prior complete outputs remain identical in Incremental, CompleteRequests and forced-dual variants. Request-local16 cadence is explicit; no future upstream reads, outer-wrapper sleep, other styles/quality or native G admission. Exact-head CI trails.
