@@ -13,6 +13,7 @@ struct Cascade {
 };
 // Preparation only: complete root batches, analog sections and matched anchors.
 // The output is unchanged when the configuration cannot be built. This first
-// tier excludes Flat Tilt, All Pass and the separate brickwall-cut path.
+// tier excludes Flat Tilt and the separate brickwall-cut path. All Pass uses
+// its explicit bilinear path rather than the ordinary magnitude matcher.
 Status build(double sampleRate, const Band &, Cascade &output) noexcept;
 } // namespace adi::mix::key_eq

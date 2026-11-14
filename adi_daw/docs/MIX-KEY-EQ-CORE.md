@@ -11,7 +11,9 @@ first-section Q floors, section-specific extrema/prominence, anchor selection
 and response-matching policy before using the common precise DFI stages. The
 ordinary Bell, shelves, cuts, Notch, Band Pass and Tilt paths are supported.
 Low Cut is high-pass; High Cut is low-pass.
-Flat Tilt, All Pass and the separate brickwall-cut path are explicitly refused.
+All Pass uses its separate mirrored-root and float-clamped bilinear conversion;
+it retains the same ordered precise DFI state and float section boundaries.
+Flat Tilt and the separate brickwall-cut path are explicitly refused.
 Non-cut shapes retain their bounded slope-clamping law.
 
 Each prepared bank has up to six ordered bands and fixed section capacity. The

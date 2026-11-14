@@ -118,8 +118,10 @@ void policy() {
         band.gainDb = 6;
         if (kind == 0)
             band.shape = k::Shape::FlatTilt;
-        if (kind == 1)
-            band.shape = k::Shape::AllPass;
+        if (kind == 1) {
+            band.shape = k::Shape::HighCut;
+            band.slope = 9;
+        }
         if (kind == 2) {
             band.shape = k::Shape::LowCut;
             band.slope = 9;
@@ -131,6 +133,54 @@ void policy() {
         check(k::build(48000, band, co) != k::Status::Ok && co == saved,
               "unsupported or invalid policy leaves the complete previous cascade unchanged");
     }
+}
+void allpass() {
+    k::Band band;
+    band.shape = k::Shape::AllPass;
+    for (int slope = 0; slope <= 9; ++slope) {
+        band.slope = static_cast<float>(slope);
+        k::Cascade cascade;
+        bool unity = k::build(48000, band, cascade) == k::Status::Ok && cascade.count > 0;
+        for (double w : {0.0, .07, .37, 1.0, 2.6, 3.141592653589793}) {
+            double magnitude = 1;
+            for (std::size_t i = 0; i < cascade.count; ++i) {
+                const auto &c = cascade.sections[i];
+                const double realN = c.b0 + c.b1 * std::cos(w) + c.b2 * std::cos(w + w);
+                const double imagN = -c.b1 * std::sin(w) - c.b2 * std::sin(w + w);
+                const double realD = 1 + c.a1 * std::cos(w) + c.a2 * std::cos(w + w);
+                const double imagD = -c.a1 * std::sin(w) - c.a2 * std::sin(w + w);
+                magnitude *= std::hypot(realN, imagN) / std::hypot(realD, imagD);
+            }
+            unity = unity && std::abs(magnitude - 1) < 1e-8;
+        }
+        check(unity, "named All Pass retains unity magnitude across the generated frequency grid");
+    }
+    band.frequencyHz = 25000;
+    k::Cascade cappedA, cappedB;
+    const auto a = k::build(48000, band, cappedA);
+    band.frequencyHz = 30000;
+    check(a == k::Status::Ok && k::build(48000, band, cappedB) == k::Status::Ok && cappedA == cappedB,
+          "All Pass uses its fixed float angular clamp above the bilinear limit");
+    auto settings = active();
+    settings.bands[0].shape = k::Shape::AllPass;
+    k::Core first, second;
+    Audio x{}, y{};
+    x[0][0] = x[1][0] = 1;
+    y = x;
+    check(first.prepare({48000, 256, 2}, settings) == k::Status::Ok &&
+              second.prepare({48000, 256, 2}, settings) == k::Status::Ok && render(first, x) &&
+              render(second, y, 17) && same(x, y),
+          "prepared All Pass phase history is exact across physical partitions");
+    double energy = 0;
+    for (float sample : x[0])
+        energy += static_cast<double>(sample) * sample;
+    check(x[0][0] != 1 && x[0][1] != 0 && std::abs(energy - 1) < 1e-6,
+          "All Pass changes impulse phase while retaining impulse energy");
+    const auto initial = x;
+    x = {};
+    x[0][0] = x[1][0] = 1;
+    first.reset();
+    check(render(first, x) && same(x, initial), "reset clears All Pass recursive phase history");
 }
 void lifecycle() {
     k::Core a, b;
@@ -239,6 +289,7 @@ void routingAndBlend() {
 } // namespace
 int main() {
     policy();
+    allpass();
     lifecycle();
     routingAndBlend();
     std::printf("Mix key EQ: %d checks, %d failures; audio allocations %zu/%zu\n", checks, failures,
