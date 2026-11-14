@@ -5807,6 +5807,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   root.infoSpectrum.mode() == panel.analysis.mode() && root.infoSpectrum.point() == panel.analysis.point(),
               "compact Info follows the parent's analyzer mode, source point and palette");
         check(value(*store, "SELECT count(*) FROM ops") == operations, "palette choices never create audio edits or undo operations");
+        panel.analysis.slopeBox.setSelectedId(2, juce::sendNotificationSync); root.frame();
+        check(root.state().analysisSpectrumSlope == "tilt45" && persistence.load("mix").analysisSpectrumSlope == "tilt45" &&
+                  root.infoSpectrum.spectrumSlope() == SpectrumSlope::Tilt45 && value(*store, "SELECT count(*) FROM ops") == operations,
+              "Spectrum slope persists as view state and compact Info follows without audio edits");
+        panel.analysis.slopeBox.setSelectedId(1, juce::sendNotificationSync);
         panel.analysis.paletteBox.setSelectedId(1, juce::sendNotificationSync);
         panel.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
         panel.analysis.setMode(SharedSpectrumView::Mode::Spectrum); root.frame();
@@ -6808,6 +6813,27 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                           broker->stats().transforms == spectralBefore.transforms && broker->stats().consumers == spectralBefore.consumers,
                       "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
                 actual.state().zoom = oldZoom;
+                mix.analysis.view.freeze(false); mix.analysis.setMode(SharedSpectrumView::Mode::Spectrum);
+                mix.analysis.slopeBox.setSelectedId(2, juce::sendNotificationSync);
+                mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
+                broker->pump(); mix.frame(actual.reader()); mix.analysis.view.freeze(true);
+                const auto slopePicture = mix.analysis.view.snapshot();
+                const auto slopeImage = mix.analysis.view.createComponentSnapshot(mix.analysis.view.getLocalBounds(), false);
+                check(slopePicture && mix.analysis.view.spectrumSlope() == SpectrumSlope::Tilt45,
+                      "slope rollback fixture contains a retained real Frozen Spectrum");
+                const auto slopeBefore = broker->stats(); actual.state().zoom = 0;
+                mix.analysis.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+                const auto slopeAfter = mix.analysis.view.createComponentSnapshot(mix.analysis.view.getLocalBounds(), false);
+                bool slopePixelsEqual = slopeImage.getBounds() == slopeAfter.getBounds();
+                for (int y = 0; y < slopeImage.getHeight() && slopePixelsEqual; ++y)
+                    for (int x = 0; x < slopeImage.getWidth(); ++x)
+                        slopePixelsEqual = slopePixelsEqual && slopeImage.getPixelAt(x, y) == slopeAfter.getPixelAt(x, y);
+                check(mix.analysis.requestedSpectrumSlope() == SpectrumSlope::Tilt45 &&
+                          actual.state().analysisSpectrumSlope == "tilt45" && mix.analysis.view.snapshot() == slopePicture &&
+                          slopePixelsEqual && broker->stats().consumers == slopeBefore.consumers &&
+                          broker->stats().transforms == slopeBefore.transforms,
+                      "failed slope save restores only controls and retains Frozen projection, measurement and demand");
+                actual.state().zoom = oldZoom;
                 {
                     // A separate software component tree reproduces floating
                     // key forwarding without creating a native window.
@@ -6815,15 +6841,21 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     fake.addAndMakeVisible(detached); detached.setBounds(0, 0, 500, 420);
                     detached.setMode(SharedSpectrumView::Mode::Spectrogram);
                     detached.setPalette(mix.analysis.view.palette(), mix.analysis.view.paletteReversed());
+                    detached.setSpectrumSlope(mix.analysis.view.spectrumSlope());
+                    detached.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+                    check(detached.view.spectrumSlope() == SpectrumSlope::Flat && mix.analysis.view.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                              actual.state().analysisSpectrumSlope == "tilt45",
+                          "floating slope starts from the parent then remains a lifetime-local view choice");
                     detached.paletteBox.setSelectedId(static_cast<int>(palettes::find("magma")) + 1, juce::sendNotificationSync);
                     check(detached.view.palette() == "magma" && mix.analysis.view.palette() == "viridis" &&
                               actual.state().analysisPalette == "viridis",
                           "detached palette choice remains local after copying the parent presentation");
                     bool protectedContext = true;
                     commands.activate(actual);
-                    for (auto *control : std::array<juce::Component *, 9>{&detached.modeBox, &detached.sourceBox,
-                            &detached.pointBox, &detached.channelBox, &detached.paletteBox, &detached.reverseButton,
+                    for (auto *control : std::array<juce::Component *, 10>{&detached.modeBox, &detached.sourceBox,
+                            &detached.pointBox, &detached.channelBox, &detached.paletteBox, &detached.slopeBox, &detached.reverseButton,
                             &detached.freezeButton, &detached.resetButton, &detached.expandButton}) {
+                        detached.setMode(control == &detached.slopeBox ? SharedSpectrumView::Mode::Spectrum : SharedSpectrumView::Mode::Spectrogram);
                         control->grabKeyboardFocus();
                         protectedContext = protectedContext && AnalysisPane::anyControlsFocused();
                         for (const int id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,

@@ -54,6 +54,7 @@ int main() {
     state.mixAnalyzerChannel = 4;
     state.analysisPalette = "viridis";
     state.analysisPaletteReverse = true;
+    state.analysisSpectrumSlope = "tilt45";
     state.showReference = true;
     state.hideReturns = true;
     state.gridSnap = false;
@@ -94,6 +95,13 @@ int main() {
     check(restored.analysisPalette == "viridis" && restored.analysisPaletteReverse &&
               views.load("other").analysisPalette == "adi" && !views.load("other").analysisPaletteReverse,
           "spectrogram palette/reverse persist per window with original ADI colors as the default");
+    check(restored.analysisSpectrumSlope == "tilt45" && views.load("other").analysisSpectrumSlope == "flat",
+          "Spectrum display slope persists per window with the exact Flat default for old preferences");
+    {
+        auto invalid = state; invalid.analysisSpectrumSlope = "unknown-slope";
+        check(!views.save("main", invalid, error) && views.load("main").analysisSpectrumSlope == "tilt45",
+              "unknown display slope cannot replace the saved known preference");
+    }
     {
         auto invalid = state; invalid.analysisPalette = "unknown-palette";
         check(!views.save("main", invalid, error) && views.load("main").analysisPalette == "viridis",

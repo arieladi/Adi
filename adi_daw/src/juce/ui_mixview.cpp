@@ -99,6 +99,16 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : ref(root), stack(root), roo
         }
         analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
     };
+    analysis.onSpectrumSlopeChange = [this] {
+        auto &state = root_.state();
+        const auto before = state.analysisSpectrumSlope;
+        state.analysisSpectrumSlope = spectrumSlopeId(analysis.requestedSpectrumSlope());
+        if (!root_.persist()) {
+            state.analysisSpectrumSlope = before;
+            analysis.restoreSlopeControls(spectrumSlopeFromId(before)); return;
+        }
+        analysis.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+    };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
 void MixViewPanel::adoptViewState() {
@@ -107,6 +117,7 @@ void MixViewPanel::adoptViewState() {
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
                            state.mixAnalyzerWidth);
     analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
+    analysis.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
     resized();
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
