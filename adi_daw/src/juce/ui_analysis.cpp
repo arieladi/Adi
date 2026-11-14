@@ -21,6 +21,61 @@ juce::String meterNumber(float value) {
     return std::isfinite(value) ? juce::String(value, 1) : juce::String("--");
 }
 } // namespace
+juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, bool reverse) noexcept {
+    if (palette >= palettes::count) palette = palettes::defaultIndex;
+    if (palette != palettes::defaultIndex) return juce::Colour(0xff000000u | palettes::rgb(palette, sample, reverse));
+    // Preserve the exact original 256-node JUCE color law and integer pixel
+    // indexing. This initialization occurs on owner-side view construction.
+    static const auto original = [] {
+        std::array<juce::Colour, 256> colors;
+        for (std::size_t i = 0; i < colors.size(); ++i) {
+            const auto strength = static_cast<float>(i) / 255.f;
+            colors[i] = look::display.interpolatedWith(look::value, strength)
+                .interpolatedWith(look::accent, std::max(0.f, (strength - .7f) / .3f));
+        }
+        return colors;
+    }();
+    return original[reverse ? 255u - sample : sample];
+}
+struct SharedSpectrumView::Raster {
+    static constexpr int width = 128, height = 256;
+    static constexpr std::uint16_t gap = 256;
+    std::array<std::uint16_t, static_cast<std::size_t>(width * height)> intensity{};
+    std::array<juce::Colour, 256> colors{};
+    juce::Image image;
+    std::uint64_t revision = 0, epoch = 0, column = 0;
+    bool paletteDirty = true;
+    Raster() { intensity.fill(gap); }
+    void setPalette(std::size_t index, bool reverse) noexcept {
+        for (std::size_t i = 0; i < colors.size(); ++i)
+            colors[i] = analysisPaletteColour(index, static_cast<std::uint8_t>(i), reverse);
+        paletteDirty = true;
+    }
+    void clearColumns(int first, int count) {
+        for (int y = 0; y < height; ++y) {
+            const auto start = static_cast<std::size_t>(y * width + first);
+            std::fill_n(intensity.data() + start, count, gap);
+        }
+        image.clear({first, 0, count, height}, look::display);
+    }
+    void shift(int added) {
+        for (int y = 0; y < height; ++y) {
+            auto *row = intensity.data() + static_cast<std::size_t>(y * width);
+            std::copy_n(row + added, width - added, row);
+        }
+        image.moveImageSection(0, 0, added, 0, width - added, height);
+        clearColumns(width - added, added);
+    }
+    void recolor() {
+        if (image.isNull()) return;
+        juce::Image::BitmapData pixels(image, juce::Image::BitmapData::writeOnly);
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+            const auto value = intensity[static_cast<std::size_t>(y * width + x)];
+            pixels.setPixelColour(x, y, value == gap ? look::display : colors[value]);
+        }
+        paletteDirty = false;
+    }
+};
 std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudness &meter,
                                                      std::int64_t track, double sampleRate) noexcept {
     const auto expected = meter.preparedFormatSequence();
@@ -39,6 +94,7 @@ std::optional<MainMeterSnapshot> readMainMeterSnapshot(const engine::MainLoudnes
     return result;
 }
 SharedSpectrumView::SharedSpectrumView() {
+    (void)analysisPaletteColour(palettes::defaultIndex, 0); // no lazy LUT initialization in paint
     setTitle("Channel spectrum");
     setTooltip("The channel after its mixer. Full and boxed views share one Hann-window spectrum. "
                "Sine-calibrated dBFS; sample peak and RMS refer to the same contiguous window. "
@@ -50,18 +106,29 @@ SharedSpectrumView::SharedSpectrumView() {
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     mode_ = mode; updateDemand(); repaint();
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     point_ = point; device_ = device; updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); spectrogram_ = {}; clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     channel_ = channel; updateDemand(); repaint();
+}
+void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
+    if (palette() == id && paletteReversed_ == reverse) return;
+    const auto index = palettes::find(id);
+    if (paletteIndex_ == index && paletteReversed_ == reverse) return;
+    paletteIndex_ = index; paletteReversed_ = reverse;
+    if (raster_) raster_->setPalette(index, reverse);
+    if (eligible()) {
+        try { updateRaster(); } catch (...) { raster_.reset(); }
+    }
+    repaint();
 }
 void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
     if (!mainMeterSource_.owner_before(source) && !source.owner_before(mainMeterSource_)) return;
@@ -89,7 +156,7 @@ void SharedSpectrumView::freeze(bool value) {
             clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
             clearedColumn_ = shown_->historySerial;
         } else if (!projectedMain) clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-        shown_.reset(); mainMeter_.reset(); updateDemand();
+        shown_.reset(); mainMeter_.reset(); raster_.reset(); updateDemand();
     }
     repaint();
 }
@@ -100,7 +167,7 @@ void SharedSpectrumView::clear() {
         clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
         clearedColumn_ = shown_->historySerial;
     }
-    shown_.reset(); mainMeter_.reset(); spectrogram_ = {};
+    shown_.reset(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
 SharedSpectrumView::~SharedSpectrumView() {
@@ -112,7 +179,7 @@ void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::in
         lease_.reset();
         shown_.reset();
         mainMeter_.reset();
-        spectrogram_ = {};
+        raster_.reset();
         broker_ = std::move(broker);
         track_ = track;
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
@@ -137,6 +204,7 @@ void SharedSpectrumView::updateDemand() noexcept {
     if (!eligible()) {
         lease_.reset();
         shown_.reset();
+        raster_.reset();
         mainMeter_.reset();
         status_ = Status::Detached;
     } else if (frozen_) {
@@ -158,6 +226,7 @@ void SharedSpectrumView::updateDemand() noexcept {
         }
         if (!lease_ || !lease_.available()) {
             shown_.reset();
+            raster_.reset();
             mainMeter_.reset();
             status_ = Status::Unavailable;
         } else {
@@ -174,6 +243,9 @@ void SharedSpectrumView::frame() noexcept {
     if (!lease_.available()) return;
     auto next = lease_.read();
     if (next && next->sourceEpoch == clearedEpoch_ && next->windowSerial <= clearedRevision_) next.reset();
+    // A recreated domain may restart these counters. A discarded publication
+    // cannot leave a raster that later aliases the new domain's first result.
+    if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
     if (next != shown_) {
         shown_ = std::move(next);
@@ -182,6 +254,67 @@ void SharedSpectrumView::frame() noexcept {
         repaint();
     }
     updateMainMeter();
+    try { updateRaster(); } catch (...) { raster_.reset(); }
+}
+void SharedSpectrumView::updateRaster() {
+    if (mode_ != Mode::Spectrogram || !shown_) return;
+    const auto skipped = shown_->sourceEpoch == clearedEpoch_ ? static_cast<std::size_t>(std::count_if(
+        shown_->columns.begin(), shown_->columns.end(), [this](const auto &entry) { return entry.serial <= clearedColumn_; })) : 0;
+    const auto count = shown_->columns.size() - skipped;
+    const auto topHz = std::min(20000., shown_->sampleRate * .5);
+    if ((!count && !shown_->historySerial) || topHz <= 20) return;
+    if (!raster_) {
+        raster_ = std::make_unique<Raster>(); raster_->setPalette(paletteIndex_, paletteReversed_);
+    }
+    auto &raster = *raster_;
+    if (raster.image.isNull() || raster.revision != shown_->revision || raster.epoch != shown_->sourceEpoch) {
+        auto firstColumn = skipped;
+        const bool reset = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
+            shown_->historySerial < raster.column || shown_->historySerial - raster.column >= Raster::width;
+        if (reset) {
+            if (raster.image.isNull()) raster.image = juce::Image(juce::Image::RGB, Raster::width, Raster::height, true);
+            raster.intensity.fill(Raster::gap); raster.image.clear(raster.image.getBounds(), look::display);
+        } else {
+            while (firstColumn < shown_->columns.size() && shown_->columns[firstColumn].serial <= raster.column) ++firstColumn;
+            const auto added = static_cast<int>(shown_->historySerial - raster.column);
+            if (added > 0) raster.shift(added);
+            if (firstColumn && shown_->columns[firstColumn - 1].serial == raster.column) --firstColumn;
+        }
+        if (shown_->droppedHistoryColumns) {
+            std::array<bool, Raster::width> retained{};
+            for (auto column = skipped; column < shown_->columns.size(); ++column) {
+                const auto serial = shown_->columns[column].serial;
+                if (serial <= shown_->historySerial && shown_->historySerial - serial < Raster::width)
+                    retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
+            }
+            for (std::size_t x = 0; x < retained.size(); ++x)
+                if (!retained[x]) raster.clearColumns(static_cast<int>(x), 1);
+        }
+        std::array<std::size_t, Raster::height> firstBin{}, lastBin{};
+        for (int row = 0; row < Raster::height; ++row) {
+            const auto low = 20. * std::pow(topHz / 20., static_cast<double>(row) / Raster::height);
+            const auto high = 20. * std::pow(topHz / 20., static_cast<double>(row + 1) / Raster::height);
+            firstBin[static_cast<std::size_t>(row)] = std::max<std::size_t>(1, static_cast<std::size_t>(low * shown_->request.fftSize / shown_->sampleRate));
+            lastBin[static_cast<std::size_t>(row)] = std::max(firstBin[static_cast<std::size_t>(row)] + 1,
+                static_cast<std::size_t>(high * shown_->request.fftSize / shown_->sampleRate) + 1);
+        }
+        juce::Image::BitmapData pixels(raster.image, juce::Image::BitmapData::writeOnly);
+        for (auto column = firstColumn; column < shown_->columns.size(); ++column) for (int row = 0; row < Raster::height; ++row) {
+            const auto &entry = shown_->columns[column];
+            if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= Raster::width) continue;
+            const auto &bins = *entry.binsDbfs;
+            float peak = floorDb;
+            for (auto i = firstBin[static_cast<std::size_t>(row)]; i < std::min(bins.size(), lastBin[static_cast<std::size_t>(row)]); ++i)
+                peak = std::max(peak, bins[i]);
+            const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
+            const auto value = static_cast<std::uint16_t>(strength * 255.f);
+            const int x = 127 - static_cast<int>(shown_->historySerial - entry.serial), y = Raster::height - row - 1;
+            raster.intensity[static_cast<std::size_t>(y * Raster::width + x)] = value;
+            pixels.setPixelColour(x, y, raster.colors[value]);
+        }
+        raster.revision = shown_->revision; raster.epoch = shown_->sourceEpoch; raster.column = shown_->historySerial;
+    }
+    if (raster.paletteDirty) raster.recolor();
 }
 void SharedSpectrumView::updateMainMeter() noexcept {
     std::optional<MainMeterSnapshot> next;
@@ -223,7 +356,7 @@ void SharedSpectrumView::componentVisibilityChanged(juce::Component &) { updateD
 void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); status_ = Status::Detached;
+    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
     unwatchAncestors();
 }
 void SharedSpectrumView::paint(juce::Graphics &g) {
@@ -300,73 +433,9 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
             g.fillRect(centre.x + std::clamp((l - r) * .5f, -1.f, 1.f) * radius,
                        centre.y - std::clamp((l + r) * .5f, -1.f, 1.f) * radius, 1.4f, 1.4f);
         }
-    } else if (mode_ == Mode::Spectrogram) {
-        const auto skipped = shown_->sourceEpoch == clearedEpoch_ ? static_cast<std::size_t>(std::count_if(
-            shown_->columns.begin(), shown_->columns.end(), [this](const auto &column) { return column.serial <= clearedColumn_; })) : 0;
-        const auto count = shown_->columns.size() - skipped;
-        const auto topHz = std::min(20000., shown_->sampleRate * .5);
-        // Each display column represents exactly one hop, with max aggregation across the
-        // logarithmic row's FFT bins. No renderer-dependent resampling of analysis time.
-        if ((count || shown_->historySerial) && topHz > 20) {
-            constexpr int rows = 256;
-            if (spectrogram_.isNull() || rasterRevision_ != shown_->revision || rasterEpoch_ != shown_->sourceEpoch) {
-                auto firstColumn = skipped;
-                const bool reset = spectrogram_.isNull() || rasterEpoch_ != shown_->sourceEpoch ||
-                    shown_->historySerial < rasterColumn_ || shown_->historySerial - rasterColumn_ >= 128;
-                if (reset) {
-                    spectrogram_ = juce::Image(juce::Image::RGB, 128, rows, true);
-                    spectrogram_.clear(spectrogram_.getBounds(), look::display);
-                } else {
-                    while (firstColumn < shown_->columns.size() && shown_->columns[firstColumn].serial <= rasterColumn_) ++firstColumn;
-                    const auto added = static_cast<int>(shown_->historySerial - rasterColumn_);
-                    if (added > 0) {
-                        spectrogram_.moveImageSection(0, 0, added, 0, 128 - added, rows);
-                        spectrogram_.clear({128 - added, 0, added, rows}, look::display);
-                    }
-                    // A previously capped hop may arrive without a new source sequence.
-                    // Redraw its same-time column; never squeeze missing hops together.
-                    if (firstColumn && shown_->columns[firstColumn - 1].serial == rasterColumn_) --firstColumn;
-                }
-                if (shown_->droppedHistoryColumns) {
-                    std::array<bool, 128> retained{};
-                    for (auto column = skipped; column < shown_->columns.size(); ++column) {
-                        const auto serial = shown_->columns[column].serial;
-                        if (serial <= shown_->historySerial && shown_->historySerial - serial < 128)
-                            retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
-                    }
-                    for (std::size_t x = 0; x < retained.size(); ++x) if (!retained[x])
-                        spectrogram_.clear({static_cast<int>(x), 0, 1, rows}, look::display);
-                }
-                std::array<std::size_t, rows> firstBin{}, lastBin{};
-                std::array<juce::Colour, 256> palette;
-                for (int row = 0; row < rows; ++row) {
-                    const auto low = 20. * std::pow(topHz / 20., static_cast<double>(row) / rows);
-                    const auto high = 20. * std::pow(topHz / 20., static_cast<double>(row + 1) / rows);
-                    firstBin[static_cast<std::size_t>(row)] = std::max<std::size_t>(1, static_cast<std::size_t>(low * shown_->request.fftSize / shown_->sampleRate));
-                    lastBin[static_cast<std::size_t>(row)] = std::max(firstBin[static_cast<std::size_t>(row)] + 1,
-                        static_cast<std::size_t>(high * shown_->request.fftSize / shown_->sampleRate) + 1);
-                    const auto strength = static_cast<float>(row) / 255.f;
-                    palette[static_cast<std::size_t>(row)] = look::display.interpolatedWith(look::value, strength)
-                        .interpolatedWith(look::accent, std::max(0.f, (strength - .7f) / .3f));
-                }
-                juce::Image::BitmapData pixels(spectrogram_, juce::Image::BitmapData::writeOnly);
-                for (auto column = firstColumn; column < shown_->columns.size(); ++column) for (int row = 0; row < rows; ++row) {
-                    const auto &entry = shown_->columns[column];
-                    if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= 128) continue;
-                    const auto &bins = *entry.binsDbfs;
-                    float peak = floorDb;
-                    for (auto i = firstBin[static_cast<std::size_t>(row)]; i < std::min(bins.size(), lastBin[static_cast<std::size_t>(row)]); ++i)
-                        peak = std::max(peak, bins[i]);
-                    const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
-                    pixels.setPixelColour(127 - static_cast<int>(shown_->historySerial - entry.serial), rows - row - 1,
-                        palette[static_cast<std::size_t>(strength * 255.f)]);
-                }
-                rasterRevision_ = shown_->revision; rasterEpoch_ = shown_->sourceEpoch;
-                rasterColumn_ = shown_->historySerial;
-            }
-            g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
-            g.drawImage(spectrogram_, plot);
-        }
+    } else if (mode_ == Mode::Spectrogram && raster_ && !raster_->image.isNull()) {
+        g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
+        g.drawImage(raster_->image, plot);
     }
     const double topHz = std::min(20000.0, shown_->sampleRate * .5);
     if (topHz <= 20) return;
@@ -436,6 +505,30 @@ AnalysisPane::AnalysisPane() {
     }
     modeBox.setTitle("Analysis mode"); sourceBox.setTitle("Analysis channel source");
     pointBox.setTitle("Analysis tap point"); channelBox.setTitle("Spectrum channel");
+    paletteBox.setTitle("Spectrogram palette"); reverseButton.setTitle("Reverse spectrogram palette");
+    static const auto previews = [] {
+        std::array<juce::Image, palettes::count> images;
+        for (std::size_t i = 0; i < images.size(); ++i) {
+            images[i] = juce::Image(juce::Image::RGB, 96, 8, false);
+            juce::Image::BitmapData pixels(images[i], juce::Image::BitmapData::writeOnly);
+            for (int x = 0; x < 96; ++x) for (int y = 0; y < 8; ++y)
+                pixels.setPixelColour(x, y, analysisPaletteColour(i, static_cast<std::uint8_t>(x * 255 / 95)));
+        }
+        return images;
+    }();
+    for (std::size_t i = 0; i < palettes::count; ++i) {
+        const auto name = palettes::id(i);
+        paletteBox.getRootMenu()->addItem(static_cast<int>(i) + 1,
+            i == 0 ? juce::String("ADI (default)") : juce::String::fromUTF8(name.data(), static_cast<int>(name.size())),
+            true, false, previews[i]);
+    }
+    const auto paletteChanged = [this] {
+        if (onPaletteChange) onPaletteChange();
+        else setPalette(requestedPalette(), reverseButton.getToggleState());
+    };
+    paletteBox.onChange = paletteChanged; reverseButton.onClick = paletteChanged;
+    addAndMakeVisible(paletteBox); addAndMakeVisible(reverseButton);
+    setPalette("adi");
     modeBox.onChange = [this] { setMode(static_cast<SharedSpectrumView::Mode>(modeBox.getSelectedId() - 1)); };
     sourceBox.onChange = [this] { source_ = sourceBox.getSelectedId() == 2 ? Source::Selected : Source::Main; };
     pointBox.onChange = [this] { setPoint(static_cast<engine::ScopePoint>(pointBox.getSelectedId() - 1)); };
@@ -447,10 +540,18 @@ AnalysisPane::AnalysisPane() {
     resetButton.setTooltip("Clear this view's display interval; other analyzer views and audio are unchanged.");
     expandButton.onClick = [this] { if (onExpand) onExpand(view.track()); };
     addAndMakeVisible(freezeButton); addAndMakeVisible(resetButton); addAndMakeVisible(expandButton); addAndMakeVisible(view);
+    setMode(view.mode());
+}
+bool AnalysisPane::anyControlsFocused() noexcept {
+    auto *focused = juce::Component::getCurrentlyFocusedComponent();
+    return focused && focused->isShowing() &&
+        (dynamic_cast<AnalysisPane *>(focused) != nullptr || focused->findParentComponentOfClass<AnalysisPane>() != nullptr);
 }
 void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     view.setMode(mode); modeBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
     channelBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::Spectrogram);
+    paletteBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
+    reverseButton.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
 }
 void AnalysisPane::setSource(Source source) {
     source_ = source; sourceBox.setSelectedId(source == Source::Selected ? 2 : 1, juce::dontSendNotification);
@@ -458,18 +559,32 @@ void AnalysisPane::setSource(Source source) {
 void AnalysisPane::setPoint(engine::ScopePoint point) {
     view.setSource(point); pointBox.setSelectedId(static_cast<int>(point) + 1, juce::dontSendNotification);
 }
+std::string_view AnalysisPane::requestedPalette() const noexcept {
+    const int selected = paletteBox.getSelectedId();
+    return palettes::id(selected > 0 ? static_cast<std::size_t>(selected - 1) : 0);
+}
+void AnalysisPane::restorePaletteControls(std::string_view id, bool reverse) {
+    paletteBox.setSelectedId(static_cast<int>(palettes::find(id)) + 1, juce::dontSendNotification);
+    reverseButton.setToggleState(reverse, juce::dontSendNotification);
+}
+void AnalysisPane::setPalette(std::string_view id, bool reverse) {
+    view.setPalette(id, reverse); restorePaletteControls(view.palette(), reverse);
+}
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
 }
 void AnalysisPane::resized() {
-    auto area = getLocalBounds();
-    auto controls = area.removeFromTop(25).reduced(2);
-    const int width = std::max(38, (controls.getWidth() - 180) / 4);
-    for (auto *box : {&modeBox, &sourceBox, &pointBox, &channelBox}) box->setBounds(controls.removeFromLeft(width).reduced(1, 0));
-    freezeButton.setBounds(controls.removeFromLeft(60).reduced(1, 0));
-    resetButton.setBounds(controls.removeFromLeft(60).reduced(1, 0));
-    expandButton.setBounds(controls.reduced(1, 0));
-    view.setBounds(area);
+    const std::array<juce::Component *, 9> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox,
+        &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const int columns = std::clamp(getWidth() / 96, 1, 4);
+    const int rows = (static_cast<int>(controls.size()) + columns - 1) / columns;
+    const int height = std::min(25, std::max(0, getHeight() / rows));
+    for (std::size_t i = 0; i < controls.size(); ++i) {
+        const int column = static_cast<int>(i) % columns, row = static_cast<int>(i) / columns;
+        const int left = column * getWidth() / columns, right = (column + 1) * getWidth() / columns;
+        controls[i]->setBounds(juce::Rectangle<int>(left, row * height, right - left, height).reduced(1));
+    }
+    view.setBounds(getLocalBounds().withTrimmedTop(rows * height));
 }
 
 AnalysisDock::AnalysisDock() {

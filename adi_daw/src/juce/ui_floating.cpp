@@ -410,6 +410,9 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     pane->setSize(800, 420);
     pane->setMode(root.mixViewPanel.analysis.mode());
     pane->setPoint(root.mixViewPanel.analysis.point());
+    pane->view.setChannel(root.mixViewPanel.analysis.view.channel());
+    pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
+    pane->setPalette(root.mixViewPanel.analysis.view.palette(), root.mixViewPanel.analysis.view.paletteReversed());
     pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
     pane->expandButton.setButtonText("Mix View");
     pane->onExpand = [&root](std::int64_t channel) {

@@ -846,6 +846,7 @@ void AdiRootComponent::frame() noexcept {
     infoSpectrum.setMode(mixViewPanel.analysis.mode());
     infoSpectrum.setSource(mixViewPanel.analysis.point());
     infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
+    infoSpectrum.setPalette(mixViewPanel.analysis.view.palette(), mixViewPanel.analysis.view.paletteReversed());
     infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
     infoSpectrum.frame();
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,

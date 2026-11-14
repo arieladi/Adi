@@ -52,6 +52,8 @@ struct WindowState {
     // Optional right-side shared analyzer presentation; never audio parameters.
     bool mixAnalyzerDock = false;
     int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
+    std::string analysisPalette = "adi";
+    bool analysisPaletteReverse = false;
     // The ★ Reference track (ADR-0209 §4, d11): hidden from the project view until its
     // [Reference Track] toggle shows it.
     bool showReference = false;

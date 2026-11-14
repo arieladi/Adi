@@ -52,6 +52,8 @@ int main() {
     state.mixAnalyzerSource = 1;
     state.mixAnalyzerPoint = 2;
     state.mixAnalyzerChannel = 4;
+    state.analysisPalette = "viridis";
+    state.analysisPaletteReverse = true;
     state.showReference = true;
     state.hideReturns = true;
     state.gridSnap = false;
@@ -89,6 +91,14 @@ int main() {
               !views.load("other").mixAnalyzerDock && views.load("other").mixAnalyzerWidth == 300 &&
               views.load("other").mixAnalyzerSource == 0,
           "optional analyzer dock source/tap/channel/width persist per window, off and Main by default");
+    check(restored.analysisPalette == "viridis" && restored.analysisPaletteReverse &&
+              views.load("other").analysisPalette == "adi" && !views.load("other").analysisPaletteReverse,
+          "spectrogram palette/reverse persist per window with original ADI colors as the default");
+    {
+        auto invalid = state; invalid.analysisPalette = "unknown-palette";
+        check(!views.save("main", invalid, error) && views.load("main").analysisPalette == "viridis",
+              "unknown palette cannot replace a saved known palette");
+    }
     {
         auto invalid = state;
         invalid.mixAnalyzerWidth = 239;
