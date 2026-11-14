@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/ops.hpp"
 #include "adi/engine/mpe_output.hpp"
@@ -211,6 +212,7 @@ private:
 std::unique_ptr<DeviceInstance> makeBuiltinDevice(const engine::DeviceRequest& request,std::string& error) {
     try {
         if(!request.ref || request.ref->format!="internal"){error="built-in loader needs an internal plug-in reference";return {};}
+        if(mix::functionForReference(request.ref->format,request.ref->uid))return makeMixFunction(request,error);
         const auto* info=findBuiltin(request.ref->uid);
         if(!info){error="unknown built-in device UID: "+request.ref->uid;return {};}
         if(!info->available){error=std::string(info->name)+" is not available through this built-in loader";return {};}

@@ -6,6 +6,11 @@
 #include <memory>
 #include <string>
 namespace adi::ui {
+struct ParameterGroupMetadata {
+    std::string groupId, groupName;
+    bool groupEnableControl = false;
+    bool operator==(const ParameterGroupMetadata &) const = default;
+};
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
     // The track's device chain holding it (`device_chains.id`): where a paste in front of it goes.
@@ -32,6 +37,8 @@ struct DevicePanelData {
     // Each parameter's default, normalised, as the plug-in declares it (`ParamDescriptor::
     // defaultValue`): where Live's Return to Default (manual 41.6) takes a control.
     std::map<std::string, double> defaults;
+    // Keyed by stable parameter id, copied from the live descriptor, not inferred from names.
+    std::map<std::string, ParameterGroupMetadata> parameterGroups{};
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.

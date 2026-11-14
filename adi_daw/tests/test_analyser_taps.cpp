@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 using namespace adi;
 using namespace adi::engine;
@@ -138,6 +139,17 @@ struct Fixture {
         float* channels[]={out.data(),out.data()+512};
         session.process({channels,nullptr,2,0,frames,0});
     }
+    void settleScopePlans() {
+        // Explicit software callback boundaries, with no source samples or second reader.
+        // The owner then flushes the latest deferred demand before the next boundary.
+        for (int attempt=0;attempt<4;++attempt) {
+            const auto before=session.scopeStats();
+            if (!before.deferredPlans && !before.awaitingAudio) return;
+            { auto boundary=session.beginRender(); static_cast<void>(boundary); }
+            session.collectScopeTaps();
+        }
+        throw std::runtime_error("scope plan did not settle");
+    }
 };
 struct Window {
     std::array<float,512> l{},r{};
@@ -161,6 +173,7 @@ void gainAndFallback() {
         const auto scope=f.session.openScope(1,1);
         check(pre && post && scope && (inserts ? pre!=post : pre==post) && post!=scope,"physical aliases share capture; distinct endpoints have separate rings");
         check(pre->capacity()==48000 && f.session.openScope(1,1,ScopePoint::ChainInput)==pre,"caller selects one-second ring; reopening reuses it");
+        f.settleScopePlans();
         f.render();
         const Window a(pre),b(post),c(scope);
         bool exact=true;
@@ -169,6 +182,7 @@ void gainAndFallback() {
         check(std::abs(c.l[0]-b.l[0]*0.5f)<1e-6f,"PreFader excludes the fader; legacy PostFader includes it");
         check(a.stamp==b.stamp && c.stamp==b.stamp,"zero-latency points share heard stamps");
         for(auto point:points) f.session.closeScope(1,point);
+        f.settleScopePlans();
         const auto n=pre->written(),m=post->written(),k=scope->written();
         f.render();
         check(pre->written()==n && post->written()==m && scope->written()==k,"closed taps copy zero frames");
@@ -176,6 +190,7 @@ void gainAndFallback() {
     Fixture synth(true,true); synth.load();
     auto a=synth.session.openScope(1,1,ScopePoint::ChainInput);
     const auto b=synth.session.openScope(1,1,ScopePoint::PreFader);
+    synth.settleScopePlans();
     synth.render();
     check(Window(a).l[0]==0.375f && Window(b).l[0]==0.75f,"instrument track taps after instrument and before first effect");
     // Removing the effect must move ChainInput onto the strip, and closing it
@@ -183,12 +198,15 @@ void gainAndFallback() {
     synth.store->db().exec("DELETE FROM devices WHERE id=1");
     check(synth.session.refresh(*synth.store),"chain edit rebuilds");
     a=synth.session.openScope(1,1,ScopePoint::ChainInput); // a new physical endpoint is a generation
+    synth.settleScopePlans();
     synth.render();
     check(Window(a).l[0]==0.375f && Window(b).l[0]==0.375f,"instrument-only chain falls back to PreFader audio");
     synth.session.closeScope(1,ScopePoint::ChainInput);
+    synth.settleScopePlans();
     const auto before=a->written(); synth.render();
     check(a->written()==before+512,"closing a retargeted alias preserves the remaining PreFader consumer");
     synth.session.closeScope(1,ScopePoint::PreFader);
+    synth.settleScopePlans();
     const auto closed=a->written(); synth.render();
     check(a->written()==closed,"last alias consumer detaches the retargeted physical endpoint");
 }
@@ -198,6 +216,7 @@ void stamps() {
     const auto b=f.session.openScope(2,1,ScopePoint::PreFader);
     const auto ca=f.session.openScope(1,1,ScopePoint::ChainInput);
     const auto cb=f.session.openScope(2,1,ScopePoint::ChainInput);
+    f.settleScopePlans();
     f.render();
     const Window wa(a),wb(b);
     check(a->latency()==32 && b->latency()==96,"PreFader has each insert's arrival latency");
@@ -213,6 +232,7 @@ void stamps() {
     Fixture instrument(true,true); instrument.delays=true; instrument.load();
     const auto input=instrument.session.openScope(1,1,ScopePoint::ChainInput);
     const auto output=instrument.session.openScope(1,1,ScopePoint::PreFader);
+    instrument.settleScopePlans();
     instrument.render();
     check(input->latency()==96 && output->latency()==128,"instrument arrival is included before the effect's own latency");
     check(Window(input).stamp==-96 && Window(output).stamp==-128,"nonzero ChainInput arrival is used in actual write stamps");
@@ -222,6 +242,7 @@ void silenceAndConcurrentClose() {
     Fixture f(false); f.load();
     const auto pre=f.session.openScope(1,1,ScopePoint::PreFader);
     const auto chain=f.session.openScope(1,1,ScopePoint::ChainInput);
+    f.settleScopePlans();
     f.render(); f.a.silent=true; f.render();
     check(pre->written()==1024 && chain->written()==1024,"suspended silent strip keeps open rings current");
     check(Window(pre).l[0]==0 && Window(chain).l[0]==0,"silent taps replace previously audible samples");
@@ -238,6 +259,12 @@ void silenceAndConcurrentClose() {
             const auto tap=f.session.openScope(i%2+1,1,point);
             reused=reused && tap==f.session.openScope(i%2+1,1,point);
             f.session.closeScope(i%2+1,point);
+            const auto limit=std::chrono::steady_clock::now()+std::chrono::seconds(2);
+            auto state=f.session.scopeStats();
+            while((state.deferredPlans||state.awaitingAudio)&&std::chrono::steady_clock::now()<limit) {
+                f.session.collectScopeTaps();state=f.session.scopeStats();std::this_thread::yield();
+            }
+            quiet=quiet&&!state.deferredPlans&&!state.awaitingAudio;
             auto settled=blocks.load();
             while(blocks.load()-settled<2) std::this_thread::yield();
             const auto written=tap->written(); settled=blocks.load();
@@ -295,6 +322,140 @@ void cursorsAndBoundaries() {
           "4096 single-sample event segments preserve the complete prepared history");
 }
 
+void transportRevisionBoundaries() {
+    for (const bool wide : {false,true}) {
+        ScopeTap tap(4096,1);
+        auto cursor=tap.cursorAtEnd();
+        const float narrow=.25f;const double precise=.25;
+        for (int i=0;i<4096;++i) {
+            audio::CallbackScope callback;
+            if (wide) tap.write(&precise,nullptr,1,i,true,17);
+            else tap.write(&narrow,nullptr,1,i,true,17);
+        }
+        std::array<float,4096> l{},r{};
+        auto result=tap.read(cursor,l,r);
+        check(result.status==ScopeTap::ReadStatus::Ready&&result.frames==4096&&result.transportRevision==17&&
+                  tap.oldest()==0&&std::all_of(l.begin(),l.end(),[](float x){return x==.25f;}),
+              "one revision coalesces all single-sample writes at either precision");
+        {
+            audio::CallbackScope callback;
+            if (wide) tap.write(&precise,nullptr,1,4096,true,18);
+            else tap.write(&narrow,nullptr,1,4096,true,18);
+        }
+        result=tap.read(cursor,l,r);
+        check(result.status==ScopeTap::ReadStatus::Discontinuity&&result.frames==1&&
+                  result.firstStamp==4096&&result.transportRevision==18&&cursor.expectedRevision==18,
+              "an advancing seek to the expected next stamp still has an explicit revision boundary");
+        ScopeTap parked(64,1);auto stopped=parked.cursorAtEnd();
+        if (wide) parked.write(&precise,nullptr,1,777,false,31);
+        else parked.write(&narrow,nullptr,1,777,false,31);
+        result=parked.read(stopped,l,r);
+        check(result.status==ScopeTap::ReadStatus::Ready&&!result.advancing&&result.transportRevision==31,
+              "parked revision establishes its own cursor expectation");
+        if (wide) parked.write(&precise,nullptr,1,777,false,32);
+        else parked.write(&narrow,nullptr,1,777,false,32);
+        result=parked.read(stopped,l,r);
+        check(result.status==ScopeTap::ReadStatus::Discontinuity&&result.firstStamp==777&&
+                  !result.advancing&&result.transportRevision==32,
+              "a seek to the identical parked stamp cannot merge into older audio");
+    }
+}
+
+void graphTransportRevisions() {
+    for (const auto precision : {Precision::Float32,Precision::Float64}) {
+        Fixture f;f.load();f.session.setPrecision(precision);
+        auto input=f.session.requestScope({{1,ScopePoint::DeviceInput,1},1});
+        auto output=f.session.requestScope({{1,ScopePoint::DeviceOutput,1},1});
+        f.settleScopePlans();
+        auto in=input.tap()->cursorAtEnd(),out=output.tap()->cursorAtEnd();
+        std::array<float,512> l{},r{};
+        f.render();
+        auto a=input.tap()->read(in,l,r),b=output.tap()->read(out,l,r);
+        check(a.transportRevision==f.session.transport().revision()&&b.transportRevision==a.transportRevision&&
+                  a.frames==512&&b.frames==512,
+              "active input/output taps carry the actual driver revision at both processing precisions");
+        f.session.transport().locate(f.session.transport().position());f.render();
+        a=input.tap()->read(in,l,r);b=output.tap()->read(out,l,r);
+        check(a.status==ScopeTap::ReadStatus::Discontinuity&&b.status==ScopeTap::ReadStatus::Discontinuity&&
+                  a.transportRevision==f.session.transport().revision()&&b.transportRevision==a.transportRevision,
+              "active graph capture forwards a contiguous Locate revision through every precision path");
+        const auto* entry=f.session.entryFor(1);
+        f.session.devices().nodeAt(entry->hostIndex).setBypassed(true);
+        f.a.silent=true;f.b.silent=true;f.render();f.render();
+        in=input.tap()->cursorAtEnd();out=output.tap()->cursorAtEnd();
+        f.session.transport().play(false);f.render();
+        a=input.tap()->read(in,l,r);b=output.tap()->read(out,l,r);
+        check(a.frames==512&&b.frames==512&&!a.advancing&&!b.advancing,
+              "a parked silent graph establishes complete input/output spans");
+        f.session.transport().locate(f.session.transport().position());f.render();
+        a=input.tap()->read(in,l,r);b=output.tap()->read(out,l,r);
+        check(f.session.graph().currentGraph()->stats().nodesSuspended>0&&
+                  a.status==ScopeTap::ReadStatus::Discontinuity&&b.status==ScopeTap::ReadStatus::Discontinuity&&
+                  a.transportRevision==f.session.transport().revision()&&b.transportRevision==a.transportRevision&&
+                  std::all_of(l.begin(),l.end(),[](float x){return x==0;}),
+              "suspended input/output writes preserve same-position Locate boundaries without fabricated signal");
+    }
+}
+
+void boundedStoppedDemand() {
+    for (const bool renderedBeforeStop : {false,true}) {
+        Fixture f;f.load();
+        std::vector<std::weak_ptr<const ScopeTap>> history;
+        history.reserve(256);
+        auto seed=f.session.requestScope({{1,ScopePoint::DeviceInput,1},.005});
+        history.push_back(seed.tap());
+        if (renderedBeforeStop) {f.settleScopePlans();f.render();}
+        auto larger=f.session.requestScope({{1,ScopePoint::DeviceInput,1},.01});
+        history.push_back(larger.tap());
+        if (renderedBeforeStop) f.session.release();
+        seed.reset();larger.reset();f.session.collectScopeTaps();
+        bool bounded=true,aliases=true;
+        for (int i=0;i<100;++i) {
+            auto current=f.session.requestScope({{1,ScopePoint::DeviceInput,1},i%2?.02:.01});
+            auto alias=f.session.requestScope({{1,ScopePoint::ChainInput,0},.005});
+            history.push_back(current.tap());
+            aliases=aliases&&current.tap()==alias.tap()&&f.session.scopeStats().sources==1;
+            current.reset();alias.reset();f.session.collectScopeTaps();
+            const auto stats=f.session.scopeStats();
+            const auto alive=std::count_if(history.begin(),history.end(),[](const auto& weak){return !weak.expired();});
+            bounded=bounded&&stats.consumers==0&&stats.sources==0&&stats.retired<=1&&stats.deferredPlans<=1&&alive<=3;
+        }
+        check(aliases&&bounded,
+              "stopped or never-started hide/show retains a constant number of tap generations and physical aliases");
+        auto latest=f.session.requestScope({{2,ScopePoint::DeviceOutput,2},.02});
+        f.session.prepare(48000,512);
+        auto tap=latest.tap();history.push_back(tap);
+        f.render();
+        check(tap&&tap->written()==0&&f.session.scopeStats().deferredPlans==1,
+              "the latest deferred source waits for real adoption rather than inventing stopped-driver progress");
+        f.session.collectScopeTaps();f.render();f.session.collectScopeTaps();
+        check(tap->written()==512&&Window(tap).l[0]==.125f&&f.session.scopeStats().deferredPlans==0&&
+                  !f.session.scopeStats().awaitingAudio,
+              "restart acknowledges and publishes exactly the newest requested endpoint");
+        const auto written=tap->written();latest.reset();f.render();f.session.collectScopeTaps();
+        check(tap->written()==written&&f.session.scopeStats().consumers==0&&f.session.scopeStats().sources==0,
+              "closing the latest resumed demand cannot be undone by an older deferred publication");
+        tap.reset();
+        check(std::all_of(history.begin(),history.end(),[](const auto& weak){return weak.expired();}),
+              "owner collection reclaims every obsolete tap only after final callback detachment");
+    }
+    Fixture closed;closed.load();
+    auto first=closed.session.requestScope({{1,ScopePoint::DeviceInput,1},.005});
+    closed.settleScopePlans();closed.render();
+    std::weak_ptr<const ScopeTap> old=first.tap();
+    auto replacement=closed.session.requestScope({{1,ScopePoint::DeviceInput,1},.02});
+    std::weak_ptr<const ScopeTap> last=replacement.tap();
+    closed.session.release();first.reset();replacement.reset();closed.session.collectScopeTaps();
+    check(closed.session.scopeStats().sources==0&&closed.session.scopeStats().deferredPlans==1,
+          "stopping behind an unacknowledged replacement retains the latest closed-demand plan");
+    closed.session.prepare(48000,512);closed.render();closed.session.collectScopeTaps();
+    closed.render();closed.session.collectScopeTaps();
+    check(old.expired()&&last.expired()&&closed.session.scopeStats().consumers==0&&
+              closed.session.scopeStats().sources==0&&!closed.session.scopeStats().deferredPlans&&
+              !closed.session.scopeStats().awaitingAudio,
+          "restart with no surviving demand cannot resurrect an earlier deferred capture");
+}
+
 void scopedDemandAndGeneration() {
     Fixture f; f.load();
     auto a=f.session.requestScope({{1,ScopePoint::DeviceInput,1},0.5});
@@ -304,6 +465,7 @@ void scopedDemandAndGeneration() {
     auto c=f.session.requestScope({{1,ScopePoint::DeviceInput,1},1.5});
     check(a.tap()==b.tap() && b.tap()==c.tap() && c.tap()!=old && c.tap()->capacity()==72000,
           "maximum history demand prepares a shared replacement generation");
+    f.settleScopePlans();
     auto cursor=a.tap()->cursorAtEnd(); f.render();
     std::array<float,512> l{},r{};
     auto read=a.tap()->read(cursor,l,r);
@@ -315,6 +477,7 @@ void scopedDemandAndGeneration() {
           c.tap()->read(cursor,l,r).status==ScopeTap::ReadStatus::GenerationChanged,
           "rate preparation replaces capture storage and invalidates old analysis windows");
     auto output=f.session.requestScope({{1,ScopePoint::DeviceOutput,1},0.5});
+    f.settleScopePlans();
     f.render();
     check(Window(output.tap()).l[0]==0.5f,"device output captures processed audio independently of input");
     f.store->db().exec("DELETE FROM devices WHERE id=1");
@@ -355,6 +518,7 @@ void deviceStampsPrecisionAndSound() {
         f.session.setPrecision(precision);
         auto input=f.session.requestScope({{1,ScopePoint::DeviceInput,1},1});
         auto output=f.session.requestScope({{1,ScopePoint::DeviceOutput,1},1});
+        f.settleScopePlans();
         f.render();
         const Window before(input.tap()), after(output.tap());
         check(before.stamp==0 && after.stamp==-32 && before.peakStamp()==after.peakStamp(),
@@ -376,6 +540,7 @@ void deviceStampsPrecisionAndSound() {
     Fixture clean, watched; clean.load(); watched.load();
     auto input=watched.session.requestScope({{1,ScopePoint::DeviceInput,1},1});
     auto output=watched.session.requestScope({{1,ScopePoint::DeviceOutput,1},1});
+    watched.settleScopePlans();
     std::array<float,1024> a{},b{};
     float* ap[]={a.data(),a.data()+512}; float* bp[]={b.data(),b.data()+512};
     for(int i=0;i<8;++i) {
@@ -411,7 +576,8 @@ void physicalCallbackMetadata() {
 int main() {
     try {
         gainAndFallback(); stamps(); silenceAndConcurrentClose();
-        cursorsAndBoundaries(); scopedDemandAndGeneration(); stalledRetirement(); deviceStampsPrecisionAndSound(); physicalCallbackMetadata();
+        cursorsAndBoundaries(); transportRevisionBoundaries(); graphTransportRevisions(); boundedStoppedDemand();
+        scopedDemandAndGeneration(); stalledRetirement(); deviceStampsPrecisionAndSound(); physicalCallbackMetadata();
         check(callbackLatencyQueries.load()==0,"no SDK latency queries in callback capture");
         check(allocations.load()==0,"zero allocations in audio process");
         check(deallocations.load()==0,"zero retirement destructors or deallocations in audio process");

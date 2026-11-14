@@ -181,6 +181,7 @@ bool Graph::topoSort() {
 // ---------------------------------------------------------------------------
 
 void DelayLine::prepare(std::int32_t channels, std::int32_t capacity, bool wide) {
+    graphSequence_=nullptr;graphTarget_=nullptr;graphWarmTarget_=graphActiveTarget_=0;
     channels_ = channels > 0 ? channels : 0;
     capacity_ = capacity > 0 ? capacity : 0;
     // ONE MORE THAN THE CAPACITY. The write happens before the read, so a tap
@@ -216,6 +217,7 @@ void DelayLine::setDelay(std::int32_t d) noexcept {
     if (d < 0) d = 0;
     if (d > capacity_) d = capacity_;
     delay_ = d;
+    graphActiveTarget_=d;
     target_.store(d, std::memory_order_relaxed);
     gliding_.store(false, std::memory_order_relaxed);
 }
@@ -232,6 +234,7 @@ bool DelayLine::beginGlide(std::int32_t d) noexcept {
     // `limit_` and the two atomics, nothing else: `capacity_` and `delay_` are
     // the audio thread's to move (a swap, the end of a glide) while this runs.
     if (d < 0 || d > limit_) return false;
+    if(graphSequence_) {publishGraphTarget(d);return true;}
     // Not gliding, the delay in effect is the target, or is about to be: a
     // glide's end, or a swap, is already taking it there.
     if (!gliding_.load(std::memory_order_acquire) &&
@@ -242,6 +245,33 @@ bool DelayLine::beginGlide(std::int32_t d) noexcept {
     return true;
 }
 
+void DelayLine::publishGraphTarget(std::int32_t d) noexcept {
+    graphSequence_->fetch_add(1,std::memory_order_acq_rel);
+    graphTarget_->store(d,std::memory_order_release);
+    graphSequence_->fetch_add(1,std::memory_order_release);
+}
+void DelayLine::admitGraphResource() noexcept {
+    const auto g=grow_.load(std::memory_order_acquire);
+    if(g==Grow::Offered) {
+        // Capacity changes carry the current audible tap. Future PDC targets
+        // wait for complete history in that capacity, without a silence hole.
+        targetDelay_=delay_;primeRemaining_=(std::max)(0,delay_-inFilled_);
+        grow_.store(primeRemaining_==0?Grow::Fading:Grow::Priming,std::memory_order_release);
+    } else if(g==Grow::Ready) {
+        targetDelay_=delay_;
+        if(inFilled_>=delay_)grow_.store(Grow::Fading,std::memory_order_release);
+    }
+}
+bool DelayLine::canApplyGraphTarget(std::int32_t d) const noexcept {
+    const auto g=grow_.load(std::memory_order_acquire);
+    return d>=0&&d<=capacity_&&d<=filled_&&(g==Grow::Idle||g==Grow::Spent);
+}
+void DelayLine::applyGraphTarget(std::int32_t d) noexcept {
+    graphWarmTarget_=0;graphActiveTarget_=d;
+    if(d!=target_.load(std::memory_order_relaxed)||gliding_.load(std::memory_order_relaxed)) {
+        target_.store(d,std::memory_order_relaxed);gliding_.store(true,std::memory_order_release);
+    }
+}
 void DelayLine::settle() noexcept {
     // Down FIRST, then the target read again, whether or not the flag was up.
     // A glide the message thread raised after this edge's snapshot either
@@ -283,11 +313,12 @@ bool DelayLine::offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_
     // the delay asked for is this one: a glide still pending from before the
     // offer is superseded, so the swap does not glide back to it.
     limit_ = capacity;
-    target_.store(targetDelay, std::memory_order_relaxed);
+    if(!graphSequence_)target_.store(targetDelay, std::memory_order_relaxed);
 
     // RELEASE, and last: everything above must be visible to the audio thread
     // before it can observe the state that tells it to look.
-    grow_.store(Grow::Priming, std::memory_order_release);
+    grow_.store(graphSequence_?Grow::Offered:Grow::Priming, std::memory_order_release);
+    if(graphSequence_)publishGraphTarget(targetDelay);
     return true;
 }
 
@@ -351,7 +382,7 @@ bool DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // This is the audio thread, which owns the incoming ring from Priming to
     // the swap.
     const Grow g = old.grow_.load(std::memory_order_acquire);
-    const bool growing = g == Grow::Priming || g == Grow::Fading;
+    const bool growing = g == Grow::Priming || g == Grow::Ready || g == Grow::Fading;
     // Only what each ring really holds: one whose edge sat at zero, or
     // slept, holds whatever it last had, and handing that on would play it.
     const std::int32_t inOld = (std::min)(old.capacity_, old.filled_);
@@ -410,7 +441,7 @@ DelayLine::Edge DelayLine::beginEdge() const noexcept {
     // The incoming ring's cursor and count are the audio thread's only from
     // Priming to the swap; the acquire above is what makes the offer's
     // values visible. In Idle and Spent they are the message thread's.
-    if (e.grow_ == Grow::Priming || e.grow_ == Grow::Fading) {
+    if (e.grow_ == Grow::Priming || e.grow_ == Grow::Ready || e.grow_ == Grow::Fading) {
         e.inWrite_ = inWrite_;
         e.primeRemaining_ = primeRemaining_;
     }
@@ -430,10 +461,10 @@ void DelayLine::endEdge(const Edge& e, bool silentSource) noexcept {
                                 static_cast<std::int64_t>(quiet_) + ran))
                           : 0;
     const Grow g = e.grow_;
-    if (g == Grow::Priming || g == Grow::Fading)
+    if (g == Grow::Priming || g == Grow::Ready || g == Grow::Fading)
         inFilled_ = static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(inCapacity_),
                                                          static_cast<std::int64_t>(inFilled_) + ran));
-    if (g == Grow::Idle || g == Grow::Spent) {
+    if (g == Grow::Idle || g == Grow::Spent || g==Grow::Offered) {
         if (e.glide_) {
             // The delay the crossfade reached, which is the snapshot's: a
             // target the message thread moved since is the NEXT glide.
@@ -445,14 +476,14 @@ void DelayLine::endEdge(const Edge& e, bool silentSource) noexcept {
 
     // A glide asked for while a ring grows waits for the swap: the old ring
     // is the one being read and it is on its way out.
-    if (g == Grow::Priming) {
+    if (g == Grow::Priming || g==Grow::Ready) {
         // PRIMING ENDS ON A BLOCK BOUNDARY, not mid-call. Letting it end
         // mid-call means one call that is part prime and part crossfade, and
         // the bookkeeping for that is worth more than the one extra block it
         // saves.
         if (primeRemaining_ <= 0) {
             primeRemaining_ = 0;
-            grow_.store(Grow::Fading, std::memory_order_release);
+            grow_.store(graphSequence_?Grow::Ready:Grow::Fading, std::memory_order_release);
         }
         return;
     }
@@ -489,7 +520,7 @@ void DelayLine::processGrowing(std::vector<T>& buf, std::vector<T>& incoming,
     // BOTH RINGS ARE WRITTEN THROUGHOUT. The new one is accumulating the
     // history it will need; the old one is still the one being read, and will
     // be until the very last sample of the fade.
-    if (state == Grow::Priming) {
+    if (state == Grow::Priming || state==Grow::Ready) {
         const std::int32_t d = delay_;
         for (std::int32_t i = 0; i < frames; ++i) {
             const T in = src[i];   // src == dst is legal: read before writing
@@ -538,7 +569,7 @@ void DelayLine::run(const Edge& e, std::vector<T>& buf, std::vector<T>& incoming
     write_ = e.write_;
     ran_ = frames > 0 ? frames : 0;
     const Grow g = e.grow_;
-    if (g == Grow::Priming || g == Grow::Fading) {
+    if (g == Grow::Priming || g == Grow::Ready || g == Grow::Fading) {
         inWrite_ = e.inWrite_;
         primeRemaining_ = e.primeRemaining_;
         processGrowing(buf, incoming, channel, src, dst, frames, g);
@@ -724,91 +755,119 @@ void Graph::computeCompensation() {
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
                         std::memory_order_release);
+    preparePdcStorage();
 }
 
-bool Graph::retapLatency() noexcept {
-    if (!prepared_) return false;
-
-    // The same arithmetic as `computeCompensation`, against the latencies the
-    // nodes report NOW. Deliberately not factored into one function with it:
-    // that one ALLOCATES and this one must not, and a shared helper is one
-    // edit away from allocating on the audio thread's behalf.
+void Graph::preparePdcStorage() {
+    const auto n=slots_.size();pdcLines_.clear();
+    for(const auto id:order_) {
+        auto& s=slots_[static_cast<std::size_t>(id)];
+        if(s.hasBypass)pdcLines_.push_back(&s.dryDelay);
+        for(auto& d:s.inDelays)pdcLines_.push_back(&d);
+        for(auto& d:s.sideDelays)pdcLines_.push_back(&d);
+    }
+    const auto cells=2*n+pdcLines_.size()+1;
+    pdcPending_=std::vector<std::atomic<std::int32_t>>(cells);
+    pdcOwner_.resize(cells);pdcCandidate_.resize(cells);pdcScratch_.resize(cells);
+    pdcActiveLatency_.resize(n);pdcActiveArrival_.resize(n);
+    for(std::size_t i=0;i<n;++i) {
+        pdcOwner_[i]=pdcActiveLatency_[i]=slotLatency_[i].load(std::memory_order_relaxed);
+        pdcOwner_[n+i]=pdcActiveArrival_[i]=slotArrival_[i].load(std::memory_order_relaxed);
+    }
+    for(std::size_t i=0;i<pdcLines_.size();++i)pdcOwner_[2*n+i]=pdcLines_[i]->delay();
+    pdcOwner_.back()=graphLatency_.load(std::memory_order_relaxed);
+    for(std::size_t i=0;i<cells;++i)pdcPending_[i].store(pdcOwner_[i],std::memory_order_relaxed);
+    for(std::size_t i=0;i<pdcLines_.size();++i)pdcLines_[i]->manageGraph(&pdcSequence_,&pdcPending_[2*n+i]);
+    pdcCandidate_=pdcOwner_;pdcApplied_=pdcCandidateVersion_=2;pdcPhysical_=0;
+    pdcSequence_.store(2,std::memory_order_release);
+}
+bool Graph::computePdcOwner() noexcept {
+    const auto n=slots_.size();
+    // Main-thread-only SDK calls: one answer per node for the complete plan.
+    for(std::size_t i=0;i<n;++i)pdcOwner_[i]=slots_[i].node?slots_[i].node->latencySamples():0;
     bool allFit = true;
-
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         std::int64_t latest = 0;
         for (NodeId in : s.inputs) {
-            const Slot& u = slots_[static_cast<std::size_t>(in)];
-            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+            const auto i=static_cast<std::size_t>(in);
+            const std::int64_t ready=static_cast<std::int64_t>(pdcOwner_[n+i])+pdcOwner_[i];
             if (ready > latest) latest = ready;
         }
         for (NodeId in : s.sidechains) {
-            const Slot& u = slots_[static_cast<std::size_t>(in)];
-            const std::int64_t ready = static_cast<std::int64_t>(u.arrival) +
-                (u.node != nullptr ? u.node->latencySamples() : 0);
+            const auto i=static_cast<std::size_t>(in);
+            const std::int64_t ready=static_cast<std::int64_t>(pdcOwner_[n+i])+pdcOwner_[i];
             if (ready > latest) latest = ready;
         }
-        s.arrival = static_cast<std::int32_t>(latest);
+        s.arrival=pdcOwner_[n+static_cast<std::size_t>(id)]=static_cast<std::int32_t>(latest);
     }
-
+    std::size_t line=0;
+    const auto target=[&](std::int32_t d) {
+        d=(std::max)(0,d);pdcOwner_[2*n+line]=d;
+        if(d>pdcLines_[line]->limit())allFit=false;
+        ++line;
+    };
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
-        if (s.hasBypass && !s.dryDelay.beginGlide((std::max)(0, s.node->latencySamples())))
-            allFit = false;
+        if(s.hasBypass)target(pdcOwner_[static_cast<std::size_t>(id)]);
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
-            const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
-            const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const auto i=static_cast<std::size_t>(s.inputs[k]);const Slot& u=slots_[i];
+            const auto ready=pdcOwner_[n+i]+pdcOwner_[i];
             const std::int32_t d = !delayCompensation_ || loopEdge(u.node, s.node) ? 0 : s.arrival - ready;
-            // EVERYTHING THAT FITS IS MOVED, even when something else does not.
-            // A partial correction is closer to right than none, and the edges
-            // that failed are about to be rebuilt anyway.
-            if (!s.inDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
+            target(d);
         }
         for (std::size_t k = 0; k < s.sidechains.size() && k < s.sideDelays.size(); ++k) {
-            const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
-            const std::int32_t ready =
-                u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
+            const auto i=static_cast<std::size_t>(s.sidechains[k]);
+            const auto ready=pdcOwner_[n+i]+pdcOwner_[i];
             const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
-            if (!s.sideDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
+            target(d);
         }
     }
-    // After every glide it started: a sleeping node that sees this move looks
-    // at its lines again (`Slot::dozeGlides`).
-    glides_.fetch_add(1, std::memory_order_release);
-
-    // ADR-0123: refresh the audio thread's copies. The event delay jumps to the
-    // new value while the audio tap glides; that is what it did before, when
-    // the audio thread asked the node itself.
-    for (std::size_t i = 0; i < slots_.size() && i < slotLatency_.size(); ++i)
-        slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
-                              std::memory_order_relaxed);
-    for (std::size_t i = 0; i < slots_.size() && i < slotArrival_.size(); ++i)
-        slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
-    const Slot& out = slots_[static_cast<std::size_t>(output_)];
-    graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
-                        std::memory_order_release);
+    const auto output=static_cast<std::size_t>(output_);pdcOwner_.back()=pdcOwner_[n+output]+pdcOwner_[output];
     return allFit;
 }
-
-namespace {
-
-/// The required delay on one edge, from the arrivals already computed.
-std::int32_t requiredDelay(std::int32_t toArrival, std::int32_t fromArrival,
-                           const Node* fromNode, const Node* toNode) noexcept {
-    if (loopEdge(fromNode, toNode)) return 0;
-    const std::int32_t ready =
-        fromArrival + (fromNode != nullptr ? fromNode->latencySamples() : 0);
-    const std::int32_t d = toArrival - ready;
-    return d > 0 ? d : 0;
+void Graph::publishPdcOwner() noexcept {
+    pdcSequence_.fetch_add(1,std::memory_order_acq_rel);
+    // Release scalar stores pair with the reader's acquire fence. Seeing any
+    // new cell makes the writer's odd sequence visible to the final check.
+    for(std::size_t i=0;i<pdcOwner_.size();++i)pdcPending_[i].store(pdcOwner_[i],std::memory_order_release);
+    pdcSequence_.fetch_add(1,std::memory_order_release);
 }
-
-}  // namespace
+bool Graph::retapLatency() noexcept {
+    if(!prepared_)return false;
+    const auto fit=computePdcOwner();publishPdcOwner();return fit;
+}
+void Graph::pinPhysicalPdc(std::uint64_t block) noexcept {
+    if(!prepared_||(block&&block==pdcPhysical_))return;
+    pdcPhysical_=block;
+    const auto version=pdcSequence_.load(std::memory_order_acquire);
+    if((version&1)||version==pdcApplied_)return;
+    if(version!=pdcCandidateVersion_) {
+        for(std::size_t i=0;i<pdcScratch_.size();++i)pdcScratch_[i]=pdcPending_[i].load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if(pdcSequence_.load(std::memory_order_acquire)!=version)return; // bounded: keep the old complete plan
+        pdcScratch_.swap(pdcCandidate_);pdcCandidateVersion_=version;
+        glides_.fetch_add(1,std::memory_order_release);
+    }
+    const auto n=slots_.size();bool ready=true;
+    for(std::size_t i=0;i<pdcLines_.size();++i) {
+        auto& line=*pdcLines_[i];line.admitGraphResource();line.warmGraphTarget(pdcCandidate_[2*n+i]);
+        if(!line.canApplyGraphTarget(pdcCandidate_[2*n+i]))ready=false;
+    }
+    if(!ready)return;
+    for(std::size_t i=0;i<pdcLines_.size();++i)pdcLines_[i]->applyGraphTarget(pdcCandidate_[2*n+i]);
+    for(std::size_t i=0;i<n;++i) {
+        pdcActiveLatency_[i]=pdcCandidate_[i];pdcActiveArrival_[i]=pdcCandidate_[n+i];
+        slotLatency_[i].store(pdcActiveLatency_[i],std::memory_order_relaxed);
+        slotArrival_[i].store(pdcActiveArrival_[i],std::memory_order_relaxed);
+    }
+    graphLatency_.store(pdcCandidate_.back(),std::memory_order_release);pdcApplied_=pdcCandidateVersion_;
+    glides_.fetch_add(1,std::memory_order_release);
+}
 
 std::size_t Graph::escalateLatency(Unresolved* left) {
     if (!prepared_) return 0;
+    (void)computePdcOwner();publishPdcOwner();
 
     std::size_t grown = 0;
     Unresolved unresolved;
@@ -846,21 +905,7 @@ std::size_t Graph::escalateLatency(Unresolved* left) {
         if (taken) ++grown;
     };
 
-    for (NodeId id : order_) {
-        Slot& s = slots_[static_cast<std::size_t>(id)];
-        if (s.hasBypass) offer(s.dryDelay, (std::max)(0, s.node->latencySamples()));
-        // Disabled alignment has no required input rings. Bypass delay is
-        // physical and still grows independently through the offer above.
-        if(!delayCompensation_)continue;
-        for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
-            const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
-            offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
-        }
-        for (std::size_t k = 0; k < s.sidechains.size() && k < s.sideDelays.size(); ++k) {
-            const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
-            offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
-        }
-    }
+    for(std::size_t i=0;i<pdcLines_.size();++i)offer(*pdcLines_[i],pdcOwner_[2*slots_.size()+i]);
     if (left != nullptr) *left = unresolved;
     return grown;
 }
@@ -912,7 +957,8 @@ std::size_t Graph::growingEdges() const noexcept {
 
 std::int32_t Graph::arrivalOf(NodeId id) const noexcept {
     if (id < 0 || id >= static_cast<NodeId>(slots_.size())) return -1;
-    return slots_[static_cast<std::size_t>(id)].arrival;
+    const auto i=static_cast<std::size_t>(id);
+    return i<slotArrival_.size()?slotArrival_[i].load(std::memory_order_acquire):slots_[i].arrival;
 }
 
 std::int32_t Graph::compensationFor(NodeId from, NodeId to, Bus bus) const noexcept {
@@ -1213,8 +1259,8 @@ std::int32_t Graph::adoptEventHistory(const Graph& old) noexcept {
         if(nextI==i+1 && nextJ==j+1) {
             auto& dst=slots_[static_cast<std::size_t>(a.second)];
             const auto& src=old.slots_[static_cast<std::size_t>(b.second)];
-            const auto arrival=slotArrival_[static_cast<std::size_t>(a.second)].load(std::memory_order_relaxed);
-            const auto oldArrival=old.slotArrival_[static_cast<std::size_t>(b.second)].load(std::memory_order_relaxed);
+            const auto arrival=pdcActiveArrival_[static_cast<std::size_t>(a.second)];
+            const auto oldArrival=old.pdcActiveArrival_[static_cast<std::size_t>(b.second)];
             if(arrival==oldArrival)for(std::int32_t n=0;n<src.pendingCount;++n) {
                 if(static_cast<std::size_t>(dst.pendingCount)>=dst.pending.size())break;
                 const auto& pending=src.pending[static_cast<std::size_t>(n)];
@@ -1562,10 +1608,10 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
             // getter is main-thread only (linux's audit, C6; ADR-0123).
             const std::size_t ui = static_cast<std::size_t>(s.inputs[k]);
             const std::int64_t delay =
-                static_cast<std::int64_t>(ui < slotLatency_.size()
-                                              ? slotLatency_[ui].load(std::memory_order_relaxed)
+                static_cast<std::int64_t>(ui < pdcActiveLatency_.size()
+                                              ? pdcActiveLatency_[ui]
                                               : 0) +
-                (k < s.inDelays.size() ? s.inDelays[k].delay() : 0);
+                (k < s.inDelays.size() ? s.inDelays[k].appliedTarget() : 0);
 
             for (const Event& e : u.events) {
                 if (!isNoteStream(e.type)) continue;   // addressed: stays put
@@ -1650,13 +1696,14 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     ScopeTap* const outputTap = s.node->outputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
+    const auto transportRevision = transport != nullptr ? transport->transportRevision : 0;
     // With alignment off, scope input timestamps show the heard global time.
     // Physical maximum path latency remains cached for diagnostics.
-    // The audio thread's copy: retapLatency rewrites s.arrival as it runs.
+    // One coherent audio-owned physical callback plan, shared by every slice.
     const auto slotIndex = static_cast<std::size_t>(&s - slots_.data());
     const std::int32_t arrival =
-        delayCompensation_ && slotIndex < slotArrival_.size() ? slotArrival_[slotIndex].load(std::memory_order_relaxed) : 0;
-    const auto configuredLatency = slotIndex < slotLatency_.size() ? slotLatency_[slotIndex].load(std::memory_order_relaxed) : 0;
+        delayCompensation_ && slotIndex < pdcActiveArrival_.size() ? pdcActiveArrival_[slotIndex] : 0;
+    const auto configuredLatency = slotIndex < pdcActiveLatency_.size() ? pdcActiveLatency_[slotIndex] : 0;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1755,16 +1802,17 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     }
     if (suspend) {
         if (inputTap)
-            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing);
+            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing, transportRevision);
         if (outputTap)
             outputTap->write(static_cast<const float*>(nullptr), nullptr, frames,
-                             firstSample - static_cast<std::int64_t>(arrival) - configuredLatency, advancing);
+                             firstSample - static_cast<std::int64_t>(arrival) - configuredLatency, advancing, transportRevision);
         NodeIo silence;
         silence.frames = frames;
         silence.channels = channels_;
         silence.transport = transport;
         silence.renderBlock = renderBlock_;
         silence.configuredLatency = configuredLatency;
+        silence.exporting = exporting_;
         s.node->silenceTaps(silence);
         ++r.stats.nodesSuspended;
         s.silent = true;
@@ -1849,6 +1897,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         nio.sampleRate = sampleRate_;
         nio.renderBlock = renderBlock_;
         nio.configuredLatency = configuredLatency;
+        nio.exporting = exporting_;
 
         // The summed, compensated input belongs to this graph's arrival,
         // before the node's own latency. No device implementation is involved.
@@ -1857,11 +1906,11 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             if (wide)
                 inputTap->write(anyMain ? r.mixWidePtrs_[0] + begin : nullptr,
                                 anyMain && channels_ > 1 ? r.mixWidePtrs_[1] + begin : nullptr,
-                                n, stamp, advancing);
+                                n, stamp, advancing, transportRevision);
             else
                 inputTap->write(anyMain ? r.mixPtrs_[0] + begin : nullptr,
                                 anyMain && channels_ > 1 ? r.mixPtrs_[1] + begin : nullptr,
-                                n, stamp, advancing);
+                                n, stamp, advancing, transportRevision);
         }
 
         const Event* first = nullptr;
@@ -1934,8 +1983,8 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     // dry bypass, at graph precision. Latencies are this callback's cached values.
     if (outputTap && channels_ > 0) {
         const auto stamp = firstSample - static_cast<std::int64_t>(arrival) - configuredLatency;
-        if (wide) outputTap->write(s.widePtrs[0], channels_ > 1 ? s.widePtrs[1] : nullptr, frames, stamp, advancing);
-        else outputTap->write(s.chanPtrs[0], channels_ > 1 ? s.chanPtrs[1] : nullptr, frames, stamp, advancing);
+        if (wide) outputTap->write(s.widePtrs[0], channels_ > 1 ? s.widePtrs[1] : nullptr, frames, stamp, advancing, transportRevision);
+        else outputTap->write(s.chanPtrs[0], channels_ > 1 ? s.chanPtrs[1] : nullptr, frames, stamp, advancing, transportRevision);
     }
 
     // Is this node's output silent? Measured rather than declared: a node that
@@ -2066,6 +2115,8 @@ void Graph::process(const AudioIo& io) noexcept {
     static std::atomic<std::uint64_t> directSerial{0};
     renderBlock_ = io.renderBlock != 0 ? io.renderBlock :
         ((std::uint64_t{1} << 63) | (directSerial.fetch_add(1, std::memory_order_relaxed) + 1));
+    pinPhysicalPdc(renderBlock_);
+    exporting_ = io.exporting;
 
     ++stats_.blocks;
     render_.stats=GraphStats{};

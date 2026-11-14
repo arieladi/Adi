@@ -104,6 +104,8 @@ struct SessionSpec {
     /// uses this constant tempo for ALL musical playback and clock consumers;
     /// authored project tempo rows remain intact. Not an offline export option.
     std::optional<double> externalTempoBpm = std::nullopt;
+    /// Export quality is independent of monitoring/performance-state suppression.
+    bool exporting = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -115,6 +117,7 @@ struct DeviceRequest {
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
     std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
+    bool exporting = false; ///< known before prepare, so the first block uses the intended bank
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
@@ -391,9 +394,13 @@ public:
     /// Scoped visual demand. Compatible logical endpoints share their physical capture and the
     /// longest requested history. Off-thread tap snapshots follow replacement generations.
     [[nodiscard]] ScopeLease requestScope(const ScopeRequest&);
-    /// Owner collection; never releases a tap used by a stalled physical callback.
+    /// Owner collection and latest deferred-plan publication after audio acknowledgement;
+    /// never releases a tap used by a stalled physical callback.
     std::size_t collectScopeTaps();
-    struct ScopeStats { std::size_t consumers = 0, sources = 0, retired = 0; };
+    struct ScopeStats {
+        std::size_t consumers = 0, sources = 0, retired = 0, deferredPlans = 0;
+        bool awaitingAudio = false;
+    };
     [[nodiscard]] ScopeStats scopeStats() const;
 
     /// ADR-0203 d3: how long a return's send into itself takes to come back,

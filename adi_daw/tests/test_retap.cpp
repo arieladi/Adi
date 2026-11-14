@@ -372,7 +372,9 @@ void testARetapFollowsTheNewLatency() {
     // The mode switch.
     plugin.setLatency(192);
     check(g.retapLatency(), "the retap fits the headroom");
-    eqi(g.latencySamples(), 192, "and the graph reports the new cost at once");
+    eqi(g.latencySamples(), 64, "the current physical callback retains its applied cost");
+    g.pinPhysicalPdc(0);
+    eqi(g.latencySamples(), 192, "the next physical boundary admits the new cost before transport reads it");
 
     g.process(io);            // the crossfade block
     src.advance();
@@ -541,7 +543,8 @@ void testABurstBecomesOneRetap() {
         "and the graph was retapped exactly once for the whole burst");
     check(!c.pending(), "with nothing left open");
 
-    eqi(r.g.latencySamples(), 132, "against the LAST value reported, not the first");
+    r.g.pinPhysicalPdc(0);
+    eqi(r.g.latencySamples(), 132, "at the next physical boundary, against the LAST value reported, not the first");
     check(!c.poll(200), "and a quiet poll afterwards does nothing");
     eqi(c.stats().retaps, 1, "still once");
 }
@@ -568,7 +571,8 @@ void testAContinuousReporterIsNotStarved() {
     }
     check(acted, "the ceiling fired even though the burst never went quiet");
     eqi(c.stats().maxWaitTrips, 1, "and it is counted as such, not as a normal retap");
-    eqi(r.g.latencySamples(), 200, "the compensation followed");
+    r.g.pinPhysicalPdc(0);
+    eqi(r.g.latencySamples(), 200, "the compensation followed at the next physical boundary");
 }
 
 void testTheQuietPeriodIsTheThingBeingTested() {
@@ -918,6 +922,7 @@ void testAShapeChangeEscalatesStraightToARebuild() {
     r.plugin.setLatency(96);
     latency.fetch_add(1, std::memory_order_release);
     check(c.poll(0), "the latency report is acted on");
+    r.g.pinPhysicalPdc(0);
     eqi(r.g.latencySamples(), 96, "and the compensation followed");
     check(!c.rebuildNeeded(), "with no rebuild demanded");
     eqi(c.stats().shapeReports, 0, "and nothing counted as a shape change");
@@ -941,9 +946,9 @@ void testAShapeChangeEscalatesStraightToARebuild() {
     ports.fetch_add(1, std::memory_order_release);
     check(c.poll(200), "a mixed burst is acted on");
     check(c.rebuildNeeded(), "and the shape half wins");
+    r.g.pinPhysicalPdc(0);
     eqi(r.g.latencySamples(), 128,
-        "while the latency half is still applied -- a partial correction is "
-        "closer to right than none, and the rebuild may be a frame away");
+        "the latency plan is admitted at a physical boundary while the shape rebuild remains requested");
 
     // AND THE FLAG DOES NOT LEAK INTO THE NEXT BURST. Without this the whole
     // distinction collapses after the first port change: every later latency
@@ -958,6 +963,7 @@ void testAShapeChangeEscalatesStraightToARebuild() {
     check(!c.rebuildNeeded(),
           "and demands NO rebuild -- the shape flag belonged to its own burst");
     eqi(c.stats().rebuildsNeeded, before, "and nothing new was counted");
+    r.g.pinPhysicalPdc(0);
     eqi(r.g.latencySamples(), 160, "with the cheap path still working");
 }
 
@@ -1584,7 +1590,9 @@ void testAGrowTooSmallIsGrownAgain() {
     // that and grows it again -- rather than giving up and asking for a
     // rebuild, which costs every edge in the graph its history.
     RampNode src;
-    SwitchableNode plugin(0, 4096);
+    // Graph-managed growth primes at the current audible tap. Keep that tap
+    // longer than the first block so this really tests an in-flight offer.
+    SwitchableNode plugin(500, 4096);
     SumNode direct, mix;
     Graph g;
     const NodeId ns = g.addNode(src), np = g.addNode(plugin);

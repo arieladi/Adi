@@ -2,6 +2,7 @@
 #pragma once
 #include <optional>
 #include "adi/engine/param_edits.hpp"
+#include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -104,6 +105,13 @@ class DevicePanelView final : public juce::Component {
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void visibilityChanged() override;
+    const mix::FunctionInfo *nativeFunction() const noexcept;
+    std::uint64_t presentedInstance() const noexcept;
+    // Capture the displayed authored identity separately from native drag presentation.
+    bool beginFunctionDrag();
+    const DevicePanelData *functionDragTarget() const noexcept;
     // The device the keyboard chose, itself or one of its controls: where a load goes (D4).
     void focusGained(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
@@ -125,6 +133,17 @@ class DevicePanelView final : public juce::Component {
     WrenchButton wrench;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
+    struct ParameterPageControl {
+        std::string id, name, enableParameter;
+        std::unique_ptr<juce::TextButton> selector;
+        std::unique_ptr<ActivatorButton> enabled;
+    };
+    // Only backend-provided groups appear. A pure Limiter descriptor never invents Clip.
+    std::vector<ParameterPageControl> parameterPages;
+    const std::string &selectedParameterPage() const noexcept { return selectedPage_; }
+    bool chooseParameterPage(const std::string &);
+    bool setParameterPageEnabled(const std::string &, bool);
+    bool parameterShown(const std::string &) const;
     // Color Cab's Impulse tile, beside its controls (D5); none on any other device.
     std::unique_ptr<SampleTile> sample;
     static constexpr int kTileWidth = 96;
@@ -144,11 +163,24 @@ class DevicePanelView final : public juce::Component {
 
   private:
     void endRename(bool commit);
+    bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
+    void endFunctionParameter();
     bool validTarget() const { return !targetValid || targetValid(); }
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
+    std::optional<DevicePanelData> dragTarget_;
+    std::string editingParameter_;
+    double editingValue_ = 0;
+    bool editingBegan_ = false;
+    std::string selectedPage_;
+    std::uint64_t pageEpoch_ = 0;
+    bool presentParameterPages(const DevicePanelData &);
+    const panel::Record *pageEnableRecord(const ParameterPageControl &) const;
+    static int pageSelectorWidth(const ParameterPageControl &) noexcept;
+    static constexpr int kPageHeight = 22;
+    friend class DeviceChainStrip;
 };
 class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
   public:
@@ -162,6 +194,13 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
     bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
+    juce::PopupMenu functionMenu();
+    bool hasFunction(mix::Function) const;
+    bool dropFunction(DevicePanelView &, std::optional<std::int64_t> before);
+    void cancelFunctionInteractions();
+    void visibilityChanged() override;
+    void parentHierarchyChanged() override;
+    juce::TextButton addTab{"+"};
     // Moves the focus from a device to its neighbour; at either end it stays.
     bool focusNext(std::int64_t from, bool forward);
     // Live's device clipboard (manual 23.2.1; N18): Cut, Copy, Paste and Duplicate on `device`, or
@@ -195,6 +234,10 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    std::function<mix::Availability(mix::Function)> functionAvailability;
+    std::function<bool(mix::Function, std::int64_t track)> addFunction;
+    std::function<bool(const DevicePanelData &, std::int64_t track,
+                       std::optional<std::int64_t> before)> moveFunction;
     // The app's clipboard: `copy` keeps a device's copy (and removes it, for Cut); `paste` puts the
     // kept copy on `track`, in front of `before` or at the chain's end; `duplicate` copies and
     // pastes at once, the clipboard untouched; `holdsCopy` says whether there is one to paste.
@@ -217,6 +260,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     juce::Viewport scroll;
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;
+    std::uint64_t addMenuEpoch_ = 0;
 };
 // The strip's top edge: drag it up to grow the strip (ADR-0184), never below its floor.
 class DockResizer final : public juce::Component {

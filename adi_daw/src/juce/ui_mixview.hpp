@@ -32,21 +32,20 @@ class EyeButton final : public juce::Button {
     EyeButton() : juce::Button("Reference Track") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// The Mix View (ADR-0209, ruled 1 November 2026; UI-ARCHITECTURE §12): every channel's ADI-Q, ADI-L
-// and sidechain slot in one view. F4 or the control bar's Mix button opens it, docked in the centre
+// The Mix View presents actual channel chains and optional native functions (ADR-0236/0237).
+// F4 or the control bar's Mix button opens it, docked in the centre
 // in place of the arrangement and its track controls; the browser, the strip down the edge and the
-// Detail View stay. Its tabs in the draft's order and names (d13). P1 builds STACK, ADR-0204 d1's
-// one window (d11); the other four are drawn empty until their turn after the first-window gate.
+// Detail View stay. STACK and the shared analyzer views use the same document/runtime sources.
 // Which tab is shown is this window's view state (`WindowState::mixViewTab`, kept in `ui_view`),
 // never the panel's own.
 class MixViewPanel final : public juce::Component {
   public:
-    enum class Tab { Overview, Stack, ScopePhase, Spectrogram, Cascade };
-    static constexpr int kTabCount = 5;
+    enum class Tab { Overview, Stack, ScopePhase, Spectrogram, Cascade, Analysis };
+    static constexpr int kTabCount = 6;
     static constexpr std::array<const char *, kTabCount> kTabNames{"OVERVIEW", "STACK", "SCOPE & PHASE",
-                                                                   "SPECTROGRAM", "CTZ CASCADE"};
+                                                                   "SPECTROGRAM", "CTZ CASCADE", "ANALYSIS"};
     // The tabs' widths, Live's 17 pt fields on its dark band.
-    static constexpr std::array<int, kTabCount> kTabWidths{72, 52, 100, 100, 92};
+    static constexpr std::array<int, kTabCount> kTabWidths{72, 52, 100, 100, 92, 72};
     static constexpr int kHeaderHeight = 25;
     // The ★ Reference strip under the tabs (ADR-0209 d11): the track against the arrangement's
     // length, [REF] and [Reference Track].
@@ -70,9 +69,11 @@ class MixViewPanel final : public juce::Component {
     // The strip's own rectangle, and where its timeline runs.
     juce::Rectangle<int> strip() const noexcept;
     juce::Rectangle<int> timeline() const noexcept;
-    // STACK: ADR-0204 d1's one window, every channel's ADI-Q, sidechain slot and ADI-L.
+    // STACK follows each channel's actual authored devices and optional native functions.
     StackTab stack;
     SharedSpectrumView spectrum;
+    AnalysisPane analysis;
+    void suspendAnalysis(bool value) { spectrum.suspend(value); analysis.suspend(value); }
 
   private:
     AdiRootComponent &root_;

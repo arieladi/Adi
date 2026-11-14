@@ -8,6 +8,7 @@
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include "mix_function_host.hpp"
 #include <chrono>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -262,6 +263,18 @@ class AdiApplication final : public juce::JUCEApplication,
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->sharedAnalysis = document_->analysis();
+        root->devices.functionAvailability = device::mixFunctionAvailability;
+        root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
+            const bool ok = document_->addMixFunction(kind, track);
+            if (!ok && root_) root_->say(document_->error());
+            return ok;
+        };
+        root->devices.moveFunction = [this](const DevicePanelData &expected, std::int64_t track,
+                                           std::optional<std::int64_t> before) {
+            const bool ok = document_->moveMixFunction(expected, track, before);
+            if (!ok && root_) root_->say(document_->error());
+            return ok;
+        };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
@@ -398,6 +411,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // plug-in's size, in a floating window the root opens from a device's wrench. Its frame
         // runs on that window's clock; an error it reports reaches the Status Bar.
         root_->pluginHost = floating_.get();
+        root_->openAnalyzer = [this](std::int64_t track) { return showAnalyzerWindow(*floating_, *root_, track); };
         root_->pluginEditor = [this](std::int64_t id, std::string &why) {
             AdiRootComponent::PluginEditorView out;
             auto *instance = document_->session().instanceFor(id);

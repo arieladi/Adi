@@ -287,7 +287,7 @@ void concurrentRetaps() {
         std::array<Source,8> sources;std::array<Retapped,8> devices;SumNode sum;Graph graph;graph.setPrecision(precision);graph.setParallelRendering(3,1,2);
         const auto output=graph.addNode(sum);for(std::size_t index=0;index<8;++index){const auto input=graph.addNode(sources[index]),device=graph.addNode(devices[index]);graph.connect(input,device);graph.connect(device,output);}graph.setOutput(output);graph.prepare(48000,64);
         if(!graph.ok())throw std::runtime_error(graph.error());
-        std::atomic<unsigned> completed{0};std::atomic<bool> done{false};bool valid=true;
+        std::atomic<unsigned> completed{0};std::atomic<bool> done{false},published{false};bool valid=true;
         std::thread render([&]{
             for(auto& source:sources)source.owner=std::this_thread::get_id();
             std::array<std::array<float,64>,2> narrow{};std::array<std::array<double,64>,2> wide{};std::array<float*,2> f{narrow[0].data(),narrow[1].data()};std::array<double*,2> d{wide[0].data(),wide[1].data()};
@@ -297,6 +297,15 @@ void concurrentRetaps() {
                 completed.store(block+1,std::memory_order_release);
             }
             done.store(true,std::memory_order_release);
+            // The final owner offer can arrive too late in the stress loop to
+            // prime a formerly zero-delay line. Drain it on the same callback
+            // owner, after publication stops, rather than requiring metadata
+            // to jump ahead of real history at an owner-only query.
+            while(!published.load(std::memory_order_acquire))std::this_thread::yield();
+            for(unsigned block=1000;block<1004;++block) {
+                transport.timelineSample=static_cast<std::int64_t>(block)*64;
+                {audio::CallbackScope callback;graph.process(io);}
+            }
         });
         while(completed.load(std::memory_order_acquire)<16)std::this_thread::yield();
         unsigned requests=0;bool fit=true;
@@ -304,8 +313,10 @@ void concurrentRetaps() {
             for(std::size_t index=0;index<devices.size();++index)devices[index].reported.store(std::array<std::int32_t,4>{0,7,17,31}[(change+index)%4],std::memory_order_release);
             fit=graph.retapLatency() && fit;++requests;std::this_thread::yield();
         }
+        published.store(true,std::memory_order_release);
         render.join();bool affinity=true;for(const auto& source:sources)affinity=affinity && !source.wrongThread;
         check(valid && completed==1000 && requests>0 && graph.stats().parallelLevels>0,"parallel bypass/PDC rendering remains finite during real concurrent owner latency retaps");
+        if(!fit||graph.latencySamples()!=31||!affinity)std::printf("retap diagnostic: fit=%d latency=%d affinity=%d requests=%u\n",fit,graph.latencySamples(),affinity,requests);
         check(fit && graph.latencySamples()==31 && affinity,"hot retaps preserve latency publication and callback-only source ownership in both precisions");
     }
 }
