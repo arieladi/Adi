@@ -53,6 +53,24 @@ EQ with unmasking, compressor, de-esser, gate, and limiter with clipping. Their 
 tabs and Mix View rows must address those same nodes. ADI Still's final placement and separate
 standalone applications remain guide questions. Analyzers stay outside the processing chain.
 
+## Main meter readouts
+
+Meters mode can show the existing Main programme measurement: momentary, short-term and
+integrated LUFS, plus the held aggregate true peak in dBTP. This is a read-only projection of
+Session's persistent Main service before cue/metronome, not another meter, transform, tap or
+worker. Its fields have independent measurement intervals; they are not a sample-synchronous
+snapshot. Channel-basis selection still controls the analysis plot, while this strip remains
+explicitly labelled as the aggregate Main programme measurement.
+
+Only visible, unfrozen actual Main/Post Mixer views read those values. Selected non-Main,
+device-input/output and other tap points cannot display Main loudness under another source's
+name. The default Spectrum presentation is unchanged. Info, full and floating views share
+the same presentation, with weak document-owner bindings revoked before teardown. Prepared
+versus audio-adopted format identities suppress stale readings during a format change.
+An unavailable/unwarmed field is shown as `--`, without claiming that every negative-infinity
+reading is an unwarmed window. Freeze and Reset affect the local picture only; they never
+pause or reset the shared Main measurement. Closing the last view adds no meter DSP work.
+
 ## Build and verification
 
 JUCE is pinned to 9.0.5 / d60b7a78030661574a615b586d9325ba7a7fa7dd. CMake accepts an

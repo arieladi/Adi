@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_analysis.hpp"
 #include "ui_fake_peer.hpp"
+#include "adi/engine/main_loudness.hpp"
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <limits>
 #include <numbers>
 #include <vector>
 
@@ -292,11 +295,149 @@ void cappedFrozenHistoryAndIdleReset() {
     check(broker->stats().consumers == 0 && broker->stats().spectralPlans == 0 && broker->stats().historyBytes == 0,
           "hidden analysis and released frozen views leave no spectral plan or history backing");
 }
+void mainReadoutFormatProjection() {
+    adi::engine::MainLoudness meter;
+    check(!adi::ui::readMainMeterSnapshot(meter, 1, 48000), "unprepared Main service cannot provide a display snapshot");
+    check(meter.prepare(48000, 2) && !adi::ui::readMainMeterSnapshot(meter, 1, 48000),
+          "prepared format is not presented before audio adopts its identity");
+    std::array<float, 256> samples{}; samples.fill(.25f);
+    std::array<float *, 2> output{samples.data(), samples.data()};
+    adi::engine::AudioIo io; io.out = output.data(); io.numOut = 2; io.frames = 256;
+    meter.process(io);
+    const auto first = adi::ui::readMainMeterSnapshot(meter, 1, 48000);
+    check(first && first->formatSequence == meter.preparedFormatSequence() &&
+          std::isfinite(first->truePeakDb), "Main projection reads the adopted format and existing held true peak");
+    check(meter.prepare(44100, 2) && !adi::ui::readMainMeterSnapshot(meter, 1, 44100) &&
+          std::isfinite(meter.readout().truePeakDb.load()),
+          "old-format held values are suppressed while a new prepared format awaits adoption");
+    meter.process({});
+    const auto second = adi::ui::readMainMeterSnapshot(meter, 1, 44100);
+    check(second && first && second->formatSequence != first->formatSequence &&
+          std::isinf(second->momentaryLufs) && std::isinf(second->truePeakDb),
+          "new adopted format exposes cleared service values without UI reset or meter processing");
+    check(!adi::ui::readMainMeterSnapshot(meter, 0, 44100) &&
+          !adi::ui::readMainMeterSnapshot(meter, 1, std::numeric_limits<double>::quiet_NaN()),
+          "invalid presentation identity/rate cannot claim Main results");
+}
+void mainMetersSharedPresentation() {
+    Fixture f;
+    Root root; root.setBounds(0, 0, 900, 500); root.setVisible(true); root.addToDesktop(0);
+    Root floating; floating.setBounds(0, 0, 400, 300); floating.setVisible(true); floating.addToDesktop(0);
+    SharedSpectrumView full, info, window;
+    full.setBounds(0, 0, 400, 240); info.setBounds(410, 0, 240, 196); window.setBounds(0, 0, 350, 230);
+    root.addAndMakeVisible(full); root.addAndMakeVisible(info); floating.addAndMakeVisible(window);
+    adi::ui::MainMeterSnapshot values;
+    values.track = 1; values.sampleRate = 48000; values.formatSequence = 1;
+    values.momentaryLufs = -14.2f; values.shortTermLufs = -15.3f; values.integratedLufs = -16.4f; values.truePeakDb = -.7f;
+    int reads = 0; bool ready = true;
+    std::shared_ptr<const adi::ui::MainMeterSource> source = std::make_shared<adi::ui::MainMeterSource>(
+        adi::ui::MainMeterSource{1, [&]() -> std::optional<adi::ui::MainMeterSnapshot> {
+            ++reads;
+            if (!ready) return {};
+            return values;
+        }});
+    for (auto *view : {&full, &info, &window}) { view->setMainMeterSource(source); view->present(f.broker, 1); }
+    f.write(); f.broker->pump(); full.frame(); info.frame(); window.frame();
+    check(reads == 0 && !full.mainMeterSnapshot(), "default Spectrum performs no Main readout callbacks");
+    const auto paint = [](SharedSpectrumView &view) {
+        juce::Image image(juce::Image::RGB, view.getWidth(), view.getHeight(), true);
+        juce::Graphics graphics(image); view.paint(graphics); return image;
+    };
+    const auto spectrumWithBinding = paint(full);
+    full.setMainMeterSource({});
+    const auto spectrumWithoutBinding = paint(full);
+    bool samePixels = true;
+    for (int y = 0; y < full.getHeight(); ++y) for (int x = 0; x < full.getWidth(); ++x)
+        samePixels = samePixels && spectrumWithBinding.getPixelAt(x, y) == spectrumWithoutBinding.getPixelAt(x, y);
+    check(samePixels, "default Spectrum software image is unchanged by the optional Main binding");
+    full.setMainMeterSource(source);
+    for (auto *view : {&full, &info, &window}) view->setMode(SharedSpectrumView::Mode::Meters);
+    const auto transforms = f.broker->stats().transforms;
+    f.write(1024); f.broker->pump(); full.frame(); info.frame(); window.frame();
+    check(full.mainMeterSnapshot() == values && info.mainMeterSnapshot() == values && window.mainMeterSnapshot() == values &&
+          full.snapshot() == info.snapshot() && info.snapshot() == window.snapshot(),
+          "full, boxed Info and floating renderers reuse one supplied Main readout and sample publication");
+    check(f.broker->stats().transforms == transforms && f.broker->stats().domains == 1 && f.acquired == 1,
+          "Main readouts add no FFT, source cursor or tap to compatible Meters views");
+    const auto text = full.mainMeterText();
+    check(text.contains("Main aggregate programme / pre-cue") && text.contains("M -14.2") &&
+          text.contains("S -15.3") && text.contains("I -16.4 LUFS") && text.contains("TP (held) -0.7 dBTP"),
+          "Main text names aggregate pre-cue programme, independent LUFS windows and held dBTP at one decimal");
+    (void)paint(full); (void)paint(info); (void)paint(window);
+    const int minimisedReads = reads; root.fake->minimized = true; floating.fake->minimized = true;
+    full.frame(); info.frame(); window.frame();
+    check(reads == minimisedReads && !full.mainMeterSnapshot() && !window.mainMeterSnapshot(),
+          "minimised owning windows release Main presentation without invoking its reader");
+    root.fake->minimized = false; floating.fake->minimized = false;
+    full.frame(); info.frame(); window.frame(); f.write(2048); f.broker->pump(); full.frame(); info.frame(); window.frame();
+    const auto beforeFreeze = full.mainMeterSnapshot(); full.freeze(true);
+    const int frozenReads = reads; values.integratedLufs = -12.5f;
+    full.frame(); check(reads == frozenReads && full.mainMeterSnapshot() == beforeFreeze,
+                        "Freeze keeps only a local Main picture without polling or pausing the shared service");
+    info.frame(); check(info.mainMeterSnapshot() == values, "another live view keeps reading while its peer is frozen");
+    const auto peer = info.mainMeterSnapshot(); full.clear(); full.frame();
+    check(!full.mainMeterSnapshot() && info.mainMeterSnapshot() == peer,
+          "Reset clears one frozen presentation without altering another view or Main values");
+    full.freeze(false); full.frame();
+    check(!full.mainMeterSnapshot(), "resume after local clear waits for a new sample interval");
+    f.write(3072); f.broker->pump(); full.frame();
+    check(full.mainMeterSnapshot() == values, "fresh interval resumes the ongoing held Main measurement");
+    info.present(f.broker, 2); f.broker->pump(); const auto selectedReads = reads; info.frame();
+    check(reads == selectedReads && !info.mainMeterSnapshot(), "Selected non-Main source never polls or displays Main loudness");
+    for (const auto point : {ScopePoint::PreFader, ScopePoint::ChainInput, ScopePoint::DeviceInput, ScopePoint::DeviceOutput}) {
+        full.setSource(point, point == ScopePoint::DeviceInput || point == ScopePoint::DeviceOutput ? 12 : 0);
+        f.broker->pump(); const int wrongPointReads = reads; full.frame();
+        check(reads == wrongPointReads && !full.mainMeterSnapshot(), "non-post-Main/device points cannot display programme loudness");
+    }
+    full.setSource(ScopePoint::PostFader); f.broker->pump(); full.frame();
+    ready = false; full.frame(); check(!full.mainMeterSnapshot(), "unavailable owner projection clears old Main values");
+    ready = true; values.formatSequence = 0; full.frame();
+    check(!full.mainMeterSnapshot(), "unadopted format sequence cannot present old numeric values");
+    values.formatSequence = 2; values.sampleRate = 44100; full.frame();
+    check(!full.mainMeterSnapshot(), "readout rate must match the current source publication");
+    f.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds); f.broker->refreshSources(true);
+    f.write(); f.broker->pump(); full.frame();
+    check(full.mainMeterSnapshot() == values && full.snapshot()->sampleRate == 44100,
+          "new source format accepts only its matching adopted Main projection");
+    values.momentaryLufs = values.shortTermLufs = values.integratedLufs = values.truePeakDb = -std::numeric_limits<float>::infinity();
+    full.frame();
+    check(full.mainMeterText().contains("M --") && full.mainMeterText().contains("TP (held) -- dBTP") &&
+          !full.mainMeterText().containsIgnoreCase("warming"),
+          "negative infinity is shown honestly without claiming silence is necessarily an unwarmed window");
+    values.truePeakDb = std::numeric_limits<float>::quiet_NaN(); full.frame();
+    check(!full.mainMeterSnapshot(), "invalid readout numbers never leak into the display");
+    values.truePeakDb = -.5f; full.frame(); full.freeze(true);
+    Fixture replacement;
+    replacement.tap = std::make_shared<ScopeTap>(44100, SharedAnalysis::kTapSeconds);
+    auto newValues = values;
+    newValues.integratedLufs = -20;
+    int newReads = 0;
+    auto newSource = std::make_shared<adi::ui::MainMeterSource>(adi::ui::MainMeterSource{
+        1, [&]() -> std::optional<adi::ui::MainMeterSnapshot> { ++newReads; return newValues; }});
+    full.setMainMeterSource(newSource);
+    check(full.frozen() && !full.mainMeterSnapshot() && newValues.track == values.track &&
+          newValues.sampleRate == values.sampleRate && newValues.formatSequence == values.formatSequence,
+          "new document binding invalidates frozen Main values even when all numeric source/format identities match");
+    full.present(replacement.broker, 1); full.freeze(false); full.frame();
+    check(!full.mainMeterSnapshot(), "document/source replacement cannot retain its old frozen Main numbers");
+    replacement.write(); replacement.broker->pump(); full.frame();
+    check(full.mainMeterSnapshot() == newValues && newReads == 1,
+          "replacement document reads only its new Main identity and owner callback");
+    full.freeze(true); newSource.reset(); full.frame();
+    check(!full.mainMeterSnapshot(), "revoking the document callback clears a retained frozen Main picture");
+    source.reset();
+    const int hiddenReads = reads, hiddenNewReads = newReads; root.setVisible(false); floating.setVisible(false);
+    full.frame(); info.frame(); window.frame();
+    check(reads == hiddenReads && newReads == hiddenNewReads && f.broker->stats().consumers == 0 &&
+          replacement.broker->stats().consumers == 0, "hidden full/Info/floating views poll no Main values or analysis");
+    full.present({}, 0);
+}
 
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset(); }
+    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

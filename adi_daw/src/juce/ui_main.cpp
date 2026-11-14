@@ -200,6 +200,7 @@ class AdiApplication final : public juce::JUCEApplication,
             delete snapshotPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
         window_.reset();
@@ -251,6 +252,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        mainMeterSource_.reset();
         floating_.reset();
         historyWindow_.reset();
         window_.reset();
@@ -266,6 +268,19 @@ class AdiApplication final : public juce::JUCEApplication,
             document_->setParameterDemand(consumer, ids);
         };
         root->sharedAnalysis = document_->analysis();
+        const auto meterOwner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        const auto mainTrack = root->analysisTrack();
+        mainMeterSource_ = std::make_shared<MainMeterSource>(MainMeterSource{
+            mainTrack, [this, meterOwner, mainTrack]() -> std::optional<MainMeterSnapshot> {
+                // The component token expires before this document is destroyed.
+                // Views retain only a weak owner callback, never a Session pointer.
+                if (!meterOwner || !document_ || root_ != meterOwner.getComponent() ||
+                    meterOwner->analysisTrack() != mainTrack) return {};
+                return readMainMeterSnapshot(document_->session().mainLoudness(), mainTrack,
+                                             document_->session().spec().sampleRate);
+            }});
+        root->infoSpectrum.setMainMeterSource(mainMeterSource_);
+        root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
             const bool ok = document_->addMixFunction(kind, track);
@@ -414,7 +429,13 @@ class AdiApplication final : public juce::JUCEApplication,
         // plug-in's size, in a floating window the root opens from a device's wrench. Its frame
         // runs on that window's clock; an error it reports reaches the Status Bar.
         root_->pluginHost = floating_.get();
-        root_->openAnalyzer = [this](std::int64_t track) { return showAnalyzerWindow(*floating_, *root_, track); };
+        root_->openAnalyzer = [this](std::int64_t track) {
+            const bool opened = showAnalyzerWindow(*floating_, *root_, track);
+            if (opened)
+                if (auto *pane = dynamic_cast<AnalysisPane *>(floating_->content("Analysis")))
+                    pane->view.setMainMeterSource(mainMeterSource_);
+            return opened;
+        };
         root_->pluginEditor = [this](std::int64_t id, std::string &why) {
             AdiRootComponent::PluginEditorView out;
             auto *instance = document_->session().instanceFor(id);
@@ -766,6 +787,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
     std::unique_ptr<ProjectDocument> document_;
+    std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
     std::unique_ptr<device::DeviceBridge> bridge_;
     std::unique_ptr<AdiWindow> window_;
