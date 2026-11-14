@@ -351,14 +351,6 @@ void releaseFreezeAndAmount() {
         process(amount, a, &key, 2, zero);
     }
     check(same(a, dry), "zero amount settles to exact dry while the key remains active");
-    for (std::size_t block = 100; block < 110; ++block) {
-        a.tone(block * frames);
-        dry.samples = a.samples;
-        key.tone(block * frames, 1000, .7);
-        process(amount, a, &key, 2, settings);
-    }
-    check(a.finite() && a.energy(0) < dry.energy(0) * .8,
-          "restoring amount resumes the current active detector curve");
 
     carve::Core retainedHold;
     retainedHold.prepare({48000, 256, 2}, settings);
@@ -432,7 +424,7 @@ void auditionAndLifecycle() {
         key.tone(20 * frames, 991, .6, rate, true);
         process(changed, a, &key, 2, narrow);
         process(fresh, b, &key, 2, narrow);
-        check(a.finite() && !same(a, b), "live cutoff rebuild preserves existing signal history");
+        check(a.finite() && b.finite(), "live cutoff update and fresh preparation remain finite");
         changed.reset(narrow);
         fresh.prepare({rate, 256, 2}, narrow);
         a.tone(0, 991, .2, rate, true);
@@ -622,6 +614,251 @@ void inactiveComponentsAndWake() {
     check(returnedDry && gradualStart && finiteAndResponsive,
           "repeated sleep and wake preserve finite tails, gradual entry and useful reduction");
 }
+
+template <class Sample> void monoPanAndRelease() {
+    for (const double rate : {44100., 48000., 96000.})
+        for (const auto mode : {carve::Mode::Stereo, carve::Mode::MidSide})
+            for (int layout = 0; layout < 5; ++layout) {
+                std::array<carve::Core, 4> cores;
+                std::array<carve::Settings, 4> settings;
+                for (std::size_t index = 0; index < cores.size(); ++index) {
+                    auto &s = settings[index];
+                    s.amount = .25f; s.pan = index == 0 ? 0.f : index == 2 ? 1.f : .5f;
+                    s.attackMs = 1; s.releaseMs = 1; s.lowHz = 300; s.highHz = 6000; s.mode = mode;
+                    cores[index].prepare({rate, static_cast<int>(frames), 1}, s);
+                }
+                std::array<Audio<Sample>, 4> output;
+                Audio<Sample> dry, key;
+                bool equal = true, undeclared = true;
+                const int keyChannels = layout == 0 ? 1 : 2;
+                for (std::size_t block = 0; block < 32; ++block) {
+                    dry.tone(block * frames, 997, .2, rate);
+                    key.tone(block * frames, 997, .7, rate, layout == 3);
+                    if (layout == 1) key.samples[1].fill(Sample(0));
+                    if (layout == 2) key.samples[0].fill(Sample(0));
+                    if (layout == 4)
+                        for (std::size_t i = 0; i < frames; ++i) key.samples[1][i] = -key.samples[0][i];
+                    settings[3].pan = block % 3 == 0 ? 0.f : 1.f;
+                    for (std::size_t index = 0; index < cores.size(); ++index) {
+                        output[index].samples = dry.samples;
+                        equal &= process(cores[index], output[index], &key, keyChannels, settings[index]);
+                        equal &= same(output[index], output[0]) && cores[index].activity() == cores[0].activity();
+                        undeclared &= output[index].samples[1] == dry.samples[1] && output[index].finite();
+                    }
+                }
+                check(equal && undeclared, "mono Pan endpoints and live Pan edits preserve exact samples and activity for every key layout");
+                if (layout == 4) {
+                    check(same(output[0], dry) && cores[0].activity() == carve::Activity::Sleeping,
+                          "a fresh antiphase stereo key leaves mono programme exactly dry and sleeping");
+                } else {
+                    check(output[0].energy(0) < dry.energy(0) * .97 && cores[0].activity() == carve::Activity::Active,
+                          "mono Pan comparison has actual active reduction rather than equally dry controls");
+                }
+                key.silence();
+                bool sleeping = false;
+                for (std::size_t block = 32; block < 192; ++block) {
+                    dry.tone(block * frames, 997, .2, rate);
+                    for (std::size_t index = 0; index < cores.size(); ++index) {
+                        output[index].samples = dry.samples;
+                        equal &= process(cores[index], output[index], index % 2 ? &key : nullptr,
+                                         index % 2 ? keyChannels : 0, settings[index]);
+                        equal &= same(output[index], output[0]) && cores[index].activity() == cores[0].activity();
+                    }
+                    sleeping = cores[0].activity() == carve::Activity::Sleeping && same(output[0], dry);
+                    if (sleeping) break;
+                }
+                if (!(equal && sleeping))
+                    std::printf("mono release diagnostic: rate=%.0f layout=%d mode=%d bytes=%zu equal=%d sleep=%d\n",
+                                rate, layout, static_cast<int>(mode), sizeof(Sample), equal, sleeping);
+                check(equal && sleeping,
+                      "mono Pan remains neutral through zero or disconnected key release and exact dry sleep");
+            }
+    // Observe every release sample so the demand threshold cannot slip between blocks.
+    for (const double rate : {44100., 48000., 96000.}) {
+        std::array<carve::Core, 3> cores;
+        std::array<carve::Settings, 3> settings;
+        std::array<Audio<Sample>, 3> output;
+        Audio<Sample> key;
+        for (std::size_t index = 0; index < cores.size(); ++index) {
+            auto &s = settings[index];
+            s.amount = .1f; s.pan = static_cast<float>(index) * .5f;
+            s.attackMs = s.releaseMs = 1; s.lowHz = 300; s.highHz = 6000;
+            cores[index].prepare({rate, static_cast<int>(frames), 1}, s);
+        }
+        for (std::size_t block = 0; block < 24; ++block) {
+            key.tone(block * frames, 997, .7, rate);
+            for (std::size_t index = 0; index < cores.size(); ++index) {
+                output[index].tone(block * frames, 997, .2, rate);
+                process(cores[index], output[index], &key, 1, settings[index]);
+            }
+        }
+        key.silence();
+        bool equal = true, releasing = false, sleeping = false;
+        for (int sample = 0; sample < static_cast<int>(rate / 3); ++sample) {
+            for (std::size_t index = 0; index < cores.size(); ++index) {
+                output[index].samples[0][0] = Sample(.2);
+                equal &= process(cores[index], output[index], &key, 1, settings[index], 1);
+                equal &= output[index].samples[0][0] == output[0].samples[0][0] &&
+                         cores[index].activity() == cores[0].activity();
+            }
+            releasing |= cores[0].activity() == carve::Activity::Releasing;
+            sleeping = cores[0].activity() == carve::Activity::Sleeping;
+            if (sleeping) break;
+        }
+        if (!(equal && releasing))
+            std::printf("mono threshold diagnostic: rate=%.0f bytes=%zu equal=%d release=%d sleep=%d\n",
+                        rate, sizeof(Sample), equal, releasing, sleeping);
+        check(equal && releasing, "mono release-demand threshold is Pan-neutral at every actual sample");
+    }
+}
+
+template <class Sample> void monoAuditionFold() {
+    for (const double rate : {44100., 48000., 96000.})
+        for (const auto mode : {carve::Mode::Stereo, carve::Mode::MidSide})
+            for (const float pan : {0.f, .5f, 1.f}) {
+                carve::Settings settings;
+                settings.audition = true; settings.pan = pan; settings.mode = mode;
+                settings.lowHz = 300; settings.highHz = 6000;
+                std::array<carve::Core, 6> cores;
+                for (auto &core : cores) core.prepare({rate, static_cast<int>(frames), 1}, settings);
+                std::array<Audio<Sample>, 6> output, keys;
+                bool equal = true, cancellation = true;
+                for (std::size_t block = 0; block < 32; ++block) {
+                    Audio<Sample> source;
+                    source.tone(block * frames, 997, .6, rate);
+                    keys[0].samples = source.samples; keys[0].samples[1].fill(Sample(0));
+                    keys[1].samples = source.samples; keys[1].samples[0].fill(Sample(0));
+                    keys[2].samples = source.samples;
+                    for (auto &value : keys[2].samples[0]) value *= Sample(.5);
+                    keys[3].tone(block * frames, 997, .6, rate, true);
+                    for (std::size_t i = 0; i < frames; ++i) {
+                        const float left = static_cast<float>(keys[3].samples[0][i]);
+                        const float right = static_cast<float>(keys[3].samples[1][i]);
+                        keys[4].samples[0][i] = static_cast<Sample>((left + right) * .5f);
+                        keys[5].samples[0][i] = source.samples[0][i];
+                        keys[5].samples[1][i] = -source.samples[0][i];
+                    }
+                    for (std::size_t index = 0; index < cores.size(); ++index) {
+                        output[index].tone(block * frames, 733, .2, rate);
+                        equal &= process(cores[index], output[index], &keys[index], index == 2 || index == 4 ? 1 : 2, settings);
+                    }
+                    equal &= output[0].samples[0] == output[1].samples[0] && output[0].samples[0] == output[2].samples[0] &&
+                             output[3].samples[0] == output[4].samples[0] && output[0].finite() && output[3].finite();
+                    cancellation &= output[5].energy(0) == 0 && cores[5].activity() == carve::Activity::Sleeping;
+                }
+                check(equal && output[1].energy(0) > 1.e-10 && cores[1].activity() == carve::Activity::Active,
+                      "mono audition keeps left-only, right-only and independently folded stereo keys equal to their mono controls");
+                check(cancellation, "mono audition activity uses its folded source and stays sleeping for a fresh antiphase key");
+                for (std::size_t block = 32; block < 192; ++block)
+                    for (std::size_t index = 0; index < cores.size(); ++index) {
+                        keys[index].silence(); output[index].tone(block * frames, 733, .2, rate);
+                        process(cores[index], output[index], index % 2 ? &keys[index] : nullptr, index % 2 ? 2 : 0, settings);
+                    }
+                bool silent = true;
+                for (std::size_t index = 0; index < cores.size(); ++index)
+                    silent &= output[index].energy(0) == 0 && cores[index].activity() == carve::Activity::Sleeping;
+                check(silent, "mono audition releases zero and absent key inputs to exact monitored silence");
+            }
+}
+
+template <class Sample> void amountZeroContinuity() {
+    for (const double rate : {44100., 48000., 96000.}) {
+        carve::Settings settings;
+        settings.amount = .25f; settings.attackMs = 100; settings.releaseMs = 700;
+        settings.lowHz = 300; settings.highHz = 6000;
+        carve::Core subject, control, reset;
+        subject.prepare({rate, static_cast<int>(frames), 2}, settings);
+        control.prepare({rate, static_cast<int>(frames), 2}, settings);
+        reset.prepare({rate, static_cast<int>(frames), 2}, settings);
+        Audio<Sample> a, b, fresh, key, dry;
+        auto zero = settings; zero.amount = 0;
+        bool dryZero = true;
+        for (std::size_t block = 0; block < 64; ++block) {
+            a.silence(); b.silence();
+            key.tone(block * frames, block < 40 ? 997. : 1413., .7, rate, true);
+            process(subject, a, &key, 2, block < 40 ? settings : zero);
+            process(control, b, &key, 2, settings);
+            if (block >= 42) dryZero &= a.energy(0) == 0 && a.energy(1) == 0;
+        }
+        key.silence();
+        const auto blendComplete = static_cast<std::size_t>(std::ceil(rate * .005)) + 2;
+        bool exact = true, differsFromReset = false, checked = false;
+        for (std::size_t block = 0; block < 2; ++block) {
+            dry.tone((64 + block) * frames, 1109, .2, rate, true);
+            a.samples = b.samples = fresh.samples = dry.samples;
+            process(subject, a, &key, 2, settings);
+            process(control, b, &key, 2, settings);
+            process(reset, fresh, &key, 2, settings);
+            for (std::size_t i = 0; i < frames; ++i)
+                if (block * frames + i >= blendComplete)
+                    for (std::size_t channel = 0; channel < 2; ++channel) {
+                        exact &= a.samples[channel][i] == b.samples[channel][i];
+                        differsFromReset |= a.samples[channel][i] != fresh.samples[channel][i];
+                        checked = true;
+                    }
+        }
+        check(dryZero && checked && exact && differsFromReset,
+              "amount-zero interval preserves the live detector curve at the first post-blend samples with no key to relearn");
+    }
+}
+
+template <class Sample> void coefficientHistoryContinuity() {
+    for (const double rate : {44100., 48000., 96000.})
+        for (int variant = 0; variant < 3; ++variant) {
+            carve::Settings settings;
+            settings.amount = .03f; settings.lowHz = 1000; settings.highHz = 500;
+            settings.audition = variant == 1;
+            carve::Core subject, control;
+            subject.prepare({rate, static_cast<int>(frames), 2}, settings);
+            control.prepare({rate, static_cast<int>(frames), 2}, settings);
+            Audio<Sample> a, b, key, dry;
+            for (std::size_t block = 0; block < 80; ++block) {
+                dry.tone(block * frames, 1000, .2, rate, true);
+                a.samples = b.samples = dry.samples; key.tone(block * frames, 1000, .7, rate);
+                process(subject, a, &key, 2, settings); process(control, b, &key, 2, settings);
+            }
+            check(a.energy(0) > 1.e-12 && (settings.audition || a.energy(0) < dry.energy(0) * .99),
+                  "equivalent-cutoff fixture has nonzero filter history and an effective active curve");
+            settings.freeze = variant == 2;
+            auto changed = settings; changed.highHz = 700;
+            bool exact = true;
+            for (std::size_t block = 80; block < 84; ++block) {
+                a.tone(block * frames, 1000, .2, rate, true); b.samples = a.samples;
+                key.tone(block * frames, 1000, .7, rate);
+                exact &= process(subject, a, &key, 2, changed) && process(control, b, &key, 2, settings) && same(a, b);
+            }
+            check(exact, "forced rebuild with identical effective cutoffs preserves every immediate normal, audition and held sample");
+        }
+}
+
+template <class Sample> void realCoefficientTails() {
+    for (const double rate : {44100., 48000., 96000.}) {
+        carve::Settings settings;
+        settings.amount = .3f; settings.lowHz = 300; settings.highHz = 6000;
+        carve::Core programme, detector;
+        programme.prepare({rate, static_cast<int>(frames), 2}, settings);
+        Audio<Sample> main, key;
+        for (std::size_t block = 0; block < 80; ++block) {
+            main.silence(); key.tone(block * frames, 997, .7, rate);
+            process(programme, main, &key, 2, settings);
+        }
+        settings.freeze = true;
+        main.silence(); main.samples[0].back() = Sample(.6); main.samples[1].back() = Sample(-.4);
+        process(programme, main, &key, 2, settings);
+        auto changed = settings; changed.lowHz = 450; changed.highHz = 4200;
+        main.silence(); key.silence(); process(programme, main, &key, 2, changed);
+        check(main.finite() && main.energy(0) > 1.e-16,
+              "a real cutoff change retains the immediate programme impulse tail under a matured held curve");
+        settings.freeze = false; settings.audition = true;
+        detector.prepare({rate, static_cast<int>(frames), 2}, settings);
+        main.silence(); key.silence(); key.samples[0].back() = Sample(.7); key.samples[1].back() = Sample(-.2);
+        process(detector, main, &key, 2, settings);
+        changed = settings; changed.lowHz = 450; changed.highHz = 4200;
+        main.silence(); key.silence(); process(detector, main, &key, 2, changed);
+        check(main.finite() && main.energy(0) > 1.e-16,
+              "a real cutoff change retains the immediate detector impulse tail with no new key input");
+    }
+}
 } // namespace
 
 int main() {
@@ -634,6 +871,11 @@ int main() {
         segmentationAndLiveControls();
         bufferAliasingAndRejectedCalls();
         inactiveComponentsAndWake();
+        monoPanAndRelease<float>(); monoPanAndRelease<double>();
+        monoAuditionFold<float>(); monoAuditionFold<double>();
+        amountZeroContinuity<float>(); amountZeroContinuity<double>();
+        coefficientHistoryContinuity<float>(); coefficientHistoryContinuity<double>();
+        realCoefficientTails<float>(); realCoefficientTails<double>();
         check(allocations == 0, "audio calls perform zero C++ allocations");
         check(deallocations == 0, "audio calls perform zero C++ deallocations");
     } catch (const std::exception &error) {

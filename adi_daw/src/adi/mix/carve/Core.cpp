@@ -240,13 +240,16 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
         heldMaximum = std::max(heldMaximum, band.held);
     const float leftWeight = (amount_ + amount_) * (1.f - s.pan);
     const float rightWeight = (amount_ + amount_) * s.pan;
-    const float largestWeight = std::max(leftWeight, rightWeight);
+    // Mono has one programme plane: Pan changes neither its amount nor release.
+    const bool monoMain = spec_.channels == 1;
+    const float largestWeight = monoMain ? amount_ : std::max(leftWeight, rightWeight);
     const bool heldCurve = s.freeze && heldMaximum > 0 && amount_ > 0;
     for (std::int32_t frame = 0; frame < frames; ++frame) {
         const float keyLeft = keyChannels ? static_cast<float>(key[0][frame]) : 0.f;
         const float keyRight = keyChannels == 2 ? static_cast<float>(key[1][frame]) : keyLeft;
         const float folded = keyChannels == 2 ? (keyLeft + keyRight) * .125f : keyLeft * .25f;
-        observeKey(s.audition ? std::max(std::abs(keyLeft), std::abs(keyRight)) * .25f : std::abs(folded));
+        observeKey(s.audition && !monoMain ? std::max(std::abs(keyLeft), std::abs(keyRight)) * .25f
+                                         : std::abs(folded));
         if (s.audition) {
             if (auditionSleeping_ && !keyPresent_) {
                 for (std::int32_t c = 0; c < spec_.channels; ++c)
@@ -258,7 +261,8 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
             float residual = 0;
             for (std::int32_t c = 0; c < spec_.channels; ++c) {
                 const auto channel = static_cast<std::size_t>(c);
-                const float source = (c == 0 ? keyLeft : keyRight) * .25f;
+                // Mono monitoring follows the same folded key as the detector.
+                const float source = monoMain ? folded : (c == 0 ? keyLeft : keyRight) * .25f;
                 float sum = 0;
                 for (auto &band : bank_) {
                     sum += band.detection[channel].tick(source, band.detector);
@@ -295,7 +299,8 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
             const Sample originalRight = spec_.channels == 2 ? main[1][frame] : originalLeft;
             const float left = static_cast<float>(originalLeft), right = static_cast<float>(originalRight);
             const bool midSide = s.mode == Mode::MidSide && spec_.channels == 2;
-            float a = programme(midSide ? (left + right) * .5f : left, 0, leftWeight, envelopes, s.freeze);
+            float a = programme(midSide ? (left + right) * .5f : left, 0,
+                                monoMain ? amount_ : leftWeight, envelopes, s.freeze);
             float b = spec_.channels == 2
                           ? programme(midSide ? (left - right) * .5f : right, 1, rightWeight, envelopes, s.freeze)
                           : 0;
