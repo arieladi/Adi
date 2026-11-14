@@ -721,6 +721,8 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
             m = ModuleRec{};
         r.laneFirst = 0;
         r.laneFirstDevice = 0;
+        r.lanePixelOffset = 0;
+        r.laneRetainedPose = false;
         r.textHash = 0;
         r.name.clear();
         ch.any = ch.text = ch.structure = ch.membership = true;
@@ -1196,12 +1198,14 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     if (shownVersion_ != versionBefore)
         afterShownChange(now, oldFocusShown);
     replan();
+    validateItemFocus(now);
     // Jump mode's matches follow the shown list: rebuilt only when it or a row's match moved, and
     // the current match stays on its track
     if (view_.searchMode == SearchMode::Jump && !queryFold_.empty() && (shownVersion_ != versionBefore || matchMoved))
         rebuildMatches(matchCursor);
     solveScroll();
     rehit(now);
+    rehitItem(now);
     updateNavScroll();
     endEvent(fx, before);
     return fx;
@@ -1329,6 +1333,7 @@ Effects StackModel::setKeyboardFocus(bool on, TimeMs now) {
         return fx;
     }
     keyboardFocus_ = on;
+    if (!inside_ && !cap_.active) setEmphasizedItem(on ? focusItem_ : ItemRef{}, now);
     if (!on) {
         focusOwns_ = false;
         // outside the list, the focused row was enlarged only because the keys were here
@@ -1875,6 +1880,8 @@ void StackModel::userScroll(double to, TimeMs now) {
         anchorFirstVisible();
     solveScroll();
     rehit(now);
+    itemCandidate_ = {};
+    rehitItem(now);
     bump();
 }
 
@@ -1938,6 +1945,8 @@ void StackModel::rebase(TimeMs delta) noexcept {
     shift(leaveAt_);
     shift(landingEnd_);
     shift(enlargedSince_);
+    shift(itemAnimStart_);
+    shift(itemEnteredAt_);
 }
 
 TimeMs StackModel::animEnd() const noexcept {
@@ -1968,13 +1977,14 @@ TimeMs StackModel::laneDeadline() const noexcept {
 }
 
 TimeMs StackModel::internalDeadline() const noexcept {
-    return std::min({animEnd(), jumpEnd(), landingDeadline(), leaveDeadline(), promotionDeadline(), laneDeadline()});
+    return std::min({animEnd(), jumpEnd(), landingDeadline(), leaveDeadline(), promotionDeadline(), laneDeadline(),
+                     itemPromotionDeadline(), itemAnimationEnd()});
 }
 
 TimeMs StackModel::nextDeadline() const noexcept { return internalDeadline(); }
 
 bool StackModel::busy() const noexcept {
-    if (animActive_ || (jump_.active && jump_.moving))
+    if (animActive_ || itemAnimActive_ || (jump_.active && jump_.moving))
         return true;
     for (const auto &a : laneAnims_)
         if (a.row != 0)
@@ -2016,9 +2026,23 @@ void StackModel::processAt(TimeMs d) {
         onLeave(d);
     if (promotionDeadline() <= d)
         promote(d);
+    if (itemPromotionDeadline() <= d)
+        setEmphasizedItem(itemCandidate_, d, true);
+    if (itemAnimationEnd() <= d) {
+        itemAnimActive_ = false;
+        std::size_t count = 0;
+        for (std::size_t j = 0; j < itemAnimCount_; ++j)
+            if (itemAnims_[j].to > 0) {
+                itemAnims_[j].from = itemAnims_[j].to;
+                itemAnims_[count++] = itemAnims_[j];
+            }
+        itemAnimCount_ = count;
+        bump();
+    }
     for (auto &a : laneAnims_)
         if (a.row != 0 && a.start + c_.laneScrollMs <= d) {
             a = LaneAnim{};
+            rehitItem(d); // explicit lane navigation may move content under a resting pointer
             bump();
         }
 }
@@ -2058,6 +2082,7 @@ void StackModel::onLeave(TimeMs d) {
     leaveAt_ = kNever;
     if (inside_ || cap_.active)
         return;
+    setEmphasizedItem(keyboardFocus_ ? focusItem_ : ItemRef{}, d);
     if (!jump_.moving) {
         jump_ = Jump{};
         anchorFirstVisible(); // settles any slack the pointer left
@@ -2104,6 +2129,123 @@ Effects StackModel::advance(TimeMs now) {
 
 // --- interaction ----------------------------------------------------------------------------------
 
+TimeMs StackModel::itemAnimationEnd() const noexcept {
+    return itemAnimActive_ ? itemAnimStart_ + c_.heightAnimMs : kNever;
+}
+
+TimeMs StackModel::itemPromotionDeadline() const noexcept {
+    if (!view_.autoZoom || cap_.active || focusOwns_ || !inside_ || buttonDown_ ||
+        itemCandidate_.place != ItemPlace::Chain || itemCandidate_ == emphasizedItem_ ||
+        !live(itemCandidate_) || !shownIndex(itemCandidate_.row.track) ||
+        (jump_.active && jump_.moving)) return kNever;
+    return std::max({itemEnteredAt_ + c_.dwellMs, lastScrollAt_ + c_.scrollHoldOffMs,
+                     captureEndAt_ + c_.dwellMs});
+}
+
+double StackModel::itemWeight(const ItemRef &ref, bool target) const noexcept {
+    if (target) return ref == emphasizedItem_ ? 1.0 : 0.0;
+    const double e = itemAnimActive_ && c_.heightAnimMs > 0
+                         ? ease(static_cast<double>(now_ - itemAnimStart_) / c_.heightAnimMs) : 1.0;
+    for (std::size_t j = 0; j < itemAnimCount_; ++j)
+        if (itemAnims_[j].ref == ref)
+            return itemAnims_[j].from + (itemAnims_[j].to - itemAnims_[j].from) * e;
+    return 0;
+}
+
+double StackModel::itemHeight(const Rec &r, std::size_t index, double h, bool target) const noexcept {
+    const auto &item = r.items[index];
+    const ItemRef ref{{r.id, r.gen}, ItemPlace::Chain, 0, item.device, item.gen};
+    const double compact = std::min(static_cast<double>(base()), h);
+    return compact + (h - compact) * itemWeight(ref, target);
+}
+
+double StackModel::itemWidth(const Rec &r, std::size_t index, double h, bool target) const noexcept {
+    const auto &item = r.items[index];
+    const double height = itemHeight(r, index, h, target);
+    if (plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
+        return c_.pill;
+    return chainItemWidth(item.cls, height, c_);
+}
+
+void StackModel::settleItemAnchor() {
+    if (itemAnchor_.ref.place != ItemPlace::Chain) return;
+    const auto at = shownIndex(itemAnchor_.ref.row.track);
+    const auto rec = recOf(itemAnchor_.ref.row.track);
+    if (at && rec != kNoRec && live(itemAnchor_.ref)) {
+        const auto anchored = lane(*at).offset;
+        itemAnchor_ = {};
+        rows_[rec].lanePixelOffset = 0;
+        rows_[rec].lanePixelOffset = anchored - lane(*at).offset;
+        rows_[rec].laneRetainedPose = false;
+    } else itemAnchor_ = {};
+}
+
+void StackModel::setEmphasizedItem(ItemRef ref, TimeMs now, bool pointerAnchor) {
+    if (cap_.active) return;
+    if (ref.place != ItemPlace::Chain || !live(ref) || !shownIndex(ref.row.track)) ref = {};
+    if (ref == emphasizedItem_) return;
+    ItemAnchor anchor;
+    if (pointerAnchor && ref.place == ItemPlace::Chain) {
+        struct Find {
+            const ItemRef &ref;
+            ItemAnchor &anchor;
+            double x;
+            void operator()(const ItemGeo &g) const {
+                if (g.ref == ref && g.width > 0)
+                    anchor = {ref, x, std::clamp((x - g.x) / g.width, 0.0, 1.0)};
+            }
+        } find{ref, anchor, px_};
+        walkItems(*shownIndex(ref.row.track), detail::sinkFor<ItemGeo>(find));
+    }
+    settleItemAnchor();
+    std::array<ItemAnim, kMaxItemAnims> next{};
+    std::size_t count = 0;
+    for (std::size_t j = 0; j < itemAnimCount_; ++j) {
+        const auto &old = itemAnims_[j];
+        const double weight = itemWeight(old.ref);
+        if (weight > kEps && live(old.ref) && count < next.size())
+            next[count++] = {old.ref, weight, old.ref == ref ? 1.0 : 0.0};
+    }
+    bool found = false;
+    for (std::size_t j = 0; j < count; ++j) found = found || next[j].ref == ref;
+    if (ref.place == ItemPlace::Chain && !found) {
+        if (count == next.size()) {
+            std::size_t smallest = 0;
+            for (std::size_t j = 1; j < count; ++j)
+                if (next[j].from < next[smallest].from) smallest = j;
+            next[smallest] = {ref, 0, 1};
+            ++stats_.entrySnaps;
+        } else next[count++] = {ref, 0, 1};
+    }
+    emphasizedItem_ = ref;
+    itemAnims_ = next;
+    itemAnimCount_ = count;
+    itemAnimStart_ = now;
+    itemAnimActive_ = c_.heightAnimMs > 0 && count != 0;
+    itemAnchor_ = anchor;
+    bump();
+}
+
+void StackModel::rehitItem(TimeMs now) {
+    if (cap_.active) return;
+    const auto hit = inside_ && pointerKnown_ ? hitTest(px_, py_) : Hit{};
+    const ItemRef candidate = hit.part == HitPart::ChainItem || hit.part == HitPart::ChainPill ? hit.item : ItemRef{};
+    if (candidate == itemCandidate_) return;
+    itemCandidate_ = candidate;
+    itemEnteredAt_ = now;
+}
+
+void StackModel::validateItemFocus(TimeMs now) {
+    if (cap_.active) return;
+    if (itemAnchor_.ref.place != ItemPlace::None &&
+        (!live(itemAnchor_.ref) || !shownIndex(itemAnchor_.ref.row.track))) itemAnchor_ = {};
+    if (itemCandidate_.place != ItemPlace::None &&
+        (!live(itemCandidate_) || !shownIndex(itemCandidate_.row.track))) itemCandidate_ = {};
+    if (emphasizedItem_.place != ItemPlace::None &&
+        (!live(emphasizedItem_) || !shownIndex(emphasizedItem_.row.track)))
+        setEmphasizedItem(keyboardFocus_ ? focusItem_ : ItemRef{}, now);
+}
+
 std::optional<std::size_t> StackModel::pointerRowIndex() const noexcept {
     if (!pointerOverRows())
         return std::nullopt;
@@ -2140,6 +2282,7 @@ void StackModel::buttonReleased(TimeMs now) {
     if (!buttonDown_)
         return;
     buttonDown_ = false;
+    itemEnteredAt_ = now;
     if (candidate_ != 0 && candidate_ != enlarged_)
         enteredAt_ = now; // the dwell counts from the release
     if (revealPending_) {
@@ -2166,6 +2309,7 @@ void StackModel::focusByKey(std::size_t shown, const ItemRef &item, TimeMs now, 
     bump();
     if (cap_.active)
         return;
+    setEmphasizedItem(focusItem_, now);
     landed_ = 0;
     if (maximised_ == 0) {
         setEnlarged(r.id, now);
@@ -2185,6 +2329,7 @@ void StackModel::focusByClick(std::size_t shown, const ItemRef &item, TimeMs now
     focusItem_ = item.row.valid() ? item : chipRef(r.id);
     fx.select = r.id;
     bump();
+    if (!view_.autoZoom && !cap_.active) setEmphasizedItem(focusItem_, now);
     if (!view_.autoZoom && !cap_.active && maximised_ == 0 && enlarged_ != r.id) {
         // with auto-zoom off only focus enlarges, and at once
         setEnlarged(r.id, now);
@@ -2245,18 +2390,42 @@ std::size_t StackModel::focusOrder(std::size_t shown, std::array<ItemRef, kFocus
 void StackModel::setLaneFirst(Rec &r, std::uint32_t index, TimeMs now, bool animate) {
     if (r.items.empty())
         return;
+    lastScrollAt_ = now;
+    itemCandidate_ = {};
+    // An explicit lane command takes ownership back from pointer anchoring, even
+    // when the requested first item is already the first one.
+    const bool residual = itemAnchor_.ref.row.track == r.id || std::abs(r.lanePixelOffset) > kEps;
+    double anchoredPosition = 0;
+    if (residual)
+        if (const auto shown = shownIndex(r.id)) {
+            double remaining = lane(*shown).offset;
+            const double height = heightAt(*shown);
+            const double gap = plan().laneMode == LaneMode::Pills ? c_.trayPillGap : c_.itemGap;
+            for (std::size_t j = 0; j < r.items.size(); ++j) {
+                const double span = itemWidth(r, j, height) + gap;
+                if (remaining < span || j + 1 == r.items.size()) {
+                    anchoredPosition = static_cast<double>(j) + remaining / span;
+                    break;
+                }
+                remaining -= span;
+            }
+        }
+    if (itemAnchor_.ref.row.track == r.id) itemAnchor_ = {};
+    r.lanePixelOffset = 0;
+    r.laneRetainedPose = false;
     index = std::min(index, static_cast<std::uint32_t>(r.items.size() - 1));
     const std::uint32_t from = resolveLaneFirst(r);
-    if (index == from)
+    if (index == from && !residual) {
         return;
+    }
     // where the lane is now, in items, so a scroll during a scroll continues from it
-    double pos = static_cast<double>(from);
+    double pos = residual ? anchoredPosition : static_cast<double>(from);
     LaneAnim *anim = nullptr;
     for (auto &a : laneAnims_)
         if (a.row == r.id) {
             anim = &a;
             const double u = c_.laneScrollMs > 0 ? static_cast<double>(now - a.start) / static_cast<double>(c_.laneScrollMs) : 1.0;
-            pos = a.from + (a.to - a.from) * ease(u);
+            if (!residual) pos = a.from + (a.to - a.from) * ease(u);
         }
     r.laneFirst = index;
     r.laneFirstDevice = r.items[index].device;
@@ -2293,10 +2462,7 @@ void StackModel::revealLaneItem(Rec &r, std::uint32_t index, std::size_t shown, 
     const bool pills = p.laneMode == LaneMode::Pills;
     const double gap = pills ? c_.trayPillGap : c_.itemGap;
     const auto widthOf = [&](std::uint32_t j) {
-        const auto &item = r.items[j];
-        if (pills || tierFor(h, false, c_) < c_.foldBelow[classAt(item.cls)])
-            return static_cast<double>(c_.pill);
-        return static_cast<double>(chainItemWidth(item.cls, h, c_));
+        return itemWidth(r, j, h, true);
     };
     // move the first item on until `index` ends inside the lane (or is the first)
     while (first < index) {
@@ -2328,6 +2494,10 @@ void StackModel::stepItem(int dir, TimeMs now, Effects &fx) {
         return;
     focusItem_ = order[static_cast<std::size_t>(next)];
     bump();
+    if (!cap_.active) {
+        setEmphasizedItem(focusItem_, now);
+        focusOwns_ = view_.autoZoom;
+    }
     if (focusItem_.place == ItemPlace::Chain && !cap_.active) {
         Rec &r = rows_[shown_[*at]];
         for (std::uint32_t j = 0; j < r.items.size(); ++j)
@@ -2410,11 +2580,11 @@ void StackModel::pressRow(const Hit &hit, Button button, Mods mods, int clicks, 
         if (left && !cap_.active)
             if (const std::uint32_t rec = recOf(hit.row.track); rec != kNoRec) {
                 Rec &r = rows_[rec];
-                const std::uint32_t first = resolveLaneFirst(r);
+                const std::uint32_t first = lane(hit.shown).first;
                 if (hit.part == HitPart::ChevronRight)
                     setLaneFirst(r, first + 1, now, true);
-                else if (first > 0)
-                    setLaneFirst(r, first - 1, now, true);
+                else
+                    setLaneFirst(r, first > 0 ? first - 1 : 0, now, true);
             }
         break;
     case HitPart::RowSpace:
@@ -2453,6 +2623,7 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
         if (inside_) {
             inside_ = false;
             candidate_ = 0;
+            itemCandidate_ = {};
             if (!cap_.active)
                 leaveAt_ = now + c_.leaveMs;
         }
@@ -2467,6 +2638,7 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
         // the keys gave the enlarged row away; a move hands it back to hover after a fresh dwell
         focusOwns_ = false;
         candidate_ = 0;
+        itemCandidate_ = {};
     }
     // the landing's hold ends when the pointer moves into another row, which then needs its own dwell
     if (moved && landed_ != 0)
@@ -2478,8 +2650,10 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
     // rule 2: while heights move, the row under the pointer holds still under it
     if (moved && animActive_ && !jump_.active && !cap_.active && pointerOverRows())
         anchorPointer();
-    if (moved)
+    if (moved) {
         rehit(now);
+        rehitItem(now);
+    }
     endEvent(fx, before);
     return fx;
 }
@@ -2491,6 +2665,7 @@ Effects StackModel::pointerExit(TimeMs now) {
     if (inside_) {
         inside_ = false;
         candidate_ = 0;
+        itemCandidate_ = {};
         if (!cap_.active)
             leaveAt_ = now + c_.leaveMs;
     }
@@ -2499,6 +2674,14 @@ Effects StackModel::pointerExit(TimeMs now) {
 }
 
 Effects StackModel::pointerDown(double x, double y, Button button, Mods mods, int clicks, TimeMs now) {
+    return pointerDownAt(x, y, button, mods, clicks, now, nullptr);
+}
+Effects StackModel::pointerDownPresented(double x, double y, Button button, Mods mods, int clicks,
+                                         const Hit &presented, TimeMs now) {
+    return pointerDownAt(x, y, button, mods, clicks, now, &presented);
+}
+Effects StackModel::pointerDownAt(double x, double y, Button button, Mods mods, int clicks,
+                                  TimeMs now, const Hit *presented) {
     Effects fx;
     const auto before = beginEvent();
     now = advanceTo(now);
@@ -2506,16 +2689,34 @@ Effects StackModel::pointerDown(double x, double y, Button button, Mods mods, in
     px_ = x;
     py_ = y;
     pointerKnown_ = true;
+    if (moved && focusOwns_) {
+        focusOwns_ = false;
+        candidate_ = 0;
+        itemCandidate_ = {};
+    }
     buttonPressed(now);
     if (x >= 0 && y >= 0 && x < listW_ && y < listH_ && !inside_) {
         inside_ = true;
         leaveAt_ = kNever;
     }
-    if (moved)
+    if (moved) {
         rehit(now); // a press where the pointer was not is a move
+        rehitItem(now);
+    }
     fx.takeFocus = true;
     fx.consumed = true;
-    const Hit hit = hitTest(x, y);
+    Hit hit = presented ? *presented : hitTest(x, y);
+    if (presented && hit.row.valid()) {
+        const auto shown = live(hit.row) ? shownIndex(hit.row.track) : std::nullopt;
+        if (!shown || (hit.item.place == ItemPlace::Chain && !live(hit.item)) || !hit.rect.contains(x, y)) {
+            fx.refused = true;
+            endEvent(fx, before);
+            return fx;
+        }
+        hit.shown = *shown;
+        itemCandidate_ = hit.part == HitPart::ChainItem || hit.part == HitPart::ChainPill ? hit.item : ItemRef{};
+        itemEnteredAt_ = now;
+    }
     fx.hit = hit;
     switch (hit.part) {
     case HitPart::NavigatorLine:
@@ -2659,7 +2860,7 @@ Effects StackModel::wheel(double x, double y, const WheelDelta &delta, Mods mods
                     }
                 }
                 if (items != 0) {
-                    const std::int64_t first = static_cast<std::int64_t>(resolveLaneFirst(r)) + items;
+                    const std::int64_t first = static_cast<std::int64_t>(lane(hit.shown).first) + items;
                     setLaneFirst(r, static_cast<std::uint32_t>(std::max<std::int64_t>(0, first)), now, true);
                 }
             }
@@ -2859,6 +3060,7 @@ Effects StackModel::setAutoZoom(bool on, TimeMs now) {
     view_.autoZoom = on;
     focusOwns_ = false;
     if (!on && !cap_.active && maximised_ == 0) {
+        setEmphasizedItem(focusItem_, now);
         // only focus enlarges from now on
         const TrackId target = focusRow_ != 0 && shownIndex(focusRow_) ? focusRow_ : 0;
         if (target != enlarged_) {
@@ -3498,7 +3700,8 @@ Effects StackModel::scrollLane(const RowRef &ref, int items, TimeMs now) {
         return fx;
     }
     Rec &r = rows_[rec];
-    const std::int64_t first = static_cast<std::int64_t>(resolveLaneFirst(r)) + items;
+    const auto shown = shownIndex(ref.track);
+    const std::int64_t first = static_cast<std::int64_t>(shown ? lane(*shown).first : resolveLaneFirst(r)) + items;
     setLaneFirst(r, static_cast<std::uint32_t>(std::max<std::int64_t>(0, first)), now, true);
     endEvent(fx, before);
     return fx;
@@ -3655,6 +3858,7 @@ Effects StackModel::openFromChip(TrackId track, ItemKey landOn, TimeMs now) {
     fx.takeFocus = true;
     bump();
     if (!cap_.active) {
+        setEmphasizedItem(item, now);
         if (maximised_ == 0) {
             setEnlarged(track, now);
             landed_ = track;
@@ -3723,6 +3927,13 @@ CaptureResult StackModel::beginCapture(CaptureKind kind, const ItemRef &target, 
         return result;
     }
     const std::size_t shown = *shownIndex(target.row.track);
+    // Freeze the actual intermediate item weights too; no animation on another
+    // row may move a control while any drag, editor or asynchronous menu owns it.
+    for (std::size_t j = 0; j < itemAnimCount_; ++j) {
+        const double weight = itemWeight(itemAnims_[j].ref);
+        itemAnims_[j].from = itemAnims_[j].to = weight;
+    }
+    itemAnimActive_ = false;
     // everything in flight stops where it is
     if (animActive_) {
         const double k = animE();
@@ -3752,6 +3963,91 @@ CaptureResult StackModel::beginCapture(CaptureKind kind, const ItemRef &target, 
     result.ref.kind = kind;
     result.ref.target = target;
     bump();
+    endEvent(fx, before);
+    return result;
+}
+
+CaptureResult StackModel::beginCapturePresented(CaptureKind kind, const ItemRef &target,
+        const RowGeo &row, const LaneGeo &lane, std::span<const ItemGeo> items, TimeMs now) {
+    bool found = false;
+    bool valid = row.ref == target.row && std::isfinite(row.top) && std::isfinite(row.height) && row.height > 0 &&
+                 std::isfinite(lane.x) && std::isfinite(lane.width) && lane.width >= 0 &&
+                 std::isfinite(lane.offset) && items.size() <= frozenItems_.capacity();
+    for (const auto &item : items) {
+        found = found || item.ref == target;
+        valid = valid && item.ref.row == row.ref && std::isfinite(item.x) && std::isfinite(item.width) &&
+                std::isfinite(item.top) && std::isfinite(item.height) && item.width > 0 && item.height > 0 &&
+                item.top == row.top && item.height <= row.height + kEps;
+    }
+    if (!valid || !found) {
+        CaptureResult rejected;
+        rejected.refusal = CaptureRefusal::NotShown;
+        return rejected;
+    }
+    const auto before = beginEvent();
+    auto result = beginCapture(kind, target, now);
+    if (result.refusal != CaptureRefusal::None) return result;
+    const auto shown = *shownIndex(target.row.track);
+    Entry *entry = nullptr;
+    for (std::size_t j = 0; j < entryCount_; ++j)
+        if (entries_[j].id == target.row.track) entry = &entries_[j];
+    if (entry == nullptr && row.height != static_cast<double>(base())) {
+        if (entryCount_ == entries_.size()) {
+            // Keep the edited row exactly; an unrelated transition may snap if
+            // every prepared entry is occupied, just as in ordinary retargeting.
+            --entryCount_;
+            ++stats_.entrySnaps;
+        }
+        std::size_t at = entryCount_++;
+        while (at > 0 && entries_[at - 1].shown > shown) { entries_[at] = entries_[at - 1]; --at; }
+        entries_[at] = {shown, target.row.track, row.height, row.height, g0(), g0()};
+        entry = &entries_[at];
+    }
+    if (entry) entry->hFrom = entry->hTo = row.height;
+    // Resume from the displayed item weights as well as the displayed row
+    // height. Focus callbacks may have advanced/retargeted both since that pose.
+    std::array<ItemAnim, kMaxItemAnims> displayed{};
+    std::size_t displayedCount = 0;
+    const double compact = std::min(static_cast<double>(base()), row.height);
+    for (const auto &item : items) {
+        const double weight = row.height > compact + kEps
+                                  ? std::clamp((item.height - compact) / (row.height - compact), 0.0, 1.0) : 0.0;
+        if (weight > 0 && live(item.ref) && displayedCount < displayed.size())
+            displayed[displayedCount++] = {item.ref, weight, weight};
+    }
+    bool hasTarget = false;
+    for (std::size_t j = 0; j < displayedCount; ++j) hasTarget = hasTarget || displayed[j].ref == emphasizedItem_;
+    if (emphasizedItem_.place == ItemPlace::Chain && !hasTarget) {
+        if (displayedCount == displayed.size()) {
+            std::size_t smallest = 0;
+            for (std::size_t j = 1; j < displayedCount; ++j)
+                if (displayed[j].from < displayed[smallest].from) smallest = j;
+            displayed[smallest] = {emphasizedItem_, 0, 0};
+            ++stats_.entrySnaps;
+        } else displayed[displayedCount++] = {emphasizedItem_, 0, 0};
+    }
+    for (std::size_t j = 0; j < itemAnimCount_ && displayedCount < displayed.size(); ++j) {
+        const auto &old = itemAnims_[j];
+        if (old.ref.row == target.row || old.ref == emphasizedItem_ || old.from <= 0) continue;
+        displayed[displayedCount++] = old;
+    }
+    itemAnims_ = displayed;
+    itemAnimCount_ = displayedCount;
+    cap_.viewTop = row.top;
+    cap_.lane = lane;
+    cap_.lane.frozen = true;
+    frozenItems_.assign(items.begin(), items.end());
+    if (itemAnchor_.ref.row == target.row) itemAnchor_ = {};
+    auto &record = rows_[shown_[shown]];
+    record.lanePixelOffset = 0;
+    LaneGeo nominal;
+    layoutLane(shown, row.top, row.height, &nominal, {});
+    record.lanePixelOffset = lane.offset - nominal.offset;
+    record.laneRetainedPose = true;
+    recomputeFrozenGaps();
+    solveScroll();
+    bump();
+    Effects fx;
     endEvent(fx, before);
     return result;
 }
@@ -3811,6 +4107,14 @@ void StackModel::finishCapture(TimeMs now, CaptureStatus status, TrackId matchCu
     lastStatus_ = status;
     const TrackId rowId = cap_.target.row.track;
     cap_ = Capture{};
+    bool itemMoving = false;
+    for (std::size_t j = 0; j < itemAnimCount_; ++j) {
+        itemAnims_[j].to = itemAnims_[j].ref == emphasizedItem_ ? 1.0 : 0.0;
+        itemMoving = itemMoving || itemAnims_[j].from != itemAnims_[j].to;
+    }
+    itemAnimStart_ = now;
+    itemAnimActive_ = c_.heightAnimMs > 0 && itemMoving;
+    itemEnteredAt_ = now;
     planFrozen_ = false;
     replan();
     const std::size_t oldFocusShown = focusRow_ != 0 ? shownIndex(focusRow_).value_or(kNpos) : kNpos;
@@ -4115,12 +4419,8 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
     }
     const bool pills = L.mode == LaneMode::Pills;
     const double gap = pills ? c_.trayPillGap : c_.itemGap;
-    const Tier tier = tierFor(h, false, c_);
     const auto widthOf = [&](std::size_t j) {
-        const auto &item = r.items[j];
-        if (pills || tier < c_.foldBelow[classAt(item.cls)])
-            return static_cast<double>(c_.pill);
-        return static_cast<double>(chainItemWidth(item.cls, h, c_));
+        return itemWidth(r, j, h);
     };
     const std::uint32_t first = resolveLaneFirst(r);
     L.first = first;
@@ -4139,6 +4439,21 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         offset += widthOf(j) + gap;
     if (whole < n)
         offset += (pos - static_cast<double>(whole)) * (widthOf(whole) + gap);
+    offset += r.lanePixelOffset;
+    const bool anchored = itemAnchor_.ref.row == RowRef{r.id, r.gen} && live(itemAnchor_.ref);
+    const bool pixelScroll = anchored || std::abs(r.lanePixelOffset) > kEps;
+    double total = 0, anchorOffset = 0;
+    if (pixelScroll) {
+        for (std::size_t j = 0; j < n; ++j) {
+            const auto &item = r.items[j];
+            if (anchored && item.device == itemAnchor_.ref.device && item.gen == itemAnchor_.ref.gen)
+                anchorOffset = total + widthOf(j) * itemAnchor_.fraction - (itemAnchor_.x - L.x);
+            total += widthOf(j) + (j + 1 < n ? gap : 0);
+        }
+        if (anchored) offset = anchorOffset;
+        if (anchored || !r.laneRetainedPose)
+            offset = std::clamp(offset, 0.0, std::max(0.0, total - L.width));
+    }
     L.offset = offset;
     const double laneRight = L.x + L.width;
     const double chevY = top + std::floor((h - static_cast<double>(c_.chevronH)) / 2);
@@ -4151,7 +4466,7 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         const double left = x, right = x + w;
         x += w + gap;
         bool draw = false, clipped = false;
-        if (scrolling) {
+        if (scrolling || pixelScroll) {
             draw = right > L.x + kEps && left < laneRight - kEps;
             clipped = draw && (left < L.x - kEps || right > laneRight + kEps);
         } else if (j >= first) {
@@ -4181,17 +4496,22 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         g.index = static_cast<std::uint32_t>(j);
         g.x = left;
         g.width = w;
-        g.tier = tier;
-        g.pill = pills || tier < c_.foldBelow[classAt(r.items[j].cls)];
+        g.top = top;
+        g.height = itemHeight(r, j, h);
+        g.targetHeight = itemHeight(r, j, targetHeightAt(shown), true);
+        g.tier = tierFor(g.height, false, c_);
+        g.pill = pills || g.tier < c_.foldBelow[classAt(r.items[j].cls)];
         g.clipped = clipped;
         g.focused = focusItem_.place == ItemPlace::Chain && focusItem_.row.track == r.id &&
                     focusItem_.device == g.ref.device;
+        g.emphasized = g.ref == emphasizedItem_;
         if (emit.call != nullptr)
             emit(g);
     }
     if (drawnCount > 0) {
         L.drawnFirst = static_cast<std::uint32_t>(drawnFirst);
         L.drawnCount = static_cast<std::uint32_t>(drawnCount);
+        if (pixelScroll) L.first = L.drawnFirst;
     }
     if (!pills) {
         const std::size_t end = drawnCount > 0 ? drawnFirst + drawnCount : first;
@@ -4200,7 +4520,7 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
             const double cx = (drawnCount > 0 ? (clippedOnly ? laneRight : lastRight) : laneRight) - c_.chevronW;
             L.rightChevron = {cx, chevY, static_cast<double>(c_.chevronW), static_cast<double>(c_.chevronH)};
         }
-        L.left = first > 0 || pos > kEps;
+        L.left = pixelScroll ? offset > kEps : first > 0 || pos > kEps;
         if (L.left)
             L.leftChevron = {L.x, chevY, static_cast<double>(c_.chevronW), static_cast<double>(c_.chevronH)};
     }
@@ -4449,11 +4769,11 @@ Hit StackModel::hitRow(std::size_t shown, double x, double y, double top, double
     }
     if (L.mode != LaneMode::None && x >= L.x && x < L.x + L.width) {
         struct Find {
-            double at;
+            double at, y;
             const ItemGeo **found;
             ItemGeo *store;
             void operator()(const ItemGeo &g) const {
-                if (at >= g.x && at < g.x + g.width) {
+                if (at >= g.x && at < g.x + g.width && y >= g.top && y < g.top + g.height) {
                     *store = g;
                     *found = store;
                 }
@@ -4461,7 +4781,7 @@ Hit StackModel::hitRow(std::size_t shown, double x, double y, double top, double
         };
         ItemGeo store;
         const ItemGeo *found = nullptr;
-        Find find{x, &found, &store};
+        Find find{x, y, &found, &store};
         if (isCapturedShown(shown)) {
             for (const auto &g : frozenItems_)
                 find(g);
@@ -4470,7 +4790,8 @@ Hit StackModel::hitRow(std::size_t shown, double x, double y, double top, double
         if (found != nullptr) {
             hit.part = found->pill ? HitPart::ChainPill : HitPart::ChainItem;
             hit.item = found->ref;
-            hit.rect = {found->x, top, found->width, h};
+            hit.rect = {found->x, found->top, found->width, found->height};
+            hit.tier = found->tier;
             return hit;
         }
         return hit;
@@ -4763,6 +5084,13 @@ Effects StackModel::applyViewState(const ViewState &state, TimeMs now) {
     view_.folded.reserve(boundOf(c_.maxFolded));
     view_.search.reserve(boundOf(c_.searchMaxBytes) + 8);
     foldForSearch(view_.search, queryFold_);
+    // Item hover/animation and pixel anchoring are temporary presentation state,
+    // never restored from a saved channel layout.
+    emphasizedItem_ = itemCandidate_ = {};
+    itemAnchor_ = {};
+    itemAnimActive_ = false;
+    itemAnimCount_ = 0;
+    for (auto &row : rows_) { row.lanePixelOffset = 0; row.laneRetainedPose = false; }
     maximised_ = 0;
     landed_ = 0;
     jump_ = Jump{};
@@ -4779,6 +5107,7 @@ Effects StackModel::applyViewState(const ViewState &state, TimeMs now) {
     afterShownChange(now, oldFocusShown);
     snapEntries();
     replan();
+    if (!view_.autoZoom) setEmphasizedItem(focusItem_, now);
     rebuildMatches(0);
     anchor_ = AnchorHold{};
     scroll_ = 0;
@@ -4799,6 +5128,7 @@ Effects StackModel::applyViewState(const ViewState &state, TimeMs now) {
 std::uint64_t StackModel::beginEvent() const noexcept { return epoch_; }
 
 void StackModel::endEvent(Effects &fx, std::uint64_t epochBefore) {
+    validateItemFocus(now_);
     // an event can make a deadline due at once (a dwell that was done before hover was allowed
     // again): it runs now, at the event's time, not at whichever frame comes next
     if (internalDeadline() <= now_)

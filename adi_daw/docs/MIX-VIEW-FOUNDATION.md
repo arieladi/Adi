@@ -37,6 +37,25 @@ Search, channel-scope, row-size and toolbar-button focus own their keyboard hand
 device focus must not make Cut/Delete/Duplicate fall through to another device or track.
 The toolbar wraps for constrained widths without changing the row geometry law.
 
+## Focus inside a channel row
+
+Row enlargement and tool enlargement are separate presentation states. The inspected tool
+uses the row's available height while neighboring tools stay compact. Each tool's width,
+tier, painting and hit rectangle follow its own height. Hover changes presentation only;
+explicit keyboard focus retains priority until actual pointer movement and a fresh dwell.
+Layout-generated motion cannot hand a stationary pointer to another tool.
+
+A bounded transition set uses the existing frame clock and keeps the inspected horizontal
+position anchored while neighboring tools shrink. Lane arrows and wheel navigation continue
+from the displayed offset. There is no added DSP, analyzer demand or per-tool timer.
+
+Drag, text and menu capture retain the last completed displayed pose, including intermediate
+animation geometry. Painting, canvas hits and child bounds use that same pose. Stable target
+validation remains separate from geometry; a stale visible item cannot edit a replacement.
+Presentation callbacks may synchronously replace or destroy a surface, so model walks finish
+before invoking controls and a nested complete presentation supersedes an interrupted one.
+Release resumes from the retained pose through the common gesture and undo authority.
+
 ## Shared track analysis
 
 The document owns SharedAnalysis. Visible consumers hold scoped leases keyed by track, tap point,

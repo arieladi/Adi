@@ -6162,6 +6162,40 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "the visible model and generic panels show actual device order and the shared parameter feed");
             if (first && first->controls.size() == 2) {
                 const auto stable = surface.model().chainRef(2, 30);
+                const auto itemTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                surface.model().focusItem(stable, itemTime);
+                surface.frameAt(actual.reader(), itemTime + 80);
+                stack::ItemGeo inspected, sibling;
+                if (const auto at = surface.model().shownIndex(2))
+                    surface.model().forEachChainItem(*at, [&](const auto &item) {
+                        if (item.ref.device == 30) inspected = item;
+                        if (item.ref.device == 31) sibling = item;
+                    });
+                check(findPanel(30) == first && inspected.emphasized && inspected.height > sibling.height &&
+                          first->getHeight() == static_cast<int>(std::round(inspected.height)) - 4 &&
+                          findPanel(31) && findPanel(31)->getHeight() == static_cast<int>(std::round(sibling.height)) - 4,
+                      "item emphasis uses independent model bounds while retaining both actual device panels");
+                auto editPoseTime = itemTime + 200;
+                for (const auto kind : {DevicePanelView::Interaction::Text, DevicePanelView::Interaction::Menu}) {
+                    surface.model().focusItem(surface.model().chainRef(2, 31), editPoseTime);
+                    surface.frameAt(actual.reader(), editPoseTime + 60);
+                    surface.model().focusItem(stable, editPoseTime + 60);
+                    surface.frameAt(actual.reader(), editPoseTime + 100);
+                    const auto displayed = first->getBounds();
+                    surface.model().advance(editPoseTime + 107);
+                    const bool captured = first->beginInteraction(kind);
+                    surface.frameAt(actual.reader(), editPoseTime + 120);
+                    check(captured && findPanel(30) == first && first->getBounds() == displayed,
+                          "Text/Menu capture uses the last presented child rectangle after unseen t+7 movement");
+                    first->endInteraction(kind);
+                    surface.frameAt(actual.reader(), editPoseTime + 120);
+                    check(first->getBounds() == displayed, "Text/Menu release starts from the same displayed child bounds");
+                    editPoseTime += 300;
+                }
+                const auto dragTime = itemTime + 660;
+                surface.frameAt(actual.reader(), dragTime);
+                const auto heldItemBounds = first->getBounds();
+                surface.model().advance(dragTime + 7); // model events may advance between visible frames
                 auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(30));
                 const auto beforeUndo = actual.undoTitle(false);
                 auto &slider = first->controls[0]->slider;
@@ -6175,20 +6209,21 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 document->tick(10);
                 actual.frame();
                 check(findPanel(30) == first && surface.model().chainRef(2, 30) == stable &&
-                          surface.model().capture().has_value(),
-                      "new live parameter publications preserve the tile and capture identity");
+                          surface.model().capture().has_value() && first->getBounds() == heldItemBounds,
+                      "new live parameter publications preserve the tile, capture identity and intermediate item rectangle");
                 slider.onDragEnd();
                 document->tick(20);
                 actual.frame();
                 check(!surface.model().capture() && begins == 1 && ends == 1 &&
-                          actual.undoTitle(false) == "Undo UI knobs: Cutoff",
-                      "tile release balances one host gesture and commits one undo step");
+                          actual.undoTitle(false) == "Undo UI knobs: Cutoff" && first->getBounds() == heldItemBounds,
+                      "tile release balances one host gesture/undo and resumes from the last presented bounds");
                 check(actual.command(AppCommands::Undo), "undo the tile drag");
                 document->tick(30); actual.frame();
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
-                const auto compactTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                const auto compactTime = std::max(dragTime + 20,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
                 surface.model().setBaseHeight(44, compactTime);
                 surface.frameAt(actual.reader(), compactTime + 200);
@@ -6210,11 +6245,46 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     document->tick(36); actual.frame();
                     check(value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "1",
                           "one undo restores the folded device activator");
+                    stack::ItemGeo secondPill;
+                    surface.model().forEachChainItem(*surface.model().shownIndex(2), [&](const auto &item) {
+                        if (item.ref.device == 31) secondPill = item;
+                    });
+                    surface.model().scrollLane(surface.model().rowRef(2), 1, compactTime + 201);
+                    surface.model().advance(compactTime + 208); // no new component presentation
+                    const auto click = surface.listArea().getPosition().toFloat() + juce::Point<float>(
+                        static_cast<float>(secondPill.x + secondPill.width - 2), static_cast<float>(secondPill.top + 6));
+                    surface.mouseDown(pressAt(surface, click)); surface.mouseUp(pressAt(surface, click));
+                    document->tick(37); actual.frame();
+                    check(secondPill.pill && value(document->store(), "SELECT enabled FROM devices WHERE id=31") == "0" &&
+                              value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "1",
+                          "a pill click hits the last painted stable device despite unseen lane motion between frames");
+                    check(actual.command(AppCommands::Undo), "undo only the displayed second pill's activator");
+                    document->tick(38); actual.frame();
                 }
-                surface.model().setBaseHeight(100, compactTime + 210);
-                surface.model().setAutoZoom(true, compactTime + 210);
-                surface.frameAt(actual.reader(), compactTime + 400);
+                const auto restoreTime = std::max(compactTime + 210,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                surface.model().setBaseHeight(100, restoreTime);
+                surface.model().setAutoZoom(true, restoreTime);
+                surface.model().focusItem(stable, restoreTime);
+                surface.model().scrollLane(surface.model().rowRef(2), -1, restoreTime);
+                surface.frameAt(actual.reader(), restoreTime + surface.model().constants().heightAnimMs +
+                    surface.model().constants().laneScrollMs + 1);
                 first = findPanel(30);
+                if (!first) {
+                    const auto at = surface.model().shownIndex(2);
+                    std::printf("item fixture: row=%d base=%d focused=%lld emphasized=%lld\n", at.has_value(),
+                        surface.model().windowView().baseHeight, static_cast<long long>(surface.model().focus().item.device),
+                        static_cast<long long>(surface.model().emphasizedItem().device));
+                    if (at) {
+                        const auto lane = surface.model().lane(*at);
+                        std::printf("lane mode=%u first=%u offset=%.3f width=%.3f\n", static_cast<unsigned>(lane.mode), lane.first, lane.offset, lane.width);
+                        surface.model().forEachChainItem(*at, [](const auto &item) {
+                            std::printf("device=%lld pill=%d x=%.3f width=%.3f height=%.3f\n", static_cast<long long>(item.ref.device), item.pill, item.x, item.width, item.height);
+                        });
+                    }
+                }
+                check(first && first->controls.size() == 2,
+                      "pill-navigation fixture restores the original lane/focus so all downstream control regressions still execute");
                 if (first) {
                     first->grabKeyboardFocus();
                     check(surface.hasDeviceContext() && actual.command(AppCommands::Copy) && copiedDevice == 30,
@@ -6413,6 +6483,153 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 }
             }
             actual.mixViewPanel.stack.cancelInteractions();
+            // End can synchronously destroy or re-present the originating surface.
+            // This fixture still uses only the document's headless Knobs devices and null peer.
+            const auto savedPublication = actual.devices.publication;
+            const auto savedGesture = actual.devices.guardedGesture;
+            for (int mode = 0; mode < 2; ++mode) {
+                std::unique_ptr<StackTab> transient = std::make_unique<StackTab>(actual);
+                actual.addAndMakeVisible(*transient);
+                transient->setBounds(surface.getBounds());
+                transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 1000;
+                std::shared_ptr<const ParameterPublication> supplied = document->parameterFeed().current();
+                actual.devices.publication = [&] { return supplied; };
+                transient->frameAt(actual.reader(), time);
+                const auto find = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                    if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == 30) return p;
+                    for (int i = 0; i < component.getNumChildComponents(); ++i)
+                        if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                    return nullptr;
+                };
+                auto *observedPanel = find(find, *transient);
+                bool reenter = false;
+                int endCalls = 0;
+                juce::Rectangle<int> nestedBounds;
+                bool nestedPresented = false;
+                actual.devices.guardedGesture = [&](std::int64_t id, const std::string &parameter,
+                        engine::ParamEventKind kind, double v, const engine::DeviceRuntimeToken &token, std::uint64_t stamp) {
+                    const bool accepted = savedGesture(id, parameter, kind, v, token, stamp);
+                    if (kind == engine::ParamEventKind::End && reenter) {
+                        reenter = false; ++endCalls;
+                        if (mode == 0) transient.reset();
+                        else {
+                            auto replacement = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
+                            std::reverse(replacement->begin(), replacement->end());
+                            for (auto &device : *replacement) if (device.id == 30) device.name = "Nested pose";
+                            supplied = replacement;
+                            if (const auto cap = transient->model().capture()) transient->model().endCapture(*cap, time + 20);
+                            transient->model().focusItem(transient->model().chainRef(2, 31), time + 20);
+                            transient->frameAt(actual.reader(), time + 220);
+                            if (const auto *nested = find(find, *transient)) {
+                                nestedBounds = nested->getBounds(); nestedPresented = true;
+                            }
+                        }
+                    }
+                    return accepted;
+                };
+                const auto gesture = observedPanel ? observedPanel->parameterGesture : decltype(observedPanel->parameterGesture){};
+                const bool began = gesture && gesture("cutoff", engine::ParamEventKind::Begin, .5);
+                auto changed = std::make_shared<ParameterPublication>(*supplied);
+                for (auto &device : *changed) if (device.id == 30) device.available = false;
+                supplied = changed; reenter = true;
+                if (transient) transient->frameAt(actual.reader(), time + 10);
+                check(began && endCalls == 1 && (mode == 0 ? !transient : transient && !transient->model().capture()),
+                      mode == 0 ? "End during row presentation can synchronously destroy the surface without resuming a dead walker"
+                                : "nested End presentation replaces the outer pose without committing a partial snapshot");
+                if (mode == 1 && transient) {
+                    auto *nested = find(find, *transient);
+                    std::vector<std::int64_t> nestedOrder;
+                    if (const auto at = transient->model().shownIndex(2))
+                        transient->model().forEachChainItem(*at, [&](const auto &item) { nestedOrder.push_back(item.ref.device); });
+                    check(nestedPresented && nested && nested->title.getButtonText() == "Nested pose" &&
+                              nested->getBounds() == nestedBounds && nestedOrder == std::vector<std::int64_t>{31, 30},
+                          "outer presentation cannot overwrite nested reordered child bounds or replacement labels");
+                    const bool capture = nested && nested->beginInteraction(DevicePanelView::Interaction::Menu);
+                    transient->frameAt(actual.reader(), time + 227);
+                    nested = find(find, *transient);
+                    check(capture && nested && nested->getBounds() == nestedBounds,
+                          "a subsequent capture consumes the complete nested pose rather than an abandoned outer snapshot");
+                    if (nested) nested->endInteraction(DevicePanelView::Interaction::Menu);
+                }
+                transient.reset();
+                actual.devices.guardedGesture = savedGesture;
+                actual.devices.publication = savedPublication;
+            }
+            // Publication getters are external callbacks too. Exercise both entry
+            // points with the same null peer, independently of gesture End callbacks.
+            for (int entry = 0; entry < 2; ++entry) {
+                for (int mode = 0; mode < 3; ++mode) {
+                    std::unique_ptr<StackTab> transient = std::make_unique<StackTab>(actual);
+                    actual.addAndMakeVisible(*transient);
+                    transient->setBounds(surface.getBounds());
+                    transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                    const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 2000;
+                    auto initial = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
+                    for (auto &device : *initial) if (device.id == 30) device.name = "Abandoned getter";
+                    std::shared_ptr<const ParameterPublication> supplied = initial;
+                    actual.devices.publication = [&] { return supplied; };
+                    transient->frameAt(actual.reader(), time);
+                    const auto find = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                        if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == 30) return p;
+                        for (int i = 0; i < component.getNumChildComponents(); ++i)
+                            if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                        return nullptr;
+                    };
+                    auto replacement = std::make_shared<ParameterPublication>(*initial);
+                    if (mode == 1) std::reverse(replacement->begin(), replacement->end());
+                    for (auto &device : *replacement) if (device.id == 30) device.name = "Nested getter pose";
+                    bool armed = true, nestedPresented = false;
+                    int callbacks = 0;
+                    juce::Rectangle<int> nestedBounds;
+                    actual.devices.publication = [&]() -> std::shared_ptr<const ParameterPublication> {
+                        const auto result = supplied;
+                        if (armed) {
+                            armed = false; ++callbacks;
+                            if (mode == 0) transient.reset();
+                            else {
+                                supplied = replacement;
+                                transient->model().focusItem(transient->model().chainRef(2, 31), time + 20);
+                                if (mode == 1) transient->frameAt(actual.reader(), time + 220);
+                                else {
+                                    transient->model().advance(time + 220);
+                                    transient->resized();
+                                }
+                                if (const auto *nested = find(find, *transient)) {
+                                    nestedBounds = nested->getBounds(); nestedPresented = true;
+                                }
+                            }
+                        }
+                        return result; // deliberately return the older publication after nested work
+                    };
+                    if (entry == 0) transient->frameAt(actual.reader(), time + 10);
+                    else transient->resized();
+                    check(callbacks == 1 && (mode == 0 ? !transient : transient != nullptr),
+                          entry == 0 ? "a frame getter may synchronously destroy or reenter its null-peer surface"
+                                     : "a post-demand layout getter may synchronously destroy or reenter its null-peer surface");
+                    if (mode != 0 && transient) {
+                        auto *nested = find(find, *transient);
+                        std::vector<std::int64_t> nestedOrder;
+                        if (const auto at = transient->model().shownIndex(2))
+                            transient->model().forEachChainItem(*at, [&](const auto &item) { nestedOrder.push_back(item.ref.device); });
+                        const auto expectedOrder = mode == 1 ? std::vector<std::int64_t>{31, 30}
+                                                             : std::vector<std::int64_t>{30, 31};
+                        check(nestedPresented && nested && nested->title.getButtonText() == "Nested getter pose" &&
+                                  nested->getBounds() == nestedBounds && nestedOrder == expectedOrder,
+                              entry == 0 ? "an abandoned frame getter cannot overwrite nested frame or layout presentation"
+                                         : "an abandoned layout getter cannot overwrite nested frame or layout presentation");
+                        // With no further getter, the next layout must still use the
+                        // nested record storage rather than a late outer assignment.
+                        actual.devices.publication = {};
+                        transient->resized();
+                        nested = find(find, *transient);
+                        check(nested && nested->title.getButtonText() == "Nested getter pose",
+                              "getter reentry retains the nested publication for a subsequent callback-free layout");
+                    }
+                    transient.reset();
+                    actual.devices.publication = savedPublication;
+                }
+            }
             actual.mixViewPanel.stack.suspendParameters(true);
             actual.devices.suspendParameters(true);
             actual.afterEdit = nullptr;

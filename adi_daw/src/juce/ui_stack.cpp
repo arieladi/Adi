@@ -71,6 +71,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     juce::ScrollBar scrollbar{true};
     RenameEditor rename;
     bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
+    std::uint64_t frame = 0, layout = 0;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
     std::string parameter;
@@ -78,6 +79,12 @@ struct StackTab::State : juce::ScrollBar::Listener {
 };
 struct StackRow::State {
     stack::RowGeo geo;
+    stack::RowGeo presentedRow;
+    stack::ChipGeo presentedChip;
+    stack::LaneGeo presentedLane;
+    std::vector<stack::ItemGeo> presentedItems, pendingItems;
+    std::uint64_t presentation = 0;
+    bool destroying = false;
     juce::Component lane;
     struct Tile {
         stack::ItemRef target;
@@ -94,19 +101,35 @@ StackRow::StackRow(StackTab &s, std::int64_t track)
     setTitle("Channel");
     setTooltip("The channel's actual devices. Hover to enlarge; pin to retain a channel.");
 }
-StackRow::~StackRow() = default;
+StackRow::~StackRow() { state_->destroying = true; }
 bool StackRow::zoomed() const noexcept { return state_->geo.enlarged || state_->geo.maximised; }
 juce::Rectangle<int> StackRow::eqArea() const noexcept { return {}; }
 juce::Rectangle<int> StackRow::sidechainArea() const noexcept { return {}; }
 juce::Rectangle<int> StackRow::limiterArea() const noexcept { return {}; }
 const char *StackRow::mode() const noexcept { return "Actual devices"; }
-void StackRow::present(const stack::RowGeo &geo) {
+void StackRow::present(const stack::RowGeo &input) {
+    const auto geo = input;
+    const juce::Component::SafePointer<StackRow> alive(this);
+    const auto presentation = ++state_->presentation;
+    const auto publication = stack_.state_->publication;
+    (void)publication; // callbacks may publish a replacement while this row adopts these records
     state_->geo = geo;
     const auto lane = stack_.model().lane(geo.shown);
+    const auto chip = stack_.model().chip(geo.shown);
+    state_->pendingItems.clear();
+    state_->presentedItems.reserve(lane.count);
+    state_->pendingItems.reserve(lane.count);
     state_->lane.setBounds(static_cast<int>(std::round(lane.x)), 0,
                            std::max(0, static_cast<int>(std::round(lane.width))), getHeight());
+    if (!alive || state_->presentation != presentation) return;
     for (auto &tile : state_->tiles) tile.wanted = false;
+    // Complete the pure model walk before any control callback can replace the
+    // row/model. Callback-bearing presentation only visits local item copies.
     stack_.model().forEachChainItem(geo.shown, [&](const stack::ItemGeo &item) {
+        state_->pendingItems.push_back(item);
+    });
+    const auto presentItem = [&](const stack::ItemGeo &item) {
+        if (!alive || state_->presentation != presentation) return;
         const auto *data = stack_.device(item.ref.device);
         const auto resolved = stack_.model().resolve(item.ref);
         if (item.pill || !data || !resolved || resolved->identity != data->instance) return;
@@ -117,28 +140,34 @@ void StackRow::present(const stack::RowGeo &geo) {
             tile.target = item.ref;
             tile.view = std::make_unique<DevicePanelView>(stack_.root.devices, *data);
             const auto target = item.ref;
-            tile.view->targetValid = [this, target] { return stack_.validTarget(target); };
-            tile.view->parameterGesture = [this, target](const std::string &p, engine::ParamEventKind k, double v) {
-                return stack_.editParameter(target, p, k, v);
+            const juce::Component::SafePointer<StackRow> owner(this);
+            tile.view->targetValid = [owner, target] { return owner && !owner->state_->destroying && owner->stack_.validTarget(target); };
+            tile.view->parameterGesture = [owner, target](const std::string &p, engine::ParamEventKind k, double v) {
+                return owner && !owner->state_->destroying && owner->stack_.editParameter(target, p, k, v);
             };
-            tile.view->interactionBegin = [this, target](DevicePanelView::Interaction k) {
-                return stack_.beginInteraction(target, k == DevicePanelView::Interaction::Text
+            tile.view->interactionBegin = [owner, target](DevicePanelView::Interaction k) {
+                return owner && !owner->state_->destroying && owner->stack_.beginInteraction(target, k == DevicePanelView::Interaction::Text
                                                          ? stack::CaptureKind::Text : stack::CaptureKind::Menu);
             };
-            tile.view->interactionEnd = [this, target](DevicePanelView::Interaction) {
-                if (const auto cap = stack_.model().capture(); cap && cap->target == target)
-                    stack_.endInteraction();
+            tile.view->interactionEnd = [owner, target](DevicePanelView::Interaction) {
+                if (!owner || owner->state_->destroying) return;
+                if (const auto cap = owner->stack_.model().capture(); cap && cap->target == target)
+                    owner->stack_.endInteraction();
             };
-            tile.view->navigate = [this, target](bool forward) {
-                if (!stack_.validTarget(target)) return false;
-                stack_.effects(stack_.model().focusItem(target, clockNow()), false);
-                const auto fx = stack_.model().key(forward ? stack::Key::Right : stack::Key::Left, {}, clockNow());
-                stack_.effects(fx);
-                stack_.layoutRows();
-                stack_.focusTile(stack_.model().focus().item);
+            tile.view->navigate = [owner, target](bool forward) {
+                if (!owner || owner->state_->destroying || !owner->stack_.validTarget(target)) return false;
+                const juce::Component::SafePointer<StackTab> surface(&owner->stack_);
+                surface->effects(surface->model().focusItem(target, clockNow()), false);
+                if (!surface) return false;
+                const auto fx = surface->model().key(forward ? stack::Key::Right : stack::Key::Left, {}, clockNow());
+                surface->effects(fx);
+                if (!surface) return fx.consumed;
+                surface->layoutRows();
+                if (surface) surface->focusTile(surface->model().focus().item);
                 return fx.consumed;
             };
             state_->lane.addAndMakeVisible(*tile.view);
+            if (!alive || state_->presentation != presentation) return;
             state_->tiles.push_back(std::move(tile));
             found = std::prev(state_->tiles.end());
         }
@@ -150,32 +179,58 @@ void StackRow::present(const stack::RowGeo &geo) {
             const bool parameterLive = data->available && std::any_of(data->parameters().begin(), data->parameters().end(),
                 [&](const auto &record) { return record.id == stack_.state_->parameter && !record.missing; });
             if (!sameControls || !parameterLive) stack_.endInteraction();
+            if (!alive || state_->presentation != presentation) return;
+            found = std::find_if(state_->tiles.begin(), state_->tiles.end(),
+                                 [&](const State::Tile &t) { return t.target == item.ref; });
+            if (found == state_->tiles.end()) return;
         }
-        found->view->present(*data);
-        if (found->view->wrench.isVisible())
-            found->view->wrench.setToggleState(stack_.root.pluginWindowOpen(data->id), juce::dontSendNotification);
-        if (found->view->sample) {
+        const juce::Component::SafePointer<DevicePanelView> panel(found->view.get());
+        panel->present(*data);
+        if (!alive || !panel || state_->presentation != presentation) return;
+        if (panel->wrench.isVisible())
+            panel->wrench.setToggleState(stack_.root.pluginWindowOpen(data->id), juce::dontSendNotification);
+        if (panel->sample) {
             const engine::SampleSlotNode *slot = nullptr;
             if (const auto *snapshot = stack_.root.reader().get())
                 for (const auto &candidate : snapshot->sampleSlots)
                     if (candidate && candidate->deviceId == data->id &&
-                        candidate->slot == found->view->sample->slot) slot = candidate.get();
-            found->view->sample->show(slot);
+                        candidate->slot == panel->sample->slot) slot = candidate.get();
+            panel->sample->show(slot);
         }
-        found->view->setBounds(static_cast<int>(std::round(item.x - lane.x)), 2,
+        if (!alive || !panel || state_->presentation != presentation) return;
+        panel->setBounds(static_cast<int>(std::round(item.x - lane.x)),
+                                static_cast<int>(std::round(item.top - geo.top)) + 2,
                                 std::max(0, static_cast<int>(std::round(item.width))),
-                                std::max(0, getHeight() - 4));
-    });
-    std::erase_if(state_->tiles, [](const State::Tile &t) { return !t.wanted; });
+                                std::max(0, static_cast<int>(std::round(item.height)) - 4));
+    };
+    const auto count = state_->pendingItems.size();
+    for (std::size_t j = 0; j < count; ++j) {
+        if (!alive || state_->presentation != presentation) return;
+        const auto item = state_->pendingItems[j];
+        presentItem(item);
+    }
+    if (!alive || state_->presentation != presentation) return;
+    for (std::size_t j = state_->tiles.size(); j-- > 0;) {
+        if (state_->tiles[j].wanted) continue;
+        auto retired = std::move(state_->tiles[j]);
+        state_->tiles.erase(state_->tiles.begin() + static_cast<std::ptrdiff_t>(j));
+        retired.view.reset();
+        if (!alive || state_->presentation != presentation) return;
+    }
+    if (!alive || state_->presentation != presentation) return;
+    state_->presentedRow = geo;
+    state_->presentedChip = chip;
+    state_->presentedLane = lane;
+    state_->presentedItems.swap(state_->pendingItems);
 }
 void StackRow::paint(juce::Graphics &g) {
-    const auto &row = state_->geo;
+    const auto &row = state_->presentedRow;
     const auto &m = stack_.model();
     const auto local = [&](stack::Rect r) { r.y -= row.top; return rect(r); };
     g.fillAll(row.selected ? look::laneSelectedAlt : look::panel);
     g.setColour(row.colour >= 0 ? look::paletteColour(row.colour) : look::trackColour(row.shown));
     g.fillRect(2, 2, 3, std::max(0, getHeight() - 4));
-    const auto chip = m.chip(row.shown);
+    const auto chip = state_->presentedChip;
     const auto name = local(chip.chip);
     g.setColour(row.focused ? look::field : look::panel);
     g.fillRoundedRectangle(name, 2.f);
@@ -191,19 +246,19 @@ void StackRow::paint(juce::Graphics &g) {
     g.drawText("P", local(chip.pin), juce::Justification::centred);
     g.setColour(row.pairA || row.pairB ? look::accent : look::textDim);
     g.drawText(row.pairA ? "A" : row.pairB ? "B" : "C", local(chip.collision), juce::Justification::centred);
-    const auto lane = m.lane(row.shown);
+    const auto lane = state_->presentedLane;
     {
         juce::Graphics::ScopedSaveState saved(g);
         g.reduceClipRegion(juce::Rectangle<int>(static_cast<int>(lane.x), 0,
                                                static_cast<int>(lane.width), getHeight()));
-        m.forEachChainItem(row.shown, [&](const stack::ItemGeo &item) {
+        for (const auto &item : state_->presentedItems) {
             const auto *data = stack_.device(item.ref.device);
             const auto resolved = m.resolve(item.ref);
             const bool current = data && resolved && resolved->identity == data->instance;
-            if (!item.pill && current) return;
-            const juce::Rectangle<float> box(static_cast<float>(item.x), 3.f,
+            if (!item.pill && current) continue;
+            const juce::Rectangle<float> box(static_cast<float>(item.x), static_cast<float>(item.top - row.top) + 3.f,
                                               static_cast<float>(item.width),
-                                              static_cast<float>(std::max(0, getHeight() - 6)));
+                                              static_cast<float>(std::max(0.0, item.height - 6)));
             look::box(g, box, item.focused ? look::field : look::button);
             g.setColour(current && item.enabled && item.available ? look::accent : look::textDim);
             g.fillEllipse(box.getCentreX() - 4, box.getY() + 3, 8.f, 8.f);
@@ -214,13 +269,13 @@ void StackRow::paint(juce::Graphics &g) {
                 juce::Graphics::ScopedSaveState rotated(g);
                 g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi,
                                                                box.getCentreX(), box.getCentreY()));
-                const juce::Rectangle<float> text(box.getCentreX() - (box.getHeight() - 18) / 2,
+                const juce::Rectangle<float> labelArea(box.getCentreX() - (box.getHeight() - 18) / 2,
                                                   box.getCentreY() - box.getWidth() / 2,
                                                   box.getHeight() - 18, box.getWidth());
-                g.drawText(label, text.reduced(2, 0), juce::Justification::centred, true);
+                g.drawText(label, labelArea.reduced(2, 0), juce::Justification::centred, true);
             } else g.drawFittedText(label, box.withTrimmedTop(13).reduced(2, 1).toNearestInt(),
                                    juce::Justification::centred, 1);
-        });
+        }
         if (lane.count == 0) {
             g.setColour(look::textDim);
             g.setFont(look::font(11.5f));
@@ -332,6 +387,8 @@ const DevicePanelData *StackTab::device(std::int64_t id) const noexcept {
     return nullptr;
 }
 void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto frame = state_->frame, layout = state_->layout;
     const auto &hidden = root.arrangement.geometry.hidden;
     // ProjectView owns the UI publication, not SnapshotPublisher: Snapshot::seq is unstamped
     // here. The root's generation is its presented ProjectView generation. Pointer identity
@@ -356,6 +413,7 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
                     !d.plugin && mix::functionForUid(d.uid) != nullptr});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
+        if (!alive || state_->frame != frame || state_->layout != layout) return;
         state_->generation = generation;
         state_->snapshot = reader.get();
         state_->provider = &provider();
@@ -369,13 +427,26 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
         updateParameterDemand({});
         return;
     }
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto frame = ++state_->frame, layout = state_->layout;
+    const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
     // Keep the prior record storage alive until every component has adopted the new feed.
     const auto old = state_->publication;
     (void)old; // its ownership deliberately lasts through every present() below
-    if (root.devices.publication) state_->publication = root.devices.publication();
+    if (root.devices.publication) {
+        // A getter may destroy this surface or synchronously present a newer pose.
+        // Validate before touching state, including the publication assignment itself.
+        auto next = root.devices.publication();
+        if (!current()) return;
+        state_->publication = std::move(next);
+    }
+    if (!current()) return;
     refreshRows(reader, time);
+    if (!current()) return;
     effects(model().setSelection(root.arrangement.geometry.selection.track, time), false);
+    if (!current()) return;
     effects(model().advance(time), false);
+    if (!current()) return;
     layoutRows();
 }
 void StackTab::syncScroll() {
@@ -400,6 +471,9 @@ void StackTab::layoutRows() {
         updateParameterDemand({});
         return;
     }
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto frame = state_->frame, layout = ++state_->layout;
+    const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
     state_->wanted.clear();
     const auto realised = model().realised();
     model().forEachRow(realised, [this](const stack::RowGeo &g) { state_->wanted.push_back(g); });
@@ -416,17 +490,26 @@ void StackTab::layoutRows() {
             model().forEachChainItem(geo.shown, [&](const stack::ItemGeo &item) {
                 if (!item.pill && !root.devices.folded(item.ref.device)) devices.push_back(item.ref.device);
             });
-        const auto safe = SafePointer<StackTab>(this);
         updateParameterDemand(std::move(devices));
-        if (!safe) return;
-        if (root.devices.publication) state_->publication = root.devices.publication();
-        if (!safe) return;
+        if (!current()) return;
+        if (root.devices.publication) {
+            auto next = root.devices.publication();
+            if (!current()) return;
+            state_->publication = std::move(next);
+        }
     }
-    std::erase_if(rows_, [this](const auto &row) {
-        return std::none_of(state_->wanted.begin(), state_->wanted.end(),
-                            [&](const auto &g) { return g.ref == row->state_->geo.ref; });
-    });
-    for (const auto &geo : state_->wanted) {
+    for (std::size_t j = rows_.size(); j-- > 0;) {
+        if (std::any_of(state_->wanted.begin(), state_->wanted.end(),
+                       [&](const auto &g) { return g.ref == rows_[j]->state_->geo.ref; })) continue;
+        auto retired = std::move(rows_[j]);
+        rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(j));
+        retired.reset();
+        if (!current()) return;
+    }
+    const auto count = state_->wanted.size();
+    for (std::size_t j = 0; j < count; ++j) {
+        if (!current()) return;
+        const auto geo = state_->wanted[j];
         auto found = std::find_if(rows_.begin(), rows_.end(), [&](const auto &r) { return r->track() == geo.ref.track; });
         if (found == rows_.end()) {
             auto row = std::make_unique<StackRow>(*this, geo.ref.track);
@@ -440,6 +523,7 @@ void StackTab::layoutRows() {
         (*found)->setExplicitFocusOrder(static_cast<int>(std::min<std::size_t>(geo.shown + 1,
                                                       static_cast<std::size_t>(std::numeric_limits<int>::max()))));
         (*found)->present(geo);
+        if (!current()) return;
     }
     if (state_->rename.isVisible())
         if (const auto cap = model().capture(); cap && cap->target.place == stack::ItemPlace::None)
@@ -450,20 +534,29 @@ void StackTab::layoutRows() {
 }
 void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
     if (state_->destroying) return;
+    const juce::Component::SafePointer<StackTab> alive(this);
     if (fx.captureLost != stack::CaptureStatus::Live) cancelInteractions();
+    if (!alive) return;
     if (fx.captureEnded != 0 && state_->rename.isVisible()) endRename(true);
+    if (!alive) return;
     if (fx.select != 0) {
         root.arrangement.geometry.selection.track = fx.select;
         root.publishSelection();
+        if (!alive) return;
     }
     if (fx.showDevices.valid()) {
         root.arrangement.geometry.selection.track = fx.showDevices.track;
         root.publishSelection();
+        if (!alive) return;
         root.showDeviceView();
+        if (!alive) return;
     }
     if (fx.takeFocus && takeFocus && isShowing()) grabKeyboardFocus();
+    if (!alive) return;
     if (fx.escape == stack::EscapeStep::Capture) cancelInteractions();
+    if (!alive) return;
     if (fx.escape == stack::EscapeStep::CloseMixView) root.setMixView(false, root.state().mixViewDetached);
+    if (!alive) return;
     if (fx.rename.valid()) beginRename(fx.rename);
     if (fx.repaint) { state_->canvas.repaint(); repaint(); }
     if (fx.windowViewChanged) {
@@ -551,6 +644,49 @@ bool StackTab::fromList(const juce::MouseEvent &e) const {
     return e.eventComponent == &state_->canvas || state_->canvas.isParentOf(e.eventComponent) ||
            listArea().contains(e.getEventRelativeTo(const_cast<StackTab *>(this)).getPosition());
 }
+stack::Hit StackTab::presentedHit(double x, double y) const {
+    if (x < 0 || y < 0 || x >= listArea().getWidth() || y >= listArea().getHeight()) return {};
+    // Navigator is painted by the model; actual chain controls and pills are
+    // painted from the last completed row presentation below.
+    if (model().windowView().navigator && x >= model().plan().navX) return model().hitTest(x, y);
+    for (const auto &row : rows_) {
+        const auto &pose = row->state_->presentedRow;
+        if (!pose.ref.valid() || y < pose.top || y >= pose.top + pose.height) continue;
+        stack::Hit hit;
+        hit.row = pose.ref;
+        hit.item = {pose.ref, stack::ItemPlace::None, 0, 0, pose.ref.gen};
+        hit.shown = pose.shown;
+        hit.tier = pose.tier;
+        hit.part = stack::HitPart::RowSpace;
+        hit.rect = {0, pose.top, static_cast<double>(row->getWidth()), pose.height};
+        if (x < model().constants().chipColumn) {
+            const auto &chip = row->state_->presentedChip;
+            if (chip.pin.contains(x, y)) { hit.part = stack::HitPart::ChipPin; hit.rect = chip.pin; }
+            else if (chip.collision.contains(x, y)) { hit.part = stack::HitPart::ChipCollision; hit.rect = chip.collision; }
+            else if (chip.kick.contains(x, y)) { hit.part = stack::HitPart::ChipKick; hit.rect = chip.kick; }
+            else if (pose.group && chip.fold.contains(x, y)) { hit.part = stack::HitPart::ChipFold; hit.rect = chip.fold; }
+            else if (chip.chip.contains(x, y)) { hit.part = stack::HitPart::Chip; hit.rect = chip.chip; }
+            return hit;
+        }
+        const auto &lane = row->state_->presentedLane;
+        if (lane.right && lane.rightChevron.contains(x, y)) {
+            hit.part = stack::HitPart::ChevronRight; hit.rect = lane.rightChevron; return hit;
+        }
+        if (lane.left && lane.leftChevron.contains(x, y)) {
+            hit.part = stack::HitPart::ChevronLeft; hit.rect = lane.leftChevron; return hit;
+        }
+        if (x >= lane.x && x < lane.x + lane.width)
+            for (const auto &item : row->state_->presentedItems) {
+                const stack::Rect box{item.x, item.top, item.width, item.height};
+                if (!box.contains(x, y)) continue;
+                hit.item = item.ref; hit.rect = box; hit.tier = item.tier;
+                hit.part = item.pill ? stack::HitPart::ChainPill : stack::HitPart::ChainItem;
+                return hit;
+            }
+        return hit;
+    }
+    return {};
+}
 void StackTab::mouseMove(const juce::MouseEvent &e) {
     if (!fromList(e)) return;
     const auto p = modelPoint(e);
@@ -564,30 +700,35 @@ void StackTab::mouseExit(const juce::MouseEvent &e) {
         effects(model().pointerExit(clockNow()), false);
 }
 void StackTab::mouseDown(const juce::MouseEvent &e) {
+    const juce::Component::SafePointer<StackTab> alive(this);
     if (!fromList(e)) return;
     const auto p = modelPoint(e);
     // Hit the geometry that supplied the visible components. Reflowing a newer document
     // here would hit an unseen row at this screen point. Validate the seen identity against
     // current state instead; the next frame adopts its new position.
-    const auto presented = model().hitTest(p.x, p.y);
+    const auto presented = presentedHit(p.x, p.y);
     const auto current = root.current();
     if (presented.row.valid() && (!current || !current->findTrack(presented.row.track))) return;
     if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item)) return;
     const auto button = e.mods.isPopupMenu() ? stack::Button::Right
                       : e.mods.isMiddleButtonDown() ? stack::Button::Middle : stack::Button::Left;
-    const auto fx = model().pointerDown(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), clockNow());
+    const auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, clockNow());
     effects(fx, e.eventComponent == &state_->canvas);
+    if (!alive) return;
     if (fx.hit.part == stack::HitPart::ChainPill && button == stack::Button::Left &&
         p.y >= fx.hit.rect.y && p.y < fx.hit.rect.y + 16 && validTarget(fx.hit.item)) {
         if (const auto *data = device(fx.hit.item.device); data && data->available)
             root.devices.action("device.setEnabled", {{"id", data->id}, {"enabled", !data->enabled}});
+        if (!alive) return;
         layoutRows();
         return;
     }
     if ((fx.hit.part == stack::HitPart::ChainPill || fx.hit.part == stack::HitPart::ChainItem) &&
-        e.getNumberOfClicks() > 1 && e.eventComponent == &state_->canvas) {
+        e.getNumberOfClicks() > 1 && e.eventComponent == &state_->canvas && validTarget(fx.hit.item)) {
         root.devices.chose(fx.hit.item.device);
+        if (!alive) return;
         root.showDeviceView();
+        if (!alive) return;
     }
     layoutRows();
 }
@@ -755,12 +896,22 @@ bool StackTab::validTarget(const stack::ItemRef &target) const {
     return current && current->findTrack(target.row.track) != nullptr && root.devices.validExpected(*data);
 }
 bool StackTab::beginInteraction(const stack::ItemRef &target, stack::CaptureKind kind) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    if (state_->ending || state_->destroying) return false;
     if (!validTarget(target)) return false;
     if (state_->interaction) return state_->interaction->target == target && state_->interaction->kind == kind;
     // Child controls receive their own mouseDown before the canvas listener. Select their
     // stable target here as well, without stealing keyboard focus from the control.
     effects(model().focusItem(target, clockNow()), false);
-    const auto capture = model().beginCapture(kind, target, clockNow());
+    if (!alive) return false;
+    stack::CaptureResult capture;
+    capture.refusal = stack::CaptureRefusal::NotShown;
+    for (const auto &row : rows_)
+        if (row->state_->geo.ref == target.row) {
+            capture = model().beginCapturePresented(kind, target, row->state_->presentedRow,
+                row->state_->presentedLane, row->state_->presentedItems, clockNow());
+            break;
+        }
     if (capture.refusal != stack::CaptureRefusal::None) return false;
     state_->interaction = capture.ref;
     return true;
@@ -768,8 +919,10 @@ bool StackTab::beginInteraction(const stack::ItemRef &target, stack::CaptureKind
 void StackTab::endInteraction() {
     if (state_->ending) return;
     state_->ending = true;
+    const juce::Component::SafePointer<StackTab> alive(this);
     if (state_->began && state_->editData && !state_->parameter.empty())
         root.devices.editExpected(*state_->editData, state_->parameter, engine::ParamEventKind::End, state_->lastValue);
+    if (!alive) return;
     state_->began = false;
     state_->editData = nullptr;
     state_->editPublication.reset();
@@ -783,10 +936,13 @@ void StackTab::endInteraction() {
 }
 bool StackTab::editParameter(const stack::ItemRef &target, const std::string &parameter,
                              engine::ParamEventKind kind, double value) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    if (state_->ending) return false;
     if (kind == engine::ParamEventKind::Begin) {
         // A reset/new control gesture during a held drag is a new gesture, not a new
         // owner installed over an unclosed old one. End the exact original target first.
         if (state_->editData) endInteraction();
+        if (!alive) return false;
         if (!beginInteraction(target, stack::CaptureKind::Drag)) return false;
         state_->editPublication = state_->publication;
         state_->editData = device(target.device);
@@ -804,7 +960,9 @@ bool StackTab::editParameter(const stack::ItemRef &target, const std::string &pa
         endInteraction();
         return false;
     }
+    const auto interaction = state_->interaction;
     const bool accepted = root.devices.editExpected(*state_->editData, parameter, kind, value);
+    if (!alive || state_->interaction != interaction) return accepted;
     if (accepted) state_->lastValue = value;
     if (kind == engine::ParamEventKind::Begin) state_->began = accepted;
     if (!accepted) endInteraction();
@@ -812,11 +970,18 @@ bool StackTab::editParameter(const stack::ItemRef &target, const std::string &pa
 }
 void StackTab::cancelInteractions() {
     if (!state_ || state_->ending) return;
+    const juce::Component::SafePointer<StackTab> alive(this);
     endRename(false);
+    if (!alive) return;
     endInteraction();
-    for (auto &row : rows_)
-        for (auto &tile : row->state_->tiles)
-            tile.view->cancelInteractions();
+    if (!alive) return;
+    const auto layout = state_->layout;
+    for (std::size_t r = 0; r < rows_.size(); ++r)
+        for (std::size_t t = 0; t < rows_[r]->state_->tiles.size(); ++t) {
+            const juce::Component::SafePointer<DevicePanelView> panel(rows_[r]->state_->tiles[t].view.get());
+            panel->cancelInteractions();
+            if (!alive || state_->layout != layout) return;
+        }
 }
 void StackTab::beginRename(stack::RowRef row) {
     const stack::ItemRef target{row, stack::ItemPlace::None, 0, 0, 0};
