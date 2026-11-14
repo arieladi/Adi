@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 14 November 2026 — accepted device-key assignment; repairs first
+
+Claim schema minor **1.22** for win's DEV-05/MX-24 assignment on #546 (DF-M11). The scope is canonical device-key routing/tap storage, destination identity, logical mono/stereo key width and route-lifecycle epochs, plus reversible route cleanup. This reserves the assigned format number; no format or routing implementation starts ahead of the reviewed repair sequence below. Engine-owned paths will be logged before edits, the engine seat reviews on return, and fenced op handlers remain untouched.
+
 ## 14 November 2026 — reviewed fixes take priority; no new PRs
 
 The director pauses new PRs. Work now follows win's review order: #541 latency-control automation and limiter background ownership; #542 hidden EQ publication and conditional unmasking pages; #545 bounded FIR work and actual-rate arithmetic; then foundation gesture/seek/tap-retirement/test follow-ups. Fixes go to existing review branches, with dependent stacks rebased afterward. #537/#540 are already merged, so their follow-ups will be carried by the existing open stack rather than a new PR. No self-merge.
