@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 14 November 2026 — processing/average CI green; next real-hop integration
+
+#566 corrected `33c64136`, #567 moving controls `52861576` and #568 average primitive `32b334fd` each pass all18 core+3 UI exact-head jobs and are ready for win, unmerged by this seat. Gate runs43532107827/43532107786; moving43530558133/43530558118; average43532170409/43532170375. #555 remains the separate unresolved ARM storage/Ops review gate.
+
+Draft [#569](https://github.com/arieladi/Adi/pull/569), `d895f3d8`, on #565 supplies exact-zero StereoPower lane FFT elision.305 shared/Spectrum checks, two strict units/four validators pass; root verifies55 fixed records/three source identities,552 complete-result replay windows byte-identical and300 allocation rows unchanged.36 transforms are omitted only on tested one-silent-lane windows. The both-zero parent path remains unchanged; no threshold, scan, audio or timing claim.
+
+`mixview/average-domain-20261114` in isolated `D:/Adi-wt/mix-average-domain-1114` combines only exact #568+#569 parents through authorized local dependency merge `c9eeea44`, never Main. Own shared_analysis API/worker tests, narrow docs and common precise-target linking. Optional explicit1-second magnitude decay consumes real source hops, shares existing FFT/cursor, uses a separate immutable average sidecar so Raw Result layout/Debug allocations remain unchanged, and reports invalid FFT data without modifying Raw. No UI/preferences, new worker/timer/tap or old package mutation. The root continuous-scope component stays separate. Live work remains Claude's; CPU timing remains deferred.
+
 ## 14 November 2026 — next composition and continuous capture ownership
 
 `mixview/clean-key-facade-20261114` in `D:/Adi-wt/mix-compressor-1113` starts from #567 `52861576`, owning only new `mix/clean_key`, generated tests/docs and minimal core registration. Root independently verified the preceding private nine-case actual-child composition before authorizing this facade. It keeps the existing compressor/key/filter children unchanged, explicit prepared key scratch, fixed dynamics/Programme/internal source, boundary-only optional EQ motion and strong refusal. No native C capability flip, routing, running reset, monitoring or new CPU timing.
