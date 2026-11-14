@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/shared_analysis.hpp"
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -290,6 +292,73 @@ void sharedModesAndCursors() {
     tone(*f.tap, 1024, .5f, -1.f, 51024); f.broker.pump();
     check(power.read() && near(power.read()->binsDbfs[16], -6.020599913), "stereo power spectrum does not cancel antiphase audio");
 }
+void exactZeroSpectrum() {
+    for (const auto size : {32, 96, 1024, 1536, 65536})
+        for (const auto window : {adi::dsp::Window::Hann, adi::dsp::Window::Rectangular}) {
+            adi::dsp::Spectrum spectrum(size, window);
+            std::vector<float> frame(static_cast<std::size_t>(size), .5f);
+            std::vector<float> bins(static_cast<std::size_t>(size / 2 + 1), -1.f);
+            spectrum.analyse(frame, bins);
+            for (std::size_t i = 0; i < frame.size(); ++i) frame[i] = (i & 1u) ? -0.f : 0.f;
+            spectrum.analyse(frame, bins);
+            check(spectrum.valid() && std::all_of(bins.begin(), bins.end(), [](float value) {
+                      return std::bit_cast<std::uint32_t>(value) == 0;
+                  }), "prepared FFT overwrites prior tone magnitudes with positive zero for either signed-zero input");
+        }
+}
+void exactSilentStereoLanes() {
+    for (const auto size : {32, 1024})
+        for (const auto window : {adi::dsp::Window::Hann, adi::dsp::Window::Rectangular}) {
+            Fixture f;
+            SharedAnalysis::Request request{1, ScopePoint::PostFader, size, SharedAnalysis::Channel::StereoPower, window};
+            request.hopSize = size; request.outputs = 31;
+            auto lease = f.broker.acquire(request);
+            adi::dsp::Spectrum reference(size, window);
+            const auto n = static_cast<std::size_t>(size);
+            std::vector<float> l(n), r(n), cleanL(n), cleanR(n), first(n / 2 + 1), second(first.size()), expected(first.size());
+            for (int part = 0; part < 10; ++part) {
+                const bool zeroL = part == 2 || part == 3 || part == 7 || part == 9;
+                const bool zeroR = part == 1 || part == 3 || part == 6 || part == 9;
+                std::size_t invalid = 0;
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto phase = 2 * std::numbers::pi * static_cast<double>(i) / size;
+                    l[i] = zeroL ? ((i & 1u) ? -0.f : 0.f) : static_cast<float>(.5 * std::cos(3 * phase));
+                    r[i] = zeroR ? ((i & 1u) ? -0.f : 0.f) : static_cast<float>(.25 * std::sin(5 * phase));
+                    if (part == 4) l[i] = (i & 1u) ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN();
+                    if (part == 5) r[i] = (i & 1u) ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN();
+                    if (part == 6) l[i] = std::numeric_limits<float>::denorm_min();
+                    if (part == 7) r[i] = -std::numeric_limits<float>::denorm_min();
+                    invalid += static_cast<std::size_t>(!std::isfinite(l[i])) + static_cast<std::size_t>(!std::isfinite(r[i]));
+                    cleanL[i] = std::isfinite(l[i]) ? l[i] : 0.f;
+                    cleanR[i] = std::isfinite(r[i]) ? r[i] : 0.f;
+                }
+                reference.analyse(cleanL, first); reference.analyse(cleanR, second);
+                for (std::size_t i = 0; i < first.size(); ++i)
+                    expected[i] = adi::dsp::toDbfs(std::sqrt((first[i] * first[i] + second[i] * second[i]) * .5f));
+                const auto stamp = static_cast<std::int64_t>(part) * size;
+                const auto before = f.broker.stats().transforms;
+                f.tap->write(l.data(), r.data(), size, stamp, true);
+                f.broker.pump();
+                const auto result = lease.read();
+                const auto wanted = part == 3 || part == 9 ? 0u : part == 0 || part == 8 ? 2u : 1u;
+                check(f.broker.stats().transforms - before == wanted,
+                      "stereo power transforms each exact-nonzero sanitized lane once, including subnormal lanes");
+                const auto sameBits = [](float a, float b) { return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b); };
+                check(result && result->binsDbfs.size() == expected.size() &&
+                          std::equal(expected.begin(), expected.end(), result->binsDbfs.begin(), sameBits) &&
+                          std::equal(cleanL.begin(), cleanL.end(), result->scopeLeft.begin(), result->scopeLeft.end(), sameBits) &&
+                          std::equal(cleanR.begin(), cleanR.end(), result->scopeRight.begin(), result->scopeRight.end(), sameBits) &&
+                          result->nonFiniteSamples == invalid && result->windowSerial == static_cast<std::uint64_t>(part + 1) &&
+                          result->firstStamp == stamp && result->firstSequence == stamp && result->columns.size() == static_cast<std::size_t>(part + 1),
+                      "lane skipping preserves exact two-FFT combination, sanitized scope, stamps and hop history after active/silent transitions");
+            }
+            const auto previous = lease.read(); const auto transforms = f.broker.stats().transforms;
+            auto compact = f.broker.acquire(request);
+            check(f.broker.pump() == 0 && compact.read() == previous && lease.read() == previous &&
+                      f.broker.stats().transforms == transforms,
+                  "compatible full/compact silence pictures share the same publication without redundant transforms");
+        }
+}
 void boundsAndDeviceSources() {
     auto tap = std::make_shared<ScopeTap>(48000, .1);
     std::vector<adi::engine::ScopeSource> acquired, released;
@@ -543,7 +612,7 @@ void lateRateAndFailedNegotiation() {
 } // namespace
 int main() {
     try { sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
+          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

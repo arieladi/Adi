@@ -252,10 +252,14 @@ struct SharedAnalysis::Domain {
         if (bits & (Output::Scope | Output::Phase)) { latest->scopeLeft = left; latest->scopeRight = right; }
         if (spectralOutput(bits)) {
             if (spectralWindow != windowSerial) {
-                if (nonzero) { spectrum->analyse(scratch, linear); ++transforms; }
+                const bool stereoPower = request.channel == Channel::StereoPower;
+                // Sanitized float squares are accumulated in double above. Reuse
+                // their exact-zero result; no threshold or additional sample scan.
+                if (nonzero && (!stereoPower || sumL > 0)) { spectrum->analyse(scratch, linear); ++transforms; }
                 else std::fill(linear.begin(), linear.end(), 0.f);
-                if (nonzero && request.channel == Channel::StereoPower) {
-                    spectrum->analyse(right, second); ++transforms;
+                if (nonzero && stereoPower) {
+                    if (sumR > 0) { spectrum->analyse(right, second); ++transforms; }
+                    else std::fill(second.begin(), second.end(), 0.f);
                     for (std::size_t i = 0; i < linear.size(); ++i)
                         linear[i] = std::sqrt((linear[i] * linear[i] + second[i] * second[i]) * .5f);
                 }
