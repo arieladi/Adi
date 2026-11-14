@@ -378,10 +378,14 @@ bool DevicePanelView::eqPresentation(const DevicePanelData &value) noexcept {
 }
 void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
     if (!eqPresentation(next)) return;
-    if (data && eqPresentation(*data) && data->parameterGroups == next.parameterGroups) return;
+    // A folded or scrolled-out identity row carries no parameter payload.
+    // Keep this runtime's presentation selection until demand resumes.
+    if (next.groups().empty()) return;
+    if (data && eqPresentation(*data) &&
+        (&data->groups() == &next.groups() || data->groups() == next.groups())) return;
     std::vector<std::int32_t> bands;
     std::vector<std::pair<std::string, std::string>> sections;
-    for (const auto &[parameter, metadata] : next.parameterGroups) {
+    for (const auto &[parameter, metadata] : next.groups()) {
         (void)parameter;
         if (metadata.groupId != "eq") continue;
         if (metadata.bandIndex >= 0 &&
@@ -458,12 +462,12 @@ std::string_view DevicePanelView::parameterPageUnavailableReason() const {
 }
 const panel::Record *DevicePanelView::pageEnableRecord(const ParameterPageControl &page) const {
     if (!data || page.enableParameter.empty()) return nullptr;
-    const auto declared = std::find_if(data->declared.begin(), data->declared.end(), [&](const auto &p) {
+    const auto declared = std::find_if(data->declarations().begin(), data->declarations().end(), [&](const auto &p) {
         return p.id == page.enableParameter && p.modifiable;
     });
-    if (declared == data->declared.end()) return nullptr;
-    const auto at = std::find_if(data->records.begin(), data->records.end(), [&](const auto &r) { return r.id == page.enableParameter; });
-    return at != data->records.end() && !at->missing ? &*at : nullptr;
+    if (declared == data->declarations().end()) return nullptr;
+    const auto at = std::find_if(data->parameters().begin(), data->parameters().end(), [&](const auto &r) { return r.id == page.enableParameter; });
+    return at != data->parameters().end() && !at->missing ? &*at : nullptr;
 }
 bool DevicePanelView::parameterShown(const std::string &parameter) const {
     return !data || parameterShown(*data, parameter);
@@ -471,8 +475,8 @@ bool DevicePanelView::parameterShown(const std::string &parameter) const {
 bool DevicePanelView::parameterShown(const DevicePanelData &next, const std::string &parameter) const {
     if (parameterPages.empty()) return true;
     if (!parameterPageUnavailableReason().empty()) return false;
-    const auto group = next.parameterGroups.find(parameter);
-    if (group == next.parameterGroups.end() || group->second.groupId.empty()) return true;
+    const auto group = next.groups().find(parameter);
+    if (group == next.groups().end() || group->second.groupId.empty()) return true;
     const auto &metadata = group->second;
     if (metadata.groupEnableControl || metadata.groupId != selectedPage_) return false;
     if (!eqPresentation(next)) return true;
@@ -487,7 +491,7 @@ bool DevicePanelView::controlsMatch(const DevicePanelData &next) const {
         return true;
     }
     std::size_t index = 0;
-    for (const auto &record : next.records) {
+    for (const auto &record : next.parameters()) {
         if (!parameterShown(next, record.id)) continue;
         if (index >= controls.size() || controls[index]->parameter != record.id) return false;
         ++index;
@@ -527,12 +531,13 @@ bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) 
     return accepted;
 }
 bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
-    if (data && eqPresentation(*data) == eqPresentation(next) && data->parameterGroups == next.parameterGroups) return true;
+    if (data && eqPresentation(*data) == eqPresentation(next) &&
+        (&data->groups() == &next.groups() || data->groups() == next.groups())) return true;
     struct Page { std::string id, name, enable; std::string unavailable{}; };
     std::vector<Page> pages;
-    for (const auto &r : next.records) {
-        const auto metadata = next.parameterGroups.find(r.id);
-        if (metadata == next.parameterGroups.end() || metadata->second.groupId.empty()) continue;
+    for (const auto &r : next.parameters()) {
+        const auto metadata = next.groups().find(r.id);
+        if (metadata == next.groups().end() || metadata->second.groupId.empty()) continue;
         const auto &m = metadata->second;
         auto at = std::find_if(pages.begin(), pages.end(), [&](const auto &p) { return p.id == m.groupId; });
         if (at == pages.end()) {
@@ -543,8 +548,6 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     if (eqPresentation(next)) {
         if (std::none_of(pages.begin(), pages.end(), [](const auto &page) { return page.id == "eq"; }))
             pages.push_back({"eq", "EQ", {}});
-        pages.push_back({"carve", "Carve", {}, "Carve is not available yet. Its processing core and device sidechain route are not connected."});
-        pages.push_back({"focus", "Focus", {}, "Focus is not available yet. Its processing core, analysis proposals and device sidechain route are not connected."});
     }
     const auto order = [](const std::string &id) { return id == "clip" ? 0 : id == "limiter" ? 1 : 2; };
     std::stable_sort(pages.begin(), pages.end(), [&](const auto &a, const auto &b) { return order(a.id) < order(b.id); });
@@ -625,7 +628,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
     // plug-in Configure cap. Construct only this small visible control set.
     std::vector<panel::Entry> eqEntries;
     if (eqPresentation()) {
-        for (const auto &record : d.records)
+        for (const auto &record : d.parameters())
             if (parameterShown(record.id)) eqEntries.push_back({record.id, record.missing});
     }
     const auto &entries = eqPresentation() ? eqEntries : d.resolved.entries;
@@ -639,8 +642,8 @@ void DevicePanelView::present(const DevicePanelData &d) {
     // The plug-in's default for a parameter, where Delete returns it (manual 41.6); 0 when the
     // feed knows none.
     auto defaultOf = [&d](const std::string &param) {
-        const auto found = d.defaults.find(param);
-        return found == d.defaults.end() ? 0.0 : found->second;
+        const auto found = d.defaultValues().find(param);
+        return found == d.defaultValues().end() ? 0.0 : found->second;
     };
     if (!same) {
         const auto safe = SafePointer<DevicePanelView>(this);
@@ -654,7 +657,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         controls.clear();
         const auto epoch = controlsEpoch_;
         for (const auto &e : entries)
-            for (const auto &r : d.records)
+            for (const auto &r : d.parameters())
                 if (r.id == e.id) {
                     auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
                     c->parameterGesture = [this, epoch](const std::string &param, engine::ParamEventKind kind, double v) {
@@ -673,14 +676,14 @@ void DevicePanelView::present(const DevicePanelData &d) {
         resized();
     }
     for (auto &c : controls)
-        for (const auto &r : d.records)
+        for (const auto &r : d.parameters())
             if (c->parameter == r.id) {
                 c->present(r, defaultOf(r.id));
-                const auto declared = std::find_if(d.declared.begin(), d.declared.end(), [&](const auto &p) {
+                const auto declared = std::find_if(d.declarations().begin(), d.declarations().end(), [&](const auto &p) {
                     return p.id == r.id;
                 });
-                c->setEnabled(!r.missing && declared != d.declared.end() && declared->modifiable);
-                if (nativeFunction() && !r.missing && declared != d.declared.end() && !declared->modifiable)
+                c->setEnabled(!r.missing && declared != d.declarations().end() && declared->modifiable);
+                if (nativeFunction() && !r.missing && declared != d.declarations().end() && !declared->modifiable)
                     c->setTooltip("Read-only in this device tier. The current setting is retained; editing is not connected.");
                 break;
             }
@@ -944,13 +947,13 @@ void DevicePanelView::configure() {
     m.addItem(1, "Use default panel");
     m.addItem(2, "Clear panel");
     m.addItem(3, "Done");
-    auto choices = panel::search(data->declared, search.getText().toStdString());
+    auto choices = panel::search(data->declarations(), search.getText().toStdString());
     std::vector<std::string> ids;
     for (const auto &e : data->resolved.entries)
         ids.push_back(e.id);
     std::vector<std::string> candidates;
     for (auto match : choices) {
-        const auto &d = data->declared[match.index];
+        const auto &d = data->declarations()[match.index];
         if (!d.modifiable)
             continue;
         candidates.push_back(d.id);
@@ -1091,8 +1094,30 @@ void DeviceChainStrip::cancelFunctionInteractions() {
     ++addMenuEpoch_;
     for (auto &panel : panels) if (panel->nativeFunction()) panel->cancelInteractions();
 }
-void DeviceChainStrip::visibilityChanged() { if (!isShowing()) cancelFunctionInteractions(); }
-void DeviceChainStrip::parentHierarchyChanged() { if (!isShowing()) cancelFunctionInteractions(); }
+DeviceChainStrip::~DeviceChainStrip() { if (parameterDemand) parameterDemand(this, {}); }
+void DeviceChainStrip::updateParameterDemand(std::vector<std::int64_t> devices) {
+    std::sort(devices.begin(), devices.end());
+    devices.erase(std::unique(devices.begin(), devices.end()), devices.end());
+    if (devices == demandedDevices_) return;
+    demandedDevices_ = std::move(devices);
+    if (parameterDemand) parameterDemand(this, demandedDevices_);
+}
+void DeviceChainStrip::suspendParameters(bool suspended) {
+    parametersSuspended_ = suspended;
+    if (suspended) {
+        const auto safe = SafePointer<DeviceChainStrip>(this);
+        cancelFunctionInteractions();
+        if (safe) updateParameterDemand({});
+    }
+}
+void DeviceChainStrip::visibilityChanged() {
+    if (!isShowing()) {
+        const auto safe = SafePointer<DeviceChainStrip>(this);
+        cancelFunctionInteractions();
+        if (safe) updateParameterDemand({});
+    }
+}
+void DeviceChainStrip::parentHierarchyChanged() { visibilityChanged(); }
 const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
     if (presented)
         for (const auto &d : *presented)
@@ -1166,6 +1191,7 @@ void DeviceChainStrip::frame(std::int64_t track) {
     const auto safe = SafePointer<DeviceChainStrip>(this);
     const auto epoch = ++frameEpoch_;
     const auto current = [&safe, epoch] { return safe && safe->frameEpoch_ == epoch; };
+    if (parameterDemand && (parametersSuspended_ || !isShowing())) { updateParameterDemand({}); return; }
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
@@ -1176,6 +1202,23 @@ void DeviceChainStrip::frame(std::int64_t track) {
     // publication. No strip member is touched after the callback until checked.
     auto next = publication ? publication() : nullptr;
     if (!current()) return;
+    if (parameterDemand) {
+        std::vector<std::int64_t> demanded;
+        if (next)
+            for (const auto &device : *next)
+                if (device.track == track && !folded(device.id)) {
+                    const auto panel = std::find_if(panels.begin(), panels.end(), [&](const auto &candidate) {
+                        return candidate->id == device.id;
+                    });
+                    if (track == selectedTrack && panel != panels.end() && !scroll.getViewArea().isEmpty() &&
+                        !(*panel)->getBounds().intersects(scroll.getViewArea())) continue;
+                    demanded.push_back(device.id);
+                }
+        updateParameterDemand(std::move(demanded));
+        if (!current()) return;
+        next = publication ? publication() : nullptr;
+        if (!current()) return;
+    }
     if (next == presented && track == selectedTrack)
         return;
     if (track != selectedTrack) {

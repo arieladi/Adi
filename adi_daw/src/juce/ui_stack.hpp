@@ -43,6 +43,7 @@ class StackTab final : public juce::Component {
   public:
     explicit StackTab(AdiRootComponent &);
     ~StackTab() override;
+    void suspendParameters(bool);
     void frame(const SnapshotReader &);
     // Deterministic component-test entry; normal frames use the window's monotonic clock.
     void frameAt(const SnapshotReader &, stack::TimeMs);
@@ -89,6 +90,7 @@ class StackTab final : public juce::Component {
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
     void layoutRows();
+    void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();
     void focusTile(const stack::ItemRef &);

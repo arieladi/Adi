@@ -84,9 +84,8 @@ void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     };
     check(publication->front().declared.size() == 730 && panel->controls.size() == 8 && panel->functionBand.getNumItems() == 24,
           "730 descriptors construct only one basic band while all 24 bands remain reachable");
-    check(panel->parameterPages.size() == 3 && panel->parameterPages[0].id == "eq" &&
-              panel->parameterPages[1].id == "carve" && panel->parameterPages[2].id == "focus",
-          "native EQ has separate EQ, Carve and Focus presentation pages");
+    check(panel->parameterPages.size() == 1 && panel->parameterPages[0].id == "eq",
+          "native EQ only presents its available processing page before keyed stages are admitted");
     check(!panel->configureButton.isVisible() && panel->selectedFunctionSection() == "basic" &&
               panel->selectedFunctionBand() == 0 && panel->functionSection.getNumItems() == 5,
           "native EQ uses explicit band and section selectors instead of generic Configure");
@@ -141,15 +140,25 @@ void exercise(AppCommands &commands, const std::filesystem::path &directory) {
     findControl("band-23-17")->slider.onDragStart();
     check(events.empty(), "read-only detector field cannot claim a working edit gesture");
     for (const auto *page : {"carve", "focus"}) {
-        check(panel->chooseParameterPage(page) && panel->controls.empty() && !panel->parameterPageUnavailableReason().empty() &&
-                  !panel->functionBand.isVisible() && !panel->functionSection.isVisible(),
-              "deferred processing page names its missing dependencies and exposes no controls");
+        check(!panel->chooseParameterPage(page) && panel->controls.size() == 9 &&
+                  panel->functionBand.isVisible() && panel->functionSection.isVisible(),
+              "a stage without enabled routed processing has no selectable placeholder page");
         check(!panel->setParameterPageEnabled(page, true) && events.empty() && actions == 0,
               "deferred page cannot enable fake processing or apply an analysis result");
     }
     panel->chooseParameterPage("eq");
     check(panel->selectedFunctionBand() == 23 && panel->selectedFunctionSection() == "detector" && panel->controls.size() == 9,
-          "returning from deferred pages preserves the chosen band and section");
+          "refusing unavailable pages preserves the chosen band and section");
+    const auto hydrated = publication;
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->front().records.clear(); publication->front().declared.clear();
+    publication->front().defaults.clear(); publication->front().parameterGroups.clear();
+    strip.frame(2);
+    check(panel->controls.empty() && panel->selectedFunctionBand() == 23 && panel->selectedFunctionSection() == "detector",
+          "a metadata-only offscreen row retains its runtime's selected band and section");
+    publication = hydrated; strip.frame(2);
+    check(panel->controls.size() == 9 && panel->selectedFunctionSection() == "detector",
+          "renewed parameter demand restores the selected controls without a processing edit");
     publication = std::make_shared<ParameterPublication>(*publication);
     std::reverse(publication->front().records.begin(), publication->front().records.end());
     std::reverse(publication->front().declared.begin(), publication->front().declared.end());

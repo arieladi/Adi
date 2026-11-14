@@ -207,6 +207,9 @@ class DevicePanelView final : public juce::Component {
 class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
+    ~DeviceChainStrip() override;
+    void suspendParameters(bool);
+    bool parametersSuspended() const noexcept { return parametersSuspended_; }
     void frame(std::int64_t track);
     void resized() override;
     void paint(juce::Graphics &) override;
@@ -251,6 +254,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
+    std::function<void(const void *, const std::vector<std::int64_t> &)> parameterDemand;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double,
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
@@ -276,6 +280,9 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
   private:
     const DevicePanelData *dataOf(std::int64_t device) const;
     void showSamples();
+    void updateParameterDemand(std::vector<std::int64_t>);
+    std::vector<std::int64_t> demandedDevices_;
+    bool parametersSuspended_ = false;
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;
     int end_ = 0; // where the chain ends, in the content's pixels

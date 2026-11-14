@@ -75,7 +75,11 @@ void documentAuthority() {
     const auto at = std::find_if(pub->begin(), pub->end(), [](const auto& d) { return d.uid == "org.adidaw.mix.eq"; });
     check(at != pub->end() && at->available, "real EQ runtime is published to common feed");
     if (at == pub->end()) return;
-    const auto shown = *at;
+    doc->setParameterDemand(doc.get(), {at->id});
+    const auto requested = doc->parameterFeed().current();
+    const auto shown = *std::find_if(requested->begin(), requested->end(), [&](const auto& data) { return data.id == at->id; });
+    check(shown.metadata && shown.parameters().size() == 730 && shown.resolved.entries.empty(),
+          "actual native EQ demand shares all controls without an aggregate Configure list");
     auto* instance = doc->session().instanceFor(shown.id);
     check(instance && instance->paramCount() == 730, "complete authored processing parameter set is available");
     if (!instance) return;

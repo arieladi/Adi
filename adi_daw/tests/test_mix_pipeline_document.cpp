@@ -42,6 +42,9 @@ int main(){
     const auto found=std::find_if(publication->begin(),publication->end(),[](const auto& p){return p.uid=="org.adidaw.mix.limiter";});
     check(found!=publication->end()&&found->available,"real full processing provider resolves");if(found==publication->end())return 2;
     auto shown=*found;auto* instance=doc->session().instanceFor(shown.id);
+    doc->setParameterDemand(doc.get(), {shown.id});
+    const auto requested=doc->parameterFeed().current();
+    shown=*std::find_if(requested->begin(),requested->end(),[&](const auto& p){return p.id==shown.id;});
     check(instance&&instance->paramCount()==67,"full processing controls exist before first processing");if(!instance)return 2;
     check(instance->getParam("19").real==1&&instance->getParam("20").real==0,"Limiter starts on and Clip off");
     check(shown.parameterGroups.at("19").groupId=="limiter"&&shown.parameterGroups.at("19").groupEnableControl&&

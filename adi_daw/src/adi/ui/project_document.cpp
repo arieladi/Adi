@@ -83,7 +83,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         }
         document->realisedGeneration_ = document->view_.generation();
         document->parameterOps_.attachSession(document->session_);
-        document->feed_.publish(document->session_);
+        document->feed_.publish(document->session_, document->realisedGeneration_);
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -245,7 +245,7 @@ bool ProjectDocument::reenableAutomation() {
     // snapshot unlights the switch and the strip's marks go back from overridden to automated in
     // the same call, so the window never shows a set the session no longer holds.
     followOverrides();
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     error_ = refusal;
     return ok;
 }
@@ -275,7 +275,10 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
+}
+void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
+    if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
 bool ProjectDocument::autoGainStage(bool lufs) {
     engine::GainStageOptions options;
@@ -296,7 +299,7 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
@@ -327,7 +330,7 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
@@ -340,7 +343,7 @@ bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     });
     error_ = result.error;
     if (!result.ok || !synchronise()) return false;
-    feed_.publish(session_); return true;
+    feed_.publish(session_, realisedGeneration_); return true;
 }
 bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                                        std::optional<std::int64_t> before) {
@@ -354,7 +357,7 @@ bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int6
     });
     error_ = result.error;
     if (!result.ok || !synchronise()) return false;
-    feed_.publish(session_); return true;
+    feed_.publish(session_, realisedGeneration_); return true;
 }
 namespace {
 // Commits a prepared sample batch and hands each new state to the live device, as the engine's
@@ -386,7 +389,7 @@ bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
@@ -406,7 +409,7 @@ bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 std::string ProjectDocument::deviceCopyIdentity() const {
@@ -464,7 +467,7 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
@@ -494,7 +497,7 @@ bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceR
                                           std::uint64_t stamp) {
     const bool pending = realisedGeneration_ != view_.generation();
     if (!synchronise()) return false;
-    if (pending) feed_.publish(session_);
+    if (pending) feed_.publish(session_, realisedGeneration_);
     const auto publication = feed_.current();
     const auto shown = std::find_if(publication->begin(), publication->end(), [&](const auto &d) {
         return d.id == id && d.instance == stamp;
@@ -597,7 +600,7 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     // frame, so Re-Enable Automation lights with the knob's move.
     followOverrides();
     if (appended && committed)
-        feed_.publish(session_);
+        feed_.publish(session_, realisedGeneration_);
     if (!committed)
         return false;
     if (!taken) {
