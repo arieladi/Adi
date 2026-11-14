@@ -94,6 +94,13 @@ The existing two-lane power combination,
 scope/meter samples and publication/history rules remain unchanged. Nonzero lanes, including
 subnormal input, keep the normal transform path. This is an analysis optimization, not an
 audio-processing shortcut or a CPU-percentage claim.
+The broker also has an optional fixed Average1s linear-magnitude profile, sharing
+the existing real-hop transform with Raw/Spectrogram and publishing a separate
+immutable sidecar. It is a numerical API only: Raw stays the visible/default view.
+It waits for new post-activation audio, advances on real hops rather than frames,
+and reports invalid FFT magnitudes without changing Raw output. See
+`SPECTRUM-AVERAGE.md` for demand, lifetime and recovery rules; no new worker/timer,
+Main loudness service or audio DSP is introduced.
 
 The first presentation is a calibrated Main spectrum, with stereo peak/RMS, in the Mix View's
 OVERVIEW and boxed Info area. Hover information temporarily replaces the boxed analyzer. These

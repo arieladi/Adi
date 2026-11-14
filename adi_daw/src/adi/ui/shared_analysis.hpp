@@ -30,7 +30,7 @@ class SharedAnalysis final {
     static constexpr std::size_t kMaxHistoryBytes = 64u * 1024u * 1024u;
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
-    enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16 };
+    enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32 };
     struct Request {
         std::int64_t track = 0;
         engine::ScopePoint point = engine::ScopePoint::PostFader;
@@ -68,6 +68,15 @@ class SharedAnalysis final {
         std::int64_t pendingFrames = 0;
         bool advancing = false, discontinuity = false, budgetLimited = false, historyLimited = false;
     };
+    enum class AverageStatus { Waiting, Ready, InvalidInput, Unavailable };
+    // Optional sidecar keeps the Raw Result layout/allocation path unchanged.
+    // The fixed profile is a one-second 20 dB linear-magnitude decay, not LUFS.
+    struct AverageResult {
+        std::shared_ptr<const Result> window;
+        std::shared_ptr<const std::vector<float>> binsDbfs;
+        AverageStatus status = AverageStatus::Waiting;
+        std::uint64_t epoch = 0, processedWindows = 0, windowSerial = 0;
+    };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
         std::uint64_t transforms = 0, publications = 0, frameRequests = 0, workerPasses = 0;
@@ -93,6 +102,9 @@ class SharedAnalysis final {
         explicit operator bool() const noexcept;
         bool available() const noexcept;
         std::shared_ptr<const Result> read() const noexcept;
+        // Only Average1s leases: same immutable sidecar/window for compatible
+        // consumers. Missing/refused publication returns null; inspect status.
+        std::shared_ptr<const AverageResult> readAverage() const noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
         // generation identifies the currently usable tap; written is its completed
         // sample count, independent of analysis backlog or publication revisions.

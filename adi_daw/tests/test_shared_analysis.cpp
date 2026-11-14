@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/shared_analysis.hpp"
+#include "adi/dsp/spectrum_average.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <memory>
 #include <limits>
 #include <numbers>
+#include <new>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -20,11 +23,20 @@ using adi::engine::ScopeTap;
 using adi::ui::SharedAnalysis;
 namespace {
 int checks = 0, failures = 0;
+thread_local int failAllocationAfter = -1;
+thread_local bool observeAllocationSizes = false, refusedAllocationSize = false;
+thread_local std::size_t allocationSizeCount = 0, refuseAllocationBytes = 0;
+thread_local std::array<std::size_t,16> allocationSizes{};
 void check(bool ok, const char *what) {
     ++checks;
     if (!ok) { ++failures; std::printf("FAIL %s\n", what); }
 }
 bool near(double a, double b, double tolerance = 0.0003) { return std::abs(a - b) < tolerance; }
+bool exactBins(std::span<const float> a, std::span<const float> b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](float x, float y) {
+        return std::bit_cast<std::uint32_t>(x) == std::bit_cast<std::uint32_t>(y);
+    });
+}
 void tone(ScopeTap &tap, int frames = 1024, float amplitude = .5f, float rightScale = 1.f,
           std::int64_t stamp = 0) {
     std::vector<float> left(static_cast<std::size_t>(frames)), right(left.size());
@@ -359,6 +371,340 @@ void exactSilentStereoLanes() {
                   "compatible full/compact silence pictures share the same publication without redundant transforms");
         }
 }
+void sharedAverage() {
+    Fixture f;
+    SharedAnalysis::Request request{1}; request.hopSize = 1024;
+    request.outputs = SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram;
+    auto raw = f.broker.acquire(request);
+    request.outputs = SharedAnalysis::Average1s;
+    auto average = f.broker.acquire(request);
+    check(average && !average.readAverage() && !raw.readAverage(), "only demanded average has an optional sidecar, initially no invented history");
+    tone(*f.tap); check(f.broker.pump() == 1, "Raw, Spectrogram and average share the same first FFT");
+    const auto first = average.readAverage();
+    check(first && first->status == SharedAnalysis::AverageStatus::Ready && first->processedWindows == 1 &&
+              first->window == raw.read() && first->binsDbfs && f.broker.stats().domains == 1 && f.broker.stats().spectralPlans == 1,
+          "average sidecar points to the atomically published Raw window and one shared plan");
+    auto compact = f.broker.acquire(request);
+    check(compact.readAverage() == first && f.broker.pump() == 0,
+          "second average consumer reuses the identical sidecar without reset or old-window integration");
+    auto combinedRequest=request; combinedRequest.outputs|=SharedAnalysis::Scope;
+    auto combined=f.broker.acquire(combinedRequest);
+    check(!combined.readAverage() && average.readAverage()==first && compact.readAverage()==first,
+          "a combined lease refuses an older sidecar lacking newly requested fields while existing average readers retain their picture");
+    f.broker.pump(); const auto complete=combined.readAverage();
+    check(complete && complete->window==combined.read() && complete->window->scopeLeft.size()==1024 &&
+              complete->processedWindows==1 && complete->binsDbfs==first->binsDbfs && f.broker.stats().transforms==1,
+          "combined fields publish together on a metadata-only pass without extra FFT or average integration");
+    combined.reset();
+    adi::dsp::Spectrum spectrum(1024, adi::dsp::Window::Hann);
+    adi::dsp::LinearMagnitudeAverage reference;
+    reference.prepare({513,48000.,1024,1.});
+    std::vector<float> input(1024), linear(513), expected(513);
+    for (std::size_t i=0;i<input.size();++i) input[i]=.5f*static_cast<float>(std::sin(2*std::numbers::pi*16*static_cast<double>(i)/1024));
+    spectrum.analyse(input,linear); reference.processChecked(linear);
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    check(first && first->binsDbfs && exactBins(*first->binsDbfs,expected), "first average is the exact primitive fed linear calibrated bins, before dB conversion");
+    request.outputs=SharedAnalysis::Scope;
+    auto scope=f.broker.acquire(request); f.broker.pump();
+    const auto republished=average.readAverage();
+    check(republished && republished!=first && republished->window==raw.read() && republished->window->windowSerial==1 &&
+              republished->processedWindows==1 && republished->binsDbfs==first->binsDbfs && f.broker.stats().transforms==1,
+          "output-only republication shares immutable average bins and never advances the numerical history");
+    const std::vector<float> zero(1024);
+    f.tap->write(zero.data(),zero.data(),1024,1024,true); f.broker.pump();
+    std::fill(linear.begin(),linear.end(),0.f); reference.processChecked(linear);
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    const auto decayed=average.readAverage();
+    check(decayed && decayed->processedWindows==2 && decayed->windowSerial==2 && decayed->binsDbfs &&
+              exactBins(*decayed->binsDbfs,expected) && f.broker.stats().transforms==1,
+          "a new silent hop advances the average decay even when no FFT call is needed");
+    average.reset();
+    tone(*f.tap,1024,.25f,1.f,2048); f.broker.pump();
+    check(compact.readAverage() && compact.readAverage()->processedWindows==3 && first->processedWindows==1 &&
+              first->binsDbfs && exactBins(*first->binsDbfs,*republished->binsDbfs),
+          "one frozen/released reader does not reset another consumer and retained snapshots remain immutable");
+    compact.reset();
+    request.outputs=SharedAnalysis::Average1s;
+    auto resumed=f.broker.acquire(request); f.broker.pump();
+    check(resumed.readAverage() && resumed.readAverage()->status==SharedAnalysis::AverageStatus::Waiting &&
+              resumed.readAverage()->processedWindows==0 && !resumed.readAverage()->binsDbfs,
+          "last average demand removal frees its history; renewed demand starts zero and waits for a new hop");
+    tone(*f.tap,1024,.125f,1.f,3072); f.broker.pump();
+    check(resumed.readAverage() && resumed.readAverage()->processedWindows==1 && raw.read()->columns.size()==4,
+          "renewed average and still-live Raw history have independent lifetimes");
+}
+void averageActivationAndOverflow() {
+    Fixture f;
+    SharedAnalysis::Request request{1};
+    auto raw=f.broker.acquire(request);
+    tone(*f.tap); f.broker.pump();
+    request.outputs=SharedAnalysis::Average1s;
+    auto average=f.broker.acquire(request); f.broker.pump();
+    check(average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Waiting &&
+              average.readAverage()->processedWindows==0 && f.broker.stats().transforms==1,
+          "first average demand cannot integrate an already completed retained Raw window");
+    average.reset();
+    tone(*f.tap,4096,.25f,1.f,1024);
+    average=f.broker.acquire(request); f.broker.pump();
+    check(average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Waiting &&
+              average.readAverage()->processedWindows==0 && raw.read()->windowSerial==17,
+          "queued pre-activation Raw windows do not invent prior average history");
+    tone(*f.tap,256,.25f,1.f,5120); f.broker.pump();
+    check(average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Ready &&
+              average.readAverage()->processedWindows==1 && average.readAverage()->windowSerial==18,
+          "one genuinely post-activation hop starts the average once");
+    request.channel=SharedAnalysis::Channel::Left;
+    auto differentDomain=f.broker.acquire(request); f.broker.pump();
+    check(differentDomain.readAverage() && differentDomain.readAverage()->status==SharedAnalysis::AverageStatus::Waiting &&
+              differentDomain.readAverage()->processedWindows==0,
+          "a new channel domain on an already-live tap cannot reinterpret retained pre-demand audio as a first average hop");
+    tone(*f.tap,256,.25f,1.f,5376); f.broker.pump();
+    check(differentDomain.readAverage() && differentDomain.readAverage()->processedWindows==1,
+          "a newly configured average on a shared tap starts at its own post-demand sample boundary");
+    auto left=SharedAnalysis::Request{2,ScopePoint::PostFader,1024,SharedAnalysis::Channel::Left};
+    left.hopSize=1024; left.outputs=SharedAnalysis::Spectrum | SharedAnalysis::Average1s;
+    Fixture overflow;
+    auto lease=overflow.broker.acquire(left);
+    std::vector<float> huge(1024,std::numeric_limits<float>::max()*.25f), zero(1024), modest(1024,.25f);
+    overflow.tap->write(huge.data(),zero.data(),1024,0,true); overflow.broker.pump();
+    auto rejected=lease.readAverage();
+    check(rejected && rejected->status==SharedAnalysis::AverageStatus::InvalidInput && !rejected->binsDbfs &&
+              rejected->processedWindows==0 && lease.read() && !lease.read()->binsDbfs.empty(),
+          "finite input that overflows the float FFT refuses only average output, without poisoning or suppressing Raw");
+    const auto epoch=rejected?rejected->epoch:0;
+    overflow.tap->write(huge.data(),zero.data(),1024,1024,true); overflow.broker.pump();
+    rejected=lease.readAverage();
+    check(rejected && rejected->status==SharedAnalysis::AverageStatus::InvalidInput && rejected->epoch==epoch &&
+              rejected->processedWindows==0, "an invalid run stays explicit without repeatedly resetting the average epoch");
+    overflow.tap->write(modest.data(),zero.data(),1024,2048,true); overflow.broker.pump();
+    const auto recovered=lease.readAverage();
+    adi::dsp::Spectrum spectrum(1024,adi::dsp::Window::Hann); std::vector<float> bins(513), expected(513);
+    spectrum.analyse(modest,bins); adi::dsp::LinearMagnitudeAverage reference;
+    reference.prepare({513,48000.,1024,1.}); reference.processChecked(bins);
+    for(std::size_t i=0;i<bins.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    check(recovered && recovered->status==SharedAnalysis::AverageStatus::Ready && recovered->epoch==epoch &&
+              recovered->processedWindows==1 && recovered->binsDbfs && exactBins(*recovered->binsDbfs,expected),
+          "a valid completed window recovers deterministically from zero after an explicit invalid-data gap");
+}
+void averageChronologyAndEpochs() {
+    constexpr int size=1024, hop=256, total=size+30*hop;
+    std::vector<float> signal(total), right(total);
+    for(std::size_t i=0;i<signal.size();++i) {
+        signal[i]=static_cast<float>(.25*std::sin(.137*static_cast<double>(i))+.1*std::cos(.027*static_cast<double>(i)));
+        right[i]=signal[i];
+    }
+    adi::dsp::Spectrum spectrum(size,adi::dsp::Window::Hann);
+    adi::dsp::LinearMagnitudeAverage reference; reference.prepare({513,48000.,hop,1.});
+    std::vector<float> linear(513),expected(513);
+    for(int start=0;start+size<=total;start+=hop) {
+        spectrum.analyse(std::span(signal).subspan(static_cast<std::size_t>(start),size),linear);
+        reference.processChecked(linear);
+    }
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    for(const int fps:{30,60,144}) for(const int chunk:{17,256,513}) {
+        Fixture f; SharedAnalysis::Request request{1}; request.outputs=SharedAnalysis::Average1s;
+        auto average=f.broker.acquire(request); int nextFrame=1;
+        for(int offset=0;offset<total;) {
+            const int count=std::min(chunk,total-offset);
+            f.tap->write(signal.data()+offset,right.data()+offset,count,offset,true); offset+=count;
+            const int frame=offset*fps/48000;
+            if(frame>=nextFrame) {f.broker.pump();nextFrame=frame+1;}
+        }
+        f.broker.pump(); f.broker.pump();
+        const auto result=average.readAverage();
+        check(result && result->status==SharedAnalysis::AverageStatus::Ready && result->processedWindows==31 &&
+                  result->windowSerial==31 && result->binsDbfs && exactBins(*result->binsDbfs,expected),
+              "identical real hops are bit-identical at exact 30/60/144 Hz frame cadence and different audio callback splits");
+        check(result && result->window->binsDbfs.empty() && f.broker.stats().transforms==31 &&
+                  f.broker.stats().domains==1 && f.broker.stats().taps==1,
+              "average-only demand uses one ordinary transform path without an unused Raw dB projection");
+    }
+    Fixture f; SharedAnalysis::Request request{1}; request.hopSize=1024; request.outputs=SharedAnalysis::Average1s;
+    auto average=f.broker.acquire(request); tone(*f.tap); f.broker.pump(); const auto old=average.readAverage();
+    f.tap=std::make_shared<ScopeTap>(96000.,4.); f.broker.refreshSources();
+    check(!average.readAverage(), "source replacement atomically discards both old window and old average sidecar");
+    tone(*f.tap); f.broker.pump(); const auto changed=average.readAverage();
+    check(old && changed && changed->epoch>old->epoch && changed->processedWindows==1 &&
+              changed->window->sampleRate==96000. && changed->window->generation!=old->window->generation,
+          "owner rate/generation preparation starts a zero average epoch with the actual new sample rate");
+    adi::dsp::LinearMagnitudeAverage rateReference; rateReference.prepare({513,96000.,1024,1.});
+    std::vector<float> rateInput(1024);
+    for(std::size_t i=0;i<rateInput.size();++i)
+        rateInput[i]=.5f*static_cast<float>(std::sin(2*std::numbers::pi*16*static_cast<double>(i)/1024));
+    spectrum.analyse(rateInput,linear); rateReference.processChecked(linear);
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(rateReference.magnitudes()[i]));
+    check(changed && changed->binsDbfs && exactBins(*changed->binsDbfs,expected),
+          "new-rate average values use the exact 96 kHz hop coefficient, not merely new rate metadata");
+    tone(*f.tap,1024,.5f,1.f,50000); f.broker.pump(); const auto gap=average.readAverage();
+    check(gap && changed && gap->epoch>changed->epoch && gap->processedWindows==1 && gap->window->gapCount==1 &&
+              gap->binsDbfs && exactBins(*gap->binsDbfs,*changed->binsDbfs),
+          "timeline gaps reset only average numerical history and accept the next complete contiguous window");
+    const auto frozen=gap; f.broker.shutdown();
+    check(!average && !average.readAverage() && frozen && frozen->binsDbfs && old->processedWindows==1,
+          "shutdown revokes live sidecars while retained immutable snapshots stay valid");
+    std::shared_ptr<ScopeTap> late;
+    SharedAnalysis pending([&](std::int64_t,ScopePoint){return late;},[](std::int64_t,ScopePoint){},SharedAnalysis::Mode::Manual);
+    auto waiting=pending.acquire(request);
+    check(waiting && !waiting.available() && pending.pump()==0, "unavailable average demand starts no worker analysis or guessed-rate history");
+    late=std::make_shared<ScopeTap>(96000.,4.); pending.refreshSources(); tone(*late); pending.pump();
+    check(waiting.readAverage() && waiting.readAverage()->processedWindows==1 && waiting.readAverage()->window->sampleRate==96000.,
+          "late source availability prepares the average on the owner at its actual rate");
+    const auto retained=std::make_shared<ScopeTap>(96000.,4.); int calls=0;
+    SharedAnalysis negotiating([&](adi::engine::ScopeSource,double){
+        if(++calls==2) tone(*retained,65536);
+        return retained;
+    },[](adi::engine::ScopeSource){},SharedAnalysis::Mode::Manual);
+    request.fftSize=65536; request.hopSize=0;
+    auto onset=negotiating.acquire(request); negotiating.pump();
+    check(calls==2 && onset.readAverage() && onset.readAverage()->processedWindows==1 &&
+              onset.readAverage()->window->firstSequence==0 && onset.readAverage()->window->sampleRate==96000.,
+          "first average activation preserves audio captured during actual-rate history negotiation");
+    const auto small=std::make_shared<ScopeTap>(48000.,1.), large=std::make_shared<ScopeTap>(96000.,4.);
+    int replacements=0;
+    SharedAnalysis resizing([&](adi::engine::ScopeSource,double seconds){
+        if(seconds>1.) {if(++replacements==2) tone(*large,65536);return large;}
+        return small;
+    },[](adi::engine::ScopeSource){},SharedAnalysis::Mode::Manual);
+    auto existing=resizing.acquire({1}); tone(*small); resizing.pump();
+    auto replacing=resizing.acquire(request);
+    for(int pass=0;pass<4 && (!replacing.readAverage() || replacing.readAverage()->status!=SharedAnalysis::AverageStatus::Ready);++pass)
+        resizing.pump();
+    check(replacements==2 && replacing.readAverage() && replacing.readAverage()->processedWindows==1 &&
+              replacing.readAverage()->window->firstSequence==0 && replacing.readAverage()->window->sampleRate==96000.,
+          "physical source replacement during a new-domain negotiation preserves newly activated capture onset on an existing tap key");
+    Fixture overrun; overrun.tap=std::make_shared<ScopeTap>(48000.,.1);
+    request.fftSize=1024; request.hopSize=256;
+    auto afterOverrun=overrun.broker.acquire(request); tone(*overrun.tap); overrun.broker.pump();
+    const auto beforeOverrun=afterOverrun.readAverage();
+    tone(*overrun.tap,10000,.25f,1.f,1024); overrun.broker.pump();
+    check(beforeOverrun && afterOverrun.readAverage() && afterOverrun.readAverage()->epoch>beforeOverrun->epoch &&
+              afterOverrun.readAverage()->window->overrunCount==1 && afterOverrun.readAverage()->processedWindows>0 &&
+              afterOverrun.readAverage()->processedWindows<=SharedAnalysis::kMaxWindowsPerFrame,
+          "ring overrun starts a bounded fresh average epoch rather than bridging discarded source history");
+}
+void averagePreparationFailure() {
+    for(int fault:{0,1}) {
+        Fixture f; SharedAnalysis::Request request{1}; request.hopSize=1024;
+        auto raw=f.broker.acquire(request); tone(*f.tap); f.broker.pump();
+        request.outputs=SharedAnalysis::Average1s;
+        failAllocationAfter=fault; auto average=f.broker.acquire(request); failAllocationAfter=-1;
+        f.broker.pump(); const auto refused=average.readAverage();
+        check(average && raw.available() && refused && refused->status==SharedAnalysis::AverageStatus::Unavailable &&
+                  !refused->binsDbfs && refused->window==raw.read(),
+              "average object/array preparation failures leave a live Raw subscriber and explicit unavailable sidecar");
+        raw.reset(); const auto before=f.broker.stats(); tone(*f.tap,1024,.25f,1.f,1024); f.broker.pump();
+        check(!average.available() && f.broker.stats().workerPasses==before.workerPasses &&
+                  f.broker.stats().transforms==before.transforms,
+              "unprepared average-only demand does no hidden window/FFT work or worker allocation retries");
+        request.outputs=SharedAnalysis::Spectrum; raw=f.broker.acquire(request); f.broker.pump();
+        check(raw.available() && raw.read() && near(raw.read()->binsDbfs[16],-12.041199827) &&
+                  average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Unavailable,
+              "a new Raw subscriber reactivates its source independently of an unavailable average");
+        average.reset(); request.outputs=SharedAnalysis::Average1s; average=f.broker.acquire(request); f.broker.pump();
+        check(average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Waiting &&
+                  average.readAverage()->processedWindows==0, "renewed owner demand can prepare after allocation refusal without integrating old Raw data");
+        tone(*f.tap,1024,.125f,1.f,2048); f.broker.pump();
+        check(average.readAverage() && average.readAverage()->status==SharedAnalysis::AverageStatus::Ready &&
+                  average.readAverage()->processedWindows==1, "fresh audio recovers an explicitly retried average from zero");
+    }
+}
+void averagePendingBoundaries() {
+    for(const int queued:{0,1,2}) {
+        Fixture f;
+        if(queued==2) f.tap=std::make_shared<ScopeTap>(48000.,.1);
+        SharedAnalysis::Request request{1}; request.outputs=SharedAnalysis::Scope;
+        auto temporal=f.broker.acquire(request); tone(*f.tap); f.broker.pump();
+        std::int64_t nextStamp=1024;
+        if(queued==1) {tone(*f.tap,1024,.25f,1.f,50000);nextStamp=51024;}
+        if(queued==2) {tone(*f.tap,10000,.25f,1.f,1024);nextStamp=11024;}
+        request.outputs=SharedAnalysis::Average1s;
+        auto average=f.broker.acquire(request); f.broker.pump();
+        const auto waiting=average.readAverage();
+        check(waiting && waiting->status==SharedAnalysis::AverageStatus::Waiting && waiting->processedWindows==0 &&
+                  !waiting->binsDbfs && f.broker.stats().transforms==0,
+              "temporal-only cached/gapped/overrun backlog preserves the first-average sample fence and performs no unused old-window FFT");
+        tone(*f.tap,256,.25f,1.f,nextStamp); f.broker.pump();
+        const auto fresh=average.readAverage();
+        check(fresh && fresh->status==SharedAnalysis::AverageStatus::Ready && fresh->processedWindows==1 &&
+                  f.broker.stats().transforms==1,
+              "first real post-demand hop after cached/gapped/overrun backlog performs exactly one average FFT/update");
+    }
+}
+void averageHistoryAndSanitation() {
+    const auto tap=std::make_shared<ScopeTap>(48000.,1.);
+    SharedAnalysis broker([&](std::int64_t,ScopePoint){return tap;},[](std::int64_t,ScopePoint){},
+                          SharedAnalysis::Mode::Manual,3*513*sizeof(float));
+    SharedAnalysis::Request request{1}; request.outputs=SharedAnalysis::Spectrogram|SharedAnalysis::Average1s;
+    auto lease=broker.acquire(request);
+    tone(*tap); broker.pump();
+    for(int part=0;part<3;++part){tone(*tap,256,.5f,1.f,1024+part*256);broker.pump();}
+    const auto blocked=lease.readAverage(); const auto work=broker.stats();
+    check(blocked && blocked->status==SharedAnalysis::AverageStatus::Ready && blocked->processedWindows==4 &&
+              blocked->window->historyLimited && blocked->window->columns.size()==2,
+          "average real-hop history advances independently of a capped immutable Spectrogram publication");
+    broker.pump(); const auto retried=lease.readAverage();
+    check(retried && blocked && !retried->window->historyLimited && retried->window->columns.size()==3 &&
+              retried->processedWindows==blocked->processedWindows && retried->epoch==blocked->epoch &&
+              retried->binsDbfs==blocked->binsDbfs && broker.stats().transforms==work.transforms &&
+              broker.stats().analysisWindows==work.analysisWindows,
+          "history-only retry reuses average bins and numerical identity with no FFT or average update");
+    Fixture f; request.hopSize=1024; request.outputs=SharedAnalysis::Spectrum|SharedAnalysis::Scope|SharedAnalysis::Average1s;
+    auto average=f.broker.acquire(request); tone(*f.tap); f.broker.pump();
+    adi::dsp::Spectrum spectrum(1024,adi::dsp::Window::Hann);
+    adi::dsp::LinearMagnitudeAverage reference; reference.prepare({513,48000.,1024,1.});
+    std::vector<float> input(1024),linear(513),expected(513);
+    for(std::size_t i=0;i<input.size();++i) input[i]=.5f*static_cast<float>(std::sin(2*std::numbers::pi*16*static_cast<double>(i)/1024));
+    spectrum.analyse(input,linear); reference.processChecked(linear);
+    std::fill(input.begin(),input.end(),0.f); input[0]=std::numeric_limits<float>::quiet_NaN();
+    input[1]=std::numeric_limits<float>::infinity(); input[2]=-std::numeric_limits<float>::infinity();
+    f.tap->write(input.data(),input.data(),1024,1024,true); f.broker.pump();
+    std::fill(linear.begin(),linear.end(),0.f); reference.processChecked(linear);
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    auto result=average.readAverage();
+    check(result && result->status==SharedAnalysis::AverageStatus::Ready && result->processedWindows==2 &&
+              result->window->nonFiniteSamples==6 && result->window->scopeLeft[0]==0.f &&
+              result->binsDbfs && exactBins(*result->binsDbfs,expected) && f.broker.stats().transforms==1 && std::isnan(input[0]),
+          "source NaN/Inf sanitation supplies a valid zero hop and decay without poisoning average state or modifying input");
+    std::fill(input.begin(),input.end(),std::numeric_limits<float>::denorm_min());
+    f.tap->write(input.data(),input.data(),1024,2048,true); f.broker.pump();
+    spectrum.analyse(input,linear); reference.processChecked(linear);
+    for(std::size_t i=0;i<expected.size();++i) expected[i]=adi::dsp::toDbfs(static_cast<float>(reference.magnitudes()[i]));
+    result=average.readAverage();
+    check(result && result->status==SharedAnalysis::AverageStatus::Ready && result->processedWindows==3 &&
+              result->binsDbfs && exactBins(*result->binsDbfs,expected) && result->window->nonFiniteSamples==0,
+          "smallest finite subnormal source input follows the existing FFT and precise average law without a new silence floor");
+}
+void averagePublicationFailure() {
+    std::array<std::size_t,2> sizes{};
+    for(int kind=0;kind<2;++kind) {
+        allocationSizeCount=0; observeAllocationSizes=true;
+        if(kind==0) {auto marker=std::make_shared<SharedAnalysis::AverageResult>(); observeAllocationSizes=false;}
+        else {auto marker=std::make_shared<std::vector<float>>(); observeAllocationSizes=false;}
+        sizes[static_cast<std::size_t>(kind)]=allocationSizeCount?allocationSizes[0]:0;
+    }
+    check(sizes[0] && sizes[1] && sizes[0]!=sizes[1], "failure injection calibrates opaque standard-library sidecar and bin-owner allocation sizes");
+    for(const auto size:sizes) {
+        Fixture f; SharedAnalysis::Request request{1}; request.hopSize=1024;
+        request.outputs=SharedAnalysis::Spectrum|SharedAnalysis::Average1s;
+        auto lease=f.broker.acquire(request); tone(*f.tap); f.broker.pump();
+        tone(*f.tap,1024,.25f,1.f,1024);
+        refuseAllocationBytes=size; refusedAllocationSize=false;
+        f.broker.pump(); refuseAllocationBytes=0;
+        check(refusedAllocationSize && lease.read() && lease.read()->windowSerial==2 && !lease.readAverage() &&
+                  near(lease.read()->binsDbfs[16],-12.041199827),
+              "optional sidecar/bin publication allocation refusal still commits the complete Raw window");
+        const auto stopped=f.broker.stats(); f.broker.pump();
+        check(!lease.readAverage() && f.broker.stats().workerPasses==stopped.workerPasses &&
+                  f.broker.stats().publications==stopped.publications,
+              "publication allocation refusal does not create an idle worker allocation retry loop");
+        request.outputs=SharedAnalysis::Scope; auto scope=f.broker.acquire(request); f.broker.pump();
+        const auto recovered=lease.readAverage();
+        check(recovered && recovered->status==SharedAnalysis::AverageStatus::Ready && recovered->processedWindows==2 &&
+                  recovered->windowSerial==2 && recovered->window==lease.read() && recovered->binsDbfs &&
+                  f.broker.stats().transforms==stopped.transforms && f.broker.stats().analysisWindows==stopped.analysisWindows,
+              "a genuine metadata event retries optional publication without replaying FFT or numerical average hops");
+    }
+}
 void boundsAndDeviceSources() {
     auto tap = std::make_shared<ScopeTap>(48000, .1);
     std::vector<adi::engine::ScopeSource> acquired, released;
@@ -610,9 +956,24 @@ void lateRateAndFailedNegotiation() {
 }
 
 } // namespace
+void *operator new(std::size_t bytes) {
+    if(observeAllocationSizes && allocationSizeCount<allocationSizes.size()) allocationSizes[allocationSizeCount++]=bytes;
+    if(refuseAllocationBytes && bytes==refuseAllocationBytes && !refusedAllocationSize) {
+        refusedAllocationSize=true; throw std::bad_alloc{};
+    }
+    if(failAllocationAfter==0) throw std::bad_alloc{};
+    if(failAllocationAfter>0) --failAllocationAfter;
+    if(auto *p=std::malloc(bytes?bytes:1)) return p;
+    throw std::bad_alloc{};
+}
+void *operator new[](std::size_t bytes) {return ::operator new(bytes);}
+void operator delete(void *p) noexcept {std::free(p);}
+void operator delete[](void *p) noexcept {::operator delete(p);}
+void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
+void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
+          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
