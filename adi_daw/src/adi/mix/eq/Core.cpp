@@ -95,6 +95,19 @@ Settings resolveLinkedChanges(const Settings &previous, Settings next) noexcept 
     }
     return next;
 }
+Settings pinPlanSettings(Settings controls, const Settings &plan) noexcept {
+    controls.structure = plan.structure;
+    controls.lookaheadMs = plan.lookaheadMs;
+    controls.spectralResolution = plan.spectralResolution;
+    if (spectral(controls) != spectral(plan))
+        for (std::size_t i = 0; i < bandCount; ++i)
+            if (spectral(controls.bands[i]) != spectral(plan.bands[i])) {
+                controls.bands[i].spectralOn = plan.bands[i].spectralOn;
+                controls.bands[i].status = plan.bands[i].status;
+                controls.bands[i].shape = plan.bands[i].shape;
+            }
+    return controls;
+}
 struct Core::Implementation {
     adi_eq_zlp::Controller controller;
     ADISharedEqSpectralDynamics spectralEngine;
@@ -104,7 +117,7 @@ struct Core::Implementation {
     std::array<std::vector<double>, 2> mainStorage, keyStorage, detectorDelay;
     std::array<double *, 2> mainPointers{}, keyPointers{};
     std::array<ADISharedEqSpectralDynamics::Band, bandCount> spectralBands{};
-    int detectorPosition = 0, spectralLatency = 0;
+    int detectorPosition = 0, spectralLatency = 0, maximumLatency = 0;
     std::uint64_t generation = 0, block = 0, lastPhysical = 0, offerSerial = 0;
     std::atomic<std::uint64_t> pending{0};
     std::atomic<int> committedLatency{0}, reportedActual{0};
@@ -129,20 +142,7 @@ struct Core::Implementation {
         pending.store((offerSerial << 32) | samples, std::memory_order_release);
     }
     Settings pinned(Settings desired) const noexcept {
-        desired.structure = active.structure;
-        desired.lookaheadMs = active.lookaheadMs;
-        desired.spectralResolution = active.spectralResolution;
-        if (spectral(desired) != spectral(active))
-            for (std::size_t i = 0; i < bandCount; ++i) {
-                // Hold only topology that changes spectral latency. Unrelated
-                // bands keep their ordinary, segment-accurate control edits.
-                if (spectral(desired.bands[i]) != spectral(active.bands[i])) {
-                    desired.bands[i].spectralOn = active.bands[i].spectralOn;
-                    desired.bands[i].status = active.bands[i].status;
-                    desired.bands[i].shape = active.bands[i].shape;
-                }
-            }
-        return desired;
+        return pinPlanSettings(desired, active);
     }
     void apply(const Settings &s) noexcept {
         const bool all = !applied;
@@ -386,6 +386,14 @@ void Core::prepare(PrepareSpec spec, const Settings &s) {
     i.controller.setEditorON(false);
     i.spectralEngine.setDisplayEnabled(false);
     i.controller.prepare(spec.sampleRate, static_cast<std::size_t>(i.spec.maximumFrames));
+    int maximumCorrection = 0, maximumSpectral = 0;
+    for (int structure = 0; structure < 6; ++structure)
+        maximumCorrection = std::max(maximumCorrection, i.controller.preparedCorrectionLatency(
+                                                           static_cast<adi_eq_zlp::FilterStructure>(structure)));
+    for (int resolution = 0; resolution < 3; ++resolution)
+        maximumSpectral = std::max(maximumSpectral, i.spectralEngine.preparedFftSize(
+                                                      static_cast<ADISharedEqSpectralDynamics::Resolution>(resolution)));
+    i.maximumLatency = maximumCorrection + i.controller.preparedDelayLatency(.020) + maximumSpectral;
     i.active = s;
     i.offer = s;
     i.pending.store(0, std::memory_order_release);
@@ -401,11 +409,22 @@ void Core::reset(const Settings &s) { prepare(implementation->spec, s); }
 std::int32_t Core::latencySamples() const noexcept {
     return implementation->committedLatency.load(std::memory_order_acquire);
 }
+std::int32_t Core::maximumLatencySamples() const noexcept {
+    return implementation->prepared ? implementation->maximumLatency : 0;
+}
 LatencyChange Core::pendingLatencyChange() const noexcept {
     const auto token = implementation->pending.load(std::memory_order_acquire);
     return {token, static_cast<std::int32_t>(token & 0xffffffffU)};
 }
-BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, const Settings &s) noexcept {
+bool Core::requestConfiguration(const Settings &s) noexcept {
+    auto &i = *implementation;
+    if (!i.prepared || !valid(s))
+        return false;
+    i.consider(s);
+    return true;
+}
+BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, const Settings &s,
+                            bool admitPending) noexcept {
     auto &i = *implementation;
     if (!i.prepared || !valid(s) || configured < 0)
         return {};
@@ -417,7 +436,7 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
     ++i.block;
     i.blockAdmitted = false;
     const auto pending = i.pending.load(std::memory_order_acquire);
-    if (pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
+    if (admitPending && pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
         i.active = i.offer;
         i.committedLatency.store(configured, std::memory_order_release);
         i.pending.store(0, std::memory_order_release);
