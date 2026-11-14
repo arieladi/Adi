@@ -140,4 +140,11 @@ std::string encodeError(const Json& id, const RpcError& e) {
     return dumpJson(m);
 }
 
+std::string clipEcho(std::string_view text, std::size_t max) {
+    if (text.size() <= max) return std::string(text);
+    std::size_t cut = max;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) --cut;
+    return std::string(text.substr(0, cut)) + "...";
+}
+
 }  // namespace adi::control

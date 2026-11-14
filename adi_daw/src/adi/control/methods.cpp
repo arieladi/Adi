@@ -24,17 +24,8 @@ constexpr std::size_t kMaxRequestText = 4096;   ///< characters
 constexpr std::size_t kMaxLabel = 200;          ///< characters
 constexpr std::size_t kMaxQuery = 128;          ///< characters
 constexpr std::size_t kMaxActorLabel = 120;     ///< bytes, cut on a UTF-8 boundary
-constexpr std::size_t kMaxEcho = 64;            ///< bytes of caller text a refusal repeats
 constexpr std::size_t kMaxChangesShown = 200;
 constexpr std::size_t kMaxDiffBytes = 256 * 1024;
-
-/// At most `max` bytes, never ending inside a UTF-8 sequence.
-std::string clipUtf8(std::string_view text, std::size_t max) {
-    if (text.size() <= max) return std::string(text);
-    std::size_t cut = max;
-    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) --cut;
-    return std::string(text.substr(0, cut)) + "...";
-}
 
 /// Method params are closed objects, like op payloads: an unknown key is a
 /// typo the caller believes did something. The refusal repeats a bounded part
@@ -44,7 +35,7 @@ std::optional<RpcError> closedKeys(const Json& params, std::initializer_list<std
     if (!params.is_object()) return RpcError{errc::InvalidParams, "params must be an object", nullptr};
     for (auto it = params.begin(); it != params.end(); ++it)
         if (std::find(keys.begin(), keys.end(), it.key()) == keys.end())
-            return RpcError{errc::InvalidParams, "unknown parameter: " + clipUtf8(it.key(), kMaxEcho), nullptr};
+            return RpcError{errc::InvalidParams, "unknown parameter: " + clipEcho(it.key()), nullptr};
     return std::nullopt;
 }
 
@@ -165,14 +156,23 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
         return refusal(errc::InvalidParams, "project is a project handle (a string)", "invalid");
     // baseHead is required (ADR-0233 d5: the stale check keeps nextIds free
     // only when the head the caller read is checked). A caller on the RPC
-    // path may say it as meta.expectHead instead. Null is the root.
+    // path may say it as meta.expectHead instead, which is copied in here so
+    // the run, the queue's idempotency digest and the stale check all see
+    // one head. Both, disagreeing, is refused: never a silent choice of one.
+    // Null is the root.
     if (const auto bh = p.find("baseHead"); bh != p.end()) {
+        std::optional<std::int64_t> head;
         if (!bh->is_null()) {
             const auto v = asInt64(*bh);
             if (!v) return refusal(errc::InvalidParams, "baseHead is an integer or null", "invalid");
             *bh = *v;
+            head = *v;
         }
-    } else if (!meta.expectHead) {
+        if (meta.expectHead && *meta.expectHead != head)
+            return refusal(errc::InvalidParams, "baseHead and meta.expectHead disagree", "invalid");
+    } else if (meta.expectHead) {
+        p["baseHead"] = *meta.expectHead ? Json(**meta.expectHead) : Json(nullptr);
+    } else {
         return refusal(errc::InvalidParams,
                        "baseHead is required: the head project_read returned (null is the root)", "invalid");
     }
@@ -195,7 +195,7 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
             return refusal(errc::InvalidParams, at + " is an object", "invalid", {{"index", index}});
         for (auto it = o.begin(); it != o.end(); ++it)
             if (it.key() != "op" && it.key() != "payload" && it.key() != "label")
-                return refusal(errc::InvalidParams, at + ": unknown key " + clipUtf8(it.key(), kMaxEcho), "invalid",
+                return refusal(errc::InvalidParams, at + ": unknown key " + clipEcho(it.key()), "invalid",
                                {{"index", index}});
         const auto op = o.find("op");
         if (op == o.end() || !op->is_string())
@@ -204,7 +204,7 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
         const auto* d = OpRegistry::instance().find(name);
         if (!d || !agent::agentMayEmit(name))
             return refusal(errc::InvalidParams,
-                           "'" + clipUtf8(name, kMaxEcho) + "' is not an op a changeset may contain (ops.describe)",
+                           "'" + clipEcho(name) + "' is not an op a changeset may contain (ops.describe)",
                            "op not allowed", {{"index", index}});
         const auto payload = o.find("payload");
         if (payload == o.end() || !payload->is_object())
@@ -215,9 +215,9 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMe
         if (!issues.empty()) {
             Json list = Json::array();
             for (std::size_t i = 0; i < issues.size() && i < 8; ++i)
-                list.push_back({{"key", clipUtf8(issues[i].key, kMaxEcho)}, {"problem", issues[i].problem}});
+                list.push_back({{"key", clipEcho(issues[i].key)}, {"problem", issues[i].problem}});
             return refusal(errc::InvalidParams,
-                           std::string(d->name) + ": " + clipUtf8(issues.front().key, kMaxEcho) + " " +
+                           std::string(d->name) + ": " + clipEcho(issues.front().key) + " " +
                                issues.front().problem,
                            "invalid", {{"index", index}, {"op", std::string(d->name)}, {"issues", std::move(list)}});
         }
@@ -449,7 +449,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     if (!n.is_string()) return Outcome::fail(errc::InvalidParams, "names holds strings");
                     const auto* d = reg.find(n.get<std::string>());
                     if (!d) {
-                        unknown.push_back(clipUtf8(n.get_ref<const std::string&>(), kMaxEcho));
+                        unknown.push_back(clipEcho(n.get_ref<const std::string&>()));
                         continue;
                     }
                     Json o = describeOp(*d);
@@ -548,14 +548,12 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                 }
             }
 
-            // The head the caller built on: params.baseHead (the screen made it
-            // required), else meta.expectHead. Null is the root.
+            // The head the caller built on: params.baseHead, which the screen
+            // made required (or copied in from meta.expectHead) and an int64.
+            // Null is the root.
             std::optional<std::int64_t> baseHead;
-            if (const auto bh = p.find("baseHead"); bh != p.end()) {
-                if (!bh->is_null()) baseHead = bh->get<std::int64_t>();
-            } else if (call.meta.expectHead) {
-                baseHead = *call.meta.expectHead;
-            }
+            if (const auto bh = p.find("baseHead"); bh != p.end() && !bh->is_null())
+                baseHead = bh->get<std::int64_t>();
 
             agent::Changeset cs;
             cs.baseHead = baseHead;

@@ -60,7 +60,9 @@ by default, and it can never raise its own tier.
 `adi-mcp --project` holds **no writable handle** on the project (AI-AGENT §6 rule 1), and no
 handle at all between requests:
 - each read opens a read-only connection, reads, and closes it;
-- each preview runs on a private snapshot copy;
+- each preview runs on a private snapshot copy, taken afresh for every preview, so it is the file
+  as it is now even when something changed it without moving the head (an ephemeral op, Collect
+  All and Save, another project saved over it);
 - **applying is the user's act.** Headless, the user saves the `changeset` that
   `changeset_propose` returns (`changeset_status` returns it too, while it awaits review) and runs
   `adi_tool propose <file> <changeset.json> --apply`. The app's review panel (AGT-05) will apply
@@ -176,9 +178,20 @@ read is refused as stale if anything moved, so the stale check keeps `nextIds` f
    - The grant comes before anything else, so an unknown or ungranted caller learns nothing.
    - Then the method and its tier, then the idempotent replay. A replay returns the first
      answer; a key reused with different arguments is refused (−32602), never replayed.
+     `meta.expectHead` counts as an argument: the same key and params with another head is
+     refused too.
    - Then the method's screen: parameters checked, and every op normalised and validated
      (allow-list, cap, `validateSubmission` with the remote bounds). A refusal never reaches the
      owner thread.
+   - The remote bounds reach inside an open object or array (one whose members no `Field`
+     declares): text there, member names included, is at most 16,384 characters, and arrays and
+     objects at most 4,096 members. The schema states the top-level caps only.
+   - A payload key that starts with `_` (split pan's `_erase` and `_restore`, `clip.setFades`'
+     `_restore`) belongs to the op's inverse. The remote boundary refuses it, and the remote schema
+     does not list it.
+   - Of the ops that exist to replay a captured inverse, `automation.restoreLane`,
+     `automation.restoreData`, `cc.restoreStream`, `note.restoreNotes` and
+     `track.restoreRecording` are refused as `op not allowed`.
 2. **The hop.** The call waits PENDING until the owner TAKES it with a compare-and-swap.
    - A transport whose deadline fires first ABANDONS it, and it never runs.
    - A call that waited past its deadline without being abandoned is taken and answered −32003,
@@ -218,6 +231,16 @@ With the WebSocket listener (CTL-04), a `meta` object, a sibling of `params`, wi
 `expectHead`, `deadlineMs` and `idempotencyKey` (ADR-0232 d2). The `Service` already takes a
 `RequestMeta`, and `parseMeta` is built and tested, but no wire in this slice reads a top-level
 `meta`. MCP carries only the idempotency key, in `params._meta` (§5.2).
+
+`expectHead` binds writes only (ADR-0232 d2: a commit precondition); a read ignores it. For
+`changeset.propose` it is the `baseHead`: when `params.baseHead` is absent the screen copies
+`expectHead` into it, so the stale check, the queue's idempotency digest and the changeset all
+see one head; when both are present and differ, the call is refused (−32602, "baseHead and
+meta.expectHead disagree"), never a silent choice of one.
+
+A refusal repeats at most 64 bytes of anything the caller sent (a method, tool or parameter
+name, a uri, a protocol version), cut on a character boundary with `...` after it. A line may be
+4 MiB; an echo of it never is.
 
 **Errors:**
 
@@ -298,7 +321,8 @@ the guidance.
   version MUST NOT emit −32002.
 
 **Errors in `tools/call`.**
-- An unknown tool is −32602 (ruled), once the caller is granted.
+- An unknown tool is −32602 (ruled), once the caller is granted. Its `data.tools` lists the tools
+  that caller's tier is offered, exactly as `tools/list` does.
 - Bad arguments and refusals are **tool execution errors**: `isError: true`, so the model can
   correct itself. `structuredContent` is `{error: {code, message, data?}}`. On a screening or
   preview refusal `error.data.refusal` names it: `empty`, `too many ops`, `op not allowed`,
@@ -519,9 +543,11 @@ the row truthfully, and the projection shows it as a sidechain row.
 
   `--connect` and the app's listener wait for AGT-03. Whether the headless bridge may run before
   AGT-03 at all is the director's to rule (ADR-0233 d8).
-- **Snapshots of the project** live in a private folder named for the bridge's process, removed
-  when it ends. A folder left by a bridge that crashed or was killed is swept when the next one
-  starts.
+- **Snapshots of the project** live in a private folder named for the bridge's process
+  (`adi-mcp-<pid>-<16 lowercase hex>`), removed when it ends. On POSIX it is created 0700 in one
+  call, never widened first and narrowed after. A folder left by a bridge that crashed or was
+  killed is swept when the next one starts: only an exact match, only a real folder (never a
+  link), and on POSIX only one this user owns.
 - **No listener exists in this slice.** The WebSocket (CTL-04) will be:
   - bound to 127.0.0.1 and off by default (`control.enabled`);
   - closed to any request without a bearer token, compared in constant time
@@ -607,10 +633,10 @@ CheckAtStartOnly.
 
 | Suite | Proves |
 |---|---|
-| `adi_ops_schema_tests` (AC-24) | every op has a closed schema; a payload passes the schema exactly when the boundary accepts it (over values as nlohmann parses them: an integer outside int64 and uint64 arrives as a double, so AC-24 holds over parsed values, not over JSON text), over generated payloads for all 142 ops and a synthetic op whose nested items are generated too; declared enums, ranges and lengths are refused naming the key; a full uint64 is an Int (note ids); the remote bounds profile |
-| `adi_rpc_permissions_tests` | permission before validation; no grant means refused; a write needs more than Observe; a revoked grant is never replayed, and a grant revoked while a call waits is refused on the owner thread, unrun; idempotent replay is keyed by credential plus key, and a key reused with different arguments is refused; a call abandoned while pending never runs, and one past its deadline is refused unrun; the screen runs on the caller's thread and a refusal never reaches the owner; an internal error says only "internal error"; the audit keeps codes and kinds, never a granted caller's text, every field capped; `secureEquals` |
-| `adi_changeset_tests` | the diff stays bounded and correct past its budget, and exact for a contiguous block |
-| `adi_control_mcp_tests` (AC-23, AC-17) | both handshakes, 2025-03-26 answered 2025-11-25 and 2024-11-05 echoed, −32022, a legacy version in modern `_meta` treated as legacy, `server/discover`, `resultType`, `ttlMs` and `cacheScope`; an unknown tool is −32602; a refusal is `isError`; resource not found is −32002 legacy and −32602 modern; no grant answers −32006 for lists, tools and `resources/read`, and every MCP-layer refusal is audited; hostile lines (depth, size, bad UTF-8, batches, a null id) never crash, and an unreadable id is omitted; a peer's response, id-less or with a null id, is never answered; an invalid `_meta` idempotency key is refused; `baseHead` is required, and its absence is refused; headless read, propose a volume change, see the diff and the changeset in the result, file bytes unchanged; the §6.3 sidechain changeset applied, then one undo restores the projection exactly; two projects open, a request naming B never touches A; another client of the same server cannot read your changeset; characters, not bytes; devices inside racks, `nextIds`, key events; telemetry with taps and the live manifest's transport; the connection's audit |
+| `adi_ops_schema_tests` (AC-24) | every op has a closed schema; a payload passes the schema exactly when the boundary accepts it (over values as nlohmann parses them: an integer outside int64 and uint64 arrives as a double, so AC-24 holds over parsed values, not over JSON text), over generated payloads for all 142 ops and a synthetic op whose nested items are generated too; declared enums, ranges and lengths are refused naming the key; an Int is an int64, and only a note id may be a full uint64 (above INT64_MAX anything else is refused, exactly, never wrapped; the schema's maximum says the same); the remote bounds profile, inside open objects and arrays too; `_` keys refused remotely and absent from the remote schema |
+| `adi_rpc_permissions_tests` | permission before validation; no grant means refused; a write needs more than Observe; a revoked grant is never replayed, and a grant revoked while a call waits is refused on the owner thread, unrun; idempotent replay is keyed by credential plus key, and a key reused with different arguments, or with another `meta.expectHead`, is refused; a call abandoned while pending never runs, and one past its deadline is refused unrun; the screen runs on the caller's thread and a refusal never reaches the owner; an internal error says only "internal error"; the audit keeps codes and kinds, never a granted caller's text, every field capped; `secureEquals` |
+| `adi_changeset_tests` | the diff stays bounded and correct past its budget, and exact for a contiguous block; the internal restore ops are refused and `controller.bind`, `clip.split` and `clip.join` are not; `clip.split` reads as before and after, not a deletion; `adi_tool`'s changeset JSON refuses a `baseHead`, `targetId` or `createdUtc` that is not an int64 |
+| `adi_control_mcp_tests` (AC-23, AC-17) | both handshakes, 2025-03-26 answered 2025-11-25 and 2024-11-05 echoed, −32022, a legacy version in modern `_meta` treated as legacy, `server/discover`, `resultType`, `ttlMs` and `cacheScope`; an unknown tool is −32602, listing only the caller's tier's tools; a refusal is `isError`; no refusal repeats more than 64 bytes of a 100 KB method, tool, uri or protocol version; `track.create` with id UINT64_MAX, `_restore`/`_erase` and an over-long text inside an open row are refused naming the key; `meta.expectHead` alone is the base head and stale when old, disagreeing with `baseHead` is refused, and a key reused with another `expectHead` is refused by the service and by the queue; a write that does not move the head is seen by the next preview; resource not found is −32002 legacy and −32602 modern; no grant answers −32006 for lists, tools and `resources/read`, and every MCP-layer refusal is audited; hostile lines (depth, size, bad UTF-8, batches, a null id) never crash, and an unreadable id is omitted; a peer's response, id-less or with a null id, is never answered; an invalid `_meta` idempotency key is refused; `baseHead` is required, and its absence is refused; headless read, propose a volume change, see the diff and the changeset in the result, file bytes unchanged; the §6.3 sidechain changeset applied, then one undo restores the projection exactly; two projects open, a request naming B never touches A; another client of the same server cannot read your changeset; characters, not bytes; devices inside racks, `nextIds`, key events; telemetry with taps and the live manifest's transport; the connection's audit |
 | `adi_control_projection_tests` (AGT-02) | the levelled read over a seeded project: clips, automation lanes and notes with their ids, positions and note names at levels 1 and 2; `fromBar` and `toBar` select clips; scope arguments refused at a level that ignores them, and `fromBar` not before `toBar` refused; level 3 refused; `tempoChanges`, `meterChanges`, `pluginRefs` and each device's `ref` at level 0; key events, remarks and tunings, and `nextIds` one past the highest id |
 | `adi-mcp` smoke | the real binary over pipes: initialize, `tools/list`, `project_read`, the file unchanged |
 

@@ -5,6 +5,7 @@
 #include <initializer_list>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace adi::control {
 namespace {
@@ -47,6 +48,16 @@ const ToolDef* findTool(std::string_view name) {
     for (const auto& t : kTools)
         if (name == t.tool) return &t;
     return nullptr;
+}
+
+/// The tools a tier is offered: those whose method it may call. One rule for
+/// tools/list and for the list an unknown tool's refusal gives, so an Observe
+/// client is never shown a tool that would only ever answer "not granted".
+std::vector<std::pair<const ToolDef*, const MethodSpec*>> offeredTools(const Service& service, Tier tier) {
+    std::vector<std::pair<const ToolDef*, const MethodSpec*>> out;
+    for (const auto& t : kTools)
+        if (const MethodSpec* spec = service.find(t.method); spec && spec->minTier <= tier) out.emplace_back(&t, spec);
+    return out;
 }
 
 std::string labelOf(const Json& clientInfo) {
@@ -184,19 +195,15 @@ Json McpEndpoint::discoverResult() const {
 
 Json McpEndpoint::toolsList(Tier tier) const {
     Json tools = Json::array();
-    for (const auto& t : kTools) {
-        const MethodSpec* spec = service_.find(t.method);
-        // Only what this caller may call: an Observe client is not offered a
-        // tool that would only ever answer "not granted".
-        if (!spec || spec->minTier > tier) continue;
-        tools.push_back({{"name", t.tool},
-                         {"title", t.title},
-                         {"description", spec->summary + ". " + t.guidance},
+    for (const auto& [t, spec] : offeredTools(service_, tier)) {
+        tools.push_back({{"name", t->tool},
+                         {"title", t->title},
+                         {"description", spec->summary + ". " + t->guidance},
                          {"inputSchema", spec->paramsSchema},
                          {"annotations",
-                          {{"readOnlyHint", t.readOnly},
+                          {{"readOnlyHint", t->readOnly},
                            {"destructiveHint", false},
-                           {"idempotentHint", t.idempotent},
+                           {"idempotentHint", t->idempotent},
                            {"openWorldHint", false}}}});
     }
     return {{"tools", std::move(tools)}};
@@ -263,7 +270,7 @@ std::string McpEndpoint::refuse(const Json& id, const std::string& label, const 
     return encodeError(id, std::move(error));
 }
 
-std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, RpcError& error) {
+std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, Tier tier, RpcError& error) {
     // A refusal made here is audited here; one from the method came through
     // Service::call, which audited it already.
     const auto local = [this, &who, &error](RpcError e) -> std::optional<Json> {
@@ -275,10 +282,11 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
         return local({errc::InvalidParams, "tools/call needs a tool name", nullptr});
     const auto& name = params.at("name").get_ref<const std::string&>();
     const ToolDef* tool = findTool(name);
-    if (!tool)
-        return local({errc::InvalidParams, "unknown tool: " + name,
-                      {{"tools", Json::array({"project_read", "ops_describe", "changeset_propose",
-                                              "changeset_status"})}}});
+    if (!tool) {
+        Json names = Json::array();
+        for (const auto& offered : offeredTools(service_, tier)) names.push_back(offered.first->tool);
+        return local({errc::InvalidParams, "unknown tool: " + clipEcho(name), {{"tools", std::move(names)}}});
+    }
     Json arguments = Json::object();
     if (const auto a = params.find("arguments"); a != params.end() && !a->is_null()) {
         if (!a->is_object()) return local({errc::InvalidParams, "tool arguments are an object", nullptr});
@@ -351,7 +359,7 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
         }
     }
     if (method.empty()) {
-        error = {notFound, "no such resource", {{"uri", uri}}};
+        error = {notFound, "no such resource", {{"uri", clipEcho(uri)}}};
         auditRefusal(who.label, "resources/read", error);
         return std::nullopt;
     }
@@ -362,7 +370,7 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
         error = *out.error;
         if (error.code == errc::InvalidParams) {
             error.code = notFound;
-            error.data = {{"uri", uri}};
+            error.data = {{"uri", clipEcho(uri)}};
         }
         return std::nullopt;
     }
@@ -404,7 +412,7 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
         } else if (!isLegacyVersion(version)) {
             return refuse(id, asked, audited,
                           {errc::UnsupportedProtocolVersion, "Unsupported protocol version",
-                           {{"supported", allVersions()}, {"requested", v}}});
+                           {{"supported", allVersions()}, {"requested", clipEcho(version)}}});
         }
         // A legacy version in a modern _meta: the spec is silent, and −32022
         // listing the very version asked for would invite a loop. The modern
@@ -469,11 +477,11 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
         cacheable = true;
         if (!result) return encodeError(id, error);
     } else if (method == "tools/call") {
-        result = callTool(params, who, error);   // audited inside, as above
+        result = callTool(params, who, *granted, error);   // audited inside, as above
         if (!result) return encodeError(id, error);
     } else {
         // initialize under modern _meta, ping in the modern era, or anything else.
-        return refuse(id, era.label, audited, {errc::MethodNotFound, "method not found: " + method, nullptr});
+        return refuse(id, era.label, audited, {errc::MethodNotFound, "method not found: " + clipEcho(method), nullptr});
     }
 
     if (era.modern) {

@@ -9,11 +9,30 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <exception>
+#include <optional>
 #include <utility>
 
 namespace adi::agent {
 namespace {
+
+/// A JSON integer that fits an int64, or a float with no fraction inside that
+/// range (JSON Schema calls both an integer); nullopt otherwise, so an
+/// unsigned value above INT64_MAX is refused, never wrapped to a negative.
+/// The rule control/methods.cpp's asInt64 applies on the MCP path.
+std::optional<std::int64_t> int64Of(const Payload& v) {
+    if (v.is_number_integer() && !v.is_number_unsigned()) return v.get<std::int64_t>();
+    if (v.is_number_unsigned() && v.get<std::uint64_t>() <= static_cast<std::uint64_t>(INT64_MAX))
+        return static_cast<std::int64_t>(v.get<std::uint64_t>());
+    if (v.is_number_float()) {
+        const double d = v.get<double>();
+        if (std::isfinite(d) && std::floor(d) == d && d >= -9223372036854775808.0 && d < 9223372036854775808.0)
+            return static_cast<std::int64_t>(d);
+    }
+    return std::nullopt;
+}
 
 // --- guardrails, shared by preview and apply ---------------------------------------
 
@@ -105,8 +124,11 @@ Change describe(const OpRequest& q, const OpDescriptor& d, const std::optional<P
         if (objects && everyKeyIn(*inverse, q.payload, true)) {
             // The inverse is only the identity, repeated from the payload: a creation.
             c.after = q.payload;
-        } else if (objects && everyKeyIn(q.payload, *inverse, false)) {
-            // The inverse captured the row the payload names: a deletion.
+        } else if (objects && everyKeyIn(q.payload, *inverse, true)) {
+            // The inverse captured the row the payload names, and the payload
+            // is only that row's identity: a deletion. Compared by value, so
+            // clip.split ({id,changes} against {id,changes reversed}) shows
+            // both sides.
             c.before = *inverse;
         } else {
             // A capture beside new values: the old state, then the new.
@@ -292,6 +314,14 @@ bool agentMayEmit(std::string_view opType) {
     // disk, and the agent has no business asserting what is on the disk.
     // Any media op added later is refused until it is named here.
     if (opType.rfind("media.", 0) == 0) return opType == "media.unlink" || opType == "media.relink";
+    // The restore ops exist to replay an inverse another op captured, and
+    // write what they are given past that op's own checks: raw stream bytes,
+    // a lane row, a recording row. Named, not inferred from "has no inverse
+    // and is some op's inverse", which would also catch controller.bind, a
+    // forward op. arranger.splice, clip.split and clip.join are edits.
+    for (const std::string_view internal : {"automation.restoreLane", "automation.restoreData",
+                                            "cc.restoreStream", "note.restoreNotes", "track.restoreRecording"})
+        if (opType == internal) return false;
     return true;
 }
 
@@ -490,12 +520,23 @@ std::optional<Changeset> changesetFromJson(const Store& store, const Payload& j,
                                            std::string& error) {
     try {
         if (!j.is_object()) { error = "a changeset is a JSON object"; return std::nullopt; }
+        std::int64_t createdUtc = 0;
+        if (const auto c = j.find("createdUtc"); c != j.end()) {
+            const auto v = int64Of(*c);
+            if (!v) { error = "\"createdUtc\" is an integer"; return std::nullopt; }
+            createdUtc = *v;
+        }
         Changeset cs = begin(store, j.value("request", std::string{}),
-                             j.value("actorDetail", std::string{}),
-                             j.value("createdUtc", std::int64_t{0}));
+                             j.value("actorDetail", std::string{}), createdUtc);
         if (j.contains("baseHead")) {
             const auto& h = j.at("baseHead");
-            cs.baseHead = h.is_null() ? std::nullopt : std::optional<std::int64_t>(h.get<std::int64_t>());
+            if (h.is_null()) {
+                cs.baseHead = std::nullopt;
+            } else {
+                const auto v = int64Of(h);
+                if (!v) { error = "\"baseHead\" is an integer or null"; return std::nullopt; }
+                cs.baseHead = *v;
+            }
         }
         if (cs.request.empty()) { error = "\"request\" is required (AI-AGENT 6.8)"; return std::nullopt; }
         if (!j.contains("ops") || !j.at("ops").is_array()) {
@@ -508,8 +549,11 @@ std::optional<Changeset> changesetFromJson(const Store& store, const Payload& j,
             q.payload = o.value("payload", Payload::object());
             q.label = o.value("label", std::string{});
             q.targetKind = o.value("targetKind", std::string{});
-            if (o.contains("targetId") && o.at("targetId").is_number_integer())
-                q.targetId = o.at("targetId").get<std::int64_t>();
+            if (const auto t = o.find("targetId"); t != o.end() && !t->is_null()) {
+                const auto v = int64Of(*t);
+                if (!v) { error = "\"targetId\" is an integer"; return std::nullopt; }
+                q.targetId = *v;
+            }
             cs.ops.push_back(std::move(q));
         }
         return cs;

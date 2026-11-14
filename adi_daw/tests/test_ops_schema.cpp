@@ -341,10 +341,16 @@ void testEveryOpIsClosedAndEquivalent() {
     std::string first;
     for (const auto& d : reg.all()) {
         ++ops;
+        // The remote schema (the default) shows every field but the op's own
+        // '_' keys; the local one shows them all.
+        std::size_t callerFields = 0;
+        for (const auto& f : d.fields)
+            if (!f.key.starts_with('_')) ++callerFields;
         const Payload s = opInputSchema(d);
         const bool closed = s.value("type", "") == "object" && s.contains("additionalProperties") &&
                             s.at("additionalProperties") == false && s.contains("properties") &&
-                            s.at("properties").size() == d.fields.size();
+                            s.at("properties").size() == callerFields &&
+                            opInputSchema(d, Bounds::Local).at("properties").size() == d.fields.size();
         check(closed, std::string(d.name) + ": a closed object with one property per field");
         for (const auto b : {Bounds::Local, Bounds::Remote}) {
             std::string mismatch;
@@ -394,16 +400,118 @@ void testRichMetadata() {
     check(names(issuesOf(d, {{"mode", "a"}, {"count", static_cast<std::uint64_t>(INT64_MAX) + 1u}}), "count"),
           "a declared maximum holds for an unsigned value too");
 
-    // An Int holds what nlohmann holds: signed or unsigned 64-bit. A note's
-    // persisted id is a full uint64, so nothing between INT64_MAX and
-    // UINT64_MAX may be refused, and nothing beyond it may be accepted.
-    const auto* vol = OpRegistry::instance().find("mixer.setVolume");
-    check(vol && issuesOf(*vol, {{"id", std::numeric_limits<std::uint64_t>::max()}, {"db", 1.0}}).empty(),
-          "a full uint64 is an Int (note ids are)");
+    // An Int is an int64: every handler but the note ones reads it with
+    // get<int64_t>, which would wrap anything above INT64_MAX to a negative.
+    // Only a note's persisted id (fullUint64) is a full uint64.
+    const auto& reg = OpRegistry::instance();
+    const auto* vol = reg.find("mixer.setVolume");
+    const auto* del = reg.find("note.delete");
+    const std::uint64_t two63 = static_cast<std::uint64_t>(INT64_MAX) + 1u;
+    for (const auto b : {Bounds::Local, Bounds::Remote}) {
+        const std::string profile = b == Bounds::Local ? "local: " : "remote: ";
+        check(vol && names(issuesOf(*vol, {{"id", std::numeric_limits<std::uint64_t>::max()}, {"db", 1.0}}, b), "id"),
+              profile + "UINT64_MAX on a non-note Int is refused, naming id, never wrapped to -1");
+        check(vol && names(issuesOf(*vol, {{"id", two63}, {"db", 1.0}}, b), "id"),
+              profile + "2^63 is refused exactly (a double bound would let it through)");
+        check(vol && issuesOf(*vol, {{"id", INT64_MAX}, {"db", 1.0}}, b).empty(), profile + "INT64_MAX is an Int");
+        check(vol && issuesOf(*vol, {{"id", INT64_MIN}, {"db", 1.0}}, b).empty(), profile + "INT64_MIN is an Int");
+        check(vol && names(issuesOf(*vol, {{"id", 1e19}, {"db", 1.0}}, b), "id"),
+              profile + "1e19, a whole float above INT64_MAX, is refused on a non-note Int");
+        check(del && issuesOf(*del, {{"clip", 1}, {"note", std::numeric_limits<std::uint64_t>::max()}}, b).empty(),
+              profile + "a note id is a full uint64");
+        check(del && issuesOf(*del, {{"clip", 1}, {"note", 1e19}}, b).empty(),
+              profile + "1e19 is that note id at the boundary");
+        check(del && names(issuesOf(*del, {{"clip", two63}, {"note", 1}}, b), "clip"),
+              profile + "the clip beside a note id is still an int64");
+    }
     check(vol && names(issuesOf(*vol, {{"id", 2e19}, {"db", 1.0}}), "id"),
           "a whole number beyond UINT64_MAX is refused, naming the key");
-    check(vol && issuesOf(*vol, {{"id", 1e19}, {"db", 1.0}}).empty(),
-          "1e19, a whole float inside the unsigned range, is that integer at the boundary");
+    check(del && names(issuesOf(*del, {{"clip", 1}, {"note", 2e19}}), "note"),
+          "beyond UINT64_MAX is refused for a note id too");
+
+    // The schema says the same.
+    const auto* create = reg.find("track.create");
+    if (create && del) {
+        const Payload id = opInputSchema(*create, Bounds::Remote).at("properties").at("id");
+        check(id.at("maximum") == Payload(INT64_MAX) && id.at("maximum").is_number_integer(),
+              "the schema: track.create's id has maximum INT64_MAX: " + id.dump());
+        const Payload note = opInputSchema(*del, Bounds::Remote).at("properties").at("note");
+        check(note.at("maximum") == Payload(std::numeric_limits<std::uint64_t>::max()),
+              "the schema: note.delete's note has maximum UINT64_MAX: " + note.dump());
+    } else {
+        check(false, "track.create and note.delete are registered");
+    }
+}
+
+void testOpenValues() {
+    section("the remote bounds reach inside an open object or array (P3.1)");
+    const auto d = richOp();
+    const std::string longText(kRemoteMaxTextLength + 1, 'x');
+    const std::string fits(kRemoteMaxTextLength, 'x');
+    check(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({longText})}}, Bounds::Local).empty(),
+          "local: an open array's element is not capped");
+    check(names(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({longText})}}, Bounds::Remote), "bag[0]"),
+          "remote: an open array's long text element is refused, naming bag[0]");
+    check(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({fits})}}, Bounds::Remote).empty(),
+          "remote: 16,384 characters inside fit");
+    Payload deep = Payload::array({{{"a", Payload::array({1, {{"b", longText}}})}}});
+    check(names(issuesOf(d, {{"mode", "a"}, {"bag", deep}}, Bounds::Remote), "bag[0].a[1].b"),
+          "remote: the cap holds at any depth, naming the path");
+    Payload wide = Payload::array();
+    for (std::size_t i = 0; i <= kRemoteMaxArrayItems; ++i) wide.push_back(static_cast<std::int64_t>(i));
+    check(names(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({wide})}}, Bounds::Remote), "bag[0]"),
+          "remote: a nested array of 4,097 items is refused");
+    Payload longKey = Payload::object();
+    longKey[longText] = 1;
+    check(names(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({longKey})}}, Bounds::Remote), "bag[0]"),
+          "remote: a member name is text, and capped too");
+
+    const auto& reg = OpRegistry::instance();
+    const auto* lane = reg.find("automation.createLane");
+    check(lane != nullptr, "automation.createLane is registered");
+    if (lane) {
+        const Payload p = {{"id", 1}, {"row", {{"param_name", longText}}}};
+        check(issuesOf(*lane, p, Bounds::Local).empty(), "local: createLane's open row is not capped");
+        check(names(issuesOf(*lane, p, Bounds::Remote), "row.param_name"),
+              "remote: createLane's row.param_name of 16,385 characters is refused");
+    }
+    const auto* insert = reg.find("device.insert");
+    check(insert != nullptr, "device.insert is registered");
+    if (insert) {
+        Payload p = baseOf(insert->fields);
+        p["params"] = Payload::array({{{"param", "p"}, {"name", longText}}});
+        check(names(issuesOf(*insert, p, Bounds::Remote), "params[0].name"),
+              "remote: device.insert's params[0].name of 16,385 characters is refused");
+    }
+}
+
+void testInternalKeys() {
+    section("a '_' key is the op's own: refused from a remote caller, absent from its schema (P3.3)");
+    const auto& reg = OpRegistry::instance();
+    const auto* mode = reg.find("mixer.setPanMode");
+    const auto* left = reg.find("mixer.setPanLeft");
+    const auto* fades = reg.find("clip.setFades");
+    check(mode && left && fades, "the split pan ops and clip.setFades are registered");
+    if (!mode || !left || !fades) return;
+    const Payload restore = {{"id", 1}, {"mode", "invalid_mode"}, {"_restore", true}};
+    check(issuesOf(*mode, restore, Bounds::Local).empty(), "local: the inverse may still say _restore");
+    check(names(issuesOf(*mode, restore, Bounds::Remote), "_restore"),
+          "remote: setPanMode with _restore is refused, naming _restore");
+    check(names(issuesOf(*mode, {{"id", 1}, {"mode", "stereo"}, {"_erase", true}}, Bounds::Remote), "_erase"),
+          "remote: setPanMode with _erase is refused");
+    check(names(issuesOf(*mode, {{"id", 1}, {"mode", "stereo"}, {"_erase", nullptr}}, Bounds::Remote), "_erase"),
+          "remote: even a null _erase is refused, as the schema without it says");
+    check(names(issuesOf(*left, {{"id", 1}, {"pan", 5.0}, {"_erase", true}}, Bounds::Remote), "_erase"),
+          "remote: setPanLeft with _erase is refused");
+    check(names(issuesOf(*fades, {{"id", 1}, {"_restore", Payload::object()}}, Bounds::Remote), "_restore"),
+          "remote: clip.setFades' _restore is refused");
+    check(issuesOf(*mode, {{"id", 1}, {"mode", "split"}}, Bounds::Remote).empty(), "remote: the ordinary payload passes");
+
+    const Payload remote = opInputSchema(*mode, Bounds::Remote).at("properties");
+    const Payload local = opInputSchema(*mode, Bounds::Local).at("properties");
+    check(!remote.contains("_restore") && !remote.contains("_erase") && remote.contains("mode"),
+          "the remote schema omits the '_' keys: " + remote.dump());
+    check(local.contains("_restore") && local.contains("_erase"), "the local schema keeps them");
 }
 
 void testBoundsProfiles() {
@@ -471,6 +579,8 @@ int runAll() {
     testEveryOpIsClosedAndEquivalent();
     testRichMetadata();
     testBoundsProfiles();
+    testOpenValues();
+    testInternalKeys();
     testCatalogueMetadata();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

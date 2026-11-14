@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <random>
 #include <span>
 #include <system_error>
@@ -27,6 +28,8 @@
 #else
 #include <cerrno>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #endif
 
@@ -79,6 +82,42 @@ bool processAlive(std::uint64_t pid) {
 }
 
 constexpr const char* kScratchPrefix = "adi-mcp-";
+constexpr std::size_t kScratchSuffixHex = 16;   ///< lowercase hex characters after the pid
+
+/// adi-mcp-<pid>-<16 lowercase hex>, exactly as makeScratch names it. The pid,
+/// or nullopt for any other name.
+std::optional<std::uint64_t> scratchPid(const std::string& name) {
+    const std::string prefix(kScratchPrefix);
+    if (name.rfind(prefix, 0) != 0) return std::nullopt;
+    const auto dash = name.find('-', prefix.size());
+    if (dash == std::string::npos || dash == prefix.size()) return std::nullopt;
+    std::uint64_t pid = 0;
+    for (std::size_t i = prefix.size(); i < dash; ++i) {
+        const char c = name[i];
+        if (c < '0' || c > '9' || pid > (UINT64_MAX - 9) / 10) return std::nullopt;
+        pid = pid * 10 + static_cast<std::uint64_t>(c - '0');
+    }
+    if (name.size() - dash - 1 != kScratchSuffixHex) return std::nullopt;
+    for (std::size_t i = dash + 1; i < name.size(); ++i) {
+        const char c = name[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return std::nullopt;
+    }
+    return pid;
+}
+
+/// Whether a swept entry is a real folder (never a link to one) that this
+/// user owns. Ownership is what matters in a shared /tmp: the sticky bit
+/// stops anyone else renaming or replacing an entry this user owns.
+bool ownScratchFolder(const fs::path& p) {
+    std::error_code ec;
+    if (fs::symlink_status(p, ec).type() != fs::file_type::directory || ec) return false;
+#if !defined(_WIN32)
+    struct stat st {};
+    if (::lstat(p.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode) || st.st_uid != ::geteuid()) return false;
+#endif
+    return true;
+}
 
 /// The private folder a snapshot lives in: under the user's own temp folder,
 /// named for this process, owner-only where the platform lets us say so.
@@ -91,12 +130,9 @@ bool makeScratch(fs::path& out, std::string& error) {
     }
     const std::string stem = std::string(kScratchPrefix) + std::to_string(thisProcess()) + "-";
     for (int attempt = 0; attempt < 8; ++attempt) {
-        const fs::path candidate = base / (stem + randomHex(8));
+        const fs::path candidate = base / (stem + randomHex(kScratchSuffixHex / 2));
+#if defined(_WIN32)
         if (fs::create_directory(candidate, ec)) {
-#if !defined(_WIN32)
-            fs::permissions(candidate, fs::perms::owner_all, fs::perm_options::replace, ec);
-            ec.clear();
-#endif
             out = candidate;
             return true;
         }
@@ -104,6 +140,19 @@ bool makeScratch(fs::path& out, std::string& error) {
             error = "cannot create a scratch folder: " + ec.message();
             return false;
         }
+#else
+        // Owner-only from the first instant: mkdir with 0700 (umask only
+        // takes bits away), never mkdir then chmod, which leaves a window in
+        // which another user could open it or plant a link inside.
+        if (::mkdir(candidate.c_str(), 0700) == 0) {
+            out = candidate;
+            return true;
+        }
+        if (errno != EEXIST) {
+            error = "cannot create a scratch folder: " + std::error_code(errno, std::generic_category()).message();
+            return false;
+        }
+#endif
     }
     error = "cannot create a scratch folder";
     return false;
@@ -141,26 +190,13 @@ std::size_t HeadlessProject::sweepAbandonedScratch() {
     std::size_t removed = 0;
     fs::directory_iterator it(base, fs::directory_options::skip_permission_denied, ec);
     if (ec) return 0;
-    const std::string prefix(kScratchPrefix);
     for (; it != fs::directory_iterator(); it.increment(ec)) {
         if (ec) break;
-        const std::string name = utf8(it->path().filename());
-        if (name.rfind(prefix, 0) != 0) continue;
-        const auto dash = name.find('-', prefix.size());
-        if (dash == std::string::npos || dash == prefix.size()) continue;
-        std::uint64_t pid = 0;
-        bool digits = true;
-        for (std::size_t i = prefix.size(); i < dash; ++i) {
-            const char c = name[i];
-            if (c < '0' || c > '9' || pid > (UINT64_MAX - 9) / 10) {
-                digits = false;
-                break;
-            }
-            pid = pid * 10 + static_cast<std::uint64_t>(c - '0');
-        }
-        if (!digits || pid == thisProcess() || processAlive(pid)) continue;
+        const auto pid = scratchPid(utf8(it->path().filename()));
+        if (!pid || *pid == thisProcess() || processAlive(*pid)) continue;
+        if (!ownScratchFolder(it->path())) continue;
         std::error_code rm;
-        if (fs::is_directory(it->path(), rm) && fs::remove_all(it->path(), rm) > 0 && !rm) ++removed;
+        if (fs::remove_all(it->path(), rm) > 0 && !rm) ++removed;
     }
     return removed;
 }
@@ -263,7 +299,6 @@ void HeadlessProject::dropSnapshotLocked() {
         snapshot_->close();
         snapshot_.reset();
     }
-    snapshotHead_.reset();
     if (!scratch_.empty()) {
         std::error_code ec;
         for (const char* suffix : {"", "-wal", "-shm", "-journal"})
@@ -272,11 +307,16 @@ void HeadlessProject::dropSnapshotLocked() {
 }
 
 bool HeadlessProject::refreshSnapshotLocked(std::string& error) {
+    // A fresh copy for every preview, never one cached by the head: the file
+    // can change while head_seq stays put (an ephemeral op such as
+    // transport.setLoop, Collect All and Save rewriting media paths, another
+    // project saved over this one), and the preview is what the user reviews
+    // (ADR-0148). The head is read first only to fail early on a file whose
+    // head cannot be read.
     auto reader = openReader(error);
     if (!reader) return false;
-    const auto current = headOf(*reader, error);
+    (void)headOf(*reader, error);
     if (!error.empty()) return false;
-    if (snapshot_ && snapshotHead_ == current) return true;
 
     dropSnapshotLocked();
     if (scratch_.empty() && !makeScratch(scratch_, error)) return false;
@@ -306,7 +346,7 @@ bool HeadlessProject::refreshSnapshotLocked(std::string& error) {
         return false;
     }
     std::string snapError;
-    snapshotHead_ = headOf(*snapshot_, snapError);
+    (void)headOf(*snapshot_, snapError);
     if (!snapError.empty()) {
         error = snapError;
         dropSnapshotLocked();

@@ -39,12 +39,14 @@ Payload fieldSchema(const Field& f, Bounds bounds) {
 
     switch (f.type) {
         case FieldType::Int:
-            // What an Int can hold: a signed or an unsigned 64-bit integer (a
-            // note's persisted id is a full uint64). The schema says so.
+            // What an Int can hold: a signed 64-bit integer, or, for a note's
+            // persisted id alone (fullUint64), an unsigned one too. The
+            // schema says exactly what checkValue enforces.
             s["minimum"] = f.minimum ? boundValue(*f.minimum)
                                      : Payload(std::numeric_limits<std::int64_t>::min());
-            s["maximum"] = f.maximum ? boundValue(*f.maximum)
-                                     : Payload(std::numeric_limits<std::uint64_t>::max());
+            if (f.maximum) s["maximum"] = boundValue(*f.maximum);
+            else if (f.fullUint64) s["maximum"] = std::numeric_limits<std::uint64_t>::max();
+            else s["maximum"] = std::numeric_limits<std::int64_t>::max();
             break;
         case FieldType::Real:
             if (f.minimum) s["minimum"] = boundValue(*f.minimum);
@@ -86,6 +88,9 @@ Payload closedObject(std::span<const Field> fields, Bounds bounds) {
     Payload properties = Payload::object();
     Payload required = Payload::array();
     for (const auto& f : fields) {
+        // A '_' key is the op's own (its inverse's), never a caller's: the
+        // remote boundary refuses it, so the remote schema does not show it.
+        if (bounds == Bounds::Remote && f.key.starts_with('_')) continue;
         properties[std::string(f.key)] = fieldSchema(f, bounds);
         if (f.required) required.push_back(std::string(f.key));
     }

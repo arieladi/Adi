@@ -18,6 +18,7 @@
 #include "adi/control/service.hpp"
 #include "adi/control/stdio_server.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <deque>
 #include <exception>
@@ -232,6 +233,34 @@ void testIdempotency() {
     check(rig.writeRuns == 5, "and the handler did not run again");
     auto x4 = rig.call(a, "test.write", {{"v", 1}, {"w", 2}}, d);
     check(x4 && !x4->error && x4->result == x1->result, "the original params still replay after the refusal");
+
+    // meta.expectHead is an argument: a method may take the head from it.
+    // The same key and params with another head is a corrected retry, and is
+    // refused, never answered with the outcome built on the old head.
+    RequestMeta h5;
+    h5.idempotencyKey = "head";
+    h5.expectHead = std::optional<std::int64_t>{5};
+    RequestMeta h6 = h5;
+    h6.expectHead = std::optional<std::int64_t>{6};
+    RequestMeta hRoot = h5;
+    hRoot.expectHead = std::optional<std::int64_t>{};
+    const int before = rig.writeRuns;
+    auto e1 = rig.call(a, "test.write", Json::object(), h5);
+    auto e1again = rig.call(a, "test.write", Json::object(), h5);
+    check(e1 && e1again && !e1->error && e1->result == e1again->result && rig.writeRuns == before + 1,
+          "the same key, params and expectHead: replayed");
+    auto e2 = rig.call(a, "test.write", Json::object(), h6);
+    check(e2 && e2->error && e2->error->code == errc::InvalidParams &&
+              e2->error->message == "idempotencyKey reused with different arguments",
+          "the same key and params with expectHead 6 after 5: refused (−32602), not replayed");
+    auto e3 = rig.call(a, "test.write", Json::object(), hRoot);
+    check(e3 && e3->error && e3->error->code == errc::InvalidParams,
+          "an expectHead of null (the root) is another head again");
+    RequestMeta hNone = h5;
+    hNone.expectHead.reset();
+    auto e4 = rig.call(a, "test.write", Json::object(), hNone);
+    check(e4 && e4->error && e4->error->code == errc::InvalidParams && rig.writeRuns == before + 1,
+          "and no expectHead at all differs from one, and nothing ran again");
 }
 
 void testInternalErrors() {

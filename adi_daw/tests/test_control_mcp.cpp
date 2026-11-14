@@ -37,6 +37,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -45,6 +46,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -472,6 +474,46 @@ void testRefusals() {
               "invalid",
           "the remote bounds: a name over 16 KiB characters is refused");
 
+    // P1.1: an id above INT64_MAX is refused, never wrapped to -1 by the
+    // handler while the review list shows the unsigned value.
+    const std::string bytesBefore = fileBytes(f.path);
+    const auto firstIssue = [](const Json& r) -> std::string {
+        if (!isToolError(r)) return {};
+        const auto& data = r.at("structuredContent").at("error").value("data", Json::object());
+        if (!data.contains("issues") || data.at("issues").empty()) return {};
+        return data.at("issues").at(0).value("key", "");
+    };
+    const Json wrap = propose({{{"op", "track.create"},
+                                {"payload", {{"id", std::numeric_limits<std::uint64_t>::max()},
+                                             {"kind", "audio"},
+                                             {"name", "Wrap"}}}}});
+    check(refusalOf(wrap) == "invalid" && firstIssue(wrap) == "id",
+          "track.create with id 18446744073709551615 is refused as invalid, naming id: " + wrap.dump().substr(0, 300));
+    check(fileBytes(f.path) == bytesBefore && b.queue.size() == 0, "and nothing was queued or written");
+    // P3.1: the remote bounds hold inside an open object.
+    const Json openRow = propose({{{"op", "automation.createLane"},
+                                   {"payload", {{"id", 1},
+                                                {"row", {{"param_name", std::string(kRemoteMaxTextLength + 1, 'p')}}}}}}});
+    check(refusalOf(openRow) == "invalid" && firstIssue(openRow) == "row.param_name",
+          "createLane's row.param_name over the remote text cap is refused, naming it");
+    // P3.3: the op's own '_' keys are not a caller's.
+    const Json restoreMode = propose({{{"op", "mixer.setPanMode"},
+                                       {"payload", {{"id", 3}, {"mode", "invalid_mode"}, {"_restore", true}}}}});
+    check(refusalOf(restoreMode) == "invalid" && firstIssue(restoreMode) == "_restore",
+          "setPanMode with _restore is refused, naming _restore");
+    const Json eraseMode = propose({{{"op", "mixer.setPanMode"},
+                                     {"payload", {{"id", 3}, {"mode", "stereo"}, {"_erase", true}}}}});
+    check(refusalOf(eraseMode) == "invalid" && firstIssue(eraseMode) == "_erase",
+          "setPanMode with _erase is refused, naming _erase");
+    const Json eraseLeft = propose({{{"op", "mixer.setPanLeft"},
+                                     {"payload", {{"id", 3}, {"pan", 5.0}, {"_erase", true}}}}});
+    check(refusalOf(eraseLeft) == "invalid" && firstIssue(eraseLeft) == "_erase",
+          "setPanLeft with _erase is refused, naming _erase");
+    // P3.2: an internal restore op is not one a changeset may contain.
+    check(refusalOf(propose({{{"op", "automation.restoreLane"},
+                              {"payload", {{"id", 1}, {"state", {{"row", nullptr}}}}}}})) == "op not allowed",
+          "automation.restoreLane is internal: op not allowed");
+
     std::string hebrew;
     for (int i = 0; i < 2100; ++i) hebrew += "\xD7\x90";   // 2,100 letters, 4,200 bytes
     check(!isToolError(propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}},
@@ -518,6 +560,149 @@ void testRefusals() {
     for (const auto& t : observerTools.at("result").at("tools")) offered.insert(t.value("name", ""));
     check(!offered.count("changeset_propose") && offered.count("project_read"),
           "an Observe client is not offered changeset_propose at all");
+    // P2.1: nor in the list an unknown tool's refusal gives.
+    const auto unknownToolList = [](Bridge& as) {
+        const Json reply = as.send({{"jsonrpc", "2.0"}, {"id", 77}, {"method", "tools/call"},
+                                    {"params", {{"name", "bogus"}, {"arguments", Json::object()}}}});
+        std::set<std::string> names;
+        if (reply.contains("error") && reply.at("error").contains("data"))
+            for (const auto& n : reply.at("error").at("data").at("tools")) names.insert(n.get<std::string>());
+        return names;
+    };
+    const auto observerUnknown = unknownToolList(observer);
+    std::string listed;
+    for (const auto& n : observerUnknown) listed += n + " ";
+    check(!observerUnknown.count("changeset_propose") && observerUnknown.count("project_read") &&
+              observerUnknown == offered,
+          "an Observe client's unknown-tool refusal lists exactly what tools/list offers it: " + listed);
+    check(unknownToolList(b).count("changeset_propose") == 1, "a Propose client's lists changeset_propose");
+}
+
+void testEchoesAreClipped() {
+    section("a refusal repeats at most 64 bytes of what the caller sent (P1.2)");
+    ProjectFile f("echo");
+    Bridge b(openHeadless(f.path));
+    b.initialize();
+    const std::string huge(100000, 'x');
+    const auto small = [](const Json& reply) { return reply.contains("error") && reply.dump().size() < 600; };
+    const Json method = b.request(10, huge);
+    check(small(method) && method.at("error").at("code") == errc::MethodNotFound,
+          "a 100 KB method name: method not found, in " + std::to_string(method.dump().size()) + " bytes");
+    const Json tool = b.send({{"jsonrpc", "2.0"}, {"id", 11}, {"method", "tools/call"},
+                              {"params", {{"name", huge}, {"arguments", Json::object()}}}});
+    check(small(tool), "a 100 KB tool name: unknown tool, in " + std::to_string(tool.dump().size()) + " bytes");
+    for (const std::string& uri : {"adi://nowhere/" + huge, "adi://ops/" + huge, "adi://projects/" + huge + "/manifest"}) {
+        const Json read = b.request(12, "resources/read", {{"uri", uri}});
+        check(small(read), "resources/read " + uri.substr(0, 16) + "...: not found, in " +
+                               std::to_string(read.dump().size()) + " bytes");
+    }
+    Json future = modern(Json::object());
+    future["_meta"]["io.modelcontextprotocol/protocolVersion"] = huge;
+    const Json version = b.request(13, "tools/list", future);
+    check(small(version) && version.at("error").at("code") == errc::UnsupportedProtocolVersion &&
+              version.at("error").at("data").at("requested").get<std::string>().size() <= 64 + 3,   // kMaxEcho and "..."
+          "a 100 KB protocol version: −32022 with requested clipped, in " +
+              std::to_string(version.dump().size()) + " bytes");
+    check(clipEcho("\xD7\x90\xD7\x91", 3) == "\xD7\x90...", "a cut never ends inside a UTF-8 sequence");
+    check(clipEcho("short") == "short", "short text is repeated whole");
+}
+
+/// changeset.propose through Service::call, as the RPC wire will call it,
+/// with a meta the MCP tools never carry.
+Outcome proposeRpc(Bridge& b, const Json& params, const RequestMeta& meta) {
+    std::optional<Outcome> out;
+    b.service.call(Principal{b.session.credential, "rpc"}, "changeset.propose", params, meta,
+                   [&out](Outcome o) { out = std::move(o); });
+    return out ? std::move(*out) : Outcome::fail(errc::Internal, "no outcome");
+}
+
+void testExpectHead() {
+    section("meta.expectHead binds a proposal like baseHead (P2.2, P2.3)");
+    ProjectFile f("expect");
+    Bridge b(openHeadless(f.path));
+    b.initialize();
+    const Json headJ = b.head();
+    check(headJ.is_number_integer(), "the fixture has a head");
+    if (!headJ.is_number_integer()) return;
+    const std::int64_t head = headJ.get<std::int64_t>();
+    const Json noBase = {{"request", "quieter"},
+                         {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -2.0}}}}}}};
+    Json withBase = noBase;
+    withBase["baseHead"] = head;
+    const auto at = [](std::int64_t h) {
+        RequestMeta m;
+        m.expectHead = std::optional<std::int64_t>{h};
+        return m;
+    };
+
+    const Outcome stale = proposeRpc(b, noBase, at(999));
+    check(stale.error && stale.error->code == errc::Stale && stale.error->data.value("headFound", Json()) == headJ &&
+              stale.error->data.value("baseHead", Json()) == 999,
+          "expectHead 999 alone on the current head: −32002, headFound");
+    const Outcome disagree = proposeRpc(b, withBase, at(999));
+    check(disagree.error && disagree.error->code == errc::InvalidParams &&
+              disagree.error->message.find("disagree") != std::string::npos,
+          "baseHead and a different expectHead: refused (−32602), never a silent choice");
+    const Outcome agree = proposeRpc(b, withBase, at(head));
+    check(!agree.error, "baseHead and the same expectHead: proposed");
+    const Outcome alone = proposeRpc(b, noBase, at(head));
+    check(!alone.error && alone.result.at("changeset").at("baseHead") == headJ,
+          "expectHead alone is the changeset's baseHead");
+
+    // The service's replay: a stale outcome under a key is not the answer to
+    // the same key with the corrected head.
+    RequestMeta k999 = at(999);
+    k999.idempotencyKey = "retry";
+    RequestMeta kHead = at(head);
+    kHead.idempotencyKey = "retry";
+    const Outcome first = proposeRpc(b, noBase, k999);
+    check(first.error && first.error->code == errc::Stale, "the first try is stale");
+    const Outcome second = proposeRpc(b, noBase, kHead);
+    check(second.error && second.error->code == errc::InvalidParams &&
+              second.error->message == "idempotencyKey reused with different arguments",
+          "the same key with another expectHead is refused, not answered with the stale outcome");
+
+    // The queue's memory, with the service's cache off: the head the screen
+    // copied in is part of what the key stands for.
+    ServiceOptions forgetful;
+    forgetful.idempotencyEntries = 0;
+    Bridge q(openHeadless(f.path), Tier::Propose, std::move(forgetful));
+    q.initialize();
+    RequestMeta qHead = at(head);
+    qHead.idempotencyKey = "queued";
+    RequestMeta qOther = at(head - 1);
+    qOther.idempotencyKey = "queued";
+    const Outcome queued = proposeRpc(q, noBase, qHead);
+    check(!queued.error && q.queue.size() == 1, "queued under a key");
+    const Outcome other = proposeRpc(q, noBase, qOther);
+    check(other.error && other.error->message == "idempotencyKey reused with different arguments" &&
+              q.queue.size() == 1,
+          "the same key with another expectHead is refused by the queue too, never answered with the old proposal");
+}
+
+void testFreshSnapshot() {
+    section("every preview takes a fresh snapshot, even when the head did not move (P4.1)");
+    ProjectFile f("fresh");
+    Bridge b(openHeadless(f.path));
+    b.initialize();
+    const Json head = b.head();
+    const auto beforeDb = [&b, &head]() -> double {
+        const Json r = b.tool("changeset_propose",
+                              {{"request", "quieter"},
+                               {"baseHead", head},
+                               {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -6.0}}}}}}});
+        if (isToolError(r)) return 99.0;
+        return r.at("structuredContent").at("changes").at(0).at("before").value("db", 99.0);
+    };
+    check(beforeDb() == 0.0, "the first preview reads the fader at 0 dB");
+    {
+        // A write that moves no head: as an ephemeral op, Collect All and
+        // Save, or another project saved over this one would.
+        SQLite::Database db(f.path.string(), SQLite::OPEN_READWRITE);
+        db.exec("UPDATE mixer_strip SET volume_db = -10 WHERE track_id = 3");
+    }
+    check(b.head() == head, "the head did not move");
+    check(beforeDb() == -10.0, "the next preview reads the file as it is now: -10 dB, not the old copy's 0");
 }
 
 void testIdempotentPropose() {
@@ -984,19 +1169,44 @@ void testSweepAbandonedScratch() {
     // No process can have this id: above Linux's pid_max (2^22) and macOS's
     // 99999, not a multiple of 4 on Windows; and within pid_t, which the
     // sweep needs before it calls a process gone.
-    const fs::path dead = base / "adi-mcp-2147483646-x";
-    const fs::path mine = base / ("adi-mcp-" + std::to_string(adi::test::processId()) + "-x");
+    // A scratch folder is adi-mcp-<pid>-<16 lowercase hex>, as makeScratch
+    // names it; anything else that merely starts the same way is not ours.
+    const fs::path dead = base / "adi-mcp-2147483646-0123456789abcdef";
+    const fs::path mine = base / ("adi-mcp-" + std::to_string(adi::test::processId()) + "-0123456789abcdef");
+    // Each under its own dead pid: Windows names are case-insensitive, so an
+    // upper-case twin of `dead` would be `dead` itself there.
+    const fs::path lookalikes[] = {base / "adi-mcp-2147483646-x", base / "adi-mcp-2147483642-0123456789ABCDEF",
+                                   base / "adi-mcp-2147483638-0123456789abcdef0"};
     fs::create_directories(dead, ec);
     fs::create_directories(mine, ec);
+    for (const auto& l : lookalikes) fs::create_directories(l, ec);
     {
         std::ofstream copy(dead / "snapshot.adi", std::ios::binary);
         copy << "somebody's unreleased project";
     }
+#if !defined(_WIN32)
+    // A link named like a dead scratch folder is never followed or removed.
+    const fs::path target = base / "adi-mcp-test-link-target";
+    const fs::path link = base / "adi-mcp-2147483645-fedcba9876543210";
+    fs::create_directories(target, ec);
+    { std::ofstream keep(target / "keep.txt"); keep << "keep"; }
+    fs::remove(link, ec);
+    fs::create_directory_symlink(target, link, ec);
+#endif
     const std::size_t removed = HeadlessProject::sweepAbandonedScratch();
     check(!fs::exists(dead, ec) && removed >= 1, "the dead process's folder is removed");
     check(fs::exists(mine, ec), "this process's folder is kept");
+    for (const auto& l : lookalikes)
+        check(fs::exists(l, ec), "a look-alike that is not adi-mcp-<pid>-<16 hex> is kept: " + l.filename().string());
+#if !defined(_WIN32)
+    check(fs::is_symlink(fs::symlink_status(link, ec)) && fs::exists(target / "keep.txt", ec),
+          "a link named like a scratch folder is kept, and so is what it points at");
+    fs::remove(link, ec);
+    fs::remove_all(target, ec);
+#endif
     fs::remove_all(mine, ec);
     fs::remove_all(dead, ec);
+    for (const auto& l : lookalikes) fs::remove_all(l, ec);
 }
 
 // --- the real binary --------------------------------------------------------------------
@@ -1093,6 +1303,9 @@ int runAll() {
     testToolsAndReads();
     testProposeLeavesTheFile();
     testRefusals();
+    testEchoesAreClipped();
+    testExpectHead();
+    testFreshSnapshot();
     testIdempotentPropose();
     testSidechainIsOneUndo();
     testResources();

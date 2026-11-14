@@ -12,8 +12,9 @@
 //   * a preview runs on a private copy: the SQLite backup API takes a
 //     consistent snapshot of the committed file into a scratch folder, which
 //     is opened writable and thrown away (ADR-0233 d5; ADR-0148 d1's
-//     rolled-back preview, run on the copy). The copy is taken again whenever
-//     the file's head has moved, so a preview runs on the project as it is.
+//     rolled-back preview, run on the copy). The copy is taken again for
+//     every preview, so a preview runs on the project as it is now, even
+//     when something changed the file without moving its head.
 //
 // The scratch folder is named for this process; one whose process is gone (a
 // crash, a kill) is swept the next time a bridge starts, so no copy of
@@ -62,8 +63,10 @@ public:
     /// Empty until the first preview.
     [[nodiscard]] const std::filesystem::path& scratchFolder() const { return scratch_; }
 
-    /// Removes `adi-mcp-<pid>-*` folders in the temp folder whose process is
-    /// gone. Returns how many it removed. Called once per bridge start.
+    /// Removes `adi-mcp-<pid>-<16 lowercase hex>` folders in the temp folder
+    /// whose process is gone: real folders only, never a link, and on POSIX
+    /// only those this user owns. Returns how many it removed. Called once
+    /// per bridge start.
     static std::size_t sweepAbandonedScratch();
 
 private:
@@ -75,7 +78,6 @@ private:
     std::filesystem::path file_;
     std::filesystem::path scratch_;
     std::unique_ptr<Store> snapshot_;
-    std::optional<std::int64_t> snapshotHead_;
     std::string handle_;
     std::string label_;
     mutable std::mutex mutex_;

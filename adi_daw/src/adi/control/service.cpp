@@ -121,7 +121,7 @@ std::optional<RequestMeta> parseMeta(const Json& meta, RpcError& error) {
             }
             m.idempotencyKey = v.get<std::string>();
         } else {
-            error = {errc::InvalidParams, "unknown meta key: " + key, nullptr};
+            error = {errc::InvalidParams, "unknown meta key: " + clipEcho(key), nullptr};
             return std::nullopt;
         }
     }
@@ -319,7 +319,7 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     const MethodSpec* spec = find(method);
     if (!spec) {
         pending->take();
-        finish(Outcome::fail(errc::MethodNotFound, "unknown method: " + methodName));
+        finish(Outcome::fail(errc::MethodNotFound, "unknown method: " + clipEcho(methodName)));
         return pending;
     }
     if (*tier < spec->minTier) {
@@ -333,7 +333,9 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     //    keys dump in order). The same key with other params is a caller's
     //    mistake -- a corrected retry under the old key -- and is refused, not
     //    answered with the old outcome. A hash collision could only replay
-    //    the caller's own earlier answer to itself.
+    //    the caller's own earlier answer to itself. meta.expectHead is an
+    //    argument too (a method may take the head from it), so it is in the
+    //    digest: a retry with another head is not answered with the old one.
     std::string cacheKey;
     std::size_t paramsDigest = 0;
     if (spec->idempotent && meta.idempotencyKey) {
@@ -342,7 +344,12 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         cacheKey += spec->name;
         cacheKey += '\n';
         cacheKey += *meta.idempotencyKey;
-        paramsDigest = std::hash<std::string>{}(dumpJson(params));
+        std::string digested = dumpJson(params);
+        digested += '\n';
+        digested += !meta.expectHead    ? std::string("-")
+                    : *meta.expectHead ? std::to_string(**meta.expectHead)
+                                       : std::string("null");
+        paramsDigest = std::hash<std::string>{}(digested);
         if (auto hit = recall(cacheKey)) {
             pending->take();
             if (hit->paramsDigest != paramsDigest)

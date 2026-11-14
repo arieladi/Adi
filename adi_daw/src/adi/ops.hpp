@@ -99,6 +99,11 @@ struct Field {
     /// Object: the value is a closed object with exactly these fields.
     /// Empty: the elements, or the object's members, are not described.
     std::span<const Field> items = {};
+    /// Int: the value may be any unsigned 64-bit integer as well as any
+    /// signed one. Only a note's persisted id (ANOT), which its handler reads
+    /// with noteIdValue; every other Int is read as int64, so above INT64_MAX
+    /// it is refused rather than wrapped to a negative.
+    bool fullUint64 = false;
 };
 
 // ---------------------------------------------------------------------------

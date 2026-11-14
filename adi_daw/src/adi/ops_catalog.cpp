@@ -971,8 +971,11 @@ constexpr Field kFClipMove[] = {{"id", FieldType::Int, true},
 constexpr Field kFClipResize[] = {{"id", FieldType::Int, true},
                                   {"pos", FieldType::Int, true},
                                   {"length", FieldType::Int, true}};
+// A note's persisted id is a full uint64 (ANOT; note_diff and note_flags read
+// it with noteIdValue): the one Int the boundary lets above INT64_MAX.
+constexpr Field kFNoteId{.key = "note", .type = FieldType::Int, .required = true, .fullUint64 = true};
 constexpr Field kFNoteFull[] = {{"clip", FieldType::Int, true},
-                                {"note", FieldType::Int, true},
+                                kFNoteId,
                                 {"start", FieldType::Int, true},
                                 {"dur", FieldType::Int, true},
                                 {"key", FieldType::Int, true},
@@ -982,18 +985,18 @@ constexpr Field kFNoteFull[] = {{"clip", FieldType::Int, true},
                                 {"prob", FieldType::Int, false},
                                 {"cents", FieldType::Real, false}};
 constexpr Field kFNoteRef[] = {{"clip", FieldType::Int, true},
-                               {"note", FieldType::Int, true}};
+                               kFNoteId};
 constexpr Field kFNoteMove[] = {{"clip", FieldType::Int, true},
-                                {"note", FieldType::Int, true},
+                                kFNoteId,
                                 {"start", FieldType::Int, true},
                                 {"key", FieldType::Int, true}};
 constexpr Field kFNoteResize[] = {{"clip", FieldType::Int, true},
-                                  {"note", FieldType::Int, true},
+                                  kFNoteId,
                                   {"dur", FieldType::Int, true}};
 constexpr Field kFNoteVel[] = {{"clip", FieldType::Int, true},
-                               {"note", FieldType::Int, true},
+                               kFNoteId,
                                {"vel", FieldType::Int, true}};
-constexpr Field kFNoteMute[] = {{"clip",FieldType::Int,true},{"note",FieldType::Int,true},
+constexpr Field kFNoteMute[] = {{"clip",FieldType::Int,true},kFNoteId,
                                 {"muted",FieldType::Bool,true}};
 constexpr Field kFTempoIns[] = {{"pos", FieldType::Int, true},
                                 {"bpm", FieldType::Real, true},

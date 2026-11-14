@@ -100,8 +100,10 @@ private:
     [[nodiscard]] Json capabilities(bool modern) const;
     [[nodiscard]] Json serverInfoJson() const;
 
-    /// tools/call: a result, or a JSON-RPC error.
-    [[nodiscard]] std::optional<Json> callTool(const Json& params, const Principal& who, RpcError& error);
+    /// tools/call: a result, or a JSON-RPC error. `tier`: the caller's grant,
+    /// which decides the tools an unknown name's refusal lists.
+    [[nodiscard]] std::optional<Json> callTool(const Json& params, const Principal& who, Tier tier,
+                                               RpcError& error);
     /// `modern`: the request's era, which decides the not-found code.
     [[nodiscard]] std::optional<Json> readResource(const Json& params, const Principal& who, bool modern,
                                                    RpcError& error);

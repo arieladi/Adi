@@ -79,4 +79,13 @@ struct Incoming {
 [[nodiscard]] std::string encodeResult(const Json& id, const Json& result);
 [[nodiscard]] std::string encodeError(const Json& id, const RpcError&);
 
+/// Bytes of caller text a refusal repeats: a method or tool name, a uri, a
+/// key, a protocol version. A line may be 4 MiB; an echo never is.
+inline constexpr std::size_t kMaxEcho = 64;
+
+/// At most `max` bytes of `text`, never ending inside a UTF-8 sequence, and
+/// "..." after it when it was cut. Every refusal that repeats caller text
+/// passes it through here.
+[[nodiscard]] std::string clipEcho(std::string_view text, std::size_t max = kMaxEcho);
+
 }  // namespace adi::control

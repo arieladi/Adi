@@ -14,6 +14,7 @@
 
 #include "adi/automation_lanes.hpp"
 #include "adi/changeset.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -24,11 +25,13 @@
 #include <sqlite3.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -119,6 +122,17 @@ void testGuardrails() {
     check(!agentMayEmit("media.import"), "asserting what is on disk is not");
     check(!agentMayEmit("media.delete") && !agentMayEmit("no.suchOp"),
           "an op nobody registered is refused");
+    // The internal restore ops replay a captured inverse past the forward
+    // op's checks; each is registered and editable, and each is refused.
+    for (const char* internal : {"automation.restoreLane", "automation.restoreData", "cc.restoreStream",
+                                 "note.restoreNotes", "track.restoreRecording"}) {
+        const auto* d = OpRegistry::instance().find(internal);
+        check(d && d->scope == Scope::Edit && !d->ephemeral, std::string(internal) + " is a registered edit op");
+        check(!agentMayEmit(internal), std::string(internal) + " is internal: the agent may not emit it");
+    }
+    check(agentMayEmit("controller.bind") && agentMayEmit("clip.split") && agentMayEmit("clip.join") &&
+              agentMayEmit("arranger.splice"),
+          "forward ops with no inverse of their own, or paired with each other, stay allowed");
 
     Fixture f("guard");
     if (!f.store) return;
@@ -245,6 +259,28 @@ void testDescribeByContent() {
               "setLaneEnabled: `after` holds the new value");
     }
     check(count(s, "SELECT COUNT(*) FROM automation_lanes") == 0, "and nothing was written");
+
+    // clip.split is paired with clip.join, and its inverse has the payload's
+    // keys ({id,changes}) with other values: a capture beside new values,
+    // never a deletion with no `after`.
+    s.db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,2,'audio',0,5765760)");
+    const auto split = clip_edit::prepareSplit(s, 7, 17, {0, 2882880}, 48000);
+    check(split.ok, "a split prepares: " + split.error);
+    if (split.ok) {
+        Changeset cut = begin(s, "split the bass clip", "m", kT0);
+        for (const auto& r : split.requests) cut.ops.push_back(r);
+        const auto ps = preview(s, cut);
+        check(ps.ok, "the split previews: " + ps.error);
+        bool seen = false;
+        for (const auto& c : ps.changes) {
+            if (c.opType != "clip.split") continue;
+            seen = true;
+            check(c.before && c.after && c.after->contains("changes"),
+                  "clip.split shows before and after, not a deletion");
+        }
+        check(seen, "the preview lists the clip.split");
+        check(count(s, "SELECT COUNT(*) FROM clips WHERE id=17") == 0, "and nothing was written");
+    }
 }
 
 // --- apply ------------------------------------------------------------------------------
@@ -402,6 +438,28 @@ void testJson() {
     const auto staleCs = changesetFromJson(*f.store, old, err);
     check(staleCs && apply(*f.store, *staleCs).refusal == Refusal::Stale,
           "an explicit older baseHead is honoured -- and is stale");
+
+    // Integers are int64s, as on the MCP path: an unsigned value above
+    // INT64_MAX or a fraction is refused, never wrapped or truncated.
+    const auto refused = [&](const char* key, const Payload& value, bool inOp) {
+        Payload bad = j;
+        if (inOp) bad["ops"][0][key] = value;
+        else bad[key] = value;
+        std::string why;
+        return !changesetFromJson(*f.store, bad, why) && why.find(key) != std::string::npos;
+    };
+    const Payload huge = std::numeric_limits<std::uint64_t>::max();
+    check(refused("baseHead", huge, false), "baseHead UINT64_MAX is refused, never read as -1");
+    check(refused("baseHead", 3.7, false), "baseHead 3.7 is refused, never truncated to 3");
+    check(refused("baseHead", "1", false), "baseHead \"1\" is refused");
+    check(refused("createdUtc", huge, false), "createdUtc UINT64_MAX is refused");
+    check(refused("targetId", huge, true), "targetId UINT64_MAX is refused");
+    Payload whole = j;
+    whole["baseHead"] = 1.0;
+    whole["ops"][0]["targetId"] = 2;
+    const auto wholeCs = changesetFromJson(*f.store, whole, err);
+    check(wholeCs && wholeCs->baseHead == 1 && wholeCs->ops.at(0).targetId == 2,
+          "a whole float is that integer, as JSON Schema reads it: " + err);
 }
 
 // --- a large project: what the preview costs --------------------------------------------------------
