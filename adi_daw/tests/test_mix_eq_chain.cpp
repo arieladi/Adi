@@ -1032,6 +1032,274 @@ void sameTotalLatencyRepartition() {
           "equal-total repartition uses the newly admitted zero EQ key delay against independent children");
 }
 
+void learnedHistogramSurvivesStoppedReprepare() {
+    chain::Settings settings;
+    auto &band = settings.eq.bands[0];
+    band.status = eq::Status::On;
+    band.frequencyHz = 1000.f;
+    band.q = 1.2f;
+    band.dynamicOn = true;
+    band.dynamicLearn = true;
+    band.dynamicRelative = false;
+    band.thresholdDb = -40.f;
+    band.targetGainDb = -12.f;
+    band.attackMs = 5.f;
+    band.releaseMs = 30.f;
+    band.smoothPercent = 0.f;
+    chain::Core core;
+    eq::Core retained;
+    chain::PrepareSpec spec{48000, 64, 2};
+    core.prepare(spec, settings);
+    retained.prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, settings.eq);
+    chain::BlockContext lastContext;
+    eq::BlockContext lastReferenceContext;
+    const auto signal = [](Audio<double> &audio, double rate, bool training, std::size_t first) {
+        for (std::size_t c = 0; c < 2; ++c)
+            for (std::size_t i = 0; i < audio.size(); ++i) {
+                const auto frame = first + i;
+                const bool alternate = ((frame / 1024) % 2) != 0;
+                const double amplitude = training ? (alternate ? .65 : .35) : (alternate ? .09 : .04);
+                audio.data[c][i] =
+                    amplitude * std::sin(6.2831853071795864769 * 1000. * static_cast<double>(frame) / rate +
+                                         static_cast<double>(c) * .31);
+            }
+    };
+    const auto compareContinuation = [&](Audio<double> &actual, Audio<double> &expected,
+                                         Audio<double> *freshAudio, eq::Core *freshCore) {
+        bool okay = true;
+        std::uint64_t physical = 1;
+        for (std::size_t offset = 0; offset < actual.size();
+             offset += static_cast<std::size_t>(spec.maximumFrames), ++physical) {
+            const auto count = static_cast<std::int32_t>(
+                std::min(actual.size() - offset, static_cast<std::size_t>(spec.maximumFrames)));
+            lastContext = begin(core, physical, core.latencySamples(), settings);
+            okay &= segment(core, actual, static_cast<const Audio<double> *>(nullptr), 0, offset, count,
+                            settings, lastContext);
+            {
+                AudioScope scope;
+                std::array<double *, 2> output{expected.data[0].data() + offset,
+                                               expected.data[1].data() + offset};
+                lastReferenceContext = retained.beginBlock(physical, retained.latencySamples(), settings.eq);
+                okay &= retained.process(output.data(), nullptr, 0, count, settings.eq, lastReferenceContext);
+                if (freshCore && freshAudio) {
+                    std::array<double *, 2> freshOutput{freshAudio->data[0].data() + offset,
+                                                        freshAudio->data[1].data() + offset};
+                    const auto freshContext =
+                        freshCore->beginBlock(physical, freshCore->latencySamples(), settings.eq);
+                    okay &=
+                        freshCore->process(freshOutput.data(), nullptr, 0, count, settings.eq, freshContext);
+                }
+            }
+            okay &= core.learnedThreshold(0) == retained.learnedThreshold(0) &&
+                    core.learnedKnee(0) == retained.learnedKnee(0);
+        }
+        return okay && actual.finite() && identical(actual, expected) && error(actual, expected) == 0.;
+    };
+    Audio<double> training(32768);
+    signal(training, spec.sampleRate, true, 0);
+    auto trainedReference = training;
+    check(compareContinuation(training, trainedReference, nullptr, nullptr) &&
+              core.learnedThreshold(0) != -40. && core.learnedKnee(0) >= 2.,
+          "facade and retained direct EQ learn the same nontrivial histogram from generated audio");
+    const std::array<chain::PrepareSpec, 4> preparations{
+        {{48000, 64, 2}, {48000, 128, 2}, {96000, 128, 2}, {44100, 32, 1}}};
+    for (std::size_t index = 0; index < preparations.size(); ++index) {
+        spec = preparations[index];
+        const auto oldThreshold = core.learnedThreshold(0), oldKnee = core.learnedKnee(0);
+        core.reprepareStopped(spec, settings);
+        retained.prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, settings.eq);
+        check(core.isPrepared() && core.learnedThreshold(0) == oldThreshold &&
+                  core.learnedKnee(0) == oldKnee &&
+                  core.learnedThreshold(0) == retained.learnedThreshold(0) &&
+                  core.learnedKnee(0) == retained.learnedKnee(0) && core.requestedWorkVersion() == 0 &&
+                  core.completedWorkVersion() == 0,
+              "stopped reprepare retains learned state while rebuilding the stream protocol");
+        Audio<double> actual(4096);
+        signal(actual, spec.sampleRate, false, 32768 + index * actual.size());
+        auto expected = actual;
+        if (index == 0) {
+            eq::Core fresh;
+            fresh.prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, settings.eq);
+            auto freshAudio = actual;
+            const bool matched = compareContinuation(actual, expected, &freshAudio, &fresh);
+            check(
+                matched && std::abs(core.learnedThreshold(0) - fresh.learnedThreshold(0)) > 1. &&
+                    error(actual, freshAudio) > 1.e-8,
+                "continued histogram affects subsequent full audio and readbacks unlike a fresh parameter-only instance");
+        } else {
+            check(
+                compareContinuation(actual, expected, nullptr, nullptr),
+                "changed maximum frames, rate and mono layout retain the direct EQ prepare law over full continuation audio");
+        }
+        const auto stats = core.statistics();
+        check(stats.eqFrames == actual.size() && stats.carveFrames == 0 && stats.focusFrames == 0 &&
+                  !stats.focusPrepared && !stats.keyPrepared && core.learnedThreshold(eq::bandCount) == 0. &&
+                  core.learnedKnee(eq::bandCount) == 0.,
+              "retained EQ continuation starts fresh stage accounting and bounds its learned readbacks");
+    }
+    const auto threshold = core.learnedThreshold(0), knee = core.learnedKnee(0);
+    bool badSpec = false, unsupportedStage = false;
+    try {
+        core.reprepareStopped({std::numeric_limits<double>::quiet_NaN(), 32, 1}, settings);
+    } catch (const std::invalid_argument &) {
+        badSpec = true;
+    }
+    auto monoFocus = settings;
+    monoFocus.focusEnabled = true;
+    try {
+        core.reprepareStopped(spec, monoFocus);
+    } catch (const std::invalid_argument &) {
+        unsupportedStage = true;
+    }
+    check(badSpec && unsupportedStage && core.isPrepared() && core.learnedThreshold(0) == threshold &&
+              core.learnedKnee(0) == knee && core.requestedWorkVersion() == 0 &&
+              core.completedWorkVersion() == 0,
+          "invalid specification or unsupported stage leaves the retained prepared EQ untouched");
+    Audio<double> actual(32);
+    signal(actual, spec.sampleRate, false, 50000);
+    auto expected = actual;
+    bool okay =
+        segment(core, actual, static_cast<const Audio<double> *>(nullptr), 0, 0, 32, settings, lastContext);
+    {
+        AudioScope scope;
+        std::array<double *, 2> output{expected.data[0].data(), expected.data[1].data()};
+        okay &= retained.process(output.data(), nullptr, 0, 32, settings.eq, lastReferenceContext);
+    }
+    check(okay && identical(actual, expected) && core.learnedThreshold(0) == retained.learnedThreshold(0) &&
+              core.learnedKnee(0) == retained.learnedKnee(0),
+          "failed stopped reprepare preserves the prior context and continuing signal and histogram state");
+}
+
+void scalarAutomationAvoidsOwnerWork() {
+    for (const bool allStages : {false, true}) {
+        auto settings = activeSettings();
+        settings.carveEnabled = settings.focusEnabled = allStages;
+        settings.focus.detector = focus::Detector::SideChain;
+        chain::Core core;
+        eq::Core equalizer;
+        carve::Core carver;
+        focus::Core focuser;
+        core.prepare({48000, blockFrames, 2}, settings);
+        equalizer.prepare({48000, blockFrames, 2}, settings.eq);
+        if (allStages) {
+            carver.prepare({48000, blockFrames, 2}, settings.carve);
+            focuser.prepare({48000, blockFrames, 2}, settings.focus);
+        }
+        Audio<double> actual(4096), key(4096);
+        actual.signal();
+        key.signal(0, true);
+        auto expected = actual;
+        bool okay = true, noWork = true;
+        std::uint64_t firstGeneration = 0;
+        for (std::size_t offset = 0; offset < actual.size();
+             offset += static_cast<std::size_t>(blockFrames)) {
+            const auto physical = offset / static_cast<std::size_t>(blockFrames) + 1;
+            const auto context = begin(core, physical, 0, settings);
+            if (physical == 1)
+                firstGeneration = context.generation;
+            noWork &= context.generation == firstGeneration;
+            eq::BlockContext eqContext;
+            focus::BlockContext focusContext;
+            {
+                AudioScope scope;
+                eqContext = equalizer.beginBlock(physical, 0, settings.eq);
+                if (allStages)
+                    focusContext = focuser.beginBlock(physical, 0, settings.focus);
+            }
+            for (const auto &part : {std::pair<std::int32_t, std::int32_t>{0, 17}, {17, 47}}) {
+                const auto start = offset + static_cast<std::size_t>(part.first);
+                const auto step = static_cast<double>((start / 17) % 13) / 12.;
+                settings.eq.bands[0].gainDb = static_cast<float>(-3. + 9. * step);
+                settings.eq.outputGainDb = static_cast<float>(-2. + 3. * step);
+                settings.carve.amount = static_cast<float>(.1 + .4 * step);
+                settings.carve.pan = static_cast<float>(.15 + .7 * step);
+                settings.focus.nodes[0].thresholdDb = -45. + 20. * step;
+                settings.focus.nodes[0].attackMs = 5. + 15. * step;
+                settings.focus.nodes[0].releaseMs = 30. + 70. * step;
+                settings.focus.inputGainDb = -1. + 3. * step;
+                settings.focus.outputGainDb = 1. - 2. * step;
+                okay &= segment(core, actual, &key, 2, start, part.second, settings, context);
+                std::array<double *, 2> output{expected.data[0].data() + start,
+                                               expected.data[1].data() + start};
+                std::array<const double *, 2> source{key.data[0].data() + start, key.data[1].data() + start};
+                {
+                    AudioScope scope;
+                    okay &= equalizer.process(output.data(), source.data(), 2, part.second, settings.eq,
+                                              eqContext);
+                    if (allStages) {
+                        okay &= carver.process(output.data(), source.data(), 2, part.second, settings.carve);
+                        okay &= focuser.process(output.data(), source.data(), 2, part.second, settings.focus,
+                                                focusContext);
+                    }
+                }
+                noWork &= core.requestedWorkVersion() == 0 && core.completedWorkVersion() == 0;
+            }
+            noWork &= !service(core);
+        }
+        check(okay && actual.finite() && identical(actual, expected) && error(actual, expected) == 0.,
+              allStages
+                  ? "moving EQ, Carve and Focus scalar controls match independent children over every frame"
+                  : "moving EQ gain controls match the direct EQ over every frame");
+        check(noWork,
+              "scalar-only segment automation publishes no parent work and requires no owner service");
+    }
+}
+
+void publicOwnerWorkVersions() {
+    chain::Core core;
+    check(!core.isPrepared() && core.requestedWorkVersion() == 0 && core.completedWorkVersion() == 0,
+          "unprepared facade exposes no outstanding owner work");
+    auto settings = activeSettings();
+    settings.carveEnabled = false;
+    core.prepare({48000, blockFrames, 2}, settings);
+    auto invalid = settings;
+    invalid.carve.amount = 2.f;
+    check(core.isPrepared() && !request(core, invalid) && core.requestedWorkVersion() == 0 &&
+              core.completedWorkVersion() == 0,
+          "rejected settings do not publish an owner-work version");
+    auto first = settings;
+    first.eq.lookaheadMs = 2.f;
+    first.focus.nodes[0].frequencyHz = 1800.;
+    bool okay = request(core, first);
+    const auto requestedA = core.requestedWorkVersion();
+    okay &= request(core, first);
+    auto latest = first;
+    latest.eq.lookaheadMs = 0.f;
+    latest.focus.nodes[0].q = 2.1;
+    okay &= request(core, latest);
+    check(
+        okay && requestedA != 0 && core.requestedWorkVersion() == requestedA &&
+            core.completedWorkVersion() == 0,
+        "only successful candidate publication increments work; later structural requests coalesce behind it");
+    check(service(core) && core.completedWorkVersion() == requestedA &&
+              core.requestedWorkVersion() == requestedA && core.latencySamples() == 0,
+          "owner completion publishes the actual ready version before audio admission");
+    const auto before = begin(core, 1, 0, latest);
+    Audio<double> main, key;
+    main.signal();
+    key.signal(0, true);
+    okay = segment(core, main, &key, 2, 0, blockFrames, latest, before);
+    okay &= !service(core) && core.requestedWorkVersion() == requestedA &&
+            core.completedWorkVersion() == requestedA;
+    const auto admittedA = begin(core, 2, 96, latest);
+    okay &= admittedA.generation != before.generation && core.latencySamples() == 96 && request(core, latest);
+    const auto requestedB = core.requestedWorkVersion();
+    check(okay && requestedB > requestedA && core.completedWorkVersion() == requestedA,
+          "queued request receives a distinct work version only after the first candidate is admitted");
+    main.signal(64);
+    key.signal(64, true);
+    okay = segment(core, main, &key, 2, 0, blockFrames, latest, admittedA);
+    okay &= service(core);
+    check(okay && core.requestedWorkVersion() == requestedB && core.completedWorkVersion() == requestedB &&
+              core.latencySamples() == 96,
+          "second owner completion identifies B while A remains the audible plan");
+    const auto admittedB = begin(core, 3, 0, latest);
+    check(admittedB.generation != admittedA.generation && core.latencySamples() == 0 &&
+              core.requestedWorkVersion() == requestedB && core.completedWorkVersion() == requestedB &&
+              !service(core),
+          "work metadata remains stable after B admission without consuming a pending plan view");
+}
+
 void ownerAudioConcurrency() {
     chain::Settings initial;
     initial.eqEnabled = false;
@@ -1136,6 +1404,9 @@ int main() {
         stoppedPrepareAndResetReuse();
         coherentOppositeLatencyRequests();
         sameTotalLatencyRepartition();
+        learnedHistogramSurvivesStoppedReprepare();
+        scalarAutomationAvoidsOwnerWork();
+        publicOwnerWorkVersions();
         ownerAudioConcurrency();
         check(audioAllocations == 0, "composition audio calls allocate zero C++ objects");
         check(audioDeallocations == 0, "composition audio calls deallocate zero C++ objects");
