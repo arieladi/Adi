@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 14 November 2026 — composed Clean and continuous scope supplied
+
+Draft [#570](https://github.com/arieladi/Adi/pull/570), `282d4537`, on #567 supplies the unregistered float-stereo Clean/key-EQ facade.172 Debug/Release checks, strict2/validators4 and callback0/0 pass. Root verifies417 fixed records/23 source identities/16 unchanged children and selected complete-output preservation. Caller validation remains atomic; a real copied-key overflow is instead contained by a clearly distinct latched ProcessingFault before Clean, with stopped recovery and an explicit post-key scan cost. No abort was reproduced, no DSP clamp/cutoff or native C admission is implied.
+
+Draft [#571](https://github.com/arieladi/Adi/pull/571), `6cc38fea`, on #568 supplies a framework-free continuous triggered scope with prepared ordered-extrema buffers and source ranges.148 generated checks in Debug/Release, strict3/validators4, zero processing/reset allocation and actual public original-source projection comparisons pass. Full GPLv3 provenance is retained; derived files use GPL-3.0-only because an upstream later-version grant was not identified. Existing latest-window Scope, worker/audio/UI and current packages are unchanged. Shared continuous acquisition remains a later slice, distinct from sparse UI-frame data.
+
+`mixview/g-complete-request-20261114` in the gate worktree is authorized for fixed explicit request processing only after the private source/runtime topology prerequisite closed. Preserve the corrected Incremental default, staged four-plane request scratch, full-available-span alias/pending law, honest request cadence and all prior output gates; no outer-wrapper sleep, threshold automation or native factory. The average-domain child continues separately. Live tests stay with Claude, timing remains deferred, win reviews/merges in dependency order; no self-merge.
+
 ## 14 November 2026 — processing/average CI green; next real-hop integration
 
 #566 corrected `33c64136`, #567 moving controls `52861576` and #568 average primitive `32b334fd` each pass all18 core+3 UI exact-head jobs and are ready for win, unmerged by this seat. Gate runs43532107827/43532107786; moving43530558133/43530558118; average43532170409/43532170375. #555 remains the separate unresolved ARM storage/Ops review gate.
