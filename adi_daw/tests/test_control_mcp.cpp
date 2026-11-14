@@ -54,6 +54,10 @@
 #include <utility>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 using namespace adi;
 using namespace adi::control;
 namespace fs = std::filesystem;
@@ -1072,6 +1076,11 @@ void testTwoProjects() {
           "a proposal naming B is B's");
     check(a->scratchFolder().empty() && !bProject->scratchFolder().empty(),
           "only B was snapshotted: A was not touched");
+#if !defined(_WIN32)
+    struct stat scratchStat {};
+    check(::stat(bProject->scratchFolder().c_str(), &scratchStat) == 0 && (scratchStat.st_mode & 0777) == 0700,
+          "the scratch folder is owner-only (0700)");
+#endif
     check(fileBytes(fa.path) == bytesA, "A's bytes are unchanged");
 }
 

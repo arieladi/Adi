@@ -31,6 +31,35 @@ Payload boundValue(double v) {
 
 Payload closedObject(std::span<const Field> fields, Bounds bounds);
 
+Payload openValueRef() { return {{"$ref", "#/$defs/openValue"}}; }
+
+/// What checkOpen enforces inside an open value (an Object with no declared
+/// members, or an element of an Array with no declared items), as one
+/// recursive definition: text, member names included, at most
+/// kRemoteMaxTextLength characters; arrays and objects at most
+/// kRemoteMaxArrayItems members; every member an open value again.
+Payload openValueDef() {
+    return {{"anyOf", Payload::array({
+                          {{"type", Payload::array({"null", "boolean", "number"})}},
+                          {{"type", "string"}, {"maxLength", kRemoteMaxTextLength}},
+                          {{"type", "array"}, {"maxItems", kRemoteMaxArrayItems}, {"items", openValueRef()}},
+                          {{"type", "object"},
+                           {"maxProperties", kRemoteMaxArrayItems},
+                           {"propertyNames", {{"maxLength", kRemoteMaxTextLength}}},
+                           {"additionalProperties", openValueRef()}},
+                      })}};
+}
+
+/// True when a field the remote schema shows, at any depth, is open.
+bool hasOpenField(std::span<const Field> fields) {
+    for (const auto& f : fields) {
+        if (f.key.starts_with('_')) continue;
+        if (f.type != FieldType::Array && f.type != FieldType::Object) continue;
+        if (f.items.empty() || hasOpenField(f.items)) return true;
+    }
+    return false;
+}
+
 Payload fieldSchema(const Field& f, Bounds bounds) {
     Payload s = Payload::object();
     if (f.required) s["type"] = jsonType(f.type);
@@ -69,6 +98,7 @@ Payload fieldSchema(const Field& f, Bounds bounds) {
             if (f.maxItems) s["maxItems"] = *f.maxItems;
             else if (bounds == Bounds::Remote) s["maxItems"] = kRemoteMaxArrayItems;
             if (!f.items.empty()) s["items"] = closedObject(f.items, bounds);
+            else if (bounds == Bounds::Remote) s["items"] = openValueRef();
             break;
         case FieldType::Object:
             if (!f.items.empty()) {
@@ -76,6 +106,13 @@ Payload fieldSchema(const Field& f, Bounds bounds) {
                 s["properties"] = inner.at("properties");
                 s["required"] = inner.at("required");
                 s["additionalProperties"] = false;
+            } else if (bounds == Bounds::Remote) {
+                // checkOpen on the field's own object: its member count and
+                // member names are capped like any open object's, and every
+                // member is an open value.
+                s["maxProperties"] = kRemoteMaxArrayItems;
+                s["propertyNames"] = {{"maxLength", kRemoteMaxTextLength}};
+                s["additionalProperties"] = openValueRef();
             }
             break;
         case FieldType::Bool:
@@ -129,6 +166,9 @@ void normalizeFields(std::span<const Field> fields, Payload& p) {
 Payload opInputSchema(const OpDescriptor& d, Bounds bounds) {
     Payload s = closedObject(d.fields, bounds);
     if (!d.summary.empty()) s["description"] = std::string(d.summary);
+    // The remote bounds reach inside an open value; the definition its
+    // fields refer to sits at the root, and only where one is used.
+    if (bounds == Bounds::Remote && hasOpenField(d.fields)) s["$defs"] = {{"openValue", openValueDef()}};
     return s;
 }
 

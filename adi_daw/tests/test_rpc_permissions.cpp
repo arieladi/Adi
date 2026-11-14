@@ -474,6 +474,21 @@ void testMeta() {
     check(!parseMeta({{"idempotencyKey", wide}}, e), "the bound is in bytes, not characters");
     check(!parseMeta({{"expectHead", "7"}}, e), "a head is an integer");
     check(parseMeta(nullptr, e).has_value(), "no meta at all is fine");
+
+    // What the caller sent is echoed clipped: a 100 KB unknown key or method
+    // never comes back whole in the refusal.
+    const std::string huge(100 * 1024, 'q');
+    const bool hugeRefused = !parseMeta({{huge, 1}}, e);
+    check(hugeRefused && e.code == errc::InvalidParams && e.message.size() < 300,
+          "a 100 KB unknown meta key is echoed clipped (" + std::to_string(e.message.size()) + " bytes)");
+    Rig rig(inlineExecutor());
+    const Principal p{"cred-clip", "Client Clip"};
+    rig.grants.grant(p.credential, Tier::Observe);
+    const auto unknown = rig.call(p, huge.c_str());
+    check(unknown && unknown->error && unknown->error->code == errc::MethodNotFound &&
+              unknown->error->message.size() < 300,
+          "a 100 KB unknown method is echoed clipped (" +
+              std::to_string(unknown && unknown->error ? unknown->error->message.size() : 0) + " bytes)");
 }
 
 void testWire() {

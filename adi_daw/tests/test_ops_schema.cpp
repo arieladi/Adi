@@ -119,7 +119,20 @@ bool typeIs(const std::string& t, const Payload& v) {
     return false;
 }
 
-bool schemaAccepts(const Payload& s, const Payload& v) {
+/// `root` is the op's whole schema, the document a "$ref" ("#/$defs/...")
+/// points into.
+bool schemaAccepts(const Payload& s, const Payload& v, const Payload& root) {
+    if (s.contains("$ref")) {
+        const auto ref = s.at("$ref").get<std::string>();
+        if (!ref.starts_with("#/")) return false;
+        const Payload::json_pointer at(ref.substr(1));
+        if (!root.contains(at) || !schemaAccepts(root.at(at), v, root)) return false;
+    }
+    if (s.contains("anyOf")) {
+        bool any = false;
+        for (const auto& one : s.at("anyOf")) any = any || schemaAccepts(one, v, root);
+        if (!any) return false;
+    }
     if (s.contains("type")) {
         const auto& t = s.at("type");
         bool ok = false;
@@ -144,23 +157,33 @@ bool schemaAccepts(const Payload& s, const Payload& v) {
         if (s.contains("maxItems") && v.size() > s.at("maxItems").get<std::size_t>()) return false;
         if (s.contains("items"))
             for (const auto& e : v)
-                if (!schemaAccepts(s.at("items"), e)) return false;
+                if (!schemaAccepts(s.at("items"), e, root)) return false;
     }
     if (v.is_object()) {
+        if (s.contains("maxProperties") && v.size() > s.at("maxProperties").get<std::size_t>()) return false;
         if (s.contains("required"))
             for (const auto& k : s.at("required"))
                 if (!v.contains(k.get<std::string>())) return false;
         const Payload props = s.value("properties", Payload::object());
         for (auto it = v.begin(); it != v.end(); ++it) {
-            if (props.contains(it.key())) {
-                if (!schemaAccepts(props.at(it.key()), it.value())) return false;
-            } else if (s.contains("additionalProperties") && s.at("additionalProperties") == false) {
+            if (s.contains("propertyNames") && !schemaAccepts(s.at("propertyNames"), Payload(it.key()), root))
                 return false;
+            if (props.contains(it.key())) {
+                if (!schemaAccepts(props.at(it.key()), it.value(), root)) return false;
+            } else if (s.contains("additionalProperties")) {
+                const auto& extra = s.at("additionalProperties");
+                if (extra.is_boolean()) {
+                    if (!extra.get<bool>()) return false;
+                } else if (!schemaAccepts(extra, it.value(), root)) {
+                    return false;
+                }
             }
         }
     }
     return true;
 }
+
+bool schemaAccepts(const Payload& schema, const Payload& v) { return schemaAccepts(schema, v, schema); }
 
 bool boundaryAccepts(const OpDescriptor& d, Payload p, Bounds b) {
     normalizeSubmission(d, p);
@@ -309,6 +332,7 @@ constexpr Field kRich[] = {
     {"count", FieldType::Int, false, "count", {}, 0.0, 10.0},
     {"pts", FieldType::Array, false, "points", {}, std::nullopt, std::nullopt, std::nullopt, 3, kItem},
     {"bag", FieldType::Array, false, "anything, no declared size"},
+    {"free", FieldType::Object, false, "anything, no declared members"},
     {"obj", FieldType::Object, false, "inner", {}, std::nullopt, std::nullopt, std::nullopt, std::nullopt, kItem},
 };
 
@@ -465,6 +489,66 @@ void testOpenValues() {
     longKey[longText] = 1;
     check(names(issuesOf(d, {{"mode", "a"}, {"bag", Payload::array({longKey})}}, Bounds::Remote), "bag[0]"),
           "remote: a member name is text, and capped too");
+
+    // The remote schema states the same recursive caps: a payload passes it
+    // exactly when the remote boundary accepts it, inside open values too.
+    const Payload remoteSchema = opInputSchema(d, Bounds::Remote);
+    const Payload localSchema = opInputSchema(d, Bounds::Local);
+    check(remoteSchema.contains("$defs") && remoteSchema.at("$defs").contains("openValue"),
+          "the remote schema defines openValue at its root");
+    check(!localSchema.contains("$defs") && localSchema.dump().find("$ref") == std::string::npos,
+          "the local schema has no open-value caps");
+    check(remoteSchema.at("properties").at("bag").at("items") == Payload{{"$ref", "#/$defs/openValue"}},
+          "an open array's items are open values");
+    check(remoteSchema.at("properties").at("free").value("maxProperties", std::size_t{0}) == kRemoteMaxArrayItems &&
+              remoteSchema.at("properties").at("free").at("additionalProperties") ==
+                  Payload{{"$ref", "#/$defs/openValue"}},
+          "an open object's members are capped and are open values");
+    const auto* closedOp = OpRegistry::instance().find("mixer.setVolume");
+    check(closedOp && !opInputSchema(*closedOp, Bounds::Remote).contains("$defs"),
+          "an op with no open field carries no $defs");
+
+    Payload manyMembers = Payload::object();
+    for (std::size_t i = 0; i <= kRemoteMaxArrayItems; ++i) manyMembers["m" + std::to_string(i)] = 1;
+    Payload topLongKey = Payload::object();
+    topLongKey[longText] = 1;
+    Payload fitsKey = Payload::object();
+    fitsKey[fits] = Payload::array({fits, nullptr, true, 1.5, -3});
+    Payload deepValid = Payload::array(
+        {{{"a", Payload::array({1, {{"b", fits}, {"c", Payload::object()}}, Payload::array({Payload::array()})})},
+          {"d", {{"e", {{"f", "x"}}}}}}});
+    struct Case {
+        const char* what;
+        Payload payload;
+        bool accepted;
+    };
+    const std::vector<Case> cases = {
+        {"a long string inside an open object", {{"mode", "a"}, {"free", {{"k", longText}}}}, false},
+        {"a long string deep inside an open object", {{"mode", "a"}, {"free", {{"k", {{"j", Payload::array({longText})}}}}}}, false},
+        {"a long member name on the open object itself", {{"mode", "a"}, {"free", topLongKey}}, false},
+        {"a long member name inside an open object", {{"mode", "a"}, {"free", {{"k", topLongKey}}}}, false},
+        {"a long member name inside an open array", {{"mode", "a"}, {"bag", Payload::array({longKey})}}, false},
+        {"a member name of exactly the cap", {{"mode", "a"}, {"free", fitsKey}}, true},
+        {"an open object with 4,097 members", {{"mode", "a"}, {"free", manyMembers}}, false},
+        {"a nested object with 4,097 members", {{"mode", "a"}, {"free", {{"k", manyMembers}}}}, false},
+        {"a nested array of 4,097", {{"mode", "a"}, {"bag", Payload::array({wide})}}, false},
+        {"a nested array of 4,097 in an open object", {{"mode", "a"}, {"free", {{"k", wide}}}}, false},
+        {"a deep nested valid value in an open array", {{"mode", "a"}, {"bag", deepValid}}, true},
+        {"a deep nested valid value in an open object", {{"mode", "a"}, {"free", {{"k", deepValid}}}}, true},
+        {"a long text element of an open array", {{"mode", "a"}, {"bag", Payload::array({longText})}}, false},
+        {"a null open object", {{"mode", "a"}, {"free", nullptr}}, true},
+    };
+    for (const auto& c : cases) {
+        const bool s = schemaAccepts(remoteSchema, c.payload);
+        const bool b = boundaryAccepts(d, c.payload, Bounds::Remote);
+        check(s == b && b == c.accepted, std::string("remote: ") + c.what + ": schema " +
+                                             (s ? "accepts" : "refuses") + ", boundary " +
+                                             (b ? "accepts" : "refuses"));
+        // Locally nothing inside an open value is capped, and the local
+        // schema says so.
+        check(schemaAccepts(localSchema, c.payload) == boundaryAccepts(d, c.payload, Bounds::Local),
+              std::string("local: ") + c.what + ": schema and boundary agree");
+    }
 
     const auto& reg = OpRegistry::instance();
     const auto* lane = reg.find("automation.createLane");
