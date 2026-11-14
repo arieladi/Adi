@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 14 November 2026 — director settles Versatile seed recall
+
+Adi chose to save each instance's seed with project/state for repeatable recall. The future ADI-C Versatile adapter must restore that identity instead of reseeding on project/editor/graph reopening. This resolves the initialization design question only; complete live-state snapshots, seed generation, schema migration and the actual Versatile engine still require source/state proof. No released audio, current core, provider, package or CPU claim changes. Root records the ruling in the private decision guide/roadmap/current checkpoint; win assigns any eventual ADR/schema change. Live tests stay with Claude.
+
 ## 14 November 2026 — fixed Split prerequisite closed privately
 
 The DS private fixed Split composition is sealed and independently root-verified: complete selected-array gates and Debug/Release generated checks pass, using unchanged Wide plus existing float overlap-save code. Product #562 remains clean and unchanged; no native provider or Split admission is supplied. Retained first/final variants preserve all predicted audio bytes. The final failure-injection scope explicitly targets recoverable data allocations; the earlier broader Release test remains separately recorded. Storage/finite-sample preconditions, malformed outer enum validation and whole-hop versus staged processing remain explicit future facade/CPU-readiness boundaries. No fitted kernel, new native execution, thinner convolver, public source edit, live test or timing.
