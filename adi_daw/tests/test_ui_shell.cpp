@@ -5757,6 +5757,43 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "STACK shows, lit, with a row for each channel");
     check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
           "under the tabs");
+    {
+        const auto before = panel.getBounds();
+        check(!root.state().mixAnalyzerDock && !panel.analyzerDockShown(), "right analyzer dock is opt-in by default");
+        panel.setSize(1000, 650);
+        check(panel.setAnalyzerDock(true) && panel.setAnalyzerWidth(360), "show and size the optional analyzer dock");
+        panel.frame(root.reader());
+        check(panel.analyzerDockShown() && panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth &&
+                  !panel.stack.getBounds().intersects(panel.analyzerDock.getBounds()) &&
+                  panel.analyzerDock.getWidth() == 360,
+              "dock sits beside actual channel tools and preserves their editing width");
+        check(persistence.load("mix").mixAnalyzerDock && persistence.load("mix").mixAnalyzerWidth == 360,
+              "dock visibility and width use window view persistence without an audio edit");
+        for (const int width : {400, 570, 900}) {
+            panel.setSize(width, 650); panel.frame(root.reader());
+            bool fits = panel.getLocalBounds().contains(panel.analyzerToggle.getBounds()) &&
+                        panel.getLocalBounds().contains(panel.floating.getBounds()) &&
+                        !panel.analyzerToggle.getBounds().intersects(panel.floating.getBounds());
+            for (std::size_t i = 0; i < panel.tabs.size(); ++i) {
+                fits = fits && panel.getLocalBounds().contains(panel.tabs[i]->getBounds()) &&
+                    !panel.tabs[i]->getBounds().intersects(panel.analyzerToggle.getBounds()) &&
+                    !panel.tabs[i]->getBounds().intersects(panel.floating.getBounds());
+                for (std::size_t j = i + 1; j < panel.tabs.size(); ++j)
+                    fits = fits && !panel.tabs[i]->getBounds().intersects(panel.tabs[j]->getBounds());
+            }
+            check(fits && (!panel.analyzerDockShown() || panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth),
+                  "tabs, dock toggle and float wrap without overlap while channel editing keeps its minimum");
+        }
+        panel.setSize(400, 650); panel.frame(root.reader());
+        check(root.state().mixAnalyzerDock && !panel.analyzerDockShown() && panel.stack.getBounds() == panel.body(),
+              "narrow layout suppresses requested dock and gives the whole body back to channel tools");
+        const auto zoom = root.state().zoom; root.state().zoom = 0;
+        check(!panel.setAnalyzerDock(false) && root.state().mixAnalyzerDock,
+              "failed preference persistence rolls back dock visibility instead of changing the view");
+        root.state().zoom = zoom;
+        check(panel.setAnalyzerDock(false), "restore default hidden dock after geometry checks");
+        panel.setBounds(before); panel.frame(root.reader());
+    }
     panel.tabs[0]->onClick();
     root.frame();
     check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
@@ -6629,6 +6666,107 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     transient.reset();
                     actual.devices.publication = savedPublication;
                 }
+            }
+            // Dock/header/narrow layout changes never relocate a held device control.
+            const auto mixBounds = actual.mixViewPanel.getBounds();
+            for (int kind = 0; kind < 3; ++kind) {
+                auto &mix = actual.mixViewPanel;
+                mix.setAnalyzerDock(false); mix.setSize(900, 650);
+                const auto stamp = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 10000 + kind * 1000;
+                surface.model().setAutoZoom(false, stamp); surface.model().setBaseHeight(150, stamp);
+                surface.model().focusItem(surface.model().chainRef(2, 30), stamp);
+                surface.frameAt(actual.reader(), stamp + 400);
+                auto *heldPanel = findPanel(30);
+                check(heldPanel && !heldPanel->controls.empty(), "dock capture fixture has a live actual device control");
+                if (!heldPanel || heldPanel->controls.empty()) continue;
+                const auto child = heldPanel->getBounds(), wholeStack = surface.getBounds(), body = mix.body();
+                bool captured = false;
+                if (kind == 0) { heldPanel->controls[0]->slider.onDragStart(); captured = surface.model().capture().has_value(); }
+                else captured = heldPanel->beginInteraction(kind == 1 ? DevicePanelView::Interaction::Text : DevicePanelView::Interaction::Menu);
+                mix.setAnalyzerDock(true); mix.setAnalyzerWidth(300); mix.setAnalyzerWidth(420);
+                mix.setSize(400, 650); mix.frame(actual.reader());
+                check(captured && surface.model().capture() && surface.getBounds() == wholeStack && mix.body() == body &&
+                          heldPanel->getBounds() == child && !mix.analyzerDockShown(),
+                      "Drag/Text/Menu hold keeps whole Stack, header origin and child geometry while dock changes queue");
+                if (kind == 0) heldPanel->controls[0]->slider.onDragEnd();
+                else heldPanel->endInteraction(kind == 1 ? DevicePanelView::Interaction::Text : DevicePanelView::Interaction::Menu);
+                mix.frame(actual.reader());
+                check(!surface.model().capture() && !mix.analyzerDockShown() && surface.getBounds() == mix.body() &&
+                          actual.state().mixAnalyzerWidth == 420,
+                      "release applies the last requested narrow layout without showing hidden analyzer demand");
+                mix.setSize(900, 650); mix.frame(actual.reader());
+                check(mix.analyzerDockShown() && mix.analyzerDock.getWidth() == 420 &&
+                          surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
+                      "widening after release restores the remembered dock beside channel tools");
+                mix.setAnalyzerDock(false); mix.frame(actual.reader());
+            }
+            actual.mixViewPanel.setBounds(mixBounds); actual.mixViewPanel.frame(actual.reader());
+            {
+                auto &mix = actual.mixViewPanel;
+                const auto savedBroker = actual.sharedAnalysis;
+                auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
+                int acquired = 0, released = 0;
+                auto broker = std::make_shared<SharedAnalysis>(
+                    [&](std::int64_t, engine::ScopePoint) { ++acquired; return tap; },
+                    [&](std::int64_t, engine::ScopePoint) { ++released; }, SharedAnalysis::Mode::Manual);
+                actual.sharedAnalysis = broker;
+                mix.setSize(900, 650); mix.setAnalyzerDock(true); mix.frame(actual.reader());
+                const int chromeHeight = mix.getHeight() - mix.body().getHeight();
+                mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight - 1); mix.frame(actual.reader());
+                check(mix.body().getHeight() == 419 && actual.state().mixAnalyzerDock && !mix.analyzerDockShown() &&
+                          broker->stats().consumers == 0,
+                      "requested dock below 420 px body height releases all its demand and preserves the preference");
+                mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight); mix.frame(actual.reader());
+                check(mix.body().getHeight() == 420 && mix.analyzerDockShown() && broker->stats().consumers == 3 &&
+                          surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
+                      "420 px admission restores all three shared views without taking channel editing width");
+                std::array<float, 1024> signal{};
+                for (std::size_t i = 0; i < signal.size(); ++i)
+                    signal[i] = .5f * std::sin(static_cast<float>(i) * .1f);
+                tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 0, true);
+                broker->pump(); mix.frame(actual.reader());
+                auto &dock = mix.analyzerDock;
+                const auto picture = dock.spectrum.snapshot();
+                check(picture && dock.meters.snapshot() == picture && dock.phase.snapshot() == picture,
+                      "dock rollback fixture has a shared real publication before freezing");
+                dock.freezeButton.setToggleState(true, juce::dontSendNotification); dock.freezeButton.onClick();
+                const auto before = broker->stats(); const int oldAcquire = acquired, oldRelease = released;
+                const auto oldZoom = actual.state().zoom; actual.state().zoom = 0;
+                dock.pointBox.setSelectedId(2, juce::sendNotificationSync);
+                dock.channelBox.setSelectedId(4, juce::sendNotificationSync);
+                dock.sourceBox.setSelectedId(2, juce::sendNotificationSync);
+                dock.widthBox.setSelectedId(240, juce::sendNotificationSync);
+                mix.frame(actual.reader());
+                check(dock.point() == 0 && dock.channel() == 0 && dock.source() == 0 && dock.requestedWidth() == 420 &&
+                          dock.spectrum.snapshot() == picture && dock.phase.snapshot() == picture && dock.meters.snapshot() == picture &&
+                          broker->stats().consumers == before.consumers && broker->stats().domains == before.domains &&
+                          acquired == oldAcquire && released == oldRelease,
+                      "failed source/tap/channel/width saves restore controls without discarding frozen pictures or touching demand");
+                actual.state().zoom = oldZoom;
+                const auto oldOps = value(document->store(), "SELECT count(*) FROM ops");
+                const auto oldTracks = value(document->store(), "SELECT count(*) FROM tracks");
+                const auto oldDevices = value(document->store(), "SELECT count(*) FROM devices");
+                const auto oldUndo = actual.undoTitle(false);
+                commands.activate(actual);
+                bool blocked = true;
+                for (auto *control : std::array<juce::Component *, 8>{&mix.analyzerToggle, &dock.sourceBox, &dock.pointBox,
+                        &dock.channelBox, &dock.widthBox, &dock.freezeButton, &dock.resetButton, &dock.expandButton}) {
+                    control->grabKeyboardFocus();
+                    blocked = blocked && mix.hasAnalyzerControlFocus();
+                    for (const int id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate,
+                                          AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                        juce::ApplicationCommandInfo commandInfo(id); commands.getCommandInfo(id, commandInfo);
+                        blocked = blocked && !actual.command(id) &&
+                            (commandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                    }
+                }
+                check(blocked && value(document->store(), "SELECT count(*) FROM ops") == oldOps &&
+                          value(document->store(), "SELECT count(*) FROM tracks") == oldTracks &&
+                          value(document->store(), "SELECT count(*) FROM devices") == oldDevices && actual.undoTitle(false) == oldUndo,
+                      "analyzer controls protect menu and direct track/device actions without changing audio edits or Undo");
+                dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
+                actual.sharedAnalysis = savedBroker; mix.setAnalyzerDock(false); mix.frame(actual.reader());
+                mix.setBounds(mixBounds); mix.frame(actual.reader()); surface.grabKeyboardFocus();
             }
             actual.mixViewPanel.stack.suspendParameters(true);
             actual.devices.suspendParameters(true);

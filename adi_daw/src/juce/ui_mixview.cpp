@@ -82,17 +82,35 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : ref(root), stack(root), roo
     addChildComponent(stack);
     addChildComponent(spectrum);
     addChildComponent(analysis);
+    addChildComponent(analyzerDock);
+    addAndMakeVisible(analyzerToggle);
+    analyzerToggle.setMouseClickGrabsKeyboardFocus(false);
+    analyzerToggle.onClick = [this] { setAnalyzerDock(analyzerToggle.getToggleState()); };
+    analyzerDock.onChange = [this] { persistAnalyzerSettings(); };
+    analyzerDock.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
     analysis.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
+void MixViewPanel::adoptViewState() {
+    ownerReady_ = true;
+    const auto &state = root_.state();
+    analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
+                           state.mixAnalyzerWidth);
+    resized();
+}
+bool MixViewPanel::hasAnalyzerControlFocus() const {
+    return analyzerToggle.hasKeyboardFocus(true) ||
+        (analyzerDock.isVisible() && analyzerDock.hasKeyboardFocus(true)) ||
+        (analysis.isVisible() && analysis.hasKeyboardFocus(true));
+}
 MixViewPanel::Tab MixViewPanel::tab() const noexcept {
     return static_cast<Tab>(std::clamp(root_.state().mixViewTab, 0, kTabCount - 1));
 }
 juce::Rectangle<int> MixViewPanel::body() const noexcept {
-    return getLocalBounds().withTrimmedTop(kHeaderHeight + kStripHeight).reduced(look::border);
+    return appliedBody_;
 }
 juce::Rectangle<int> MixViewPanel::strip() const noexcept {
-    return {look::border, kHeaderHeight, std::max(0, getWidth() - 2 * look::border), kStripHeight - 2};
+    return appliedStrip_;
 }
 juce::Rectangle<int> MixViewPanel::timeline() const noexcept {
     const auto s = strip();
@@ -106,6 +124,7 @@ juce::String MixViewPanel::referenceText() const {
     return "None yet";
 }
 void MixViewPanel::frame(const SnapshotReader &reader) {
+    const juce::Component::SafePointer<MixViewPanel> alive(this);
     floating.setToggleState(root_.state().mixViewDetached, juce::dontSendNotification);
     if (ref.getToggleState() != root_.reference().on() || eye.getToggleState() != root_.state().showReference ||
         root_.playing()) {
@@ -119,35 +138,113 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         for (int i = 0; i < kTabCount; ++i)
             tabs[static_cast<std::size_t>(i)]->setToggleState(i == shown, juce::dontSendNotification);
         stack.setVisible(tab() == Tab::Stack);
+        if (!alive) return;
         spectrum.setVisible(tab() == Tab::Overview);
+        if (!alive) return;
         analysis.setVisible(tab() == Tab::Analysis || tab() == Tab::ScopePhase || tab() == Tab::Spectrogram);
+        if (!alive) return;
         if (tab() == Tab::ScopePhase) analysis.setMode(SharedSpectrumView::Mode::Phase);
         if (tab() == Tab::Spectrogram) analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+        layoutPending_ = true;
         repaint();
     }
+    if (layoutPending_ || appliedDock_ != root_.state().mixAnalyzerDock ||
+        appliedWidth_ != root_.state().mixAnalyzerWidth) resized();
+    if (!alive) return;
     // STACK's rows follow the tracks; a frame that changes none of them builds nothing.
-    if (stack.isVisible())
+    if (stack.isVisible()) {
         stack.frame(reader);
+        if (!alive) return;
+    }
     spectrum.present(root_.sharedAnalysis, root_.analysisTrack(reader));
     spectrum.frame();
+    if (!alive) return;
     analysis.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
+    if (!alive) return;
+    analyzerDock.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
+}
+bool MixViewPanel::setAnalyzerDock(bool visible) {
+    auto &state = root_.state();
+    const bool before = state.mixAnalyzerDock;
+    state.mixAnalyzerDock = visible;
+    if (!root_.persist()) { state.mixAnalyzerDock = before; analyzerToggle.setToggleState(before, juce::dontSendNotification); return false; }
+    resized(); return true;
+}
+bool MixViewPanel::setAnalyzerWidth(int width) {
+    auto &state = root_.state();
+    const int before = state.mixAnalyzerWidth;
+    state.mixAnalyzerWidth = std::clamp(width, kDockMinimumWidth, 420);
+    if (!root_.persist()) { state.mixAnalyzerWidth = before; return false; }
+    analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
+                           state.mixAnalyzerWidth);
+    resized(); return true;
+}
+bool MixViewPanel::persistAnalyzerSettings() {
+    auto &state = root_.state();
+    const auto before = std::array{state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
+                                   state.mixAnalyzerWidth};
+    state.mixAnalyzerSource = analyzerDock.source(); state.mixAnalyzerPoint = analyzerDock.point();
+    state.mixAnalyzerChannel = analyzerDock.channel(); state.mixAnalyzerWidth = analyzerDock.requestedWidth();
+    if (!root_.persist()) {
+        state.mixAnalyzerSource = before[0]; state.mixAnalyzerPoint = before[1];
+        state.mixAnalyzerChannel = before[2]; state.mixAnalyzerWidth = before[3];
+        analyzerDock.restoreControls(before[0], before[1], before[2], before[3]); return false;
+    }
+    analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
+                           state.mixAnalyzerWidth);
+    resized(); return true;
 }
 void MixViewPanel::resized() {
+    const juce::Component::SafePointer<MixViewPanel> alive(this);
+    if (!ownerReady_) { layoutPending_ = true; return; }
+    // Preserve the complete applied child/header/canvas geometry while an edit is
+    // held. The next owner frame coalesces requested changes after release.
+    if (stack.model().capture()) { layoutPending_ = true; return; }
+    layoutPending_ = false;
+    const auto &state = root_.state();
+    appliedDock_ = state.mixAnalyzerDock; appliedWidth_ = state.mixAnalyzerWidth;
+    headerHeight_ = getWidth() >= kHeaderSingleRowWidth ? kHeaderHeight : kHeaderHeight * 2;
+    appliedBody_ = getLocalBounds().withTrimmedTop(headerHeight_ + kStripHeight).reduced(look::border);
+    appliedStrip_ = {look::border, headerHeight_, std::max(0, getWidth() - 2 * look::border), kStripHeight - 2};
+    analyzerToggle.setToggleState(appliedDock_, juce::dontSendNotification);
     // The tabs along the top, from the left, as Live's view choosers sit on its band.
     int x = look::gap;
     const int y = (kHeaderHeight - look::fieldHeight) / 2;
+    const int tabsWidth = std::max(0, getWidth() - look::gap * 2 -
+        (headerHeight_ == kHeaderHeight ? 120 : 26));
+    int remaining = std::min(500, tabsWidth);
     for (int i = 0; i < kTabCount; ++i) {
-        const int w = kTabWidths[static_cast<std::size_t>(i)];
+        const int nominal = kTabWidths[static_cast<std::size_t>(i)];
+        const int w = std::min(remaining, std::max(0, nominal * std::min(500, tabsWidth) / 500));
         tabs[static_cast<std::size_t>(i)]->setBounds(x, y, w, look::fieldHeight);
-        x += w + 2;
+        x += w + 2; remaining = std::max(0, remaining - w - 2);
     }
-    floating.setBounds(getWidth() - look::gap - 22, y, 22, look::fieldHeight);
+    floating.setBounds(std::max(0, getWidth() - look::gap - 22), y, std::min(22, getWidth()), look::fieldHeight);
+    analyzerToggle.setBounds(headerHeight_ == kHeaderHeight ? std::max(x, floating.getX() - 98) : look::gap,
+                             y + (headerHeight_ == kHeaderHeight ? 0 : kHeaderHeight),
+                             std::min(94, std::max(0, getWidth() - look::gap * 2)), look::fieldHeight);
     const auto s = strip();
     const int sy = s.getY() + (s.getHeight() - look::fieldHeight) / 2;
     ref.setBounds(s.getX() + 210, sy, 38, look::fieldHeight);
     eye.setBounds(ref.getRight() + 6, sy, 124, look::fieldHeight);
-    stack.setBounds(body());
-    spectrum.setBounds(body());
+    auto content = body();
+    const bool beside = tab() == Tab::Stack || tab() == Tab::Overview;
+    const bool fits = content.getWidth() >= kStackMinimumWidth + kDockGap + kDockMinimumWidth &&
+                      content.getHeight() >= kDockMinimumHeight;
+    analyzerDock.setVisible(appliedDock_ && beside && fits);
+    if (!alive) return;
+    if (analyzerDock.isVisible()) {
+        const int width = std::min(appliedWidth_, content.getWidth() - kStackMinimumWidth - kDockGap);
+        analyzerDock.setBounds(content.removeFromRight(width)); content.removeFromRight(kDockGap);
+        if (!alive) return;
+    }
+    analyzerToggle.setTooltip(appliedDock_ && beside && !fits ?
+        "Analyzer dock requested. Enlarge this view to retain 320 px for channel tools and 240 by 420 px for analyzers." :
+        "Show or hide Meters, Phase and Spectrum beside STACK or OVERVIEW. Analysis remains a separate tab.");
+    stack.setBounds(content);
+    if (!alive) return;
+    spectrum.setBounds(content);
+    if (!alive) return;
     analysis.setBounds(body());
 }
 void MixViewPanel::paint(juce::Graphics &g) {

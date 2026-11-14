@@ -433,11 +433,74 @@ void mainMetersSharedPresentation() {
     full.present({}, 0);
 }
 
+void compactAnalyzerDock() {
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 520, 620); root.setVisible(true); root.addToDesktop(0);
+    adi::ui::AnalysisDock dock;
+    root.addAndMakeVisible(dock); dock.setBounds(0, 0, 240, 600);
+    dock.frame(f.broker, 1, 2);
+    check(dock.source() == 0 && dock.point() == 0 && dock.channel() == 0 &&
+              dock.meters.track() == 1 && dock.phase.track() == 1 && dock.spectrum.track() == 1,
+          "compact dock starts on Main/Post Mixer with one shared channel convention");
+    const auto stats = f.broker->stats();
+    check(stats.consumers == 3 && stats.domains == 1 && stats.taps == 1 && f.acquired == 1,
+          "stacked meter/phase/spectrum request one compatible domain and tap");
+    f.write(); f.broker->pump(); dock.frame(f.broker, 1, 2);
+    const auto picture = dock.spectrum.snapshot();
+    check(picture && dock.meters.snapshot() == picture && dock.phase.snapshot() == picture &&
+              (picture->outputs & (SharedAnalysis::Meters | SharedAnalysis::Phase | SharedAnalysis::Spectrum)) ==
+                  (SharedAnalysis::Meters | SharedAnalysis::Phase | SharedAnalysis::Spectrum),
+          "all dock layers consume the same published interval and output-mask union");
+    bool contained = true;
+    const std::array<juce::Component *, 7> controls{&dock.sourceBox, &dock.pointBox, &dock.channelBox, &dock.widthBox,
+        &dock.freezeButton, &dock.resetButton, &dock.expandButton};
+    for (std::size_t i = 0; i < controls.size(); ++i) {
+        contained = contained && dock.getLocalBounds().contains(controls[i]->getBounds());
+        for (std::size_t j = i + 1; j < controls.size(); ++j)
+            contained = contained && !controls[i]->getBounds().intersects(controls[j]->getBounds());
+    }
+    check(contained && dock.meters.getBottom() < dock.phase.getY() && dock.phase.getBottom() < dock.spectrum.getY(),
+          "compact controls and three labeled projections fit 240 px without overlap");
+    dock.setSize(240, 420);
+    check(dock.meters.getHeight() >= 104 && dock.phase.getHeight() >= 66 && dock.spectrum.getHeight() >= 66,
+          "minimum admitted dock height retains space for Main footer and each existing plot");
+    int reads = 0;
+    auto source = std::make_shared<adi::ui::MainMeterSource>(adi::ui::MainMeterSource{1,
+        [&]() -> std::optional<adi::ui::MainMeterSnapshot> {
+            ++reads; return adi::ui::MainMeterSnapshot{1, 48000, 1, -12, -13, -14, -1}; }});
+    dock.meters.setMainMeterSource(source); dock.frame(f.broker, 1, 2);
+    check(dock.meters.mainMeterSnapshot() && !dock.phase.mainMeterSnapshot() && !dock.spectrum.mainMeterSnapshot() && reads == 1,
+          "only the dock meter projects the existing aggregate Main loudness");
+    dock.freezeButton.setToggleState(true, juce::dontSendNotification); dock.freezeButton.onClick();
+    check(dock.meters.frozen() && dock.phase.frozen() && dock.spectrum.frozen() && f.broker->stats().consumers == 0,
+          "dock Freeze releases all three local demands");
+    dock.resetButton.onClick();
+    check(!dock.meters.snapshot() && !dock.phase.snapshot() && !dock.spectrum.snapshot() && reads == 1,
+          "dock Reset clears only its local pictures without invoking Main reset or reads");
+    dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
+    dock.configure(1, 2, 3, 360); dock.frame(f.broker, 1, 2);
+    check(dock.meters.track() == 2 && dock.spectrum.point() == ScopePoint::ChainInput &&
+              dock.spectrum.channel() == SharedAnalysis::Channel::Right && !dock.meters.mainMeterSnapshot() && reads == 1,
+          "Selected/pre-FX/right shares a new source without Main-only loudness");
+    dock.setVisible(false);
+    check(f.broker->stats().consumers == 0 && !dock.meters.subscribed() && !dock.phase.subscribed() && !dock.spectrum.subscribed(),
+          "hiding dock releases every lease immediately without another frame");
+    dock.setVisible(true); dock.frame(f.broker, 1, 2); dock.suspend(true);
+    check(f.broker->stats().consumers == 0, "minimizing its owner suspends all dock modes");
+    dock.suspend(false); dock.frame(f.broker, 1, 2);
+    check(f.broker->stats().consumers == 3 && f.broker->stats().domains == 1, "restoring reacquires one shared dock domain");
+    source.reset(); dock.configure(0, 0, 0, 300); dock.frame(f.broker, 1, 2);
+    check(!dock.meters.mainMeterSnapshot(), "expired document callback cannot survive in a dock readout");
+    dock.frame({}, 0, 0);
+    check(f.broker->stats().consumers == 0 && !dock.spectrum.snapshot(), "document replacement releases the old dock publication");
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); }
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); compactAnalyzerDock(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

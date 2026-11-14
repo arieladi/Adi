@@ -281,6 +281,7 @@ class AdiApplication final : public juce::JUCEApplication,
             }});
         root->infoSpectrum.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
+        root->mixViewPanel.analyzerDock.meters.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
             const bool ok = document_->addMixFunction(kind, track);

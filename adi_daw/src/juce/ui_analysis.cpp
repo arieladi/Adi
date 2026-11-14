@@ -471,4 +471,86 @@ void AnalysisPane::resized() {
     expandButton.setBounds(controls.reduced(1, 0));
     view.setBounds(area);
 }
+
+AnalysisDock::AnalysisDock() {
+    setTitle("Mix View analyzer dock");
+    meters.setMode(SharedSpectrumView::Mode::Meters);
+    phase.setMode(SharedSpectrumView::Mode::Phase);
+    spectrum.setMode(SharedSpectrumView::Mode::Spectrum);
+    for (auto *view : {&meters, &phase, &spectrum}) addAndMakeVisible(*view);
+    sourceBox.addItemList({"Main", "Selected"}, 1);
+    pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
+    channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
+    for (const int width : {240, 300, 360, 420}) widthBox.addItem(juce::String(width) + " px", width);
+    sourceBox.setTitle("Dock channel source"); pointBox.setTitle("Dock tap point");
+    channelBox.setTitle("Dock spectrum channel"); widthBox.setTitle("Dock width");
+    for (auto *box : {&sourceBox, &pointBox, &channelBox, &widthBox}) {
+        addAndMakeVisible(*box);
+        box->onChange = [this] { changed(); };
+    }
+    freezeButton.setClickingTogglesState(true);
+    freezeButton.onClick = [this] {
+        const bool value = freezeButton.getToggleState();
+        for (auto *view : {&meters, &phase, &spectrum}) view->freeze(value);
+    };
+    resetButton.onClick = [this] { for (auto *view : {&meters, &phase, &spectrum}) view->clear(); };
+    expandButton.onClick = [this] { if (meters.track() > 0 && onExpand) onExpand(meters.track()); };
+    freezeButton.setTooltip("Freeze these pictures and release this dock's live demand only.");
+    resetButton.setTooltip("Clear this dock's pictures; shared Main loudness and other views are unchanged.");
+    for (auto *button : {&freezeButton, &resetButton, &expandButton}) addAndMakeVisible(*button);
+    configure(0, 0, 0, 300);
+}
+void AnalysisDock::restoreControls(int source, int point, int channel, int width) {
+    sourceBox.setSelectedId(std::clamp(source, 0, 1) + 1, juce::dontSendNotification);
+    pointBox.setSelectedId(std::clamp(point, 0, 2) + 1, juce::dontSendNotification);
+    channelBox.setSelectedId(std::clamp(channel, 0, 4) + 1, juce::dontSendNotification);
+    width_ = std::clamp(width, 240, 420);
+    widthBox.setSelectedId(width_, juce::dontSendNotification);
+    if (widthBox.getSelectedId() == 0) widthBox.setText(juce::String(width_) + " px", juce::dontSendNotification);
+}
+void AnalysisDock::configure(int source, int point, int channel, int width) {
+    restoreControls(source, point, channel, width);
+    for (auto *view : {&meters, &phase, &spectrum}) {
+        view->setSource(static_cast<engine::ScopePoint>(pointBox.getSelectedId() - 1));
+        view->setChannel(static_cast<SharedAnalysis::Channel>(channelBox.getSelectedId() - 1));
+    }
+}
+void AnalysisDock::changed() {
+    const juce::Component::SafePointer<AnalysisDock> alive(this);
+    if (onChange) onChange();
+    else configure(source(), point(), channel(), requestedWidth());
+    if (alive) repaint();
+}
+void AnalysisDock::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
+    const auto track = source() == 1 ? selected : main;
+    expandButton.setEnabled(track > 0);
+    for (auto *view : {&meters, &phase, &spectrum}) view->present(broker, track);
+    for (auto *view : {&meters, &phase, &spectrum}) view->frame();
+}
+void AnalysisDock::suspend(bool value) noexcept {
+    for (auto *view : {&meters, &phase, &spectrum}) view->suspend(value);
+}
+void AnalysisDock::resized() {
+    auto area = getLocalBounds().reduced(3);
+    auto row = area.removeFromTop(24);
+    sourceBox.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(1)); pointBox.setBounds(row.reduced(1));
+    row = area.removeFromTop(24);
+    channelBox.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(1)); widthBox.setBounds(row.reduced(1));
+    row = area.removeFromTop(24);
+    const int third = row.getWidth() / 3;
+    freezeButton.setBounds(row.removeFromLeft(third).reduced(1));
+    resetButton.setBounds(row.removeFromLeft(third).reduced(1)); expandButton.setBounds(row.reduced(1));
+    // Main aggregate readouts need more space than the two other projections.
+    const int unit = std::max(0, area.getHeight() - 54) / 7;
+    area.removeFromTop(18); meters.setBounds(area.removeFromTop(unit * 3));
+    area.removeFromTop(18); phase.setBounds(area.removeFromTop(unit * 2));
+    area.removeFromTop(18); spectrum.setBounds(area);
+}
+void AnalysisDock::paint(juce::Graphics &g) {
+    g.setColour(look::panel); g.fillRect(getLocalBounds());
+    g.setColour(look::textDim); g.setFont(look::font(11.f, true));
+    for (const auto &entry : {std::pair{&meters, "METERS"}, {&phase, "PHASE"}, {&spectrum, "SPECTRUM"}})
+        g.drawText(entry.second, 5, entry.first->getY() - 18, std::max(0, getWidth() - 10), 18,
+                   juce::Justification::centredLeft);
+}
 } // namespace adi::ui
