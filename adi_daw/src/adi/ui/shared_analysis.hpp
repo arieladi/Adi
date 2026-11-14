@@ -79,6 +79,10 @@ class SharedAnalysis final {
     };
     class Lease {
       public:
+        struct SourcePosition {
+            std::uint64_t generation = 0;
+            std::int64_t written = 0;
+        };
         Lease() = default;
         ~Lease();
         Lease(Lease &&) noexcept;
@@ -89,6 +93,10 @@ class SharedAnalysis final {
         explicit operator bool() const noexcept;
         bool available() const noexcept;
         std::shared_ptr<const Result> read() const noexcept;
+        // Owner-only activation barrier, not a paint/audio query. A nonzero
+        // generation identifies the currently usable tap; written is its completed
+        // sample count, independent of analysis backlog or publication revisions.
+        SourcePosition sourcePosition() const noexcept;
       private:
         Lease(std::weak_ptr<State>, std::shared_ptr<Domain>, std::uint32_t);
         std::weak_ptr<State> state_;
@@ -111,6 +119,9 @@ class SharedAnalysis final {
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
     void shutdown() noexcept;
+    // Owner-only lifecycle query, including consumers which released all leases
+    // to hold local pictures. False after explicit shutdown.
+    bool active() const noexcept;
     void refreshSources(bool forceEpoch = false);
     // Owner/window-frame driven and coalesced. Manual brokers deliberately do not schedule.
     void requestFrame() noexcept;
