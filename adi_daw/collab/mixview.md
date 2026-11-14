@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 14 November 2026 — fixed Split prerequisite closed privately
+
+The DS private fixed Split composition is sealed and independently root-verified: complete selected-array gates and Debug/Release generated checks pass, using unchanged Wide plus existing float overlap-save code. Product #562 remains clean and unchanged; no native provider or Split admission is supplied. Retained first/final variants preserve all predicted audio bytes. The final failure-injection scope explicitly targets recoverable data allocations; the earlier broader Release test remains separately recorded. Storage/finite-sample preconditions, malformed outer enum validation and whole-hop versus staged processing remain explicit future facade/CPU-readiness boundaries. No fitted kernel, new native execution, thinner convolver, public source edit, live test or timing.
+
+Next independent tiers are private fixed Flat Tilt/Classic proofs, fixed/staged Split resources and remaining route/quality contracts, continuous shared capture, and optional average presentation. The current #573/#574 heads still await their own hosted CI; all review packages stay immutable for Claude. Native C/DS/G remain unavailable until real capability-aware providers and DEV-05/MX-24 keys exist. Win reviews/merges; no self-merge.
+
 ## 14 November 2026 — Opto and shared average supplied
 
 Draft [#573](https://github.com/arieladi/Adi/pull/573), `7594f566`, on #570 supplies fixed signed-key-to-gain Opto:177 checks in Debug/Release/parent harness, strict3/validators4, zero callback allocation/free. Root verifies279 fixed records/seven owned source identities/20 unchanged child files, full selected audio and direct-gain preservation. Threshold/typed normalized times are stopped controls, ratio4/knee0/range60. It remains unregistered and does not infer stereo selection, other controls/quality or native C capability. The missing root SQLiteCpp configure is retained as a diagnostic; hosted exact-head CI trails.
