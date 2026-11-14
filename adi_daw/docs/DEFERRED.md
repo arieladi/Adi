@@ -52,7 +52,6 @@ cut out of something that already shipped or was ruled.
 | DF-E5 | #530's linear sample-defaults test with a nonzero ns offset | engine seat | with DF-E2 |
 | DF-E6 | Count-in clicks on the latency-compensated clock; when latency exceeds a beat, measure Live first | engine seat | follow-up to #527 |
 | DF-E7 | On main: `resizeFrozenEnd` refuses `end <= first`; split's `keepRight` End-marker check | engine seat | follow-up |
-| DF-E8 | The Gemini round on #518, #528, #516 | win | done 14 Nov: #518 clean; #528's submodule check fixed in #575; #516's finding is DF-E9 |
 | DF-E9 | Automation Undo deletes and re-inserts lane and data rows: a later minor's CASCADE child or extra column is lost or refused. Restore in place (UPDATE named columns, insert only missing data rows); named-column INSERT/SELECT; test with a CASCADE child and extra columns (outside review E3.2, verified) | engine seat | next engine session |
 
 ### Repository
@@ -65,4 +64,5 @@ cut out of something that already shipped or was ruled.
 
 | Id | What | Closed by |
 |---|---|---|
+| DF-E8 | The Gemini round on #518, #528, #516 | #518 clean; #528 fixed in #575; #516 became DF-E9 (14 Nov) |
 | DF-C4 | The Gemini security round on the MCP server, each finding verified | #512: ddd704bd and bb97ce23 (14 Nov) |
