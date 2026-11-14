@@ -43,3 +43,45 @@ should share one state behind the existing transform; different averaging times
 need distinct histories but not duplicate FFTs. Source/format/gap epochs and
 presentation-local Freeze/Reset remain separate integration contracts. This
 component makes no CPU percentage, native numerical parity or listening claim.
+
+## Optional shared-domain profile
+
+`SharedAnalysis::Average1s` requests an optional fixed one-second 20 dB magnitude
+decay. Raw remains the default; this broker API does not add a visible UI mode or
+preferences. Compatible Raw, Average1s and Spectrogram requests share their existing
+source, cursor and FFT path. Average-only demand avoids projecting unused Raw dB
+bins. First average demand starts zero and waits for a new completed hop containing
+post-activation samples; queued old windows and output republication do not count.
+Same-source gaps/overruns retain that physical first-demand fence while resetting
+numerical values. Average-only waiting performs no unused FFT for old windows.
+Another already-live average consumer shares its current immutable publication.
+Real zero-magnitude hops still advance the decay when their FFT call is omitted.
+
+`Lease::readAverage()` returns an optional immutable sidecar with its exact Raw
+window, status, epoch, processed-hop count and shared dB-bin payload. Window and
+sidecar publish together; independent read calls can still cross publications.
+Like `read()`, a combined-output lease refuses a sidecar whose window lacks any
+newly requested field until the complete output union is published.
+Unchanged numeric data reuse the bin payload during metadata/history republication.
+The existing Raw Result layout is unchanged, including its allocation path when
+Average1s is absent. Last average demand releases owned state and sidecar while
+externally retained snapshots remain valid. Compatible Raw/Spectrogram demand
+needs no duplicate transform; Average-only demand activates the existing transform
+path plus demand-driven averaging/projection. There is no new worker, timer or
+audio processing.
+
+Source/format activation prepares the numerical state on the owner. Gaps/overruns
+reset only its numerical epoch. Finite time samples can overflow the float FFT;
+the checked entry rejects those magnitudes and publishes `InvalidInput` without an
+average curve, leaving Raw/Spectrogram and their source histories unchanged. The
+first rejected hop resets the average once; an invalid run retains zero state,
+and the next valid completed hop recovers from zero. There is no silent sanitation
+of FFT magnitudes, added floor or floating-point environment change.
+
+Preparation failure leaves average unavailable and preserves other active outputs.
+An unavailable average-only domain does no worker/FFT retries; a later owner source
+activation or renewed demand can retry preparation. A missing/refused sidecar is
+null; a mixed Raw/average publication can explicitly carry `Unavailable`. Failure
+to allocate an optional publication never suppresses the Raw publication; a later
+genuine publication event can retry. Compatible consumers' local Freeze/Clear must
+retain the existing presentation-only law and never reset another consumer's state.

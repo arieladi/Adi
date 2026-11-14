@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "shared_analysis.hpp"
+#include "adi/dsp/spectrum_average.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cassert>
@@ -13,7 +14,7 @@
 
 namespace adi::ui {
 namespace {
-constexpr std::uint32_t allOutputs = 31;
+constexpr std::uint32_t allOutputs = 63;
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
@@ -34,6 +35,9 @@ bool usable(const std::shared_ptr<const engine::ScopeTap> &tap, std::int32_t n) 
     return tap && std::isfinite(tap->sampleRate()) && tap->sampleRate() > 0 && tap->capacity() >= n;
 }
 bool spectralOutput(std::uint32_t outputs) noexcept {
+    return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram | SharedAnalysis::Average1s)) != 0;
+}
+bool rawSpectralOutput(std::uint32_t outputs) noexcept {
     return (outputs & (SharedAnalysis::Spectrum | SharedAnalysis::Spectrogram)) != 0;
 }
 std::atomic<std::size_t> processHistoryBytes{0};
@@ -97,6 +101,12 @@ struct SharedAnalysis::Domain {
         }()) {}
     Request request;
     std::unique_ptr<dsp::Spectrum> spectrum;
+    std::unique_ptr<dsp::LinearMagnitudeAverage> average;
+    bool averageConfigured = false;
+    AverageStatus averageStatus = AverageStatus::Unavailable;
+    std::uint64_t averageEpoch = 0, averageWindows = 0, averageWindow = 0, averageBinsWindow = 0;
+    std::int64_t averageAfterSequence = 0;
+    std::shared_ptr<const std::vector<float>> averageBins;
     std::vector<float> ringLeft, ringRight, left, right, scratch, linear, second;
     const double gain;
     std::size_t position = 0, filled = 0, sinceWindow = 0;
@@ -114,16 +124,50 @@ struct SharedAnalysis::Domain {
     std::shared_ptr<const engine::ScopeTap> tap;
     mutable std::mutex resultMutex;
     std::shared_ptr<const Result> result;
+    std::shared_ptr<const AverageResult> averageResult;
     std::shared_ptr<const Result> readResult() const { std::lock_guard lock(resultMutex); return result; }
-    void publishResult(std::shared_ptr<const Result> next) {
-        { std::lock_guard lock(resultMutex); result.swap(next); }
+    std::shared_ptr<const AverageResult> readAverageResult() const { std::lock_guard lock(resultMutex); return averageResult; }
+    void publishResult(std::shared_ptr<const Result> next, std::shared_ptr<const AverageResult> nextAverage = {}) {
+        { std::lock_guard lock(resultMutex); result.swap(next); averageResult.swap(nextAverage); }
+    }
+    void updateAvailability() noexcept {
+        const auto bits = outputs.load(std::memory_order_acquire);
+        const bool averageOnlyUnavailable = (bits & Average1s) && !(bits & ~std::uint32_t{Average1s}) && !averageConfigured;
+        available.store(usable(tap, request.fftSize) && !averageOnlyUnavailable, std::memory_order_release);
+    }
+    void resetAverageForGap() noexcept {
+        if (!averageConfigured) return;
+        average->reset(); ++averageEpoch; averageWindows = 0;
+        averageWindow = windowSerial; averageBinsWindow = 0;
+        averageBins.reset(); averageStatus = AverageStatus::Waiting;
+    }
+    // Owner-only under the domain lock: no preparation/retry on the worker.
+    void activateAverage(std::int64_t sequence) noexcept {
+        if (!(outputs.load(std::memory_order_acquire) & Average1s)) return;
+        averageConfigured = false; averageStatus = AverageStatus::Unavailable;
+        averageAfterSequence = sequence; averageWindows = 0; averageWindow = windowSerial;
+        averageBinsWindow = 0; averageBins.reset(); ++averageEpoch;
+        try {
+            if (usable(tap, request.fftSize)) {
+                const dsp::LinearMagnitudeAverage::Settings settings{
+                    static_cast<std::size_t>(request.fftSize / 2 + 1), tap->sampleRate(), request.hopSize, 1.};
+                if (!average) {
+                    auto candidate = std::make_unique<dsp::LinearMagnitudeAverage>();
+                    if (candidate->prepare(settings)) average = std::move(candidate);
+                } else if (average->settings() == settings) average->reset();
+                else if (!average->prepare(settings)) { updateAvailability(); return; }
+                averageConfigured = average && average->settings() == settings;
+                if (averageConfigured) averageStatus = AverageStatus::Waiting;
+            }
+        } catch (...) { /* explicit unavailable average; retain the working Raw path */ }
+        updateAvailability();
     }
     void resetWindow(bool epoch) {
         position = filled = sinceWindow = 0;
         hasWindow = pendingHistory = retiredForPending = false; spectralWindow = historyWindow = 0;
         historyBlocked.store(false, std::memory_order_release);
         columns.clear();
-        if (epoch) ++sourceEpoch;
+        if (epoch) { ++sourceEpoch; resetAverageForGap(); }
         publishResult({});
     }
     void bind(std::shared_ptr<const engine::ScopeTap> next, bool fresh) {
@@ -142,6 +186,7 @@ struct SharedAnalysis::Domain {
             cursor.next = std::clamp(sequence, oldest, end);
         }
         consumedSequence.store(cursor.next, std::memory_order_release);
+        activateAverage(sequence);
     }
     bool ensureSpectrum(std::uint32_t bits) {
         if (!spectralOutput(bits)) return true;
@@ -156,6 +201,12 @@ struct SharedAnalysis::Domain {
         return true;
     }
     void releaseUnused(std::uint32_t bits) {
+        if (!(bits & Average1s)) {
+            average.reset(); averageBins.reset(); averageConfigured = false;
+            averageStatus = AverageStatus::Unavailable;
+            std::shared_ptr<const AverageResult> retired;
+            { std::lock_guard lock(resultMutex); averageResult.swap(retired); }
+        }
         if (!(bits & Output::Spectrogram)) {
             columns.clear(); pendingHistory = false; historyWindow = 0; historyBlocked.store(false, std::memory_order_release);
             std::vector<float>().swap(pendingColumn);
@@ -164,6 +215,7 @@ struct SharedAnalysis::Domain {
             spectrum.reset(); spectralWindow = 0;
             std::vector<float>().swap(scratch); std::vector<float>().swap(linear); std::vector<float>().swap(second);
         }
+        updateAvailability();
     }
     bool needsWork() const noexcept {
         return active.load(std::memory_order_acquire) && available.load(std::memory_order_acquire) && tap &&
@@ -172,7 +224,7 @@ struct SharedAnalysis::Domain {
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
-    std::array<std::size_t, 5> outputUsers{}; // State mutex
+    std::array<std::size_t, 6> outputUsers{}; // State mutex
     std::size_t consumers = 0;
     std::uint64_t sourceEpoch = 1, revision = 0, columnSerial = 0, gaps = 0, overruns = 0;
     std::vector<Column> columns;
@@ -212,7 +264,11 @@ struct SharedAnalysis::Domain {
     std::shared_ptr<Result> analyse(const std::shared_ptr<HistoryBudget> &budget, std::size_t &transforms, bool newWindow = true) {
         if (!hasWindow) return {};
         const auto bits = outputs.load(std::memory_order_acquire);
-        if (spectralOutput(bits) && !spectrum) return {};
+        const auto n = left.size();
+        const bool averageHopEligible = (bits & Average1s) && averageConfigured && newWindow && averageWindow != windowSerial &&
+            firstSequence > averageAfterSequence - static_cast<std::int64_t>(n);
+        const bool needsSpectrum = rawSpectralOutput(bits) || averageHopEligible;
+        if (needsSpectrum && !spectrum) return {};
         auto latest = std::make_shared<Result>();
         latest->request = request; latest->outputs = bits; latest->request.outputs = bits;
         latest->sourceEpoch = sourceEpoch; latest->generation = tap->generation();
@@ -222,7 +278,6 @@ struct SharedAnalysis::Domain {
         latest->firstSequence = firstSequence; latest->advancing = advancing; latest->firstStamp = firstStamp;
         latest->gapCount = gaps; latest->overrunCount = overruns; latest->discontinuity = discontinuous;
         if (!newWindow) if (const auto previous = readResult()) latest->nonFiniteSamples = previous->nonFiniteSamples;
-        const auto n = left.size();
         double sumL = 0, sumR = 0, cross = 0;
         bool nonzero = false;
         for (std::size_t i = 0; i < n; ++i) {
@@ -236,7 +291,7 @@ struct SharedAnalysis::Domain {
             cross += static_cast<double>(l) * r;
             latest->peak[0] = std::max(latest->peak[0], std::abs(l));
             latest->peak[1] = std::max(latest->peak[1], std::abs(r));
-            if (spectralOutput(bits)) {
+            if (needsSpectrum) {
                 switch (request.channel) {
                 case Channel::Mid: scratch[i] = (l + r) * .5f; break;
                 case Channel::Side: scratch[i] = (l - r) * .5f; break;
@@ -250,7 +305,7 @@ struct SharedAnalysis::Domain {
                        static_cast<float>(std::sqrt(sumR / static_cast<double>(n)))};
         latest->correlation = sumL > 0 && sumR > 0 ? std::clamp(cross / std::sqrt(sumL * sumR), -1., 1.) : 0.;
         if (bits & (Output::Scope | Output::Phase)) { latest->scopeLeft = left; latest->scopeRight = right; }
-        if (spectralOutput(bits)) {
+        if (needsSpectrum) {
             if (spectralWindow != windowSerial) {
                 const bool stereoPower = request.channel == Channel::StereoPower;
                 // Sanitized float squares are accumulated in double above. Reuse
@@ -265,8 +320,22 @@ struct SharedAnalysis::Domain {
                 }
                 spectralWindow = windowSerial;
             }
-            latest->binsDbfs.resize(linear.size());
-            std::transform(linear.begin(), linear.end(), latest->binsDbfs.begin(), dsp::toDbfs);
+            if (averageHopEligible) {
+                averageWindow = windowSerial;
+                if (average->processChecked(linear)) { ++averageWindows; averageStatus = AverageStatus::Ready; }
+                else {
+                    // Refuse overflowing FFT magnitudes; an explicit average-only
+                    // gap clears once, and subsequent valid hops recover from zero.
+                    if (averageStatus != AverageStatus::InvalidInput) {
+                        average->reset(); averageWindows = 0; ++averageEpoch; averageBins.reset(); averageBinsWindow = 0;
+                    }
+                    averageStatus = AverageStatus::InvalidInput;
+                }
+            }
+            if (rawSpectralOutput(bits)) {
+                latest->binsDbfs.resize(linear.size());
+                std::transform(linear.begin(), linear.end(), latest->binsDbfs.begin(), dsp::toDbfs);
+            }
             if (bits & Output::Spectrogram) {
                 if (historyWindow != windowSerial) {
                     if (pendingHistory) droppedHistory.fetch_add(1, std::memory_order_relaxed);
@@ -277,6 +346,27 @@ struct SharedAnalysis::Domain {
             }
         }
         return latest;
+    }
+    std::shared_ptr<const AverageResult> makeAverageResult(std::shared_ptr<const Result> window) noexcept {
+        if (!(window->outputs & Average1s)) return {};
+        try {
+            auto publication = std::make_shared<AverageResult>();
+            publication->window = std::move(window);
+            publication->status = averageConfigured ? averageStatus : AverageStatus::Unavailable;
+            publication->epoch = averageEpoch; publication->processedWindows = averageWindows;
+            publication->windowSerial = averageWindow;
+            if (publication->status == AverageStatus::Ready) {
+                if (!averageBins || averageBinsWindow != averageWindow) {
+                    const auto values = average->magnitudes();
+                    auto projected = std::make_shared<std::vector<float>>(values.size());
+                    for (std::size_t i = 0; i < values.size(); ++i)
+                        (*projected)[i] = dsp::toDbfs(static_cast<float>(values[i]));
+                    averageBins = std::move(projected); averageBinsWindow = averageWindow;
+                }
+                publication->binsDbfs = averageBins;
+            }
+            return publication;
+        } catch (...) { return {}; } // Raw still publishes; retry only at a genuine publication event.
     }
     std::shared_ptr<Result> retryHistory(const std::shared_ptr<HistoryBudget> &budget) {
         if (!pendingHistory || !appendPendingHistory(budget)) return {};
@@ -444,7 +534,8 @@ struct SharedAnalysis::State {
                 latest->budgetLimited = latest->pendingFrames > 0 &&
                     (windows == kMaxWindowsPerFrame || samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
                 if (d.active.load(std::memory_order_acquire)) {
-                    d.publishResult(std::move(latest)); publications.fetch_add(1, std::memory_order_relaxed);
+                    auto averagePublication = d.makeAverageResult(latest);
+                    d.publishResult(std::move(latest), std::move(averagePublication)); publications.fetch_add(1, std::memory_order_relaxed);
                 }
             }
         }
@@ -520,6 +611,10 @@ std::shared_ptr<const SharedAnalysis::Result> SharedAnalysis::Lease::read() cons
     auto result = available() ? domain_->readResult() : nullptr;
     return result && (result->outputs & outputs_) == outputs_ ? result : nullptr;
 }
+std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::readAverage() const noexcept {
+    const auto publication = (outputs_ & Average1s) && available() ? domain_->readAverageResult() : nullptr;
+    return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
+}
 SharedAnalysis::Lease::SourcePosition SharedAnalysis::Lease::sourcePosition() const noexcept {
     const auto state = state_.lock();
     if (!state || !domain_) return {};
@@ -565,7 +660,11 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     if (const auto found = state_->domains.find(key); found != state_->domains.end()) {
         std::lock_guard domainLock(found->second->mutex);
         if (!found->second->ensureSpectrum(request.outputs)) return {};
-        found->second->changeOutputs(request.outputs, true); ++found->second->consumers; ++state_->consumers;
+        const bool firstAverage = (request.outputs & Average1s) && !(found->second->outputs.load(std::memory_order_acquire) & Average1s);
+        found->second->changeOutputs(request.outputs, true);
+        if (firstAverage) found->second->activateAverage(found->second->tap ? found->second->tap->written() : 0);
+        found->second->updateAvailability();
+        ++found->second->consumers; ++state_->consumers;
         return Lease(state_, found->second, request.outputs);
     }
     if (state_->domains.size() >= kMaxDomains) return {};
@@ -573,6 +672,7 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     if (!domain->ensureSpectrum(request.outputs)) return {};
     auto [tap, inserted] = state_->taps.try_emplace(key.source());
     auto &t = tap->second;
+    const auto previousTap = t.value;
     auto maximumSize = key.fftSize;
     for (const auto &[other, ignored] : state_->domains) {
         (void)ignored;
@@ -593,6 +693,8 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
         std::max({t.value->oldest(), t.value->written() - key.fftSize, t.freshSequence}));
     domain->consumers = 1;
     domain->changeOutputs(request.outputs, true);
+    if (request.outputs & Average1s)
+        domain->activateAverage(inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0));
     state_->domains.emplace(key, domain); ++state_->consumers;
     return Lease(state_, std::move(domain), request.outputs);
 }
