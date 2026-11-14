@@ -75,7 +75,8 @@ Status validate(const PrepareSpec &s) noexcept {
     if (std::fegetround() != FE_TONEAREST)
         return Status::UnsupportedEnvironment;
     if (!std::isfinite(s.sampleRate) || s.sampleRate < 44100 || s.sampleRate > 96000 ||
-        s.maximumFrames <= 0 || s.maximumFrames > (1 << 24))
+        s.maximumFrames <= 0 || s.maximumFrames > (1 << 24) ||
+        (s.contract != ProcessingContract::Incremental && s.contract != ProcessingContract::CompleteRequests))
         return Status::InvalidSpec;
     return s.mainChannels == 2 ? Status::Ok : Status::UnsupportedLayout;
 }
@@ -161,6 +162,15 @@ struct EnvelopePlan {
         generalAttack = generalCoefficient(a * fs);
     }
 };
+// Provenance belongs to a producer/request, not to equality of sample values.
+// Aliasing carries the complete view through without relabeling its source.
+struct RequestView {
+    float *samples;
+    std::int32_t frames;
+    const void *source;
+    std::uint64_t generation;
+    bool constant;
+};
 struct Envelope {
     double state = 0, releaseCoefficient = 0;
     float previousDelta = 0, cachedLut = 1, previousN = -1;
@@ -199,6 +209,23 @@ struct Envelope {
             state += delta * p.generalAttack;
         }
         return f(state);
+    }
+    RequestView request(RequestView input, const EnvelopePlan &plan, const ExpTable &table) noexcept {
+        constexpr float tolerance = 1e-9f;
+        bool alias = std::abs(f(state) - resetInitial) <= tolerance;
+        if (alias) {
+            for (std::int32_t i = 0; i < input.frames; ++i) {
+                if (std::abs(input.samples[i] - resetInitial) > tolerance) {
+                    alias = false;
+                    break;
+                }
+            }
+        }
+        if (alias)
+            return input;
+        for (std::int32_t i = 0; i < input.frames; ++i)
+            input.samples[i] = step(input.samples[i], plan, table, i);
+        return {input.samples, input.frames, this, input.generation, false};
     }
 };
 struct Detector {
@@ -267,6 +294,9 @@ struct Core::Impl {
     std::array<Envelope, 2> pre, reduction, gain;
     std::array<Detector, 2> detector;
     std::array<detail::InclusivePeak, 2> hold;
+    // One owner allocation, four float planes. Incremental owns none.
+    std::unique_ptr<float[]> requestScratch;
+    std::int32_t scratchCapacity = 0;
     std::uint64_t epoch = 0, sequence = 0;
     std::int32_t blockFrames = 0, nextOffset = 0;
     int precision = 0;
@@ -302,8 +332,14 @@ struct Core::Impl {
         for (std::size_t i = 0; i < 2; ++i)
             weights[i] = {1.0f - std::max(mixes[i], 0.0f), 1.0f + std::min(mixes[i], 0.0f)};
         commonGain = weights[0] == weights[1];
+        if (p.contract == ProcessingContract::CompleteRequests) {
+            requestScratch = std::make_unique<float[]>(static_cast<std::size_t>(p.maximumFrames) * 4);
+            scratchCapacity = p.maximumFrames;
+        }
         Detector silence;
-        initial = 8.0f - silence.step(-180, s.thresholdDb, ratio, knee, limit);
+        initial = p.contract == ProcessingContract::CompleteRequests && std::abs(ratio - 1.0f) <= epsilon
+                      ? 8.0f
+                      : 8.0f - silence.step(-180, s.thresholdDb, ratio, knee, limit);
         reset();
     }
     void reset() noexcept {
@@ -354,6 +390,8 @@ struct Core::Impl {
     template <class T>
     Status process(const BlockContext &c, std::int32_t offset, std::int32_t frames, T *const *main,
                    const T *const *key, std::int32_t keyChannels, const Settings &s) noexcept {
+        if (spec.contract != ProcessingContract::Incremental)
+            return Status::UnsupportedConfiguration;
         if (const auto status = validate(s); status != Status::Ok)
             return status;
         if (s != settings)
@@ -372,6 +410,88 @@ struct Core::Impl {
             render<T, false>(offset, frames, main, key, keyChannels);
         precision = static_cast<int>(sizeof(T));
         nextOffset += frames;
+        return Status::Ok;
+    }
+    template <class T, bool Common>
+    void renderRequest(std::int32_t frames, T *const *main, const T *const *key,
+                       std::int32_t keyChannels) noexcept {
+        std::array<RequestView, 2> keys{};
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            auto *plane = requestScratch.get() + channel * static_cast<std::size_t>(scratchCapacity);
+            keys[channel] = {plane, frames, plane, sequence, false};
+            for (std::int32_t i = 0; i < frames; ++i) {
+                const float sample = settings.keySource == KeySource::Internal ? f(main[channel][i])
+                                     : keyChannels                             ? f(key[channel][i])
+                                                                               : 0.0f;
+                plane[i] = std::abs(sample);
+            }
+        }
+        // Both complete key histories are demanded, including zero mixer weights.
+        // All key reads precede main writes, including exact/crossed key aliases.
+        for (std::size_t channel = 0; channel < 2; ++channel) {
+            auto input = pre[channel].request(keys[channel], prePlan, *table);
+            for (std::int32_t i = 0; i < frames; ++i)
+                input.samples[i] = hold[channel].push(input.samples[i]);
+            keys[channel] = {input.samples, frames, &hold[channel], sequence, false};
+        }
+        std::array<RequestView, 2> gains{};
+        constexpr std::size_t channels = Common ? 1 : 2;
+        for (std::size_t channel = 0; channel < channels; ++channel) {
+            auto *plane = requestScratch.get() + (channel + 2) * static_cast<std::size_t>(scratchCapacity);
+            // Fixed ordinary ratio one produces zero reduction without demanding
+            // threshold/knee/range or advancing hysteresis. Upstream keys above
+            // remain demanded. This arithmetic producer is not marked Constant.
+            if (std::abs(ratio - 1.0f) <= epsilon)
+                std::fill_n(plane, frames, 8.0f);
+            else {
+                for (std::int32_t i = 0; i < frames; ++i) {
+                    const float joined = std::max(weights[channel][0] * keys[0].samples[i],
+                                                  weights[channel][1] * keys[1].samples[i]);
+                    const float level = std::max(-180.0f, log32(joined) * 8.68588924407959f);
+                    plane[i] = 8.0f - detector[channel].step(level, settings.thresholdDb, ratio, knee, limit);
+                }
+            }
+            auto shaped = reduction[channel].request({plane, frames, &detector[channel], sequence, false},
+                                                     reductionPlan, *table);
+            for (std::int32_t i = 0; i < frames; ++i)
+                plane[i] = std::min(shaped.samples[i], 0.0f);
+            gains[channel] = gain[channel].request({plane, frames, plane, sequence, false}, gainPlan, *table);
+        }
+        if constexpr (Common)
+            gains[1] = gains[0];
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const float left = f(main[0][i]), right = f(main[1][i]);
+            const float multiplier = exp32(gains[0].samples[i] * .1151292546497023f);
+            main[0][i] = static_cast<T>(left * multiplier);
+            if constexpr (Common)
+                main[1][i] = static_cast<T>(right * multiplier);
+            else
+                main[1][i] = static_cast<T>(right * exp32(gains[1].samples[i] * .1151292546497023f));
+        }
+    }
+    template <class T>
+    Status processRequest(std::int32_t frames, T *const *main, const T *const *key, std::int32_t keyChannels,
+                          const Settings &s) noexcept {
+        if (spec.contract != ProcessingContract::CompleteRequests)
+            return Status::UnsupportedConfiguration;
+        if (const auto status = validate(s); status != Status::Ok)
+            return status;
+        if (s != settings)
+            return Status::UnsupportedConfiguration;
+        if (frames <= 0 || frames > spec.maximumFrames ||
+            (precision != 0 && precision != static_cast<int>(sizeof(T))))
+            return Status::InvalidBlock;
+        if (keyChannels != 0 && keyChannels != 2)
+            return Status::UnsupportedLayout;
+        if (!buffers(main, key, keyChannels, frames))
+            return Status::InvalidBuffers;
+        if (++sequence == 0)
+            ++sequence;
+        if (commonGain)
+            renderRequest<T, true>(frames, main, key, keyChannels);
+        else
+            renderRequest<T, false>(frames, main, key, keyChannels);
+        precision = static_cast<int>(sizeof(T));
         return Status::Ok;
     }
 };
@@ -396,10 +516,19 @@ Status Core::reprepare(const PrepareSpec &p) noexcept {
         return Status::NotPrepared;
     if (const auto status = validate(p); status != Status::Ok)
         return status;
-    if (f(p.sampleRate) != impl_->rate || p.mainChannels != impl_->spec.mainChannels)
+    if (f(p.sampleRate) != impl_->rate || p.mainChannels != impl_->spec.mainChannels ||
+        p.contract != impl_->spec.contract)
         return Status::UnsupportedConfiguration;
-    // Capacity does not own audio scratch. A stopped processing restart keeps
-    // the prepared graph and its adaptive caches, just as reset does.
+    if (p.contract == ProcessingContract::CompleteRequests && p.maximumFrames > impl_->scratchCapacity) {
+        try {
+            auto scratch = std::make_unique<float[]>(static_cast<std::size_t>(p.maximumFrames) * 4);
+            impl_->requestScratch.swap(scratch);
+            impl_->scratchCapacity = p.maximumFrames;
+        } catch (...) {
+            return Status::AllocationFailed;
+        }
+    }
+    // Incremental capacity changes own no scratch and remain allocation-free.
     impl_->spec = p;
     impl_->reset();
     return Status::Ok;
@@ -417,8 +546,8 @@ Status Core::restore(const Settings &s) noexcept {
 }
 bool Core::isPrepared() const noexcept { return static_cast<bool>(impl_); }
 BlockContext Core::beginBlock(std::int32_t frames) noexcept {
-    if (!impl_ || frames <= 0 || frames > impl_->spec.maximumFrames ||
-        impl_->nextOffset != impl_->blockFrames)
+    if (!impl_ || impl_->spec.contract != ProcessingContract::Incremental || frames <= 0 ||
+        frames > impl_->spec.maximumFrames || impl_->nextOffset != impl_->blockFrames)
         return {};
     if (++impl_->sequence == 0)
         ++impl_->sequence;
@@ -433,5 +562,13 @@ Status Core::process(const BlockContext &c, std::int32_t offset, std::int32_t fr
 Status Core::process(const BlockContext &c, std::int32_t offset, std::int32_t frames, double *const *main,
                      const double *const *key, std::int32_t keyChannels, const Settings &s) noexcept {
     return impl_ ? impl_->process(c, offset, frames, main, key, keyChannels, s) : Status::NotPrepared;
+}
+Status Core::processRequest(std::int32_t frames, float *const *main, const float *const *key,
+                            std::int32_t keyChannels, const Settings &s) noexcept {
+    return impl_ ? impl_->processRequest(frames, main, key, keyChannels, s) : Status::NotPrepared;
+}
+Status Core::processRequest(std::int32_t frames, double *const *main, const double *const *key,
+                            std::int32_t keyChannels, const Settings &s) noexcept {
+    return impl_ ? impl_->processRequest(frames, main, key, keyChannels, s) : Status::NotPrepared;
 }
 } // namespace adi::mix::gate
