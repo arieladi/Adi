@@ -42,8 +42,8 @@ class Core final {
 
     // Fresh stream; failure preserves the entire previous stream. Stereo Wide,
     // base rate, 44.1..96 kHz only. Settings are fixed until fresh preparation.
-    // SingleVocal link >100%, zero Range, Threshold below -48 dB and the zero-dB
-    // endpoint are unsupported. Accepted rates form a range; tested rates are
+    // Threshold accepts finite [-180,0] dB and Range [0,24] dB. SingleVocal link
+    // >100% is unsupported. Accepted rates form a range; tested rates are
     // 44.1/48/96 kHz. Fractional-rate reference equality is not established.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
     // Same float-rounded rate/layout/settings only; capacity may change. Clears
