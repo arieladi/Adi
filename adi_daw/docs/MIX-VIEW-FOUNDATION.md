@@ -50,8 +50,27 @@ DEV-05/MX-24 own compensated device-specific key routes. These are separate from
 Actual devices continue through the established Session/Graph chain and shared parameter
 authority. The next processing slice supplies the opt-in native function cores from ADR-0237:
 EQ with unmasking, compressor, de-esser, gate, and limiter with clipping. Their movable device-area
-tabs and Mix View rows must address those same nodes. ADI Still's final placement and separate
-standalone applications remain guide questions. Analyzers stay outside the processing chain.
+tabs and Mix View rows must address those same nodes. ADI Still remains an ordinary plug-in for
+now; no native function or EQ page is added. Separate standalone applications remain a guide
+question. Analyzers stay outside the processing chain.
+
+### Native EQ serial provider
+
+The existing EQ function uses the shared serial processing adapter with EQ enabled and the
+downstream stages disabled. All 730 parameter IDs, saved-state values and common edit/undo paths
+remain the same. The adapter retains the authored EQ learning object across stopped reprepare.
+An absent external key keeps the existing programme fallback; a connected silent key remains
+silent. This compatibility path does not create a device sidechain route.
+
+Scalar edits run without configuration-owner jobs. Prepared-plan changes use one demand-driven
+owner, a complete aggregate latency offer and physical-callback admission. Main relays published
+metadata; audio never starts or notifies the worker. Carve and Focus pages remain unavailable
+until their real controller and device-key routes are connected.
+
+A parked configuration failure retains the last applied audio plan. Its nonfatal issue is copied
+through the common device publication and shown in the header with recovery guidance. This does
+not mark the device unloaded, disable controls or end a gesture. Ordinary pending work has no
+failure indication; the empty-status presentation is unchanged.
 
 ## Build and verification
 
