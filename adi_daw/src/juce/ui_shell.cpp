@@ -8,6 +8,8 @@
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
+#include "adi/store.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -340,17 +342,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     // Live's Edit menu (manual 41.5): Cut, Copy, Paste and Duplicate on Ctrl/Cmd+X, C, V and D.
     // They act on the device with the focus, Paste also at the chain's chosen end (manual 23.2.1);
-    // the arrangement's clips are not on the clipboard yet.
+    // else on the Arrangement's chosen clip or time selection (manual 6.9; E2).
     case Cut:
     case Copy:
     case Paste:
     case Duplicate: {
         info.addDefaultKeypress(id == Cut ? 'x' : id == Copy ? 'c' : id == Paste ? 'v' : 'd', cmd);
+        // The Mix View's STACK takes them while a device there has the focus (it does them itself);
+        // else the device chain, else the Arrangement.
         using Clip = DeviceChainStrip::Clip;
         const auto clip = id == Cut ? Clip::Cut : id == Copy ? Clip::Copy : id == Paste ? Clip::Paste : Clip::Duplicate;
         const bool stack = active_ && active_->mixViewPanel.stack.hasDeviceContext();
         const bool copied = active_ && active_->devices.holdsCopy && active_->devices.holdsCopy();
-        info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->devices.canClipboard(clip)));
+        info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->canClipboard(static_cast<int>(id))));
         break;
     }
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
@@ -1316,6 +1320,278 @@ bool AdiRootComponent::commitEdit(clip_edit::PreparedEdit prepared, std::optiona
         std::move(prepared),
         [](Store &store, clip_edit::PreparedEdit &p, Actor actor) { return clip_edit::commitPrepared(store, p, actor); },
         std::move(appended)));
+}
+namespace {
+// The clip chosen by a click: the selection is that clip's own span (ArrangementView::select).
+struct ChosenClip {
+    const engine::TrackNode *track = nullptr;
+    const engine::ClipNode *clip = nullptr;
+};
+ChosenClip chosenClip(const engine::Snapshot &current, const Selection &sel) {
+    // A selection widened to other tracks (a drag across lanes, Shift or Ctrl/Cmd on a title) is a
+    // time selection, whatever clip the press began on.
+    if (sel.clip == 0 || (sel.toTrack != 0 && sel.toTrack != sel.track) || !sel.picked.empty())
+        return {};
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
+    for (const auto &t : current.tracks)
+        if (t)
+            for (const auto &c : t->clips)
+                if (c && c->id == sel.clip && from == c->posTicks && to == c->posTicks + c->lengthTicks)
+                    return {t.get(), c.get()};
+    return {};
+}
+bool holdsClips(const engine::TrackNode &t) { return t.kind == "audio" || t.kind == "midi"; }
+// A copied clip's kind, as its image holds it ("audio" or "midi").
+std::string imageKind(const Payload &image) {
+    if (image.contains("row") && image["row"].contains("kind") && image["row"]["kind"].is_string())
+        return image["row"]["kind"].get<std::string>();
+    return {};
+}
+std::string kindWord(const std::string &kind) { return kind == "midi" ? "a MIDI" : "an audio"; }
+} // namespace
+bool AdiRootComponent::deviceClipboardFirst(DeviceChainStrip::Clip clip) const {
+    // The device chain's when a device has the keyboard focus (Live's focus is where the command
+    // goes); Paste also at the chain's chosen end while the Arrangement holds no copy.
+    if (!devices.canClipboard(clip))
+        return false;
+    return devices.hasKeyboardFocus(true) || (clip == DeviceChainStrip::Clip::Paste && commands_.clipClipboard().empty());
+}
+bool AdiRootComponent::canClipboard(int id) const {
+    using Clip = DeviceChainStrip::Clip;
+    const auto clip = id == AppCommands::Cut    ? Clip::Cut
+                      : id == AppCommands::Copy ? Clip::Copy
+                      : id == AppCommands::Paste ? Clip::Paste
+                                                 : Clip::Duplicate;
+    const auto command = id == AppCommands::Cut    ? ClipCommand::Cut
+                         : id == AppCommands::Copy ? ClipCommand::Copy
+                         : id == AppCommands::Paste ? ClipCommand::Paste
+                                                    : ClipCommand::Duplicate;
+    return devices.canClipboard(clip) || canClipClipboard(command);
+}
+namespace {
+// The project file a clipboard copy names (`sourceFile`), as the engine reads the store's.
+std::string projectFile(Store &store) {
+    SQLite::Statement row(store.db(), "PRAGMA database_list");
+    while (row.executeStep())
+        if (row.getColumn(1).getString() == "main")
+            return row.getColumn(2).getString();
+    return {};
+}
+} // namespace
+std::int64_t AdiRootComponent::pasteOrigin() const {
+    // The top selected track that can hold clips, in the lanes' order, whichever way the selection
+    // was made (an upward drag keeps the lower track as its anchor).
+    for (const auto id : arrangement.geometry.selectedTracks(reader()))
+        if (const auto *t = reader().findTrack(id); t != nullptr && arrangement.geometry.shown(id) && holdsClips(*t))
+            return id;
+    return 0;
+}
+bool AdiRootComponent::canClipClipboard(ClipCommand command) const {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    const auto &sel = arrangement.geometry.selection;
+    if (command == ClipCommand::Paste)
+        return !commands_.clipClipboard().empty() && pasteOrigin() != 0;
+    if (chosenClip(*current, sel).clip != nullptr)
+        return true;
+    if (sel.start == sel.end)
+        return false;
+    for (const auto id : arrangement.geometry.selectedTracks(reader()))
+        if (const auto *t = reader().findTrack(id); t != nullptr && arrangement.geometry.shown(id) && holdsClips(*t))
+            return true;
+    return false;
+}
+bool AdiRootComponent::clipClipboard(ClipCommand command) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The clipboard needs an open project.");
+    auto &sel = arrangement.geometry.selection;
+    auto &board = commands_.clipClipboard();
+    auto &store = submitter_.store();
+    const auto rate = editRate();
+    const edit_plan::Options options{rate, edit_plan::capturePolicy(commandSettings())};
+    const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
+    const auto chosen = chosenClip(*current, sel);
+    const bool range = chosen.clip == nullptr && from != to;
+    clip_edit::RangeSelection selection{arrangement.geometry.selectedTracks(reader()), {0, from}, {0, to}};
+    // The time selection's tracks the lanes show that can hold clips, in the lanes' order: the
+    // same rule Paste puts a range back by, so a range returns onto the tracks it came from.
+    selection.tracks.erase(std::remove_if(selection.tracks.begin(), selection.tracks.end(),
+                                          [&](std::int64_t id) {
+                                              const auto *t = reader().findTrack(id);
+                                              return t == nullptr || !arrangement.geometry.shown(id) || !holdsClips(*t);
+                                          }),
+                           selection.tracks.end());
+    if (command != ClipCommand::Paste && chosen.clip == nullptr && (!range || selection.tracks.empty()))
+        return fail("Select a device, a clip, or a time selection on tracks with clips, first.");
+    // A clip chosen after an edit: the new one, at its span in the refreshed snapshot.
+    const auto chooseClip = [&](std::int64_t id) {
+        if (const auto after = view_.current())
+            for (const auto &t : after->tracks)
+                if (t)
+                    for (const auto &c : t->clips)
+                        if (c && c->id == id) {
+                            sel.track = t->id;
+                            sel.toTrack = 0;
+                            sel.clip = id;
+                            sel.pickedClips.clear();
+                            sel.insert = sel.start = c->posTicks;
+                            sel.end = c->posTicks + c->lengthTicks;
+                            sel.marked = true;
+                        }
+    };
+    const auto timeSelection = [&](std::int64_t first, std::int64_t last, std::int64_t a, std::int64_t b) {
+        sel.track = first;
+        sel.toTrack = last == first ? 0 : last;
+        sel.clip = 0;
+        sel.pickedClips.clear();
+        sel.insert = sel.start = a;
+        sel.end = b;
+        sel.marked = true;
+    };
+    // A command that worked clears an earlier refusal: an empty edit commits nothing, so nothing
+    // else would.
+    const auto succeeded = [&] {
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
+        arrangement.changed();
+    };
+    switch (command) {
+    case ClipCommand::Copy: {
+        if (chosen.clip != nullptr) {
+            auto copy = clip_edit::copyClip(store, chosen.clip->id, rate);
+            if (!copy.ok)
+                return fail(copy.error);
+            board.held = std::move(copy);
+        } else {
+            auto copy = clip_edit::copyRange(store, selection, rate);
+            if (!copy.ok)
+                return fail(copy.error);
+            board.held = std::move(copy);
+        }
+        // Copy writes nothing, so nothing else clears an earlier refusal from the Status Bar.
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
+        commands_.manager.commandStatusChanged();
+        return true;
+    }
+    case ClipCommand::Cut: {
+        // The copy is kept only once the cut is in, so a refused Cut leaves the clipboard as it was.
+        if (chosen.clip != nullptr) {
+            auto cut = clip_edit::prepareCutClip(store, chosen.clip->id, rate);
+            if (!cut.copy.ok)
+                return fail(cut.copy.error);
+            if (!commitEdit(std::move(cut.edit)))
+                return false;
+            board.held = std::move(cut.copy);
+            timeSelection(chosen.track->id, chosen.track->id, from, from);
+        } else {
+            auto cut = clip_edit::prepareCutRange(store, selection, options);
+            if (!cut.copy.ok)
+                return fail(cut.copy.error);
+            if (!commitEdit(std::move(cut.edit)))
+                return false;
+            board.held = std::move(cut.copy);
+        }
+        commands_.manager.commandStatusChanged();
+        succeeded();
+        return true;
+    }
+    case ClipCommand::Paste: {
+        if (board.empty())
+            return fail("Copy a clip or a time selection first.");
+        // At the insert marker, or a time selection's start.
+        const auto at = from != to ? from : sel.marked ? sel.insert : 0;
+        // A copy from another project: the engine refuses it, so say so before reading its tracks.
+        const auto heldFile = std::visit(
+            [](const auto &copy) -> std::string {
+                if constexpr (std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
+                    return {};
+                else
+                    return copy.sourceFile;
+            },
+            board.held);
+        if (!heldFile.empty() && heldFile != projectFile(store))
+            return fail("The clipboard holds a copy from another project: copy again in this one.");
+        const auto origin = pasteOrigin();
+        const auto *track = reader().findTrack(origin);
+        if (track == nullptr || !holdsClips(*track))
+            return fail("Select an audio or MIDI track to paste on.");
+        if (const auto *copy = std::get_if<clip_edit::ClipCopy>(&board.held)) {
+            // Audio on audio tracks, MIDI on MIDI tracks, as Live places them.
+            if (const auto kind = imageKind(copy->image); !kind.empty() && kind != track->kind)
+                return fail("The copied clip goes on " + kindWord(kind) + " track: " + track->name + " is " +
+                            kindWord(track->kind) + " track.");
+            // A new identity, never the copied clip's own: after a Cut of the newest clip, the
+            // project's next free id is the one the copy still carries.
+            auto id = audio_drop_detail::newClipId(*current);
+            if (copy->image.contains("id") && copy->image["id"].is_number_integer())
+                id = std::max(id, copy->image["id"].get<std::int64_t>() + 1);
+            if (!commitEdit(clip_edit::preparePaste(store, *copy, id, track->id, {0, at}, options)))
+                return false;
+            chooseClip(id);
+        } else {
+            const auto &rangeCopy = std::get<clip_edit::RangeCopy>(board.held);
+            // As many tracks as the copy came from, in order, from the selected one: the shown
+            // tracks that can hold clips.
+            const auto wanted = rangeCopy.selection.tracks.size();
+            std::vector<std::int64_t> targets;
+            bool reached = false;
+            for (const auto row : arrangement.geometry.rows(reader())) {
+                reached = reached || row.track->id == origin;
+                if (reached && targets.size() < wanted && arrangement.geometry.shown(row.track->id) &&
+                    holdsClips(*row.track))
+                    targets.push_back(row.track->id);
+            }
+            if (targets.size() < wanted)
+                return fail("The copy reaches " + std::to_string(wanted) + " tracks: select a track with " +
+                            std::to_string(wanted - 1) + (wanted == 2 ? " more" : " more tracks") +
+                            " below it that can hold clips.");
+            // Each source track's material onto a track of its kind: the source's kind from the
+            // project, else from its copied clips.
+            for (std::size_t i = 0; i < wanted; ++i) {
+                const auto source = rangeCopy.selection.tracks[i];
+                std::string kind;
+                if (const auto *t = reader().findTrack(source))
+                    kind = t->kind;
+                for (const auto &image : rangeCopy.images)
+                    if (kind.empty() && image.contains("row") && image["row"].value("track_id", std::int64_t{0}) == source)
+                        kind = imageKind(image);
+                const auto *target = reader().findTrack(targets[i]);
+                if (!kind.empty() && target != nullptr && target->kind != kind)
+                    return fail("The copy's track " + std::to_string(i + 1) + " goes on " + kindWord(kind) +
+                                " track: " + target->name + " is " + kindWord(target->kind) + " track.");
+            }
+            if (!commitEdit(clip_edit::preparePasteRange(store, rangeCopy, targets, {0, at}, options)))
+                return false;
+            const auto length = rangeCopy.selection.end.value - rangeCopy.selection.begin.value;
+            timeSelection(targets.front(), targets.back(), at, at + length);
+        }
+        succeeded();
+        return true;
+    }
+    case ClipCommand::Duplicate: {
+        // Right after the selection, which then moves onto the copy (manual 6.9).
+        if (chosen.clip != nullptr) {
+            const auto id = audio_drop_detail::newClipId(*current);
+            if (!commitEdit(clip_edit::prepareDuplicate(store, chosen.clip->id, id, chosen.track->id,
+                                                        {0, chosen.clip->posTicks + chosen.clip->lengthTicks}, options)))
+                return false;
+            chooseClip(id);
+        } else {
+            if (!commitEdit(clip_edit::prepareDuplicateRange(store, selection, options)))
+                return false;
+            const auto length = to - from;
+            sel.insert = sel.start = to;
+            sel.end = to + length;
+            sel.clip = 0;
+        }
+        succeeded();
+        return true;
+    }
+    }
+    return false;
 }
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
@@ -2408,10 +2684,15 @@ bool AdiRootComponent::command(int id) {
                           : id == AppCommands::Copy ? Clip::Copy
                           : id == AppCommands::Paste ? Clip::Paste
                                                      : Clip::Duplicate;
-        if (!devices.canClipboard(clip))
-            return fail(clip == Clip::Paste ? "Copy a device first, then select a device or click past the last one."
-                                            : "Select a device first: click its title bar.");
-        return devices.clipboard(clip);
+        if (deviceClipboardFirst(clip))
+            return devices.clipboard(clip);
+        const auto command = id == AppCommands::Cut    ? ClipCommand::Cut
+                             : id == AppCommands::Copy ? ClipCommand::Copy
+                             : id == AppCommands::Paste ? ClipCommand::Paste
+                                                        : ClipCommand::Duplicate;
+        if (!canClipClipboard(command) && clip == Clip::Paste && commands_.clipClipboard().empty())
+            return fail("Copy a clip, a time selection or a device first.");
+        return clipClipboard(command);
     }
     case AppCommands::Split:
         return splitAtMarker();

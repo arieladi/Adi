@@ -1412,9 +1412,16 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
-        // A clip's menu: Split at where it was clicked (Live 12 manual 6.9), above the lanes' items.
+        // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
+        // was clicked, above the lanes' items. The lanes' own menu offers Paste.
         if (geometry.selection.clip != 0) {
+            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+                menu.addCommandItem(&commands.manager, id);
+            menu.addSeparator();
             menu.addCommandItem(&commands.manager, AppCommands::Split);
+            menu.addSeparator();
+        } else if (!commands.clipClipboard().empty()) {
+            menu.addCommandItem(&commands.manager, AppCommands::Paste);
             menu.addSeparator();
         }
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
