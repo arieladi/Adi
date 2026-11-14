@@ -6450,7 +6450,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     const auto at = demands.find(owner);
                     return at != demands.end() && !at->second.empty();
                 };
-                check(has(&observed.devices) && has(&stackSurface),
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                          !stackSurface.model().shownIndex(2) && has(&observed.devices) && !has(&stackSurface),
+                      "With tools omits generic plug-in rows and requests no Stack parameters");
+                stackSurface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+                observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                          stackSurface.model().shownIndex(2) && has(&observed.devices) && has(&stackSurface),
                       "device strip and realised Stack controls own independent parameter demand");
                 window.minimisationStateChanged(true);observed.frame();
                 check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
