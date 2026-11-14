@@ -71,7 +71,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     juce::ScrollBar scrollbar{true};
     RenameEditor rename;
     bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
-    std::uint64_t layout = 0;
+    std::uint64_t frame = 0, layout = 0;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
     std::string parameter;
@@ -388,6 +388,7 @@ const DevicePanelData *StackTab::device(std::int64_t id) const noexcept {
 }
 void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
     const juce::Component::SafePointer<StackTab> alive(this);
+    const auto frame = state_->frame, layout = state_->layout;
     const auto &hidden = root.arrangement.geometry.hidden;
     // ProjectView owns the UI publication, not SnapshotPublisher: Snapshot::seq is unstamped
     // here. The root's generation is its presented ProjectView generation. Pointer identity
@@ -412,7 +413,7 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
                     !d.plugin && mix::functionForUid(d.uid) != nullptr});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
-        if (!alive) return;
+        if (!alive || state_->frame != frame || state_->layout != layout) return;
         state_->generation = generation;
         state_->snapshot = reader.get();
         state_->provider = &provider();
@@ -427,17 +428,25 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
         return;
     }
     const juce::Component::SafePointer<StackTab> alive(this);
+    const auto frame = ++state_->frame, layout = state_->layout;
+    const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
     // Keep the prior record storage alive until every component has adopted the new feed.
     const auto old = state_->publication;
     (void)old; // its ownership deliberately lasts through every present() below
-    if (root.devices.publication) state_->publication = root.devices.publication();
-    if (!alive) return;
+    if (root.devices.publication) {
+        // A getter may destroy this surface or synchronously present a newer pose.
+        // Validate before touching state, including the publication assignment itself.
+        auto next = root.devices.publication();
+        if (!current()) return;
+        state_->publication = std::move(next);
+    }
+    if (!current()) return;
     refreshRows(reader, time);
-    if (!alive) return;
+    if (!current()) return;
     effects(model().setSelection(root.arrangement.geometry.selection.track, time), false);
-    if (!alive) return;
+    if (!current()) return;
     effects(model().advance(time), false);
-    if (!alive) return;
+    if (!current()) return;
     layoutRows();
 }
 void StackTab::syncScroll() {
@@ -463,7 +472,8 @@ void StackTab::layoutRows() {
         return;
     }
     const juce::Component::SafePointer<StackTab> alive(this);
-    const auto layout = ++state_->layout;
+    const auto frame = state_->frame, layout = ++state_->layout;
+    const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
     state_->wanted.clear();
     const auto realised = model().realised();
     model().forEachRow(realised, [this](const stack::RowGeo &g) { state_->wanted.push_back(g); });
@@ -481,9 +491,12 @@ void StackTab::layoutRows() {
                 if (!item.pill && !root.devices.folded(item.ref.device)) devices.push_back(item.ref.device);
             });
         updateParameterDemand(std::move(devices));
-        if (!alive || state_->layout != layout) return;
-        if (root.devices.publication) state_->publication = root.devices.publication();
-        if (!alive || state_->layout != layout) return;
+        if (!current()) return;
+        if (root.devices.publication) {
+            auto next = root.devices.publication();
+            if (!current()) return;
+            state_->publication = std::move(next);
+        }
     }
     for (std::size_t j = rows_.size(); j-- > 0;) {
         if (std::any_of(state_->wanted.begin(), state_->wanted.end(),
@@ -491,11 +504,11 @@ void StackTab::layoutRows() {
         auto retired = std::move(rows_[j]);
         rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(j));
         retired.reset();
-        if (!alive || state_->layout != layout) return;
+        if (!current()) return;
     }
     const auto count = state_->wanted.size();
     for (std::size_t j = 0; j < count; ++j) {
-        if (!alive || state_->layout != layout) return;
+        if (!current()) return;
         const auto geo = state_->wanted[j];
         auto found = std::find_if(rows_.begin(), rows_.end(), [&](const auto &r) { return r->track() == geo.ref.track; });
         if (found == rows_.end()) {
@@ -510,7 +523,7 @@ void StackTab::layoutRows() {
         (*found)->setExplicitFocusOrder(static_cast<int>(std::min<std::size_t>(geo.shown + 1,
                                                       static_cast<std::size_t>(std::numeric_limits<int>::max()))));
         (*found)->present(geo);
-        if (!alive || state_->layout != layout) return;
+        if (!current()) return;
     }
     if (state_->rename.isVisible())
         if (const auto cap = model().capture(); cap && cap->target.place == stack::ItemPlace::None)

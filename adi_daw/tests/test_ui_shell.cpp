@@ -6556,6 +6556,80 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 actual.devices.guardedGesture = savedGesture;
                 actual.devices.publication = savedPublication;
             }
+            // Publication getters are external callbacks too. Exercise both entry
+            // points with the same null peer, independently of gesture End callbacks.
+            for (int entry = 0; entry < 2; ++entry) {
+                for (int mode = 0; mode < 3; ++mode) {
+                    std::unique_ptr<StackTab> transient = std::make_unique<StackTab>(actual);
+                    actual.addAndMakeVisible(*transient);
+                    transient->setBounds(surface.getBounds());
+                    transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                    const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 2000;
+                    auto initial = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
+                    for (auto &device : *initial) if (device.id == 30) device.name = "Abandoned getter";
+                    std::shared_ptr<const ParameterPublication> supplied = initial;
+                    actual.devices.publication = [&] { return supplied; };
+                    transient->frameAt(actual.reader(), time);
+                    const auto find = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                        if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == 30) return p;
+                        for (int i = 0; i < component.getNumChildComponents(); ++i)
+                            if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                        return nullptr;
+                    };
+                    auto replacement = std::make_shared<ParameterPublication>(*initial);
+                    if (mode == 1) std::reverse(replacement->begin(), replacement->end());
+                    for (auto &device : *replacement) if (device.id == 30) device.name = "Nested getter pose";
+                    bool armed = true, nestedPresented = false;
+                    int callbacks = 0;
+                    juce::Rectangle<int> nestedBounds;
+                    actual.devices.publication = [&]() -> std::shared_ptr<const ParameterPublication> {
+                        const auto result = supplied;
+                        if (armed) {
+                            armed = false; ++callbacks;
+                            if (mode == 0) transient.reset();
+                            else {
+                                supplied = replacement;
+                                transient->model().focusItem(transient->model().chainRef(2, 31), time + 20);
+                                if (mode == 1) transient->frameAt(actual.reader(), time + 220);
+                                else {
+                                    transient->model().advance(time + 220);
+                                    transient->resized();
+                                }
+                                if (const auto *nested = find(find, *transient)) {
+                                    nestedBounds = nested->getBounds(); nestedPresented = true;
+                                }
+                            }
+                        }
+                        return result; // deliberately return the older publication after nested work
+                    };
+                    if (entry == 0) transient->frameAt(actual.reader(), time + 10);
+                    else transient->resized();
+                    check(callbacks == 1 && (mode == 0 ? !transient : transient != nullptr),
+                          entry == 0 ? "a frame getter may synchronously destroy or reenter its null-peer surface"
+                                     : "a post-demand layout getter may synchronously destroy or reenter its null-peer surface");
+                    if (mode != 0 && transient) {
+                        auto *nested = find(find, *transient);
+                        std::vector<std::int64_t> nestedOrder;
+                        if (const auto at = transient->model().shownIndex(2))
+                            transient->model().forEachChainItem(*at, [&](const auto &item) { nestedOrder.push_back(item.ref.device); });
+                        const auto expectedOrder = mode == 1 ? std::vector<std::int64_t>{31, 30}
+                                                             : std::vector<std::int64_t>{30, 31};
+                        check(nestedPresented && nested && nested->title.getButtonText() == "Nested getter pose" &&
+                                  nested->getBounds() == nestedBounds && nestedOrder == expectedOrder,
+                              entry == 0 ? "an abandoned frame getter cannot overwrite nested frame or layout presentation"
+                                         : "an abandoned layout getter cannot overwrite nested frame or layout presentation");
+                        // With no further getter, the next layout must still use the
+                        // nested record storage rather than a late outer assignment.
+                        actual.devices.publication = {};
+                        transient->resized();
+                        nested = find(find, *transient);
+                        check(nested && nested->title.getButtonText() == "Nested getter pose",
+                              "getter reentry retains the nested publication for a subsequent callback-free layout");
+                    }
+                    transient.reset();
+                    actual.devices.publication = savedPublication;
+                }
+            }
             actual.mixViewPanel.stack.suspendParameters(true);
             actual.devices.suspendParameters(true);
             actual.afterEdit = nullptr;
