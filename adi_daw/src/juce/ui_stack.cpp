@@ -61,6 +61,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     std::vector<std::pair<std::int64_t, std::size_t>> deviceIndex;
     std::vector<stack::RowGeo> wanted;
     std::vector<std::int64_t> hidden;
+    std::vector<std::int64_t> demanded;
     std::shared_ptr<const ParameterPublication> publication, structure, editPublication;
     std::uint64_t generation = std::numeric_limits<std::uint64_t>::max(), revision = 1;
     const engine::Snapshot *snapshot = nullptr; // identity only, never dereferenced after the frame
@@ -68,7 +69,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     juce::Component canvas;
     juce::ScrollBar scrollbar{true};
     RenameEditor rename;
-    bool syncing = false, ending = false, destroying = false, began = false;
+    bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
     std::string parameter;
@@ -144,10 +145,8 @@ void StackRow::present(const stack::RowGeo &geo) {
         found->view->setExplicitFocusOrder(static_cast<int>(item.index + 1));
         if (const auto cap = stack_.model().capture(); cap && cap->target == item.ref &&
             cap->kind == stack::CaptureKind::Drag) {
-            bool sameControls = found->view->controls.size() == data->resolved.entries.size();
-            for (std::size_t i = 0; sameControls && i < found->view->controls.size(); ++i)
-                sameControls = found->view->controls[i]->parameter == data->resolved.entries[i].id;
-            const bool parameterLive = data->available && std::any_of(data->records.begin(), data->records.end(),
+            const bool sameControls = found->view->controlsMatch(*data);
+            const bool parameterLive = data->available && std::any_of(data->parameters().begin(), data->parameters().end(),
                 [&](const auto &record) { return record.id == stack_.state_->parameter && !record.missing; });
             if (!sameControls || !parameterLive) stack_.endInteraction();
         }
@@ -283,6 +282,7 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
 }
 StackTab::~StackTab() {
     state_->destroying = true;
+    if (root.devices.parameterDemand) root.devices.parameterDemand(this, {});
     cancelInteractions();
     giveAwayKeyboardFocus();
     state_->canvas.removeMouseListener(this);
@@ -348,6 +348,10 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
 }
 void StackTab::frame(const SnapshotReader &reader) { frameAt(reader, clockNow()); }
 void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
+    if (root.devices.parameterDemand && (state_->parametersSuspended || !isShowing())) {
+        updateParameterDemand({});
+        return;
+    }
     // Keep the prior record storage alive until every component has adopted the new feed.
     const auto old = state_->publication;
     (void)old; // its ownership deliberately lasts through every present() below
@@ -375,6 +379,10 @@ void StackTab::focusTile(const stack::ItemRef &target) {
             }
 }
 void StackTab::layoutRows() {
+    if (root.devices.parameterDemand && (state_->parametersSuspended || !isShowing())) {
+        updateParameterDemand({});
+        return;
+    }
     state_->wanted.clear();
     const auto realised = model().realised();
     model().forEachRow(realised, [this](const stack::RowGeo &g) { state_->wanted.push_back(g); });
@@ -383,6 +391,20 @@ void StackTab::layoutRows() {
             if (const auto at = model().shownIndex(ref.track); at && !realised.contains(*at))
                 if (std::none_of(state_->wanted.begin(), state_->wanted.end(), [&](const auto &g) { return g.ref == ref; }))
                     state_->wanted.push_back(model().row(*at));
+    const auto priorPublication = state_->publication;
+    (void)priorPublication;
+    if (root.devices.parameterDemand) {
+        std::vector<std::int64_t> devices;
+        for (const auto &geo : state_->wanted)
+            model().forEachChainItem(geo.shown, [&](const stack::ItemGeo &item) {
+                if (!item.pill && !root.devices.folded(item.ref.device)) devices.push_back(item.ref.device);
+            });
+        const auto safe = SafePointer<StackTab>(this);
+        updateParameterDemand(std::move(devices));
+        if (!safe) return;
+        if (root.devices.publication) state_->publication = root.devices.publication();
+        if (!safe) return;
+    }
     std::erase_if(rows_, [this](const auto &row) {
         return std::none_of(state_->wanted.begin(), state_->wanted.end(),
                             [&](const auto &g) { return g.ref == row->state_->geo.ref; });
@@ -633,9 +655,25 @@ void StackTab::visibilityChanged() {
         cancelInteractions();
         effects(model().pointerExit(clockNow()), false);
         effects(model().setKeyboardFocus(false, clockNow()), false);
+        updateParameterDemand({});
     }
 }
-void StackTab::parentHierarchyChanged() { if (!isShowing()) cancelInteractions(); }
+void StackTab::parentHierarchyChanged() { visibilityChanged(); }
+void StackTab::updateParameterDemand(std::vector<std::int64_t> devices) {
+    std::sort(devices.begin(), devices.end());
+    devices.erase(std::unique(devices.begin(), devices.end()), devices.end());
+    if (devices == state_->demanded) return;
+    state_->demanded = std::move(devices);
+    if (root.devices.parameterDemand) root.devices.parameterDemand(this, state_->demanded);
+}
+void StackTab::suspendParameters(bool suspended) {
+    state_->parametersSuspended = suspended;
+    if (suspended) {
+        const auto safe = SafePointer<StackTab>(this);
+        cancelInteractions();
+        if (safe) updateParameterDemand({});
+    }
+}
 void StackTab::focus(std::int64_t track) { effects(model().openFromChip(track, {}, clockNow())); layoutRows(); }
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {

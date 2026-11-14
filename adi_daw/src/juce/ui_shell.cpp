@@ -1287,6 +1287,7 @@ bool AdiRootComponent::setMixView(bool open, bool detached) {
     if (!open || wasDetached != detached) {
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
     }
+    mixViewPanel.stack.suspendParameters(!open || (!detached && devices.parametersSuspended()));
     resized();
     return true;
 }
@@ -2995,9 +2996,13 @@ void AdiWindow::moved() {
 }
 void AdiWindow::minimisationStateChanged(bool minimised) {
     root_->infoSpectrum.suspend(minimised);
-    if (root_->mixViewPanel.getParentComponent() == root_)
+    root_->devices.suspendParameters(minimised);
+    if (root_->mixViewPanel.getParentComponent() == root_) {
         root_->mixViewPanel.suspendAnalysis(minimised);
-    if (minimised) { root_->mixViewPanel.stack.cancelInteractions(); root_->devices.cancelFunctionInteractions(); }
+        root_->mixViewPanel.stack.suspendParameters(minimised || !root_->state().mixView);
+        if (minimised) root_->mixViewPanel.stack.cancelInteractions();
+    }
+    if (minimised) root_->devices.cancelFunctionInteractions();
 }
 AdiWindow::~AdiWindow() {
 #if JUCE_MAC

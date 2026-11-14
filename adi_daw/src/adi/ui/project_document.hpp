@@ -86,6 +86,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
+    void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
     // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
