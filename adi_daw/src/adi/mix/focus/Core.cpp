@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <limits>
@@ -17,7 +18,6 @@
 namespace adi::mix::focus {
 namespace {
 using Complex = std::complex<double>;
-constexpr double kKernelRate=44100.;
 std::atomic<std::uint64_t> nextPreparationEpoch{1};
 bool within(double x,double lo,double hi) noexcept { return std::isfinite(x)&&x>=lo&&x<=hi; }
 bool phaseActive(const Settings &s) noexcept {
@@ -81,14 +81,14 @@ struct Coefficients {
     bool kernelsValid=false;
     std::array<IirCoefficients,kNodes> iir;
     // One coherent extraction kernel per node serves both independent streams.
-    std::array<std::vector<Complex>,kNodes> main;
+    std::array<std::vector<Complex>,kNodes> first,second;
 };
 struct Slot { std::atomic<int> readers{0}; Coefficients coefficients; };
 void kernel(detail::Transform &small,detail::Transform &large,std::vector<double> &time,
             std::vector<Complex> &spectrum,std::vector<double> &window,
-            double frequency,double q,std::vector<Complex> &output) {
+            double frequency,double q,double rate,std::vector<Complex> &firstPart,std::vector<Complex> &secondPart) {
     const auto h=small.size();
-    const auto centre=static_cast<std::size_t>(std::floor(static_cast<double>(h)*frequency/kKernelRate+.5));
+    const auto centre=static_cast<std::size_t>(std::floor(static_cast<double>(h)*frequency/rate+.5));
     const auto width=2*static_cast<std::size_t>(std::floor(((.9/.1803)*static_cast<double>(centre)/q)/2.))+1;
     window.resize(width);
     std::size_t peak=0;
@@ -107,8 +107,8 @@ void kernel(detail::Transform &small,detail::Transform &large,std::vector<double
     }
     small.inverse(std::span<const Complex>(spectrum.data(),h/2+1),std::span<double>(time.data(),h));
     std::rotate(time.begin(),time.begin()+static_cast<std::ptrdiff_t>(h/2),time.begin()+static_cast<std::ptrdiff_t>(h));
-    std::fill(time.begin()+static_cast<std::ptrdiff_t>(h),time.end(),0.);
-    large.forward(time,output);
+    large.forward(std::span<const double>(time.data(),h/2),firstPart);
+    large.forward(std::span<const double>(time.data()+h/2,h/2),secondPart);
 }
 } // namespace
 bool sameConfiguration(const Settings &a,const Settings &b) noexcept {
@@ -146,7 +146,9 @@ struct Core::Impl {
     bool prepared=false;
     Settings lastRequested;
     detail::ConfigurationMailbox mailbox;
-    std::array<Slot,3> slots;
+    // Capture, executing input, preceding spectrum, admitted plan and offer
+    // may all identify distinct generations. No leased bank is overwritten.
+    std::array<Slot,5> slots;
     std::atomic<int> published{0};
     int activeSlot=0;
     std::uint64_t generation=0,physical=0,serial=0,epoch=0;
@@ -156,12 +158,23 @@ struct Core::Impl {
     detail::Transform builderSmall,builderLarge,firTransform,phaseTransform;
     std::vector<double> buildTime,buildWindow;
     std::vector<Complex> buildSpectrum;
-    std::size_t h=0,n=0,phaseN=0,phaseH=0,firFill=0;
+    std::size_t h=0,p=0,phaseN=0,phaseH=0,firFill=0;
     std::uint64_t firCursor=0,phaseCursor=0;
     std::array<std::array<Node,kNodes>,2> iir;
     std::array<std::array<detail::Envelope,kNodes>,2> firEnvelope;
-    std::array<std::vector<double>,2> firInput,firKey,phaseInput,phaseKey,phaseOutput;
-    std::array<std::vector<Complex>,2> firMainSpectrum,firKeySpectrum;
+    std::array<std::vector<double>,2> phaseInput,phaseKey,phaseOutput;
+    std::array<std::array<std::vector<double>,4>,2> firInput;
+    std::array<std::array<std::vector<Complex>,4>,2> firSpectrum;
+    struct FirTag { int slot=-1; std::uint16_t mask=0; std::uint64_t version=0; };
+    FirTag captureTag,jobTag,previousTag;
+    enum class FirStage { Idle, ForwardStart, Forward, Node, CurrentProduct, PreviousProduct, Sum,
+                          InverseStart, Inverse, Overlap, Finish };
+    FirStage firStage=FirStage::Idle;
+    std::size_t captureBank=0,jobTimeBank=0,previousSpectrumBank=0,jobSpectrumBank=1;
+    std::size_t jobStream=0,jobNode=0,jobIndex=0;
+    std::uint64_t jobOutput=0;
+    Complex currentProduct{},previousProduct{};
+    const Complex *jobFirstKernel=nullptr,*jobSecondKernel=nullptr,*jobCurrentInput=nullptr,*jobPreviousInput=nullptr;
     std::array<std::array<std::vector<double>,kNodes>,2> bandMain,bandKey;
     std::vector<double> transformTime,phaseTime,phaseWindow;
     std::vector<Complex> transformSpectrum,phaseSpectrum,phaseKeySpectrum;
@@ -187,11 +200,11 @@ struct Core::Impl {
             // Identical settings never depend on setter order or preset history.
             const bool same=previous && previous->kernelsValid && previous->settings.nodes[b].frequencyHz==s.nodes[b].frequencyHz;
             if(same && previous->settings.nodes[b].q==s.nodes[b].q) {
-                destination.main[b]=previous->main[b];
+                destination.first[b]=previous->first[b];destination.second[b]=previous->second[b];
                 continue;
             }
             kernel(builderSmall,builderLarge,buildTime,buildSpectrum,buildWindow,
-                s.nodes[b].frequencyHz,s.nodes[b].q,destination.main[b]);
+                s.nodes[b].frequencyHz,s.nodes[b].q,spec.sampleRate,destination.first[b],destination.second[b]);
         }
         destination.kernelsValid=true;
     }
@@ -199,11 +212,13 @@ struct Core::Impl {
         if(!valid(s)||!std::isfinite(next.sampleRate)||next.sampleRate<44100.||next.sampleRate>192000.||
            next.maximumFrames<1||next.maximumFrames>(1<<20)||next.channels!=2)
             throw std::invalid_argument("Focus prepare requires stereo main, 44.1-192 kHz and a positive block capacity");
-        prepared=false;spec=next;h=hopFor(spec.sampleRate);n=2*h;
+        prepared=false;spec=next;h=hopFor(spec.sampleRate);p=h/2;
         phaseN=phaseSizeFor(spec.sampleRate);phaseH=phaseN/4;
-        builderSmall.prepare(h);builderLarge.prepare(n);firTransform.prepare(n);phaseTransform.prepare(phaseN);
-        buildTime.assign(n,0.);buildSpectrum.resize(h+1);buildWindow.clear();
-        transformTime.assign(n,0.);transformSpectrum.resize(h+1);
+        builderSmall.prepare(h);builderLarge.prepare(h);firTransform.prepare(h);phaseTransform.prepare(phaseN);
+        buildTime.assign(h,0.);buildSpectrum.resize(p+1);buildWindow.clear();
+        transformTime.assign(h,0.);transformSpectrum.resize(p+1);
+        for(auto &bank:firInput)for(auto &stream:bank)stream.assign(p,0.);
+        for(auto &bank:firSpectrum)for(auto &stream:bank)stream.assign(p+1,Complex{});
         phaseTime.assign(phaseN,0.);phaseSpectrum.resize(phaseN/2+1);phaseKeySpectrum.resize(phaseN/2+1);
         phaseWindow.resize(phaseN);
         for(std::size_t i=0;i<phaseN;++i) {
@@ -211,8 +226,6 @@ struct Core::Impl {
             phaseWindow[i]=static_cast<double>(1.f-std::cos(angle))*.5;
         }
         for(std::size_t c=0;c<2;++c) {
-            firInput[c].assign(h,0.);firKey[c].assign(h,0.);
-            firMainSpectrum[c].resize(h+1);firKeySpectrum[c].resize(h+1);
             phaseInput[c].assign(phaseN,0.);phaseKey[c].assign(phaseN,0.);phaseOutput[c].assign(4*phaseN,0.);
             for(std::size_t b=0;b<kNodes;++b) {
                 bandMain[c][b].assign(4*h,0.);bandKey[c][b].assign(4*h,0.);
@@ -222,7 +235,8 @@ struct Core::Impl {
         }
         for(auto &slot:slots) {
             slot.readers.store(0,std::memory_order_relaxed);
-            for(auto &v:slot.coefficients.main) v.resize(h+1);
+            for(auto &v:slot.coefficients.first)v.resize(p+1);
+            for(auto &v:slot.coefficients.second)v.resize(p+1);
         }
         lastRequested=s;mailbox.reset();
         const auto version=mailbox.publish(s);
@@ -233,15 +247,20 @@ struct Core::Impl {
         activeLatency.store(latencyFor(s,spec.sampleRate),std::memory_order_release);
         firDry.prepare(h*3/2);phaseDry.prepare(phaseN);phaseKeyDelay.prepare(phaseN);phaseValidityDelay.prepare(phaseN,1.);
         firFill=0;firCursor=phaseCursor=0;physical=serial=0;++generation;
+        captureTag={};jobTag={};previousTag={};firStage=FirStage::Idle;
+        captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
         epoch=nextPreparationEpoch.fetch_add(1,std::memory_order_relaxed);stats={};phaseBlend={1.,1.};
+        stats.firWorkQuota=static_cast<std::uint64_t>(373+22*(std::bit_width(p)-1));
         phaseBlendStep=1./std::max(1.,spec.sampleRate*.01);prepared=true;
     }
     // Owner-only, while the relevant bank/stage is dormant. Re-entering after
     // another path has consumed source time cannot replay its old delayed audio.
     void clearFirSignal() noexcept {
+        releaseFirTag(captureTag);releaseFirTag(jobTag);releaseFirTag(previousTag);
+        firTransform.cancel();firStage=FirStage::Idle;
+        for(auto &bank:firInput)for(auto &stream:bank)std::fill(stream.begin(),stream.end(),0.);
+        for(auto &bank:firSpectrum)for(auto &stream:bank)std::fill(stream.begin(),stream.end(),Complex{});
         for(std::size_t c=0;c<2;++c) {
-            std::fill(firInput[c].begin(),firInput[c].end(),0.);
-            std::fill(firKey[c].begin(),firKey[c].end(),0.);
             for(std::size_t b=0;b<kNodes;++b) {
                 std::fill(bandMain[c][b].begin(),bandMain[c][b].end(),0.);
                 std::fill(bandKey[c][b].begin(),bandKey[c][b].end(),0.);
@@ -249,6 +268,7 @@ struct Core::Impl {
             }
         }
         firDry.clear();firFill=0;firCursor=0;
+        captureBank=jobTimeBank=previousSpectrumBank=0;jobSpectrumBank=1;
     }
     void clearIirSignal() noexcept {
         for(auto &channel:iir)for(auto &node:channel)node=Node{};
@@ -276,7 +296,7 @@ struct Core::Impl {
         // acquire-observed audio admission. Thus published is the immutable
         // admitted plan, and any other bank/off-phase storage is dormant.
         const int current=published.load(std::memory_order_acquire);
-        for(int index=0;index<3;++index) {
+        for(int index=0;index<static_cast<int>(slots.size());++index) {
             if(index==current) continue;
             int zero=0;
             if(!slots[static_cast<std::size_t>(index)].readers.compare_exchange_strong(zero,-1,std::memory_order_acq_rel)) continue;
@@ -327,7 +347,8 @@ struct Core::Impl {
     }
     void phaseHop(const Settings &s) noexcept {
         const auto oldest=static_cast<std::size_t>((phaseCursor+1)%phaseN);
-        const auto low=std::min(phaseN/2,static_cast<std::size_t>(static_cast<double>(phaseN-1)*s.phaseMinimumHz/kKernelRate));
+        const auto phaseWorkBefore=phaseTransform.workUnits();
+        const auto low=std::min(phaseN/2,static_cast<std::size_t>(static_cast<double>(phaseN-1)*s.phaseMinimumHz/spec.sampleRate));
         for(std::size_t c=0;c<2;++c) {
             for(std::size_t i=0;i<phaseN;++i) phaseTime[i]=phaseInput[c][(oldest+i)%phaseN]*phaseWindow[i];
             phaseTransform.forward(phaseTime,phaseSpectrum);
@@ -352,6 +373,7 @@ struct Core::Impl {
                 phaseOutput[c][static_cast<std::size_t>((phaseCursor+1+i)%(4*phaseN))]+=phaseTime[i]*phaseWindow[i]/1.5;
         }
         ++stats.phaseHops;
+        stats.phaseWorkUnits+=phaseTransform.workUnits()-phaseWorkBefore;
     }
     std::array<double,2> phaseTick(std::array<double,2> main,std::array<double,2> key,
         const Settings &s,const std::array<bool,2> &validKey) noexcept {
@@ -369,25 +391,122 @@ struct Core::Impl {
         if((phaseCursor+1)%phaseH==0) phaseHop(s);
         ++phaseCursor;return result;
     }
-    void firHop(const Coefficients &plan,const Settings &s) noexcept {
-        for(std::size_t c=0;c<2;++c) {
-            std::copy(firInput[c].begin(),firInput[c].end(),transformTime.begin());
-            std::fill(transformTime.begin()+static_cast<std::ptrdiff_t>(h),transformTime.end(),0.);
-            firTransform.forward(transformTime,firMainSpectrum[c]);
-            std::copy(firKey[c].begin(),firKey[c].end(),transformTime.begin());
-            firTransform.forward(transformTime,firKeySpectrum[c]);
-            for(std::size_t b=0;b<kNodes;++b) if(s.nodes[b].enabled) {
-                for(std::size_t k=0;k<=h;++k) transformSpectrum[k]=firMainSpectrum[c][k]*plan.main[b][k];
-                firTransform.inverse(transformSpectrum,transformTime);
-                for(std::size_t k=0;k<n-1;++k)
-                    bandMain[c][b][static_cast<std::size_t>((firCursor+1+k)%(4*h))]+=transformTime[k];
-                for(std::size_t k=0;k<=h;++k) transformSpectrum[k]=firKeySpectrum[c][k]*plan.main[b][k];
-                firTransform.inverse(transformSpectrum,transformTime);
-                for(std::size_t k=0;k<n-1;++k)
-                    bandKey[c][b][static_cast<std::size_t>((firCursor+1+k)%(4*h))]+=transformTime[k];
+    void releaseFirTag(FirTag &tag) noexcept {
+        if(tag.slot>=0)slots[static_cast<std::size_t>(tag.slot)].readers.fetch_sub(1,std::memory_order_release);
+        tag={};
+    }
+    // Bounded contiguous primitive chunks. Every loop consumes the remaining
+    // actual-sample quota; transitions keep the same logical charge as scalar
+    // execution. No whole capture/transform/overlap commit is hidden here.
+    std::uint64_t firStep(std::uint64_t budget) noexcept {
+        std::uint64_t used=1;
+        switch(firStage) {
+        case FirStage::Idle:break;
+        case FirStage::ForwardStart:
+            firTransform.startForward(firInput[jobTimeBank][jobStream],firSpectrum[jobSpectrumBank][jobStream]);
+            firStage=FirStage::Forward;break;
+        case FirStage::Forward:
+            if(firTransform.busy())used=firTransform.advance(static_cast<std::size_t>(budget));
+            else if(++jobStream<4)firStage=FirStage::ForwardStart;
+            else {jobStream=0;jobNode=0;firStage=FirStage::Node;}
+            break;
+        case FirStage::Node:
+            if(jobNode==kNodes) {
+                jobNode=0;
+                if(++jobStream==4)firStage=FirStage::Finish;
+            } else if(((jobTag.mask|previousTag.mask)&(1U<<jobNode))==0)++jobNode;
+            else {
+                jobFirstKernel=(jobTag.mask&(1U<<jobNode))!=0?
+                    slots[static_cast<std::size_t>(jobTag.slot)].coefficients.first[jobNode].data():nullptr;
+                jobSecondKernel=(previousTag.mask&(1U<<jobNode))!=0?
+                    slots[static_cast<std::size_t>(previousTag.slot)].coefficients.second[jobNode].data():nullptr;
+                jobCurrentInput=firSpectrum[jobSpectrumBank][jobStream].data();
+                jobPreviousInput=firSpectrum[previousSpectrumBank][jobStream].data();
+                jobIndex=0;firStage=FirStage::CurrentProduct;
             }
+            break;
+        case FirStage::CurrentProduct:
+            if(budget>=3) {
+                const auto count=std::min<std::size_t>(p+1-jobIndex,static_cast<std::size_t>(budget/3));
+                const auto products=[&]<bool Current,bool Previous>() noexcept {
+                    for(std::size_t i=0;i<count;++i) {
+                        const auto k=jobIndex+i;
+                        currentProduct=Current?jobCurrentInput[k]*jobFirstKernel[k]:Complex{};
+                        previousProduct=Previous?jobPreviousInput[k]*jobSecondKernel[k]:Complex{};
+                        transformSpectrum[k]=currentProduct+previousProduct;
+                    }
+                };
+                if(jobFirstKernel) {
+                    if(jobSecondKernel)products.template operator()<true,true>();
+                    else products.template operator()<true,false>();
+                } else if(jobSecondKernel)products.template operator()<false,true>();
+                else products.template operator()<false,false>();
+                jobIndex+=count;used=3*count;
+                if(jobIndex==p+1)firStage=FirStage::InverseStart;
+            } else {
+                currentProduct=jobFirstKernel?jobCurrentInput[jobIndex]*jobFirstKernel[jobIndex]:Complex{};
+                firStage=FirStage::PreviousProduct;
+            }
+            break;
+        case FirStage::PreviousProduct:
+            previousProduct=jobSecondKernel?jobPreviousInput[jobIndex]*jobSecondKernel[jobIndex]:Complex{};
+            firStage=FirStage::Sum;break;
+        case FirStage::Sum:
+            transformSpectrum[jobIndex]=currentProduct+previousProduct;
+            firStage=++jobIndex==p+1?FirStage::InverseStart:FirStage::CurrentProduct;break;
+        case FirStage::InverseStart:
+            firTransform.startInverse(transformSpectrum,transformTime);firStage=FirStage::Inverse;break;
+        case FirStage::Inverse:
+            if(firTransform.busy())used=firTransform.advance(static_cast<std::size_t>(budget));
+            else {jobIndex=0;firStage=FirStage::Overlap;}
+            break;
+        case FirStage::Overlap:
+            if(jobIndex==h-1) {++jobNode;firStage=FirStage::Node;}
+            else {
+                auto &output=jobStream<2?bandMain[jobStream][jobNode]:bandKey[jobStream-2][jobNode];
+                const auto position=static_cast<std::size_t>(jobOutput+jobIndex)&(4*h-1);
+                const auto count=std::min({static_cast<std::size_t>(budget),h-1-jobIndex,4*h-position});
+                for(std::size_t i=0;i<count;++i)output[position+i]+=transformTime[jobIndex+i];
+                jobIndex+=count;used=count;
+            }
+            break;
+        case FirStage::Finish:
+            releaseFirTag(previousTag);previousTag=jobTag;jobTag={};
+            previousSpectrumBank=jobSpectrumBank;firStage=FirStage::Idle;++stats.firJobsCompleted;break;
         }
-        ++stats.filterHops;
+        return used;
+    }
+    std::uint64_t advanceFir(const Settings &s) noexcept {
+        // First/last-sample metadata is reserved from this sample's quota,
+        // not credited by configured capacity or earlier idle callbacks.
+        const std::uint64_t metadata=(firFill==0?16U:0U)+(firFill+1==p?16U:0U);
+        if(firFill==0) {
+            captureTag.slot=activeSlot;captureTag.version=slots[static_cast<std::size_t>(activeSlot)].coefficients.version;
+            captureTag.mask=0;
+            for(std::size_t b=0;b<kNodes;++b)if(s.nodes[b].enabled)captureTag.mask|=static_cast<std::uint16_t>(1U<<b);
+            slots[static_cast<std::size_t>(activeSlot)].readers.fetch_add(1,std::memory_order_relaxed);
+        }
+        std::uint64_t used=metadata;
+        while(firStage!=FirStage::Idle&&used<stats.firWorkQuota) {
+            const auto transformBefore=firTransform.workUnits();const auto chunk=firStep(stats.firWorkQuota-used);
+            const auto primitives=firTransform.workUnits()-transformBefore;
+            // A synchronous transform mutation is still charged in full and
+            // therefore fails the sample-work/deadline regression.
+            const auto charge=std::max(chunk,primitives);
+            used+=charge;
+        }
+        stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
+        return used;
+    }
+    bool launchFir() noexcept {
+        if(firStage!=FirStage::Idle) {++stats.firDeadlineMisses;return false;}
+        jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
+        jobSpectrumBank=1-previousSpectrumBank;jobOutput=firCursor+1+p;
+        jobStream=jobNode=jobIndex=0;firStage=FirStage::ForwardStart;firFill=0;
+        ++stats.firJobsStarted;
+        // Retain the diagnostic's original h-sample source-hop unit.
+        if((firCursor+1)%h==0)++stats.filterHops;
+        return true;
     }
     template<class Sample> bool process(Sample *const *main,const Sample *const *key,std::int32_t keyChannels,
         std::int32_t frames,const Settings &s,BlockContext context) noexcept {
@@ -399,11 +518,17 @@ struct Core::Impl {
         const auto &fixed=plan.settings;
         const auto phaseSettings=pinConfiguration(s,fixed);
         const bool runPhase=phaseActive(fixed),fir=fixed.engine==Engine::Fir;
+        // Tag diagnostics are audio-published mirrors. Owner dormant clearing
+        // may reset the actual tags concurrently while this bank is IIR.
+        if(!fir) {
+            stats.firCaptureVersion=stats.firJobVersion=stats.firPreviousVersion=0;
+            stats.firCaptureMask=stats.firJobMask=stats.firPreviousMask=0;
+        }
         const double inGain=std::pow(10.,(s.inputGainDb+s.inputCalibrationDb)*.05);
         const double outGain=std::pow(10.,(s.outputGainDb-s.inputCalibrationDb)*.05);
         const double keyGain=std::pow(10.,s.keyCalibrationDb*.05);
         const bool difference=s.detector==Detector::Difference;
-        const double rate=fir?kKernelRate:spec.sampleRate;
+        const double rate=spec.sampleRate;
         bool anyEnabled=false;
         for(const auto &node:s.nodes) anyEnabled=anyEnabled||node.enabled;
         if(!runPhase&&!fir&&!anyEnabled) {
@@ -447,13 +572,17 @@ struct Core::Impl {
             else if(fixed.phaseMode==PhaseMode::Rotation&&std::abs(fixed.rotationDegrees)==180.) {x[0]=-x[0];x[1]=-x[1];}
             std::array<double,2> y=x;
             if(fir) {
+                static_cast<void>(advanceFir(s));
                 const auto dry=firDry.tick(x);y=anySolo?std::array<double,2>{0.,0.}:dry;
+                stats.firMaintenanceUnits+=4; // two dry reads and two dry stores
                 const auto index=static_cast<std::size_t>(firCursor%(4*h));
                 for(std::size_t c=0;c<2;++c) {
-                    firInput[c][firFill]=x[c];firKey[c][firFill]=k[c];
+                    firInput[captureBank][c][firFill]=x[c];firInput[captureBank][c+2][firFill]=k[c];
+                    stats.firMaintenanceUnits+=2;
                     for(std::size_t b=0;b<kNodes;++b) {
                         const double band=bandMain[c][b][index],bandK=bandKey[c][b][index];
                         bandMain[c][b][index]=0.;bandKey[c][b][index]=0.;
+                        stats.firMaintenanceUnits+=4; // two band reads and two clears
                         const auto &node=s.nodes[b];if(!node.enabled) continue;
                         const double weight=c==0?midWeight[b]:sideWeight[b];
                         const bool detectorKeyValid=present&&(keyValid[c]||std::abs(bandK)>1.e-12||firEnvelope[c][b].rms>1.e-12);
@@ -463,8 +592,11 @@ struct Core::Impl {
                             y[c]-=(1.-std::pow(10.,appliedGain*.05))*band*s.wet;
                     }
                 }
-                if(++firFill==h) { firHop(plan,s);firFill=0; }
+                if(++firFill==p&&!launchFir())return false;
                 ++firCursor;
+                stats.firCaptureVersion=captureTag.version;stats.firCaptureMask=captureTag.mask;
+                stats.firJobVersion=jobTag.version;stats.firJobMask=jobTag.mask;
+                stats.firPreviousVersion=previousTag.version;stats.firPreviousMask=previousTag.mask;
             } else {
                 for(std::size_t c=0;c<2;++c) for(std::size_t b=0;b<kNodes;++b) {
                     const auto &node=s.nodes[b];if(!node.enabled) continue;
@@ -511,5 +643,5 @@ std::int32_t Core::latencySamples() const noexcept{return impl_->activeLatency.l
 BlockContext Core::beginBlock(std::uint64_t physical,std::int32_t latency,const Settings &s,bool admitPending) noexcept{return impl_->begin(physical,latency,s,admitPending);}
 bool Core::process(float *const *main,const float *const *key,std::int32_t channels,std::int32_t frames,const Settings &s,BlockContext context) noexcept{return impl_->process(main,key,channels,frames,s,context);}
 bool Core::process(double *const *main,const double *const *key,std::int32_t channels,std::int32_t frames,const Settings &s,BlockContext context) noexcept{return impl_->process(main,key,channels,frames,s,context);}
-Statistics Core::statistics() const noexcept{return impl_->stats;}
+Statistics Core::statistics() const noexcept {return impl_->stats;}
 } // namespace adi::mix::focus

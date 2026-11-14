@@ -2,6 +2,7 @@
 #include "adi/mix/focus/Core.hpp"
 #include "adi/mix/focus/Transform.hpp"
 #include "adi/mix/focus/Mailbox.hpp"
+#include "adi/mix/focus/Filters.hpp"
 #include <atomic>
 #include <thread>
 #include <algorithm>
@@ -15,6 +16,10 @@
 #include <new>
 #include <stdexcept>
 #include <vector>
+#include <type_traits>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 namespace f=adi::mix::focus;
 namespace {
 thread_local bool inAudio=false;
@@ -567,6 +572,348 @@ void pinnedCandidateWithMovingScalars() {
     check(validAudio&&exact,"captured candidate keeps prepared frequency/bank/phase while moving scalar audio stays exact");
     check(noWork&&final.requested==initial.requested&&final.ready==initial.ready&&final.applied==initial.applied&&held.pendingLatencyChange().token==0,"pinning another candidate cannot coalesce an unrequested structural aggregate");
 }
+
+void stagedTransformBudget() {
+    using C=std::complex<double>;
+    for(const std::size_t size:{8U,8192U,16384U,32768U}) {
+        f::detail::Transform staged,synchronous;staged.prepare(size);synchronous.prepare(size);
+        std::vector<double> input(size),output(size);std::vector<C>a(size/2+1),b(size/2+1);
+        for(std::size_t i=0;i<size;++i)input[i]=.13*std::sin(.173*static_cast<double>(i));
+        synchronous.forward(input,a);staged.startForward(input,b);
+        bool bounded=true;
+        while(staged.busy()) {
+            const auto before=staged.workUnits();
+            bounded=staged.advance(3)<=3&&staged.workUnits()-before<=3&&bounded;
+        }
+        check(bounded&&a==b,"every staged forward primitive resumes with identical arithmetic");
+        staged.startInverse(b,output);
+        while(staged.busy()) {
+            const auto before=staged.workUnits();
+            bounded=staged.advance(1)==1&&staged.workUnits()-before==1&&bounded;
+        }
+        double error=0.;for(std::size_t i=0;i<size;++i)error=std::max(error,std::abs(input[i]-output[i]));
+        check(bounded&&error<2.e-14,"inverse recombination/permutation/butterflies/normalization/unpack are charged");
+        const auto before=synchronous.workUnits();synchronous.forward(input,a);
+        check(synchronous.workUnits()-before>size,"a synchronous whole FFT exposes all work, not one stage");
+        if(size==8) {
+            bool dft=true;
+            for(std::size_t k=0;k<=size/2;++k) {
+                C direct{};
+                for(std::size_t i=0;i<size;++i)direct+=input[i]*std::polar(1.,-2.*std::numbers::pi*
+                    static_cast<double>(k*i)/static_cast<double>(size));
+                dft=dft&&std::abs(direct-b[k])<2.e-15;
+            }
+            check(dft,"packed transform agrees with independent direct DFT");
+        }
+    }
+}
+void firSampleBudget() {
+    for(const double rate:{44100.,48000.,88200.,96000.,176400.,192000.}) {
+        auto settings=firSettings(1.3);for(auto &node:settings.nodes)node.enabled=true;
+        f::Core core;core.prepare({rate,1<<20,2},settings);
+        const auto initial=core.statistics();const auto p=static_cast<std::size_t>(core.latencySamples()/3);
+        check(initial.firWorkQuota==373+22*(std::bit_width(p)-1),"prepared quota follows actual transform size");
+        bool bounded=true,okay=true;std::array<double,2> main{},key{.1,-.13};
+        std::array<double*,2>m{&main[0],&main[1]};std::array<const double*,2>k{&key[0],&key[1]};
+        for(std::size_t sample=0;sample<3*p+1;++sample) {
+            const auto before=core.statistics();
+            {AudioScope scope;const auto context=core.beginBlock(0,core.latencySamples(),settings);
+             okay=core.process(m.data(),k.data(),2,0,settings,context)&&okay;
+             bounded=core.statistics().firWorkUnits==before.firWorkUnits&&bounded;
+             main={.02,-.03};okay=core.process(m.data(),k.data(),2,1,settings,context)&&okay;}
+            const auto after=core.statistics();
+            bounded=after.firWorkUnits-before.firWorkUnits<=after.firWorkQuota&&bounded;
+            bounded=after.firMaintenanceUnits-before.firMaintenanceUnits==f::Statistics::firMaintenancePerFrame&&bounded;
+            if(sample+1==2*p)bounded=after.firJobsCompleted==1&&bounded;
+            if(sample+1==3*p)bounded=after.firJobsCompleted==2&&bounded;
+        }
+        const auto final=core.statistics();
+        check(okay&&bounded&&final.firMaxSampleWork<=final.firWorkQuota&&final.firDeadlineMisses==0,
+              "ten-node FIR completes before every output deadline using only actual sample credit");
+        check(final.phaseWorkUnits==0&&final.firJobsStarted==3&&final.firJobsCompleted>=2,
+              "FIR job and independent phase counters have explicit units");
+    }
+}
+void causalFirGenerations() {
+    auto settings=firSettings(1.3);f::Core core;core.prepare({48000,8192,2},settings);
+    const auto p=static_cast<std::size_t>(core.latencySamples()/3);
+    std::vector<double> left(p+1,.03),right(p+1,-.02),key(p+1,.1);
+    auto consume=[&](std::size_t count) {
+        std::array<double*,2>m{left.data(),right.data()};std::array<const double*,2>k{key.data(),key.data()};
+        AudioScope scope;return core.process(m.data(),k.data(),2,static_cast<std::int32_t>(count),settings,
+            core.beginBlock(0,core.latencySamples(),settings));
+    };
+    const auto a=core.configurationStatus().applied;
+    check(consume(1)&&core.statistics().firCaptureVersion==a,"first actual source sample freezes capture generation A");
+    settings.nodes[0].frequencyHz=7100.;
+    check(stage(core,settings,10,core.latencySamples()),"admit B midway through source capture A");
+    const auto b=core.configurationStatus().applied;
+    check(consume(p-1)&&core.statistics().firJobVersion==a,"B cannot rewrite any of the captured A block");
+    check(consume(1)&&core.statistics().firCaptureVersion==b,"next source block starts under B");
+    settings.nodes[0].q=2.1;settings.nodes[0].enabled=false;
+    check(stage(core,settings,11,core.latencySamples()),"admit C while A executes and B is captured");
+    const auto c=core.configurationStatus().applied;
+    check(consume(p-1)&&core.statistics().firJobVersion==b&&core.statistics().firPreviousVersion==a,
+          "job B and prior-spectrum A preserve independent immutable generations");
+    check(consume(1)&&core.statistics().firCaptureVersion==c&&core.statistics().firCaptureMask==0&&
+          core.statistics().firJobMask==1&&core.statistics().firPreviousMask==1,
+          "source mask is frozen independently from later current enable controls");
+    settings.nodes[0].frequencyHz=3900.;
+    check(stage(core,settings,12,core.latencySamples()),"fourth active generation admits with three source tags held");
+    settings.nodes[0].q=3.1;
+    check(core.requestConfiguration(settings)&&core.serviceConfiguration(),"fifth slot builds while all four audio identities are held");
+    const auto offer=core.pendingLatencyChange();
+    settings.nodes[0].q=4.1;check(core.requestConfiguration(settings)&&!core.serviceConfiguration(),"sixth request coalesces behind immutable fifth offer");
+    check(core.pendingLatencyChange().token==offer.token,"five-slot pressure cannot overwrite the retained offer");
+    check(consume(p-1)&&core.statistics().firDeadlineMisses==0,"retained source generations drain without missing a deadline");
+}
+void firCallbackPartitions() {
+    for(const double rate:{44100.,96000.,192000.}) {
+        auto settings=firSettings(1.3);settings.nodes[1]=settings.nodes[0];settings.nodes[1].enabled=true;
+        settings.nodes[1].frequencyHz=7200.;settings.nodes[1].position=.8;
+        f::Core regular,split;regular.prepare({rate,65536,2},settings);split.prepare({rate,65536,2},settings);
+        const auto count=static_cast<std::size_t>(regular.latencySamples())*2+257;
+        const GeneratedAudio source(count);auto a=source,b=source;
+        bool okay=a.run(regular,settings);
+        const std::array<std::size_t,7> parts{1,3,17,63,256,1025,4093};
+        std::size_t cursor=0,which=0;bool budget=true;
+        while(cursor<count) {
+            const auto length=std::min(parts[which++%parts.size()],count-cursor);
+            std::array<double*,2>m{b.main[0].data()+cursor,b.main[1].data()+cursor};
+            std::array<const double*,2>k{b.key[0].data()+cursor,b.key[1].data()+cursor};
+            const auto before=split.statistics();
+            {AudioScope scope;okay=split.process(m.data(),k.data(),2,static_cast<std::int32_t>(length),settings,
+                split.beginBlock(0,split.latencySamples(),settings))&&okay;}
+            const auto after=split.statistics();budget=after.firWorkUnits-before.firWorkUnits<=length*after.firWorkQuota&&budget;
+            cursor+=length;
+        }
+        const auto x=regular.statistics(),y=split.statistics();
+        check(okay&&budget&&compare(a,b)==0.&&x.firWorkUnits==y.firWorkUnits&&x.firJobsCompleted==y.firJobsCompleted&&
+              x.firMaintenanceUnits==y.firMaintenanceUnits&&x.firMaintenanceUnits==count*f::Statistics::firMaintenancePerFrame,
+              "sample credit/audio are identical under irregular callback splits at every size family");
+    }
+}
+
+
+// Independent whole-kernel overlap-add oracle: no partition scheduling,
+// generation slots or Core kernel/rate helpers are used here.
+template<class Sample> void correctedRateOracle(double rate) {
+    using C=std::complex<double>;
+    const std::size_t h=rate<=48000.?8192:rate<=96000.?16384:32768,n=2*h,count=3*h+2048;
+    auto settings=firSettings(1.3);settings.nodes[0].frequencyHz=rate>96000.?7200.:1000.;
+    settings.nodes[0].attackMs=7.;settings.nodes[0].releaseMs=90.;
+    settings.nodes[0].thresholdDb=-55.;settings.wet=.7;
+    const auto &node=settings.nodes[0];
+    const auto centre=static_cast<std::size_t>(std::floor(static_cast<double>(h)*node.frequencyHz/rate+.5));
+    const auto width=2*static_cast<std::size_t>(std::floor(((.9/.1803)*static_cast<double>(centre)/node.q)/2.))+1;
+    std::vector<double> window(width),time(n);std::vector<C> smallSpectrum(h/2+1,C{.001,0.}),kernel(n/2+1),spectrum(n/2+1),product(n/2+1);
+    std::size_t peak=0;
+    for(std::size_t i=0;i<width;++i) {
+        const double angle=static_cast<double>(static_cast<float>(std::numbers::pi))*
+            std::log10(.1+.9*static_cast<double>(i)/static_cast<double>(width));
+        window[i]=.35875-.48829*std::cos(2.*angle)+.14128*std::cos(4.*angle)-.01168*std::cos(6.*angle);
+        if(window[i]>window[peak])peak=i;
+    }
+    window[peak]=1.;
+    const auto first=centre>peak?centre-peak:0,offset=peak>centre?peak-centre:0;
+    if(first<h/2&&offset<width)for(std::size_t i=0;i<std::min(width-offset,h/2-first);++i)
+        smallSpectrum[first+i]=.001+.999*window[offset+i];
+    f::detail::Transform small,large;small.prepare(h);large.prepare(n);
+    small.inverse(smallSpectrum,std::span<double>(time.data(),h));
+    std::rotate(time.begin(),time.begin()+static_cast<std::ptrdiff_t>(h/2),time.begin()+static_cast<std::ptrdiff_t>(h));
+    large.forward(time,kernel);
+    const GeneratedAudio source(count);
+    std::array<std::vector<Sample>,2> audio,key;
+    std::array<std::vector<double>,4> input,band;
+    for(auto &v:input)v.resize(count);
+    for(auto &v:band)v.assign(count,0.);
+    for(std::size_t c=0;c<2;++c) {
+        audio[c].resize(count);key[c].resize(count);
+        for(std::size_t i=0;i<count;++i) {
+            audio[c][i]=static_cast<Sample>(source.main[c][i]);key[c][i]=static_cast<Sample>(source.key[c][i]);
+        }
+    }
+    for(std::size_t i=0;i<count;++i) {
+        input[0][i]=static_cast<double>(audio[0][i])+static_cast<double>(audio[1][i]);
+        input[1][i]=static_cast<double>(audio[0][i])-static_cast<double>(audio[1][i]);
+        input[2][i]=static_cast<double>(key[0][i])+static_cast<double>(key[1][i]);
+        input[3][i]=static_cast<double>(key[0][i])-static_cast<double>(key[1][i]);
+    }
+    for(std::size_t stream=0;stream<4;++stream)for(std::size_t start=0;start+h<=count;start+=h) {
+        std::copy_n(input[stream].data()+start,h,time.data());std::fill(time.begin()+static_cast<std::ptrdiff_t>(h),time.end(),0.);
+        large.forward(time,spectrum);
+        for(std::size_t i=0;i<=h;++i)product[i]=spectrum[i]*kernel[i];
+        large.inverse(product,time);
+        for(std::size_t i=0;i<n-1&&start+h+i<count;++i)band[stream][start+h+i]+=time[i];
+    }
+    f::detail::Envelope envelopes[2];
+    const double threshold=std::min(0.,node.thresholdDb+17.56*std::exp(3.112e-5*node.frequencyHz)-16.77*std::exp(-.01135*node.frequencyHz));
+    const double attack=std::exp(-1./(rate*.001*node.attackMs)),release=std::exp(-1./(rate*.001*node.releaseMs));
+    std::array<std::vector<Sample>,2> expected;for(auto &v:expected)v.resize(count);
+    for(std::size_t i=0;i<count;++i) {
+        std::array<double,2> output{};
+        for(std::size_t c=0;c<2;++c) {
+            const double dry=i>=h*3/2?input[c][i-h*3/2]:0.;
+            const double gain=envelopes[c].tick(band[c][i],band[c+2][i],threshold,attack,release,false,true);
+            output[c]=dry-(1.-std::pow(10.,std::min(0.,gain)*.05))*band[c][i]*settings.wet;
+        }
+        expected[0][i]=static_cast<Sample>((output[0]+output[1])*.5);
+        expected[1][i]=static_cast<Sample>((output[0]-output[1])*.5);
+    }
+    f::Core core;core.prepare({rate,256,2},settings);
+    check(render(core,audio[0],audio[1],key[0],key[1],settings),"actual-rate FIR oracle stream renders");
+    double maximum=0.,squares=0.;
+    for(std::size_t c=0;c<2;++c)for(std::size_t i=0;i<count;++i) {
+        const double error=static_cast<double>(audio[c][i])-static_cast<double>(expected[c][i]);
+        maximum=std::max(maximum,std::abs(error));squares+=error*error;++comparedSamples;
+    }
+    std::printf("FIR_RATE_ORACLE rate=%.0f precision=%s max=%.17g rms=%.17g\n",rate,
+        std::is_same_v<Sample,double>?"double":"float",maximum,std::sqrt(squares/static_cast<double>(2*count)));
+    check(maximum<(std::is_same_v<Sample,double>?1.e-10:6.e-8),
+          "complete output agrees with independent actual-rate whole-kernel and envelope equations");
+}
+void firRateOracles() {
+    for(const double rate:{44100.,48000.,88200.,96000.,176400.,192000.}) {
+        correctedRateOracle<double>(rate);correctedRateOracle<float>(rate);
+    }
+}
+
+
+void phaseRateOracles() {
+    using C=std::complex<double>;
+    for(const double rate:{44100.,48000.,88200.,96000.,176400.,192000.})
+    for(const auto mode:{f::PhaseMode::Rotation,f::PhaseMode::Match}) {
+        const std::size_t n=rate<=48000.?1024:rate<=96000.?2048:4096,hop=n/4,count=5*n+19;
+        f::Settings settings;settings.phaseMode=mode;settings.rotationDegrees=90.;settings.matchAmount=.7;settings.phaseMinimumHz=6000.;
+        GeneratedAudio actual(count);
+        const auto source=actual;
+        std::array<std::vector<double>,2> mainRing,keyRing,out,expected;
+        for(std::size_t c=0;c<2;++c) {
+            mainRing[c].assign(n,0.);keyRing[c].assign(n,0.);out[c].assign(4*n,0.);expected[c].resize(count);
+        }
+        std::vector<double> window(n),time(n);std::vector<C>spectrum(n/2+1),keySpectrum(n/2+1);
+        for(std::size_t i=0;i<n;++i) {
+            const float angle=(static_cast<float>(i)*static_cast<float>(2.*std::numbers::pi))/static_cast<float>(n-1);
+            window[i]=static_cast<double>(1.f-std::cos(angle))*.5;
+        }
+        f::detail::Transform transform;transform.prepare(n);
+        const auto low=std::min(n/2,static_cast<std::size_t>(static_cast<double>(n-1)*6000./rate));
+        for(std::size_t t=0;t<count;++t) {
+            const std::array<double,2> x{source.main[0][t]+source.main[1][t],source.main[0][t]-source.main[1][t]};
+            const std::array<double,2> k{source.key[0][t]+source.key[1][t],source.key[0][t]-source.key[1][t]};
+            std::array<double,2> heard{};
+            for(std::size_t c=0;c<2;++c) {
+                heard[c]=out[c][t%(4*n)];out[c][t%(4*n)]=0.;
+                mainRing[c][t%n]=x[c];keyRing[c][t%n]=k[c];
+            }
+            expected[0][t]=(heard[0]+heard[1])*.5;expected[1][t]=(heard[0]-heard[1])*.5;
+            if((t+1)%hop==0)for(std::size_t c=0;c<2;++c) {
+                for(std::size_t i=0;i<n;++i)time[i]=mainRing[c][(t+1+i)%n]*window[i];
+                transform.forward(time,spectrum);
+                if(mode==f::PhaseMode::Match) {
+                    for(std::size_t i=0;i<n;++i)time[i]=keyRing[c][(t+1+i)%n]*window[i];
+                    transform.forward(time,keySpectrum);
+                }
+                for(std::size_t i=0;i<n/2;++i) {
+                    if((i==0&&low==0)||(i>0&&i<low))continue;
+                    const auto z=spectrum[i];const auto angle=std::atan2(z.imag(),z.real());
+                    double next=angle+std::numbers::pi*.5;
+                    if(mode==f::PhaseMode::Match) {
+                        const auto key=keySpectrum[i];
+                        const auto keyAngle=key.real()==0.&&key.imag()==0.?0.:std::atan2(key.imag(),key.real());
+                        next=.7*keyAngle+.3*angle;
+                    }
+                    spectrum[i]=std::polar(std::abs(z),next);
+                    if(i==0)spectrum[i]={spectrum[i].real(),0.};
+                }
+                transform.inverse(spectrum,time);
+                for(std::size_t i=0;i<n;++i)out[c][(t+1+i)%(4*n)]+=time[i]*window[i]/1.5;
+            }
+        }
+        f::Core core;core.prepare({rate,256,2},settings);
+        check(actual.run(core,settings),"phase minimum actual-rate oracle renders");
+        double maximum=0.;
+        for(std::size_t c=0;c<2;++c)for(std::size_t i=0;i<count;++i) {
+            maximum=std::max(maximum,std::abs(actual.main[c][i]-expected[c][i]));++comparedSamples;
+        }
+        check(maximum<3.e-14&&core.statistics().phaseWorkUnits>0&&core.statistics().firWorkUnits==0,
+              "phase cutoff uses actual sample rate with separately explicit atomic transform work");
+    }
+}
+
+
+void sourceTaggedFirOracle() {
+    using C=std::complex<double>;
+    constexpr std::size_t h=8192,p=h/2,n=2*h,count=5*h;
+    const std::array<double,3> qualities{1.3,3.7,.6};
+    std::array<std::vector<C>,3> kernels;
+    f::detail::Transform small,large;small.prepare(h);large.prepare(n);
+    std::vector<double> time(n);std::vector<C>spectrum(h+1),product(h+1);
+    for(std::size_t generation=0;generation<qualities.size();++generation) {
+        const auto centre=static_cast<std::size_t>(std::floor(static_cast<double>(h)*1000./48000.+.5));
+        const auto width=2*static_cast<std::size_t>(std::floor(((.9/.1803)*static_cast<double>(centre)/qualities[generation])/2.))+1;
+        std::vector<double> window(width);std::size_t peak=0;
+        for(std::size_t i=0;i<width;++i) {
+            const double angle=static_cast<double>(static_cast<float>(std::numbers::pi))*
+                std::log10(.1+.9*static_cast<double>(i)/static_cast<double>(width));
+            window[i]=.35875-.48829*std::cos(2.*angle)+.14128*std::cos(4.*angle)-.01168*std::cos(6.*angle);
+            if(window[i]>window[peak])peak=i;
+        }
+        window[peak]=1.;
+        std::fill(spectrum.begin(),spectrum.end(),C{.001,0.});
+        const auto first=centre>peak?centre-peak:0,offset=peak>centre?peak-centre:0;
+        for(std::size_t i=0;first+i<h/2&&offset+i<width;++i)spectrum[first+i]=.001+.999*window[offset+i];
+        small.inverse(std::span<const C>(spectrum.data(),h/2+1),std::span<double>(time.data(),h));
+        std::rotate(time.begin(),time.begin()+static_cast<std::ptrdiff_t>(h/2),time.begin()+static_cast<std::ptrdiff_t>(h));
+        std::fill(time.begin()+static_cast<std::ptrdiff_t>(h),time.end(),0.);
+        kernels[generation].resize(h+1);large.forward(time,kernels[generation]);
+    }
+    const GeneratedAudio source(count);auto actual=source;
+    std::array<std::vector<double>,4> input,band;
+    for(auto&v:input)v.resize(count);for(auto&v:band)v.assign(count,0.);
+    for(std::size_t i=0;i<count;++i) {
+        input[0][i]=source.main[0][i]+source.main[1][i];input[1][i]=source.main[0][i]-source.main[1][i];
+        input[2][i]=source.key[0][i]+source.key[1][i];input[3][i]=source.key[0][i]-source.key[1][i];
+    }
+    for(std::size_t stream=0;stream<4;++stream)for(std::size_t start=0;start+p<=count;start+=p) {
+        std::copy_n(input[stream].data()+start,p,time.data());std::fill(time.begin()+static_cast<std::ptrdiff_t>(p),time.end(),0.);
+        large.forward(time,spectrum);const auto&kernel=kernels[(start/p)%3];
+        for(std::size_t i=0;i<=h;++i)product[i]=spectrum[i]*kernel[i];large.inverse(product,time);
+        for(std::size_t i=0;i<p+h-1&&start+h+i<count;++i)band[stream][start+h+i]+=time[i];
+    }
+    auto settings=firSettings(qualities[0]);settings.nodes[0].thresholdDb=-55.;settings.nodes[0].attackMs=7.;settings.nodes[0].releaseMs=90.;
+    f::Core core;core.prepare({48000,static_cast<std::int32_t>(p),2},settings);
+    bool okay=true;
+    for(std::size_t block=0;block<count/p;++block) {
+        for(std::size_t half=0;half<2;++half) {
+            if(half==1) {
+                settings.nodes[0].q=qualities[(block+1)%3];
+                okay=stage(core,settings,0,core.latencySamples())&&okay;
+            }
+            const auto start=block*p+half*(p/2);
+            std::array<double*,2>m{actual.main[0].data()+start,actual.main[1].data()+start};
+            std::array<const double*,2>k{actual.key[0].data()+start,actual.key[1].data()+start};
+            AudioScope scope;okay=core.process(m.data(),k.data(),2,static_cast<std::int32_t>(p/2),settings,
+                core.beginBlock(0,core.latencySamples(),settings))&&okay;
+        }
+    }
+    f::detail::Envelope envelopes[2];double maximum=0.;
+    const double threshold=std::min(0.,-55.+17.56*std::exp(3.112e-5*1000.)-16.77*std::exp(-.01135*1000.));
+    const double attack=std::exp(-1./(48000.*.001*7.)),release=std::exp(-1./(48000.*.001*90.));
+    for(std::size_t i=0;i<count;++i) {
+        std::array<double,2>output{};
+        for(std::size_t c=0;c<2;++c) {
+            const double gain=envelopes[c].tick(band[c][i],band[c+2][i],threshold,attack,release,false,true);
+            output[c]=(i>=h*3/2?input[c][i-h*3/2]:0.)-(1.-std::pow(10.,std::min(0.,gain)*.05))*band[c][i];
+        }
+        maximum=std::max(maximum,std::abs(actual.main[0][i]-(output[0]+output[1])*.5));
+        maximum=std::max(maximum,std::abs(actual.main[1][i]-(output[0]-output[1])*.5));
+        comparedSamples+=2;
+    }
+    std::printf("FIR_SOURCE_TAG_ORACLE max=%.17g\n",maximum);
+    check(okay&&maximum<1.e-10,"captured A/B/C blocks retain their actual kernels through both arithmetic partitions");
+}
+
 void latencyAndSafety() {
     const std::size_t count=32768;
     std::vector<double> left(count,0.),right(count,0.),key(count,0.);
@@ -600,4 +947,11 @@ void operator delete(void*p,std::size_t)noexcept{::operator delete(p);}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete[](void*p)noexcept{::operator delete(p);}
 void operator delete[](void*p,std::size_t)noexcept{::operator delete(p);}
-int main(){fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;}
+int main(){
+    std::setvbuf(stdout,nullptr,_IONBF,0);
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT,_CRTDBG_MODE_FILE);_CrtSetReportFile(_CRT_ASSERT,_CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR,_CRTDBG_MODE_FILE);_CrtSetReportFile(_CRT_ERROR,_CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
+#endif
+    try {sourceTaggedFirOracle();phaseRateOracles();firRateOracles();stagedTransformBudget();firSampleBudget();causalFirGenerations();firCallbackPartitions();fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;} catch(const std::exception &error){std::fprintf(stderr,"Focus exception: %s\n",error.what());return 2;} catch(...){std::fprintf(stderr,"Focus unknown exception\n");return 2;}}

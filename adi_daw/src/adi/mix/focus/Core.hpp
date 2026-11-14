@@ -18,6 +18,16 @@ struct ConfigurationStatus {
 };
 struct Statistics {
     std::uint64_t processedFrames = 0, phaseHops = 0, filterHops = 0;
+    // Staged convolution primitives and constant state transitions, not timings.
+    // Fixed sample movement and atomic phase work are accounted independently;
+    // ordinary sample-domain scalar/envelope computation is outside this quota.
+    std::uint64_t firWorkUnits = 0, firMaxSampleWork = 0, firWorkQuota = 0;
+    std::uint64_t firJobsStarted = 0, firJobsCompleted = 0, firDeadlineMisses = 0, phaseWorkUnits = 0;
+    std::uint64_t firMaintenanceUnits = 0;
+    static constexpr std::uint64_t firMaintenancePerFrame = 8+8*kNodes;
+    // Audio-published mirrors: statistics never reads owner-cleared source tags.
+    std::uint64_t firCaptureVersion = 0, firJobVersion = 0, firPreviousVersion = 0;
+    std::uint16_t firCaptureMask = 0, firJobMask = 0, firPreviousMask = 0;
 };
 // Standard-C++ processing core. One serialized audio/configuration publisher.
 // prepare/reset/destruction require stopped processing. serviceConfiguration is
@@ -38,6 +48,9 @@ class Core final {
     // Owner builds the newest requested complete coefficient generation.
     // FIR frequency and Q jointly update one shared main/key extraction kernel:
     // identical settings and a fresh stream have identical sound for any edit order.
+    // FIR captures its prepared kernel and extraction-enable mask at the first
+    // source sample of each half-kernel block. Later admission cannot rewrite
+    // captured samples; older blocks/tails retain their complete generations.
     // One offered generation remains immutable until physical admission. New
     // requests coalesce behind it, including equal-latency coefficient edits.
     // False means no new request, an offer awaits admission or no free slot;
@@ -57,6 +70,7 @@ class Core final {
         std::int32_t frames, const Settings &, BlockContext) noexcept;
     // Audio-owner diagnostics, or owner after processing has stopped; not an
     // atomic UI snapshot. Reading concurrently with process is unsupported.
+    // Owner service may clear dormant tags without changing these mirrors.
     [[nodiscard]] Statistics statistics() const noexcept;
   private:
     struct Impl;
