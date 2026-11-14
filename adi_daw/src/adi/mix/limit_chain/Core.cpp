@@ -11,6 +11,16 @@
 namespace adi::mix::limit_chain {
 namespace {
 std::atomic<std::uint64_t> nextPreparation{0};
+constexpr std::uint64_t claimedBit=std::uint64_t{1}<<63;
+constexpr std::uint64_t claimingBit=std::uint64_t{1}<<62;
+constexpr std::uint64_t writingBit=std::uint64_t{1}<<61;
+constexpr std::uint64_t stateBits=claimedBit|claimingBit|writingBit;
+constexpr std::uint32_t generationMask=(std::uint32_t{1}<<29)-1;
+LatencyChange changeFrom(std::uint64_t word) noexcept {
+    if(word&writingBit)return {};
+    word&=~stateBits;
+    return word?LatencyChange{word,static_cast<std::int32_t>(static_cast<std::uint32_t>(word))}:LatencyChange{};
+}
 bool same(const limiter::EngineSettings& a,const limiter::EngineSettings& b) noexcept {
     return std::tie(a.styleIndex,a.inputGainDb,a.outputGainDb,a.lookaheadMs,a.attackMs,a.releaseMs,
         a.transientLink,a.releaseLink,a.oversampling,a.truePeak,a.dcRemoval,a.externalSidechain,a.unity,
@@ -39,7 +49,17 @@ struct Core::Impl {
         bool clipOn=false,limiterOn=false,offline=false;
         int clipLatency=0,limiterLatency=0,clipExponent=1;
         std::uint64_t limiterToken=0;
+        int limiterStyle=5,limiterOversampling=1;
+        bool limiterTruePeak=false;
+        float limiterLookahead=.2f;
         bool operator==(const Request&) const=default;
+        bool matches(const Settings& settings) const noexcept {
+            const auto exponent=static_cast<int>(std::clamp(settings.clip[settings.offline?clip::offline:clip::online],0.0f,5.0f));
+            return clipOn==settings.clipEnabled && limiterOn==settings.limiterEnabled &&
+                offline==settings.offline && clipExponent==exponent &&
+                limiterStyle==settings.limiter.styleIndex && limiterOversampling==settings.limiter.oversampling &&
+                limiterTruePeak==settings.limiter.truePeak && limiterLookahead==settings.limiter.lookaheadMs;
+        }
     } requested;
     BlockContext current;
     Statistics stats;
@@ -56,23 +76,29 @@ struct Core::Impl {
         const auto child=limiter.pendingLatencyChange();
         if(child.token){limiterToken=child.token;limiterTarget=child.samples;}
         else if(limiterToken && limiter.latencySamples()==limiterTarget)limiterToken=0;
-        // Structural offers are serialized until the graph admits them. An owner
-        // may already have published an offer's latency; retracting it on audio
-        // would leave the next callback with cached PDC for a discarded plan.
-        if(pending.load(std::memory_order_relaxed)!=0)return;
         const auto wantedLimiter=limiterToken?limiterTarget:limiter.latencySamples();
         const auto exponent=static_cast<int>(std::clamp(settings.clip[settings.offline?clip::offline:clip::online],0.0f,5.0f));
         Request next{settings.clipEnabled,settings.limiterEnabled,settings.offline,
             settings.clipEnabled?clip.latencyFor(settings.clip,settings.offline):0,
-            settings.limiterEnabled?wantedLimiter:0,exponent,settings.limiterEnabled?limiterToken:0};
+            settings.limiterEnabled?wantedLimiter:0,exponent,settings.limiterEnabled?limiterToken:0,
+            settings.limiter.styleIndex,settings.limiter.oversampling,settings.limiter.truePeak,settings.limiter.lookaheadMs};
+        auto offer=pending.load(std::memory_order_acquire);
+        // Only an unclaimed offer can be replaced. A claimed offer may already
+        // be cached in a graph; its exact request remains immutable until audio
+        // admits that latency. The owner refuses further manual structural edits.
+        if(offer&stateBits)return;
         if(next==requested)return;
+        // Reserve before changing the plain request. A simultaneous owner claim
+        // either freezes the old tuple or observes the completely published new one.
+        if(!pending.compare_exchange_strong(offer,writingBit,std::memory_order_acq_rel))return;
         requested=next;
         const auto sum=static_cast<std::int64_t>(next.clipLatency)+next.limiterLatency;
         const bool changed=next.clipOn!=clipOn || next.limiterOn!=limiterOn ||
             next.clipLatency!=clipLatency || next.limiterLatency!=limiterLatency ||
             (next.clipOn && (next.clipExponent!=clipExponent || next.offline!=clipOffline));
         if(changed && sum>=0 && sum<=std::numeric_limits<std::int32_t>::max()) {
-            if(++requestGeneration==0)++requestGeneration;
+            requestGeneration=(requestGeneration+1)&generationMask;
+            if(requestGeneration==0)requestGeneration=1;
             pending.store((static_cast<std::uint64_t>(requestGeneration)<<32)|static_cast<std::uint32_t>(sum),std::memory_order_release);
         }else pending.store(0,std::memory_order_release);
     }
@@ -127,7 +153,8 @@ void Core::prepare(const PrepareSpec& spec,const Settings& settings) {
     d.clearKey();d.generation=nextPreparation.fetch_add(1,std::memory_order_relaxed)+1;
     d.current={};d.lastPhysical=d.blockSequence=d.limiterToken=0;d.stats={};
     d.lastDisabledRequest=settings.limiter;
-    d.requested={d.clipOn,d.limiterOn,settings.offline,d.clipLatency,d.limiterLatency,d.clipExponent,0};
+    d.requested={d.clipOn,d.limiterOn,settings.offline,d.clipLatency,d.limiterLatency,d.clipExponent,0,
+        settings.limiter.styleIndex,settings.limiter.oversampling,settings.limiter.truePeak,settings.limiter.lookaheadMs};
     d.pending.store(0,std::memory_order_release);d.appliedLatency.store(d.clipLatency+d.limiterLatency,std::memory_order_release);
     d.prepared=true;
 }
@@ -139,15 +166,31 @@ void Core::setBackgroundActive(bool active) noexcept {impl_->limiter.setBackgrou
 bool Core::supportsClip() const noexcept {return impl_->prepared;}
 std::int32_t Core::latencySamples() const noexcept {return impl_->appliedLatency.load(std::memory_order_acquire);}
 LatencyChange Core::pendingLatencyChange() const noexcept {
-    const auto word=impl_->pending.load(std::memory_order_acquire);
-    return word?LatencyChange{word,static_cast<std::int32_t>(static_cast<std::uint32_t>(word))}:LatencyChange{};
+    return changeFrom(impl_->pending.load(std::memory_order_acquire));
+}
+LatencyChange Core::claimPendingLatencyChange(const Settings& settings) noexcept {
+    auto& d=*impl_;
+    auto word=d.pending.load(std::memory_order_acquire);
+    if(!word || (word&(claimingBit|writingBit)))return {};
+    if(word&claimedBit)return changeFrom(word);
+    if(!d.pending.compare_exchange_strong(word,word|claimingBit,std::memory_order_acq_rel))return {};
+    // Claiming prevents both request replacement and audio admission while this
+    // owner reads the plain tuple. The current owner values can be newer than
+    // audio's last callback, so stale intent must not become a latency promise.
+    const bool current=d.requested.matches(settings);
+    const auto result=current?changeFrom(word):LatencyChange{};
+    d.pending.store(current?word|claimedBit:word,std::memory_order_release);
+    return result;
+}
+bool Core::configurationBusy() const noexcept {
+    return (impl_->pending.load(std::memory_order_acquire)&(claimingBit|claimedBit))!=0;
 }
 BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configuredTotal,const Settings& settings) noexcept {
     auto& d=*impl_;if(!d.prepared)return {};
     d.request(settings);
     if(physicalBlock && physicalBlock==d.lastPhysical && d.current.generation==d.generation)return d.current;
-    const auto pending=d.pending.load(std::memory_order_relaxed);
-    if(pending && static_cast<std::int32_t>(static_cast<std::uint32_t>(pending))==configuredTotal) {
+    const auto pending=d.pending.load(std::memory_order_acquire);
+    if((pending&claimedBit) && static_cast<std::int32_t>(static_cast<std::uint32_t>(pending))==configuredTotal) {
         d.clipOn=d.requested.clipOn;d.limiterOn=d.requested.limiterOn;
         d.clipLatency=d.requested.clipLatency;d.limiterLatency=d.requested.limiterLatency;
         if(d.clipOn){d.clipExponent=d.requested.clipExponent;d.clipOffline=d.requested.offline;}

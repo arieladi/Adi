@@ -34,7 +34,12 @@ public:
     void setBackgroundActive(bool) noexcept;
     [[nodiscard]] bool supportsClip() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept;
+    /// Observation only. The owner must claim an offer before advertising its latency.
     [[nodiscard]] LatencyChange pendingLatencyChange() const noexcept;
+    /// Owner-only. Freezes an offer only when it still matches the owner's latest intent.
+    [[nodiscard]] LatencyChange claimPendingLatencyChange(const Settings&) noexcept;
+    /// A claimed offer cannot be withdrawn: refuse manual structural edits until admission.
+    [[nodiscard]] bool configurationBusy() const noexcept;
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock,
         std::int32_t graphConfiguredTotal,const Settings&) noexcept;
     bool process(float* const* main,const float* const* key,std::int32_t frames,

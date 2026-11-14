@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "DspEngine.h"
+#include "BackgroundOwner.h"
 #include "Dsp/ChannelGroups.h"
 #include "Dsp/ProcessingChain.h"
 #include "LoudnessMeter.h"
 #include <atomic>
-#include <chrono>
 #include <cstdint>
-#include <thread>
 
 namespace adi::mix::limiter
 {
@@ -172,7 +171,7 @@ struct DspEngine::Implementation
     static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 
     SettingsMailbox mailbox;
-    std::atomic<std::uint64_t> requested{0};
+    std::atomic<std::uint64_t> requested{0}, built{0};
     std::atomic<bool> resetRequested{false};
     std::atomic<Instance*> pending{nullptr}, retired{nullptr};
     std::atomic<bool> stopping{false}, pauseMeters{false}, measureTruePeak{true}, clearMeters{false};
@@ -184,7 +183,7 @@ struct DspEngine::Implementation
     std::uint32_t latencyGeneration = 0;
     std::uint64_t replacementLatencyToken = 0;
     std::vector<std::unique_ptr<Instance>> owned;
-    std::thread worker;
+    std::unique_ptr<BackgroundOwner::Client> background;
     Instance* active = nullptr;
     Instance* replacement = nullptr;
     std::array<std::vector<EngineBank::ChannelGroup>, 4> groups;
@@ -206,9 +205,7 @@ struct DspEngine::Implementation
     void stop()
     {
         stopping.store(true, std::memory_order_release);
-        backgroundActive.store(true, std::memory_order_release);
-        backgroundActive.notify_all();
-        if (worker.joinable()) worker.join();
+        background.reset();
         active = replacement = nullptr;
         pending.store(nullptr, std::memory_order_relaxed);
         retired.store(nullptr, std::memory_order_relaxed);
@@ -243,48 +240,45 @@ struct DspEngine::Implementation
         auto* prior = retired.load(std::memory_order_relaxed);
         do { instance->retiredNext = prior; }
         while (!retired.compare_exchange_weak(prior, instance, std::memory_order_release, std::memory_order_relaxed));
+        notifyBackground();
     }
 
-    void runWorker(std::uint64_t initialKey)
+    void notifyBackground() noexcept
     {
-        auto builtKey = initialKey;
-        while (!stopping.load(std::memory_order_acquire))
+        if (background && backgroundActive.load(std::memory_order_acquire)) background->notify();
+    }
+
+    void serviceBackground() noexcept
+    {
+        if (stopping.load(std::memory_order_acquire) || !backgroundActive.load(std::memory_order_acquire)) return;
+        auto* obsolete = retired.exchange(nullptr, std::memory_order_acquire);
+        while (obsolete != nullptr)
         {
-            if (!backgroundActive.load(std::memory_order_acquire))
-            {
-                backgroundActive.wait(false, std::memory_order_acquire);
-                continue;
-            }
-            auto* obsolete = retired.exchange(nullptr, std::memory_order_acquire);
-            while (obsolete != nullptr)
-            {
-                auto* next = obsolete->retiredNext;
-                removeOwned(obsolete);
-                obsolete = next;
-            }
-            const auto wanted = requested.load(std::memory_order_acquire);
-            EngineSettings settings;
-            if (wanted != builtKey && mailbox.read(settings)
-                && structure(settings) == wanted)
-            {
-                try
-                {
-                    auto instance = makeInstance(settings, wanted);
-                    if (requested.load(std::memory_order_acquire) == wanted)
-                    {
-                        auto* pointer = instance.get();
-                        owned.push_back(std::move(instance));
-                        auto* obsoletePending = pending.exchange(pointer, std::memory_order_acq_rel);
-                        if (obsoletePending != nullptr) removeOwned(obsoletePending);
-                        workerFailed.store(false, std::memory_order_release);
-                    }
-                }
-                catch (...) { workerFailed.store(true, std::memory_order_release); }
-                builtKey = wanted;
-            }
-            for (const auto& instance : owned) instance->chain.serviceKernelUpdates();
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            auto* next = obsolete->retiredNext;
+            removeOwned(obsolete);
+            obsolete = next;
         }
+        const auto wanted = requested.load(std::memory_order_acquire);
+        EngineSettings settings;
+        if (wanted != built.load(std::memory_order_acquire) && mailbox.read(settings)
+            && structure(settings) == wanted)
+        {
+            try
+            {
+                auto instance = makeInstance(settings, wanted);
+                if (requested.load(std::memory_order_acquire) == wanted)
+                {
+                    auto* pointer = instance.get();
+                    owned.push_back(std::move(instance));
+                    auto* obsoletePending = pending.exchange(pointer, std::memory_order_acq_rel);
+                    if (obsoletePending != nullptr) removeOwned(obsoletePending);
+                    workerFailed.store(false, std::memory_order_release);
+                }
+            }
+            catch (...) { workerFailed.store(true, std::memory_order_release); }
+            built.store(wanted, std::memory_order_release);
+        }
+        for (const auto& instance : owned) instance->chain.serviceKernelUpdates();
     }
 
     void prepare(double sampleRate, int maximumBlock, const ChannelLayout& layout, const EngineSettings& configuration)
@@ -308,6 +302,7 @@ struct DspEngine::Implementation
         resetRequested.store(false, std::memory_order_relaxed);
         mailbox.write(settings);
         requested.store(key, std::memory_order_relaxed);
+        built.store(key, std::memory_order_relaxed);
         auto initial = makeInstance(settings, key);
         active = initial.get();
         latency.store(active->chain.getLatencySamples(), std::memory_order_release);
@@ -329,8 +324,11 @@ struct DspEngine::Implementation
         peakBuffer.assign(static_cast<std::size_t>(channels), std::vector<float>(static_cast<std::size_t>(capacity)));
         for (int channel = 0; channel < channels; ++channel) peakPointers[static_cast<std::size_t>(channel)] = peakBuffer[static_cast<std::size_t>(channel)].data();
         resetMeterState();
+        backgroundActive.store(true, std::memory_order_release);
         stopping.store(false, std::memory_order_release);
-        worker = std::thread([this, key] { runWorker(key); });
+        background = std::make_unique<BackgroundOwner::Client>(this, [](void* context) noexcept {
+            static_cast<Implementation*>(context)->serviceBackground();
+        });
     }
 
     void resetMeterState() noexcept
@@ -344,11 +342,16 @@ struct DspEngine::Implementation
         published.publish(meters);
     }
 
+    void publishConfiguration(const EngineSettings& settings) noexcept
+    {
+        mailbox.write(settings);
+        const auto key = structure(settings);
+        requested.store(key, std::memory_order_release);
+        if (built.load(std::memory_order_acquire) != key) notifyBackground();
+    }
     void requestConfiguration(const EngineSettings& configuration) noexcept
     {
-        const auto settings = validated(configuration);
-        mailbox.write(settings);
-        requested.store(structure(settings), std::memory_order_release);
+        publishConfiguration(validated(configuration));
     }
 
     void updateInstance(Instance& instance, EngineSettings settings)
@@ -367,8 +370,7 @@ struct DspEngine::Implementation
         for (int channel = 0; channel < channels; ++channel) if (main[channel] == nullptr) return;
         const auto settings = validated(configuration);
         const auto key = structure(settings);
-        mailbox.write(settings);
-        requested.store(key, std::memory_order_release);
+        publishConfiguration(settings);
         if (resetRequested.exchange(false, std::memory_order_acq_rel))
         {
             active->chain.reset();
@@ -433,6 +435,7 @@ struct DspEngine::Implementation
                 active->chain.setDisplayBuffer(captureDisplay ? active->display.data() : nullptr);
                 if (!active->chain.process(input.data(), active->pointers.data(), count, sidechain ? detector.data() : nullptr))
                     for (int channel = 0; channel < channels; ++channel) std::fill_n(active->pointers[static_cast<std::size_t>(channel)], count, 0.0f);
+                if (active->chain.needsKernelService()) notifyBackground();
                 auto gainReduction = active->chain.getGainReductionDb();
                 if (replacement != nullptr)
                 {
@@ -440,6 +443,7 @@ struct DspEngine::Implementation
                     replacement->chain.setDisplayBuffer(captureDisplay ? replacement->display.data() : nullptr);
                     if (!replacement->chain.process(input.data(), replacement->pointers.data(), count, sidechain ? detector.data() : nullptr))
                         for (int channel = 0; channel < channels; ++channel) std::fill_n(replacement->pointers[static_cast<std::size_t>(channel)], count, 0.0f);
+                    if (replacement->chain.needsKernelService()) notifyBackground();
                     gainReduction = std::max(gainReduction, replacement->chain.getGainReductionDb());
                 }
                 const auto changesLatency = replacement != nullptr
@@ -553,8 +557,8 @@ DspEngine::~DspEngine() = default;
 
 void DspEngine::setBackgroundActive(bool active) noexcept
 {
-    implementation->backgroundActive.store(active, std::memory_order_release);
-    if (active) implementation->backgroundActive.notify_one();
+    const auto previous = implementation->backgroundActive.exchange(active, std::memory_order_acq_rel);
+    if (active && !previous) implementation->notifyBackground();
 }
 
 void DspEngine::prepare(double sampleRate, int maximumBlock, const ChannelLayout& channels, const EngineSettings& settings)

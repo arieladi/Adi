@@ -42,6 +42,14 @@ constexpr std::array<const char*,4> noiseNames{"Flat","Gentle","Balanced","Deep"
 constexpr std::size_t clipIndex(c::Param id) noexcept {
     return static_cast<std::size_t>(ClipFirst)+static_cast<std::size_t>(id);
 }
+constexpr bool ownerConfiguration(std::size_t i) noexcept {
+    // These controls can change the prepared processing shape or reported
+    // latency. They use the common owner configuration/undo path; an audio
+    // automation lane must never start a PDC transaction during export.
+    return i==Style || i==Lookahead || i==Oversampling || i==TruePeak ||
+        i==LimiterEnable || i==ClipEnable || i==clipIndex(c::online) ||
+        i==clipIndex(c::offline) || i==ExportOversampling;
+}
 float physical(std::size_t i, double n) noexcept {
     if(i==LimiterEnable||i==ClipEnable||i==ExportOversampling)return n>=.5?1.0f:0.0f;
     if(i>=ClipFirst&&i<ExportOversampling) {
@@ -123,14 +131,18 @@ class PureLimiterBackend final : public mix::LProcessingBackend {
 public:
     bool supportsClip() const noexcept override {return false;}
     void prepare(double rate,std::int32_t maximum,std::int32_t channels,const Settings& s) override {
+        prepared_=false;
         engine_.prepare(rate,maximum,channels==1?l::ChannelLayout::mono():l::ChannelLayout::stereo(),s.limiter);
         engine_.setMeteringOptions(false,true);engine_.setLoudnessRecording(false);
         enabled_.store(s.limiterEnabled,std::memory_order_release);transition_.store(0,std::memory_order_release);
-        latency_.store(s.limiterEnabled?engine_.latencySamples():0,std::memory_order_release);lastBlock_=0;
+        latency_.store(s.limiterEnabled?engine_.latencySamples():0,std::memory_order_release);
+        stagePending_.store(false,std::memory_order_release);lastBlock_=0;prepared_=true;
     }
-    void release() noexcept override {engine_.setBackgroundActive(false);}
+    void release() noexcept override {prepared_=false;engine_.setBackgroundActive(false);}
     void pumpMainThread(const Settings& s) override {
         observeTransition();
+        if(enabled_.load(std::memory_order_acquire)!=s.limiterEnabled)
+            stagePending_.store(true,std::memory_order_release);
         const auto token=transition_.load(std::memory_order_acquire);
         const auto actual=engine_.latencySamples();
         const auto desired=!s.limiterEnabled?0:!enabled_.load(std::memory_order_acquire)?actual:
@@ -138,11 +150,18 @@ public:
         latency_.store(desired,std::memory_order_release);
     }
     std::int32_t advertisedLatency() const noexcept override {return latency_.load(std::memory_order_acquire);}
+    bool configurationBusy() const noexcept override {
+        // A disabled engine can retain a child offer until it processes again.
+        // Keep that token for reenable, but do not make reenable itself illegal.
+        return prepared_&&(stagePending_.load(std::memory_order_acquire)||
+            (enabled_.load(std::memory_order_acquire)&&transition_.load(std::memory_order_acquire)!=0));
+    }
     void process(float* const* main,const float* const* key,std::int32_t frames,const Settings& s,
                  std::uint64_t serial,std::int32_t configured) noexcept override {
         auto enabled=enabled_.load(std::memory_order_acquire);
         if(enabled!=s.limiterEnabled&&configured==(s.limiterEnabled?engine_.latencySamples():0)) {
-            enabled=s.limiterEnabled;enabled_.store(enabled,std::memory_order_release);lastBlock_=0;
+            enabled=s.limiterEnabled;enabled_.store(enabled,std::memory_order_release);
+            stagePending_.store(false,std::memory_order_release);lastBlock_=0;
         }
         if(!enabled) {engine_.requestConfiguration(s.limiter);return;}
         observeTransition();
@@ -167,7 +186,8 @@ private:
     }
     l::DspEngine engine_;l::DspEngine::BlockContext block_{};
     std::atomic<std::uint64_t> transition_{0};
-    std::atomic<std::int32_t> latency_{0};std::atomic<bool> enabled_{true};std::uint64_t lastBlock_=0;
+    std::atomic<std::int32_t> latency_{0};std::atomic<bool> enabled_{true},stagePending_{false};
+    std::uint64_t lastBlock_=0;bool prepared_=false;
 };
 class LimiterDevice final : public DeviceInstance {
 public:
@@ -195,7 +215,7 @@ public:
             d.groupId=i>=ClipEnable&&i<ExportOversampling?"clip":"limiter";
             d.groupName=d.groupId=="clip"?"Clip":"Limiter";
             d.groupEnableControl=i==LimiterEnable||i==ClipEnable;
-            d.automatable=i!=ExportOversampling&&i!=clipIndex(c::offline);
+            d.automatable=!ownerConfiguration(i);
             d.configurable=!d.automatable;
         }
     }
@@ -262,7 +282,9 @@ public:
     bool setParam(const std::string& id,const ParamValue& value) override {
         const auto i=indexFor(id);
         if(!loaded()||!availableIndex(i)||!std::isfinite(value.normalized)||value.normalized<0||value.normalized>1)return false;
-        values_[i].store(physical(i,value.normalized),std::memory_order_release); return true;
+        const auto next=physical(i,value.normalized);
+        if(ownerConfiguration(i)&&next!=values_[i].load(std::memory_order_acquire)&&backend_->configurationBusy())return false;
+        values_[i].store(next,std::memory_order_release); return true;
     }
     std::string paramText(const std::string& id,double n) const override {
         const auto i=indexFor(id); if(!availableIndex(i)||!std::isfinite(n)||n<0||n>1)return {};
@@ -334,6 +356,9 @@ public:
                 publishLatency(0);return false;
             }
             if(!backend_->validateContinuation(continuation))return false;
+            if(backend_->configurationBusy())
+                for(std::size_t i=0;i<Count;++i)
+                    if(ownerConfiguration(i)&&pending[i]!=values_[i].load(std::memory_order_acquire))return false;
             const ReactivationGate::Hold hold(gate_);
             // This is a fresh-instance/export continuation hint, not an undo
             // snapshot of runtime audio history. Live preset/undo recall must

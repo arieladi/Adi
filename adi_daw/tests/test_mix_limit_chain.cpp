@@ -84,27 +84,102 @@ void structuralAdmission(){
     check(!same.clipEnabled&&core.pendingLatencyChange().token,"stage enable is deferred within the current physical callback");
     const auto enabled=core.pendingLatencyChange();auto wait=begin(core,2,base,s);
     check(!wait.clipEnabled&&core.latencySamples()==base,"old graph PDC retains old stage enables");
-    auto both=begin(core,3,enabled.samples,s);check(both.clipEnabled&&both.limiterEnabled&&core.latencySamples()==enabled.samples,"summed PDC admits both stages together");
+    check(!core.configurationBusy()&&!begin(core,3,enabled.samples,s).generation,
+          "peeking at an offer neither claims it nor permits graph admission");
+    const auto claimed=core.claimPendingLatencyChange(s);
+    check(claimed.token==enabled.token&&core.configurationBusy()&&(claimed.token>>61)==0,
+          "the owner claims the exact offer without exposing reservation bits");
+    auto both=begin(core,4,enabled.samples,s);check(both.clipEnabled&&both.limiterEnabled&&core.latencySamples()==enabled.samples&&!core.configurationBusy(),"summed PDC admits both stages together and releases the configuration gate");
     a.signal(1);render(core,a,nullptr,128,s,both);
-    s.limiterEnabled=false;(void)begin(core,3,enabled.samples,s);const auto justClip=core.pendingLatencyChange();
-    const auto alone=begin(core,4,justClip.samples,s);check(alone.clipEnabled&&!alone.limiterEnabled,"L-off subtracts only the limiter's own latency after acknowledgment");
+    s.limiterEnabled=false;(void)begin(core,4,enabled.samples,s);const auto justClip=core.claimPendingLatencyChange(s);
+    const auto alone=begin(core,5,justClip.samples,s);check(alone.clipEnabled&&!alone.limiterEnabled,"L-off subtracts only the limiter's own latency after acknowledgment");
     a.signal(2);render(core,a,nullptr,128,s,alone);const auto stats=core.statistics();
-    s.clipEnabled=false;(void)begin(core,5,justClip.samples,s);const auto disabled=core.pendingLatencyChange();
-    const auto off=begin(core,6,disabled.samples,s);a.signal(3);const auto before=a.samples;render(core,a,nullptr,128,s,off);
+    s.clipEnabled=false;(void)begin(core,6,justClip.samples,s);const auto disabled=core.claimPendingLatencyChange(s);
+    const auto off=begin(core,7,disabled.samples,s);a.signal(3);const auto before=a.samples;render(core,a,nullptr,128,s,off);
     check(!off.clipEnabled&&!off.limiterEnabled&&core.latencySamples()==0&&a.samples==before,"both disabled is untouched audio with zero stage latency");
     check(core.statistics().clipFrames==stats.clipFrames&&core.statistics().limiterFrames==stats.limiterFrames,"disabled stages do not advance hidden DSP");
-    s.clipEnabled=true;s.clip[clip::online]=5;(void)begin(core,7,0,s);const auto queued=core.pendingLatencyChange();
-    s.clipEnabled=false;const auto prior=begin(core,8,queued.samples,s);a.signal(4);render(core,a,nullptr,128,s,prior);
-    const auto latest=core.pendingLatencyChange();const auto settled=begin(core,9,latest.samples,s);
-    check(prior.clipEnabled&&!settled.clipEnabled&&settled.generation!=0,"rapid structural reversal completes advertised PDC before admitting the latest intent");
+    s.clipEnabled=true;s.clip[clip::online]=5;(void)begin(core,8,0,s);const auto queued=core.pendingLatencyChange();
+    s.clipEnabled=false;const auto reversed=begin(core,9,0,s);a.signal(4,4.f);const auto dry=a.samples;
+    render(core,a,nullptr,128,s,reversed);
+    check(queued.token&&!reversed.clipEnabled&&!core.pendingLatencyChange().token&&
+              !core.claimPendingLatencyChange(s).token&&!core.configurationBusy()&&
+              core.latencySamples()==0&&a.samples==dry&&core.statistics().clipFrames==stats.clipFrames,
+          "an unclaimed on-off reversal cancels without Clip colour, hidden DSP or a latency jump");
     s.clipEnabled=true;s.limiterEnabled=false;s.clip[clip::online]=0;s.clip[clip::offline]=0;s.offline=false;
     core.prepare({48000,128,limiter::ChannelLayout::stereo()},s);core.setBackgroundActive(false);
     const auto normal=begin(core,1,0,s);s.offline=true;const auto held=begin(core,1,0,s);
     check(normal.block==held.block&&core.pendingLatencyChange().token&&core.pendingLatencyChange().samples==0,
           "same-latency offline quality remains a structural transaction within the callback");
+    check(core.claimPendingLatencyChange(s).token&&core.configurationBusy(),
+          "a same-latency structural offer also requires an owner claim");
     const auto exported=begin(core,2,0,s);
     check(exported.generation&&exported.block!=held.block&&!core.pendingLatencyChange().token,
           "explicit offline bank change admits at a new callback without artificial latency");
+}
+void ownerClaimIntent(){
+    chain::Settings original;original.clipEnabled=false;original.limiterEnabled=false;
+    chain::Core core;core.prepare({48000,128,limiter::ChannelLayout::stereo()},original);core.setBackgroundActive(false);
+    auto on=original;on.clipEnabled=true;
+    (void)begin(core,1,0,on);const auto first=core.pendingLatencyChange();
+    std::array<chain::Settings,8> newer{};newer.fill(on);
+    newer[0].clipEnabled=false;newer[1].limiterEnabled=true;
+    newer[2].offline=true;newer[3].clip[clip::online]=5;
+    newer[4].limiter.styleIndex=0;newer[5].limiter.oversampling=2;
+    newer[6].limiter.truePeak=true;newer[7].limiter.lookaheadMs=.4f;
+    bool rejected=first.token!=0;
+    for(const auto& latest:newer) {
+        rejected=rejected&&!core.claimPendingLatencyChange(latest).token&&
+            !core.configurationBusy()&&core.pendingLatencyChange().token==first.token;
+    }
+    check(rejected,"owner values newer than audio refuse a stale offer for every structural identity");
+    const auto off=begin(core,2,0,original);Audio audio;audio.signal(0,4.f);const auto dry=audio.samples;
+    render(core,audio,nullptr,128,original,off);
+    check(!core.pendingLatencyChange().token&&!off.clipEnabled&&audio.samples==dry&&core.latencySamples()==0,
+          "audio cancels the stale unclaimed offer after owner-side reversal without colouring a sample");
+    (void)begin(core,3,0,on);const auto older=core.pendingLatencyChange();
+    on.clip[clip::online]=5;(void)begin(core,4,0,on);const auto replacement=core.pendingLatencyChange();
+    check(older.token&&replacement.token&&older.token!=replacement.token,
+          "an unclaimed quality change replaces the whole offer with a fresh token");
+    auto continuous=on;continuous.clip[clip::input]=12;continuous.limiter.inputGainDb=7;
+    const auto claimed=core.claimPendingLatencyChange(continuous);
+    check(claimed.token==replacement.token&&core.configurationBusy(),
+          "ordinary sound controls do not invalidate the structural claim");
+    check(core.claimPendingLatencyChange(original).token==claimed.token&&core.configurationBusy(),
+          "a claimed latency promise remains frozen until its graph arrives");
+    const auto waiting=begin(core,5,0,on);
+    check(waiting.generation&&!waiting.clipEnabled&&core.configurationBusy()&&core.latencySamples()==0,
+          "a claimed enable waits behind old graph PDC instead of bypassing a mismatched plan");
+    const auto admitted=begin(core,6,claimed.samples,on);
+    check(admitted.clipEnabled&&core.latencySamples()==claimed.samples&&!core.configurationBusy(),
+          "the exact claimed configuration admits at a new physical boundary and releases the manual gate");
+}
+void backendOwnerClaim(){
+    chain::Settings off;off.clipEnabled=false;off.limiterEnabled=false;
+    auto backend=chain::makeBackend();backend->prepare(48000,128,2,off);
+    auto on=off;on.clipEnabled=true;on.clip[clip::input]=18;
+    Audio audio;audio.signal(0,4.f);const auto dry=audio.samples;
+    {RT rt;backend->process(audio.pointers.data(),nullptr,128,on,1,0);}
+    backend->pumpMainThread(off);
+    check(!backend->configurationBusy()&&backend->advertisedLatency()==0&&audio.samples==dry,
+          "a manual Off accepted before audio observes it prevents the owner advertising an older On");
+    audio.signal(1,4.f);const auto reversed=audio.samples;
+    {RT rt;backend->process(audio.pointers.data(),nullptr,128,off,2,0);}
+    backend->pumpMainThread(off);
+    check(audio.samples==reversed&&backend->advertisedLatency()==0&&!backend->configurationBusy(),
+          "an owner-rejected stale offer cancels at the next audio boundary with no latency round trip");
+    audio.signal(2);{RT rt;backend->process(audio.pointers.data(),nullptr,128,on,3,0);}
+    backend->pumpMainThread(on);const auto target=backend->advertisedLatency();
+    check(target>0&&backend->configurationBusy(),"the public provider reports a claimed manual configuration as busy");
+    backend->pumpMainThread(off);
+    check(backend->advertisedLatency()==target&&backend->configurationBusy(),
+          "the provider retains promised PDC even if given a refused newer owner value");
+    audio.signal(3);{RT rt;backend->process(audio.pointers.data(),nullptr,128,on,4,target);}
+    check(!backend->configurationBusy(),"audio admission releases the public manual configuration gate");
+    audio.signal(4);{RT rt;backend->process(audio.pointers.data(),nullptr,128,off,5,target);}
+    backend->pumpMainThread(off);
+    check(backend->configurationBusy(),"a later accepted disable owns its own explicit latency settlement");
+    backend->release();
+    check(!backend->configurationBusy(),"stopped release removes the manual gate before another preparation");
 }
 void keyHistoryWhileLimiterOff(){
     chain::Settings s;s.clipEnabled=true;s.limiterEnabled=false;s.limiter.styleIndex=0;s.limiter.inputGainDb=9;s.limiter.externalSidechain=true;
@@ -114,7 +189,7 @@ void keyHistoryWhileLimiterOff(){
     std::array<std::array<float,256>,2> history{};int position=0;bool exact=true,wasOff=false;
     for(int i=0;i<32;++i){
         if(i==8)s.limiterEnabled=true;
-        const auto offer=combined.pendingLatencyChange();
+        const auto offer=combined.claimPendingLatencyChange(s);
         const auto context=begin(combined,static_cast<std::uint64_t>(i+1),offer.token?offer.samples:combined.latencySamples(),s);
         Audio a,b,key,delayed;a.signal(i,1.3f);b.signal(i,1.3f);key.signal(i,.9f);
         for(int frame=0;frame<128;++frame){const int read=(position+256-c.latencySamples())%256;
@@ -138,7 +213,7 @@ void disabledLimiterConfiguration(){
     // Functional wait for the existing asynchronous preparation worker, never a CPU measurement.
     std::this_thread::sleep_for(std::chrono::milliseconds(20));s.limiterEnabled=true;
     bool reached=false;
-    for(int i=0;i<256;++i){const auto offer=core.pendingLatencyChange();
+    for(int i=0;i<256;++i){const auto offer=core.claimPendingLatencyChange(s);
         const auto context=begin(core,static_cast<std::uint64_t>(i+2),offer.token?offer.samples:core.latencySamples(),s);
         a.signal(i);render(core,a,nullptr,128,s,context);
         if(context.limiterEnabled&&context.limiterLatency==expected){reached=true;break;}
@@ -176,7 +251,7 @@ void backendFadeLatency(){
     backend->release();
 }
 }
-int main(){try{limiterOnly();clipOnly();serialAndKey();structuralAdmission();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
+int main(){try{limiterOnly();clipOnly();serialAndKey();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
     check(allocations==0,"no callback C++ allocations in composition or admissions");check(deallocations==0,"no callback C++ deallocations in composition or admissions");
 }catch(const std::exception& e){++failures;std::printf("FAIL exception: %s\n",e.what());}
 std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

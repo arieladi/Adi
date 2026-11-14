@@ -77,7 +77,7 @@ public:
     void reset() noexcept;
     void setBackgroundActive(bool active) noexcept;
     // Single audio-side publisher, serialized with process. Prepares requested
-    // structures on the existing worker while a containing stage is disabled;
+    // structures on the shared owner while a containing stage is disabled;
     // does not process, warm, reset, fade or advance any audio/meter state.
     void requestConfiguration(const EngineSettings& settings) noexcept;
     BlockContext beginBlock() const noexcept;

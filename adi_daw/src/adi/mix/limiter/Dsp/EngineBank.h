@@ -223,6 +223,14 @@ public:
                 if (state.convolver) state.convolver->service();
     }
 
+    bool needsKernelService() const noexcept
+    {
+        for (const auto& bank : convolvers)
+            for (const auto& state : bank)
+                if (state.convolver && state.convolver->needsService()) return true;
+        return false;
+    }
+
     Frame detector(int slot, const Frame& input, const Frame& threshold, const Frame&,
                    const Frame& knee, const Frame& ratio, const Frame& limit, int domain, bool expansion)
     {

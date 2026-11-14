@@ -23,7 +23,7 @@ public:
         lastCount = count;
         lastShape = shape;
         lastProperties = properties;
-        served = 0;
+        served.store(0);
         generation.store(0);
     }
 
@@ -50,7 +50,7 @@ public:
     bool service() noexcept
     {
         const auto version = generation.load();
-        if ((version & 1) != 0 || version == served || convolver.hasPendingKernel()) return false;
+        if ((version & 1) != 0 || version == served.load() || convolver.hasPendingKernel()) return false;
         const auto count = requestedCount.load();
         const auto shape = requestedShape.load();
         std::array<float, 3> properties;
@@ -62,8 +62,14 @@ public:
         if (!smoothingKernel(values, static_cast<KernelFamily>(shape), properties[0], properties[1], properties[2]))
             return false;
         if (!convolver.setKernel(values)) return false;
-        served = version;
+        served.store(version);
         return true;
+    }
+
+    bool needsService() const noexcept
+    {
+        const auto version = generation.load();
+        return (version & 1) == 0 && version != served.load() && !convolver.hasPendingKernel();
     }
 
 private:
@@ -75,7 +81,7 @@ private:
     std::atomic<std::size_t> requestedCount{0};
     std::atomic<int> requestedShape{0};
     std::array<std::atomic<float>, 3> requestedProperties{};
-    std::uint64_t served = 0;
+    std::atomic<std::uint64_t> served{0};
     std::size_t lastCount = 0;
     int lastShape = 0;
     std::array<float, 3> lastProperties{};

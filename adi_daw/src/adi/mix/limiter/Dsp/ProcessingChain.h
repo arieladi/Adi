@@ -154,6 +154,7 @@ public:
     }
 
     void serviceKernelUpdates() noexcept { engine.serviceKernelUpdates(); }
+    bool needsKernelService() const noexcept { return engine.needsKernelService(); }
     void setDisplayBuffer(DisplaySample* buffer) noexcept
     {
         if (buffer && !displayBuffer)

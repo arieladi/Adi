@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/mix/limiter/DspEngine.h"
+#include "adi/mix/limiter/BackgroundOwner.h"
 #include "adi/mix/limiter/ControlMapping.h"
 #include "adi/mix/limiter/Dsp/ChannelGroups.h"
 #include "juce/builtin_host.hpp"
@@ -71,6 +72,13 @@ void parametersAndState() {
     check(d->paramAt(19)->id=="19"&&d->paramAt(19)->groupEnableControl,"limiter enable is the group control");
     check(d->paramAt(20)->id=="73"&&!d->paramAt(20)->automatable&&d->paramAt(20)->configurable,
           "export quality is nonautomatable, configurable and has a stable ID");
+    for(int i=0;i<d->paramCount();++i) {
+        const auto* descriptor=d->paramAt(i);
+        const auto& id=descriptor->id;
+        const bool configuration=id=="1"||id=="2"||id=="7"||id=="8"||id=="19"||id=="73";
+        check(descriptor->automatable!=configuration&&descriptor->configurable==configuration,
+              "latency/shape controls are owner configuration; ordinary audio controls retain automation");
+    }
     check(!d->setParam("20",device::ParamValue::fromNormalized(1)),"limiter-only provider never exposes a fake Clip stage");
     check(d->getParam("1").real==0,"Transparent default");
     check(d->getParam("5").real==75&&d->getParam("6").real==100,"shipped link defaults and stereo bounds");
@@ -102,6 +110,7 @@ public:
                  std::uint64_t,std::int32_t) noexcept override{last=s;++blocks;}
     void pumpMainThread(const mix::limit_chain::Settings& s) override{last=s;}
     std::int32_t advertisedLatency() const noexcept override{return 0;}
+    bool configurationBusy() const noexcept override{return busy;}
     std::vector<std::uint8_t> saveContinuation() const override{return {1,31};}
     bool validateContinuation(std::span<const std::uint8_t> v) const noexcept override {
         return v.empty()||(v.size()==2&&v[0]==1&&mix::clip::validContinuationWord(v[1]));
@@ -110,7 +119,7 @@ public:
         if(!validateContinuation(v))return false;
         ++restores;return true;
     }
-    mix::limit_chain::Settings last;int prepares=0,blocks=0,restores=0;
+    mix::limit_chain::Settings last;int prepares=0,blocks=0,restores=0;bool busy=false;
 };
 void capabilitiesAndPolicy() {
     auto pure=make();if(!pure)return;
@@ -139,6 +148,9 @@ void capabilitiesAndPolicy() {
           "limiter export policy stays on limiter page as configuration");
     check(descriptor("72")&&descriptor("72")->groupId=="clip"&&!descriptor("72")->automatable&&descriptor("72")->configurable,
           "Clip export policy remains separate configuration");
+    for(const auto* id:{"1","2","7","8","19","20","71","72","73"})
+        check(descriptor(id)&&!descriptor(id)->automatable&&descriptor(id)->configurable,
+              "all combined latency-changing controls use owner configuration");
     full->setParam("73",device::ParamValue::fromNormalized(1));
     full->setParam("20",device::ParamValue::fromNormalized(1));
     full->setParam("26",device::ParamValue::fromNormalized(6.0/7));
@@ -146,15 +158,43 @@ void capabilitiesAndPolicy() {
     check(recording->last.offline&&recording->last.limiter.oversampling==32,"explicit export request selects limiter 32x before prepare");
     check(recording->last.clipEnabled&&recording->last.limiterEnabled&&recording->last.clip[mix::clip::mode]==6,"provider receives both independent flags and exact Clip DTO");
     check(full->getParam("7").real==0,"export override never changes stored online oversampling");
-    std::array<engine::Event,2> forbidden{};
+    constexpr std::array<const char*,9> configurationIds{"1","2","7","8","19","20","71","72","73"};
+    std::array<engine::Event,configurationIds.size()> forbidden{};
+    std::array<device::ParamValue,configurationIds.size()> configured{};
     for(std::size_t i=0;i<forbidden.size();++i) {
-        forbidden[i].type=engine::EventType::ParamValue;forbidden[i].paramId=static_cast<std::uint32_t>(72+i);forbidden[i].value=0;
+        configured[i]=full->getParam(configurationIds[i]);
+        forbidden[i].type=engine::EventType::ParamValue;
+        forbidden[i].paramId=static_cast<std::uint32_t>(std::stoul(configurationIds[i]));
+        forbidden[i].value=configured[i].normalized==0?1:0;
     }
     process(*full,dry,0,256,2,{forbidden.data(),static_cast<std::int32_t>(forbidden.size())});
     check(full->getParam("72").real==3&&full->getParam("73").real==1,"audio automation cannot override owner-only export configuration");
+    bool held=true;
+    for(std::size_t i=0;i<configurationIds.size();++i)
+        held=held&&full->getParam(configurationIds[i]).normalized==configured[i].normalized;
+    check(held,"legacy configuration automation cannot alter stage enables or prepared quality in playback");
     check(!recording->last.offline&&recording->last.limiter.oversampling==1,"a stopped realtime block is not misclassified as export");
-    process(*full,dry,0,256,3,{},true);
+    process(*full,dry,0,256,3,{forbidden.data(),static_cast<std::int32_t>(forbidden.size())},true);
     check(recording->last.offline&&recording->last.limiter.oversampling==32,"explicit block export intent reaches provider without changing online control");
+    held=true;
+    for(std::size_t i=0;i<configurationIds.size();++i)
+        held=held&&full->getParam(configurationIds[i]).normalized==configured[i].normalized;
+    check(held&&recording->last.clipEnabled&&recording->last.limiterEnabled,
+          "configuration automation cannot disable a stage or change export preparation");
+    recording->busy=true;
+    const auto busyState=full->saveState("state");
+    check(!full->setParam("20",device::ParamValue::fromNormalized(0))&&full->saveState("state")==busyState,
+          "claimed PDC refuses a structural setter without changing the stored switch");
+    check(full->setParam("20",device::ParamValue::fromNormalized(1)),
+          "idempotent configuration remains accepted during PDC settlement");
+    auto busyRestore=Payload::from_cbor(busyState);busyRestore["params"]["20"]=0;
+    busyRestore["params"]["0"]=.8;
+    check(!full->loadState("state",Payload::to_cbor(busyRestore))&&full->saveState("state")==busyState,
+          "structural state recall during claimed PDC refuses atomically, including ordinary controls");
+    check(full->setParam("0",device::ParamValue::fromNormalized(.1))&&full->getParam("0").real==3,
+          "ordinary audio controls remain editable during PDC settlement");
+    recording->busy=false;
+    check(full->loadState("state",busyState),"unclaimed state restores through the normal path");
     const auto fullState=full->saveState("state");
     bool hidden=true;
     for(const auto* id:{"29","30","54","59","60","61","62"})
@@ -238,6 +278,37 @@ void layouts() {
     bool rejected=false;try{(void)C{C::left,C::left};}catch(const std::invalid_argument&){rejected=true;}
     check(rejected,"duplicate channel roles rejected");
 }
+void exportConfigurationAutomation() {
+    auto edited=make(),reference=make();
+    check(edited&&reference,"real limiter export automation fixtures exist");
+    if(!edited||!reference)return;
+    edited->setParam("0",device::ParamValue::fromNormalized(.2));
+    reference->setParam("0",device::ParamValue::fromNormalized(.2));
+    edited->prepare(48000,256);reference->prepare(48000,256);
+    const auto latency=edited->latencySamples();
+    const auto epoch=edited->latencyEpoch();
+    constexpr std::array<std::uint32_t,6> ids{1,2,7,8,19,73};
+    std::array<engine::Event,ids.size()> events{};
+    for(std::size_t i=0;i<ids.size();++i) {
+        events[i].type=engine::EventType::ParamValue;events[i].paramId=ids[i];
+        events[i].value=ids[i]==19?0:1;
+    }
+    bool exact=true,stable=true;
+    for(std::uint64_t block=1;block<=24;++block) {
+        std::array<std::vector<float>,2> a{std::vector<float>(256),std::vector<float>(256)};
+        for(std::size_t ch=0;ch<a.size();++ch)for(std::size_t i=0;i<a[ch].size();++i)
+            a[ch][i]=static_cast<float>(.4*std::sin(static_cast<double>(block*256+i)*(ch?.039:.081)));
+        auto b=a;
+        process(*edited,a,0,256,block,{events.data(),static_cast<std::int32_t>(events.size())},true);
+        process(*reference,b,0,256,block,{},true);
+        edited->pumpMainThread();reference->pumpMainThread();
+        exact=exact&&a==b;
+        stable=stable&&edited->latencySamples()==latency&&edited->latencyEpoch()==epoch;
+    }
+    check(exact,"old latency-control lanes cannot change real offline limiter audio");
+    check(stable,"old latency-control lanes produce no export-invalidating latency report");
+    edited->release();reference->release();
+}
 void latencyHandoff() {
     auto d=make();if(!d)return;
     d->prepare(48000,256);const auto old=d->latencySamples();
@@ -261,8 +332,58 @@ void latencyHandoff() {
     }
     d->release();
 }
+void disableAtLatencyOffer() {
+    auto d=make();if(!d)return;
+    d->prepare(48000,256);
+    const auto original=d->latencySamples();
+    std::array<std::vector<float>,2> audio{std::vector<float>(256,.2f),std::vector<float>(256,.2f)};
+    struct Barrier {std::atomic<bool> entered{false},released{false};} barrier;
+    {
+        l::BackgroundOwner::Client blocker(&barrier,[](void* context) noexcept {
+            auto& b=*static_cast<Barrier*>(context);
+            b.entered.store(true,std::memory_order_release);
+            b.released.wait(false,std::memory_order_acquire);
+        });
+        blocker.notify();
+        for(int i=0;i<2000&&!barrier.entered.load(std::memory_order_acquire);++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const bool entered=barrier.entered.load(std::memory_order_acquire);
+        check(entered,"latency-race fixture controls the real shared owner");
+        if(entered) {
+            check(d->setParam("1",device::ParamValue::fromNormalized(5.0/7)),"request Modern while owner is held");
+            process(*d,audio,0,256,1);
+        }
+        barrier.released.store(true,std::memory_order_release);barrier.released.notify_one();
+        if(!entered){d->release();return;}
+        bool parked=false;
+        for(int i=0;i<2000;++i) {
+            if(l::BackgroundOwner::snapshot().parked){parked=true;break;}
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        check(parked,"replacement build finishes before deterministic warmup");
+    }
+    // Modern needs2880 warm samples here. Its first offer appears during the
+    // twelfth block, after the adapter's pre-process transition observation.
+    for(std::uint64_t block=2;block<=13;++block)process(*d,audio,0,256,block);
+    check(d->setParam("19",device::ParamValue::fromNormalized(0)),
+          "disable is accepted in the child-offer publication gap");
+    d->pumpMainThread();
+    check(d->latencySamples()==0,"disable advertises zero before stage admission");
+    process(*d,audio,0,256,14);d->pumpMainThread();
+    check(d->setParam("19",device::ParamValue::fromNormalized(1)),
+          "settled disabled limiter can reenable despite a retained child offer");
+    d->pumpMainThread();
+    check(d->latencySamples()==original,"reenable first admits the still-active engine latency");
+    for(std::uint64_t block=15;block<=46;++block) {
+        process(*d,audio,0,256,block);d->pumpMainThread();
+    }
+    check(d->latencySamples()>original,"retained child offer completes under its own PDC admission");
+    check(d->setParam("1",device::ParamValue::fromNormalized(0)),
+          "completed reenable releases structural busy state");
+    d->release();
+}
 }
 int main() {
-    exactAdapter();parametersAndState();capabilitiesAndPolicy();layouts();latencyHandoff();
+    exactAdapter();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
     std::printf("mix limiter: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
