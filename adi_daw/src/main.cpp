@@ -11,6 +11,8 @@
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
+#include "adi/ops_schema.hpp"
+#include "adi/settings/store.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include "adi/version.hpp"
@@ -37,6 +39,9 @@ int usage() {
         "  adi_tool digest <file>   canonical digest of the project tier\n"
         "                           --full prints it; default prints the id\n"
         "  adi_tool ops             list every registered op\n"
+        "  adi_tool ops --schema [name...]\n"
+        "                           each op's closed JSON Schema, as the control\n"
+        "                           boundary enforces it (CTL-02)\n"
         "  adi_tool check <file>    verify structure and external media hashes\n"
         "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
@@ -179,6 +184,28 @@ int cmdOps() {
     return 0;
 }
 
+/// CTL-02: the registry describes itself. The same generated schema the
+/// control boundary enforces (Bounds::Remote), so what this prints is what a
+/// remote caller is held to -- and nothing here is written by hand.
+int cmdOpsSchema(int argc, char** argv) {
+    const auto& reg = adi::OpRegistry::instance();
+    adi::Payload out = adi::Payload::array();
+    if (argc <= 3) {
+        for (const auto& o : reg.all()) out.push_back(adi::describeOp(o));
+    } else {
+        for (int i = 3; i < argc; ++i) {
+            const auto* d = reg.find(argv[i]);
+            if (!d) {
+                std::fprintf(stderr, "ops --schema: no op named '%s'\n", argv[i]);
+                return 1;
+            }
+            out.push_back(adi::describeOp(*d));
+        }
+    }
+    std::printf("%s\n", out.dump(2, ' ', false, adi::Payload::error_handler_t::replace).c_str());
+    return 0;
+}
+
 int cmdExport(const char* path, bool strict) {
     adi::StoreError err = adi::StoreError::Ok;
     auto st = adi::Store::open(path, err, /*readOnly=*/true);
@@ -235,6 +262,21 @@ int cmdCheck(const char* path) {
 
 /// ADR-0145 d9, ADR-0148. Exit codes: 0 previewed (or applied), 1 refused or
 /// failed, 3 stale -- the file moved on and the changeset must be rebuilt.
+/// AGT-01: the per-request cap is the user's agent.maxOpsPerRequest, the same
+/// one adi-mcp previews with, so a changeset it queued is held to the same cap
+/// here. Unreadable settings keep the default (ADR-0203 d20: 6000).
+adi::agent::Limits userLimits() {
+    adi::agent::Limits limits;
+    try {
+        const auto settings = adi::settings::AppSettings::forApp(adi::appdata::App::Daw);
+        const auto cap = settings.get("agent.maxOpsPerRequest");
+        if (cap.is_number_integer() && cap.get<std::int64_t>() > 0)
+            limits.maxOps = static_cast<std::size_t>(cap.get<std::int64_t>());
+    } catch (const std::exception&) {
+    }
+    return limits;
+}
+
 int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     using namespace adi;
     const auto path = std::filesystem::absolute(file);
@@ -283,7 +325,8 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
         return 1;
     }
 
-    const auto p = agent::preview(*store, *cs);
+    const auto limits = userLimits();
+    const auto p = agent::preview(*store, *cs, limits);
     if (!p.ok) {
         std::fprintf(stderr, "propose: refused (%s): %s\n", agent::toString(p.refusal), p.error.c_str());
         return p.refusal == agent::Refusal::Stale ? 3 : 1;
@@ -304,7 +347,7 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
         return 0;
     }
 
-    const auto r = agent::apply(*store, *cs);
+    const auto r = agent::apply(*store, *cs, limits);
     if (!r.ok) {
         std::fprintf(stderr, "propose: apply refused (%s): %s\n", agent::toString(r.refusal),
                      r.error.c_str());
@@ -361,6 +404,8 @@ int main(int argc, char** argv) {
         return cmdDigest(argv[2], argc > 3 && std::string(argv[3]) == "--full");
     }
     if (cmd == "ops") {
+        if (argc > 2 && std::string(argv[2]) == "--schema") return cmdOpsSchema(argc, argv);
+        if (argc > 2) return usage();
         return cmdOps();
     }
     if (cmd == "export") {

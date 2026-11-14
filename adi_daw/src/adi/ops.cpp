@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <regex>
 #include <stdexcept>
 
@@ -193,27 +195,170 @@ std::span<const OpDescriptor> OpRegistry::all() const { return ops_; }
 // Validation and codec
 // ---------------------------------------------------------------------------
 
-std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
-    std::vector<ValidationIssue> out;
-    if (!p.is_object()) {
-        out.push_back({"", "payload is not an object"});
-        return out;
-    }
+namespace {
 
-    for (const auto& f : d.fields) {
-        const std::string key(f.key);
-        if (!p.contains(key)) {
+std::string renderBound(double v) {
+    if (std::isfinite(v) && std::floor(v) == v && std::fabs(v) < 9.0e15)
+        return std::to_string(static_cast<long long>(v));
+    char text[40];
+    std::snprintf(text, sizeof text, "%.17g", v);
+    return text;
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out);
+
+/// The remote bounds inside an open value: an Object with no declared
+/// members, or an element of an Array with no declared items. Nothing names
+/// what it holds, so the profile's defaults hold all the way down: text,
+/// member names included, at most kRemoteMaxTextLength characters, and
+/// arrays and objects at most kRemoteMaxArrayItems members. The depth is the
+/// wire's (WireLimits::maxDepth), and JSON has no non-finite number. Stops at
+/// the first issue, so a hostile value costs one issue, not one per member.
+bool checkOpen(const Payload& v, const std::string& key, std::vector<ValidationIssue>& out) {
+    if (v.is_string()) {
+        if (utf8CodePoints(v.get_ref<const std::string&>()) <= kRemoteMaxTextLength) return true;
+        out.push_back({key, "longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
+        return false;
+    }
+    if (!v.is_array() && !v.is_object()) return true;
+    if (v.size() > kRemoteMaxArrayItems) {
+        out.push_back({key, "more than " + std::to_string(kRemoteMaxArrayItems) + " items"});
+        return false;
+    }
+    if (v.is_array()) {
+        std::size_t i = 0;
+        for (const auto& element : v)
+            if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) return false;
+        return true;
+    }
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        if (utf8CodePoints(it.key()) > kRemoteMaxTextLength) {
+            out.push_back({key, "a member name longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
+            return false;
+        }
+        if (!checkOpen(it.value(), key + "." + it.key(), out)) return false;
+    }
+    return true;
+}
+
+/// One present, non-null value against its Field: the type, then (only when
+/// the type matched) every declared constraint and the profile's defaults.
+void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::string& key,
+                std::string_view opName, std::vector<ValidationIssue>& out) {
+    const bool typed = typeMatches(f.type, v);
+    if (!typed) out.push_back({key, "expected " + std::string(typeName(f.type))});
+    // Non-finite floats have no single encoding and no musical meaning.
+    // Letting one through would put a NaN in a project file.
+    if (v.is_number_float() && !std::isfinite(v.get<double>()))
+        out.push_back({key, "value is not finite"});
+    if (!typed) return;
+
+    switch (f.type) {
+        // An Int is an int64. Only a field marked fullUint64 (a note's
+        // persisted id, ANOT) may also be an unsigned value above INT64_MAX;
+        // every other handler reads int64, which would wrap it to a negative.
+        // Checked exactly: (double)INT64_MAX is 2^63, so a double bound would
+        // let 2^63 and its neighbours through.
+        case FieldType::Int:
+        case FieldType::Real: {
+            if (f.type == FieldType::Int && !f.fullUint64 && v.is_number_unsigned() &&
+                v.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)) {
+                out.push_back({key, "above the maximum 9223372036854775807"});
+                break;
+            }
+            if (!f.minimum && !f.maximum) break;
+            if (v.is_number_float() && !std::isfinite(v.get<double>())) break;
+            // Compared as double: a declared bound is a small number, and the
+            // 64-bit range itself is checked above, exactly.
+            const double x = v.is_number_float() ? v.get<double>()
+                           : v.is_number_unsigned() ? static_cast<double>(v.get<std::uint64_t>())
+                                                    : static_cast<double>(v.get<std::int64_t>());
+            if (f.minimum && x < *f.minimum)
+                out.push_back({key, "below the minimum " + renderBound(*f.minimum)});
+            if (f.maximum && x > *f.maximum)
+                out.push_back({key, "above the maximum " + renderBound(*f.maximum)});
+            break;
+        }
+        case FieldType::Text: {
+            const auto& s = v.get_ref<const std::string&>();
+            if (!f.enumValues.empty() &&
+                std::none_of(f.enumValues.begin(), f.enumValues.end(),
+                             [&](std::string_view e) { return e == s; })) {
+                std::string list;
+                for (const auto e : f.enumValues) {
+                    if (!list.empty()) list += ", ";
+                    list += e;
+                }
+                out.push_back({key, "must be one of: " + list});
+            }
+            const std::optional<std::size_t> cap =
+                f.maxLength ? f.maxLength
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxTextLength)
+                                           : std::nullopt;
+            if (cap && utf8CodePoints(s) > *cap)
+                out.push_back({key, "longer than " + std::to_string(*cap) + " characters"});
+            break;
+        }
+        case FieldType::Array: {
+            const std::optional<std::size_t> cap =
+                f.maxItems ? f.maxItems
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxArrayItems)
+                                           : std::nullopt;
+            if (cap && v.size() > *cap) {
+                out.push_back({key, "more than " + std::to_string(*cap) + " items"});
+                if (f.items.empty()) break;
+            }
+            if (f.items.empty()) {
+                if (bounds == Bounds::Remote) {
+                    std::size_t i = 0;
+                    for (const auto& element : v)
+                        if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) break;
+                }
+                break;
+            }
+            std::size_t i = 0;
+            for (const auto& element : v) {
+                const std::string at = key + "[" + std::to_string(i++) + "]";
+                if (!element.is_object()) {
+                    out.push_back({at, "expected object"});
+                    continue;
+                }
+                checkObject(f.items, element, bounds, at + ".", opName, out);
+            }
+            break;
+        }
+        case FieldType::Object:
+            if (!f.items.empty()) checkObject(f.items, v, bounds, key + ".", opName, out);
+            else if (bounds == Bounds::Remote) checkOpen(v, key, out);
+            break;
+        case FieldType::Bool:
+            break;
+    }
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out) {
+    for (const auto& f : fields) {
+        const std::string key = prefix + std::string(f.key);
+        const auto it = p.find(std::string(f.key));
+        if (it == p.end()) {
             if (f.required) out.push_back({key, "required field missing"});
             continue;
         }
-        const auto& v = p.at(key);
-        if (v.is_null() && !f.required) continue;   // explicit null clears an optional
-        if (!typeMatches(f.type, v))
-            out.push_back({key, "expected " + std::string(typeName(f.type))});
-        // Non-finite floats have no single encoding and no musical meaning.
-        // Letting one through would put a NaN in a project file.
-        if (v.is_number_float() && !std::isfinite(v.get<double>()))
-            out.push_back({key, "value is not finite"});
+        // A key that starts with '_' is the op's own: its inverse's way to
+        // erase a row or restore a value the forward checks would refuse
+        // (split pan's _erase and _restore, clip.setFades' _restore). A
+        // caller across the control boundary may not say it, and the remote
+        // schema does not show it.
+        if (bounds == Bounds::Remote && f.key.starts_with('_')) {
+            out.push_back({key, "internal field, not accepted from a caller"});
+            continue;
+        }
+        if (it->is_null() && !f.required) continue;   // explicit null clears an optional
+        checkValue(f, *it, bounds, key, opName, out);
     }
 
     // Closed schema. An unknown field from a CALLER is a typo or a version
@@ -221,10 +366,33 @@ std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Pay
     // they did not. (An unknown field read back from the LOG is a different
     // thing entirely and is preserved -- see decodeFromLog.)
     for (auto it = p.begin(); it != p.end(); ++it) {
-        const bool known = std::any_of(d.fields.begin(), d.fields.end(),
+        const bool known = std::any_of(fields.begin(), fields.end(),
                                        [&](const Field& f) { return f.key == it.key(); });
-        if (!known) out.push_back({it.key(), "unknown field for " + std::string(d.name)});
+        if (!known) out.push_back({prefix + it.key(), "unknown field for " + std::string(opName)});
     }
+}
+
+}  // namespace
+
+std::size_t utf8CodePoints(std::string_view text) noexcept {
+    std::size_t n = 0;
+    for (const char c : text)
+        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
+    return n;
+}
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
+    return validateSubmission(d, p, Bounds::Local);
+}
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p,
+                                                Bounds bounds) {
+    std::vector<ValidationIssue> out;
+    if (!p.is_object()) {
+        out.push_back({"", "payload is not an object"});
+        return out;
+    }
+    checkObject(d.fields, p, bounds, "", d.name, out);
     return out;
 }
 

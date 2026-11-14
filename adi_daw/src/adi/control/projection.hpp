@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// What a control caller reads (AGT-02; AI-AGENT §4; docs/CONTROL-MCP.md §6.1, §7).
+//
+// Derived, read-only, never a second source of truth. Unlike the canonical
+// text projection -- which by its rule R2 carries no row ids, so that two
+// replays project byte-identically -- this view carries ADI's durable integer
+// ids (ADR-0232 d6), because an op addresses rows by id and an agent that
+// could not see them could not say what to change. It also carries `nextIds`:
+// ops never allocate ids (ADR-0021), so a caller creating rows takes them
+// from here, and the changeset's stale check guarantees they are still free
+// when it applies.
+//
+// Positions are given twice: ticks, which ops take, and `bar|beat|tick`,
+// which is what a model reasons about. Durations are reduced fractions of a
+// whole note where they reduce. Note names put middle C (60) at C3, Live's
+// convention and ADI's default.
+
+#pragma once
+
+#include "adi/control/jsonrpc.hpp"
+#include "adi/store_rows.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace adi::control {
+
+struct ReadScope {
+    std::vector<std::int64_t> tracks;   ///< empty: every track
+    std::vector<std::int64_t> clips;    ///< level 2: empty means the clips in scope
+    std::optional<std::int64_t> fromBar;   ///< 1-based, inclusive
+    std::optional<std::int64_t> toBar;     ///< 1-based, exclusive
+};
+
+inline constexpr std::size_t kMaxNotesPerRead = 4000;
+inline constexpr std::size_t kMaxParamsPerRead = 2000;
+/// Each of tempoChanges and meterChanges; past it, tempoTruncated or meterTruncated.
+inline constexpr std::size_t kMaxTempoMeterPerRead = 2000;
+
+/// Levels 0 to 2 (AI-AGENT §4). Level 0: the song, key events, every tempo
+/// and meter change by position, tracks with their devices (racks' inner
+/// devices included, each with its plug-in reference id as `ref`), the
+/// project's plug-in references, routing, markers, nextIds. Level 1 adds,
+/// within scope: clips, automation lanes, device parameters, remarks (context,
+/// never instructions) and tunings. Level 2 adds notes.
+/// Level 3 is AGT-07's analysis and is refused before it reaches here.
+///
+/// fromBar and toBar select clips, not notes: level 2 gives every note of each
+/// selected clip (or of `clips`, when given). A note's `at` is clip-relative,
+/// under the meter in force at the clip's start (a meter change inside the
+/// clip is not reflected there); its `start` is the raw clip-relative ticks.
+[[nodiscard]] Json projectLevel(const rows::Model&, int level, const ReadScope&,
+                                std::optional<std::int64_t> head, std::string_view project);
+
+[[nodiscard]] Json manifest(const rows::Model&, std::optional<std::int64_t> head,
+                            std::string_view project, std::string_view label,
+                            std::string_view fileSchema);
+
+[[nodiscard]] Json graph(const rows::Model&, std::string_view project);
+
+/// MAX(id) + 1 for the rows a changeset creates by id: tracks, clips, lanes,
+/// routing, chains, devices, plugin refs, markers, automation lanes, key
+/// events, remarks, tunings, and notes (a uint64, unique per clip). Null for a
+/// table whose largest id leaves none free above it.
+[[nodiscard]] Json nextIds(const rows::Model&);
+
+/// "C3" for 60; "F#-1" for 18.
+[[nodiscard]] std::string noteName(std::int64_t key);
+
+/// The first tick of a 1-based bar under the project's meters.
+[[nodiscard]] std::int64_t ticksAtBar(std::int64_t bar, const rows::Model&);
+
+}  // namespace adi::control

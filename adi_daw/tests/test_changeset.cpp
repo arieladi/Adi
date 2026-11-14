@@ -12,7 +12,9 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/automation_lanes.hpp"
 #include "adi/changeset.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -23,13 +25,17 @@
 #include <sqlite3.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -116,6 +122,17 @@ void testGuardrails() {
     check(!agentMayEmit("media.import"), "asserting what is on disk is not");
     check(!agentMayEmit("media.delete") && !agentMayEmit("no.suchOp"),
           "an op nobody registered is refused");
+    // The internal restore ops replay a captured inverse past the forward
+    // op's checks; each is registered and editable, and each is refused.
+    for (const char* internal : {"automation.restoreLane", "automation.restoreData", "cc.restoreStream",
+                                 "note.restoreNotes", "track.restoreRecording"}) {
+        const auto* d = OpRegistry::instance().find(internal);
+        check(d && d->scope == Scope::Edit && !d->ephemeral, std::string(internal) + " is a registered edit op");
+        check(!agentMayEmit(internal), std::string(internal) + " is internal: the agent may not emit it");
+    }
+    check(agentMayEmit("controller.bind") && agentMayEmit("clip.split") && agentMayEmit("clip.join") &&
+              agentMayEmit("arranger.splice"),
+          "forward ops with no inverse of their own, or paired with each other, stay allowed");
 
     Fixture f("guard");
     if (!f.store) return;
@@ -208,6 +225,62 @@ void testPreviewDoesNotWrite() {
               p2.changes[1].before->at("name") == "Keys",
           "a creation shows only after, a deletion only what it removes");
     check(count(s, "SELECT COUNT(*) FROM tracks") == 2, "and neither happened");
+}
+
+void testDescribeByContent() {
+    section("paired ops are told apart by content, not key count (R4.6)");
+    Fixture f("describe");
+    if (!f.store) return;
+    Store& s = *f.store;
+    // automation.createLane is {id,row} against the inverse {id,state}: two
+    // keys each. Counting keys read it as a deletion with a null row and no
+    // `after`; setLaneEnabled ({id,value} against {id,state}) lost its new value.
+    automation::LaneSpec spec;
+    spec.id = 1;
+    spec.ownerId = 2;
+    spec.paramRef = "volume";
+    spec.paramName = "Volume";
+    Changeset cs = begin(s, "automate the bass fader", "m", kT0);
+    cs.ops.push_back(automation::createLane(spec));
+    cs.ops.push_back(automation::setLaneEnabled(1, false));
+    const auto p = preview(s, cs);
+    check(p.ok && p.changes.size() == 2, "the lane ops preview: " + p.error);
+    if (p.ok && p.changes.size() == 2) {
+        const auto& created = p.changes[0];
+        check(created.after && created.after->contains("row") &&
+                  created.after->at("row").at("param_ref") == "volume",
+              "createLane: `after` is the new lane's row");
+        check(created.before && created.before->at("state").at("row").is_null(),
+              "createLane: `before` says there was no lane");
+        const auto& enabled = p.changes[1];
+        check(enabled.before && enabled.before->at("state").at("row").at("enabled") == 1,
+              "setLaneEnabled: `before` holds the lane as it was, enabled");
+        check(enabled.after && enabled.after->at("value") == false,
+              "setLaneEnabled: `after` holds the new value");
+    }
+    check(count(s, "SELECT COUNT(*) FROM automation_lanes") == 0, "and nothing was written");
+
+    // clip.split is paired with clip.join, and its inverse has the payload's
+    // keys ({id,changes}) with other values: a capture beside new values,
+    // never a deletion with no `after`.
+    s.db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,2,'audio',0,5765760)");
+    const auto split = clip_edit::prepareSplit(s, 7, 17, {0, 2882880}, 48000);
+    check(split.ok, "a split prepares: " + split.error);
+    if (split.ok) {
+        Changeset cut = begin(s, "split the bass clip", "m", kT0);
+        for (const auto& r : split.requests) cut.ops.push_back(r);
+        const auto ps = preview(s, cut);
+        check(ps.ok, "the split previews: " + ps.error);
+        bool seen = false;
+        for (const auto& c : ps.changes) {
+            if (c.opType != "clip.split") continue;
+            seen = true;
+            check(c.before && c.after && c.after->contains("changes"),
+                  "clip.split shows before and after, not a deletion");
+        }
+        check(seen, "the preview lists the clip.split");
+        check(count(s, "SELECT COUNT(*) FROM clips WHERE id=17") == 0, "and nothing was written");
+    }
 }
 
 // --- apply ------------------------------------------------------------------------------
@@ -365,6 +438,28 @@ void testJson() {
     const auto staleCs = changesetFromJson(*f.store, old, err);
     check(staleCs && apply(*f.store, *staleCs).refusal == Refusal::Stale,
           "an explicit older baseHead is honoured -- and is stale");
+
+    // Integers are int64s, as on the MCP path: an unsigned value above
+    // INT64_MAX or a fraction is refused, never wrapped or truncated.
+    const auto refused = [&](const char* key, const Payload& value, bool inOp) {
+        Payload bad = j;
+        if (inOp) bad["ops"][0][key] = value;
+        else bad[key] = value;
+        std::string why;
+        return !changesetFromJson(*f.store, bad, why) && why.find(key) != std::string::npos;
+    };
+    const Payload huge = std::numeric_limits<std::uint64_t>::max();
+    check(refused("baseHead", huge, false), "baseHead UINT64_MAX is refused, never read as -1");
+    check(refused("baseHead", 3.7, false), "baseHead 3.7 is refused, never truncated to 3");
+    check(refused("baseHead", "1", false), "baseHead \"1\" is refused");
+    check(refused("createdUtc", huge, false), "createdUtc UINT64_MAX is refused");
+    check(refused("targetId", huge, true), "targetId UINT64_MAX is refused");
+    Payload whole = j;
+    whole["baseHead"] = 1.0;
+    whole["ops"][0]["targetId"] = 2;
+    const auto wholeCs = changesetFromJson(*f.store, whole, err);
+    check(wholeCs && wholeCs->baseHead == 1 && wholeCs->ops.at(0).targetId == 2,
+          "a whole float is that integer, as JSON Schema reads it: " + err);
 }
 
 // --- a large project: what the preview costs --------------------------------------------------------
@@ -429,15 +524,97 @@ void testLargeProject() {
     check(previewMs < 60000.0, "the preview finishes in bounded time (under 60 s)");
 }
 
+std::vector<std::string> linesOf(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const auto nl = text.find('\n', at);
+        if (nl == std::string::npos) {
+            out.push_back(text.substr(at));
+            break;
+        }
+        out.push_back(text.substr(at, nl - at));
+        at = nl + 1;
+    }
+    return out;
+}
+
+/// Applies a unified diff as unifiedDiff writes it; empty on a malformed one.
+std::optional<std::vector<std::string>> applyDiff(const std::vector<std::string>& before, const std::string& diff) {
+    std::vector<std::string> out;
+    std::size_t next = 0;   // the next line of `before` not yet copied
+    for (const auto& line : linesOf(diff)) {
+        if (line.rfind("--- ", 0) == 0 || line.rfind("+++ ", 0) == 0) continue;
+        if (line.rfind("@@ -", 0) == 0) {
+            const auto comma = line.find_first_of(", ", 4);
+            const auto first = std::stoul(line.substr(4, comma - 4));
+            std::size_t count = 1;
+            if (line[comma] == ',') count = std::stoul(line.substr(comma + 1, line.find(' ', comma) - comma - 1));
+            const std::size_t start = count == 0 ? first : first - 1;
+            if (start < next || start > before.size()) return std::nullopt;
+            while (next < start) out.push_back(before[next++]);
+            continue;
+        }
+        if (line.empty()) return std::nullopt;
+        if (line[0] == ' ' || line[0] == '-') {
+            if (next >= before.size() || before[next] != line.substr(1)) return std::nullopt;
+            if (line[0] == ' ') out.push_back(before[next]);
+            ++next;
+        } else if (line[0] == '+') {
+            out.push_back(line.substr(1));
+        } else {
+            return std::nullopt;
+        }
+    }
+    while (next < before.size()) out.push_back(before[next++]);
+    return out;
+}
+
+void testDiffStaysBounded() {
+    section("the diff stays bounded: what a request touches cannot exhaust memory (ADR-0233)");
+    // Every other line of 40,000 changed: an edit distance far past the
+    // trace budget, which before cost (D+1) x 2(N+M) words -- gigabytes.
+    std::string before, after;
+    for (int i = 0; i < 40000; ++i) {
+        before += "line " + std::to_string(i) + "\n";
+        after += std::string(i % 2 ? "changed " : "line ") + std::to_string(i) + "\n";
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string coarse = unifiedDiff(before, after);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    const auto applied = applyDiff(linesOf(before), coarse);
+    check(applied && *applied == linesOf(after), "past the budget the diff is coarser, and still correct");
+    check(ms < 60000, "and it finishes (" + std::to_string(ms) + " ms)");
+
+    // A contiguous block deleted from a long text: the common prefix and
+    // suffix are trimmed, so the diff is exact and cheap.
+    std::string longBefore, longAfter;
+    for (int i = 0; i < 30000; ++i) {
+        longBefore += "row " + std::to_string(i) + "\n";
+        if (i < 10000 || i >= 20000) longAfter += "row " + std::to_string(i) + "\n";
+    }
+    const std::string cut = unifiedDiff(longBefore, longAfter);
+    const auto cutApplied = applyDiff(linesOf(longBefore), cut);
+    std::size_t minus = 0, plus = 0;
+    for (const auto& l : linesOf(cut)) {
+        if (l.rfind("-row", 0) == 0) ++minus;
+        if (l.rfind("+row", 0) == 0) ++plus;
+    }
+    check(cutApplied && *cutApplied == linesOf(longAfter) && minus == 10000 && plus == 0,
+          "ten thousand lines deleted in one block: exactly those, nothing re-inserted");
+}
+
 int runAll() {
     std::printf("adi_changeset_tests -- ADR-0145 d9, AI-AGENT 6, ADR-0148\n\n");
     testGuardrails();
     testPreviewDoesNotWrite();
+    testDescribeByContent();
     testApplyIsOneStep();
     testStale();
     testRequestRowIsInTheTransaction();
     testMediaUnlinkLeavesTheFile();
     testUnifiedDiff();
+    testDiffStaysBounded();
     testJson();
     testLargeProject();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,

@@ -332,6 +332,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/project_files.cpp
     src/adi/ops.cpp
+    src/adi/ops_schema.cpp
     src/adi/row_capture.cpp
     src/adi/marker_ops.cpp
     src/adi/clip_property_ops.cpp
@@ -707,7 +708,7 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_core adi_changeset adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,
@@ -824,6 +825,50 @@ add_test(NAME adi_settings_tests COMMAND adi_settings_tests)
 add_executable(adi_changeset_tests tests/test_changeset.cpp)
 target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
 add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)
+
+# CTL-02: the registry describes itself; AC-24, schema and boundary agree.
+add_executable(adi_ops_schema_tests tests/test_ops_schema.cpp)
+target_link_libraries(adi_ops_schema_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
+
+# ---------------------------------------------------------------------------
+# The control stack (ADR-0232, ADR-0233; docs/CONTROL-MCP.md): one JUCE-free
+# dispatcher, its MCP projection, and adi-mcp, the stdio bridge (CTL-08).
+# No JUCE and no socket here: the loopback listener (CTL-04) and the app host
+# (CTL-09) are later PRs. Top-level scope on purpose, so adi_isolate_tests
+# gives these suites their ADI_HOME and test_all.sh finds them.
+# ---------------------------------------------------------------------------
+add_library(adi_control STATIC
+    src/adi/control/jsonrpc.cpp
+    src/adi/control/service.cpp
+    src/adi/control/telemetry.cpp
+    src/adi/control/project_access.cpp
+    src/adi/control/headless_project.cpp
+    src/adi/control/projection.cpp
+    src/adi/control/changeset_queue.cpp
+    src/adi/control/methods.cpp
+    src/adi/control/mcp.cpp
+    src/adi/control/stdio_server.cpp)
+target_link_libraries(adi_control PUBLIC adi_changeset adi_core PRIVATE adi_warnings)
+
+add_executable(adi_mcp tools/adi-mcp/main.cpp)
+target_link_libraries(adi_mcp PRIVATE adi_control adi_settings adi_changeset adi_core adi_warnings)
+set_target_properties(adi_mcp PROPERTIES OUTPUT_NAME adi-mcp)
+
+add_executable(adi_rpc_permissions_tests tests/test_rpc_permissions.cpp)
+target_link_libraries(adi_rpc_permissions_tests PRIVATE adi_control adi_core adi_warnings)
+add_test(NAME adi_rpc_permissions_tests COMMAND adi_rpc_permissions_tests)
+
+add_executable(adi_control_mcp_tests tests/test_control_mcp.cpp)
+target_link_libraries(adi_control_mcp_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
+add_dependencies(adi_control_mcp_tests adi_mcp)
+target_compile_definitions(adi_control_mcp_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
+add_test(NAME adi_control_mcp_tests COMMAND adi_control_mcp_tests)
+
+# The read levels on a seeded project, called directly (AGT-02; R5.6, R5.11).
+add_executable(adi_control_projection_tests tests/test_control_projection.cpp)
+target_link_libraries(adi_control_projection_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
+add_test(NAME adi_control_projection_tests COMMAND adi_control_projection_tests)
 
 add_executable(adi_migrate_tests tests/test_migrate.cpp)
 target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)

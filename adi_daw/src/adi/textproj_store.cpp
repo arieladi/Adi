@@ -194,7 +194,7 @@ std::span<const TableCoverage> coverage() {
         {"macro_mappings", Coverage::Excluded, "step 6"},
 
         // --- excluded pending their own ops ---------------------------------
-        {"automation_lanes", Coverage::Excluded, "no automation op is implemented"},
+        {"automation_lanes", Coverage::Excluded, "automation uses the dedicated snapshot; no lane text syntax"},
         {"automation_data", Coverage::Excluded, "automation uses the dedicated snapshot; no point text syntax"},
         {"automation_segment_ranges", Coverage::Excluded, "curve subranges accompany automation data"},
         {"note_expression", Coverage::Excluded, "no expression op is implemented"},
