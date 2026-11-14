@@ -42,14 +42,14 @@ jobs:
           else
             echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
           fi
-      - name: Build root window and both test tiers
+      - name: Build root window and UI test tiers
         run: |
           cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
-          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests --parallel 2
+          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests adi_ui_stack_model_tests adi_ui_shared_analysis_tests adi_ui_shared_spectrum_tests --parallel 2
       - name: Peerless software renders and synthesised keyboard events
         run: |
           # An unset DISPLAY deliberately proves the Linux offscreen path.
-          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_ui_(shell|window_state|document)_tests$' --output-on-failure
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_ui_(shell|window_state|document|stack_model|shared_analysis|shared_spectrum)_tests$' --output-on-failure
       - name: Windows native window smoke (no audio device)
         if: runner.os == 'Windows'
         shell: pwsh

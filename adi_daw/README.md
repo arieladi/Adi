@@ -60,7 +60,7 @@ than frightening.
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |
 | [`docs/UI-ARCHITECTURE.md`](docs/UI-ARCHITECTURE.md) | The Ableton-shaped shell, the component tree, and how the graph carries a hybrid track. |
 | [`docs/OPS.md`](docs/OPS.md) | The op vocabulary: descriptor, scopes, engine impact, inverses, CBOR encoding, first tranche. |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 238 entries. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Decision log. Append-only. 239 entries. |
 | [`docs/DEFERRED.md`](docs/DEFERRED.md) | Deferred work: every postponed item until it is done; the release gate (ADR-0239). |
 | [`docs/SETTINGS-CATALOGUE.md`](docs/SETTINGS-CATALOGUE.md) | Every setting the Settings Reference describes, generated from it by `tools/export_settings_catalogue.py`, for the settings registry to fill from. |
 | [`docs/AWAITING.md`](docs/AWAITING.md) | Tests only the director's own hardware can run: AVX-512 on his i9 laptop, ASIO on his interface. |

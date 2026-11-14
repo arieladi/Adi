@@ -12,6 +12,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
@@ -28,6 +29,7 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // a named snapshot instead, a point in the history that copies nothing.
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    ~ProjectDocument() override;
     // New (`create`) captures the registry's recording defaults for its four tracks in the history's
     // root (`Store::createNewProject`'s four-argument form, #397, N31) when `defaults` is given.
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
@@ -83,6 +85,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
+    const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
     // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
     // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
@@ -94,6 +97,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // refuses outright drains nothing, and the older gesture commits on the timer's next frame.
     bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
                           double normalized);
+    // Retained multi-track surfaces edit the exact runtime they presented. A stale row ID
+    // must never redirect a gesture to a replacement instance.
+    bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
+                                  double normalized, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    bool deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance);
     // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
     // this run follows its envelope again, from the playhead at once, and the snapshot's
     // `automationOverridden` and each lane's `overridden` follow in the same call. Not an op and
@@ -169,8 +177,14 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState sessionState_;
     engine::Session session_;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
+    struct SurfaceGesture {
+        std::uint64_t instance = 0;
+        std::shared_ptr<const gesture::OwnerToken> owner;
+    };
+    std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
+    std::shared_ptr<SharedAnalysis> analysis_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;

@@ -4,6 +4,7 @@
 namespace adi::ui {
 void ParameterFeed::publish(engine::Session &session) {
     auto next = std::make_shared<ParameterPublication>();
+    const auto publication = ++publication_;
     const auto &model = session.model();
     for (const auto &chain : model.deviceChains) {
         if (!chain.trackId)
@@ -28,17 +29,38 @@ void ParameterFeed::publish(engine::Session &session) {
                         break;
                     }
             auto *instance = session.instanceFor(row.id);
+            const auto *entry = session.entryFor(row.id);
+            data.runtime = session.deviceRuntimeToken(row.id);
+            data.available = instance && instance->loaded() && entry && !entry->retired && !entry->parked &&
+                             entry->resolvedPluginRef == row.pluginRefId && entry->resolvedUid == data.uid;
+            data.latency = data.available ? instance->latencySamples() : 0;
+            auto &identity = identities_[row.id];
+            const bool runtimeSame = identity.runtime.sameInstance(data.runtime) &&
+                                     session.resolveDevice(identity.runtime) == instance;
+            // Racks and unresolved rows have no runtime token; their authored reference is the
+            // identity until a runtime exists. A disappearance below erases their stamp too.
+            const bool neitherRuntime = identity.runtime.claimIdentity().expired() &&
+                                        data.runtime.claimIdentity().expired();
+            if (identity.stamp == 0 || identity.pluginRef != row.pluginRefId || identity.uid != data.uid ||
+                (!runtimeSame && !(neitherRuntime && !entry))) {
+                identity.stamp = ++nextIdentity_;
+                identity.runtime = data.runtime;
+                identity.pluginRef = row.pluginRefId;
+                identity.uid = data.uid;
+            }
+            data.instance = identity.stamp;
+            identity.seen = publication;
             if (instance)
                 for (std::int32_t i = 0; i < instance->paramCount(); ++i) {
                     const auto *d = instance->paramAt(i);
                     if (!d)
                         continue;
-                    data.declared.push_back({d->id, d->name, d->automatable && !d->missing});
+                    data.declared.push_back({d->id, d->name, d->automatable && !d->missing && data.available});
                     data.defaults[d->id] = d->defaultValue.normalized;
                     panel::Record r;
                     r.id = d->id;
                     r.name = d->name;
-                    r.missing = d->missing || !instance->loaded();
+                    r.missing = d->missing || !data.available;
                     r.playing = instance->getParam(d->id).normalized;
                     r.stored = r.playing;
                     for (const auto &saved : model.pluginParams)
@@ -94,6 +116,7 @@ void ParameterFeed::publish(engine::Session &session) {
             next->push_back(std::move(data));
         }
     }
+    std::erase_if(identities_, [publication](const auto &entry) { return entry.second.seen != publication; });
     current_ = std::move(next);
 }
 } // namespace adi::ui

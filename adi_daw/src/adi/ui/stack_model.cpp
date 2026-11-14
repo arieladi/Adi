@@ -527,6 +527,42 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
         }
     }
 }
+
+void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry &geometry,
+                        const MixViewProvider &provider, std::span<const ChainDeviceInput> devices,
+                        SnapshotRows &out) {
+    tracksFromSnapshot(reader, geometry, provider, out);
+    // The compatibility adapter's columns are not real devices. Actual-chain rows have only
+    // their user-added devices; this overload never switches on or reserves a built-in module.
+    out.kinds = {};
+    out.modules.clear();
+    out.chainOrder.resize(devices.size());
+    for (std::size_t i = 0; i < devices.size(); ++i)
+        out.chainOrder[i] = {devices[i].track, i};
+    std::sort(out.chainOrder.begin(), out.chainOrder.end());
+    out.items.reserve(devices.size());
+    for (auto &track : out.tracks) {
+        track.itemBegin = static_cast<std::uint32_t>(out.items.size());
+        track.itemCount = 0;
+        auto at = std::lower_bound(out.chainOrder.begin(), out.chainOrder.end(),
+                                   std::pair<TrackId, std::size_t>{track.id, 0});
+        for (; at != out.chainOrder.end() && at->first == track.id; ++at) {
+            const auto &source = devices[at->second];
+            if (source.device <= 0 || source.identity == 0 ||
+                out.items.size() >= std::numeric_limits<std::uint32_t>::max())
+                continue;
+            ItemInput item;
+            item.device = source.device;
+            item.identity = source.identity;
+            item.cls = source.cls;
+            item.name = source.name;
+            item.available = source.available;
+            item.enabled = source.enabled;
+            out.items.push_back(item);
+            ++track.itemCount;
+        }
+    }
+}
 } // namespace stack
 
 using namespace stack;
@@ -783,6 +819,8 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
             item.device = src.device;
             item.identity = src.identity;
             item.cls = static_cast<unsigned>(src.cls) < kItemClasses ? src.cls : ItemClass::View;
+            item.available = src.available;
+            item.enabled = src.enabled;
             for (const auto &old : r.items)
                 if (old.device == src.device && old.identity == src.identity) {
                     item.gen = old.gen;
@@ -795,7 +833,8 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
     bool itemsSame = scratchItems_.size() == r.items.size();
     for (std::size_t j = 0; itemsSame && j < r.items.size(); ++j) {
         const auto &a = scratchItems_[j], &b = r.items[j];
-        itemsSame = a.device == b.device && a.identity == b.identity && a.cls == b.cls && a.gen == b.gen;
+        itemsSame = a.device == b.device && a.identity == b.identity && a.cls == b.cls && a.gen == b.gen &&
+                    a.available == b.available && a.enabled == b.enabled;
     }
     if (!itemsSame) {
         r.items.swap(scratchItems_);
@@ -3812,8 +3851,11 @@ std::optional<Resolved> StackModel::resolve(const ItemRef &ref) const noexcept {
             if (item.device == ref.device) {
                 out.device = item.device;
                 out.identity = item.identity;
-                out.state = ModuleState::Engaged;
+                out.state = !item.available ? ModuleState::Absent
+                            : item.enabled ? ModuleState::Engaged : ModuleState::Dormant;
                 out.cls = item.cls;
+                out.available = item.available;
+                out.enabled = item.enabled;
             }
         return out;
     }
@@ -3823,6 +3865,8 @@ std::optional<Resolved> StackModel::resolve(const ItemRef &ref) const noexcept {
             out.identity = r.modules[k].instance;
             out.state = r.modules[k].state;
             out.cls = kinds_[k].widthClass;
+            out.available = r.modules[k].state != ModuleState::Absent;
+            out.enabled = r.modules[k].state == ModuleState::Engaged;
         }
     return out;
 }
@@ -4063,6 +4107,8 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         g.ref.device = r.items[j].device;
         g.ref.gen = r.items[j].gen;
         g.cls = r.items[j].cls;
+        g.available = r.items[j].available;
+        g.enabled = r.items[j].enabled;
         g.index = static_cast<std::uint32_t>(j);
         g.x = left;
         g.width = w;
@@ -4113,7 +4159,18 @@ void StackModel::walkItems(std::size_t shown, detail::Sink<ItemGeo> sink) const 
     if (isCapturedShown(shown)) {
         for (const auto &g : frozenItems_) {
             ++stats_.itemEvaluations;
-            sink(g);
+            // Retain geometry, not stale availability/activation. A removed/replaced neighbour
+            // remains an unavailable frozen location until the edited target releases the row.
+            ItemGeo current = g;
+            if (const auto item = resolve(g.ref)) {
+                current.cls = item->cls;
+                current.available = item->available;
+                current.enabled = item->enabled;
+            } else {
+                current.available = false;
+                current.enabled = false;
+            }
+            sink(current);
         }
         return;
     }
