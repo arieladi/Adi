@@ -16,13 +16,17 @@
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
+#include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
+#include "ui_analysis.hpp"
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <type_traits>
+#include <variant>
 namespace adi::ui {
 class AdiRootComponent;
 class FloatingHost;
@@ -120,7 +124,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Paste,
         Duplicate,
         TogglePluginWindows,
-        LastId = TogglePluginWindows
+        Split,
+        LastId = Split
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -163,6 +168,28 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
     // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
     bool linkLoopToSelection() const noexcept { return linkLoop_; }
+    // editing.splitAllWithNoSelection: Split with no clip chosen splits every track at the marker.
+    bool splitAllWithNoSelection() const noexcept { return splitAll_; }
+    // The settings, read where an engine edit captures the editing policy (`edit_plan::capturePolicy`).
+    const settings::AppSettings &settings() const noexcept { return settings_; }
+    // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
+    // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
+    // the device clipboard is, so it outlives a window; the engine refuses it in another project.
+    struct ClipClipboard {
+        std::variant<std::monostate, clip_edit::ClipCopy, clip_edit::RangeCopy> held;
+        bool empty() const noexcept { return std::holds_alternative<std::monostate>(held); }
+        // After Save As, a copy held from the project names the new file, as the device copy does.
+        void rebase(const std::string &from, const std::string &to) {
+            std::visit(
+                [&](auto &copy) {
+                    if constexpr (!std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
+                        if (copy.sourceFile == from)
+                            copy.sourceFile = to;
+                },
+                held);
+        }
+    };
+    ClipClipboard &clipClipboard() noexcept { return clipClipboard_; }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
     // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
     // and keeping a window's zoom there, saved at once.
@@ -185,6 +212,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool exclusiveSolo_ = true;
     RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
+    bool splitAll_ = true;
+    ClipClipboard clipClipboard_;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -324,6 +353,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     MixerPanel mixerView{*this, true};
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
     MixViewPanel mixViewPanel{*this};
+    SharedSpectrumView infoSpectrum;
+    std::shared_ptr<SharedAnalysis> sharedAnalysis;
+    std::int64_t analysisTrack() const noexcept;
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
     // Where the Mix View stands docked, open or not: the arrangement's place and its track controls'.
     // Its first window opens over it, on the screen (detachMixView).
@@ -371,6 +403,33 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
     // Status Bar.
     bool submitEdits(std::vector<OpRequest> ops);
+    // An engine edit prepared against the store (`clip_edit::prepareSplit`, `prepareDeleteRange`;
+    // N17, #393) committed as one batch, with at most one op of the window's on its end: one undo
+    // step. The engine's refusal goes to the Status Bar.
+    bool commitEdit(clip_edit::PreparedEdit prepared, std::optional<OpRequest> appended = std::nullopt);
+    // Live's Split (Ctrl/Cmd+E, the Edit menu, a clip's menu; manual 6.9, 41.5): a time selection
+    // cuts the clips on its tracks at its edges (inside one clip, at both); else the chosen clip at
+    // the insert marker; else the clips under the marker on the selected tracks, or on every track
+    // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
+    bool splitAtMarker();
+    // Live's Cut, Copy, Paste and Duplicate in the Arrangement (manual 6.9, 41.5; E2): on the chosen
+    // clip or the time selection; Paste at the insert marker, a range onto as many shown tracks as
+    // it came from, in order, from the selected one. Each is one undo step; the engine's refusals go
+    // to the Status Bar. `canClipClipboard` says whether there is something to act on.
+    enum class ClipCommand { Cut, Copy, Paste, Duplicate };
+    bool clipClipboard(ClipCommand);
+    bool canClipClipboard(ClipCommand) const;
+    // Whether Cut, Copy, Paste or Duplicate (an AppCommands id) has something to act on, on a device
+    // or in the Arrangement; and whether the device chain takes it first.
+    bool canClipboard(int commandId) const;
+    bool deviceClipboardFirst(DeviceChainStrip::Clip) const;
+    // Where Paste starts: the top selected track the lanes show that can hold clips; 0 if none.
+    std::int64_t pasteOrigin() const;
+    // The rate an edit's seconds and ticks convert at: the device's, else the project's.
+    double editRate() const noexcept;
+    // The store an engine edit is prepared against, and the settings its policy is captured from.
+    Store &editStore() noexcept { return submitter_.store(); }
+    const settings::AppSettings &commandSettings() const noexcept { return commands_.settings(); }
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
@@ -566,6 +625,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     juce::MenuBarModel *menu() noexcept;
     // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
     void moved() override;
+    void minimisationStateChanged(bool) override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }

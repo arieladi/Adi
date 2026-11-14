@@ -32,7 +32,24 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());
+    const auto lifetime = session_.lifetimeToken();
+    analysis_ = std::make_shared<SharedAnalysis>(
+        [this, lifetime](std::int64_t track, engine::ScopePoint point) {
+            if (lifetime.expired()) return std::shared_ptr<const engine::ScopeTap>{};
+            auto tap = session_.openScope(track, SharedAnalysis::kTapSeconds, point);
+            // Existing Session taps are retained across a format change. Do not label old-rate
+            // data as current; MX-30 owns replacing/retiring that storage safely.
+            if (tap && tap->sampleRate() != session_.spec().sampleRate) {
+                session_.closeScope(track, point);
+                return std::shared_ptr<const engine::ScopeTap>{};
+            }
+            return tap;
+        },
+        [this, lifetime](std::int64_t track, engine::ScopePoint point) {
+            if (!lifetime.expired()) session_.closeScope(track, point);
+        });
 }
+ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
@@ -192,6 +209,7 @@ bool ProjectDocument::synchronise() {
                 parameterOps_.detach(entry.deviceId);
         }
         parameterOps_.attachSession(session_);
+        analysis_->refreshSources();
         error_.clear();
     }
     // The session re-read the rows after the submitter's refresh, so an override it found there,
@@ -433,6 +451,59 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &expected,
+                                          std::uint64_t stamp) {
+    const bool pending = realisedGeneration_ != view_.generation();
+    if (!synchronise()) return false;
+    if (pending) feed_.publish(session_);
+    const auto publication = feed_.current();
+    const auto shown = std::find_if(publication->begin(), publication->end(), [&](const auto &d) {
+        return d.id == id && d.instance == stamp;
+    });
+    if (shown == publication->end()) return false;
+    if (expected.claimIdentity().expired()) return shown->runtime.claimIdentity().expired();
+    const auto current = session_.deviceRuntimeToken(id);
+    return expected.sameInstance(current) && session_.resolveDevice(expected);
+}
+bool ProjectDocument::parameterGestureExpected(std::int64_t id, const std::string &param,
+                                             engine::ParamEventKind kind, double value,
+                                             const engine::DeviceRuntimeToken &expected, std::uint64_t stamp) {
+    const bool current = deviceTargetCurrent(id, expected, stamp);
+    const auto publication = feed_.current();
+    const bool available = std::any_of(publication->begin(), publication->end(), [&](const auto &d) {
+        return d.id == id && d.instance == stamp && d.available;
+    });
+    if (!current || !available || !session_.resolveDevice(expected)) {
+        const auto held = surfaceGestures_.find({id, param});
+        if (held != surfaceGestures_.end() && held->second.instance == stamp) {
+            // End the exact common owner issued to this surface. Sending a numeric-ID End to
+            // a replacement would be unsafe; cancellation can retire a detached presentation
+            // without invoking that obsolete SDK. A newer surface's owner is never cancelled.
+            const auto cancelled = parameterOps_.cancelPending(*held->second.owner, captureNowMs());
+            if (cancelled.status.ok()) surfaceGestures_.erase(held);
+        }
+        error_ = "That device changed while it was being edited. Start a new edit.";
+        return false;
+    }
+    const auto key = std::make_pair(id, param);
+    if (kind == engine::ParamEventKind::Begin && !surfaceGestures_.contains(key)) {
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.deviceId == id && pending.parameterId == param) {
+                error_ = "Another editor is still editing that parameter.";
+                return false;
+            }
+    }
+    const bool taken = parameterGesture(id, param, kind, value);
+    if (taken && kind == engine::ParamEventKind::Begin) {
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.deviceId == id && pending.parameterId == param && pending.owner) {
+                surfaceGestures_[key] = {stamp, pending.owner};
+                break;
+            }
+    }
+    if (taken && kind == engine::ParamEventKind::End) surfaceGestures_.erase(key);
+    return taken;
+}
 bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double normalized) {
     // A drag in the strip is an edit and goes through the capture, so a first touch emits its
@@ -484,6 +555,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     engineRate_ = rate;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
+    analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {

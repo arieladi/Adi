@@ -53,14 +53,16 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     addChildComponent(menu);
     present(r, defaultNormalized);
 }
-void ParameterControl::gesture(engine::ParamEventKind kind, double v) {
-    strip.edit(device, parameter, kind, v);
+bool ParameterControl::gesture(engine::ParamEventKind kind, double v) {
+    return parameterGesture ? parameterGesture(parameter, kind, v) : strip.edit(device, parameter, kind, v);
 }
 bool ParameterControl::keyPressed(const juce::KeyPress &k) {
     // Live 12 manual 41.6: Return to Default is Delete. Backspace with it, as the device's own
     // Delete takes both. Handled here, a Delete on a clicked knob never removes the device.
-    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
-        return returnToDefault();
+    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
+        returnToDefault();
+        return true; // A refused reset must not bubble into deleting the device or its track.
+    }
     return false;
 }
 bool ParameterControl::returnToDefault() {
@@ -68,9 +70,10 @@ bool ParameterControl::returnToDefault() {
         return false;
     // One bounded gesture from the value playing to the plug-in's default: one undo step, its
     // opener in front when the parameter was never touched (ADR-0124 d4).
-    gesture(engine::ParamEventKind::Begin, record->playing);
+    if (!gesture(engine::ParamEventKind::Begin, record->playing))
+        return false;
     gesture(engine::ParamEventKind::Value, defaultValue);
-    return strip.edit(device, parameter, engine::ParamEventKind::End, defaultValue);
+    return gesture(engine::ParamEventKind::End, defaultValue);
 }
 void ParameterControl::present(const panel::Record &r, double defaultNormalized) {
     record = &r;
@@ -144,6 +147,7 @@ SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::int32_t sl, juc
     clear.getProperties().set("live.small", true);
     clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
     clear.onClick = [this] {
+        if (targetValid && !targetValid()) return;
         if (strip_.clearSample)
             strip_.clearSample(device, slot);
     };
@@ -189,6 +193,7 @@ void SampleTile::paint(juce::Graphics &g) {
     g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
 }
 bool SampleTile::drop(const juce::String &path) {
+    if (targetValid && !targetValid()) return false;
     if (path.isEmpty())
         return false;
     if (!strip_.assignSample) {
@@ -223,6 +228,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     wrench.setTitle("Plug-In Window");
     wrench.setTooltip("Opens or closes the plug-in's own window; Ctrl/Cmd keeps the other plug-in windows open.");
     wrench.onClick = [this] {
+        if (!validTarget()) return;
         strip.root.togglePluginWindow(id, juce::ModifierKeys::currentModifiers.isCommandDown());
         wrench.setToggleState(strip.root.pluginWindowOpen(id), juce::dontSendNotification);
     };
@@ -235,6 +241,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     title.addMouseListener(this, false);
     title.onClick = [this] { grabKeyboardFocus(); };
     enabled.onClick = [this] {
+        if (!validTarget()) return;
         strip.action("device.setEnabled", {{"id", id}, {"enabled", enabled.getToggleState()}});
     };
     configureButton.onClick = [this] { configure(); };
@@ -247,16 +254,46 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     rename.onFocusLost = [this] { endRename(true); };
     present(d);
 }
+DevicePanelView::~DevicePanelView() {
+    endInteraction(Interaction::Text);
+    endInteraction(Interaction::Menu);
+}
+bool DevicePanelView::beginInteraction(Interaction kind) {
+    auto &active = kind == Interaction::Text ? textInteraction_ : menuInteraction_;
+    if (active) return true;
+    if (!validTarget() || (interactionBegin && !interactionBegin(kind))) return false;
+    active = true;
+    if (kind == Interaction::Menu) ++menuEpoch_;
+    return true;
+}
+void DevicePanelView::endInteraction(Interaction kind) {
+    auto &active = kind == Interaction::Text ? textInteraction_ : menuInteraction_;
+    if (!active) return;
+    active = false;
+    if (interactionEnd) interactionEnd(kind);
+}
+void DevicePanelView::cancelInteractions() {
+    // A native menu may complete after this panel was hidden and shown again. Its old action
+    // and completion must neither mutate this target nor end a newly acquired capture.
+    ++menuEpoch_;
+    endRename(false);
+    endInteraction(Interaction::Text);
+    endInteraction(Interaction::Menu);
+}
 void DevicePanelView::present(const DevicePanelData &d) {
     data = &d;
+    const auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
+                      (d.available ? "Latency: " + juce::String(d.latency) + " samples."
+                                   : juce::String("This device is unavailable."));
+    if (title.getTooltip() != hint) title.setTooltip(hint);
     if (title.getButtonText() != juce::String(d.name)) {
         title.setButtonText(d.name);
-        title.setTooltip("Double-click to fold the device; right-click for its commands.");
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
     // Color Cab's Impulse slot, its one declared sample slot (ENGINE-SAMPLE-SLOTS.md).
     if (!sample && d.uid == "org.adidaw.builtin.color-cab") {
         sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
+        sample->targetValid = [this] { return validTarget(); };
         addAndMakeVisible(*sample);
         resized();
     }
@@ -284,6 +321,12 @@ void DevicePanelView::present(const DevicePanelData &d) {
             for (const auto &r : d.records)
                 if (r.id == e.id) {
                     auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
+                    c->parameterGesture = [this](const std::string &param, engine::ParamEventKind kind, double v) {
+                        if (kind == engine::ParamEventKind::End && parameterGesture)
+                            return parameterGesture(param, kind, v);
+                        if (!validTarget()) return false;
+                        return parameterGesture ? parameterGesture(param, kind, v) : strip.edit(id, param, kind, v);
+                    };
                     addAndMakeVisible(*c);
                     controls.push_back(std::move(c));
                     break;
@@ -368,11 +411,13 @@ void DevicePanelView::paint(juce::Graphics &g) {
     }
 }
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
+    if (!validTarget())
+        return k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
         return strip.action("device.remove", {{"id", id}});
     // Live moves between devices with the left and right arrows (§41.4.1.5).
     if (k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey)
-        return strip.focusNext(id, k == juce::KeyPress::rightKey);
+        return navigate ? navigate(k == juce::KeyPress::rightKey) : strip.focusNext(id, k == juce::KeyPress::rightKey);
     return false;
 }
 void DevicePanelView::focusGained(FocusChangeType) {
@@ -380,11 +425,16 @@ void DevicePanelView::focusGained(FocusChangeType) {
     repaint();
 }
 void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
+    if (search.hasKeyboardFocus(false))
+        beginInteraction(Interaction::Text);
+    else if (!rename.isVisible())
+        endInteraction(Interaction::Text);
     if (hasKeyboardFocus(true))
         strip.chose(id);
     repaint();
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
+    if (!validTarget()) return;
     if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
         contextMenu(e.getScreenPosition());
     else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
@@ -392,6 +442,7 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
 }
 juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (!validTarget()) return;
     if (e.eventComponent == &title || e.y < kTitleHeight)
         strip.fold(id);
 }
@@ -400,13 +451,16 @@ juce::PopupMenu DevicePanelView::commands() {
     // Delete and Fold; then the device's own. Paste is not in it: the Edit menu's and Ctrl/Cmd+V.
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
+    const auto epoch = menuEpoch_;
     using Clip = DeviceChainStrip::Clip;
     const auto clipItem = [&](const char *name, char key, Clip c) {
         juce::PopupMenu::Item item(name);
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
-        item.action = [safe, c] {
-            if (safe)
+        item.action = [safe, c, epoch] {
+            if (!safe || safe->menuEpoch_ != epoch) return;
+            if (safe) safe->endInteraction(Interaction::Menu);
+            if (safe && safe->validTarget())
                 safe->strip.clipboard(c, safe->id);
         };
         m.addItem(std::move(item));
@@ -419,33 +473,47 @@ juce::PopupMenu DevicePanelView::commands() {
     renameItem.shortcutKeyDescription =
         juce::KeyPress('r', juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
     renameItem.isEnabled = !strip.folded(id);
-    renameItem.action = [safe] {
-        if (safe)
+    renameItem.action = [safe, epoch] {
+        if (!safe || safe->menuEpoch_ != epoch) return;
+        if (safe) safe->endInteraction(Interaction::Menu);
+        if (safe && safe->validTarget())
             safe->beginRename();
     };
     m.addItem(std::move(renameItem));
     m.addSeparator();
-    m.addItem("Delete", [safe] {
-        if (safe)
+    m.addItem("Delete", [safe, epoch] {
+        if (!safe || safe->menuEpoch_ != epoch) return;
+        if (safe) safe->endInteraction(Interaction::Menu);
+        if (safe && safe->validTarget())
             safe->strip.action("device.remove", {{"id", safe->id}});
     });
-    m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe] {
-        if (safe)
+    m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe, epoch] {
+        if (!safe || safe->menuEpoch_ != epoch) return;
+        if (safe) safe->endInteraction(Interaction::Menu);
+        if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
     m.addSeparator();
-    m.addItem("Configure", [safe] {
-        if (safe)
+    m.addItem("Configure", [safe, epoch] {
+        if (!safe || safe->menuEpoch_ != epoch) return;
+        if (safe) safe->endInteraction(Interaction::Menu);
+        if (safe && safe->validTarget())
             safe->configure();
     });
     return m;
 }
 void DevicePanelView::contextMenu(juce::Point<int> where) {
-    commands().showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+    if (!beginInteraction(Interaction::Menu)) return;
+    auto safe = SafePointer<DevicePanelView>(this);
+    const auto epoch = menuEpoch_;
+    commands().showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}),
+                             [safe, epoch](int) {
+                                 if (safe && safe->menuEpoch_ == epoch) safe->endInteraction(Interaction::Menu);
+                             });
 }
 bool DevicePanelView::beginRename() {
     // A folded device has no title bar to type in.
-    if (data == nullptr || strip.folded(id))
+    if (data == nullptr || strip.folded(id) || !beginInteraction(Interaction::Text))
         return false;
     rename.setBounds(title.getBounds());
     rename.setText(juce::String::fromUTF8(data->name.c_str()), false);
@@ -461,20 +529,24 @@ void DevicePanelView::endRename(bool commit) {
     rename.setVisible(false);
     // An empty name keeps the one the device has.
     const auto name = rename.getText().trim().toStdString();
-    if (commit && data != nullptr && !name.empty() && name != data->name)
+    if (commit && validTarget() && data != nullptr && !name.empty() && name != data->name)
         strip.action("device.rename", {{"id", id}, {"name", name}});
     if (isShowing())
         grabKeyboardFocus();
+    endInteraction(Interaction::Text);
 }
 void DevicePanelView::configure() {
-    if (!data)
+    if (!data || !validTarget())
         return;
     if (!configuring) {
         // The first press shows the search; the menu lists what it finds.
         configuring = true;
+        resized();
         strip.resized();
         return;
     }
+    endInteraction(Interaction::Text);
+    if (!beginInteraction(Interaction::Menu)) return;
     juce::PopupMenu m;
     m.addItem(1, "Use default panel");
     m.addItem(2, "Clear panel");
@@ -493,12 +565,16 @@ void DevicePanelView::configure() {
                   std::find(ids.begin(), ids.end(), d.id) != ids.end());
     }
     auto safe = juce::Component::SafePointer<DevicePanelView>(this);
+    const auto epoch = menuEpoch_;
     m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&configureButton),
-                    [safe, ids, candidates](int chosen) mutable {
-                        if (!safe || chosen == 0)
+                    [safe, ids, candidates, epoch](int chosen) mutable {
+                        if (!safe || safe->menuEpoch_ != epoch) return;
+                        if (safe) safe->endInteraction(Interaction::Menu);
+                        if (!safe || !safe->validTarget() || chosen == 0)
                             return;
                         if (chosen == 3) {
                             safe->configuring = false;
+                            safe->resized();
                             safe->strip.resized();
                             return;
                         }
@@ -719,6 +795,31 @@ bool DeviceChainStrip::folded(std::int64_t id) const {
 bool DeviceChainStrip::edit(std::int64_t id, const std::string &p, engine::ParamEventKind k,
                             double v) {
     return gesture && gesture(id, p, k, v);
+}
+bool DeviceChainStrip::editExpected(const DevicePanelData &expected, const std::string &parameter,
+                                   engine::ParamEventKind kind, double value) {
+    // End must reach the document even after this publication has been superseded. It owns
+    // the exact retained gesture and can cancel that owner without touching a new instance.
+    if (kind == engine::ParamEventKind::End && guardedGesture)
+        return guardedGesture(expected.id, parameter, kind, value, expected.runtime, expected.instance);
+    const auto latest = publication ? publication() : nullptr;
+    if (!latest) return false;
+    const auto found = std::find_if(latest->begin(), latest->end(), [&](const auto &d) {
+        return d.id == expected.id && d.instance == expected.instance && d.available;
+    });
+    if (found == latest->end()) return false;
+    if (guardedGesture)
+        return guardedGesture(expected.id, parameter, kind, value, expected.runtime, expected.instance);
+    // Component/fake-host clients may not expose a Session token. Their publication stamp is
+    // still checked; production always supplies guardedGesture and validates in the document.
+    return edit(expected.id, parameter, kind, value);
+}
+bool DeviceChainStrip::validExpected(const DevicePanelData &expected) const {
+    if (targetCurrent) return targetCurrent(expected.id, expected.runtime, expected.instance);
+    const auto latest = publication ? publication() : nullptr;
+    return latest && std::any_of(latest->begin(), latest->end(), [&](const auto &d) {
+        return d.id == expected.id && d.instance == expected.instance;
+    });
 }
 bool DeviceChainStrip::action(const std::string &op, Payload p) {
     return submit && submit(op, std::move(p));

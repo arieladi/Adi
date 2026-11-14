@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -1410,6 +1412,18 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
+        // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
+        // was clicked, above the lanes' items. The lanes' own menu offers Paste.
+        if (geometry.selection.clip != 0) {
+            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+                menu.addCommandItem(&commands.manager, id);
+            menu.addSeparator();
+            menu.addCommandItem(&commands.manager, AppCommands::Split);
+            menu.addSeparator();
+        } else if (!commands.clipClipboard().empty()) {
+            menu.addCommandItem(&commands.manager, AppCommands::Paste);
+            menu.addSeparator();
+        }
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).
@@ -2541,6 +2555,62 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         return false;
     const auto &sel = view.geometry.selection;
     const auto selected = view.geometry.selectedTracks(view.reader());
+    const auto content = rangeContent(current->tracks, selected, sel.start, sel.end);
+    // A clip crossing the selection's edge (E1, N17): Delete trims it there, or cuts the middle out
+    // of a clip the selection lies inside (`prepareDeleteRange`, with the settings' editing policy);
+    // 0 over one clip splits it at the selection's edges inside it and deactivates the part inside,
+    // one batch.
+    if (content.crossing > 0 && !deactivate) {
+        clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+        const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+        auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
+        if (prepared.ok) {
+            if (!view.root.commitEdit(std::move(prepared)))
+                return false;
+            view.changed();
+            return true;
+        }
+        // The engine will not trim here (a track whose automation follows its clips, a frozen track,
+        // the editing settings): the whole clips inside go as before, and the Status Bar says why the
+        // crossing ones stay.
+        const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
+                         prepared.error + ").";
+        auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
+        if (whole.ops.empty()) {
+            view.root.say(why);
+            return false;
+        }
+        if (!view.root.submitEdits(std::move(whole.ops)))
+            return false;
+        view.changed();
+        view.root.say(why);
+        return true;
+    }
+    if (deactivate)
+        if (const auto split = edgeSplit(content, sel.start, sel.end)) {
+            const auto right = audio_drop_detail::newClipId(*current);
+            // Two cuts: the middle piece is `right`, the last one the next identity.
+            auto prepared = split->second != 0
+                                ? clip_edit::prepareSplit(view.root.editStore(), split->clip, right, right + 1,
+                                                          clip_edit::TimePoint{0, split->at},
+                                                          clip_edit::TimePoint{0, split->second}, view.root.editRate())
+                                : clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
+                                                          clip_edit::TimePoint{0, split->at}, view.root.editRate());
+            const auto inside = split->second != 0 || split->insideIsRight ? right : split->clip;
+            // 0 toggles, as on whole clips: a clip already deactivated has its inside part activated.
+            bool wasOff = false;
+            for (const auto *c : content.crossers)
+                if (c->id == split->clip)
+                    wasOff = c->muted;
+            auto mute = track_edits_detail::op("clip.setMute", {{"id", inside}, {"muted", !wasOff}},
+                                               wasOff ? "Activate Clip" : "Deactivate Clip");
+            mute.targetKind = "clip";
+            mute.targetId = inside;
+            if (!view.root.commitEdit(std::move(prepared), std::move(mute)))
+                return false;
+            view.changed();
+            return true;
+        }
     const auto note = rangeNote(current->tracks, selected, sel.start, sel.end);
     auto edit = deactivate ? deactivateRange(current->tracks, selected, sel.start, sel.end)
                            : deleteRange(current->tracks, selected, sel.start, sel.end);
@@ -2837,15 +2907,23 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (sel.start != sel.end) {
-        // A time selection moves by the grid when it holds no clip; moving part of a clip
-        // needs it split first.
+        // A time selection moves by the grid when it holds no clip. Part of a clip moves once Split
+        // has cut it there (which selects the part inside); a whole clip moves once selected.
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
-        if (track != nullptr)
-            for (const auto &c : track->clips)
-                if (c->posTicks < hi && c->posTicks + c->lengthTicks > lo) {
-                    view.root.say("Moving part of a clip waits for the engine's split (window log, N17).");
-                    return true;
-                }
+        if (track != nullptr) {
+            bool crosses = false, holds = false;
+            for (const auto &c : track->clips) {
+                const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
+                if (a < hi && b > lo)
+                    (a < lo || b > hi ? crosses : holds) = true;
+            }
+            if (crosses || holds) {
+                view.root.say(crosses ? "The arrow keys move whole clips: split the clip at the selection first "
+                                        "(Ctrl/Cmd+E), which selects the part inside."
+                                      : "The arrow keys move a selected clip: click the clip to move it.");
+                return true;
+            }
+        }
         const auto delta = geo.nextGridLine(lo, forward) - lo;
         sel.start += delta;
         sel.end += delta;

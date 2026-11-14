@@ -6,6 +6,65 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-12 (afternoon) — #530 held for the engine seat; the Mix View foundation reviewed
+
+**For the engine seat — read first (#530, `engine/clip-trim`, now at `da1de8db`; fetch first).**
+- **Win added two commits.**
+  - `f1d64d3e`: main merged in.
+  - `da1de8db`: `sampleAtNs` puts linear clip envelope endpoints in exact integer samples. Your new check "linear clip envelope retains its native absolute end through a left-edge change" failed only on ubuntu arm64. It sits on a long-double half-sample tie (35 ms at 44.1 kHz is 1543.5), and long double is a different width on each platform.
+- **Held: #530 against main's #535.** #535's `silentAfterEnd` (adi_clip_candidate_ready_tests) fails with this branch on every leg. Its clip is what an import followed by moving Start leaves: `end_marker_ticks` = 40,000 samples, and `source_end_ns` still pinned at the whole file (2 s).
+  - On main, the End marker limits `playEnd`.
+  - On this branch, an unwarped clip with a physical clock applies only the ns pin and ignores the tick End. So the clip plays past the End the user sees.
+  - Decide which End wins when they disagree. Either way, make `clip.setStartMarker` and `clip.setEndMarker` keep `source_end_ns` and `end_marker_ticks` in sync, so the two cannot disagree. Then align the rule or #535's fixture. The note is on #530 too.
+
+**The Mix View seat's foundation, #537** (draft): STACK on the real device chains, and one shared Main spectrum for the Info box and OVERVIEW. Win's four-lens review confirmed 11 findings and refuted 5. They are posted on #537:
+- JUCE moved 9.0.2 → 9.0.5 inside the feature commit with no ADR. That waits for the director; win recommends yes, as its own ADR.
+- The first spectrum frame after a reopen or seek is mostly old audio.
+- An orphan tap is left attached when acquire throws.
+- An explicit gesture is left open when the Begin's commit is refused.
+- The analyser is unavailable after a rate change (deferred to MX-30).
+- Two test gaps.
+
+#537 merges after the fixes and his answer. The seat had stopped at its live-test gate; the live check now trails its work.
+
+**Merged since the morning entry:** #538 (window E1: Split and range edits), #535, #533, #536.
+
+---
+
+## 2026-11-12 — two outside reviews verified and fixed; the Mix View seat and ADiJ ruled; #512 green and still held
+
+**For the engine seat — read first.**
+- **Win pushed onto three of your branches.** Fetch before touching them again.
+  - `engine/clip-trim` (#530): `ffeec650` on your `e9712ecb`. It covers three things:
+    - `captureSampleDefaults` measures a linear clip from `pos_ns` and clamps the tick fallback at 0, because the ns→tick round trip could give −1 and refuse the save;
+    - `trimFrozenStart` treats a left extension of a clip already at source zero as a true no-op;
+    - it refuses `begin >= end`, and refuses a Start at or past an unlooped MIDI or warped clip's End marker.
+  - `engine/library-scan-cancel` (#533): `56d976cb` on your `953e15cd`. A file that vanishes between enumeration and stat is skipped, not a failed scan. A publication that throws reports no counts.
+  - `engine/transport-start` (#527, merged): a device stop (`Session::release`) cancels a pending count-in.
+- **Merged into `engine/log`** (`783f7c66`): main with #515 to #533, #527, #529 and ADR-0235 to 0237. Your next branches include them.
+- **Yours to take, verified but not fixed by win:**
+  1. **End-marker rounding.** `TempoMap::secondsToTicks` truncates, and `ticksToSeconds`/`nanos` round, so a linear clip's End that lands exactly on a tick can come back one tick short (the outside review's B1, found on #531). Summing `pos_ns + length_ns` as int64 in `defaultEnd`/`readClipDetails` fixes only some tempos. The real fix is in the conversion: snap when within a few ulps, or convert exactly for step maps. Also compute ClipPlayback's pinned `playEnd` from absolute endpoints, not a rounded duration: about 12.5 % of arbitrary linear clips lose their tail sample on a pinned End today.
+  2. `clip.setStartMarker` should clear or recompute `source_end_ns` when it pins End, so End and the source-end pin cannot disagree.
+  3. `ProgressiveDecoder`: when the last lease of a still-queued job goes, drop the job and release its admission at once.
+  4. `Index::scan`: a throw after `tx.commit()` (in the post-commit enqueue) is reported as a rollback with zero counts. And a subdirectory that vanishes mid-walk still fails the scan; walk it with `increment(ec)`.
+  5. #530's linear B2 test uses a zero ns offset, so it proves only the clamp. Add a case with a one-sample offset.
+  6. Count-in clicks are not on the latency-compensated clock (outside review 3.2), so with a latency-reporting plug-in, bar 1 lands that many samples after the count-in's grid. When the latency exceeds a beat, it needs a decision: extend the count-in, or let the metronome emit count-in beats. Measure Live first.
+
+**The outside reviews (Gemini via Antigravity), each claim checked twice against the code with probes:**
+- **Round 2,** on #520, #522 and #527: 8 claims; 5 real or partly real (all minor), 1 false, 2 harmless. Fixed in #529 (deferred foreign keys leaking out of compaction's rolled-back probe; leftover files on a failed project creation) and on #527 (count-in on device stop).
+- **Round 3,** on #515 and #530 to #533: 17 claims; 15 real or partly real (all minor), 2 false.
+  - #535 fixes #515's follow-ups: the worker no longer claims a ready page of its own request; reservations stop at End; a muted clip opens nothing; three tests now prove what they say.
+  - #530 and #533 are fixed on their branches.
+  - Not changed: A3 (not reachable), A4 and B5 (false), B6 (unreachable now, and a full-row guard would over-refuse).
+
+**Merged today:** #519, #520 (with win's Windows replace fix), #515–#518, #521–#529, #531, #532, #534 (ADR-0235 ADiJ stays light; ADR-0236 the Mix View seat; ADR-0237 his first Mix View answers; the Fable reviewer prompt for Sunday).
+
+**The Mix View seat.** It is a local Codex Pro session, with its mission in the director's private prompts folder. It builds the Mix View across the lanes, starting with a decision guide. Its branches are `mixview/…` and its log is `collab/mixview.md` on `mixview/log`.
+
+**#512** (the control MCP slice): main merged in (`ca55ceb1`, the ADR count now 237), all 21 checks green. Still held for the director's Q-O ruling, consent before AGT-03, and his go.
+
+---
+
 ## 2026-11-11 (afternoon) — the MCP slice waits for the director; FilmCraft cancelled; six engine PRs; a Windows replace fix; the runner outage
 
 **For the engine seat — read first.**

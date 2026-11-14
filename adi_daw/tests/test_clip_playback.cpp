@@ -583,6 +583,22 @@ void fractionalEndpoint() {
     f.store->db().exec("UPDATE clips SET pos_ns=10000,length_ns=10000");
     f.load(64);const auto out=f.render(64);
     check(out[0]==f.media[0] && out[1]==0,"absolute clip endpoints round once");
+    // Both rows have the same exact 35ms endpoint. Converting the two
+    // operands separately puts the second just below the half-sample tie.
+    for (const auto begin : {0, 5}) {
+        Fixture anchored(44100, 2, 44100, -1);
+        anchored.add(1, 0, 1000, 0, 44100);
+        SQLite::Statement placement(anchored.store->db(),
+            "UPDATE clips SET pos_ns=?,length_ns=?");
+        placement.bind(1, begin);
+        placement.bind(2, 35000000 - begin);
+        placement.exec();
+        anchored.load(2048, 44100);
+        const auto rendered = anchored.render(2048);
+        check(rendered.size() == 4096 && rendered[1542] == 0.5f &&
+                  rendered[1543] == 0.5f && rendered[1544] == 0,
+              "linear audio retains its exact native end when its left edge changes");
+    }
 }
 void relativeProject() {
     Fixture f;f.add(1,0,1000,0,1000);f.store.reset();

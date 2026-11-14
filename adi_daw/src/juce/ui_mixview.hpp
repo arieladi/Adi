@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/ui/mix_view_provider.hpp"
 #include "ui_stack.hpp"
+#include "ui_analysis.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -71,6 +72,7 @@ class MixViewPanel final : public juce::Component {
     juce::Rectangle<int> timeline() const noexcept;
     // STACK: ADR-0204 d1's one window, every channel's ADI-Q, sidechain slot and ADI-L.
     StackTab stack;
+    SharedSpectrumView spectrum;
 
   private:
     AdiRootComponent &root_;

@@ -54,8 +54,9 @@ std::int64_t samples(double seconds, double rate) {
 }
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
-    // acquire ownership BEFORE reading even the page number; no seqlock over
-    // non-atomic samples, no concurrent overwrite and no audio-side retry loop.
+    // acquire ownership BEFORE trusting the page number (an unowned peek is
+    // only a filter); no seqlock over non-atomic samples, no concurrent
+    // overwrite and no audio-side retry loop.
     std::atomic<int> state{0};
     std::atomic<std::int64_t> number{-1};
     std::vector<float> data;
@@ -137,8 +138,11 @@ struct Clip {
         if (!t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
-            if(from<0 || from>=length || count<=0) return;
-            const auto last=std::min(length,from+count)-1;
+            // sourceAt never reads at or past End, so no page there is wanted.
+            // A looped clip has playEnd==length.
+            const auto audible=std::min(length,playEnd);
+            if(from<0 || from>=audible || count<=0) return;
+            const auto last=std::min(audible,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -192,9 +196,13 @@ struct Clip {
     Page* acquire(std::int64_t number) noexcept {
         for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return page;
         for (auto& p : pages) {
+            // Unowned peek as a filter only, so the worker never sees a slot
+            // this reader does not want as transiently taken; the number is
+            // checked again once the slot is owned.
+            if(p.state.load(std::memory_order_acquire)!=2 || p.number.load(std::memory_order_relaxed)!=number) continue;
             int ready=2;
             if (!p.state.compare_exchange_strong(ready,3,std::memory_order_acquire)) continue;
-            if(p.number==number) return &p;
+            if(p.number.load(std::memory_order_relaxed)==number) return &p;
             p.state.store(2,std::memory_order_release);
         }
         return nullptr;
@@ -327,6 +335,10 @@ struct Clip {
                 int state=p.state.load(std::memory_order_relaxed);
                 if(state!=0 && state!=2) continue;
                 const auto oldPage=p.number.load(std::memory_order_relaxed);
+                // Never claim, even briefly, a ready page of this same request:
+                // a reader inside that claim would see a cached page as missing.
+                // Only this worker writes number, so the unowned read is exact.
+                if(state==2 && std::find(w.begin(),w.end(),oldPage)!=w.end()) continue;
                 if(probe && probe->beforePageClaim)probe->beforePageClaim(probe->context,oldPage,number);
                 const bool claimed=p.state.compare_exchange_strong(state,1,std::memory_order_acquire);
                 if(probe && probe->afterPageClaimAttempt)probe->afterPageClaimAttempt(probe->context,oldPage,number,claimed);
@@ -340,9 +352,6 @@ struct Clip {
                 if(requestSeq.load(std::memory_order_seq_cst)!=seq) {
                     p.state.store(state,std::memory_order_release);
                     return worked;
-                }
-                if(state==2 && std::find(w.begin(),w.end(),p.number.load(std::memory_order_relaxed))!=w.end()) {
-                    p.state.store(2,std::memory_order_release); continue;
                 }
                 try { fill(p,number); }
                 catch(const PrefixPending&) { p.number=-1;p.state.store(0,std::memory_order_release);break; }
@@ -479,6 +488,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
+            // A muted clip opens no media. Its decode job would be cancelled
+            // when it is dropped here, yet stay queued against the decoder's
+            // job and space budgets ahead of the clips that do play.
+            if(row.muted) continue;
             // Direct WAV remains unchanged. Plain compressed clips consume a
             // shared worker's flushed prefixes; Warp still needs its complete
             // offline render and unknown-length sources retain the full path.
@@ -548,8 +561,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 endSeconds=tempo.ticksToSeconds(endTicks);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                if(nanos<0) throw std::runtime_error("invalid clip duration");
-                endSeconds+=static_cast<double>(nanos)*1e-9;
+                const auto begin=row.posNs.value_or(0);
+                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                    throw std::runtime_error("invalid clip duration");
+                // Preserve the stored absolute endpoint before conversion: a
+                // separately converted begin + duration can miss a sample tie.
+                endSeconds=static_cast<double>(begin+nanos)*1e-9;
                 endTicks=tempo.secondsToTicks(endSeconds);
             }
             // Quantise both absolute endpoints once. Rounding a duration and
@@ -597,7 +614,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
-            if(row.muted) continue;
             for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }

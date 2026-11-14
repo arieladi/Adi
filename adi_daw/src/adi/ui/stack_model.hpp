@@ -200,6 +200,7 @@ struct ItemInput {
     std::uint64_t identity = 0;
     ItemClass cls = ItemClass::View;
     std::string_view name; // for the search; copied into the haystack
+    bool available = true, enabled = true; // availability is distinct from the Device Activator
 };
 // One track of the snapshot. The owner passes every track (not only the shown ones) in
 // TrackOrder's order (ArrangementGeometry::rows); the order is never stored.
@@ -260,6 +261,7 @@ struct Resolved {
     std::uint64_t identity = 0; // Chain: the identity; Module: the instance
     ModuleState state = ModuleState::Absent;
     ItemClass cls = ItemClass::View;
+    bool available = true, enabled = true;
 };
 
 // --- events and effects ---------------------------------------------------------------------------
@@ -365,6 +367,7 @@ struct ItemGeo {
     double x = 0, width = 0; // view space; the row's top and height are the item's
     Tier tier = Tier::T3;
     bool pill = false, clipped = false, focused = false;
+    bool available = true, enabled = true;
     bool operator==(const ItemGeo &) const = default;
 };
 struct CellGeo {
@@ -544,7 +547,7 @@ void foldForSearch(std::string_view in, std::string &out);
 // The search text as stored: control characters dropped, cut at a UTF-8 boundary to maxBytes.
 void normaliseSearchText(std::string_view in, std::size_t maxBytes, std::string &out);
 
-// --- the snapshot as it is (until W3's provider) --------------------------------------------------
+// --- snapshot and owned actual-device publication adapters ---------------------------------------
 
 // Today's channel processor as MixViewProvider v1 reports it: ADI-Q, ducking, ADI-L (keys 1, 2, 4;
 // key 3 is kept for Clip, which v1 does not report).
@@ -552,8 +555,11 @@ std::span<const ModuleKindInput> defaultModuleKinds() noexcept;
 struct SnapshotRows {
     std::vector<TrackInput> tracks;
     std::vector<ModuleInput> modules;
-    std::vector<ItemInput> items; // empty: v1 lists no chain devices
+    std::vector<ItemInput> items;
     std::span<const ModuleKindInput> kinds;
+    // Adapter scratch only: source indices sorted by owning track, then source order. Reused so
+    // unchanged publications allocate nothing; it never owns project state or supplies identity.
+    std::vector<std::pair<TrackId, std::size_t>> chainOrder;
     RowsInput input(std::uint64_t generation, std::uint64_t providerRevision = 0) const noexcept;
 };
 // Every track of the reader's snapshot in the arrangement's order (geometry.rows(reader)), with
@@ -562,6 +568,24 @@ struct SnapshotRows {
 // valid while `reader` lives.
 void tracksFromSnapshot(const SnapshotReader &, const ArrangementGeometry &, const MixViewProvider &,
                         SnapshotRows &out);
+
+// A message-thread publication supplies these records in each track's actual chain order. Its
+// owner holds the publication through setRows(). Identity is an opaque nonzero instance token,
+// not the user-editable name or chain position. The adapter never queries a store/host, invents
+// device capabilities or instantiates a processor. Missing/bypassed devices keep their positions.
+struct ChainDeviceInput {
+    TrackId track = 0;
+    DeviceId device = 0;
+    std::uint64_t identity = 0;
+    ItemClass cls = ItemClass::Plugin;
+    std::string_view name;
+    bool available = true, enabled = true;
+};
+// The actual-chain surface (ADR-0236/0237): every real device, no reserved module columns. Track
+// order/scope/roles still come from the one snapshot. Unknown owners and invalid identities are
+// ignored. Devices interleaved between tracks retain their supplied order within each track.
+void tracksFromSnapshot(const SnapshotReader &, const ArrangementGeometry &, const MixViewProvider &,
+                        std::span<const ChainDeviceInput>, SnapshotRows &out);
 
 namespace detail {
 template <class T>
@@ -751,6 +775,7 @@ class StackModel {
         std::uint64_t identity = 0;
         stack::ItemClass cls = stack::ItemClass::View;
         std::uint32_t gen = 0;
+        bool available = true, enabled = true;
     };
     struct ModuleRec {
         stack::ModuleState state = stack::ModuleState::Absent;
