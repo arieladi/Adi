@@ -580,16 +580,22 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             if(clip.aliasOf)throw std::runtime_error("MIDI alias unsupported; silent");
             const double startSeconds=clip.timeBase==0?tempo.ticksToSeconds(clip.posTicks.value_or(0)):static_cast<double>(clip.posNs.value_or(0))*1e-9;
             const auto origin=clip.timeBase==0?clip.posTicks.value_or(0):tempo.secondsToTicks(startSeconds);
-            const auto length=clip.timeBase==0?clip.lengthTicks.value_or(0):tempo.secondsToTicks(startSeconds+static_cast<double>(clip.lengthNs.value_or(0))*1e-9)-origin;
+            double endSeconds=startSeconds;
+            if(clip.timeBase==1) {
+                const auto begin=clip.posNs.value_or(-1),extent=clip.lengthNs.value_or(0);
+                if(begin<0 || extent<=0 || begin>INT64_MAX-extent)throw std::runtime_error("invalid linear MIDI clip time; silent");
+                endSeconds=static_cast<double>(begin+extent)*1e-9;
+            }
+            const auto length=clip.timeBase==0?clip.lengthTicks.value_or(0):tempo.secondsToTicks(endSeconds)-origin;
             constexpr auto tickLimit=std::int64_t{1}<<50;
-            if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks<0||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
+            if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks < -tickLimit||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
             const auto loop=clip.loopLenTicks.value_or(0);
             if(clip.loopEnabled && (loop<=0||loop>tickLimit||clip.loopStartTicks<0||clip.loopStartTicks>tickLimit))throw std::runtime_error("invalid MIDI clip loop; silent");
             if (!clip.loopEnabled && clip.endMarkerTicks &&
                 (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
                 throw std::runtime_error("invalid MIDI clip End marker; silent");
             auto at=[&](std::int64_t local){return checkedSample(startSeconds+tempo.ticksToSeconds(origin+local)-tempo.ticksToSeconds(origin),rate);};
-            const auto clipEnd=clip.timeBase==0?at(length):checkedSample(startSeconds+static_cast<double>(clip.lengthNs.value_or(0))*1e-9,rate);
+            const auto clipEnd=clip.timeBase==0?at(length):checkedSample(endSeconds,rate);
             bool unsupported=false;
             for(const auto& note:model.notes) {
                 if(note.clipId!=clip.id || (note.flags&1u)!=0)continue;

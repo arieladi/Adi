@@ -10,6 +10,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/textproj_store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -133,6 +134,48 @@ bool applyEdit(Fixture& fixture,const clip_edit::PreparedEdit& edit,const char* 
     if(!committed.ok)std::printf("%s: %s\n",label,committed.error.c_str());
     check(committed.ok,label);return committed.ok;
 }
+void trimAtWarpMarker() {
+    for(const auto width:{Precision::Float32,Precision::Float64}) {
+        Fixture f;const auto markers=audio::writeWarpMap(std::vector<WarpMarker>{{0,0},{6000,q/2},{12000,q}},12000);
+        SQLite::Statement marker(f.store->db(),"UPDATE audio_clips SET warp_markers=? WHERE clip_id=7");
+        marker.bind(1,markers.bytes.data(),static_cast<int>(markers.bytes.size()));marker.exec();
+        const auto before=digestProject(*f.store).text;f.load(width);const auto original=f.render(26000,width);
+        const std::array<std::int64_t,1> tracks{1};edit_plan::Options options;options.policy.automationFollowsClips=false;
+        const auto trim=edit_plan::prepareTrim(*f.store,
+            edit_plan::materialScope(tracks,edit_plan::PlacementClock::Ticks,{0,2*q}),{7,{0,q/2}},options);
+        if(!applyEdit(f,trim,"left trim exactly at a stored warp marker"))return;
+        check(f.session.refresh(*f.store),"refresh a marker-aligned anchored Warp trim");
+        f.session.transport().locate(0);const auto actual=f.render(26000,width);
+        bool exact=actual.size()==52000 && original.size()==52000;
+        if(exact)for(std::size_t i=0;i<actual.size();++i)exact=exact && actual[i]==(i<24000?0:original[i]);
+        check(f.session.problems().empty() && exact &&
+                  f.store->db().execAndGet("SELECT content_offset_ticks FROM clips WHERE id=7").getInt64()==q/2,
+              "Warp trim retains original anchored marker timing and native-width samples");
+        check(History(*f.store).undo().ok && digestProject(*f.store).text==before,
+              "Warp trim undo restores exact original rows and optional-domain absence");
+    }
+}
+void extendWarpWithStalePhysicalPin() {
+    for(const auto width:{Precision::Float32,Precision::Float64}) {
+        Fixture f;f.load(width);const auto original=f.render(26000,width);
+        // Stored old ns pins are legal but ignored by Warp playback. This is
+        // the same source after an earlier musical trim/move.
+        f.store->db().exec("UPDATE clips SET pos_ticks=2882880,length_ticks=2882880,content_offset_ticks=2882880");
+        const auto before=digestProject(*f.store).text;const std::array<std::int64_t,1> tracks{1};
+        edit_plan::Options options;options.policy.automationFollowsClips=false;
+        const auto trim=edit_plan::prepareTrim(*f.store,
+            edit_plan::materialScope(tracks,edit_plan::PlacementClock::Ticks,{0,2*q}),{7,{0,0}},options);
+        if(!applyEdit(f,trim,"extend Warp to source zero despite a stale physical pin"))return;
+        check(f.store->db().execAndGet("SELECT count(*) FROM clips WHERE pos_ticks=0 AND length_ticks=5765760 AND content_offset_ticks=0").getInt()==1 &&
+                  f.store->db().execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==0,
+              "Warp extension restores full musical bounds without rewriting ignored physical metadata");
+        check(f.session.refresh(*f.store),"refresh an extended Warp clip with a stale physical pin");
+        f.session.transport().locate(0);const auto actual=f.render(26000,width);
+        check(f.session.problems().empty() && actual==original,"extended Warp renders the complete original native-width PCM");
+        check(History(*f.store).undo().ok && digestProject(*f.store).text==before,
+              "stale-pin Warp extension undoes exact source clocks and geometry");
+    }
+}
 void warpedEditsKeepHeardFades() {
     for(const auto width:{Precision::Float32,Precision::Float64}) {
         Fixture f;auto& db=f.store->db();
@@ -203,4 +246,4 @@ void warpFadesAcrossTempoAndLinearSplit() {
     }
 }
 }
-int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();trimAtWarpMarker();extendWarpWithStalePhysicalPin();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

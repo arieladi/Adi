@@ -7,6 +7,7 @@
 #include "adi/audio/warp_map.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/media/blake3.hpp"
@@ -95,11 +96,65 @@ void loopsAndMarkers() {
     // defaults contain intrinsic ranges, not the old arrangement rectangle.
     target.store->db().exec("UPDATE clips SET length_ns=750000000 WHERE id=7");
     for(const auto width:{Precision::Float32,Precision::Float64})check(render(*source.store,48000,width,38000)==render(*target.store,48000,width,38000),"extending the recalled loop repeats exact source PCM and retained source fades at both widths");
-    Project markerSource,markerTarget;original(markerSource);markerSource.store->db().exec("UPDATE clip_properties SET end_marker_ticks=8072064 WHERE clip_id=7");const auto marker=clip_edit::captureSampleDefaults(*markerSource.store,7,48000);
+    Project markerSource,markerTarget;original(markerSource);OpRequest end;end.opType="clip.setEndMarker";end.payload={{"id",7},{"ticks",8072064}};check(OpJournal(*markerSource.store).commit(end).ok,"native End edit clears its prior physical pin before a legacy marker capture");const auto marker=clip_edit::captureSampleDefaults(*markerSource.store,7,48000);
     check(marker.ok && marker.settings->sourceEndNs==700000000 && !marker.settings->endMarkerTicks,"legacy musical End is frozen into its actual fixed source time for an unwarped sample");if(!marker.ok)return;
     check(index->saveSampleSettings(marker.hash,*marker.settings,error)==library::SampleSettingsProblem::None,"canonical source End persists as authored sample data");markerTarget.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,60,0)");auto recalled=clip_edit::prepareImportAudio(*markerTarget.store,markerTarget.options(markerSource.source()),48000,index.get());check(recalled.edit.ok && clip_edit::commitMaterial(*markerTarget.store,recalled).ok,"fixed source End recalls without double-applying the old project tempo");if(!recalled.edit.ok)return;
     check(markerTarget.store->db().execAndGet("SELECT length_ns FROM clips WHERE id=7").getInt64()==650000000,"recalled initial source End subtracts the saved content offset exactly");
     check(render(*markerSource.store,48000,Precision::Float64,38000)==render(*markerTarget.store,48000,Precision::Float64,38000),"actual native playback preserves the old End marker's audible boundary across tempo");
+}
+void pinnedEndAndSignedTrim() {
+    Project source,target;original(source);
+    source.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,240);"
+                           "UPDATE clip_properties SET end_marker_ticks=5765760 WHERE clip_id=7");
+    // A clip moved to a faster tempo keeps its independent 800ms End pin;
+    // the old tick display marker must not become a second 250ms limit.
+    const auto captured=clip_edit::captureSampleDefaults(*source.store,7,48000);
+    check(captured.ok && captured.settings->sourceEndNs==800000000 && !captured.settings->endMarkerTicks,
+          "sample capture retains a pre-existing source End pin instead of re-timing it from display ticks");
+    if(!captured.ok)return;
+    test::TempDirectory home{"sample_defaults","pinned_end"};std::string error;
+    auto index=library::Index::open(home.path()/"library.sqlite",error,false);if(!index)throw std::runtime_error(error);
+    check(index->saveSampleSettings(captured.hash,*captured.settings,error)==library::SampleSettingsProblem::None,
+          "authoritative source End persists in the existing sample-defaults format");
+    target.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,60)");
+    auto recalled=clip_edit::prepareImportAudio(*target.store,target.options(source.source()),48000,index.get());
+    check(recalled.edit.ok && clip_edit::commitMaterial(*target.store,recalled).ok,
+          "pinned End defaults recall at another tempo through native material operations");
+    const auto expected=render(*source.store,48000,Precision::Float64,38000);
+    const auto actual=render(*target.store,48000,Precision::Float64,38000);
+    check(expected==actual && std::any_of(actual.begin(),actual.end(),[](double value){return value!=0;}),
+          "saved pinned End retains exact audible PCM after tempo-changing recall");
+    Project signedSource;original(signedSource);
+    signedSource.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(5765760,240);"
+                                 "UPDATE clips SET pos_ns=750000000 WHERE id=7");
+    const std::array<std::int64_t,1> tracks{1};edit_plan::Options options;options.policy.automationFollowsClips=false;
+    const auto trim=edit_plan::prepareTrim(*signedSource.store,
+        edit_plan::materialScope(tracks,edit_plan::PlacementClock::Nanoseconds,{0,2000000000}),{7,{1,0}},options);
+    check(trim.ok && clip_edit::commitPrepared(*signedSource.store,trim).ok &&
+              signedSource.store->db().execAndGet("SELECT content_offset_ticks FROM clips WHERE id=7").getInt64()<0,
+          "native source-zero extension creates the tempo-relocated signed display offset");
+    const auto before=signedSource.store->db().execAndGet("SELECT count(*) FROM ops").getInt64();
+    const auto canonical=clip_edit::captureSampleDefaults(*signedSource.store,7,48000);
+    check(canonical.ok && canonical.settings->contentOffsetTicks==0 && canonical.settings->contentOffsetNs==0 &&
+              signedSource.store->db().execAndGet("SELECT content_offset_ticks FROM clips WHERE id=7").getInt64()<0 &&
+              signedSource.store->db().execAndGet("SELECT count(*) FROM ops").getInt64()==before,
+          "portable defaults canonicalize only the unused negative tick fallback without writing the project");
+}
+void signedTrimRounding() {
+    // Source-zero clips whose start ns rounds down: the tick fallback must not
+    // derive -1 from rounded ns and truncated ticks.
+    auto capture=[](bool ticks,const char* tempo,std::int64_t position) {
+        Project p;original(p);auto& db=p.store->db();
+        db.exec(std::string("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES")+tempo);
+        if(ticks)db.exec("UPDATE clips SET time_base=0,pos_ns=NULL,length_ns=NULL,pos_ticks="+std::to_string(position)+",length_ticks=5765760,content_offset_ticks=-5 WHERE id=7");
+        else db.exec("UPDATE clips SET pos_ns="+std::to_string(position)+",content_offset_ticks=-5 WHERE id=7");
+        db.exec("UPDATE clip_playback_details SET content_offset_ns=0 WHERE clip_id=7");
+        return clip_edit::captureSampleDefaults(*p.store,7,48000);
+    };
+    const auto tick=capture(true,"(0,120),(11531520,240)",11532002);
+    check(tick.ok && tick.settings->contentOffsetTicks==0,"tick clip at source zero captures a zero tick fallback despite the ns round trip");
+    const auto linear=capture(false,"(0,120),(5765760,240)",700041667);
+    check(linear.ok && linear.settings->contentOffsetTicks==0,"linear clip at source zero measures its tick fallback from its exact ns start");
 }
 void guards() {
     Project source,target;original(source);test::TempDirectory home{"sample_defaults","guards"};std::string error;auto index=library::Index::open(home.path()/"library.sqlite",error,false);if(!index)throw std::runtime_error(error);const auto captured=clip_edit::captureSampleDefaults(*source.store,7,48000);if(!captured.ok)throw std::runtime_error(captured.error);auto wrong=*captured.settings;wrong.frames++;if(index->saveSampleSettings(captured.hash,wrong,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
@@ -127,4 +182,4 @@ void atomicRecall() {
     auto legacy=clip_edit::prepareImportAudio(*other.store,other.options(source.source()),48000);check(legacy.edit.ok && clip_edit::commitMaterial(*other.store,legacy).ok && other.store->db().execAndGet("SELECT src_start_frames=0 AND src_len_frames=96000 FROM audio_clips").getInt()==1,"explicit import without a library retains the established original-source workflow");
 }
 }
-int main(){try{ordinary();warped();loopsAndMarkers();guards();atomicRecall();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{ordinary();warped();loopsAndMarkers();pinnedEndAndSignedTrim();signedTrimRounding();guards();atomicRecall();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

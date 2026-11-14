@@ -19,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -130,6 +131,160 @@ const Effect* effectFor(const Description& description,std::int64_t id) {
     const auto found=std::find_if(description.effects.begin(),description.effects.end(),
         [id](const Effect& effect){return effect.before && effect.before->id==id;});
     return found==description.effects.end()?nullptr:&*found;
+}
+void anchoredLeftTrim() {
+    for(const int base:{0,1})for(const bool audio:{false,true}) {
+        Project project;auto& store=*project.store;auto& db=store.db();const auto unit=base==0?q:ns;
+        addClip(store,7,21,base,4*unit,4*unit,audio?"audio":"midi");
+        db.exec("UPDATE clips SET content_offset_ticks=5765760,fade_in_ticks=11531520,fade_out_ticks=17297280,loop_enabled=1,loop_start_ticks=5765760,loop_len_ticks=5765760");
+        if(audio)db.exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'trim-source','wav');"
+                         "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000);"
+                         "INSERT INTO clip_warp_fade_domains(clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks) VALUES(7,5765760,17297280,11531520,28828800)");
+        else db.exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,7,'notes',X'010203');"
+                     "INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(7,42,1,X'FF00')");
+        const ReadGuard before(store);
+        const auto prepared=prepareTrim(store,scope(base,32*unit),{7,{base,6*unit}},locked());
+        check(prepared.ok && before.unchanged(store),"left trim preparation is a read-only captured edit in either native clock");
+        if(!prepared.ok){std::printf("trim: %s\n",prepared.error.c_str());continue;}
+        const auto description=describe(prepared);
+        check(description.ok && description.effects.size()==1 && description.effects.front().kind==EffectKind::Trimmed &&
+                  description.effects.front().after.size()==1 && description.effects.front().after.front().nativeSpan==PlacementSpan{6*unit,8*unit},
+              "trim preview describes its actual anchored native extent");
+        check(commit(store,prepared) && spanIs(store,7,21,base,6*unit,2*unit,3*q) &&
+                  db.execAndGet("SELECT count(*) FROM clips WHERE fade_in_ticks=11531520 AND fade_out_ticks=11531520 AND loop_enabled=1 AND loop_start_ticks=5765760 AND loop_len_ticks=5765760").getInt()==1,
+              "left trim advances source ticks, keeps the exact end/loop and clamps both fade handles");
+        if(audio)check(db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==1500000000 &&
+                       db.execAndGet("SELECT in_begin_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==1500000000 &&
+                       db.execAndGet("SELECT out_end_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==2500000000 &&
+                       db.execAndGet("SELECT out_begin_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==1500000000 &&
+                       tableRows(store,"clip_warp_fade_domains")==before.rows.at("clip_warp_fade_domains"),
+                       "unwarped trim advances pinned PCM and retargets/clamps physical fade domains");
+        else check(tableRows(store,"event_streams")==before.rows.at("event_streams") &&
+                   tableRows(store,"note_expression")==before.rows.at("note_expression"),
+                   "trim retains opaque note and expression bytes; Crop is a separate content intent");
+        const auto after=typedRows(store);const auto step=History(store).nextUndo();
+        check(step && step->opCount==1 && History(store).undo().ok && typedRows(store)==before.rows &&
+                  digestProject(store).text==before.digest && History(store).redo().ok && typedRows(store)==after &&
+                  History(store).undo().ok && typedRows(store)==before.rows,
+              "trim is one splice with exact Undo/Redo/Undo, including absence of physical clock rows");
+        const auto expanded=prepareTrim(store,scope(base,32*unit),{7,{base,unit}},locked());
+        check(commit(store,expanded) && spanIs(store,7,21,base,audio?3*unit:unit,audio?5*unit:7*unit,audio?0:-2*q),
+              "audio extension clamps to source zero while MIDI can expose a signed source prefix");
+        check(History(store).undo().ok && typedRows(store)==before.rows,"source-zero clamp and signed extension undo exactly");
+    }
+    Project zero;auto& store=*zero.store;
+    addClip(store,7,21,0,4*q,4*q,"audio");
+    store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'zero','wav');"
+                    "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+    const ReadGuard original(store);
+    const auto clamped=prepareTrim(store,scope(),{7,{0,0}},locked());
+    check(clamped.ok && clamped.requests.empty() && original.unchanged(store) && commit(store,clamped) && original.unchanged(store),
+          "clamped source-zero no-op creates neither clock rows nor journal entries");
+    check(!prepareTrim(store,scope(),{7,{0,9*q}},locked()).ok && original.unchanged(store),
+          "trim beyond anchored end refuses without writes");
+    check(!prepareTrim(store,scope(),{7,{1,0}},locked()).ok && original.unchanged(store),
+          "trim clock must match explicit scope clock");
+}
+void trimSourceZeroAndCollapse() {
+    {
+        // pos 250 at 120 BPM/48 kHz lies after the centre of its sample, so a
+        // centre bound would land on tick 241. Source zero has no earlier PCM.
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,250,4*q,"audio");
+        store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'offgrid','wav');"
+                        "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+        const ReadGuard original(store);
+        const auto clamped=prepareTrim(store,scope(),{7,{0,0}},locked());
+        check(clamped.ok && clamped.requests.empty() && original.unchanged(store) &&
+                  tableRows(store,"clip_playback_details").empty(),
+              "off-grid clip at source zero: extension is a true no-op without clock rows");
+    }
+    for(const char* kind:{"midi","audio"}) {
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,4*q,4*q,kind);
+        if(std::string_view(kind)=="audio")
+            store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'collapse','wav');"
+                            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+        const ReadGuard original(store);
+        check(!prepareTrim(store,scope(),{7,{0,8*q}},locked()).ok && original.unchanged(store),
+              "trim onto the anchored end refuses a collapsed clip without writes");
+    }
+    for(const bool warped:{false,true}) {
+        Project project;auto& store=*project.store;
+        addClip(store,7,21,0,4*q,4*q,warped?"audio":"midi");
+        store.db().exec("INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(7,11531520)");
+        if(warped)store.db().exec("INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'marker','wav');"
+                                  "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,warp_enabled) VALUES(7,300,0,4000000,1)");
+        const ReadGuard original(store);
+        check(!prepareTrim(store,scope(),{7,{0,6*q}},locked()).ok && !prepareTrim(store,scope(),{7,{0,7*q}},locked()).ok &&
+                  original.unchanged(store),
+              "unlooped MIDI or warped trim refuses a Start at or past its End marker");
+        check(commit(store,prepareTrim(store,scope(),{7,{0,5*q}},locked())) && spanIs(store,7,21,0,5*q,3*q,q),
+              "trim that keeps Start before the End marker still applies");
+        store.db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=46126080");
+        check(commit(store,prepareTrim(store,scope(),{7,{0,7*q}},locked())) && spanIs(store,7,21,0,7*q,q,3*q),
+              "a looped clip is not bound by its End marker");
+    }
+}
+void trimPhysicalPinsAndCapture() {
+    Project project;auto& store=*project.store;auto& db=store.db();
+    addClip(store,7,21,0,4*q,4*q,"audio");
+    db.exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(11531520,240);"
+            "UPDATE clips SET content_offset_ticks=5765760;"
+            "INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'pin','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000);"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns) VALUES(7,500000000,100000013,200000019,100000013,200000019)");
+    const ReadGuard before(store);const auto source=tableRows(store,"audio_clips");
+    const auto trim=prepareTrim(store,scope(),{7,{0,0}},locked());
+    check(trim.ok && before.unchanged(store) && commit(store,trim) && spanIs(store,7,21,0,2*q,6*q,-q),
+          "physical source-zero clamp across tempo changes can retain a signed derived tick offset");
+    check(db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==0 &&
+              db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE in_begin_ns=100000013 AND in_end_ns=200000019 AND out_begin_ns=100000013 AND out_end_ns=200000019").getInt()==1 &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE fade_in_ticks=0 AND fade_out_ticks=0").getInt()==1 &&
+              tableRows(store,"audio_clips")==source,
+          "trim preserves exact dormant inherited domains and source metadata without synthesizing fades");
+    check(History(store).undo().ok && typedRows(store)==before.rows,"tempo-crossing physical clamp undoes all source and fade rows exactly");
+    auto stale=prepareTrim(store,scope(),{7,{0,5*q}},locked());
+    OpRequest rename;rename.opType="track.rename";rename.payload={{"id",21},{"name","Intervening"}};
+    check(OpJournal(store).commit(rename).ok,"intervening real op advances the trim snapshot head");
+    const ReadGuard intervening(store);const auto refused=clip_edit::commitPrepared(store,stale);
+    check(!refused.ok && refused.stale && intervening.unchanged(store),"stale trim refuses without writes or another history entry");
+    auto fresh=prepareTrim(store,scope(),{7,{0,5*q}},locked());
+    db.exec("CREATE TEMP TRIGGER trim_failure BEFORE UPDATE OF pos_ticks ON clips BEGIN SELECT RAISE(ABORT,'trim rollback');END");
+    const auto count=OpJournal(store).count();const auto head=OpJournal(store).headSeq();
+    check(!clip_edit::commitPrepared(store,fresh).ok && typedRows(store)==intervening.rows &&
+              digestProject(store).text==intervening.digest && OpJournal(store).count()==count && OpJournal(store).headSeq()==head,
+          "actual trim publication failure rolls back source-clock updates and audit rows atomically");
+    db.exec("DROP TRIGGER trim_failure");
+    check(commit(store,fresh),"the authentic captured trim can retry after a rolled-back publication");
+    Project tied;auto& fixed=*tied.store;addClip(fixed,7,21,1,5,34999995,"audio");
+    fixed.db().exec("UPDATE clips SET fade_out_ticks=24024;"
+                    "INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'tie','wav');"
+                    "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000)");
+    auto options=locked();options.referenceRate=44100;
+    const auto physical=prepareTrim(fixed,scope(1,100000000),{7,{1,10000000}},options);
+    check(commit(fixed,physical) && fixed.db().execAndGet("SELECT out_end_ns FROM clip_playback_details WHERE clip_id=7").getInt64()==35011338,
+          "freezing and trimming a fractional native endpoint pins the correct final fade sample");
+}
+void trimWarpFadeDomains() {
+    Project project;auto& store=*project.store;auto& db=store.db();
+    addClip(store,7,21,0,4*q,4*q,"audio");
+    db.exec("UPDATE clips SET content_offset_ticks=5765760,fade_in_ticks=11531520,fade_out_ticks=17297280;"
+            "INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'warp-domain','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames,warp_enabled) VALUES(7,300,0,4000000,1)");
+    const ReadGuard before(store);const auto trim=prepareTrim(store,scope(),{7,{0,6*q}},locked());
+    check(trim.ok && before.unchanged(store) && commit(store,trim) && spanIs(store,7,21,0,6*q,2*q,3*q),
+          "warped trim uses the musical source clock without an unwarped physical pin");
+    check(db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=7 AND in_begin_ticks=17297280 AND in_end_ticks=28828800 AND out_begin_ticks=17297280 AND out_end_ticks=28828800").getInt()==1 &&
+              db.execAndGet("SELECT count(*) FROM clip_playback_details").getInt()==0,
+          "warped trim retargets incoming and clamps outgoing tick fade domains to the retained span");
+    check(History(store).undo().ok && typedRows(store)==before.rows,"warped fade trim undo restores absent domain rows");
+    db.exec("INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns) VALUES(7,0,250000000)");
+    const auto oldPhysical=tableRows(store,"clip_playback_details");
+    const auto extension=prepareTrim(store,scope(),{7,{0,0}},locked());
+    check(commit(store,extension) && spanIs(store,7,21,0,3*q,5*q,0) &&
+              tableRows(store,"clip_playback_details")==oldPhysical,
+          "warped source-zero extension uses ticks and preserves its ignored obsolete physical pins");
 }
 void relationsAndSurvivors() {
     // Victim [2,6): disjoint, both touches, whole, prefix, suffix and middle.
@@ -831,7 +986,7 @@ void seededTransactions() {
 
 int main() {
     try {
-        relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
+        anchoredLeftTrim();trimSourceZeroAndCollapse();trimPhysicalPinsAndCapture();trimWarpFadeDomains();relationsAndSurvivors();swapsAndSparseGroups();completeChildrenAndResize();explicitScopeAndConversions();roundedPhysicalBoundaries();
         signedIdentitiesAndKinds();preparationAndTransactions();descriptionBinding();automationAdmissionAndPolicy();
         irrelevantRowsAndAliasDeletion();placementAdapters();seededTransactions();
     } catch(const std::exception& error) {check(false,error.what());}

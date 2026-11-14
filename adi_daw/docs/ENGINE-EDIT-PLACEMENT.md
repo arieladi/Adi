@@ -1,7 +1,7 @@
 # Captured material placement (ED-03)
 
 `adi/edit_plan.hpp` is the owner-thread entry for a prepared group move and
-anchored-start end resize. It implements the material foundation of
+anchored-start end resize and anchored-end left trim. It implements the material foundation of
 ADR-0217 d1–d2. Commit its `clip_edit::PreparedEdit` through `commitPrepared`,
 or the document's existing prepared-edit submitter. Preparation writes no
 project rows. The captured filename and journal head, including a null head,
@@ -62,12 +62,48 @@ Descriptions still use the declared scope clock. There is no blanket exact
 ns/tick round-trip test.
 
 `prepareResizeEnd` keeps the native start, source offset, loop and source-end
-marker. Left trim, Crop and source-zero extension belong to ED-04. An authored
-fade-out follows the new visible end with its captured duration, clamped to
+marker. An authored fade-out follows the new visible end with its captured duration, clamped to
 the new span. The anchored fade-in keeps its source origin. Retained fade
 domains on a side whose visible handle is zero remain inherited source
 envelopes, as after a split; resizing does not turn them into new edge fades.
 Undo restores the original rows, including absence of optional clock rows.
+
+### Anchored left trim (ED-04; Crop follows separately)
+
+`prepareTrim(Store&, scope, Trim{id, begin}, options)` moves the left edge
+without moving the material in song time. The request uses the scope clock;
+the planner retains the exact original native end, advances the source tick
+offset and the pinned unwarped audio sample clock together, and submits one
+captured `arranger.splice`. It uses the same overlap, scope, stale-head,
+frozen-track and automation admission rules as Move/Resize. Preparation writes
+no rows. Audio extension clamps at source zero using a directed native-clock
+boundary; a clamp back to the original begin is a true no-op, preserving absent
+clock rows and history. MIDI may expose a signed source prefix. The note,
+expression and controller streams remain byte-identical: trimming is a window
+on existing content, whereas Crop will remove content outside its chosen bounds.
+
+Pass the actual Session rate. Unwarped audio uses its physical source pin even
+when tempo changes make its derived tick offset negative; Warp continues to
+require a nonnegative musical source offset. The MIDI note, controller and clip
+envelope readers admit bounded signed source offsets. They retain their native
+absolute linear endpoint before conversion, so moving the left edge cannot
+change the end sample through separately rounded floating operands.
+
+Authored fade handles clamp to the remaining musical span. An active incoming
+fade follows the new source start with its captured duration; an active outgoing
+fade keeps its anchored source end and clamps its beginning. Zero-handle inherited
+source envelopes remain inherited and are not reauthored. Dormant clocks for the
+other source type remain exact. Loop bounds, source
+End, media identity and file bytes stay unchanged. The actual marker-aligned
+Warp and looped/resampled playback tests compare retained PCM at both widths.
+These are ADI regression checks; the listed Live 12.4 measurements remain NOT RUN.
+Save Sample Defaults also retains the already captured source End pin instead
+of applying the current tempo's tick marker again. A legacy End edit uses the
+native marker op, which clears the previous pin before freezing its new End.
+Portable defaults canonicalize a negative, unused unwarped tick fallback to
+the existing nonnegative physical offset; the project row and source pin stay
+unchanged. This keeps the existing library format and its validation bounds.
+Crop, the window bindings and AU-05 remain separate queue work.
 
 ## Captured settings and admission
 

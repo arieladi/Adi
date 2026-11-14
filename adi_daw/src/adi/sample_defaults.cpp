@@ -89,8 +89,21 @@ SampleDefaultsCapture captureSampleDefaults(Store& store,std::int64_t clipId,dou
             settings.endMarkerTicks=optionalInteger(*properties,"end_marker_ticks");settings.signatureNumerator=optionalInteger(*properties,"signature_numerator");settings.signatureDenominator=optionalInteger(*properties,"signature_denominator");
         }
         if(!settings.warpEnabled && settings.endMarkerTicks) {
-            edit::TimeMap time(store.db());const auto origin=root.at("time_base")==0?integer(root.at("pos_ticks")):time.ticks(integer(root.at("pos_ns")));
-            const auto marker=nanos(time.durationSeconds(origin,*settings.endMarkerTicks),referenceRate);settings.sourceEndNs=settings.sourceEndNs?std::min(*settings.sourceEndNs,marker):marker;settings.endMarkerTicks.reset();
+            // copyClip already freezes an absent legacy End clock. A present
+            // pin is independent of the current placement tempo (SPEC 9.2).
+            if(!settings.sourceEndNs)throw std::runtime_error("captured unwarped End has no source clock");
+            settings.endMarkerTicks.reset();
+        }
+        if(settings.contentOffsetTicks<0 && !settings.warpEnabled && settings.contentOffsetNs) {
+            // Native left trim can derive signed display ticks after a tempo
+            // relocation. Portable defaults use a nonnegative legacy fallback;
+            // the unchanged physical pin remains the playback authority.
+            // A linear clip measures from its exact ns start. Tick clips round
+            // through ns (rounded) and back (truncated), so clamp at zero.
+            edit::TimeMap time(store.db());const auto linear=root.at("time_base")!=0;
+            const auto origin=linear?time.ticks(integer(root.at("pos_ns"))):integer(root.at("pos_ticks"));
+            const auto beginNs=linear?integer(root.at("pos_ns")):time.nanos(origin);
+            settings.contentOffsetTicks=std::max<std::int64_t>(0,time.ticks(edit::addTime(beginNs,*settings.contentOffsetNs))-origin);
         }
         std::string error;if(library::validateSampleSettings(settings,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
         result.hash=media.getColumn(0).getString();if(result.hash.size()!=64 || result.hash.find_first_not_of("0123456789abcdef")!=std::string::npos)throw std::runtime_error("invalid source content hash");result.settings=std::move(settings);result.ok=true;

@@ -47,8 +47,11 @@ std::int64_t defaultEnd(OpContext& context, const Payload& row) {
         length = tempo.secondsToTicks(finish) - tempo.secondsToTicks(begin);
     }
     const auto offset = signedInteger(row.at("content_offset_ticks"));
-    validTick(offset); validTick(length);
-    if (length <= 0 || length > tickLimit-offset) throw std::runtime_error("clip end marker out of range");
+    if (offset < -tickLimit || offset > tickLimit)
+        throw std::runtime_error("clip source offset outside supported range");
+    validTick(length);
+    if (length <= 0 || offset < -length || length > tickLimit-offset)
+        throw std::runtime_error("clip end marker out of range");
     return offset + length;
 }
 std::int64_t currentEnd(OpContext& context, const Payload& row) {

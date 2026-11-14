@@ -1095,4 +1095,105 @@ void resizeFrozenEnd(Payload& image,std::int64_t end,const edit::TimeMap& time,d
         }
     }
 }
+void trimFrozenStart(Payload& image,std::int64_t begin,const edit::TimeMap& time,double rate) {
+    auto& row=image["row"];
+    if(!row.at("alias_of").is_null())throw std::runtime_error("left trim needs alias resolution");
+    const bool audio=row.at("kind")=="audio";
+    if(!audio && row.at("kind")!="midi")throw std::runtime_error("this clip kind has no left-trim playback");
+    const auto base=static_cast<int>(adi::detail::signedInteger(row.at("time_base")));
+    const char* position=base==0?"pos_ticks":"pos_ns";
+    const char* length=base==0?"length_ticks":"length_ns";
+    const auto first=adi::detail::signedInteger(row.at(position));
+    const auto end=edit::addTime(first,adi::detail::signedInteger(row.at(length)));
+    if(begin<0 || begin>=end)throw std::runtime_error("left trim must not pass the anchored end");
+    const auto oldOrigin=clip_edit::originTicks(row,time);
+    const auto oldOffset=adi::detail::signedInteger(row.at("content_offset_ticks"));
+    constexpr std::int64_t limit=std::int64_t{1}<<50;
+    if(oldOffset < -limit || oldOffset > limit)throw std::runtime_error("left trim source offset outside supported range");
+    auto tickAt=[&](std::int64_t value){return base==0?value:time.ticks(value);};
+    auto sampleAt=[&](std::int64_t value){return clip_edit::sample(base==0?time.seconds(value):static_cast<double>(value)*1e-9,rate);};
+    auto* clock=clip_edit::playback(image);
+    const auto& sources=image.at("children").at("audio_clips");
+    const bool warpSource=audio && !sources.empty() && sources.front().at("warp_enabled")!=0;
+    const bool physical=audio && !warpSource && clock && !clock->at("content_offset_ns").is_null();
+    std::int64_t oldSample=0,sourceSample=0;
+    if(physical) {
+        oldSample=sampleAt(first);
+        sourceSample=clip_edit::sample(static_cast<double>(adi::detail::signedInteger(clock->at("content_offset_ns")))*1e-9,rate);
+    } else if(audio && oldOffset<0)throw std::runtime_error("audio left trim needs a nonnegative source clock");
+    // A clip already at source zero has no earlier material: keep its begin,
+    // so prepareTrim restores the original image as a true no-op.
+    if(physical && sourceSample==0 && begin<first)begin=first;
+    if(audio && begin<first) {
+        // Find the first representable native position at or after source zero.
+        // Binary search keeps directed conversion independent of tempo and of
+        // tick/ns rounding at a sample boundary. The old begin is admissible.
+        auto sourceAt=[&](std::int64_t value){return physical?(base==0?time.nanos(value):value):tickAt(value);};
+        const auto lower=physical?std::min(sourceAt(first),clip_edit::sampleNanos(std::max<std::int64_t>(0,oldSample-sourceSample),rate)):oldOrigin-oldOffset;
+        if(sourceAt(begin)<lower) {
+            auto high=first;
+            while(begin<high) {
+                const auto middle=begin+(high-begin)/2;
+                if(sourceAt(middle)<lower)begin=middle+1;else high=middle;
+            }
+        }
+    }
+    const auto origin=tickAt(begin),last=tickAt(end);
+    if(last<origin)throw std::runtime_error("left trim has an invalid musical span");
+    const auto offset=edit::addTime(oldOffset,origin-oldOrigin);
+    if(offset < -limit || offset > limit || (audio && !physical && offset<0))
+        throw std::runtime_error("left trim source offset outside supported range");
+    // An unlooped MIDI or warped clip must keep Start before its End marker.
+    // Unwarped audio plays from its physical pins instead.
+    const auto& children=image.at("children");
+    if((!audio || warpSource) && row.at("loop_enabled")==0 && children.contains("clip_properties") &&
+       !children.at("clip_properties").empty() && !children.at("clip_properties")[0].at("end_marker_ticks").is_null() &&
+       offset>=adi::detail::signedInteger(children.at("clip_properties")[0].at("end_marker_ticks")))
+        throw std::runtime_error("left trim must not pass the clip End marker");
+    const auto ticks=last-origin;
+    const bool activeIn=adi::detail::signedInteger(row.at("fade_in_ticks"))>0;
+    const bool activeOut=adi::detail::signedInteger(row.at("fade_out_ticks"))>0;
+    for(const char* fade:{"fade_in_ticks","fade_out_ticks"}) {
+        const auto value=adi::detail::signedInteger(row.at(fade));
+        if(value<0)throw std::runtime_error("left trim needs valid fades");
+        row[fade]=std::min(value,ticks);
+    }
+    row[position]=begin;row[length]=end-begin;row["content_offset_ticks"]=offset;
+    auto retarget=[&](Payload& domain,const char* firstKey,const char* lastKey,
+                      std::int64_t sourceBegin,std::int64_t sourceEnd,bool incoming) {
+        if(incoming?!activeIn:!activeOut)return;
+        if(domain.at(firstKey).is_null() || domain.at(lastKey).is_null())return;
+        const auto a=adi::detail::signedInteger(domain.at(firstKey));
+        const auto b=adi::detail::signedInteger(domain.at(lastKey));
+        if(a<0 || b<a)throw std::runtime_error("left trim needs ordered fade domains");
+        const auto start=incoming?sourceBegin:std::max(a,sourceBegin);
+        const auto finish=incoming?edit::addTime(start,std::min(b-a,sourceEnd-sourceBegin)):std::min(b,sourceEnd);
+        if(finish<=start){domain[firstKey]=nullptr;domain[lastKey]=nullptr;return;}
+        domain[firstKey]=start;domain[lastKey]=finish;
+    };
+    if(physical) {
+        const auto next=edit::addTime(sourceSample,sampleAt(begin)-oldSample);
+        const auto finish=edit::addTime(next,sampleAt(end)-sampleAt(begin));
+        if(next<0 || finish<next)throw std::runtime_error("audio left trim precedes source zero");
+        // Operate in samples, then pin representable ns once per boundary.
+        Payload domains=Payload::object();
+        for(const char* key:{"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"}) {
+            if(std::string_view(key).starts_with("in_")?!activeIn:!activeOut)continue;
+            domains[key]=clock->at(key).is_null()?Payload(nullptr):Payload(clip_edit::sample(static_cast<double>(adi::detail::signedInteger(clock->at(key)))*1e-9,rate));
+        }
+        retarget(domains,"in_begin_ns","in_end_ns",next,finish,true);
+        retarget(domains,"out_begin_ns","out_end_ns",next,finish,false);
+        for(const char* key:{"in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"}) {
+            if(!domains.contains(key))continue;
+            (*clock)[key]=domains.at(key).is_null()?Payload(nullptr):Payload(clip_edit::sampleNanos(adi::detail::signedInteger(domains.at(key)),rate));
+        }
+        (*clock)["content_offset_ns"]=clip_edit::sampleNanos(next,rate);
+    }
+    auto& warped=image["children"]["clip_warp_fade_domains"];
+    if(warpSource && !warped.empty()) {
+        const auto finish=edit::addTime(offset,ticks);
+        retarget(warped[0],"in_begin_ticks","in_end_ticks",offset,finish,true);
+        retarget(warped[0],"out_begin_ticks","out_end_ticks",offset,finish,false);
+    }
+}
 } // namespace adi::edit_plan::detail
