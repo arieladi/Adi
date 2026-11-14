@@ -2,7 +2,7 @@
 "I need a better end result, it can take longer").
 
 usage: wan14_job.py <root>        (reads <root>/jobs.json; resumable; D:/AvasthaAI/venv python)
-jobs.json: [{"id": ..., "start": <png>, "end": <png or null>, "prompt": ..., "length": 81, "seed": n,
+jobs.json: [{"id": ..., "start": <png or "@prev" = last frame of the previous job>, "end": <png or null>, "prompt": ..., "length": 81, "seed": n,
              "width": 1280, "height": 720}]
 With "end", WanFirstLastFrameToVideo pins the last frame (a loop when end == start); without it, WanImageToVideo.
 Official Wan 2.2 two-stage sampling (shift 8, cfg 3.5, euler/simple, high-noise model for the first half of the steps,
@@ -19,6 +19,7 @@ R = Path(sys.argv[1])
 API = "http://127.0.0.1:8192"
 C = Path("D:/AvasthaAI/VideoEditFour-20261025")
 STEPS, SPLIT, CFG, SHIFT = 30, 15, 3.5, 8
+DONOR = "cuda:1,3.5gb;cpu,*"  # per half: 2 x 3.5 GB on the 8 GB RTX4000 (it also drives the display)
 NEG = ("text, watermark, subtitles, collage, split screen, static image, frozen, blurry, muddy detail, deformed geometry, "
        "photorealistic skin pores, extra arms, extra hands, extra fingers, melting body, bad anatomy, flicker")
 
@@ -40,17 +41,29 @@ def put(src, name, w, h):
     return name
 
 
+def start_of(j):
+    # "@prev": continue from the last frame of the previous job (chained segments of a long loop).
+    if j["start"] != "@prev":
+        return j["start"]
+    prev = jobs[[x["id"] for x in jobs].index(j["id"]) - 1]["id"]
+    return json.loads((R / "anim" / prev / "generated.json").read_text())["frames"][-1]
+
+
 def graph(j):
     w, h, L = j.get("width", 1280), j.get("height", 720), j["length"]
     tag = f"wan14/{R.name}/{j['id']}"
     g = {
-        "1": node("UnetLoaderGGUF", unet_name="wan2.2_i2v_high_noise_14B_Q8_0.gguf"),
-        "2": node("UnetLoaderGGUF", unet_name="wan2.2_i2v_low_noise_14B_Q8_0.gguf"),
-        "3": node("CLIPLoader", clip_name="umt5_xxl_fp8_e4m3fn_scaled.safetensors", type="wan", device="default"),
+        # The A2000 (cuda:0) computes; part of each half is parked on the RTX4000 (cuda:1), the rest in RAM
+        # (ComfyUI-MultiGPU DisTorch2). The text encoder runs once per clip on the CPU so the RTX4000 holds model layers.
+        "1": node("UnetLoaderGGUFDisTorch2MultiGPU", unet_name="wan2.2_i2v_high_noise_14B_Q8_0.gguf", compute_device="cuda:0",
+                  virtual_vram_gb=0.0, donor_device="cpu", expert_mode_allocations=DONOR, eject_models=False),
+        "2": node("UnetLoaderGGUFDisTorch2MultiGPU", unet_name="wan2.2_i2v_low_noise_14B_Q8_0.gguf", compute_device="cuda:0",
+                  virtual_vram_gb=0.0, donor_device="cpu", expert_mode_allocations=DONOR, eject_models=False),
+        "3": node("CLIPLoaderMultiGPU", clip_name="umt5_xxl_fp8_e4m3fn_scaled.safetensors", type="wan", device="cpu"),
         "4": node("VAELoader", vae_name="wan_2.1_vae.safetensors"),
         "5": node("CLIPTextEncode", clip=["3", 0], text=j["prompt"]),
         "6": node("CLIPTextEncode", clip=["3", 0], text=NEG),
-        "7": node("LoadImage", image=put(j["start"], f"wan14-{R.name}-{j['id']}-start.png", w, h)),
+        "7": node("LoadImage", image=put(start_of(j), f"wan14-{R.name}-{j['id']}-start.png", w, h)),
         "8": node("ModelSamplingSD3", model=["1", 0], shift=SHIFT),
         "9": node("ModelSamplingSD3", model=["2", 0], shift=SHIFT),
     }
