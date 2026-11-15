@@ -50,8 +50,8 @@ void SharedSpectrumView::clear() {
     // Local interval only: clearing one view never seeks the tap, discards another view's
     // publication or resets audio/loudness state. Wait for a subsequent worker window.
     if (shown_) {
-        clearedRevision_ = shown_->revision; clearedEpoch_ = shown_->sourceEpoch;
-        clearedColumn_ = shown_->columns.empty() ? 0 : shown_->columns.back().serial;
+        clearedRevision_ = shown_->windowSerial; clearedEpoch_ = shown_->sourceEpoch;
+        clearedColumn_ = shown_->historySerial;
     }
     shown_.reset(); spectrogram_ = {};
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
@@ -121,7 +121,7 @@ void SharedSpectrumView::frame() noexcept {
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
     auto next = lease_.read();
-    if (next && next->sourceEpoch == clearedEpoch_ && next->revision <= clearedRevision_) next.reset();
+    if (next && next->sourceEpoch == clearedEpoch_ && next->windowSerial <= clearedRevision_) next.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
     if (next != shown_) {
         shown_ = std::move(next);
@@ -234,19 +234,35 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         const auto topHz = std::min(20000., shown_->sampleRate * .5);
         // Each display column represents exactly one hop, with max aggregation across the
         // logarithmic row's FFT bins. No renderer-dependent resampling of analysis time.
-        if (count && topHz > 20) {
+        if ((count || shown_->historySerial) && topHz > 20) {
             constexpr int rows = 256;
             if (spectrogram_.isNull() || rasterRevision_ != shown_->revision || rasterEpoch_ != shown_->sourceEpoch) {
                 auto firstColumn = skipped;
                 const bool reset = spectrogram_.isNull() || rasterEpoch_ != shown_->sourceEpoch ||
-                    rasterColumn_ < shown_->columns.front().serial - 1;
+                    shown_->historySerial < rasterColumn_ || shown_->historySerial - rasterColumn_ >= 128;
                 if (reset) {
                     spectrogram_ = juce::Image(juce::Image::RGB, 128, rows, true);
                     spectrogram_.clear(spectrogram_.getBounds(), look::display);
                 } else {
                     while (firstColumn < shown_->columns.size() && shown_->columns[firstColumn].serial <= rasterColumn_) ++firstColumn;
-                    const auto added = static_cast<int>(shown_->columns.size() - firstColumn);
-                    if (added > 0 && added < 128) spectrogram_.moveImageSection(0, 0, added, 0, 128 - added, rows);
+                    const auto added = static_cast<int>(shown_->historySerial - rasterColumn_);
+                    if (added > 0) {
+                        spectrogram_.moveImageSection(0, 0, added, 0, 128 - added, rows);
+                        spectrogram_.clear({128 - added, 0, added, rows}, look::display);
+                    }
+                    // A previously capped hop may arrive without a new source sequence.
+                    // Redraw its same-time column; never squeeze missing hops together.
+                    if (firstColumn && shown_->columns[firstColumn - 1].serial == rasterColumn_) --firstColumn;
+                }
+                if (shown_->droppedHistoryColumns) {
+                    std::array<bool, 128> retained{};
+                    for (auto column = skipped; column < shown_->columns.size(); ++column) {
+                        const auto serial = shown_->columns[column].serial;
+                        if (serial <= shown_->historySerial && shown_->historySerial - serial < 128)
+                            retained[127 - static_cast<std::size_t>(shown_->historySerial - serial)] = true;
+                    }
+                    for (std::size_t x = 0; x < retained.size(); ++x) if (!retained[x])
+                        spectrogram_.clear({static_cast<int>(x), 0, 1, rows}, look::display);
                 }
                 std::array<std::size_t, rows> firstBin{}, lastBin{};
                 std::array<juce::Colour, 256> palette;
@@ -262,16 +278,18 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
                 }
                 juce::Image::BitmapData pixels(spectrogram_, juce::Image::BitmapData::writeOnly);
                 for (auto column = firstColumn; column < shown_->columns.size(); ++column) for (int row = 0; row < rows; ++row) {
-                    const auto &bins = shown_->columns[column].binsDbfs;
+                    const auto &entry = shown_->columns[column];
+                    if (!entry.binsDbfs || entry.serial > shown_->historySerial || shown_->historySerial - entry.serial >= 128) continue;
+                    const auto &bins = *entry.binsDbfs;
                     float peak = floorDb;
                     for (auto i = firstBin[static_cast<std::size_t>(row)]; i < std::min(bins.size(), lastBin[static_cast<std::size_t>(row)]); ++i)
                         peak = std::max(peak, bins[i]);
                     const auto strength = std::clamp((peak - floorDb) / -floorDb, 0.f, 1.f);
-                    pixels.setPixelColour(static_cast<int>(128 - shown_->columns.size() + column), rows - row - 1,
+                    pixels.setPixelColour(127 - static_cast<int>(shown_->historySerial - entry.serial), rows - row - 1,
                         palette[static_cast<std::size_t>(strength * 255.f)]);
                 }
                 rasterRevision_ = shown_->revision; rasterEpoch_ = shown_->sourceEpoch;
-                rasterColumn_ = shown_->columns.back().serial;
+                rasterColumn_ = shown_->historySerial;
             }
             g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
             g.drawImage(spectrogram_, plot);
@@ -319,7 +337,9 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
                    "RMS  L " + level(shown_->rms[0]) + "  R " + level(shown_->rms[1])) +
                    (shown_->gapCount ? " / Gap " + juce::String(static_cast<juce::int64>(shown_->gapCount)) : "") +
                    (shown_->nonFiniteSamples ? " / Invalid samples" : "") +
-                   (shown_->budgetLimited ? " / Catching up" : ""),
+                   (shown_->budgetLimited ? " / Catching up" : "") +
+                   (shown_->historyLimited ? " / History memory limit" : "") +
+                   (shown_->droppedHistoryColumns ? " / History gaps " + juce::String(static_cast<juce::int64>(shown_->droppedHistoryColumns)) : ""),
                footer.withTrimmedTop(12.f), juce::Justification::centredLeft, true);
 }
 
