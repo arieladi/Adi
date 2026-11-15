@@ -52,6 +52,9 @@ cut out of something that already shipped or was ruled.
 | DF-M26 | The withdrawn slots (ADR-0212) are still in the row model (`stack_model.cpp` default kinds, the Ducking kind included) and described in `mix_view_provider.hpp`; nothing draws them. Remove them | Mix View seat | follow-up |
 | DF-M27 | Two of the director's answers to the seat are recorded only in the seat's log: rows default to channels that have Mix View tools, and the optional analyser dock beside the rows. Win writes them into an ADR | win | next ADR batch |
 | DF-M28 | The compressor, gate and de-esser are merged or open as cores no user can load. First a complete compressor a user can add (internal key only, no device keys needed), then DF-M23, then DF-M11, then the other styles and the gate and de-esser | Mix View seat, on the director's go | the seat's next run |
+| DF-M29 | #548: the native EQ passes dry audio after a processing-precision switch (float to double inside a prepared stream is rejected, the same-format rebuild skips the prepare and the refusal is discarded); reproduced, a regression against main. Force a backend prepare on a width change, with a test | Mix View seat | before #548 lands |
+| DF-M30 | #548: a latency-neutral EQ plan edit now reaches audio 2 to 32 blocks later depending on the scheduler (always 1 block before), and offline render does not wait for it, so two exports of an automated Structure change can differ. Offline render waits for the plan it asked for | Mix View seat | before #548 lands |
+| DF-M31 | #548: the parked-failure text says "Reload the device to retry" but no reload command exists and reverting the edit does not clear the failure. Give the failure a way to clear, or say what does | Mix View seat | follow-up to #548 |
 
 ### Engine (win's log of 12 November)
 
