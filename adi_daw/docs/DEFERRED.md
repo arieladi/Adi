@@ -23,13 +23,14 @@ cut out of something that already shipped or was ruled.
 | DF-C1 | The session token, **both ways, the user chooses** (ADR-0239 d1): shown in ADI to paste into each AI tool, or an owner-only file in the user's profile that AI tools find on their own (only while the listener is on) | control seat | with the app listener (CTL-04, CTL-05) |
 | DF-C2 | AGT-03, the in-app consent before `project_read` answers a non-local destination; closes ADR-0039's open consent item | control seat + window | before DF-C3 ships |
 | DF-C3 | `adi-mcp --connect` to a running ADI, the app's loopback listener (CTL-04) and the in-app host (CTL-09) | control seat | after DF-C1 and DF-C2 |
+| DF-C5 | One of each function per channel (ADR-0237 d1) is checked only in the window's edit path (`mix_function_edit.cpp`); the `device.insert` operation does not check it, so a control client could add a second EQ or limiter to a channel. Refuse it in the operation | control seat | after #512 merges (the fenced files) |
 
 ### Mix View (ADR-0236, ADR-0237, PRs #537 onward)
 
 | Id | What | Owner | Trigger / before |
 |---|---|---|---|
 | DF-M1 | Live checks of the seat's builds (briefs in the seat's outputs for #537, #541, #542), run off the director's desktop or by him | director or a Claude tester | before each slice is called done |
-| DF-M2 | The decision guide (`NowWeReverse/ADI-View/mixview-seat/DECISION-GUIDE.md`) for every open Mix View choice, ADI-View D1 to D13 included | Mix View seat | now |
+| DF-M2 | The decision guide (the seat's `DECISION-GUIDE.md` in the director's private research folder) for every open Mix View choice, ADI-View D1 to D13 included | Mix View seat | now |
 | DF-M3 | CPU and sound comparison of every Mix View function against the plug-in it comes from (the VST3 builds); the director deferred CPU collection for the first slices | Mix View seat + a Claude tester | before the Mix View is called done |
 | DF-M4 | The analyser after a sample-rate change: safe tap replacement (MX-30); today the Main analyser stays unavailable until the project reopens | Mix View seat | MX-30 |
 | DF-M10 | STACK pins, search and row size persist across launches | Mix View seat | before the Mix View is called done |
@@ -42,6 +43,15 @@ cut out of something that already shipped or was ruled.
 | DF-M17 | De-esser, gate, opto and clean-key cores refuse 176.4/192 kHz (96 kHz caps); ADR-0157 makes ADI 44.1–768 kHz, with tests at 192 and 384 kHz | Mix View seat | before those functions are registered |
 | DF-M18 | Key EQ near Nyquist: BandPass loses up to −10.4 dB at 20 kHz, a Q40 Bell reaches +6.4 of +12 dB; add magnitude tests against the 384 kHz-built response, then compare with the reference before changing the policy | Mix View seat | before the key EQ ships |
 | DF-M19 | The Mix View's Overview spectrum and analyser dock ignore the spectrum-slope setting | Mix View seat | follow-up to #565 |
+| DF-M20 | The native limiter runs its loudness measurement on every block although nothing reads it (the host switches recording off): about 0.12 % of a core per instance at 48 kHz, 0.22 % at 96 kHz, measured 15 November. Skip the measurement while recording is off (ADR-0237 d6) | Mix View seat | with DF-M3 |
+| DF-M21 | One meaning for a native function's switch: a Mix View row's dot bypasses it (`device.setEnabled`), the device area's activator removes it (`device.remove`), so a function bypassed in the Mix View shows off in the device area where the only click removes it. ADR-0237 d3 says disabling removes, as deleting a Live device does | Mix View seat, the director if the two readings need a ruling | before the Mix View is called done |
+| DF-M22 | Adding a function from the Mix View (ADR-0237 d3): today only the device area's + adds one; the Mix View's empty text sends the user there | Mix View seat | before the Mix View is called done |
+| DF-M23 | Presets at both levels (ADR-0237 d4): each function, and a channel's whole set. Nothing a user can reach exists; only the state save/load underneath. Where preset files live needs an ADR from win | Mix View seat + win | after the first complete compressor |
+| DF-M24 | The compare view of the analyser tab (ADR-0237 d5): the comparison, one-second average and triggered-scope parts are merged as tested libraries with nothing on screen using them | Mix View seat | before the Mix View is called done |
+| DF-M25 | The analyser window (ADR-0237 d9) shows one mode at a time and its button back to the Mix View lands on the analysis tab, not on the channel's row | Mix View seat | before the Mix View is called done |
+| DF-M26 | The withdrawn slots (ADR-0212) are still in the row model (`stack_model.cpp` default kinds, the Ducking kind included) and described in `mix_view_provider.hpp`; nothing draws them. Remove them | Mix View seat | follow-up |
+| DF-M27 | Two of the director's answers to the seat are recorded only in the seat's log: rows default to channels that have Mix View tools, and the optional analyser dock beside the rows. Win writes them into an ADR | win | next ADR batch |
+| DF-M28 | The compressor, gate and de-esser are merged or open as cores no user can load. First a complete compressor a user can add (internal key only, no device keys needed), then DF-M23, then DF-M11, then the other styles and the gate and de-esser | Mix View seat, on the director's go | the seat's next run |
 
 ### Engine (win's log of 12 November)
 
@@ -55,6 +65,7 @@ cut out of something that already shipped or was ruled.
 | DF-E6 | Count-in clicks on the latency-compensated clock; when latency exceeds a beat, measure Live first | engine seat | follow-up to #527 |
 | DF-E7 | On main: `resizeFrozenEnd` refuses `end <= first`; split's `keepRight` End-marker check | engine seat | follow-up |
 | DF-E9 | Automation Undo deletes and re-inserts lane and data rows: a later minor's CASCADE child or extra column is lost or refused. Restore in place (UPDATE named columns, insert only missing data rows); named-column INSERT/SELECT; test with a CASCADE child and extra columns (outside review E3.2, verified) | engine seat | next engine session |
+| DF-E10 | `adi_link_session_tests` failed once on ubuntu arm64 (#548, 14 November: "shared musical timeline continues while local transport is stopped") and passed on re-run; the tests open real Link sessions while ctest runs suites in parallel on one host. Isolate them or run them serially | engine seat | next engine session |
 
 ### Repository
 
