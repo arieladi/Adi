@@ -120,7 +120,8 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     using Stats = ParamOps::Stats;
     explicit Runtime(std::int32_t ringCapacity);
     ~Runtime() override;
-    bool uiEvent(std::int64_t, const std::string&, ParamEventKind, double, std::int64_t, std::vector<OpRequest>&);
+    bool uiEventImpl(std::int64_t, const std::string&, ParamEventKind, double, std::int64_t,
+                     std::vector<OpRequest>&, bool configuration);
     bool attach(std::int64_t, device::DeviceInstance&);
     void detach(std::int64_t);
     std::size_t attachSession(Session&);
@@ -1293,8 +1294,8 @@ void ParamOps::Runtime::cancelUi(std::int64_t id, Attached& a, std::int32_t inde
     a.uiPending.erase(index); a.uiExplicit.erase(index);
 }
 
-bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, ParamEventKind kind,
-                       double value, std::int64_t nowMs, std::vector<OpRequest>& out) {
+bool ParamOps::Runtime::uiEventImpl(std::int64_t id, const std::string& param, ParamEventKind kind,
+                       double value, std::int64_t nowMs, std::vector<OpRequest>& out, bool configuration) {
     discardExpiredSessions();
     const auto found = devices_.find(id);
     if (found == devices_.end() || !found->second.active || !found->second.inst || !std::isfinite(value) ||
@@ -1302,7 +1303,9 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
     auto& a = found->second;
     const auto index = indexOf(*a.inst,param);
     const auto* descriptor = index < 0 ? nullptr : a.inst->paramAt(index);
-    if (!descriptor || descriptor->missing || !descriptor->automatable) return false;
+    if (!descriptor || descriptor->missing ||
+        (configuration ? (descriptor->automatable || !descriptor->configurable) : !descriptor->automatable))
+        return false;
     if(a.session && coordinator_) {
         // Complete an earlier implicit gesture before judging this new value.
         // Even a refused setter returns that older sealed offer to the caller.
@@ -1347,7 +1350,7 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
                 return false;
             }
             task->input=std::move(image);task->dirty=true;task->lastInputMs=nowMs;
-            (void)a.session->overrideDeviceAutomation(id,param);
+            if (!configuration) (void)a.session->overrideDeviceAutomation(id,param);
         }
         if(kind==ParamEventKind::End) {task->complete=true;openGestures_.erase(key);}
         advanceGestures(nowMs);(void)offerOne(out);return true;
@@ -1368,7 +1371,7 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
         const auto refused = stats_.appliedRefused;
         const bool sent = appliedImpl(intent.payload,nowMs,true);
         if (stats_.appliedRefused != refused) return false;
-        if (sent && a.session) (void)a.session->overrideDeviceAutomation(id,param);
+        if (sent && a.session && !configuration) (void)a.session->overrideDeviceAutomation(id,param);
         a.uiPending.insert(index);
     }
     if (!a.uiCapture->push({id,index,kind,value})) return false;
@@ -2106,7 +2109,10 @@ gesture::CancelOutcome ParamOps::cancelPending(const gesture::OwnerToken& owner,
 gesture::CancelOutcome ParamOps::retryPendingCancel(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->cancelPending(owner,now,true);}
 gesture::DrainOutcome ParamOps::pumpGestures(std::int64_t now) {return runtime_->pumpGestures(now);}
 bool ParamOps::uiEvent(std::int64_t id,const std::string& param,ParamEventKind kind,double value,std::int64_t now,std::vector<OpRequest>& out) {
-    return runtime_->uiEvent(id,param,kind,value,now,out);
+    return runtime_->uiEventImpl(id,param,kind,value,now,out,false);
+}
+bool ParamOps::uiConfigurationEvent(std::int64_t id,const std::string& param,ParamEventKind kind,double value,std::int64_t now,std::vector<OpRequest>& out) {
+    return runtime_->uiEventImpl(id,param,kind,value,now,out,true);
 }
 bool ParamOps::attach(std::int64_t id,device::DeviceInstance& instance) { return runtime_->attach(id,instance); }
 void ParamOps::detach(std::int64_t id) { runtime_->detach(id); }

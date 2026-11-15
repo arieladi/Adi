@@ -26,12 +26,14 @@ namespace adi::panel {
 inline constexpr std::size_t kDefaultLimit = 64;
 
 /// One parameter the plug-in declares, as the panel needs it. `modifiable`
-/// is the device contract's `automatable`: a read-only or hidden meter is not
-/// a slider and does not count towards the 64.
+/// means automatable or explicitly configurable: a read-only or hidden meter
+/// is not a slider and does not count towards the 64. Automation eligibility
+/// remains separate from the ability to change a configuration setting.
 struct Declared {
     std::string id;
     std::string name;
     bool modifiable = true;
+    bool automatable = true;
 };
 
 struct Entry {
@@ -128,6 +130,8 @@ struct Record {
     bool missing = false;
 
     Source lastTouchedBy = Source::None;
+    /// Optional declared discrete captions; absent entries use numeric labels.
+    std::vector<std::string> choiceLabels{};
 };
 
 /// Derive the fields a record computes from the ones a caller reads off a

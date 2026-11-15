@@ -154,6 +154,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             SQLite::Transaction snapshot(store->db());
             auto renderSpec=job.session;
             renderSpec.performanceState=false;
+            renderSpec.exporting=true;
             if (!session.load(*store, std::move(loader), renderSpec)) throw std::runtime_error(session.error());
             if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
                 std::string why = "export requires a fully resolved project";

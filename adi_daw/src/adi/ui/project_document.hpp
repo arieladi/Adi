@@ -6,6 +6,7 @@
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/mix_functions.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -85,18 +86,21 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
+    void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
     const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
     // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
     // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
     // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
     // the engine's own window producer (`ParamOps::uiEvent`). A value nothing brackets closes on
     // the drain's quiet timer, in `tick()`. False when THIS event was refused (a device that is
-    // not loaded, a missing or non-automatable parameter, a value the plug-in did not take), with
+    // not loaded, a missing or read-only parameter, a value the plug-in did not take), with
     // `error()` saying which. An older gesture the producer's own drain completed on the way to
     // judging the value is committed by this call; a device, parameter or value the producer
     // refuses outright drains nothing, and the older gesture commits on the timer's next frame.
     bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
                           double normalized);
+    // Explicitly configurable descriptors use the same gesture/undo path,
+    // but stay non-automatable and never override an automation lane.
     // Retained multi-track surfaces edit the exact runtime they presented. A stale row ID
     // must never redirect a gesture to a replacement instance.
     bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
@@ -133,6 +137,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool addMixFunction(mix::Function, std::int64_t track);
+    bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
+                         std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
     // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
     // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
@@ -142,6 +149,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool clearSample(std::int64_t device, std::int32_t slot);
     // The parameter glue's counters (for the tests: a sample's state reached the live device).
     const engine::ParamOps::Stats &parameterStats() const noexcept { return parameterOps_.stats(); }
+    std::vector<engine::PendingParameterGesture> pendingParameterGestures() const {
+        return parameterOps_.pendingGestures();
+    }
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
@@ -184,6 +194,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
+    struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
+    std::map<engine::ScopeSource, AnalysisSource> analysisSources_;
     std::shared_ptr<SharedAnalysis> analysis_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;

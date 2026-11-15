@@ -1,0 +1,1130 @@
+// Copyright (C) 2026 - zsliu98
+// This file is part of ZLEqualizer
+//
+// ZLEqualizer is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License Version 3 as published by the Free Software Foundation.
+//
+// ZLEqualizer is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License along with ZLEqualizer. If not, see <https://www.gnu.org/licenses/>.
+
+#include "controller.hpp"
+
+namespace adi_eq_zlp {
+    Controller::Controller(LatencyObserver observer) :
+        latency_observer_(observer) {
+        not_off_total_.reserve(kBandNum);
+        for (auto& v : not_off_indices_) {
+            v.reserve(kBandNum);
+        }
+        correction_on_total_.reserve(kBandNum);
+        for (auto& v : correction_on_indices_) {
+            v.reserve(kBandNum);
+        }
+        for (auto& f : side_emptys_) {
+            f.setFilterType(adi_eq_dsp::filter::kBandPass);
+        }
+        for (auto& slope : fractional_slope_) {
+            slope.store(-1.0, std::memory_order::relaxed);
+        }
+    }
+
+    void Controller::prepare(const double sample_rate, const size_t max_num_samples) {
+        fractional_sample_rate_ = sample_rate;
+        initializing_fractional_ = true;
+        c_filter_structure_ = kMinimum;
+        c_correction_enabled_ = false;
+        force_update_correction_ = true;
+        if (correction_latency_.exchange(0, std::memory_order_relaxed) != 0) {
+            publishLatency();
+        }
+
+        side_buffers[0].resize(max_num_samples);
+        side_buffers[1].resize(max_num_samples);
+        side_copy_pointers_.reserve(2);
+
+        for (size_t i = 0; i < kBandNum; ++i) {
+            fractional_filters_[i].prepare(sample_rate);
+            filter_paras_[i] = getMainFilterParameters(i);
+            side_filter_paras_[i] = side_emptys_[i].getParas();
+        }
+
+        for (size_t i = 0; i < kBandNum; ++i) {
+            dynamic_side_handlers_[i].prepare(sample_rate, 41. / 1000.);
+            tdf_filters_[i].prepare(sample_rate, 2, max_num_samples);
+            tdf_filters_[i].getFilter().updateParas(filter_paras_[i]);
+            svf_filters_[i].prepare(sample_rate, 2, max_num_samples);
+            svf_filters_[i].getFilter().updateParas(filter_paras_[i]);
+            parallel_filters_[i].prepare(sample_rate, 2, max_num_samples);
+            parallel_filters_[i].getFilter().updateParas(filter_paras_[i]);
+            side_filters_[i].prepare(sample_rate, 2, max_num_samples);
+            side_filters_[i].updateParas(side_filter_paras_[i]);
+            res_ideals_[i].prepare(sample_rate);
+            res_tdfs_[i].prepare(sample_rate, 1, 0);
+            empty_update_flags_[i].signal();
+            side_empty_update_flags_[i].signal();
+            dynamic_th_update_[i].signal();
+            dynamic_ar_update_[i].signal();
+            dynamic_extra_update_[i].signal();
+            dynamic_smooth_update_[i].signal();
+            dynamic_rms_length_update_[i].signal();
+            dynamic_rms_mix_update_[i].signal();
+        }
+        match_stereo_fir_.prepare(sample_rate);
+        mixed_stereo_fir_.prepare(sample_rate);
+        zero_stereo_fir_.prepare(sample_rate);
+        match_calculator_.prepare(match_stereo_fir_.getNumBin());
+        mixed_calculator_.prepare(mixed_stereo_fir_.getNumBin());
+        zero_calculator_.prepare(zero_stereo_fir_.getNumBin());
+
+        hist_unit_decay_ = std::pow(0.9, 1.0 / sample_rate);
+        slow_hist_unit_decay_ = std::pow(0.99, 1.0 / sample_rate);
+
+        for (size_t chan = 0; chan < 2; ++chan) {
+            pre_main_buffers_[chan].resize(max_num_samples);
+            pre_main_pointers_[chan] = pre_main_buffers_[chan].data();
+        }
+        analyzer_sender_.prepare(sample_rate, max_num_samples, {2, 2, 2}, 0.1);
+        analyzer_sender_.setON(0, true);
+        analyzer_sender_.setON(1, true);
+        analyzer_sender_.setON(2, true);
+
+        for (size_t chan = 0; chan < 2; ++chan) {
+            solo_buffers_[chan].resize(max_num_samples);
+            solo_pointers_[chan] = solo_buffers_[chan].data();
+        }
+        solo_filter_.prepare(sample_rate, 2, max_num_samples);
+        solo_gain_.prepare(sample_rate, max_num_samples, 0.5);
+        if (c_solo_side_) {
+            updateSoloFilter<true>(side_filter_paras_[c_solo_idx_]);
+        } else {
+            updateSoloFilter<true>(filter_paras_[c_solo_idx_]);
+        }
+
+        loudness_matcher_.prepare(sample_rate, 2);
+        sgc_gain_.prepare(sample_rate, max_num_samples, 0.5);
+        output_gain_.prepare(sample_rate, max_num_samples, 0.5);
+
+        delay_.prepare(sample_rate, max_num_samples, 2, 0.021);
+        to_update_status_.signal();
+        to_update_dynamic_.signal();
+        to_update_lrms_.signal();
+        to_update_ui_.signal();
+        to_update_solo_.signal();
+        to_update_solo_gain_.signal();
+        to_update_makeup_.signal();
+        to_update_delay_.signal();
+        to_update_output_.signal();
+        to_update_.signal();
+        prepareBuffer();
+        initializing_fractional_ = false;
+    }
+
+    void Controller::prepareBuffer() {
+        if (!to_update_.check()) {
+            return;
+        }
+        if (to_update_ui_.check()) {
+            prepareUIStatus();
+        }
+        prepareStatus();
+        if (to_update_dynamic_.check()) {
+            prepareDynamics();
+        }
+        if (to_update_lrms_.check()) {
+            prepareLRMS();
+            to_update_correction_indices_ = true;
+            if (c_sgc_on_) {
+                updateSGC();
+            }
+        }
+        prepareFilters();
+        if (c_correction_enabled_) {
+            if (to_update_correction_indices_) {
+                prepareCorrectionIndices();
+            }
+            prepareCorrection();
+        }
+        prepareDynamicParameters();
+        if (to_update_output_.check()) {
+            prepareOutput();
+        }
+    }
+
+    void Controller::prepareUIStatus() {
+        c_editor_on_ = editor_on_.load(std::memory_order::relaxed);
+        c_match_bypass_on_ = match_bypass_on_.load(std::memory_order::relaxed);
+    }
+
+    void Controller::prepareStatus() {
+        if (c_filter_structure_ != filter_structure_.load(std::memory_order::relaxed)) {
+            // cache filter structure
+            c_filter_structure_ = filter_structure_.load(std::memory_order::relaxed);
+            c_correction_enabled_ =
+                (c_filter_structure_ == kMatched) || (c_filter_structure_ == kMixed) || (c_filter_structure_ == kZero);
+            if (c_correction_enabled_) {
+                // not zero latency, calculate latency later with LRMS info
+                to_update_correction_indices_ = true;
+                std::fill(res_update_flags_.begin(), res_update_flags_.end(), true);
+            } else if (correction_latency_.exchange(0, std::memory_order::relaxed) != 0) {
+                // is zero latency, update latency
+                publishLatency();
+            }
+            // force update all filters
+            for (size_t i = 0; i < kBandNum; ++i) {
+                empty_update_flags_[i].signal();
+            }
+            // force reset all filters
+            for (size_t i = 0; i < kBandNum; ++i) {
+                tdf_filters_[i].reset();
+                svf_filters_[i].reset();
+                parallel_filters_[i].reset();
+                fractional_filters_[i].reset();
+            }
+            // update lr/ms on flags as they might be changed by corrections
+            is_lr_on_ = !not_off_indices_[1].empty() || !not_off_indices_[2].empty();
+            is_ms_on_ = !not_off_indices_[3].empty() || !not_off_indices_[4].empty();
+            to_update_correction_indices_ = true;
+        } else {
+            to_update_correction_indices_ = false;
+        }
+        if (to_update_status_.check()) {
+            // cache total not off indices
+            not_off_total_.clear();
+            for (size_t i = 0; i < kBandNum; ++i) {
+                c_filter_status_[i] = filter_status_[i].load(std::memory_order::relaxed);
+                const auto spectral = spectral_band_[i].load(std::memory_order::relaxed);
+                if (c_spectral_band_[i] != spectral) {
+                    c_spectral_band_[i] = spectral;
+                    tdf_filters_[i].reset();
+                    svf_filters_[i].reset();
+                    parallel_filters_[i].reset();
+                    side_filters_[i].reset();
+                    fractional_filters_[i].reset();
+                    empty_update_flags_[i].signal();
+                    res_update_flags_[i] = true;
+                }
+                if (c_filter_status_[i] != FilterStatus::kOff && !spectral) {
+                    not_off_total_.emplace_back(i);
+                }
+            }
+            to_update_lrms_.signal();
+        }
+        const auto solo_status_updated = to_update_solo_.check();
+        if (solo_status_updated) {
+            // update solo status
+            const auto solo_whole_idx = solo_whole_idx_.load(std::memory_order::relaxed);
+            if (solo_whole_idx == 2 * kBandNum) {
+                c_solo_on_ = false;
+            } else {
+                c_solo_on_ = true;
+                solo_filter_.reset();
+                if (solo_whole_idx < kBandNum) {
+                    c_solo_idx_ = solo_whole_idx;
+                    c_solo_side_ = false;
+                    updateSoloFilter<true>(filter_paras_[c_solo_idx_]);
+                } else {
+                    c_solo_idx_ = solo_whole_idx - kBandNum;
+                    c_solo_side_ = true;
+                    updateSoloFilter<true>(side_filter_paras_[c_solo_idx_]);
+                }
+            }
+        }
+        const auto solo_gain_reset_requested = to_reset_solo_gain_.check();
+        if (solo_status_updated || (solo_gain_reset_requested && !c_solo_on_)) {
+            solo_gain_.reset();
+        }
+        if (to_update_solo_gain_.check()) {
+            solo_gain_.setGainDecibels(solo_gain_db_.load(std::memory_order::relaxed));
+        }
+    }
+
+    adi_eq_dsp::filter::FilterParameters Controller::getMainFilterParameters(const size_t index) const {
+        auto parameters = emptys_[index].getParas();
+        if (parameters.filter_type == adi_eq_dsp::filter::kLowPass
+            || parameters.filter_type == adi_eq_dsp::filter::kHighPass) {
+            parameters.q /= std::numbers::sqrt2;
+        }
+        return parameters;
+    }
+
+    void Controller::prepareFilters() {
+        // update not-off filters
+        bool to_update_sgc{false};
+        for (size_t i = 0; i < kBandNum; ++i) {
+            if (c_filter_status_[i] == FilterStatus::kOff) {
+                continue;
+            }
+            if (empty_update_flags_[i].check()) {
+                const auto filter_type = filter_paras_[i].filter_type;
+                filter_paras_[i] = getMainFilterParameters(i);
+                if (c_sgc_on_) {
+                    to_update_sgc = true;
+                    sgc_values_[i] = adi_eq_dsp::filter::getGainCompensation(filter_paras_[i]);
+                }
+                if (c_solo_on_ && !c_solo_side_ && c_solo_idx_ == i) {
+                    updateSoloFilter<false>(filter_paras_[i]);
+                }
+                if (c_spectral_band_[i]) {
+                    current_gains_[i].store(filter_paras_[i].gain, std::memory_order::relaxed);
+                    continue;
+                }
+                const auto fractional_slope = fractional_slope_[i].load(std::memory_order::relaxed);
+                const auto fractional_active = fractional_slope >= 0.0
+                    && (filter_paras_[i].filter_type == adi_eq_dsp::filter::kLowPass
+                        || filter_paras_[i].filter_type == adi_eq_dsp::filter::kHighPass);
+                if (fractional_active != c_fractional_active_[i]) {
+                    c_fractional_active_[i] = fractional_active;
+                    tdf_filters_[i].reset();
+                    svf_filters_[i].reset();
+                    parallel_filters_[i].reset();
+                    fractional_filters_[i].reset();
+                    to_update_correction_indices_ = true;
+                }
+                if (fractional_active) {
+                    fractional_filters_[i].set(ADISharedEqFractionalSlope::design(fractional_sample_rate_,
+                        filter_paras_[i].freq, fractional_slope, filter_paras_[i].q * std::numbers::sqrt2,
+                        filter_paras_[i].filter_type == adi_eq_dsp::filter::kHighPass), initializing_fractional_);
+                }
+                // if the filter type changes, check whether dynamic should be on
+                if (filter_type != filter_paras_[i].filter_type) {
+                    prepareOneBandDynamics(i);
+                }
+                dynamic_side_handlers_[i].setBaseGain(filter_paras_[i].gain);
+                if (!c_dynamic_on_[i]) {
+                    current_gains_[i].store(filter_paras_[i].gain, std::memory_order::relaxed);
+                }
+                if (c_filter_structure_ == kSVF) {
+                    svf_filters_[i].getFilter().updateParas(filter_paras_[i]);
+                    if (c_dynamic_on_[i]) {
+                        svf_filters_[i].getFilter().cacheDynPara();
+                    }
+                } else if (c_filter_structure_ == kParallel) {
+                    parallel_filters_[i].getFilter().updateParas(filter_paras_[i]);
+                    if (c_dynamic_on_[i]) {
+                        parallel_filters_[i].getFilter().cacheDynPara();
+                    }
+                } else {
+                    tdf_filters_[i].getFilter().updateParas(filter_paras_[i]);
+                    if (c_dynamic_on_[i]) {
+                        tdf_filters_[i].getFilter().cacheDynPara();
+                    }
+                }
+                res_update_flags_[i] = true;
+            }
+        }
+        if (to_update_sgc) {
+            updateSGC();
+        }
+    }
+
+    void Controller::prepareLRMS() {
+        // cache not-off indices and on indices
+        for (auto& v : not_off_indices_) {
+            v.clear();
+        }
+        for (size_t i = 0; i < kBandNum; ++i) {
+            const auto lr = lrms_[i].load(std::memory_order::relaxed);
+            if (c_lrms_[i] != lr && c_fractional_active_[i]) {
+                fractional_filters_[i].reset();
+            }
+            c_lrms_[i] = lr;
+        }
+        for (const size_t& i : not_off_total_) {
+            not_off_indices_[static_cast<size_t>(c_lrms_[i])].emplace_back(i);
+        }
+        is_lr_on_ = !not_off_indices_[1].empty() || !not_off_indices_[2].empty();
+        is_ms_on_ = !not_off_indices_[3].empty() || !not_off_indices_[4].empty();
+    }
+
+    void Controller::prepareDynamics() {
+        // cache dynamic on flags
+        for (size_t i = 0; i < kBandNum; ++i) {
+            prepareOneBandDynamics(i);
+        }
+    }
+
+    void Controller::prepareOneBandDynamics(const size_t i) {
+        if (!c_spectral_band_[i] && dynamic_on_[i].load(std::memory_order::relaxed) && (
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kPeak ||
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kLowShelf ||
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kHighShelf ||
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kTiltShelf ||
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kFlatTilt ||
+            filter_paras_[i].filter_type == adi_eq_dsp::filter::kFlatGain)) {
+            // turn on dynamic
+            if (c_dynamic_on_[i] != true) {
+                c_dynamic_on_[i] = true;
+                svf_filters_[i].resetDynamic();
+                svf_filters_[i].getFilter().cacheDynPara();
+                parallel_filters_[i].resetDynamic();
+                parallel_filters_[i].getFilter().cacheDynPara();
+                tdf_filters_[i].resetDynamic();
+                tdf_filters_[i].getFilter().cacheDynPara();
+                side_filters_[i].reset();
+                to_update_correction_indices_ = true;
+
+                side_empty_update_flags_[i].signal();
+                dynamic_th_update_[i].signal();
+                dynamic_ar_update_[i].signal();
+                dynamic_extra_update_[i].signal();
+            }
+        } else {
+            // turn dynamic off and reset filter gain
+            if (c_dynamic_on_[i] != false) {
+                c_dynamic_on_[i] = false;
+                svf_filters_[i].resetDynamic();
+                parallel_filters_[i].resetDynamic();
+                tdf_filters_[i].resetDynamic();
+                current_gains_[i].store(dynamic_side_handlers_[i].getBaseGain(), std::memory_order::relaxed);
+                to_update_correction_indices_ = true;
+            }
+        }
+    }
+
+    void Controller::prepareCorrectionIndices() {
+        correction_on_total_.clear();
+        for (size_t lr = 0; lr < 5; ++lr) {
+            correction_on_indices_[lr].clear();
+            for (const size_t& i : not_off_indices_[lr]) {
+                if (c_filter_status_[i] == FilterStatus::kOn && !c_dynamic_on_[i]
+                    && !c_fractional_active_[i]) {
+                    correction_on_total_.emplace_back(i);
+                    correction_on_indices_[lr].emplace_back(i);
+                }
+            }
+        }
+        is_lr_on_ = !not_off_indices_[1].empty() || !not_off_indices_[2].empty() || !correction_on_indices_[1].empty()
+            || !correction_on_indices_[2].empty();
+        is_ms_on_ = !not_off_indices_[3].empty() || !not_off_indices_[4].empty() || !correction_on_indices_[3].empty()
+            || !correction_on_indices_[4].empty();
+
+        correction_mask_ = (!correction_on_indices_[0].empty() ? 16 : 0) |
+                           (!correction_on_indices_[1].empty() ? 8 : 0) |
+                           (!correction_on_indices_[2].empty() ? 4 : 0) |
+                           (!correction_on_indices_[3].empty() ? 2 : 0) |
+                           (!correction_on_indices_[4].empty() ? 1 : 0);
+
+        // get the latency for one correction
+        int unit_latency = 0;
+        if (c_filter_structure_ == kMatched) {
+            unit_latency = match_stereo_fir_.getLatency();
+        } else if (c_filter_structure_ == kMixed) {
+            unit_latency = mixed_stereo_fir_.getLatency();
+        } else if (c_filter_structure_ == kZero) {
+            unit_latency = zero_stereo_fir_.getLatency();
+        }
+        // latency is constant once correction is enabled
+        if (correction_latency_.exchange(unit_latency, std::memory_order::relaxed) != unit_latency) {
+            publishLatency();
+        }
+        force_update_correction_ = true;
+    }
+
+    void Controller::prepareCorrection() {
+        for (const auto& idx : correction_on_total_) {
+            if (res_update_flags_[idx]) {
+                res_tdfs_[idx].forceUpdate(filter_paras_[idx]);
+                res_ideals_[idx].forceUpdate(filter_paras_[idx]);
+            }
+        }
+        switch (c_filter_structure_) {
+        case kMatched: {
+            match_calculator_.update(res_tdfs_, res_ideals_, correction_on_total_, res_update_flags_);
+            break;
+        }
+        case kMixed: {
+            mixed_calculator_.update(res_tdfs_, res_ideals_, correction_on_total_, res_update_flags_);
+            break;
+        }
+        case kZero: {
+            zero_calculator_.update(res_tdfs_, res_ideals_, correction_on_total_, res_update_flags_);
+            break;
+        }
+        case kMinimum:
+        case kSVF:
+        case kParallel: {
+            break;
+        }
+        }
+        bool needs_update = force_update_correction_;
+        force_update_correction_ = false;
+        for (const size_t& i : correction_on_total_) {
+            if (res_update_flags_[i]) {
+                needs_update = true;
+                res_update_flags_[i] = false;
+            }
+        }
+
+        if (needs_update) {
+            switch (c_filter_structure_) {
+            case kMatched: {
+                match_stereo_fir_.updateCorrection(match_calculator_.getCorrectionsReal(),
+                                                   match_calculator_.getCorrectionsImag(),
+                                                   correction_on_indices_);
+                break;
+            }
+            case kMixed: {
+                mixed_stereo_fir_.updateCorrection(mixed_calculator_.getCorrectionsReal(),
+                                                   mixed_calculator_.getCorrectionsImag(),
+                                                   correction_on_indices_);
+                break;
+            }
+            case kZero: {
+                zero_stereo_fir_.updateCorrection(zero_calculator_.getCorrectionsReal(),
+                                                  zero_calculator_.getCorrectionsImag(),
+                                                  correction_on_indices_);
+                break;
+            }
+            case kMinimum:
+            case kSVF:
+            case kParallel: {
+                break;
+            }
+            }
+        }
+    }
+
+    void Controller::prepareDynamicParameters() {
+        for (const size_t& i : not_off_total_) {
+            if (!dynamic_on_[i]) {
+                continue;
+            }
+            if (side_empty_update_flags_[i].check()) {
+                auto side_para = side_emptys_[i].getParas();
+                if (side_para.filter_type == adi_eq_dsp::filter::kLowPass
+                    || side_para.filter_type == adi_eq_dsp::filter::kHighPass) {
+                    side_para.q = std::sqrt(2.0) * .5;
+                }
+                side_filter_paras_[i] = side_para;
+                if (c_solo_on_ && c_solo_side_ && c_solo_idx_ == i) {
+                    updateSoloFilter<false>(side_para);
+                }
+                dynamic_side_handlers_[i].setTargetGain(side_para.gain);
+                side_para.gain = 0.0;
+                side_filters_[i].updateParas(side_para);
+            }
+            if (dynamic_th_update_[i].check()) {
+                if (c_dynamic_th_relative_[i] != dynamic_th_relative_[i].load(std::memory_order::relaxed)) {
+                    c_dynamic_th_relative_[i] = dynamic_th_relative_[i].load(std::memory_order::relaxed);
+                    if (c_dynamic_th_learn_[i]) {
+                        histograms_[i].reset();
+                        slow_histograms_[i].reset();
+                        learned_thresholds_[i].store(-40.0, std::memory_order::relaxed);
+                    }
+                }
+                if (c_dynamic_th_learn_[i] != dynamic_th_learn_[i].load(std::memory_order::relaxed)) {
+                    c_dynamic_th_learn_[i] = dynamic_th_learn_[i].load(std::memory_order::relaxed);
+                    if (c_dynamic_th_learn_[i]) {
+                        histograms_[i].reset();
+                        slow_histograms_[i].reset();
+                        learned_thresholds_[i].store(-40.0, std::memory_order::relaxed);
+                    }
+                    hist_results_[1] = 0.0;
+                }
+                if (c_dynamic_th_learn_[i]) {
+                    c_dynamic_threshold_[i] = dynamic_threshold_[i].load(std::memory_order::relaxed) + 40.0;
+                } else {
+                    c_dynamic_threshold_[i] = dynamic_threshold_[i].load(std::memory_order::relaxed);
+                    dynamic_side_handlers_[i].setThreshold<false>(c_dynamic_threshold_[i]);
+                }
+                dynamic_side_handlers_[i].setKnee(dynamic_knee_[i].load(std::memory_order::relaxed));
+            }
+            if (dynamic_ar_update_[i].check()) {
+                auto& follower{dynamic_side_handlers_[i].getFollower()};
+                follower.setAttack<false>(dynamic_attack_[i].load(std::memory_order::relaxed));
+                follower.setRelease<true>(dynamic_release_[i].load(std::memory_order::relaxed));
+            }
+            if (dynamic_extra_update_[i].check()) {
+                if (dynamic_smooth_update_[i].check()) {
+                    auto& follower{dynamic_side_handlers_[i].getFollower()};
+                    follower.setSmooth<true>(dynamic_smooth_[i].load(std::memory_order::relaxed));
+                }
+                if (dynamic_rms_length_update_[i].check()) {
+                    auto& handler{dynamic_side_handlers_[i]};
+                    handler.setRMSLength(dynamic_rms_length_[i].load(std::memory_order::relaxed));
+                }
+                if (dynamic_rms_mix_update_[i].check()) {
+                    auto& handler{dynamic_side_handlers_[i]};
+                    handler.setRMSMix(dynamic_rms_mix_[i].load(std::memory_order::relaxed));
+                }
+            }
+        }
+    }
+
+    void Controller::prepareOutput() {
+        const auto sgc_on = sgc_on_.load(std::memory_order::relaxed);
+        if (c_sgc_on_ != sgc_on) {
+            c_sgc_on_ = sgc_on;
+            if (c_sgc_on_) {
+                for (const size_t& band : not_off_total_) {
+                    if (c_filter_status_[band] == kOn) {
+                        sgc_values_[band] = adi_eq_dsp::filter::getGainCompensation(filter_paras_[band]);
+                    } else {
+                        sgc_values_[band] = 0.0;
+                    }
+                }
+                updateSGC();
+            }
+        }
+        const auto loudness_matcher_on = loudness_matcher_on_.load(std::memory_order_relaxed);
+        if (loudness_matcher_on != c_loudness_matcher_on_) {
+            c_loudness_matcher_on_ = loudness_matcher_on;
+            if (c_loudness_matcher_on_) {
+                loudness_matcher_.reset();
+            }
+        }
+        const auto agc_on = agc_on_.load(std::memory_order::relaxed);
+        if (c_agc_on_ != agc_on) {
+            c_agc_on_ = agc_on;
+            updateOutputGain();
+        }
+        c_phase_flip_on_ = phase_flip_on_.load(std::memory_order_relaxed);
+        if (to_update_makeup_.check()) {
+            c_makeup_gain_linear_ = makeup_gain_linear_.load(std::memory_order::relaxed);
+            updateOutputGain();
+        }
+        if (to_update_delay_.check()) {
+            const auto delay_second = delay_second_.load(std::memory_order::relaxed);
+            c_delay_on_ = std::abs(delay_second) > 1e-6;
+            delay_.setDelay(c_delay_on_ ? delay_second : 0.);
+            delay_latency_.store(delay_.getDelayInSamples(), std::memory_order::relaxed);
+            publishLatency();
+        }
+    }
+
+    template <bool bypass>
+    void Controller::process(std::array<double*, 2> main_pointers, std::array<double*, 2> side_pointers,
+                             const size_t num_samples) {
+        prepareBuffer();
+        if (c_delay_on_) {
+            delay_.process(main_pointers, num_samples);
+        }
+        // copy pre buffer for FFT processing
+        if (bypass || c_editor_on_ || c_match_bypass_on_) {
+            adi_eq_dsp::vector::copy(pre_main_pointers_[0], main_pointers[0], num_samples);
+            adi_eq_dsp::vector::copy(pre_main_pointers_[1], main_pointers[1], num_samples);
+        }
+        // copy solo buffer
+        if (c_solo_on_) {
+            if (c_solo_side_ || !c_dynamic_on_[c_solo_idx_]) {
+                std::memset(solo_pointers_[0], 0, num_samples * sizeof(double));
+                std::memset(solo_pointers_[1], 0, num_samples * sizeof(double));
+            }
+            switch (c_lrms_[c_solo_idx_]) {
+            case FilterStereo::kStereo: {
+                if (!c_solo_side_) {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], main_pointers[0], num_samples);
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], main_pointers[1], num_samples);
+                    solo_filter_.process(solo_pointers_, num_samples);
+                }
+                break;
+            }
+            case FilterStereo::kLeft: {
+                std::memset(solo_pointers_[1], 0, num_samples * sizeof(double));
+                if (!c_solo_side_) {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], main_pointers[0], num_samples);
+                    solo_filter_.process({&solo_pointers_[0], 1}, num_samples);
+                }
+                break;
+            }
+            case FilterStereo::kRight: {
+                std::memset(solo_pointers_[0], 0, num_samples * sizeof(double));
+                if (!c_solo_side_) {
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], main_pointers[1], num_samples);
+                    solo_filter_.process({&solo_pointers_[1], 1}, num_samples);
+                }
+                break;
+            }
+            case FilterStereo::kMid: {
+                if (!c_solo_side_) {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], main_pointers[0], num_samples);
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], main_pointers[1], num_samples);
+                    adi_eq_dsp::splitter::InplaceMSSplitter<double>::split(
+                        solo_pointers_[0], solo_pointers_[1], num_samples);
+                    solo_filter_.process({&solo_pointers_[0], 1}, num_samples);
+                }
+                std::memset(solo_pointers_[1], 0, num_samples * sizeof(double));
+                break;
+            }
+            case FilterStereo::kSide: {
+                if (!c_solo_side_) {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], main_pointers[0], num_samples);
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], main_pointers[1], num_samples);
+                    adi_eq_dsp::splitter::InplaceMSSplitter<double>::split(
+                        solo_pointers_[0], solo_pointers_[1], num_samples);
+                    solo_filter_.process({&solo_pointers_[1], 1}, num_samples);
+                }
+                std::memset(solo_pointers_[0], 0, num_samples * sizeof(double));
+                break;
+            }
+            }
+        }
+        if (c_loudness_matcher_on_) {
+            loudness_matcher_.processPre(main_pointers, num_samples);
+        }
+        if (c_agc_on_) {
+            pre_square_sum_ = 0.0;
+            for (size_t chan = 0; chan < 2; chan++) {
+                pre_square_sum_ += adi_eq_dsp::vector::sum_sqr(main_pointers[chan], num_samples);
+            }
+            pre_square_sum_ /= static_cast<double>(num_samples);
+        }
+        switch (c_filter_structure_) {
+        case kMinimum:
+        case kMatched:
+        case kMixed:
+        case kZero: {
+            processDynamic(tdf_filters_, main_pointers, side_pointers, num_samples);
+            break;
+        }
+        case kSVF: {
+            processDynamic(svf_filters_, main_pointers, side_pointers, num_samples);
+            break;
+        }
+        case kParallel: {
+            processParallelPrePost<true>(main_pointers, num_samples);
+            processDynamic<std::array<adi_eq_dsp::filter::DynamicParallel<double, kFilterSize>, kBandNum>, true, true>(
+                parallel_filters_, main_pointers, side_pointers, num_samples);
+            processParallelPrePost<false>(main_pointers, num_samples);
+            processDynamic<std::array<adi_eq_dsp::filter::DynamicParallel<double, kFilterSize>, kBandNum>, true, false>(
+                parallel_filters_, main_pointers, side_pointers, num_samples);
+            break;
+        }
+        }
+        if (c_sgc_on_) {
+            sgc_gain_.process(main_pointers, num_samples);
+        }
+        if (c_loudness_matcher_on_) {
+            loudness_matcher_.processPost(main_pointers, num_samples);
+        }
+        if (c_agc_on_) {
+            double post_square_sum{0.0};
+            for (size_t chan = 0; chan < 2; chan++) {
+                post_square_sum += adi_eq_dsp::vector::sum_sqr(main_pointers[chan], num_samples);
+            }
+            post_square_sum /= static_cast<double>(num_samples);
+
+            constexpr double kMinAGCPower = 1e-12;
+            if (std::isfinite(pre_square_sum_) && std::isfinite(post_square_sum)
+                && pre_square_sum_ >= kMinAGCPower && post_square_sum >= kMinAGCPower) {
+                c_agc_gain_linear_ = std::clamp(
+                    std::sqrt(pre_square_sum_) / std::sqrt(post_square_sum), 1e-3, 1e3);
+                updateOutputGain();
+            }
+        }
+
+        output_gain_.process(main_pointers, num_samples);
+
+        if (c_agc_on_) {
+            for (size_t chan = 0; chan < 2; chan++) {
+                adi_eq_dsp::vector::clamp(main_pointers[chan], -1.0, 1.0, num_samples);
+            }
+        }
+
+        if (bypass || c_match_bypass_on_) {
+            adi_eq_dsp::vector::copy(main_pointers[0], pre_main_pointers_[0], num_samples);
+            adi_eq_dsp::vector::copy(main_pointers[1], pre_main_pointers_[1], num_samples);
+        }
+
+        if (c_editor_on_) {
+            analyzer_sender_.process({pre_main_pointers_, main_pointers, side_pointers}, num_samples);
+            if (c_sgc_on_) {
+                displayed_gain_.store(sgc_gain_.getCurrentGainLinear() * output_gain_.getCurrentGainLinear());
+            } else {
+                displayed_gain_.store(output_gain_.getCurrentGainLinear());
+            }
+        }
+
+        if (c_solo_on_) {
+            switch (c_lrms_[c_solo_idx_]) {
+            case FilterStereo::kStereo:
+            case FilterStereo::kLeft:
+            case FilterStereo::kRight: {
+                break;
+            }
+            case FilterStereo::kMid:
+            case FilterStereo::kSide: {
+                adi_eq_dsp::splitter::InplaceMSSplitter<double>::combine(
+                    solo_pointers_[0], solo_pointers_[1], num_samples);
+                break;
+            }
+            }
+            if constexpr (!bypass) {
+                solo_gain_.process(solo_pointers_, num_samples);
+                adi_eq_dsp::vector::copy(main_pointers[0], solo_pointers_[0], num_samples);
+                adi_eq_dsp::vector::copy(main_pointers[1], solo_pointers_[1], num_samples);
+            }
+        }
+
+        switch (c_filter_structure_) {
+        case kMinimum:
+        case kSVF:
+        case kParallel: {
+            break;
+        }
+        case kMatched: {
+            processCorrections(match_stereo_fir_, main_pointers, num_samples, bypass || (c_solo_on_ && !bypass));
+            break;
+        }
+        case kMixed: {
+            processCorrections(mixed_stereo_fir_, main_pointers, num_samples, bypass || (c_solo_on_ && !bypass));
+            break;
+        }
+        case kZero: {
+            processCorrections(zero_stereo_fir_, main_pointers, num_samples, bypass || (c_solo_on_ && !bypass));
+            break;
+        }
+        }
+        if constexpr (!bypass) {
+            if (c_phase_flip_on_) {
+                for (size_t chan = 0; chan < 2; chan++) {
+                    adi_eq_dsp::vector::flip(main_pointers[chan], num_samples);
+                }
+            }
+        }
+    }
+
+    template void Controller::process<true>(std::array<double*, 2>, std::array<double*, 2>, size_t);
+
+    template void Controller::process<false>(std::array<double*, 2>, std::array<double*, 2>, size_t);
+
+    void Controller::publishLatency() noexcept {
+        if (latency_observer_.changed != nullptr)
+            latency_observer_.changed(latency_observer_.context,
+                getBaseLatency() + additional_latency_.load(std::memory_order::relaxed));
+    }
+
+    int Controller::preparedCorrectionLatency(FilterStructure structure) const noexcept {
+        if (structure == kMatched) return match_stereo_fir_.getLatency();
+        if (structure == kMixed) return mixed_stereo_fir_.getLatency();
+        if (structure == kZero) return zero_stereo_fir_.getLatency();
+        return 0;
+    }
+
+    int Controller::preparedDelayLatency(double seconds) const noexcept {
+        // Exact existing IntegerDelay::setDelay/getDelayInSamples expression.
+        return std::abs(seconds) > 1e-6
+            ? static_cast<int>(std::round(seconds * fractional_sample_rate_)) : 0;
+    }
+
+    template <typename DynamicFilterArrayType, bool should_check_parallel, bool should_be_parallel>
+    void Controller::processDynamic(DynamicFilterArrayType& dynamic_filters, std::array<double*, 2> main_pointers,
+                                    std::array<double*, 2> side_pointers, const size_t num_samples) {
+        processOneChannelDynamic<DynamicFilterArrayType, should_check_parallel, should_be_parallel>(
+            dynamic_filters, 0, main_pointers, side_pointers, side_pointers, num_samples);
+        if (is_lr_on_) {
+            processOneChannelDynamic<DynamicFilterArrayType, should_check_parallel, should_be_parallel>(
+                dynamic_filters, 1, {&main_pointers[0], 1}, {&side_pointers[0], 1}, {&side_pointers[1], 1},
+                num_samples);
+            processOneChannelDynamic<DynamicFilterArrayType, should_check_parallel, should_be_parallel>(
+                dynamic_filters, 2, {&main_pointers[1], 1}, {&side_pointers[1], 1}, {&side_pointers[0], 1},
+                num_samples);
+        }
+        if (is_ms_on_) {
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::split(main_pointers[0], main_pointers[1], num_samples);
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::split(side_pointers[0], side_pointers[1], num_samples);
+
+            processOneChannelDynamic<DynamicFilterArrayType, should_check_parallel, should_be_parallel>(
+                dynamic_filters, 3, {&main_pointers[0], 1}, {&side_pointers[0], 1}, {&side_pointers[1], 1},
+                num_samples);
+            processOneChannelDynamic<DynamicFilterArrayType, should_check_parallel, should_be_parallel>(
+                dynamic_filters, 4, {&main_pointers[1], 1}, {&side_pointers[1], 1}, {&side_pointers[0], 1},
+                num_samples);
+
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::combine(main_pointers[0], main_pointers[1], num_samples);
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::combine(side_pointers[0], side_pointers[1], num_samples);
+        }
+    }
+
+    template <typename DynamicFilterArrayType, bool should_check_parallel, bool should_be_parallel>
+    void Controller::processOneChannelDynamic(DynamicFilterArrayType& dynamic_filters, const size_t lrms_idx,
+                                              const std::span<double*> main_pointers,
+                                              const std::span<double*> side_pointers1,
+                                              const std::span<double*> side_pointers2, const size_t num_samples) {
+        for (const size_t& i : not_off_indices_[lrms_idx]) {
+            if (c_fractional_active_[i]) {
+                if constexpr (!should_check_parallel || !should_be_parallel) {
+                    fractional_filters_[i].process(main_pointers, num_samples, c_filter_status_[i] == kBypass);
+                }
+                continue;
+            }
+            if constexpr (should_check_parallel) {
+                if (dynamic_filters[i].getShouldBeParallel() != should_be_parallel) {
+                    continue;
+                }
+            }
+            if (c_filter_status_[i] == kBypass) {
+                if (c_dynamic_on_[i]) {
+                    const auto swap = dynamic_swap_[i].load(std::memory_order::relaxed);
+                    if (dynamic_bypass_[i].load(std::memory_order::relaxed)) {
+                        processOneBandDynamic<true, true, true>(dynamic_filters, i, main_pointers,
+                                                                swap ? side_pointers2 : side_pointers1, num_samples);
+                    } else {
+                        processOneBandDynamic<true, true, false>(dynamic_filters, i, main_pointers,
+                                                                 swap ? side_pointers2 : side_pointers1, num_samples);
+                    }
+                } else {
+                    processOneBandDynamic<true, false, false>(dynamic_filters, i, main_pointers, side_pointers1,
+                                                              num_samples);
+                }
+            } else {
+                if (c_dynamic_on_[i]) {
+                    const auto swap = dynamic_swap_[i].load(std::memory_order::relaxed);
+                    if (dynamic_bypass_[i].load(std::memory_order::relaxed)) {
+                        processOneBandDynamic<false, true, true>(dynamic_filters, i, main_pointers,
+                                                                 swap ? side_pointers2 : side_pointers1, num_samples);
+                    } else {
+                        processOneBandDynamic<false, true, false>(dynamic_filters, i, main_pointers,
+                                                                  swap ? side_pointers2 : side_pointers1, num_samples);
+                    }
+                } else {
+                    processOneBandDynamic<false, false, false>(dynamic_filters, i, main_pointers, side_pointers1,
+                                                               num_samples);
+                }
+            }
+        }
+    }
+
+    template <bool bypass, bool dynamic_on, bool dynamic_bypass, typename DynamicFilterArrayType>
+    void Controller::processOneBandDynamic(DynamicFilterArrayType& dynamic_filters, const size_t i,
+                                           const std::span<double*> main_pointers,
+                                           const std::span<double*> side_pointers,
+                                           const size_t num_samples) {
+        if constexpr (dynamic_on) {
+            // copy side buffer
+            side_copy_pointers_.clear();
+            for (size_t chan = 0; chan < side_pointers.size(); ++chan) {
+                adi_eq_dsp::vector::copy(side_buffers[chan].data(), side_pointers[chan], num_samples);
+                side_copy_pointers_.emplace_back(side_buffers[chan].data());
+            }
+            // calculate side total loudness if dynamic relative is on
+            double side_total_loudness = 0.0;
+            if (c_dynamic_th_relative_[i]) {
+                for (size_t chan = 0; chan < side_pointers.size(); ++chan) {
+                    const auto side_sum_sqr = adi_eq_dsp::vector::sum_sqr(side_copy_pointers_[chan], num_samples);
+                    side_total_loudness += side_sum_sqr / static_cast<double>(num_samples);
+                }
+                side_total_loudness = adi_eq_dsp::chore::squareGainToDecibels(side_total_loudness);
+            }
+            // process side filter
+            side_filters_[i].process(side_copy_pointers_, num_samples);
+            // copy side buffer to solo buffer if needed
+            if (c_solo_on_ && c_solo_side_ && c_solo_idx_ == i) {
+                switch (c_lrms_[i]) {
+                case FilterStereo::kStereo: {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], side_copy_pointers_[0], num_samples);
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], side_copy_pointers_[1], num_samples);
+                    break;
+                }
+                case FilterStereo::kLeft:
+                case FilterStereo::kMid: {
+                    adi_eq_dsp::vector::copy(solo_pointers_[0], side_copy_pointers_[0], num_samples);
+                    break;
+                }
+                case FilterStereo::kRight:
+                case FilterStereo::kSide: {
+                    adi_eq_dsp::vector::copy(solo_pointers_[1], side_copy_pointers_[0], num_samples);
+                    break;
+                }
+                }
+            }
+            // calculate side histogram loudness if dynamic learn is on
+            if (c_dynamic_th_learn_[i]) {
+                double side_current_loudness = 0.0;
+                for (size_t chan = 0; chan < side_pointers.size(); ++chan) {
+                    const auto side_sum_sqr = adi_eq_dsp::vector::sum_sqr(side_copy_pointers_[chan], num_samples);
+                    side_current_loudness += side_sum_sqr / static_cast<double>(num_samples);
+                }
+                side_current_loudness = adi_eq_dsp::chore::squareGainToDecibels(side_current_loudness);
+                // update histograms
+                slow_histograms_[i].setDecay(std::pow(slow_hist_unit_decay_, static_cast<double>(num_samples)));
+                slow_histograms_[i].push(side_current_loudness - side_total_loudness);
+                slow_histograms_[i].getPercentiles(hist_percentiles_, hist_target_temp_, hist_results_);
+                learned_thresholds_[i].store(hist_results_[1],
+                                             std::memory_order::relaxed);
+                learned_knees_[i].store(std::max(0.5 * (hist_results_[2] - hist_results_[0]), 2.0),
+                                        std::memory_order::relaxed);
+
+                histograms_[i].setDecay(std::pow(hist_unit_decay_, static_cast<double>(num_samples)));
+                histograms_[i].push(side_current_loudness - side_total_loudness);
+                histograms_[i].getPercentiles(hist_percentiles_, hist_target_temp_, hist_results_);
+                dynamic_side_handlers_[i].setKnee<false>(
+                    std::max(0.5 * (hist_results_[2] - hist_results_[0]), 5.0));
+            } else if (c_editor_on_) {
+                double side_current_loudness = 0.0;
+                for (size_t chan = 0; chan < side_pointers.size(); ++chan) {
+                    const auto side_sum_sqr = adi_eq_dsp::vector::sum_sqr(side_copy_pointers_[chan], num_samples);
+                    side_current_loudness += side_sum_sqr / static_cast<double>(num_samples);
+                }
+                side_current_loudness = adi_eq_dsp::chore::squareGainToDecibels(side_current_loudness);
+                dynamic_side_loudness_display_[i].store(side_current_loudness, std::memory_order::relaxed);
+            }
+            // update actual threshold if required
+            if (c_dynamic_th_learn_[i]) {
+                if (c_dynamic_th_relative_[i]) {
+                    dynamic_side_handlers_[i].setThreshold(
+                        hist_results_[1] + side_total_loudness + c_dynamic_threshold_[i]);
+                } else {
+                    dynamic_side_handlers_[i].setThreshold(
+                        hist_results_[1] + c_dynamic_threshold_[i]);
+                }
+            } else if (c_dynamic_th_relative_[i]) {
+                dynamic_side_handlers_[i].setThreshold(
+                        side_total_loudness + c_dynamic_threshold_[i]);
+            }
+        }
+        // process the actual filter
+        dynamic_filters[i].template processDynamic<bypass, dynamic_on, dynamic_bypass>(
+            main_pointers, side_copy_pointers_,
+            num_samples);
+        if constexpr (dynamic_on) {
+            if constexpr (dynamic_bypass) {
+                current_gains_[i].store(dynamic_side_handlers_[i].getBaseGain(), std::memory_order::relaxed);
+            } else {
+                current_gains_[i].store(dynamic_side_handlers_[i].getCurrentGain(), std::memory_order::relaxed);
+            }
+        }
+    }
+
+    template <bool is_pre>
+    void Controller::processParallelPrePost(std::span<double*> main_pointers, const size_t num_samples) {
+        for (const size_t& i : not_off_indices_[0]) {
+            processParallelOneBandPrePost<is_pre>(i, main_pointers, num_samples);
+        }
+        if (is_lr_on_) {
+            std::array<std::array<double*, 1>, 2> main_lr_pointers{{{main_pointers[0]}, {main_pointers[1]}}};
+            for (const size_t& i : not_off_indices_[1]) {
+                processParallelOneBandPrePost<is_pre>(i, main_lr_pointers[0], num_samples);
+            }
+            for (const size_t& i : not_off_indices_[2]) {
+                processParallelOneBandPrePost<is_pre>(i, main_lr_pointers[1], num_samples);
+            }
+        }
+        if (is_ms_on_) {
+            std::array<std::array<double*, 1>, 2> main_ms_pointers{{{main_pointers[0]}, {main_pointers[1]}}};
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::split(main_pointers[0], main_pointers[1], num_samples);
+            for (const size_t& i : not_off_indices_[3]) {
+                processParallelOneBandPrePost<is_pre>(i, main_ms_pointers[0], num_samples);
+            }
+            for (const size_t& i : not_off_indices_[4]) {
+                processParallelOneBandPrePost<is_pre>(i, main_ms_pointers[1], num_samples);
+            }
+            adi_eq_dsp::splitter::InplaceMSSplitter<double>::combine(main_pointers[0], main_pointers[1], num_samples);
+        }
+    }
+
+    template <bool is_pre>
+    void Controller::processParallelOneBandPrePost(const size_t i,
+                                                   std::span<double*> main_pointers, const size_t num_samples) {
+        if (c_fractional_active_[i]) {
+            return;
+        }
+        if constexpr (is_pre) {
+            if (c_filter_status_[i] == kOn) {
+                parallel_filters_[i].processPre<false>(main_pointers, num_samples);
+            } else {
+                parallel_filters_[i].processPre<true>(main_pointers, num_samples);
+            }
+        } else {
+            if (c_filter_status_[i] == kOn) {
+                parallel_filters_[i].processPost<false>(main_pointers, num_samples);
+            }
+        }
+    }
+
+    void Controller::processCorrections(StereoFIRProcessor<double>& processor, std::span<double*> main_pointers,
+                                        size_t num_samples, bool bypass) {
+        auto dispatch = [&]<size_t... Is>(std::index_sequence<Is...>) {
+            using FuncType = void (*)(StereoFIRProcessor<double>&, std::span<double*>, size_t, bool);
+            static constexpr FuncType table[] = {
+                [](StereoFIRProcessor<double>& p, std::span<double*> m, size_t n, bool b) {
+                    p.template process<(Is & 16) != 0, (Is & 8) != 0, (Is & 4) != 0, (Is & 2) != 0, (Is & 1) != 0>(m, n, b);
+                }...
+            };
+            table[correction_mask_](processor, main_pointers, num_samples, bypass);
+        };
+        dispatch(std::make_index_sequence<32>{});
+    }
+
+    template <bool force>
+    void Controller::updateSoloFilter(adi_eq_dsp::filter::FilterParameters paras) {
+        switch (paras.filter_type) {
+        case adi_eq_dsp::filter::kPeak:
+        case adi_eq_dsp::filter::kNotch:
+        case adi_eq_dsp::filter::kBandPass: {
+            paras.filter_type = adi_eq_dsp::filter::kBandPass;
+            break;
+        }
+        case adi_eq_dsp::filter::kAllPass: {
+            if (paras.order == 1) {
+                paras.q = std::sqrt(2.0) * 0.5;
+            }
+            paras.order = 2;
+            paras.filter_type = adi_eq_dsp::filter::kBandPass;
+            break;
+        }
+        case adi_eq_dsp::filter::kTiltShelf:
+        case adi_eq_dsp::filter::kFlatTilt:
+        case adi_eq_dsp::filter::kFlatGain: {
+            paras.order = 2;
+            paras.gain = 0.0;
+            paras.filter_type = adi_eq_dsp::filter::kFlatGain;
+            break;
+        }
+        case adi_eq_dsp::filter::kLowShelf:
+        case adi_eq_dsp::filter::kHighPass: {
+            paras.q = std::sqrt(2.0) * 0.5;
+            paras.filter_type = c_solo_side_ ? adi_eq_dsp::filter::kHighPass : adi_eq_dsp::filter::kLowPass;
+            break;
+        }
+        case adi_eq_dsp::filter::kHighShelf:
+        case adi_eq_dsp::filter::kLowPass: {
+            paras.q = std::sqrt(2.0) * 0.5;
+            paras.filter_type = c_solo_side_ ? adi_eq_dsp::filter::kLowPass : adi_eq_dsp::filter::kHighPass;
+            break;
+        }
+        }
+        if constexpr (force) {
+            solo_filter_.forceUpdate(paras);
+        } else {
+            solo_filter_.updateParas(paras);
+        }
+    }
+
+    void Controller::updateSGC() {
+        double sgc_gain_db{0.0};
+        for (const size_t& band : not_off_total_) {
+            if (c_filter_status_[band] == kOn) {
+                switch (c_lrms_[band]) {
+                case kStereo: {
+                    sgc_gain_db += sgc_values_[band];
+                    break;
+                }
+                case kLeft:
+                case kRight: {
+                    sgc_gain_db += 0.5 * sgc_values_[band];
+                    break;
+                }
+                case kMid: {
+                    sgc_gain_db += 0.9 * sgc_values_[band];
+                    break;
+                }
+                case kSide: {
+                    sgc_gain_db += 0.1 * sgc_values_[band];
+                    break;
+                }
+                }
+            }
+        }
+        c_sgc_gain_linear_ = adi_eq_dsp::chore::decibelsToGain(sgc_gain_db);
+        sgc_gain_.setGainLinear(c_sgc_gain_linear_);
+    }
+
+    void Controller::updateOutputGain() {
+        double total = c_makeup_gain_linear_;
+        if (c_agc_on_) {
+            total *= c_agc_gain_linear_;
+        }
+        output_gain_.setGainLinear(std::clamp(total, 1e-3, 1e3));
+    }
+}
