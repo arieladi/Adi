@@ -237,7 +237,7 @@ void processingIssuePresentation(AppCommands &commands, const std::filesystem::p
     check(panel->title.getButtonText().startsWith("Configuration failed") &&
               panel->title.getButtonText().contains(juce::String(publication->front().name)) &&
               panel->title.getTooltip().contains("The configuration worker could not start.") &&
-              panel->title.getTooltip().contains("Reload the device to retry.") &&
+              panel->title.getTooltip().contains("Remove the device, then Undo to retry.") &&
               panel->title.getTooltip().contains("476 samples"),
           "header puts configuration failure first and retains the device name and detailed latency tooltip");
     check(panel->title.getBounds() == titleBounds && panel->widthFor(160) == panelWidth &&

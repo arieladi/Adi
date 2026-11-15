@@ -287,6 +287,62 @@ void nativeIdentityAndDuplicatePrepare() {
     }
     check(exact, "native same-format duplicate prepare preserves continuous detector/filter history exactly");
 }
+void precisionHandoff() {
+    adi::rows::PluginRef ref; ref.format="internal";ref.uid="org.adidaw.mix.eq";ref.name="EQ";
+    adi::engine::DeviceRequest request;request.ref=&ref;request.channels=2;std::string error;
+    auto device=adi::device::makeMixFunction(request,error);
+    if (!device) { check(false,"precision fixture creates EQ"); return; }
+    device->setParam("9",adi::device::ParamValue::fromNormalized(1));
+    device->setParam("14",adi::device::ParamValue::fromNormalized(.8));
+    const auto process = [&]<class Sample>(std::uint64_t block) {
+        Audio<Sample> audio;audio.signal(block,48000);const auto dry=audio;
+        auto out=audio.pointers();const auto in=audio.keyPointers();
+        adi::engine::NodeIo io;io.channels=2;io.frames=frames;io.renderBlock=block;
+        io.configuredLatency=device->latencySamples();
+        if constexpr(std::is_same_v<Sample,float>) {io.in=in.data();io.out=out.data();}
+        else {io.in64=in.data();io.out64=out.data();}
+        { AudioScope scope;device->process(io); }
+        return !(audio==dry);
+    };
+    device->willBeHanded(adi::engine::Precision::Float32);device->prepare(48000,frames);
+    check(process.template operator()<float>(1),"float EQ processes before precision handoff");
+    device->willBeHanded(adi::engine::Precision::Float64);device->prepare(48000,frames);
+    check(process.template operator()<double>(2),"same-format float to double rebuild keeps EQ active");
+    device->willBeHanded(adi::engine::Precision::Float32);device->prepare(48000,frames);
+    check(process.template operator()<float>(3),"same-format double to float rebuild keeps EQ active");
+}
+template<class Sample> void offlinePlanEdits() {
+    const auto initial=settingsFor(0);auto wanted=initial;
+    auto backend=eq::makeBackend(true), replay=eq::makeBackend(true);eq::Core direct;
+    backend->prepare(48000,frames,2,initial);direct.prepare({48000,frames,2},initial);
+    replay->prepare(48000,frames,2,initial);
+    bool exact=true, changed=false, repeated=true;
+    for(std::uint64_t block=1;block<=48;++block) {
+        if(block==5) wanted.structure=eq::Structure::SVF;
+        if(block==17) wanted.structure=eq::Structure::Parallel;
+        if(block==33) wanted.structure=eq::Structure::Minimum;
+        Audio<Sample> actual;actual.signal(block,48000);auto expected=actual;const auto dry=actual;
+        auto main=actual.pointers();
+        // Explicit offline service may allocate; never label it a live callback.
+        backend->process(main.data(),nullptr,0,frames,wanted,block,0);
+        auto second=dry;
+        if(block%2) replay->pumpMainThread(wanted);
+        auto firstPart=second.pointers(),lastPart=second.pointers(17);
+        replay->process(firstPart.data(),nullptr,0,17,wanted,block,0);
+        replay->process(lastPart.data(),nullptr,0,47,wanted,block,0);
+        repeated=repeated&&(actual==second);
+        // The direct core's ordinary begin considers a new request after its
+        // admission check. Give the reference the same pre-begin request as
+        // the explicit offline owner, rather than comparing different blocks.
+        direct.requestConfiguration(wanted);
+        const auto context=direct.beginBlock(block,0,wanted);
+        exact=reference(direct,expected,static_cast<const Audio<Sample>*>(nullptr),0,wanted,context)&&exact;
+        exact=(actual==expected)&&exact;changed=changed||!(actual==dry);
+        // Deliberately no Main pump or scheduler wait: the export owns service.
+    }
+    check(exact&&changed&&backend->processingIssue().empty(),"offline latency-neutral structure edits match direct core on the requested block without worker scheduling");
+    check(repeated,"fresh offline replays are bit-identical across whole/split blocks and different Main pump schedules");
+}
 } // namespace
 int main() {
     for (double rate : {44100., 48000., 96000.}) for (int channels : {1, 2}) for (int mode = 0; mode < 3; ++mode) {
@@ -297,7 +353,8 @@ int main() {
     malformedPlanes<float>(); malformedPlanes<double>();
     continuation<float>(); continuation<double>();
     asynchronousPdc<float>(); asynchronousPdc<double>();
-    parkedFailure(); nativeIdentityAndDuplicatePrepare();
+    parkedFailure(); nativeIdentityAndDuplicatePrepare();precisionHandoff();
+    offlinePlanEdits<float>();offlinePlanEdits<double>();
     check(audioAllocations.load() == 0 && audioDeallocations.load() == 0, "native serial provider performs no callback allocation or free");
     std::printf("Native EQ serial: %d checks, %d failures, %llu sample pairs, %llu/%llu audio allocations/deallocations\n",
                 checks, failures, static_cast<unsigned long long>(samplePairs),

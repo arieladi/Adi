@@ -7,6 +7,7 @@ namespace adi::mix::eq {
 namespace {
 class Backend final : public EqProcessingBackend {
 public:
+    explicit Backend(bool offline) : serial_(offline ? eq_chain::OwnerMode::Offline : eq_chain::OwnerMode::Threaded) {}
     bool supportsDouble() const noexcept override { return true; }
     void prepare(double rate, std::int32_t maximum, std::int32_t channels,
                  const Settings& settings) override {
@@ -81,5 +82,5 @@ private:
     bool prepared_ = false;
 };
 } // namespace
-std::unique_ptr<EqProcessingBackend> makeBackend() { return std::make_unique<Backend>(); }
+std::unique_ptr<EqProcessingBackend> makeBackend(bool offline) { return std::make_unique<Backend>(offline); }
 } // namespace adi::mix::eq

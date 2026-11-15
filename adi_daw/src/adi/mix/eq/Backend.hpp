@@ -8,5 +8,5 @@ namespace adi::mix::eq {
 // Carve/Focus stay unavailable and allocate no downstream resources. Existing
 // parameter/state identity and programme fallback without a key bus are retained.
 // Stopped release/reprepare retains the same authored EQ learning object.
-[[nodiscard]] std::unique_ptr<EqProcessingBackend> makeBackend();
+[[nodiscard]] std::unique_ptr<EqProcessingBackend> makeBackend(bool offline = false);
 } // namespace adi::mix::eq
