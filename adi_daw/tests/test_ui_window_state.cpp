@@ -47,6 +47,14 @@ int main() {
     state.mixView = true;
     state.mixViewTab = 3;
     state.mixViewDetached = true;
+    state.mixAnalyzerDock = true;
+    state.mixAnalyzerWidth = 360;
+    state.mixAnalyzerSource = 1;
+    state.mixAnalyzerPoint = 2;
+    state.mixAnalyzerChannel = 4;
+    state.analysisPalette = "viridis";
+    state.analysisPaletteReverse = true;
+    state.analysisSpectrumSlope = "tilt45";
     state.showReference = true;
     state.hideReturns = true;
     state.gridSnap = false;
@@ -79,6 +87,32 @@ int main() {
           "the Mix View and its tab are kept per window: closed, on STACK, until opened (ADR-0209)");
     check(restored.mixViewDetached && !views.load("other").mixViewDetached,
           "and where it opens: docked until moved into a window of its own");
+    check(restored.mixAnalyzerDock && restored.mixAnalyzerWidth == 360 && restored.mixAnalyzerSource == 1 &&
+              restored.mixAnalyzerPoint == 2 && restored.mixAnalyzerChannel == 4 &&
+              !views.load("other").mixAnalyzerDock && views.load("other").mixAnalyzerWidth == 300 &&
+              views.load("other").mixAnalyzerSource == 0,
+          "optional analyzer dock source/tap/channel/width persist per window, off and Main by default");
+    check(restored.analysisPalette == "viridis" && restored.analysisPaletteReverse &&
+              views.load("other").analysisPalette == "adi" && !views.load("other").analysisPaletteReverse,
+          "spectrogram palette/reverse persist per window with original ADI colors as the default");
+    check(restored.analysisSpectrumSlope == "tilt45" && views.load("other").analysisSpectrumSlope == "flat",
+          "Spectrum display slope persists per window with the exact Flat default for old preferences");
+    {
+        auto invalid = state; invalid.analysisSpectrumSlope = "unknown-slope";
+        check(!views.save("main", invalid, error) && views.load("main").analysisSpectrumSlope == "tilt45",
+              "unknown display slope cannot replace the saved known preference");
+    }
+    {
+        auto invalid = state; invalid.analysisPalette = "unknown-palette";
+        check(!views.save("main", invalid, error) && views.load("main").analysisPalette == "viridis",
+              "unknown palette cannot replace a saved known palette");
+    }
+    {
+        auto invalid = state;
+        invalid.mixAnalyzerWidth = 239;
+        check(!views.save("main", invalid, error) && views.load("main").mixAnalyzerWidth == 360,
+              "invalid dock geometry is refused without replacing saved preferences");
+    }
     check(restored.showReference && !views.load("other").showReference,
           "the Reference track's toggle is kept per window: hidden until shown (ADR-0209 d11)");
     check(restored.hideReturns && !views.load("other").hideReturns,

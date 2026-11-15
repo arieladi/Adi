@@ -1002,6 +1002,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
     {
         check(root.command(AppCommands::ToggleMixView), "the Mix View opens on the groups");
+        root.mixViewPanel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
         root.frame();
         auto stackIds = [&root] {
             std::vector<std::int64_t> out;
@@ -5629,6 +5630,114 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "the View menu's Mix View, on F4 (ADR-0209 d9)");
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
     root.frame();
+    check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+              panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+          "STACK starts with tool channels and explains how to add the first tool");
+    {
+        const auto selectionBefore = root.arrangement.geometry.selection;
+        const auto opsBefore = store->db().execAndGet("SELECT count(*) FROM ops").getInt();
+        panel.stack.focus(999);
+        check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  panel.stack.channelScope.getSelectedId() == 1,
+              "an invalid channel shortcut leaves the default tool scope unchanged");
+        root.arrangement.geometry.selection.track = 10;
+        check(root.command(AppCommands::ShowChannelEq) && panel.stack.focused() == 10 &&
+                  panel.stack.model().shownIndex(10) &&
+                  panel.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                  panel.stack.channelScope.getSelectedId() == 2,
+              "an explicit channel shortcut visibly selects All channels and lands on an empty chain");
+        check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore &&
+                  panel.stack.model().moduleKindCount() == 0,
+              "landing before the first tool creates no processor or undo operation");
+        panel.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
+    }
+    {
+        const auto previousPublication = root.devices.publication;
+        const auto selectionBefore = root.arrangement.geometry.selection;
+        const auto undoBefore = root.undoTitle(false);
+        auto publication = std::make_shared<ParameterPublication>();
+        const auto add = [&](std::int64_t id, std::int64_t track, const char *name, const char *uid, bool plugin) {
+            DevicePanelData data;
+            data.id = id; data.track = track; data.chain = track; data.instance = static_cast<std::uint64_t>(id);
+            data.name = name; data.uid = uid; data.plugin = plugin;
+            data.available = false; data.enabled = false;
+            publication->push_back(std::move(data));
+        };
+        add(101, 10, "Before", "ordinary", true);
+        add(102, 10, "Renamed shaping tool", "org.adidaw.mix.eq", false);
+        add(103, 10, "After", "ordinary", true);
+        add(104, 11, "EQ", "org.adidaw.mix.eq", true);
+        add(105, 1, "Finisher", "org.adidaw.mix.limiter", false);
+        root.devices.publication = [&] { return publication; };
+        auto &surface = panel.stack;
+        const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+        surface.frameAt(root.reader(), time);
+        check(surface.model().shownCount() == 2 && surface.model().shownTrack(0) == 10 &&
+                  surface.model().shownTrack(1) == 1,
+              "native identity includes renamed bypassed unavailable tools; a plug-in spoofing its UID stays excluded");
+        std::vector<std::int64_t> order;
+        if (const auto row = surface.model().shownIndex(10))
+            surface.model().forEachChainItem(*row, [&](const stack::ItemGeo &item) { order.push_back(item.ref.device); });
+        check(order == std::vector<std::int64_t>{101, 102, 103},
+              "eligible channel retains every actual insert in chain order");
+        const auto original = surface.model().chainRef(10, 102);
+        surface.focus(10);
+        check(surface.focused() == 10 &&
+                  surface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                  surface.channelScope.getSelectedId() == 1,
+              "an eligible native channel shortcut preserves With tools");
+        root.arrangement.geometry.selection = selectionBefore;
+        root.publishSelection();
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[1].name = "Another display name";
+        (*publication)[1].enabled = true;
+        (*publication)[1].available = true;
+        surface.frameAt(root.reader(), time + 1);
+        check(surface.model().shownCount() == 2 && surface.model().chainRef(10, 102) == original,
+              "rename bypass and load-state updates retain native membership and device identity");
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[1].plugin = true;
+        surface.frameAt(root.reader(), time + 2);
+        check(surface.model().shownCount() == 1 && surface.model().shownTrack(0) == 1,
+              "format identity changes invalidate membership even with a native-looking UID");
+        publication = std::make_shared<ParameterPublication>(*publication);
+        (*publication)[4].uid = "ordinary";
+        surface.frameAt(root.reader(), time + 3);
+        check(surface.model().shownCount() == 0, "last native UID disappearing removes its channel from With tools");
+        surface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+        check(surface.model().shownCount() == 4 && surface.model().moduleKindCount() == 0,
+              "All channels restores empty and ordinary chains without reserved modules");
+        surface.search.setText("Bass", false);
+        surface.search.onTextChange();
+        check(surface.model().shownCount() == 1 && surface.model().shownTrack(0) == 11 &&
+                  root.arrangement.geometry.selection == selectionBefore && root.undoTitle(false) == undoBefore,
+              "scope and search are presentation only and never select or edit all matches");
+        surface.search.setText({}, false);
+        surface.search.onTextChange();
+        root.devices.publication = previousPublication ? previousPublication
+            : [] { return std::shared_ptr<const ParameterPublication>{}; };
+        surface.frameAt(root.reader(), time + 4);
+        root.devices.publication = previousPublication;
+        const auto originalBounds = surface.getBounds();
+        for (const int width : {900, 720, 600, 520, 360, 320}) {
+            surface.setSize(width, 460);
+            bool contained = true;
+            const std::array<juce::Component *, 6> toolbar{&surface.channelScope, &surface.search, &surface.rowSize,
+                                                         &surface.autoZoom, &surface.pinsOnly, &surface.navigator};
+            for (const auto *control : toolbar)
+                contained = contained && surface.getLocalBounds().contains(control->getBounds()) &&
+                    control->getBottom() <= surface.display().getY();
+            for (std::size_t i = 0; i < toolbar.size(); ++i)
+                for (std::size_t j = i + 1; j < toolbar.size(); ++j)
+                    contained = contained && !toolbar[i]->getBounds().intersects(toolbar[j]->getBounds());
+            check(contained, "scope/search and existing toolbar controls fit narrow widths without overlap");
+        }
+        surface.setBounds(originalBounds);
+    }
+    panel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
     check(root.state().mixView && panel.isVisible() && !root.arrangement.isVisible() && !root.mixer.isVisible() &&
               panel.getBounds() == lanes.getUnion(controls),
           "in place of the arrangement and its track controls");
@@ -5648,6 +5757,65 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "STACK shows, lit, with a row for each channel");
     check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
           "under the tabs");
+    {
+        const auto before = panel.getBounds();
+        check(!root.state().mixAnalyzerDock && !panel.analyzerDockShown(), "right analyzer dock is opt-in by default");
+        panel.setSize(1000, 650);
+        check(panel.setAnalyzerDock(true) && panel.setAnalyzerWidth(360), "show and size the optional analyzer dock");
+        panel.frame(root.reader());
+        check(panel.analyzerDockShown() && panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth &&
+                  !panel.stack.getBounds().intersects(panel.analyzerDock.getBounds()) &&
+                  panel.analyzerDock.getWidth() == 360,
+              "dock sits beside actual channel tools and preserves their editing width");
+        check(persistence.load("mix").mixAnalyzerDock && persistence.load("mix").mixAnalyzerWidth == 360,
+              "dock visibility and width use window view persistence without an audio edit");
+        for (const int width : {400, 570, 900}) {
+            panel.setSize(width, 650); panel.frame(root.reader());
+            bool fits = panel.getLocalBounds().contains(panel.analyzerToggle.getBounds()) &&
+                        panel.getLocalBounds().contains(panel.floating.getBounds()) &&
+                        !panel.analyzerToggle.getBounds().intersects(panel.floating.getBounds());
+            for (std::size_t i = 0; i < panel.tabs.size(); ++i) {
+                fits = fits && panel.getLocalBounds().contains(panel.tabs[i]->getBounds()) &&
+                    !panel.tabs[i]->getBounds().intersects(panel.analyzerToggle.getBounds()) &&
+                    !panel.tabs[i]->getBounds().intersects(panel.floating.getBounds());
+                for (std::size_t j = i + 1; j < panel.tabs.size(); ++j)
+                    fits = fits && !panel.tabs[i]->getBounds().intersects(panel.tabs[j]->getBounds());
+            }
+            check(fits && (!panel.analyzerDockShown() || panel.stack.getWidth() >= MixViewPanel::kStackMinimumWidth),
+                  "tabs, dock toggle and float wrap without overlap while channel editing keeps its minimum");
+        }
+        panel.setSize(400, 650); panel.frame(root.reader());
+        check(root.state().mixAnalyzerDock && !panel.analyzerDockShown() && panel.stack.getBounds() == panel.body(),
+              "narrow layout suppresses requested dock and gives the whole body back to channel tools");
+        const auto zoom = root.state().zoom; root.state().zoom = 0;
+        check(!panel.setAnalyzerDock(false) && root.state().mixAnalyzerDock,
+              "failed preference persistence rolls back dock visibility instead of changing the view");
+        root.state().zoom = zoom;
+        check(panel.setAnalyzerDock(false), "restore default hidden dock after geometry checks");
+        panel.setBounds(before); panel.frame(root.reader());
+    }
+    {
+        const auto operations = value(*store, "SELECT count(*) FROM ops");
+        panel.analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+        panel.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("viridis")) + 1, juce::sendNotificationSync);
+        panel.analysis.reverseButton.setToggleState(true, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
+        root.frame();
+        check(root.state().analysisPalette == "viridis" && root.state().analysisPaletteReverse &&
+                  persistence.load("mix").analysisPalette == "viridis" && persistence.load("mix").analysisPaletteReverse,
+              "palette controls save the parent's per-window visual choice");
+        check(root.infoSpectrum.palette() == "viridis" && root.infoSpectrum.paletteReversed() &&
+                  root.infoSpectrum.mode() == panel.analysis.mode() && root.infoSpectrum.point() == panel.analysis.point(),
+              "compact Info follows the parent's analyzer mode, source point and palette");
+        check(value(*store, "SELECT count(*) FROM ops") == operations, "palette choices never create audio edits or undo operations");
+        panel.analysis.slopeBox.setSelectedId(2, juce::sendNotificationSync); root.frame();
+        check(root.state().analysisSpectrumSlope == "tilt45" && persistence.load("mix").analysisSpectrumSlope == "tilt45" &&
+                  root.infoSpectrum.spectrumSlope() == SpectrumSlope::Tilt45 && value(*store, "SELECT count(*) FROM ops") == operations,
+              "Spectrum slope persists as view state and compact Info follows without audio edits");
+        panel.analysis.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+        panel.analysis.paletteBox.setSelectedId(1, juce::sendNotificationSync);
+        panel.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); panel.analysis.reverseButton.onClick();
+        panel.analysis.setMode(SharedSpectrumView::Mode::Spectrum); root.frame();
+    }
     panel.tabs[0]->onClick();
     root.frame();
     check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
@@ -6033,6 +6201,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             document->tick(0);
             actual.frame();
             check(actual.setMixView(true, false), "open actual chains");
+            actual.mixViewPanel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
             actual.frame();
             auto &surface = actual.mixViewPanel.stack;
             auto findPanel = [&](std::int64_t id) -> DevicePanelView * {
@@ -6052,6 +6221,40 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "the visible model and generic panels show actual device order and the shared parameter feed");
             if (first && first->controls.size() == 2) {
                 const auto stable = surface.model().chainRef(2, 30);
+                const auto itemTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                surface.model().focusItem(stable, itemTime);
+                surface.frameAt(actual.reader(), itemTime + 80);
+                stack::ItemGeo inspected, sibling;
+                if (const auto at = surface.model().shownIndex(2))
+                    surface.model().forEachChainItem(*at, [&](const auto &item) {
+                        if (item.ref.device == 30) inspected = item;
+                        if (item.ref.device == 31) sibling = item;
+                    });
+                check(findPanel(30) == first && inspected.emphasized && inspected.height > sibling.height &&
+                          first->getHeight() == static_cast<int>(std::round(inspected.height)) - 4 &&
+                          findPanel(31) && findPanel(31)->getHeight() == static_cast<int>(std::round(sibling.height)) - 4,
+                      "item emphasis uses independent model bounds while retaining both actual device panels");
+                auto editPoseTime = itemTime + 200;
+                for (const auto kind : {DevicePanelView::Interaction::Text, DevicePanelView::Interaction::Menu}) {
+                    surface.model().focusItem(surface.model().chainRef(2, 31), editPoseTime);
+                    surface.frameAt(actual.reader(), editPoseTime + 60);
+                    surface.model().focusItem(stable, editPoseTime + 60);
+                    surface.frameAt(actual.reader(), editPoseTime + 100);
+                    const auto displayed = first->getBounds();
+                    surface.model().advance(editPoseTime + 107);
+                    const bool captured = first->beginInteraction(kind);
+                    surface.frameAt(actual.reader(), editPoseTime + 120);
+                    check(captured && findPanel(30) == first && first->getBounds() == displayed,
+                          "Text/Menu capture uses the last presented child rectangle after unseen t+7 movement");
+                    first->endInteraction(kind);
+                    surface.frameAt(actual.reader(), editPoseTime + 120);
+                    check(first->getBounds() == displayed, "Text/Menu release starts from the same displayed child bounds");
+                    editPoseTime += 300;
+                }
+                const auto dragTime = itemTime + 660;
+                surface.frameAt(actual.reader(), dragTime);
+                const auto heldItemBounds = first->getBounds();
+                surface.model().advance(dragTime + 7); // model events may advance between visible frames
                 auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(30));
                 const auto beforeUndo = actual.undoTitle(false);
                 auto &slider = first->controls[0]->slider;
@@ -6065,20 +6268,21 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 document->tick(10);
                 actual.frame();
                 check(findPanel(30) == first && surface.model().chainRef(2, 30) == stable &&
-                          surface.model().capture().has_value(),
-                      "new live parameter publications preserve the tile and capture identity");
+                          surface.model().capture().has_value() && first->getBounds() == heldItemBounds,
+                      "new live parameter publications preserve the tile, capture identity and intermediate item rectangle");
                 slider.onDragEnd();
                 document->tick(20);
                 actual.frame();
                 check(!surface.model().capture() && begins == 1 && ends == 1 &&
-                          actual.undoTitle(false) == "Undo UI knobs: Cutoff",
-                      "tile release balances one host gesture and commits one undo step");
+                          actual.undoTitle(false) == "Undo UI knobs: Cutoff" && first->getBounds() == heldItemBounds,
+                      "tile release balances one host gesture/undo and resumes from the last presented bounds");
                 check(actual.command(AppCommands::Undo), "undo the tile drag");
                 document->tick(30); actual.frame();
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
-                const auto compactTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                const auto compactTime = std::max(dragTime + 20,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
                 surface.model().setBaseHeight(44, compactTime);
                 surface.frameAt(actual.reader(), compactTime + 200);
@@ -6100,15 +6304,81 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     document->tick(36); actual.frame();
                     check(value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "1",
                           "one undo restores the folded device activator");
+                    stack::ItemGeo secondPill;
+                    surface.model().forEachChainItem(*surface.model().shownIndex(2), [&](const auto &item) {
+                        if (item.ref.device == 31) secondPill = item;
+                    });
+                    surface.model().scrollLane(surface.model().rowRef(2), 1, compactTime + 201);
+                    surface.model().advance(compactTime + 208); // no new component presentation
+                    const auto click = surface.listArea().getPosition().toFloat() + juce::Point<float>(
+                        static_cast<float>(secondPill.x + secondPill.width - 2), static_cast<float>(secondPill.top + 6));
+                    surface.mouseDown(pressAt(surface, click)); surface.mouseUp(pressAt(surface, click));
+                    document->tick(37); actual.frame();
+                    check(secondPill.pill && value(document->store(), "SELECT enabled FROM devices WHERE id=31") == "0" &&
+                              value(document->store(), "SELECT enabled FROM devices WHERE id=30") == "1",
+                          "a pill click hits the last painted stable device despite unseen lane motion between frames");
+                    check(actual.command(AppCommands::Undo), "undo only the displayed second pill's activator");
+                    document->tick(38); actual.frame();
                 }
-                surface.model().setBaseHeight(100, compactTime + 210);
-                surface.model().setAutoZoom(true, compactTime + 210);
-                surface.frameAt(actual.reader(), compactTime + 400);
+                const auto restoreTime = std::max(compactTime + 210,
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                surface.model().setBaseHeight(100, restoreTime);
+                surface.model().setAutoZoom(true, restoreTime);
+                surface.model().focusItem(stable, restoreTime);
+                surface.model().scrollLane(surface.model().rowRef(2), -1, restoreTime);
+                surface.frameAt(actual.reader(), restoreTime + surface.model().constants().heightAnimMs +
+                    surface.model().constants().laneScrollMs + 1);
                 first = findPanel(30);
+                if (!first) {
+                    const auto at = surface.model().shownIndex(2);
+                    std::printf("item fixture: row=%d base=%d focused=%lld emphasized=%lld\n", at.has_value(),
+                        surface.model().windowView().baseHeight, static_cast<long long>(surface.model().focus().item.device),
+                        static_cast<long long>(surface.model().emphasizedItem().device));
+                    if (at) {
+                        const auto lane = surface.model().lane(*at);
+                        std::printf("lane mode=%u first=%u offset=%.3f width=%.3f\n", static_cast<unsigned>(lane.mode), lane.first, lane.offset, lane.width);
+                        surface.model().forEachChainItem(*at, [](const auto &item) {
+                            std::printf("device=%lld pill=%d x=%.3f width=%.3f height=%.3f\n", static_cast<long long>(item.ref.device), item.pill, item.x, item.width, item.height);
+                        });
+                    }
+                }
+                check(first && first->controls.size() == 2,
+                      "pill-navigation fixture restores the original lane/focus so all downstream control regressions still execute");
                 if (first) {
                     first->grabKeyboardFocus();
                     check(surface.hasDeviceContext() && actual.command(AppCommands::Copy) && copiedDevice == 30,
                           "global Copy dispatch keeps the Mix View's device context");
+                    const auto toolbarUndo = actual.undoTitle(false);
+                    const auto deviceCount = value(document->store(), "SELECT count(*) FROM devices");
+                    const auto trackCount = value(document->store(), "SELECT count(*) FROM tracks");
+                    surface.channelScope.grabKeyboardFocus();
+                    commands.activate(actual);
+                    check(surface.hasToolbarFocus() && !surface.hasDeviceContext(),
+                          "the channel selector owns focus without inheriting the last device target");
+                    bool blocked = true;
+                    for (const int command : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
+                                               AppCommands::Duplicate, AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                        juce::ApplicationCommandInfo commandInfo(command);
+                        commands.getCommandInfo(command, commandInfo);
+                        blocked = blocked && !actual.command(command) &&
+                            (commandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                    }
+                    check(blocked && surface.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                              surface.keyPressed(juce::KeyPress('x', juce::ModifierKeys::commandModifier, 0)) &&
+                              !surface.deviceCommand(AppCommands::DeleteTrack) &&
+                              value(document->store(), "SELECT count(*) FROM devices") == deviceCount &&
+                              value(document->store(), "SELECT count(*) FROM tracks") == trackCount &&
+                              actual.undoTitle(false) == toolbarUndo,
+                          "toolbar menu and direct edit keys cannot mutate the stale device or current track");
+                    surface.search.grabKeyboardFocus();
+                    surface.search.setText("abc", false);
+                    surface.search.selectAll();
+                    surface.search.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey));
+                    check(surface.search.getText().isEmpty() && surface.hasToolbarFocus(),
+                          "search keeps native local text editing while global device actions are blocked");
+                    surface.search.setText({}, false);
+                    surface.search.onTextChange();
+                    first->grabKeyboardFocus();
                     check(actual.command(AppCommands::RenameTrack) && first->rename.isVisible() &&
                               surface.model().capture().has_value(),
                           "global Rename opens the exact device editor rather than the track editor");
@@ -6272,6 +6542,341 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 }
             }
             actual.mixViewPanel.stack.cancelInteractions();
+            // End can synchronously destroy or re-present the originating surface.
+            // This fixture still uses only the document's headless Knobs devices and null peer.
+            const auto savedPublication = actual.devices.publication;
+            const auto savedGesture = actual.devices.guardedGesture;
+            for (int mode = 0; mode < 2; ++mode) {
+                std::unique_ptr<StackTab> transient = std::make_unique<StackTab>(actual);
+                actual.addAndMakeVisible(*transient);
+                transient->setBounds(surface.getBounds());
+                transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 1000;
+                std::shared_ptr<const ParameterPublication> supplied = document->parameterFeed().current();
+                actual.devices.publication = [&] { return supplied; };
+                transient->frameAt(actual.reader(), time);
+                const auto find = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                    if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == 30) return p;
+                    for (int i = 0; i < component.getNumChildComponents(); ++i)
+                        if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                    return nullptr;
+                };
+                auto *observedPanel = find(find, *transient);
+                bool reenter = false;
+                int endCalls = 0;
+                juce::Rectangle<int> nestedBounds;
+                bool nestedPresented = false;
+                actual.devices.guardedGesture = [&](std::int64_t id, const std::string &parameter,
+                        engine::ParamEventKind kind, double v, const engine::DeviceRuntimeToken &token, std::uint64_t stamp) {
+                    const bool accepted = savedGesture(id, parameter, kind, v, token, stamp);
+                    if (kind == engine::ParamEventKind::End && reenter) {
+                        reenter = false; ++endCalls;
+                        if (mode == 0) transient.reset();
+                        else {
+                            auto replacement = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
+                            std::reverse(replacement->begin(), replacement->end());
+                            for (auto &device : *replacement) if (device.id == 30) device.name = "Nested pose";
+                            supplied = replacement;
+                            if (const auto cap = transient->model().capture()) transient->model().endCapture(*cap, time + 20);
+                            transient->model().focusItem(transient->model().chainRef(2, 31), time + 20);
+                            transient->frameAt(actual.reader(), time + 220);
+                            if (const auto *nested = find(find, *transient)) {
+                                nestedBounds = nested->getBounds(); nestedPresented = true;
+                            }
+                        }
+                    }
+                    return accepted;
+                };
+                const auto gesture = observedPanel ? observedPanel->parameterGesture : decltype(observedPanel->parameterGesture){};
+                const bool began = gesture && gesture("cutoff", engine::ParamEventKind::Begin, .5);
+                auto changed = std::make_shared<ParameterPublication>(*supplied);
+                for (auto &device : *changed) if (device.id == 30) device.available = false;
+                supplied = changed; reenter = true;
+                if (transient) transient->frameAt(actual.reader(), time + 10);
+                check(began && endCalls == 1 && (mode == 0 ? !transient : transient && !transient->model().capture()),
+                      mode == 0 ? "End during row presentation can synchronously destroy the surface without resuming a dead walker"
+                                : "nested End presentation replaces the outer pose without committing a partial snapshot");
+                if (mode == 1 && transient) {
+                    auto *nested = find(find, *transient);
+                    std::vector<std::int64_t> nestedOrder;
+                    if (const auto at = transient->model().shownIndex(2))
+                        transient->model().forEachChainItem(*at, [&](const auto &item) { nestedOrder.push_back(item.ref.device); });
+                    check(nestedPresented && nested && nested->title.getButtonText() == "Nested pose" &&
+                              nested->getBounds() == nestedBounds && nestedOrder == std::vector<std::int64_t>{31, 30},
+                          "outer presentation cannot overwrite nested reordered child bounds or replacement labels");
+                    const bool capture = nested && nested->beginInteraction(DevicePanelView::Interaction::Menu);
+                    transient->frameAt(actual.reader(), time + 227);
+                    nested = find(find, *transient);
+                    check(capture && nested && nested->getBounds() == nestedBounds,
+                          "a subsequent capture consumes the complete nested pose rather than an abandoned outer snapshot");
+                    if (nested) nested->endInteraction(DevicePanelView::Interaction::Menu);
+                }
+                transient.reset();
+                actual.devices.guardedGesture = savedGesture;
+                actual.devices.publication = savedPublication;
+            }
+            // Publication getters are external callbacks too. Exercise both entry
+            // points with the same null peer, independently of gesture End callbacks.
+            for (int entry = 0; entry < 2; ++entry) {
+                for (int mode = 0; mode < 3; ++mode) {
+                    std::unique_ptr<StackTab> transient = std::make_unique<StackTab>(actual);
+                    actual.addAndMakeVisible(*transient);
+                    transient->setBounds(surface.getBounds());
+                    transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                    const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 2000;
+                    auto initial = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
+                    for (auto &device : *initial) if (device.id == 30) device.name = "Abandoned getter";
+                    std::shared_ptr<const ParameterPublication> supplied = initial;
+                    actual.devices.publication = [&] { return supplied; };
+                    transient->frameAt(actual.reader(), time);
+                    const auto find = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
+                        if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == 30) return p;
+                        for (int i = 0; i < component.getNumChildComponents(); ++i)
+                            if (auto *p = self(self, *component.getChildComponent(i))) return p;
+                        return nullptr;
+                    };
+                    auto replacement = std::make_shared<ParameterPublication>(*initial);
+                    if (mode == 1) std::reverse(replacement->begin(), replacement->end());
+                    for (auto &device : *replacement) if (device.id == 30) device.name = "Nested getter pose";
+                    bool armed = true, nestedPresented = false;
+                    int callbacks = 0;
+                    juce::Rectangle<int> nestedBounds;
+                    actual.devices.publication = [&]() -> std::shared_ptr<const ParameterPublication> {
+                        const auto result = supplied;
+                        if (armed) {
+                            armed = false; ++callbacks;
+                            if (mode == 0) transient.reset();
+                            else {
+                                supplied = replacement;
+                                transient->model().focusItem(transient->model().chainRef(2, 31), time + 20);
+                                if (mode == 1) transient->frameAt(actual.reader(), time + 220);
+                                else {
+                                    transient->model().advance(time + 220);
+                                    transient->resized();
+                                }
+                                if (const auto *nested = find(find, *transient)) {
+                                    nestedBounds = nested->getBounds(); nestedPresented = true;
+                                }
+                            }
+                        }
+                        return result; // deliberately return the older publication after nested work
+                    };
+                    if (entry == 0) transient->frameAt(actual.reader(), time + 10);
+                    else transient->resized();
+                    check(callbacks == 1 && (mode == 0 ? !transient : transient != nullptr),
+                          entry == 0 ? "a frame getter may synchronously destroy or reenter its null-peer surface"
+                                     : "a post-demand layout getter may synchronously destroy or reenter its null-peer surface");
+                    if (mode != 0 && transient) {
+                        auto *nested = find(find, *transient);
+                        std::vector<std::int64_t> nestedOrder;
+                        if (const auto at = transient->model().shownIndex(2))
+                            transient->model().forEachChainItem(*at, [&](const auto &item) { nestedOrder.push_back(item.ref.device); });
+                        const auto expectedOrder = mode == 1 ? std::vector<std::int64_t>{31, 30}
+                                                             : std::vector<std::int64_t>{30, 31};
+                        check(nestedPresented && nested && nested->title.getButtonText() == "Nested getter pose" &&
+                                  nested->getBounds() == nestedBounds && nestedOrder == expectedOrder,
+                              entry == 0 ? "an abandoned frame getter cannot overwrite nested frame or layout presentation"
+                                         : "an abandoned layout getter cannot overwrite nested frame or layout presentation");
+                        // With no further getter, the next layout must still use the
+                        // nested record storage rather than a late outer assignment.
+                        actual.devices.publication = {};
+                        transient->resized();
+                        nested = find(find, *transient);
+                        check(nested && nested->title.getButtonText() == "Nested getter pose",
+                              "getter reentry retains the nested publication for a subsequent callback-free layout");
+                    }
+                    transient.reset();
+                    actual.devices.publication = savedPublication;
+                }
+            }
+            // Dock/header/narrow layout changes never relocate a held device control.
+            const auto mixBounds = actual.mixViewPanel.getBounds();
+            for (int kind = 0; kind < 3; ++kind) {
+                auto &mix = actual.mixViewPanel;
+                mix.setAnalyzerDock(false); mix.setSize(900, 650);
+                const auto stamp = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 10000 + kind * 1000;
+                surface.model().setAutoZoom(false, stamp); surface.model().setBaseHeight(150, stamp);
+                surface.model().focusItem(surface.model().chainRef(2, 30), stamp);
+                surface.frameAt(actual.reader(), stamp + 400);
+                auto *heldPanel = findPanel(30);
+                check(heldPanel && !heldPanel->controls.empty(), "dock capture fixture has a live actual device control");
+                if (!heldPanel || heldPanel->controls.empty()) continue;
+                const auto child = heldPanel->getBounds(), wholeStack = surface.getBounds(), body = mix.body();
+                bool captured = false;
+                if (kind == 0) { heldPanel->controls[0]->slider.onDragStart(); captured = surface.model().capture().has_value(); }
+                else captured = heldPanel->beginInteraction(kind == 1 ? DevicePanelView::Interaction::Text : DevicePanelView::Interaction::Menu);
+                mix.setAnalyzerDock(true); mix.setAnalyzerWidth(300); mix.setAnalyzerWidth(420);
+                mix.setSize(400, 650); mix.frame(actual.reader());
+                check(captured && surface.model().capture() && surface.getBounds() == wholeStack && mix.body() == body &&
+                          heldPanel->getBounds() == child && !mix.analyzerDockShown(),
+                      "Drag/Text/Menu hold keeps whole Stack, header origin and child geometry while dock changes queue");
+                if (kind == 0) heldPanel->controls[0]->slider.onDragEnd();
+                else heldPanel->endInteraction(kind == 1 ? DevicePanelView::Interaction::Text : DevicePanelView::Interaction::Menu);
+                mix.frame(actual.reader());
+                check(!surface.model().capture() && !mix.analyzerDockShown() && surface.getBounds() == mix.body() &&
+                          actual.state().mixAnalyzerWidth == 420,
+                      "release applies the last requested narrow layout without showing hidden analyzer demand");
+                mix.setSize(900, 650); mix.frame(actual.reader());
+                check(mix.analyzerDockShown() && mix.analyzerDock.getWidth() == 420 &&
+                          surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
+                      "widening after release restores the remembered dock beside channel tools");
+                mix.setAnalyzerDock(false); mix.frame(actual.reader());
+            }
+            actual.mixViewPanel.setBounds(mixBounds); actual.mixViewPanel.frame(actual.reader());
+            {
+                auto &mix = actual.mixViewPanel;
+                const auto savedBroker = actual.sharedAnalysis;
+                auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
+                int acquired = 0, released = 0;
+                auto broker = std::make_shared<SharedAnalysis>(
+                    [&](std::int64_t, engine::ScopePoint) { ++acquired; return tap; },
+                    [&](std::int64_t, engine::ScopePoint) { ++released; }, SharedAnalysis::Mode::Manual);
+                actual.sharedAnalysis = broker;
+                mix.setSize(900, 650); mix.setAnalyzerDock(true); mix.frame(actual.reader());
+                const int chromeHeight = mix.getHeight() - mix.body().getHeight();
+                mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight - 1); mix.frame(actual.reader());
+                check(mix.body().getHeight() == 419 && actual.state().mixAnalyzerDock && !mix.analyzerDockShown() &&
+                          broker->stats().consumers == 0,
+                      "requested dock below 420 px body height releases all its demand and preserves the preference");
+                mix.setSize(900, chromeHeight + MixViewPanel::kDockMinimumHeight); mix.frame(actual.reader());
+                check(mix.body().getHeight() == 420 && mix.analyzerDockShown() && broker->stats().consumers == 3 &&
+                          surface.getWidth() >= MixViewPanel::kStackMinimumWidth,
+                      "420 px admission restores all three shared views without taking channel editing width");
+                std::array<float, 1024> signal{};
+                for (std::size_t i = 0; i < signal.size(); ++i)
+                    signal[i] = .5f * std::sin(static_cast<float>(i) * .1f);
+                tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 0, true);
+                broker->pump(); mix.frame(actual.reader());
+                auto &dock = mix.analyzerDock;
+                const auto picture = dock.spectrum.snapshot();
+                check(picture && dock.meters.snapshot() == picture && dock.phase.snapshot() == picture,
+                      "dock rollback fixture has a shared real publication before freezing");
+                dock.freezeButton.setToggleState(true, juce::dontSendNotification); dock.freezeButton.onClick();
+                const auto before = broker->stats(); const int oldAcquire = acquired, oldRelease = released;
+                const auto oldZoom = actual.state().zoom; actual.state().zoom = 0;
+                dock.pointBox.setSelectedId(2, juce::sendNotificationSync);
+                dock.channelBox.setSelectedId(4, juce::sendNotificationSync);
+                dock.sourceBox.setSelectedId(2, juce::sendNotificationSync);
+                dock.widthBox.setSelectedId(240, juce::sendNotificationSync);
+                mix.frame(actual.reader());
+                check(dock.point() == 0 && dock.channel() == 0 && dock.source() == 0 && dock.requestedWidth() == 420 &&
+                          dock.spectrum.snapshot() == picture && dock.phase.snapshot() == picture && dock.meters.snapshot() == picture &&
+                          broker->stats().consumers == before.consumers && broker->stats().domains == before.domains &&
+                          acquired == oldAcquire && released == oldRelease,
+                      "failed source/tap/channel/width saves restore controls without discarding frozen pictures or touching demand");
+                actual.state().zoom = oldZoom;
+                const auto oldOps = value(document->store(), "SELECT count(*) FROM ops");
+                const auto oldTracks = value(document->store(), "SELECT count(*) FROM tracks");
+                const auto oldDevices = value(document->store(), "SELECT count(*) FROM devices");
+                const auto oldUndo = actual.undoTitle(false);
+                commands.activate(actual);
+                bool blocked = true;
+                for (auto *control : std::array<juce::Component *, 8>{&mix.analyzerToggle, &dock.sourceBox, &dock.pointBox,
+                        &dock.channelBox, &dock.widthBox, &dock.freezeButton, &dock.resetButton, &dock.expandButton}) {
+                    control->grabKeyboardFocus();
+                    blocked = blocked && mix.hasAnalyzerControlFocus();
+                    for (const int id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate,
+                                          AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                        juce::ApplicationCommandInfo commandInfo(id); commands.getCommandInfo(id, commandInfo);
+                        blocked = blocked && !actual.command(id) &&
+                            (commandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                    }
+                }
+                check(blocked && value(document->store(), "SELECT count(*) FROM ops") == oldOps &&
+                          value(document->store(), "SELECT count(*) FROM tracks") == oldTracks &&
+                          value(document->store(), "SELECT count(*) FROM devices") == oldDevices && actual.undoTitle(false) == oldUndo,
+                      "analyzer controls protect menu and direct track/device actions without changing audio edits or Undo");
+                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
+                mix.analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+                mix.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("viridis")) + 1, juce::sendNotificationSync);
+                mix.analysis.reverseButton.setToggleState(true, juce::dontSendNotification); mix.analysis.reverseButton.onClick();
+                mix.frame(actual.reader());
+                tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 1024, true);
+                broker->pump(); mix.frame(actual.reader());
+                mix.analysis.freezeButton.setToggleState(true, juce::dontSendNotification); mix.analysis.freezeButton.onClick();
+                const auto spectralPicture = mix.analysis.view.snapshot(); const auto spectralBefore = broker->stats();
+                const auto image = [&] {
+                    juce::Image picture(juce::Image::RGB, mix.analysis.view.getWidth(), mix.analysis.view.getHeight(), true);
+                    juce::Graphics graphics(picture); mix.analysis.view.paint(graphics); return picture;
+                };
+                const auto beforeImage = image();
+                check(spectralPicture && mix.analysis.view.frozen(), "palette rollback fixture retains a frozen spectrogram");
+                actual.state().zoom = 0;
+                mix.analysis.paletteBox.setSelectedId(static_cast<int>(palettes::find("plasma")) + 1, juce::sendNotificationSync);
+                mix.analysis.reverseButton.setToggleState(false, juce::dontSendNotification); mix.analysis.reverseButton.onClick();
+                const auto afterImage = image(); bool pixelsEqual = beforeImage.getBounds() == afterImage.getBounds();
+                for (int y = 0; y < beforeImage.getHeight(); ++y) for (int x = 0; x < beforeImage.getWidth(); ++x)
+                    pixelsEqual = pixelsEqual && beforeImage.getPixelAt(x, y) == afterImage.getPixelAt(x, y);
+                check(mix.analysis.view.palette() == "viridis" && mix.analysis.view.paletteReversed() &&
+                          mix.analysis.requestedPalette() == "viridis" && mix.analysis.reverseButton.getToggleState() &&
+                          mix.analysis.view.snapshot() == spectralPicture && pixelsEqual &&
+                          broker->stats().transforms == spectralBefore.transforms && broker->stats().consumers == spectralBefore.consumers,
+                      "failed palette/reverse saves preserve frozen measurement, pixels and analysis demand");
+                actual.state().zoom = oldZoom;
+                mix.analysis.view.freeze(false); mix.analysis.setMode(SharedSpectrumView::Mode::Spectrum);
+                mix.analysis.slopeBox.setSelectedId(2, juce::sendNotificationSync);
+                mix.frame(actual.reader()); tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 2048, true);
+                broker->pump(); mix.frame(actual.reader()); mix.analysis.view.freeze(true);
+                const auto slopePicture = mix.analysis.view.snapshot();
+                const auto slopeImage = mix.analysis.view.createComponentSnapshot(mix.analysis.view.getLocalBounds(), false);
+                check(slopePicture && mix.analysis.view.spectrumSlope() == SpectrumSlope::Tilt45,
+                      "slope rollback fixture contains a retained real Frozen Spectrum");
+                const auto slopeBefore = broker->stats(); actual.state().zoom = 0;
+                mix.analysis.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+                const auto slopeAfter = mix.analysis.view.createComponentSnapshot(mix.analysis.view.getLocalBounds(), false);
+                bool slopePixelsEqual = slopeImage.getBounds() == slopeAfter.getBounds();
+                for (int y = 0; y < slopeImage.getHeight() && slopePixelsEqual; ++y)
+                    for (int x = 0; x < slopeImage.getWidth(); ++x)
+                        slopePixelsEqual = slopePixelsEqual && slopeImage.getPixelAt(x, y) == slopeAfter.getPixelAt(x, y);
+                check(mix.analysis.requestedSpectrumSlope() == SpectrumSlope::Tilt45 &&
+                          actual.state().analysisSpectrumSlope == "tilt45" && mix.analysis.view.snapshot() == slopePicture &&
+                          slopePixelsEqual && broker->stats().consumers == slopeBefore.consumers &&
+                          broker->stats().transforms == slopeBefore.transforms,
+                      "failed slope save restores only controls and retains Frozen projection, measurement and demand");
+                actual.state().zoom = oldZoom;
+                {
+                    // A separate software component tree reproduces floating
+                    // key forwarding without creating a native window.
+                    AnalysisPane detached;
+                    fake.addAndMakeVisible(detached); detached.setBounds(0, 0, 500, 420);
+                    detached.setMode(SharedSpectrumView::Mode::Spectrogram);
+                    detached.setPalette(mix.analysis.view.palette(), mix.analysis.view.paletteReversed());
+                    detached.setSpectrumSlope(mix.analysis.view.spectrumSlope());
+                    detached.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+                    check(detached.view.spectrumSlope() == SpectrumSlope::Flat && mix.analysis.view.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                              actual.state().analysisSpectrumSlope == "tilt45",
+                          "floating slope starts from the parent then remains a lifetime-local view choice");
+                    detached.paletteBox.setSelectedId(static_cast<int>(palettes::find("magma")) + 1, juce::sendNotificationSync);
+                    check(detached.view.palette() == "magma" && mix.analysis.view.palette() == "viridis" &&
+                              actual.state().analysisPalette == "viridis",
+                          "detached palette choice remains local after copying the parent presentation");
+                    bool protectedContext = true;
+                    commands.activate(actual);
+                    for (auto *control : std::array<juce::Component *, 10>{&detached.modeBox, &detached.sourceBox,
+                            &detached.pointBox, &detached.channelBox, &detached.paletteBox, &detached.slopeBox, &detached.reverseButton,
+                            &detached.freezeButton, &detached.resetButton, &detached.expandButton}) {
+                        detached.setMode(control == &detached.slopeBox ? SharedSpectrumView::Mode::Spectrum : SharedSpectrumView::Mode::Spectrogram);
+                        control->grabKeyboardFocus();
+                        protectedContext = protectedContext && AnalysisPane::anyControlsFocused();
+                        for (const int id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste,
+                                              AppCommands::Duplicate, AppCommands::RenameTrack, AppCommands::DeleteTrack}) {
+                            juce::ApplicationCommandInfo analysisCommandInfo(id); commands.getCommandInfo(id, analysisCommandInfo);
+                            protectedContext = protectedContext && !actual.command(id) &&
+                                (analysisCommandInfo.flags & juce::ApplicationCommandInfo::isDisabled) != 0;
+                        }
+                    }
+                    check(protectedContext && value(document->store(), "SELECT count(*) FROM ops") == oldOps &&
+                              value(document->store(), "SELECT count(*) FROM tracks") == oldTracks &&
+                              value(document->store(), "SELECT count(*) FROM devices") == oldDevices &&
+                              actual.undoTitle(false) == oldUndo,
+                          "detached analyzer control keys/menu cannot edit the stale main track or device context");
+                }
+                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)); mix.frame(actual.reader());
+                mix.analysis.freezeButton.setToggleState(false, juce::dontSendNotification); mix.analysis.freezeButton.onClick();
+                dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
+                actual.sharedAnalysis = savedBroker; mix.setAnalyzerDock(false); mix.frame(actual.reader());
+                mix.setBounds(mixBounds); mix.frame(actual.reader()); surface.grabKeyboardFocus();
+            }
             actual.mixViewPanel.stack.suspendParameters(true);
             actual.devices.suspendParameters(true);
             actual.afterEdit = nullptr;
@@ -6309,7 +6914,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     const auto at = demands.find(owner);
                     return at != demands.end() && !at->second.empty();
                 };
-                check(has(&observed.devices) && has(&stackSurface),
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+                          !stackSurface.model().shownIndex(2) && has(&observed.devices) && !has(&stackSurface),
+                      "With tools omits generic plug-in rows and requests no Stack parameters");
+                stackSurface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+                observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
+                check(stackSurface.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+                          stackSurface.model().shownIndex(2) && has(&observed.devices) && has(&stackSurface),
                       "device strip and realised Stack controls own independent parameter demand");
                 window.minimisationStateChanged(true);observed.frame();
                 check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
@@ -8604,6 +9215,7 @@ int main(int argc, char **argv) {
         {
             const auto selectionBeforeStack = integrated.arrangement.geometry.selection;
             StackTab eqView(integrated);
+            eqView.channelScope.setSelectedId(2, juce::sendNotificationSync);
             eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
