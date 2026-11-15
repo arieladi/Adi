@@ -116,12 +116,15 @@ struct FloatingHost::Entry {
         bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
         void closeButtonPressed() override {
             e.closing = true;
+            if (e.component.getComponent() == &h.root_.mixViewPanel)
+                h.root_.mixViewPanel.stack.suspendParameters(true);
             setVisible(false);
         }
         void minimisationStateChanged(bool minimised) override {
             if (e.component.getComponent() == &h.root_.mixViewPanel) {
                 h.root_.mixViewPanel.suspendAnalysis(minimised);
-                if (minimised) { h.root_.mixViewPanel.stack.cancelInteractions(); h.root_.devices.cancelFunctionInteractions(); }
+                h.root_.mixViewPanel.stack.suspendParameters(minimised || e.hidden || e.closing);
+                if (minimised) h.root_.mixViewPanel.stack.cancelInteractions();
             }
             if (auto *analysis = dynamic_cast<AnalysisPane *>(e.component.getComponent())) analysis->suspend(minimised);
         }
@@ -210,6 +213,8 @@ void FloatingHost::show(const std::string &key, bool on) {
         return;
     auto &e = *it->second;
     e.hidden = !on;
+    if (e.component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(!on || e.closing || (e.window && e.window->isMinimised()));
     if (native_ && e.window && !e.closing)
         e.window->setVisible(on);
 }
@@ -243,6 +248,8 @@ void FloatingHost::frame(const std::string &key) {
     auto &e = *it->second;
     if (!alive_(e.device)) {
         e.closing = true;
+        if (e.component.getComponent() == &root_.mixViewPanel)
+            root_.mixViewPanel.stack.suspendParameters(true);
         e.window->setVisible(false);
         return;
     }
@@ -294,6 +301,8 @@ void FloatingHost::close(const std::string &key) {
         return;
     auto &e = *it->second;
     save(e, false);
+    if (e.component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(true);
     // Gone before its content leaves it: an empty window never shows (the director's R3).
     e.window->setVisible(false);
     e.window->clearContentComponent();
@@ -312,6 +321,8 @@ void FloatingHost::requestClose(const std::string &key) {
     if (it == entries_.end())
         return;
     it->second->closing = true;
+    if (it->second->component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(true);
     if (it->second->window)
         it->second->window->setVisible(false);
 }
@@ -328,6 +339,8 @@ void FloatingHost::closeAll(bool remember) {
     while (!entries_.empty()) {
         auto &e = *entries_.begin()->second;
         save(e, remember);
+        if (e.component.getComponent() == &root_.mixViewPanel)
+            root_.mixViewPanel.stack.suspendParameters(true);
         e.window->setVisible(false);
         e.window->clearContentComponent();
         if (e.dock && e.component) {

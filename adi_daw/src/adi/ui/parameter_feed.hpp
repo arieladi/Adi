@@ -4,12 +4,20 @@
 #include "adi/panel.hpp"
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 namespace adi::ui {
 struct ParameterGroupMetadata {
     std::string groupId, groupName;
     bool groupEnableControl = false;
+    std::int32_t bandIndex = -1;
+    std::string sectionId{}, sectionName{};
     bool operator==(const ParameterGroupMetadata &) const = default;
+};
+struct ParameterMetadata {
+    std::vector<panel::Declared> declared;
+    std::map<std::string, double> defaults;
+    std::map<std::string, ParameterGroupMetadata> groups;
 };
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
@@ -39,12 +47,23 @@ struct DevicePanelData {
     std::map<std::string, double> defaults;
     // Keyed by stable parameter id, copied from the live descriptor, not inferred from names.
     std::map<std::string, ParameterGroupMetadata> parameterGroups{};
+    // Native descriptors are immutable for an exact runtime. Publications share
+    // these tables and unchanged records instead of copying every band each tick.
+    std::shared_ptr<const ParameterMetadata> metadata;
+    std::shared_ptr<const std::vector<panel::Record>> cachedRecords;
+    const auto &declarations() const noexcept { return metadata ? metadata->declared : declared; }
+    const auto &defaultValues() const noexcept { return metadata ? metadata->defaults : defaults; }
+    const auto &groups() const noexcept { return metadata ? metadata->groups : parameterGroups; }
+    const auto &parameters() const noexcept { return cachedRecords ? *cachedRecords : records; }
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.
 class ParameterFeed {
   public:
-    void publish(engine::Session &);
+    void publish(engine::Session &, std::uint64_t modelRevision);
+    // Each surface owns its demand. Releasing one must not silence another.
+    // Empty demand removes the consumer; identity/mixer rows remain published.
+    bool setDemand(const void *consumer, std::vector<std::int64_t> devices);
     std::shared_ptr<const ParameterPublication> current() const noexcept { return current_; }
     void touched(std::int64_t id, const std::string &param) {
         touched_[{id, param}] = panel::Source::Mouse;
@@ -59,6 +78,20 @@ class ParameterFeed {
         std::uint64_t seen = 0;
     };
     std::map<std::int64_t, Identity> identities_;
+    struct NativeCache {
+        std::uint64_t instance = 0;
+        std::int32_t parameterCount = 0;
+        bool available = false;
+        std::vector<device::ParamDescriptor> descriptors;
+        std::vector<std::optional<std::string>> automationRefs;
+        std::shared_ptr<const ParameterMetadata> metadata;
+        std::shared_ptr<const std::vector<panel::Record>> records;
+    };
+    std::map<std::int64_t, NativeCache> native_;
+    std::map<const void *, std::vector<std::int64_t>> demands_;
+    std::set<std::int64_t> demanded_;
+    std::map<std::pair<std::int64_t, std::string>, double> saved_;
+    std::optional<std::uint64_t> savedRevision_;
     std::uint64_t nextIdentity_ = 0;
     std::uint64_t publication_ = 0;
     std::map<std::pair<std::int64_t, std::string>, panel::Source> touched_;

@@ -262,6 +262,9 @@ class AdiApplication final : public juce::JUCEApplication,
         root_ = root.get();
         root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
+        root->devices.parameterDemand = [this](const void *consumer, const std::vector<std::int64_t> &ids) {
+            document_->setParameterDemand(consumer, ids);
+        };
         root->sharedAnalysis = document_->analysis();
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {

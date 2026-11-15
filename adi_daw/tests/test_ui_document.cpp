@@ -176,6 +176,7 @@ void mixSurfacePublication(const std::filesystem::path &file) {
                            {"name", "Same name"}, {"latency", 999}};
         check(document->ops().submit(std::move(make)).ok && document->synchronise(),
               "Mix View: actual loaded and missing devices in authored order");
+        document->setParameterDemand(document.get(), {3, 4});
         document->tick(0);
         const auto panelOf = [&](std::int64_t id) -> const ui::DevicePanelData * {
             const auto publication = document->parameterFeed().current();
@@ -915,6 +916,7 @@ int main(int argc, char **argv) {
             make[1].opType = "device.insert";
             make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
             check(strip->ops().submit(std::move(make)).ok && strip->synchronise(), "a device on track 2");
+            strip->setParameterDemand(strip.get(), {3});
             strip->tick(0); // the timer's frame: the feed publishes the new device
             auto *knobs = dynamic_cast<test::Knobs *>(strip->session().instanceFor(3));
             const auto *entry = strip->session().entryFor(3);
@@ -1048,6 +1050,7 @@ int main(int argc, char **argv) {
             spec.defaultValue = .5;
             check(armed->ops().submit(automation::createLane(spec)).ok && armed->synchronise(),
                   "a lane on its Cutoff, with no points: the lane plays its default");
+            armed->setParameterDemand(armed.get(), {3});
             armed->tick(0); // the timer's frame: the feed publishes the device
             auto *knobs = dynamic_cast<test::Knobs *>(armed->session().instanceFor(3));
             auto snapshot = [&] { return armed->view().current(); };
@@ -1155,6 +1158,7 @@ int main(int argc, char **argv) {
             spec.defaultValue = .5;
             make.push_back(automation::createLane(spec));
             check(clap->ops().submit(std::move(make)).ok && clap->synchronise(), "the device and a lane on its Cutoff");
+            clap->setParameterDemand(clap.get(), {3});
             clap->tick(0);
             auto cutoffRecord = [&]() -> const panel::Record * {
                 const auto feed = clap->parameterFeed().current();

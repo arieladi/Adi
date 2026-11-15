@@ -59,6 +59,12 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(tests/test_ui_mix_functions.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_mix_functions_tests COMMAND adi_ui_mix_functions_tests)
+    juce_add_console_app(adi_ui_eq_pages_tests PRODUCT_NAME "adi_ui_eq_pages_tests")
+    target_sources(adi_ui_eq_pages_tests PRIVATE tests/test_ui_eq_pages.cpp)
+    target_link_libraries(adi_ui_eq_pages_tests PRIVATE adi_ui_shell)
+    set_source_files_properties(tests/test_ui_eq_pages.cpp PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
+    add_test(NAME adi_ui_eq_pages_tests COMMAND adi_ui_eq_pages_tests)
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
     target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.

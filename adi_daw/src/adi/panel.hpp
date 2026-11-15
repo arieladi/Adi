@@ -130,6 +130,8 @@ struct Record {
     bool missing = false;
 
     Source lastTouchedBy = Source::None;
+    /// Optional declared discrete captions; absent entries use numeric labels.
+    std::vector<std::string> choiceLabels{};
 };
 
 /// Derive the fields a record computes from the ones a caller reads off a

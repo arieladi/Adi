@@ -77,6 +77,9 @@ THIRD_PARTY=(
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
+  # Preserve the authored EQ's static-target SIMD/FFT evaluation. A dependency
+  # update requires rerunning its strict extraction comparisons.
+  "google/highway               highway     Apache-2.0 1.4.0    2607d3b5b0113992fe84d3848859eae13b3b52c1  build"
   # libpd has a required submodule: pure-data
   # IS the DSP -- libpd without it is a wrapper around nothing. Its commit is
   # fixed by libpd's own tree, so the pin below still answers "what did we build

@@ -1,31 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "parameter_feed.hpp"
 #include <algorithm>
+#include <cmath>
+#include <unordered_set>
 namespace adi::ui {
-void ParameterFeed::publish(engine::Session &session) {
+bool ParameterFeed::setDemand(const void *consumer, std::vector<std::int64_t> devices) {
+    std::sort(devices.begin(), devices.end());
+    devices.erase(std::unique(devices.begin(), devices.end()), devices.end());
+    if (devices.empty()) {
+        if (!demands_.erase(consumer)) return false;
+    } else {
+        const auto found = demands_.find(consumer);
+        if (found != demands_.end() && found->second == devices) return false;
+        demands_[consumer] = std::move(devices);
+    }
+    std::set<std::int64_t> next;
+    for (const auto &[owner, ids] : demands_) {
+        (void)owner;
+        next.insert(ids.begin(), ids.end());
+    }
+    if (next == demanded_) return false;
+    demanded_ = std::move(next);
+    return true;
+}
+void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevision) {
     auto next = std::make_shared<ParameterPublication>();
     const auto publication = ++publication_;
     const auto &model = session.model();
+    if (!demanded_.empty() && savedRevision_ != modelRevision) {
+        saved_.clear();
+        for (const auto &saved : model.pluginParams) saved_[{saved.deviceId, saved.paramId}] = saved.normalized;
+        savedRevision_ = modelRevision;
+    }
     for (const auto &chain : model.deviceChains) {
-        if (!chain.trackId)
-            continue;
+        if (!chain.trackId) continue;
         for (const auto &row : model.devices) {
-            if (row.chainId != chain.id)
-                continue;
+            if (row.chainId != chain.id) continue;
             DevicePanelData data;
-            data.id = row.id;
-            data.track = *chain.trackId;
-            data.chain = chain.id;
-            data.name = row.name;
-            data.enabled = row.enabled;
-            // A rack's kind has no values in the format yet, so only a plug-in can be an instrument.
+            data.id = row.id; data.track = *chain.trackId; data.chain = chain.id;
+            data.name = row.name; data.enabled = row.enabled;
             if (row.pluginRefId)
                 for (const auto &ref : model.pluginRefs)
                     if (ref.id == *row.pluginRefId) {
                         data.instrument = ref.subtype == "instrument";
-                        data.uid = ref.uid;
-                        // A plug-in has a window of its own; ADI's built-ins ("internal") have none.
-                        data.plugin = ref.format != "internal";
+                        data.uid = ref.uid; data.plugin = ref.format != "internal";
                         break;
                     }
             auto *instance = session.instanceFor(row.id);
@@ -37,98 +55,141 @@ void ParameterFeed::publish(engine::Session &session) {
             auto &identity = identities_[row.id];
             const bool runtimeSame = identity.runtime.sameInstance(data.runtime) &&
                                      session.resolveDevice(identity.runtime) == instance;
-            // Racks and unresolved rows have no runtime token; their authored reference is the
-            // identity until a runtime exists. A disappearance below erases their stamp too.
             const bool neitherRuntime = identity.runtime.claimIdentity().expired() &&
                                         data.runtime.claimIdentity().expired();
             if (identity.stamp == 0 || identity.pluginRef != row.pluginRefId || identity.uid != data.uid ||
                 (!runtimeSame && !(neitherRuntime && !entry))) {
                 identity.stamp = ++nextIdentity_;
-                identity.runtime = data.runtime;
-                identity.pluginRef = row.pluginRefId;
-                identity.uid = data.uid;
+                identity.runtime = data.runtime; identity.pluginRef = row.pluginRefId; identity.uid = data.uid;
+                native_.erase(row.id);
             }
-            data.instance = identity.stamp;
-            identity.seen = publication;
+            data.instance = identity.stamp; identity.seen = publication;
+            // Mixer and selection identity stays available without touching parameters.
+            if (!demanded_.contains(row.id)) { next->push_back(std::move(data)); continue; }
+            const auto readValues = [&](const device::ParamDescriptor &descriptor,
+                                        const std::optional<std::string> &ref, panel::Record &record) {
+                record.missing = descriptor.missing || !data.available;
+                record.playing = instance->getParam(descriptor.id).normalized;
+                const auto saved = saved_.find({row.id, descriptor.id});
+                record.stored = saved == saved_.end() ? record.playing : saved->second;
+                if (record.missing) record.playing = record.stored;
+                record.driven = !record.missing && std::abs(record.playing - record.stored) > 1e-9;
+                record.automated = record.overridden = false;
+                const auto *lanes = session.deviceAutomation();
+                if (descriptor.automatable && lanes && ref) {
+                    const auto lane = lanes->laneFor.find({row.id, *ref});
+                    if (lane != lanes->laneFor.end()) {
+                        record.automated = true;
+                        record.overridden = session.overriddenLanes().contains(lane->second);
+                    }
+                }
+                const auto source = touched_.find({row.id, descriptor.id});
+                record.lastTouchedBy = source == touched_.end() ? panel::Source::None : source->second;
+                if (record.automated && !record.overridden) record.lastTouchedBy = panel::Source::Automation;
+            };
+            const bool nativeEq = instance && !data.plugin && data.uid == "org.adidaw.mix.eq";
+            if (nativeEq) {
+                auto &cache = native_[row.id];
+                const auto count = instance->paramCount();
+                if (!cache.metadata || cache.instance != data.instance || cache.available != data.available ||
+                    cache.parameterCount != count) {
+                    cache = {};
+                    cache.instance = data.instance; cache.available = data.available; cache.parameterCount = count;
+                    auto metadata = std::make_shared<ParameterMetadata>();
+                    for (std::int32_t i = 0; i < count; ++i) {
+                        const auto *descriptor = instance->paramAt(i);
+                        if (!descriptor) continue;
+                        cache.descriptors.push_back(*descriptor);
+                        cache.automationRefs.push_back(engine::automationParamRef(instance->identity().format, descriptor->id));
+                        metadata->declared.push_back({descriptor->id, descriptor->name,
+                            (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
+                            descriptor->automatable});
+                        metadata->defaults[descriptor->id] = descriptor->defaultValue.normalized;
+                        if (!descriptor->groupId.empty())
+                            metadata->groups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
+                                descriptor->groupEnableControl, descriptor->bandIndex, descriptor->sectionId, descriptor->sectionName};
+                    }
+                    cache.metadata = std::move(metadata);
+                }
+                std::shared_ptr<std::vector<panel::Record>> changed;
+                for (std::size_t i = 0; i < cache.descriptors.size(); ++i) {
+                    const auto &descriptor = cache.descriptors[i];
+                    panel::Record values;
+                    readValues(descriptor, cache.automationRefs[i], values);
+                    const auto *prior = cache.records ? &(*cache.records)[i] : nullptr;
+                    if (prior && prior->playing == values.playing && prior->stored == values.stored &&
+                        prior->missing == values.missing && prior->automated == values.automated &&
+                        prior->overridden == values.overridden && prior->lastTouchedBy == values.lastTouchedBy) continue;
+                    if (!changed)
+                        changed = cache.records ? std::make_shared<std::vector<panel::Record>>(*cache.records)
+                                                : std::make_shared<std::vector<panel::Record>>(cache.descriptors.size());
+                    auto &record = (*changed)[i];
+                    if (!prior) {
+                        record.id = descriptor.id; record.name = descriptor.name;
+                        record.shape = static_cast<panel::Shape>(descriptor.shape); record.stepCount = descriptor.stepCount;
+                        if (descriptor.shape == device::ParamShape::Menu) record.choiceLabels = descriptor.choiceLabels;
+                    }
+                    if (!prior || prior->playing != values.playing) record.text = instance->paramText(descriptor.id, values.playing);
+                    record.playing = values.playing; record.stored = values.stored; record.driven = values.driven;
+                    record.missing = values.missing; record.automated = values.automated;
+                    record.overridden = values.overridden; record.lastTouchedBy = values.lastTouchedBy;
+                }
+                if (changed) cache.records = std::move(changed);
+                data.metadata = cache.metadata; data.cachedRecords = cache.records;
+                // EQ selects controls directly by band/section. Its unused aggregate
+                // Configure list must not create 730 entries or quadratic lookups.
+                next->push_back(std::move(data));
+                continue;
+            }
             if (instance)
                 for (std::int32_t i = 0; i < instance->paramCount(); ++i) {
-                    const auto *d = instance->paramAt(i);
-                    if (!d)
-                        continue;
-                    data.declared.push_back({d->id, d->name,
-                                             (d->automatable || d->configurable) && !d->missing && data.available,
-                                             d->automatable});
-                    data.defaults[d->id] = d->defaultValue.normalized;
-                    if (!d->groupId.empty())
-                        data.parameterGroups[d->id] = {d->groupId, d->groupName, d->groupEnableControl};
-                    panel::Record r;
-                    r.id = d->id;
-                    r.name = d->name;
-                    r.missing = d->missing || !data.available;
-                    r.playing = instance->getParam(d->id).normalized;
-                    r.stored = r.playing;
-                    for (const auto &saved : model.pluginParams)
-                        if (saved.deviceId == row.id && saved.paramId == d->id) {
-                            r.stored = saved.normalized;
-                            break;
-                        }
-                    r.text = instance->paramText(d->id, r.playing);
-                    r.shape = static_cast<panel::Shape>(d->shape);
-                    r.stepCount = d->stepCount;
-                    // The lane's ref is decimal where a CLAP id is hex (ADR-0165): the session's
-                    // own spelling, so a CLAP parameter's lane is found as its override is.
-                    const auto *lanes = session.deviceAutomation();
-                    const auto ref = engine::automationParamRef(instance->identity().format, d->id);
-                    if (d->automatable && lanes && ref) {
-                        const auto lane = lanes->laneFor.find({row.id, *ref});
-                        if (lane != lanes->laneFor.end()) {
-                            r.automated = true;
-                            r.overridden = session.overriddenLanes().contains(lane->second);
-                        }
-                    }
-                    auto source = touched_.find({row.id, d->id});
-                    r.lastTouchedBy =
-                        source == touched_.end() ? panel::Source::None : source->second;
-                    if (r.automated && !r.overridden)
-                        r.lastTouchedBy = panel::Source::Automation;
-                    data.records.push_back(std::move(r));
+                    const auto *descriptor = instance->paramAt(i);
+                    if (!descriptor) continue;
+                    data.declared.push_back({descriptor->id, descriptor->name,
+                        (descriptor->automatable || descriptor->configurable) && !descriptor->missing && data.available,
+                        descriptor->automatable});
+                    data.defaults[descriptor->id] = descriptor->defaultValue.normalized;
+                    if (!descriptor->groupId.empty())
+                        data.parameterGroups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
+                            descriptor->groupEnableControl, descriptor->bandIndex, descriptor->sectionId, descriptor->sectionName};
+                    panel::Record record;
+                    record.id = descriptor->id; record.name = descriptor->name;
+                    readValues(*descriptor, engine::automationParamRef(instance->identity().format, descriptor->id), record);
+                    record.text = instance->paramText(descriptor->id, record.playing);
+                    record.shape = static_cast<panel::Shape>(descriptor->shape); record.stepCount = descriptor->stepCount;
+                    if (descriptor->shape == device::ParamShape::Menu) record.choiceLabels = descriptor->choiceLabels;
+                    data.records.push_back(std::move(record));
                 }
-            panel::finalize(data.records);
             data.resolved = panel::resolve(model, row.id, data.declared);
             if (!data.plugin && !data.parameterGroups.empty() && !data.resolved.configured) {
-                // Explicit native pages partition their controls. The ordinary plug-in's
-                // aggregate 64-control Configure threshold must not empty a two-stage page.
                 data.resolved.entries.clear();
-                for (const auto &parameter : data.declared)
-                    if (parameter.modifiable) data.resolved.entries.push_back({parameter.id, false});
+                for (const auto &parameter : data.declared) data.resolved.entries.push_back({parameter.id, false});
                 data.resolved.showsConfigureHint = false;
             }
-            // Suite identity, not a name match against a user's renamed device.
             if (instance && instance->identity().uid.find("airwindows") != std::string::npos) {
-                auto algorithm = instance->getParam("0");
-                const auto active = panel::activeAlgorithmParams(
-                    data.records,
+                const auto algorithm = instance->getParam("0");
+                const auto active = panel::activeAlgorithmParams(data.records,
                     static_cast<std::int32_t>(algorithm.hasReal ? algorithm.real : 0));
                 std::vector<panel::Entry> entries;
-                for (auto index : active)
-                    entries.push_back({data.records[index].id, data.records[index].missing});
-                data.resolved.entries = std::move(entries);
-                data.resolved.showsConfigureHint = false;
+                for (auto index : active) entries.push_back({data.records[index].id, data.records[index].missing});
+                data.resolved.entries = std::move(entries); data.resolved.showsConfigureHint = false;
             }
-            for (const auto &e : data.resolved.entries) {
-                if (std::none_of(data.records.begin(), data.records.end(),
-                                 [&](const auto &r) { return r.id == e.id; })) {
-                    panel::Record r;
-                    r.id = e.id;
-                    r.name = e.id;
-                    r.missing = true;
-                    data.records.push_back(std::move(r));
-                }
+            std::unordered_set<std::string_view> recorded;
+            recorded.reserve(data.records.size());
+            for (const auto &record : data.records) recorded.insert(record.id);
+            // Finish lookups before growing record storage invalidates string views.
+            std::vector<std::string> missing;
+            for (const auto &entryToShow : data.resolved.entries)
+                if (!recorded.contains(entryToShow.id)) missing.push_back(entryToShow.id);
+            for (const auto &id : missing) {
+                panel::Record record; record.id = record.name = id; record.missing = true;
+                data.records.push_back(std::move(record));
             }
             next->push_back(std::move(data));
         }
     }
-    std::erase_if(identities_, [publication](const auto &entry) { return entry.second.seen != publication; });
+    std::erase_if(identities_, [publication](const auto &item) { return item.second.seen != publication; });
+    std::erase_if(native_, [this](const auto &item) { return !identities_.contains(item.first); });
     current_ = std::move(next);
 }
 } // namespace adi::ui

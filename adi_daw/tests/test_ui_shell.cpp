@@ -29,6 +29,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <new>
 #include <optional>
 #include <set>
@@ -2444,8 +2445,14 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         return;
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "devices");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     root.loadBuiltin = [&](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
         const bool ok = document->insertBuiltin(uid, track, before);
         if (!ok)
@@ -2901,8 +2908,14 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     check(document->ops().submit(std::move(make)).ok && document->synchronise(), "Color Cab on 3 Audio");
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "colorcab");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     root.devices.assignSample = [&](std::int64_t device, std::int32_t slot, const std::string &path) {
         const bool ok = document->assignSample(device, slot, media::pathFromUtf8(path), 7);
         if (!ok)
@@ -5007,8 +5020,14 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI to copy");
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "clipboard");
+    UiPeerRoot host;
+    host.setSize(1600, 1000);host.addAndMakeVisible(root);
+    host.setVisible(true);host.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     root.devices.submit = [&](const std::string &op, Payload p) {
         const bool ok = document->deviceAction(op, std::move(p));
         if (!ok)
@@ -5063,11 +5082,6 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
               !root.devices.canClipboard(Clip::Paste) && !root.command(AppCommands::Copy) &&
               root.error().find("Select a device") != std::string::npos,
           "with no device chosen, Copy has nothing to act on and the Status Bar says so");
-    UiPeerRoot host;
-    host.setSize(root.getWidth(), root.getHeight());
-    host.addAndMakeVisible(root);
-    host.setVisible(true);
-    host.addToDesktop(0);
     auto *peer = host.getPeer();
     const auto key = [&](char c) {
         return peer != nullptr && peer->handleKeyPress(juce::KeyPress(c, juce::ModifierKeys::commandModifier, 0));
@@ -5188,8 +5202,14 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
           "two plug-ins and a device of no plug-in on 1 MIDI");
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "plugins");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     root.setSize(1440, 900);
     root.arrangement.geometry.selection.track = 2;
     const auto refresh = [&] {
@@ -5333,8 +5353,14 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI");
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "strip");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     // As ui_main.cpp wires it: a refusal's reason goes to the Status Bar.
     root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
                                double value) {
@@ -5466,8 +5492,14 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
     check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI with a lane on its Cutoff");
     AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
                           document->sessionState(), "arm");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);surfacePeer.addToDesktop(0);
     root.afterEdit = [&] { document->synchronise(); };
     root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+        document->setParameterDemand(owner, ids);
+    };
     root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
                                double value) {
         const bool ok = document->parameterGesture(id, param, kind, value);
@@ -5977,6 +6009,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "Mix View focus dispatch uses a fake peer with no native window");
             actual.afterEdit = [&] { document->synchronise(); };
             actual.devices.publication = [&] { return document->parameterFeed().current(); };
+            actual.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+                document->setParameterDemand(owner, ids);
+            };
             actual.devices.submit = [&](const std::string &op, Payload p) {
                 return document->deviceAction(op, std::move(p));
             };
@@ -6237,9 +6272,83 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 }
             }
             actual.mixViewPanel.stack.cancelInteractions();
+            actual.mixViewPanel.stack.suspendParameters(true);
+            actual.devices.suspendParameters(true);
             actual.afterEdit = nullptr;
             fake.removeChildComponent(&actual);
             fake.removeFromDesktop();
+            // Exercise the real main/floating visibility hooks with fake peers.
+            // Neither DocumentWindow constructs a native peer in this fixture.
+            std::map<const void *, std::vector<std::int64_t>> demands;
+            {
+                auto owned = std::make_unique<AdiRootComponent>(document->view(), document->ops(), document->mailbox(),
+                    commands, document->views(), document->sessionState(), "parameter-demand");
+                auto &observed = *owned;
+                observed.devices.publication = [&] { return document->parameterFeed().current(); };
+                observed.devices.parameterDemand = [&](const void *owner, const std::vector<std::int64_t> &ids) {
+                    if (ids.empty()) demands.erase(owner); else demands[owner] = ids;
+                    document->setParameterDemand(owner, ids);
+                };
+                observed.setSize(1440, 900);
+                observed.arrangement.geometry.selection.track = 2;
+                AdiWindow window(std::move(owned), commands, false);
+                UiPeerRoot mainPeer;
+                mainPeer.setSize(1600, 1000);
+                mainPeer.addAndMakeVisible(window);
+                mainPeer.setVisible(true);mainPeer.addToDesktop(0);
+                check(dynamic_cast<UiFakePeer *>(mainPeer.getPeer()) && window.getPeer() &&
+                          window.getPeer()->getNativeHandle() == nullptr,
+                      "parameter visibility fixture has only a software peer");
+                observed.frame();
+                check(observed.setMixView(true, false), "parameter demand opens the docked Stack");
+                auto &stackSurface = observed.mixViewPanel.stack;
+                const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+                stackSurface.model().setAutoZoom(false, time);stackSurface.model().setBaseHeight(140, time);
+                observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
+                const auto has = [&](const void *owner) {
+                    const auto at = demands.find(owner);
+                    return at != demands.end() && !at->second.empty();
+                };
+                check(has(&observed.devices) && has(&stackSurface),
+                      "device strip and realised Stack controls own independent parameter demand");
+                window.minimisationStateChanged(true);observed.frame();
+                check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
+                window.minimisationStateChanged(false);observed.frame();stackSurface.frameAt(observed.reader(), time + 220);
+                check(has(&observed.devices) && has(&stackSurface), "restoring the main window refreshes both visible consumers");
+                FloatingHost host(observed, commands, document->views(), document->view(),
+                    [](std::int64_t) { return true; }, false);
+                check(detachMixView(host, observed, true), "parameter demand detaches Stack to its own software window");
+                UiPeerRoot floatingPeer;
+                floatingPeer.setSize(1600, 1000);
+                auto *floating = host.window("Mix View");
+                if (floating) {
+                    floatingPeer.addAndMakeVisible(*floating);floatingPeer.setVisible(true);floatingPeer.addToDesktop(0);
+                    host.frame("Mix View");stackSurface.frameAt(observed.reader(), time + 240);
+                    check(has(&stackSurface), "detached visible Stack requests its own parameters");
+                    window.minimisationStateChanged(true);host.frame("Mix View");
+                    check(!has(&observed.devices) && has(&stackSurface),
+                          "main minimization preserves the independent floating Stack consumer");
+                    floating->minimisationStateChanged(true);host.frame("Mix View");
+                    check(demands.empty(), "floating minimization releases its last parameter demand");
+                    floating->minimisationStateChanged(false);host.frame("Mix View");
+                    check(!has(&observed.devices) && has(&stackSurface),
+                          "floating restore works while the main window remains minimized");
+                    host.show("Mix View", false);host.frame("Mix View");
+                    check(demands.empty(), "explicit floating hide releases demand without a native visibility callback");
+                    host.show("Mix View", true);host.frame("Mix View");
+                    check(has(&stackSurface), "explicit floating show restores demand");
+                    check(detachMixView(host, observed, false), "dock Stack back into the minimized main window");
+                    observed.frame();
+                    check(demands.empty(), "docking into minimized main does not revive hidden parameter work");
+                    window.minimisationStateChanged(false);observed.frame();
+                    check(has(&observed.devices) && has(&stackSurface), "main restore after redocking refreshes current controls");
+                    floatingPeer.removeFromDesktop();
+                } else check(false, "detached parameter window exists");
+                check(observed.setMixView(false, false), "close the parameter-demand Stack");
+                check(!has(&stackSurface) && has(&observed.devices), "closing Stack keeps the visible device strip's demand");
+                mainPeer.removeChildComponent(&window);mainPeer.removeFromDesktop();
+            }
+            check(demands.empty(), "surface destruction releases all parameter demand owners");
             document->release();
         }
     }
