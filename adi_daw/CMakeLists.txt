@@ -1954,6 +1954,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+include(cmake/triggered_scope.cmake)
 
 add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)
 target_link_libraries(adi_mp4_aac_tests PRIVATE adi_core adi_warnings)
