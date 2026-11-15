@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "Settings.hpp"
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 
@@ -34,10 +35,27 @@ class Core final {
     Core &operator=(const Core &) = delete;
     void prepare(PrepareSpec, const Settings &);
     void reset(const Settings &);
+    // Stopped owner only, including stopped service and metadata readers. Uses
+    // the same EQ object and its authored prepare law, retaining learned
+    // histograms unless that law resets them for a learn/relative transition.
+    // Other stages, contexts, key history and work versions start a fresh stream.
+    // Validation/resource staging failure leaves the old chain intact. If the
+    // final retained-EQ prepare throws, the chain fails closed: isPrepared()==
+    // false, zero latency/no offer, audio rejects; retry this method or prepare.
+    void reprepareStopped(PrepareSpec, const Settings &);
+    [[nodiscard]] bool isPrepared() const noexcept;
     // False rejects invalid settings or an unsupported enabled stage layout/rate.
     // Later requests coalesce behind the one immutable candidate being serviced.
     bool requestConfiguration(const Settings &) noexcept;
     bool serviceConfiguration();
+    // Lock-free metadata for a third Main/UI observer. Read these versions to
+    // signal an owner pump; never call pendingPlan as a third concurrent actor.
+    // Separate loads are not a coherent pair snapshot: requested > completed
+    // signals outstanding work, and a later Main tick retries the observation.
+    // Versions reset on stopped preparation. Lifecycle replacement/destruction
+    // still requires metadata readers to have stopped using this instance.
+    [[nodiscard]] std::uint64_t requestedWorkVersion() const noexcept;
+    [[nodiscard]] std::uint64_t completedWorkVersion() const noexcept;
     // A candidate is advertised only after owner resources and original-key
     // history are ready. Fresh requested-on EQ can prime into private scratch
     // while the previous audible plan runs. It is counted separately from
@@ -63,6 +81,8 @@ class Core final {
                  const Settings &, BlockContext) noexcept;
     // Audio-owner diagnostics, or after stopping. Not a concurrent UI snapshot.
     [[nodiscard]] Statistics statistics() const noexcept;
+    [[nodiscard]] double learnedThreshold(std::size_t band) const noexcept;
+    [[nodiscard]] double learnedKnee(std::size_t band) const noexcept;
 
   private:
     struct Impl;

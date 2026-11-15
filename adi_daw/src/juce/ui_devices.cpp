@@ -381,15 +381,30 @@ void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
     // A folded or scrolled-out identity row carries no parameter payload.
     // Keep this runtime's presentation selection until demand resumes.
     if (next.groups().empty()) return;
-    if (data && eqPresentation(*data) &&
+    const bool pageChanged = functionSelectionPage_ != selectedPage_;
+    if (!pageChanged && data && eqPresentation(*data) &&
         (&data->groups() == &next.groups() || data->groups() == next.groups())) return;
+    if (pageChanged) {
+        if (!functionSelectionPage_.empty())
+            functionSelectionByPage_[functionSelectionPage_] = {selectedBand_, selectedSection_};
+        const auto saved = functionSelectionByPage_.find(selectedPage_);
+        selectedBand_ = saved == functionSelectionByPage_.end() ? 0 : saved->second.band;
+        selectedSection_ = saved == functionSelectionByPage_.end() ? std::string() : saved->second.section;
+        functionSelectionPage_ = selectedPage_;
+    }
     std::vector<std::int32_t> bands;
     std::vector<std::pair<std::string, std::string>> sections;
+    std::vector<std::string> bandSections;
+    bool groupPresent = false;
     for (const auto &[parameter, metadata] : next.groups()) {
         (void)parameter;
-        if (metadata.groupId != "eq") continue;
-        if (metadata.bandIndex >= 0 &&
-            std::find(bands.begin(), bands.end(), metadata.bandIndex) == bands.end()) bands.push_back(metadata.bandIndex);
+        if (metadata.groupId != selectedPage_) continue;
+        groupPresent = true;
+        if (metadata.bandIndex >= 0) {
+            if (std::find(bands.begin(), bands.end(), metadata.bandIndex) == bands.end()) bands.push_back(metadata.bandIndex);
+            if (std::find(bandSections.begin(), bandSections.end(), metadata.sectionId) == bandSections.end())
+                bandSections.push_back(metadata.sectionId);
+        }
         if (!metadata.sectionId.empty() && std::none_of(sections.begin(), sections.end(), [&](const auto &section) {
                 return section.first == metadata.sectionId;
             })) sections.emplace_back(metadata.sectionId, metadata.sectionName.empty() ? metadata.sectionId : metadata.sectionName);
@@ -403,16 +418,29 @@ void DevicePanelView::presentFunctionSelection(const DevicePanelData &next) {
         const auto ao = sectionOrder(a.first), bo = sectionOrder(b.first);
         return ao != bo ? ao < bo : a.first < b.first;
     });
-    if (!bands.empty() && std::find(bands.begin(), bands.end(), selectedBand_) == bands.end()) selectedBand_ = bands.front();
-    if (std::none_of(sections.begin(), sections.end(), [&](const auto &section) { return section.first == selectedSection_; }))
-        selectedSection_ = sections.empty() ? std::string() : sections.front().first;
-    if (bands != functionBands_) {
+    if (groupPresent) {
+        if (!bands.empty() && std::find(bands.begin(), bands.end(), selectedBand_) == bands.end()) selectedBand_ = bands.front();
+        if (std::none_of(sections.begin(), sections.end(), [&](const auto &section) { return section.first == selectedSection_; }))
+            selectedSection_ = sections.empty() ? std::string() : sections.front().first;
+        functionSelectionByPage_[selectedPage_] = {selectedBand_, selectedSection_};
+    }
+    // A temporarily missing group keeps its last selection but no active controls.
+    // The same runtime may later publish that group's real metadata again.
+    const bool nodes = selectedPage_ == "focus";
+    const auto page = std::find_if(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == selectedPage_; });
+    const auto pageName = page == parameterPages.end() ? selectedPage_ : page->name;
+    functionBand.setTitle(pageName + (nodes ? " node" : " band"));
+    functionBand.setTooltip(nodes ? "Selects the node whose controls are shown. Selection does not change processing."
+                                  : "Selects the band whose controls are shown. Selection does not change processing.");
+    functionSection.setTitle(pageName + " control section");
+    if (pageChanged || bands != functionBands_) {
         functionBands_ = std::move(bands);
         functionBand.clear(juce::dontSendNotification);
         for (std::size_t i = 0; i < functionBands_.size(); ++i)
-            functionBand.addItem("Band " + juce::String(functionBands_[i] + 1), static_cast<int>(i + 1));
+            functionBand.addItem(juce::String(nodes ? "Node " : "Band ") + juce::String(functionBands_[i] + 1), static_cast<int>(i + 1));
     }
-    if (sections != functionSections_) {
+    functionBandSections_ = std::move(bandSections);
+    if (pageChanged || sections != functionSections_) {
         functionSections_ = std::move(sections);
         functionSection.clear(juce::dontSendNotification);
         for (std::size_t i = 0; i < functionSections_.size(); ++i)
@@ -427,12 +455,14 @@ bool DevicePanelView::chooseFunctionBand(std::int32_t band) {
     if (!eqPresentation() || !validTarget() ||
         std::find(functionBands_.begin(), functionBands_.end(), band) == functionBands_.end()) return false;
     if (selectedBand_ == band) return true;
+    const auto page = selectedPage_;
     const auto safe = SafePointer<DevicePanelView>(this);
     cancelInteractions();
-    if (!safe || !safe->validTarget()) return false;
+    if (!safe || !safe->validTarget() || safe->selectedPage_ != page) return false;
     const auto selected = std::find(functionBands_.begin(), functionBands_.end(), band);
     if (selected == functionBands_.end()) return false;
     selectedBand_ = band;
+    functionSelectionByPage_[selectedPage_] = {selectedBand_, selectedSection_};
     functionBand.setSelectedId(static_cast<int>(selected - functionBands_.begin() + 1), juce::dontSendNotification);
     present(*data);
     if (!safe) return false;
@@ -444,12 +474,14 @@ bool DevicePanelView::chooseFunctionSection(const std::string &section) {
     if (!eqPresentation() || !validTarget() || std::none_of(functionSections_.begin(), functionSections_.end(),
         [&](const auto &s) { return s.first == requested; })) return false;
     if (selectedSection_ == requested) return true;
+    const auto page = selectedPage_;
     const auto safe = SafePointer<DevicePanelView>(this);
     cancelInteractions();
-    if (!safe || !safe->validTarget()) return false;
+    if (!safe || !safe->validTarget() || safe->selectedPage_ != page) return false;
     const auto selected = std::find_if(functionSections_.begin(), functionSections_.end(), [&](const auto &s) { return s.first == requested; });
     if (selected == functionSections_.end()) return false;
     selectedSection_ = requested;
+    functionSelectionByPage_[selectedPage_] = {selectedBand_, selectedSection_};
     functionSection.setSelectedId(static_cast<int>(selected - functionSections_.begin() + 1), juce::dontSendNotification);
     present(*data);
     if (!safe) return false;
@@ -531,6 +563,8 @@ bool DevicePanelView::setParameterPageEnabled(const std::string &page, bool on) 
     return accepted;
 }
 bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
+    // No demand means an identity-only row, not removal of a configured page.
+    if (next.groups().empty() && data && eqPresentation(*data) && eqPresentation(next)) return true;
     if (data && eqPresentation(*data) == eqPresentation(next) &&
         (&data->groups() == &next.groups() || data->groups() == next.groups())) return true;
     struct Page { std::string id, name, enable; std::string unavailable{}; };
@@ -549,7 +583,11 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
         if (std::none_of(pages.begin(), pages.end(), [](const auto &page) { return page.id == "eq"; }))
             pages.push_back({"eq", "EQ", {}});
     }
-    const auto order = [](const std::string &id) { return id == "clip" ? 0 : id == "limiter" ? 1 : 2; };
+    const bool eqFamily = eqPresentation(next);
+    const auto order = [eqFamily](const std::string &id) {
+        return eqFamily ? (id == "eq" ? 0 : id == "carve" ? 1 : id == "focus" ? 2 : 3)
+                        : (id == "clip" ? 0 : id == "limiter" ? 1 : 2);
+    };
     std::stable_sort(pages.begin(), pages.end(), [&](const auto &a, const auto &b) { return order(a.id) < order(b.id); });
     bool same = pages.size() == parameterPages.size();
     if (same) for (std::size_t i = 0; i < pages.size(); ++i)
@@ -560,6 +598,9 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     cancelInteractions();
     if (!safe) return false;
     ++pageEpoch_;
+    // Retain the bounded native page selections if a configured group temporarily
+    // disappears. Its selector still disappears; a future real group can restore
+    // that page's band/section without inventing an unavailable placeholder.
     parameterPages.clear();
     if (std::none_of(pages.begin(), pages.end(), [&](const auto &p) { return p.id == selectedPage_; })) {
         const auto limiter = std::find_if(pages.begin(), pages.end(), [](const auto &p) { return p.id == "limiter"; });
@@ -698,7 +739,8 @@ int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
     const int top = kTitleHeight + (configuring ? 26 : 2) + (parameterPages.empty() ? 0 : kPageHeight) +
-                    (eqPresentation() && selectedPage_ == "eq" ? kPageHeight : 0);
+                    (eqPresentation() && parameterPageUnavailableReason().empty() &&
+                     (!functionBands_.empty() || !functionSections_.empty()) ? kPageHeight : 0);
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
     const auto count = static_cast<std::size_t>(std::count_if(controls.begin(), controls.end(), [&](const auto &c) { return parameterShown(c->parameter); }));
     const int columns = static_cast<int>((count + static_cast<std::size_t>(rows) - 1) /
@@ -737,14 +779,17 @@ void DevicePanelView::resized() {
         page.selector->setBounds(pageX, top + 1, width, kPageHeight - 3); pageX += width + 3;
     }
     if (!parameterPages.empty()) top += kPageHeight;
-    const bool eqControls = !isFolded && eqPresentation() && selectedPage_ == "eq";
-    functionBand.setVisible(eqControls && !functionBands_.empty());
-    functionSection.setVisible(eqControls && !functionSections_.empty());
-    functionBand.setEnabled(selectedSection_ != "global" && validTarget());
+    const bool functionControls = !isFolded && eqPresentation() && parameterPageUnavailableReason().empty() &&
+                                  (!functionBands_.empty() || !functionSections_.empty());
+    functionBand.setVisible(functionControls && !functionBands_.empty());
+    functionSection.setVisible(functionControls && !functionSections_.empty());
+    const bool bandApplies = std::find(functionBandSections_.begin(), functionBandSections_.end(), std::string()) != functionBandSections_.end() ||
+                            std::find(functionBandSections_.begin(), functionBandSections_.end(), selectedSection_) != functionBandSections_.end();
+    functionBand.setEnabled(bandApplies && validTarget());
     functionSection.setEnabled(validTarget());
     functionBand.setBounds(6, top + 1, 98, kPageHeight - 3);
     functionSection.setBounds(108, top + 1, std::max(0, std::min(150, getWidth() - 114)), kPageHeight - 3);
-    if (eqControls) top += kPageHeight;
+    if (functionControls) top += kPageHeight;
     const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
     int visible = 0;
     for (auto &control : controls) {

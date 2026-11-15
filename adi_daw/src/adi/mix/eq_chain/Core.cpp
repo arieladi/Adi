@@ -15,6 +15,7 @@
 namespace adi::mix::eq_chain {
 namespace {
 static_assert(std::atomic<int>::is_always_lock_free);
+static_assert(std::atomic<bool>::is_always_lock_free);
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<void *>::is_always_lock_free);
 std::atomic<std::uint64_t> nextEpoch{1};
@@ -142,7 +143,7 @@ bool valid(const Settings &s) noexcept {
 
 struct Core::Impl {
     PrepareSpec spec{};
-    eq::Core equalizer;
+    std::unique_ptr<eq::Core> equalizer = std::make_unique<eq::Core>();
     // These pointers are created and destroyed only by the owner. Once created,
     // storage is retained until stopped destruction; no callback releases it.
     std::unique_ptr<carve::Core> carver;
@@ -158,6 +159,7 @@ struct Core::Impl {
     Mailbox<Candidate> requests;
     ReadyFields offers;
     std::atomic<std::uint64_t> readyVersion{0}, acknowledged{0};
+    std::atomic<std::uint64_t> requestedWork{0}, completedWork{0};
     std::atomic<std::uint64_t> keySeenEpoch{0}, warmFrames{0};
     std::atomic<std::uint64_t> eqPrimedVersion{0}, eqWarmFrames{0};
     std::atomic<std::uint64_t> focusPreparations{0}, eqResets{0};
@@ -178,7 +180,8 @@ struct Core::Impl {
     KeyStorage *audioKeys = nullptr;
     Statistics stats{};
     int keyLayout = 0, precision = 0;
-    bool prepared = false, blockValid = false;
+    std::atomic<bool> prepared{false};
+    bool blockValid = false;
     // Owner ownership. A nonzero readyVersion remains immutable until acquire
     // observes acknowledgment. No disabled child is touched by audio afterward.
     Settings ownerActive{};
@@ -201,8 +204,8 @@ struct Core::Impl {
             spec.maximumFrames < 1 || spec.maximumFrames > 65536 ||
             (spec.channels != 1 && spec.channels != 2) || !supported(s))
             throw std::invalid_argument("Invalid EQ chain specification or unsupported enabled stage");
-        equalizer.prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, s.eq);
-        maximumEqLatency = equalizer.maximumLatencySamples();
+        equalizer->prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, s.eq);
+        maximumEqLatency = equalizer->maximumLatencySamples();
         for (auto &v : zeroFloat)
             v.assign(static_cast<std::size_t>(spec.maximumFrames), 0.f);
         for (auto &v : zeroDouble)
@@ -215,9 +218,9 @@ struct Core::Impl {
         activePlan.eqEnabled = s.eqEnabled;
         activePlan.carveEnabled = s.carveEnabled;
         activePlan.focusEnabled = s.focusEnabled;
-        activePlan.eqLatency = s.eqEnabled ? equalizer.latencySamples() : 0;
+        activePlan.eqLatency = s.eqEnabled ? equalizer->latencySamples() : 0;
         if (s.eqEnabled)
-            eqContext = equalizer.beginBlock(0, activePlan.eqLatency, s.eq, false);
+            eqContext = equalizer->beginBlock(0, activePlan.eqLatency, s.eq, false);
         if (s.carveEnabled) {
             carver = std::make_unique<carve::Core>();
             carver->prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, s.carve);
@@ -258,14 +261,25 @@ struct Core::Impl {
         desired = s;
         if (candidateVersion || s == active)
             return true;
+        const bool sameEnables = s.eqEnabled == active.eqEnabled && s.carveEnabled == active.carveEnabled &&
+                                 s.focusEnabled == active.focusEnabled;
+        const bool sameEq = !s.eqEnabled || (!equalizer->pendingLatencyChange().token &&
+                                             eq::pinPlanSettings(s.eq, active.eq) == s.eq);
+        const bool sameFocus = !s.focusEnabled || focus::sameConfiguration(s.focus, active.focus);
+        if (sameEnables && sameEq && sameFocus) {
+            // Ordinary controls are consumed directly by the audio children.
+            // They need neither an owner candidate nor a worker wakeup.
+            active = s;
+            return true;
+        }
         Candidate next;
         next.settings = s;
         if (s.eqEnabled && active.eqEnabled) {
-            if (!equalizer.requestConfiguration(s.eq))
+            if (!equalizer->requestConfiguration(s.eq))
                 return false;
-            const auto pending = equalizer.pendingLatencyChange();
+            const auto pending = equalizer->pendingLatencyChange();
             next.eqToken = pending.token;
-            next.eqLatency = pending.token ? pending.samples : equalizer.latencySamples();
+            next.eqLatency = pending.token ? pending.samples : equalizer->latencySamples();
         }
         if (s.focusEnabled && active.focusEnabled) {
             if (!audioFocus->requestConfiguration(s.focus))
@@ -277,6 +291,7 @@ struct Core::Impl {
             return false;
         candidate = next;
         candidateVersion = version;
+        requestedWork.store(version, std::memory_order_release);
         return true;
     }
     bool service() {
@@ -294,6 +309,10 @@ struct Core::Impl {
         std::uint64_t version = 0;
         if (!requests.read(next, version) || version == lastBuiltVersion)
             return false;
+        // The mailbox precedes the public request revision. An owner that
+        // reaches this narrow publication window retries after that release.
+        if (requestedWork.load(std::memory_order_acquire) < version)
+            return false;
         if (buildingVersion != version) {
             ownerCandidate = next;
             ownerReady = {};
@@ -306,9 +325,9 @@ struct Core::Impl {
             p.eqToken = next.eqToken;
             p.eqLatency = next.eqLatency;
             if (s.eqEnabled && !ownerActive.eqEnabled) {
-                equalizer.reset(s.eq);
+                equalizer->reset(s.eq);
                 eqResets.fetch_add(1, std::memory_order_relaxed);
-                p.eqLatency = equalizer.latencySamples();
+                p.eqLatency = equalizer->latencySamples();
                 p.eqToken = 0;
                 ownerReady.primeEq = downstream(s);
             }
@@ -365,6 +384,7 @@ struct Core::Impl {
         offers.publish(ownerReady);
         lastBuiltVersion = version;
         readyVersion.store(version, std::memory_order_release);
+        completedWork.store(version, std::memory_order_release);
         return true;
     }
     bool ready(Ready &r) const noexcept {
@@ -403,9 +423,9 @@ struct Core::Impl {
     bool validateReady(const Ready &r) const noexcept {
         const auto &p = r.plan;
         if (p.eqEnabled) {
-            const auto change = equalizer.pendingLatencyChange();
+            const auto change = equalizer->pendingLatencyChange();
             if (change.token != p.eqToken ||
-                (change.token ? change.samples : equalizer.latencySamples()) != p.eqLatency)
+                (change.token ? change.samples : equalizer->latencySamples()) != p.eqLatency)
                 return false;
         }
         if (p.focusEnabled) {
@@ -464,7 +484,7 @@ struct Core::Impl {
         focus::BlockContext nextFocus{};
         auto *selectedFocus = admit ? publishedFocus.load(std::memory_order_acquire) : audioFocus;
         if (!admit && available && r.primeEq) {
-            eqPrimeContext = equalizer.beginBlock(block, r.plan.eqLatency, control.eq, false);
+            eqPrimeContext = equalizer->beginBlock(block, r.plan.eqLatency, control.eq, false);
             if (!eqPrimeContext.generation)
                 return {};
         }
@@ -472,7 +492,7 @@ struct Core::Impl {
         // cannot select different latency plans. Held callbacks explicitly deny
         // child admission, including offers whose latency happens to be equal.
         if (selected.eqEnabled) {
-            nextEq = equalizer.beginBlock(block, p.eqLatency, control.eq, admit);
+            nextEq = equalizer->beginBlock(block, p.eqLatency, control.eq, admit);
             if (!nextEq.generation)
                 return {};
         }
@@ -561,7 +581,7 @@ struct Core::Impl {
             }
             const auto &e = control.eq;
             const int eqKeyChannels = keyChannels == 0 && e.externalSidechain ? 2 : keyChannels;
-            if (!equalizer.process(scratch.data(), rawKey.data(), eqKeyChannels, frames, e, eqPrimeContext))
+            if (!equalizer->process(scratch.data(), rawKey.data(), eqKeyChannels, frames, e, eqPrimeContext))
                 return false;
             stats.eqPrimingFrames += static_cast<std::uint64_t>(frames);
             eqWarmFrames.store(
@@ -574,7 +594,7 @@ struct Core::Impl {
             // An explicitly external detector with no route receives silence.
             // It must not accidentally become programme self-detection.
             const int eqKeyChannels = keyChannels == 0 && e.externalSidechain ? 2 : keyChannels;
-            if (!equalizer.process(main, rawKey.data(), eqKeyChannels, frames, e, eqContext))
+            if (!equalizer->process(main, rawKey.data(), eqKeyChannels, frames, e, eqContext))
                 return false;
             stats.eqFrames += static_cast<std::uint64_t>(frames);
         }
@@ -603,8 +623,43 @@ void Core::prepare(PrepareSpec spec, const Settings &s) {
     impl_.swap(next);
 }
 void Core::reset(const Settings &s) { prepare(impl_->spec, s); }
+void Core::reprepareStopped(PrepareSpec spec, const Settings &s) {
+    // Prepare every other potentially allocating chain resource first. The
+    // temporary EQ also supplies exact capacities from its actual prepared plans.
+    auto next = std::make_unique<Impl>();
+    next->prepare(spec, s);
+    // From this point the retained EQ's own in-place, fallible prepare law is
+    // the commit boundary. A failure cannot leave partially prepared DSP audible.
+    impl_->prepared.store(false, std::memory_order_release);
+    impl_->blockValid = false;
+    impl_->committedLatency.store(0, std::memory_order_release);
+    impl_->readyVersion.store(0, std::memory_order_release);
+    impl_->acknowledged.store(0, std::memory_order_release);
+    impl_->requestedWork.store(0, std::memory_order_release);
+    impl_->completedWork.store(0, std::memory_order_release);
+    impl_->candidateVersion = 0;
+    impl_->equalizer->prepare({spec.sampleRate, spec.maximumFrames, spec.channels}, s.eq);
+    // Same rate/plans give the same storage bound independently of learned bins.
+    // Guard this before transferring ownership rather than risk a short key ring.
+    if (impl_->equalizer->maximumLatencySamples() != next->maximumEqLatency)
+        throw std::logic_error("Retained EQ preparation changed the staged latency capacity");
+    next->equalizer.swap(impl_->equalizer);
+    next->activePlan.eqLatency = s.eqEnabled ? next->equalizer->latencySamples() : 0;
+    next->activePlan.totalLatency = next->activePlan.eqLatency + next->activePlan.focusLatency;
+    next->committedLatency.store(next->activePlan.totalLatency, std::memory_order_release);
+    next->eqContext = s.eqEnabled ? next->equalizer->beginBlock(0, next->activePlan.eqLatency, s.eq, false)
+                                  : eq::BlockContext{};
+    impl_.swap(next);
+}
+bool Core::isPrepared() const noexcept { return impl_->prepared.load(std::memory_order_acquire); }
 bool Core::requestConfiguration(const Settings &s) noexcept { return impl_->request(s); }
 bool Core::serviceConfiguration() { return impl_->service(); }
+std::uint64_t Core::requestedWorkVersion() const noexcept {
+    return impl_->requestedWork.load(std::memory_order_acquire);
+}
+std::uint64_t Core::completedWorkVersion() const noexcept {
+    return impl_->completedWork.load(std::memory_order_acquire);
+}
 PlanOffer Core::pendingPlan() const noexcept { return impl_->pending(); }
 std::int32_t Core::latencySamples() const noexcept {
     return impl_->committedLatency.load(std::memory_order_acquire);
@@ -628,4 +683,8 @@ Statistics Core::statistics() const noexcept {
     s.keyPrepared = impl_->publishedKeys.load(std::memory_order_acquire) != nullptr;
     return s;
 }
+double Core::learnedThreshold(std::size_t band) const noexcept {
+    return impl_->equalizer->learnedThreshold(band);
+}
+double Core::learnedKnee(std::size_t band) const noexcept { return impl_->equalizer->learnedKnee(band); }
 } // namespace adi::mix::eq_chain
