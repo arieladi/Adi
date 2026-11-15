@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 15 November 2026 — reachable devices next; native EQ review first
+
+Director answers awaiting ADR coverage: With tools is the default channel scope; the analyzer right dock is optional. Clip and Limiter have independent enables in Clip → Limiter order. EQ/Carve/Focus use separate pages, independent enables in EQ → Carve → Focus order, and suggestions require explicit application. Focus recall uses current settings rather than hidden edit history. Still remains an ordinary plug-in. Versatile retains its per-instance seed for repeatable recall. The reference sketch is a starting point, not an all-expanded layout requirement. Multi-channel relative/absolute edit behavior is not settled.
+
+Following the continuation brief, repair held #548 on current main first: DF-M29 precision handoff, DF-M30 deterministic offline plan service, and DF-M31 actionable failure recovery text. Claim `src/juce/mix_eq_host.cpp`, `mix_function_host.cpp`, `src/adi/mix/eq/Backend.*`, `src/adi/mix/eq_chain/Backend.*`, their focused tests/docs. Offline-only serialized owner work must never enter the live callback path. No fenced operation or schema edit. Next are DF-M16/17/18, then the addable internal-key Clean compressor DF-M28 before further inaccessible refinements. #578 has not landed at the fetched main pin `58b2d096`; do not fork another analyzer feature stack ahead of it. Live acceptance stays with the director/Claude; win reviews and merges.
+
 ## 14 November 2026 — review repairs complete on the existing stacks
 
 The director's repair wave is pushed to the existing PRs; no new PR or self-merge. #541 `cc4b59da` is ready for win's re-review and its complete hosted core/UI matrix passes. Latency-changing controls are configuration-only, limiters share an event-driven parked owner, and claimed structural conflicts refuse before values change. The same open PR carries the follow-ups to merged #537/#540: exact new-gesture cleanup on an older refused commit, stale/refused Delete/Backspace guards, audio-applied seek revisions, bounded stopped tap storage, and the offline gain-staging consumer correction. The engine-owned paths remain subject to win and the returning engine seat's review; no fenced operations, schema or routing change was added.
