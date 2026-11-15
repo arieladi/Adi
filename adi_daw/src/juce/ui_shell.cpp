@@ -17,6 +17,10 @@
 #include <vector>
 namespace adi::ui {
 namespace {
+bool deviceOrTrackEditCommand(int id) noexcept {
+    return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
+           id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
+}
 // A letter's key is down whichever case its code names.
 bool keyIsDown(int code) {
     return juce::KeyPress::isKeyCurrentlyDown(code) ||
@@ -523,6 +527,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     default:
         break;
     }
+    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+        info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
@@ -659,6 +665,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addChildComponent(mixerView);
     addChildComponent(mixerViewResizer);
     addChildComponent(mixViewPanel);
+    mixViewPanel.adoptViewState();
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -839,6 +846,8 @@ void AdiRootComponent::frame() noexcept {
     infoSpectrum.setMode(mixViewPanel.analysis.mode());
     infoSpectrum.setSource(mixViewPanel.analysis.point());
     infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
+    infoSpectrum.setPalette(mixViewPanel.analysis.view.palette(), mixViewPanel.analysis.view.paletteReversed());
+    infoSpectrum.setSpectrumSlope(mixViewPanel.analysis.view.spectrumSlope());
     infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
     infoSpectrum.frame();
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
@@ -2453,6 +2462,8 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
+    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+        return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();
         devices.cancelFunctionInteractions();

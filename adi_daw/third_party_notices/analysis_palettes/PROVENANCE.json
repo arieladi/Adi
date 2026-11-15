@@ -1,0 +1,215 @@
+{
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/LICENSE",
+      "sha256": "8a2846772feaada87e4df3ad501b0a54161b1794eaf3c1f6f8b3078f26322b47",
+      "file": "CMasher-LICENSE.txt"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_amber.npy",
+      "sha256": "b960cc7446cccbcc258b6d4a1164904f5e1d904d15f05957710a9259a2b3306b",
+      "file": "amber.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_amethyst.npy",
+      "sha256": "894751d19ccdfcc9c3a705da6523cc02eda1105b874758ecb58d04e6e2b6e9a3",
+      "file": "amethyst.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_apple.npy",
+      "sha256": "80712c6175ae0d05cba53a454d8f4e49167e20d2573972a1d1b09229c337b1f7",
+      "file": "apple.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_arctic.npy",
+      "sha256": "0aa331181896b84d4fb142aa3bb577b3cf7bfc1ad74d02232bb1f66af756409c",
+      "file": "arctic.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_bubblegum.npy",
+      "sha256": "63ab98217e659a1f7cdca6ba3b4607afe0987870fe6715c8a0b59daa1862cafa",
+      "file": "bubblegum.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_chroma.npy",
+      "sha256": "bf6e5f3dc4cb0455c0141c072117d4210bc07eb39f66b01a1c66ee3f85c4838b",
+      "file": "chroma.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_cosmic.npy",
+      "sha256": "3d1ababdff0d6bc7f73de4e8d7de8cf5b5418b17a4349dd15f63130a635b6cd2",
+      "file": "cosmic.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_dusk.npy",
+      "sha256": "28a2d81adf73eeddf7485f3fb433eb753a73f8ac5f93dfe73d42c0b3c5f23f30",
+      "file": "dusk.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_eclipse.npy",
+      "sha256": "61365a23067356434b35fd313035b6eab8397417657b133cd4442f16d01db315",
+      "file": "eclipse.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_ember.npy",
+      "sha256": "0af51047dd9e865b6fa38d50df6365c0962f98164ede08b8392aeecf350e572b",
+      "file": "ember.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_emerald.npy",
+      "sha256": "2ba03485215faf66cb303b4de9b0b52c2dfe053e69e60dcb6b34833f3aafd564",
+      "file": "emerald.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_fall.npy",
+      "sha256": "15f8308f47416642ff515c02ad23ce7dadec4235ec1781c76db8f669212c5d80",
+      "file": "fall.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_flamingo.npy",
+      "sha256": "010b64b05b0e9c547f4fe42b32281b6bce5a0b608445ed033ecf236cc04b6fce",
+      "file": "flamingo.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_freeze.npy",
+      "sha256": "59ec2357309951f7310cba831d1a4e3856ef53decb36ff30914493caef480af6",
+      "file": "freeze.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_gem.npy",
+      "sha256": "47cc7fe88cea3e559b8c68a69f0624b1662450389cca359a02fc76a43f716b5e",
+      "file": "gem.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_ghostlight.npy",
+      "sha256": "bfe446957cfe60bbc1fd6a22cb9a492df6cfe7879880b803cb67049299339ef0",
+      "file": "ghostlight.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_gothic.npy",
+      "sha256": "c65793b98187914292b4fb16b3fb891f62fca3446e6aa02ac4c3397be93c2c25",
+      "file": "gothic.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_horizon.npy",
+      "sha256": "93b0f3008811525680c74ae7ba70dc87d4dc1ce2cdd6aa6bdb2640d41b7d6817",
+      "file": "horizon.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_jungle.npy",
+      "sha256": "a672654e6c86fe09765c5b0d11c135fb225200d51dbc50a9b1ad06c8738c0d8e",
+      "file": "jungle.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_lavender.npy",
+      "sha256": "e6583d4e54e97b4c6a8f67b26000b3006f71d7e4927fcb3fa0583c66e6a9e06e",
+      "file": "lavender.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_lilac.npy",
+      "sha256": "bc9f8767c4a49cc39016ddbd15def5dca1a277431d68fbcbef8a3455cfe2d9ab",
+      "file": "lilac.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/matplotlib/matplotlib/b9ca6c2fd78b5331d9406e2994b5cb08609d0f18/LICENSE/LICENSE",
+      "sha256": "5a1a81ea301728c8bba2933da832c0cd62229daf20893a024ab3d53244468dbc",
+      "file": "matplotlib-LICENSE.txt"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/matplotlib/matplotlib/b9ca6c2fd78b5331d9406e2994b5cb08609d0f18/lib/matplotlib/_cm_listed.py",
+      "sha256": "ddad3698f5129ceb1792a445371286c08bc9080298e657b3054aea19c9659ef9",
+      "file": "matplotlib-colours.py"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/matplotlib/matplotlib/b9ca6c2fd78b5331d9406e2994b5cb08609d0f18/lib/matplotlib/_cm.py",
+      "sha256": "44dc9e0f2801d1a04a4abc9f88bbea672ebcf2e1fd9efc4fac49e8fea9ed4f96",
+      "file": "matplotlib-cubehelix.py"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_neon.npy",
+      "sha256": "f8bb98ab70693213f63da27a530f80a57d81e88321630555e73f2b7bdb4dca36",
+      "file": "neon.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_nuclear.npy",
+      "sha256": "d7fe413e9a829fbb29bcc228841d417904356a0bd34ac42b3bf892ee2984d6bd",
+      "file": "nuclear.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_ocean.npy",
+      "sha256": "5bd37fa476a21957a3b5f89e6d1606cbd4394e0a48b331e3b7e0c4fa19c7fda8",
+      "file": "ocean.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_pepper.npy",
+      "sha256": "1a763e4129b7aec8b875c713499d26d7b5d823890702469e35500aac49f1f283",
+      "file": "pepper.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_rainforest.npy",
+      "sha256": "52f9dbadaad97e34b9469bb045ab937111078d6a0e8dd81b746d298dd9ff3c19",
+      "file": "rainforest.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_sapphire.npy",
+      "sha256": "1a4d58c1c6f97e76f81f227c44a2fc5951158ca84d9c6c7948d8fed86cd3234c",
+      "file": "sapphire.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_savanna.npy",
+      "sha256": "835aef1d5fc9a887f5aaa34c5af764bee838dc2bad3ce3a1ab1e513aaef9f3da",
+      "file": "savanna.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/mwaskom/seaborn/c1cb287835852406691aed60ea0c62710f2c6b18/LICENSE.md",
+      "sha256": "357ad276e086fab501163d4e9a0ae13c2fd0647eb08d2305fbc0ca3813892601",
+      "file": "seaborn-LICENSE.txt"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/mwaskom/seaborn/c1cb287835852406691aed60ea0c62710f2c6b18/seaborn/cm.py",
+      "sha256": "f209b5441c841725b417bb24af50edfd428fdb9bab142b01f72418db9f0cb4c0",
+      "file": "seaborn-colours.py"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_sepia.npy",
+      "sha256": "c49592ee61ab2fbafd0f8e1226601a1b7b8c5e13b205d16104db576ecb3040fe",
+      "file": "sepia.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_sunburst.npy",
+      "sha256": "05707957a7e98227e32fa8db51ed23fedbaf6f9518b60a52d944c94dedbf2a46",
+      "file": "sunburst.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_swamp.npy",
+      "sha256": "f93083de393d53e7b169a4d00f3eb1d9b29ffc3de780e28d4c05bd7ba4737559",
+      "file": "swamp.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_torch.npy",
+      "sha256": "1700fd3c5676795d471b114f881f2427b848c84b6338d3fa4c19e03efb5613e7",
+      "file": "torch.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_toxic.npy",
+      "sha256": "14de24f9a83a5d02d0d424abbbf4f2891face866021e7f9503b53d1708dc8dfe",
+      "file": "toxic.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_tree.npy",
+      "sha256": "400c4540484b45227e8504c89e9a84994c0928caef3f312454496d7a407a6824",
+      "file": "tree.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_tropical.npy",
+      "sha256": "f476c8efc9292afc3f36ed379ac83a0ebdcaefc583bd34cdd0b4fabfdfda4982",
+      "file": "tropical.npy"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/1313e/CMasher/819b230338fcffd9b961ee81688eabc20f5fe2ac/src/cmasher/colormaps/cm_voltage.npy",
+      "sha256": "c79478c33ab689a09fa73467b60726b948cded15578d4c5186e17cd701306628",
+      "file": "voltage.npy"
+    }
+  ],
+  "scope": "Pinned public scientific palette sources; all256samples retained and converted to nearestRGB8 (tiesupward), no interpolation. Cubehelix/gray generated from the documented formula."
+}

@@ -73,10 +73,24 @@ class MixViewPanel final : public juce::Component {
     StackTab stack;
     SharedSpectrumView spectrum;
     AnalysisPane analysis;
-    void suspendAnalysis(bool value) { spectrum.suspend(value); analysis.suspend(value); }
+    AnalysisDock analyzerDock;
+    juce::ToggleButton analyzerToggle{"Analyzer dock"};
+    bool setAnalyzerDock(bool);
+    bool setAnalyzerWidth(int);
+    void adoptViewState(); // owner constructor body, after WindowState exists
+    bool hasAnalyzerControlFocus() const;
+    bool analyzerDockShown() const noexcept { return analyzerDock.isVisible(); }
+    static constexpr int kStackMinimumWidth = 320, kDockMinimumWidth = 240, kDockGap = 6;
+    static constexpr int kDockMinimumHeight = 420, kHeaderSingleRowWidth = 632;
+    void suspendAnalysis(bool value) { spectrum.suspend(value); analysis.suspend(value); analyzerDock.suspend(value); }
 
   private:
     AdiRootComponent &root_;
     int shownTab_ = -1;
+    int headerHeight_ = kHeaderHeight;
+    bool layoutPending_ = false, appliedDock_ = false, ownerReady_ = false;
+    int appliedWidth_ = 300;
+    juce::Rectangle<int> appliedBody_, appliedStrip_;
+    bool persistAnalyzerSettings();
 };
 } // namespace adi::ui
