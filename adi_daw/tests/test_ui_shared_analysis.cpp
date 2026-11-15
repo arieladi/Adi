@@ -157,10 +157,90 @@ void parentDestruction() {
     check(!view.subscribed() && f.released == 1,
           "ancestor destruction safely releases the child without a later frame");
 }
+void modesSourcesAndFreeze() {
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 900, 500); root.setVisible(true); root.addToDesktop(0);
+    adi::ui::AnalysisPane pane;
+    pane.setBounds(0, 0, 600, 400); root.addAndMakeVisible(pane);
+    pane.frame(f.broker, 1, 2);
+    check(pane.source() == adi::ui::AnalysisPane::Source::Main && pane.view.track() == 1,
+          "analyzer opens on Main, independently of current channel selection");
+    SharedSpectrumView compact;
+    compact.setBounds(610, 0, 240, 200); root.addAndMakeVisible(compact); compact.present(f.broker, 1);
+    pane.setMode(SharedSpectrumView::Mode::Spectrogram);
+    f.write(); f.broker->pump(); pane.frame(f.broker, 1, 2); compact.frame();
+    check(f.broker->stats().domains == 1 && pane.view.snapshot() == compact.snapshot() &&
+          pane.view.snapshot()->columns.size() == 1, "spectrogram and spectrum share the same calibrated transform/publication");
+    const auto otherView = compact.snapshot();
+    pane.resetButton.onClick(); pane.frame(f.broker, 1, 2); compact.frame();
+    check(!pane.view.snapshot() && compact.snapshot() == otherView,
+          "Reset clears only this view's interval and waits for a new publication without resetting shared consumers");
+    compact.setVisible(false);
+    pane.setMode(SharedSpectrumView::Mode::Meters);
+    const auto before = f.broker->stats().transforms;
+    f.write(1024); f.broker->pump(); pane.frame(f.broker, 1, 2);
+    check(pane.view.snapshot() && pane.view.snapshot()->binsDbfs.empty() &&
+          f.broker->stats().transforms == before && !pane.channelBox.isEnabled(),
+          "meter-only view publishes sample statistics without FFT or misleading spectrum controls");
+    const auto frozen = pane.view.snapshot();
+    pane.freezeButton.setToggleState(true, juce::dontSendNotification); pane.freezeButton.onClick();
+    check(pane.view.frozen() && !pane.view.subscribed() && pane.view.snapshot() == frozen &&
+          f.broker->stats().consumers == 0, "Freeze retains one immutable picture and releases all live analysis demand");
+    pane.freezeButton.setToggleState(false, juce::dontSendNotification); pane.freezeButton.onClick();
+    check(pane.view.subscribed() && !pane.view.snapshot(), "Resume waits for fresh audio instead of replaying hidden history");
+    pane.setSource(adi::ui::AnalysisPane::Source::Selected); pane.frame(f.broker, 1, 2);
+    check(pane.view.track() == 2 && !pane.view.snapshot(), "explicit Selected source follows current channel identity");
+    pane.frame(f.broker, 1, 3);
+    check(pane.view.track() == 3 && !pane.view.snapshot(), "selection replacement clears the old channel publication");
+    pane.setPoint(ScopePoint::PreFader);
+    pane.setMode(SharedSpectrumView::Mode::Scope);
+    f.write(2048); f.broker->pump(); pane.frame(f.broker, 1, 3);
+    check(pane.view.snapshot() && pane.view.snapshot()->scopeLeft.size() == 1024 &&
+          pane.view.snapshot()->request.point == ScopePoint::PreFader, "Scope uses the selected explicit tap and contiguous raw samples");
+    int expanded = 0;
+    pane.onExpand = [&](std::int64_t track) { expanded = static_cast<int>(track); };
+    pane.expandButton.onClick();
+    check(expanded == 3, "window action carries exactly the shown channel identity");
+    for (const auto mode : {SharedSpectrumView::Mode::Spectrum, SharedSpectrumView::Mode::Scope,
+                            SharedSpectrumView::Mode::Meters, SharedSpectrumView::Mode::Phase,
+                            SharedSpectrumView::Mode::Spectrogram}) {
+        pane.setMode(mode); f.write(4096); f.broker->pump(); pane.frame(f.broker, 1, 3);
+        juce::Image image(juce::Image::RGB, 600, 375, true);
+        juce::Graphics graphics(image); pane.view.paint(graphics); // software-only component render, never desktop capture
+        check(pane.view.snapshot() && pane.view.mode() == mode, "each implemented mode consumes a real publication and paints offscreen");
+    }
+    root.setVisible(false);
+    check(!pane.view.subscribed() && f.broker->stats().consumers == 0, "hiding analyzer controls releases mode demand without a frame");
+}
+void pendingSourceLease() {
+    std::shared_ptr<ScopeTap> tap;
+    int releases = 0, resolutions = 0;
+    auto broker = std::make_shared<SharedAnalysis>([&](adi::engine::ScopeSource, double) {
+        ++resolutions; return tap;
+    }, [&](adi::engine::ScopeSource) { ++releases; });
+    Root root;
+    root.setBounds(0, 0, 640, 360); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView view;
+    view.setBounds(0, 0, 300, 180); root.addAndMakeVisible(view); view.present(broker, 1);
+    view.frame();
+    check(view.status() == SharedSpectrumView::Status::Unavailable && resolutions >= 2 &&
+          broker->stats().workerPasses == 0, "a pending visible lease resolves on frames without starting unavailable analysis jobs");
+    view.setVisible(false);
+    check(releases == 1 && broker->stats().consumers == 0,
+          "hiding a never-available source releases its pending endpoint lease exactly once");
+    view.setVisible(true); view.frame();
+    tap = std::make_shared<ScopeTap>(48000, .25);
+    view.frame();
+    check(view.subscribed() && view.status() == SharedSpectrumView::Status::Waiting,
+          "a visible pending source becomes ready for fresh audio without a project edit or another available view");
+    view.setVisible(false);
+    check(releases == 2 && broker->stats().consumers == 0, "resolved pending source also releases at final demand");
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
-    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); }
+    try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

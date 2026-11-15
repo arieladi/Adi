@@ -81,6 +81,8 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : ref(root), stack(root), roo
     addAndMakeVisible(eye);
     addChildComponent(stack);
     addChildComponent(spectrum);
+    addChildComponent(analysis);
+    analysis.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
 MixViewPanel::Tab MixViewPanel::tab() const noexcept {
@@ -118,13 +120,17 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
             tabs[static_cast<std::size_t>(i)]->setToggleState(i == shown, juce::dontSendNotification);
         stack.setVisible(tab() == Tab::Stack);
         spectrum.setVisible(tab() == Tab::Overview);
+        analysis.setVisible(tab() == Tab::Analysis || tab() == Tab::ScopePhase || tab() == Tab::Spectrogram);
+        if (tab() == Tab::ScopePhase) analysis.setMode(SharedSpectrumView::Mode::Phase);
+        if (tab() == Tab::Spectrogram) analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
         repaint();
     }
     // STACK's rows follow the tracks; a frame that changes none of them builds nothing.
     if (stack.isVisible())
         stack.frame(reader);
-    spectrum.present(root_.sharedAnalysis, root_.analysisTrack());
+    spectrum.present(root_.sharedAnalysis, root_.analysisTrack(reader));
     spectrum.frame();
+    analysis.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
 }
 void MixViewPanel::resized() {
     // The tabs along the top, from the left, as Live's view choosers sit on its band.
@@ -142,6 +148,7 @@ void MixViewPanel::resized() {
     eye.setBounds(ref.getRight() + 6, sy, 124, look::fieldHeight);
     stack.setBounds(body());
     spectrum.setBounds(body());
+    analysis.setBounds(body());
 }
 void MixViewPanel::paint(juce::Graphics &g) {
     // Live's panel: the dark band with its rounded 4 pt edge, the tabs on it, the body inside.
@@ -185,7 +192,7 @@ void MixViewPanel::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.fillRect(px, static_cast<float>(line.getY()), 1.f, static_cast<float>(line.getHeight()));
     }
-    if (tab() == Tab::Stack || tab() == Tab::Overview)
+    if (tab() != Tab::Cascade)
         return;
     // A tab of P2 (ADR-0209 d11): drawn empty, saying when it comes.
     g.setColour(look::textDim);

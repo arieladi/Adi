@@ -17,6 +17,7 @@
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
+#include "mix_seek_fixture.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -34,6 +35,9 @@
 #include <thread>
 #include <tuple>
 #include <vector>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 namespace {
 thread_local bool audit = false;
 std::atomic<unsigned> allocations{0};
@@ -6174,13 +6178,58 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                         first = findPanel(30);
                     }
                     if (first) {
+                        const auto journalCount = [&] {
+                            return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64();
+                        };
+                        const auto keysLeaveRows = [&](const char *label) {
+                            const auto before = journalCount();
+                            const auto countDevices = value(document->store(), "SELECT count(*) FROM devices");
+                            const auto countTracks = value(document->store(), "SELECT count(*) FROM tracks");
+                            const auto undo = actual.undoTitle(false);
+                            const int beforeSets = knobs ? knobs->sets : 0;
+                            bool consumed = true;
+                            for (const auto key : {juce::KeyPress::deleteKey, juce::KeyPress::backspaceKey}) {
+                                const juce::KeyPress press(key);
+                                if (!first->controls.empty()) {
+                                    const bool knobHandled = first->controls[0]->keyPressed(press);
+                                    // Model JUCE's parent bubbling so a regressed knob guard
+                                    // would reach a valid panel's destructive action.
+                                    if (!knobHandled) (void)first->keyPressed(press);
+                                    consumed = knobHandled && consumed;
+                                }
+                                if (!first->targetValid()) consumed = first->keyPressed(press) && consumed;
+                            }
+                            check(consumed && journalCount() == before && actual.undoTitle(false) == undo &&
+                                      value(document->store(), "SELECT count(*) FROM devices") == countDevices &&
+                                      value(document->store(), "SELECT count(*) FROM tracks") == countTracks &&
+                                      (!knobs || knobs->sets == beforeSets), label);
+                        };
+                        if (!first->controls.empty()) {
+                            auto &control = *first->controls[0];
+                            const auto accept = control.parameterGesture;
+                            control.parameterGesture = [](const std::string &, engine::ParamEventKind, double) {
+                                return false;
+                            };
+                            keysLeaveRows("Delete and Backspace on a refused knob reset are consumed without deleting or writing");
+                            control.parameterGesture = accept;
+                            panel::Record missing;
+                            missing.id = "cutoff"; missing.name = "Cutoff"; missing.missing = true;
+                            ParameterControl unavailable(actual.devices, 30, missing, .5);
+                            const auto before = journalCount();
+                            check(unavailable.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                                      unavailable.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey)) &&
+                                      journalCount() == before,
+                                  "both reset keys consume a missing parameter with no journal write");
+                        }
                         // Keep the old tile alive while delete/undo changes its runtime between frames.
                         check(document->deviceAction("device.remove", {{"id", 30}}),
                               "remove the actual device between surface frames");
                         check(!first->targetValid(), "an old tile rejects the removed runtime before the next frame");
+                        keysLeaveRows("both reset keys on removed control and panel consume stale targets without escaped deletion");
                         check(actual.command(AppCommands::Undo), "undo device removal");
                         document->tick(50);
                         check(!first->targetValid(), "undo with the same row id cannot revive a stale runtime handle");
+                        keysLeaveRows("both reset keys after same-id undo cannot call the restored runtime or delete its row");
                         actual.frame();
                         check(findPanel(30) && surface.model().chainRef(2, 30) != stable,
                               "the next frame creates a fresh tile generation for the restored device");
@@ -6229,6 +6278,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         record.name = "Cutoff";
         record.playing = .5;
         expected.records.push_back(record);
+        expected.declared.push_back({"cutoff", "Cutoff", true});
         expected.resolved.entries.push_back({"cutoff", false});
         DevicePanelView retained(gateway, expected);
         bool valid = true;
@@ -6249,6 +6299,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "panel End still reaches its original owner after target validation turns stale");
         }
     }
+    adi::uitest::mixSeekChecks(commands, dir, check);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
@@ -6271,6 +6322,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
 }
 } // namespace
 int main(int argc, char **argv) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     juce::ScopedJuceInitialiser_GUI init;
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
@@ -7838,6 +7897,7 @@ int main(int argc, char **argv) {
                 record.stepCount = i % 3 == 1 ? 2 : 4;
                 record.text = "Plugin value";
                 panelData.records.push_back(record);
+                panelData.declared.push_back({record.id, record.name, true});
                 panelData.resolved.entries.push_back({record.id, false});
             }
             panel::finalize(panelData.records);
@@ -8191,6 +8251,9 @@ int main(int argc, char **argv) {
                     std::sin(2 * 3.141592653589793 * 32 * static_cast<double>(i) / 1024.));
             tap->write(sine.data(), sine.data(), 1024, 0, true);
             auto model = std::make_shared<AnalyserModel>(tap);
+            model->analyseOnce(); // explicit diagnostic demand; no private worker or timer
+            tap->write(sine.data(), sine.data(), 1024, 1024, true);
+            model->analyseOnce();
             AnalyserView small(model);
             auto big = std::make_unique<AnalyserView>(model);
             auto *bigPtr = big.get();
@@ -8201,10 +8264,9 @@ int main(int argc, char **argv) {
                   "the docked and the big view share one measurement model");
             std::array<float, 513> bins{};
             std::uint64_t revision = 0;
-            for (int retry = 0; retry < 100 && !model->read(bins, revision); ++retry)
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            model->read(bins, revision);
             check(revision > 0 && bins[100] < -90 && std::abs(bins[32]) < .01,
-                  "analyser worker calibrated floor before 0 dB sine");
+                  "shared analyzer explicit pass calibrates the 0 dB sine without autonomous polling");
             const std::string analyserKey = "analyser";
             floating.frame(analyserKey);
             allocations = 0;
@@ -8250,6 +8312,26 @@ int main(int argc, char **argv) {
             check(floating.openView("analyser", 11, std::move(again)) && floating.zoomOf(analyserKey) == .5f,
                   "and it opens again at that zoom");
             floating.close("analyser");
+            const auto selectedBeforeAnalysis = integrated.arrangement.geometry.selection.track;
+            check(showAnalyzerWindow(floating, integrated, integrated.analysisTrack()) &&
+                      integrated.arrangement.geometry.selection.track == selectedBeforeAnalysis,
+                  "opening the default Main analyzer preserves the selected editing channel");
+            auto *followingAnalysis = dynamic_cast<AnalysisPane *>(floating.content("Analysis"));
+            check(followingAnalysis && followingAnalysis->source() == AnalysisPane::Source::Main,
+                  "the project-owned analyzer window starts with explicit Main source");
+            const auto oldSessionSelection = integrated.session().selection();
+            auto detachedSelection = oldSessionSelection;
+            for (const auto &track : integrated.reader().tracks())
+                if (track->id != oldSessionSelection.track) { detachedSelection.track = track->id; break; }
+            check(integrated.session().select(detachedSelection, why), "another window can update the shared channel selection");
+            if (followingAnalysis) {
+                followingAnalysis->setSource(AnalysisPane::Source::Selected);
+                floating.frame("Analysis");
+            }
+            check(followingAnalysis && followingAnalysis->view.track() == detachedSelection.track,
+                  "a detached analyzer follows shared selection without ticking the main window");
+            check(integrated.session().select(oldSessionSelection, why), "restore the session selection after detached analyzer test");
+            floating.close("Analysis");
         }
         integrated.devices.publication = {};
         arrangement.geometry.selection.track = 2;

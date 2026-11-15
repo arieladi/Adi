@@ -55,8 +55,12 @@ void ParameterFeed::publish(engine::Session &session) {
                     const auto *d = instance->paramAt(i);
                     if (!d)
                         continue;
-                    data.declared.push_back({d->id, d->name, d->automatable && !d->missing && data.available});
+                    data.declared.push_back({d->id, d->name,
+                                             (d->automatable || d->configurable) && !d->missing && data.available,
+                                             d->automatable});
                     data.defaults[d->id] = d->defaultValue.normalized;
+                    if (!d->groupId.empty())
+                        data.parameterGroups[d->id] = {d->groupId, d->groupName, d->groupEnableControl};
                     panel::Record r;
                     r.id = d->id;
                     r.name = d->name;
@@ -75,7 +79,7 @@ void ParameterFeed::publish(engine::Session &session) {
                     // own spelling, so a CLAP parameter's lane is found as its override is.
                     const auto *lanes = session.deviceAutomation();
                     const auto ref = engine::automationParamRef(instance->identity().format, d->id);
-                    if (lanes && ref) {
+                    if (d->automatable && lanes && ref) {
                         const auto lane = lanes->laneFor.find({row.id, *ref});
                         if (lane != lanes->laneFor.end()) {
                             r.automated = true;
@@ -91,6 +95,14 @@ void ParameterFeed::publish(engine::Session &session) {
                 }
             panel::finalize(data.records);
             data.resolved = panel::resolve(model, row.id, data.declared);
+            if (!data.plugin && !data.parameterGroups.empty() && !data.resolved.configured) {
+                // Explicit native pages partition their controls. The ordinary plug-in's
+                // aggregate 64-control Configure threshold must not empty a two-stage page.
+                data.resolved.entries.clear();
+                for (const auto &parameter : data.declared)
+                    if (parameter.modifiable) data.resolved.entries.push_back({parameter.id, false});
+                data.resolved.showsConfigureHint = false;
+            }
             // Suite identity, not a name match against a user's renamed device.
             if (instance && instance->identity().uid.find("airwindows") != std::string::npos) {
                 auto algorithm = instance->getParam("0");

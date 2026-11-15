@@ -38,6 +38,7 @@
 #include "adi/engine/held_notes.hpp"
 #include "adi/engine/process.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -88,6 +89,8 @@ struct TransportInfo {
     /// Immutable scalar automation bindings retained by this graph publication;
     /// null keeps the legacy owner-configured strip bindings.
     const StripLaneBindings* stripLanes = nullptr;
+    /// Driver-applied transport identity; seeks can be discontinuous even at equal stamps.
+    std::uint64_t transportRevision = 0;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -140,6 +143,7 @@ struct NodeIo {
     /// callbacks and seeks. No device/SDK query is needed at the processing boundary.
     std::uint64_t renderBlock = 0;
     std::int32_t configuredLatency = 0; ///< this graph publication's cached slot latency
+    bool exporting = false; ///< explicit quality intent, not inferred from transport state
 
     /// This call is at full width: `out64` is the buffer to write.
     [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
@@ -487,6 +491,8 @@ public:
         inFilled_ = o.inFilled_;
         quiet_ = o.quiet_;
         ran_ = o.ran_;
+        graphSequence_ = o.graphSequence_;graphTarget_ = o.graphTarget_;
+        graphWarmTarget_ = o.graphWarmTarget_;graphActiveTarget_=o.graphActiveTarget_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
@@ -546,7 +552,8 @@ public:
     [[nodiscard]] bool gliding() const noexcept {
         return gliding_.load(std::memory_order_relaxed);
     }
-    /// The delay last asked for: by `setDelay`, a glide, or an offered ring.
+    /// Active target. A standalone glide/offer publishes it immediately;
+    /// graph-managed requests become active with a complete physical PDC plan.
     [[nodiscard]] std::int32_t target() const noexcept {
         return target_.load(std::memory_order_relaxed);
     }
@@ -608,12 +615,13 @@ public:
     /// long, or those samples are never heard (see `Graph::runNode`).
     [[nodiscard]] std::int32_t reach() const noexcept {
         std::int32_t r = delay_;
+        if(graphSequence_ && graphWarmTarget_>r)r=graphWarmTarget_;
         if (gliding_.load(std::memory_order_acquire)) {
             const std::int32_t t = target_.load(std::memory_order_relaxed);
             if (t > r) r = t;
         }
         const Grow g = grow_.load(std::memory_order_acquire);
-        if ((g == Grow::Priming || g == Grow::Fading) && targetDelay_ > r) r = targetDelay_;
+        if ((g == Grow::Priming || g == Grow::Ready || g == Grow::Fading) && targetDelay_ > r) r = targetDelay_;
         return r;
     }
 
@@ -626,7 +634,12 @@ public:
     /// Anything that spans a block is in progress, so the caller must not take
     /// a shortcut. One predicate rather than two, because the fast path in
     /// `Graph::accumulate` forgot `gliding()` once already.
-    [[nodiscard]] bool busy() const noexcept { return gliding() || growing(); }
+    [[nodiscard]] bool busy() const noexcept {
+        // Keep already-ready history alive while another line still warms.
+        // Releasing the zero-delay fast path early would forget it and let
+        // staggered lines alternate forever behind the complete-plan barrier.
+        return gliding() || growing() || (graphSequence_ && graphWarmTarget_>0);
+    }
 
     // --- per-edge state, shared across channels ----------------------------
 
@@ -648,7 +661,9 @@ public:
 private:
     enum class Grow : std::uint8_t {
         Idle,      ///< one ring
+        Offered,   ///< graph resource, not admitted until a physical boundary
         Priming,   ///< two rings; writing both, reading the old
+        Ready,     ///< graph resource has history, still reads the old target
         Fading,    ///< two rings; crossfading old tap to new
         Spent,     ///< swapped; the old buffer is parked for collection
     };
@@ -750,12 +765,26 @@ public:
     /// it fades the onset in, or plays it at the old alignment while it
     /// waits.
     [[nodiscard]] bool due() const noexcept {
+        if(graphSequence_) {
+            const auto g=grow_.load(std::memory_order_acquire);
+            if(graphWarmTarget_>0 || (g!=Grow::Idle&&g!=Grow::Spent))return true;
+        }
         if (gliding_.load(std::memory_order_acquire)) return true;
         const std::int32_t r = reach();
         return quiet_ < (filled_ < r ? filled_ : r);
     }
 
 private:
+    friend class Graph;
+    void manageGraph(std::atomic<std::uint64_t>* sequence,std::atomic<std::int32_t>* target) noexcept {
+        graphSequence_=sequence;graphTarget_=target;graphWarmTarget_=0;
+    }
+    void publishGraphTarget(std::int32_t) noexcept;
+    void admitGraphResource() noexcept;
+    void warmGraphTarget(std::int32_t d) noexcept {graphWarmTarget_=(std::min)((std::max)(0,d),capacity_);}
+    [[nodiscard]] bool canApplyGraphTarget(std::int32_t) const noexcept;
+    void applyGraphTarget(std::int32_t) noexcept;
+    [[nodiscard]] std::int32_t appliedTarget() const noexcept {return graphSequence_?graphActiveTarget_:delay_;}
     template <typename T>
     [[nodiscard]] static T tapAt(const T* hist, std::int32_t w,
                                  std::int32_t ring, std::int32_t d) noexcept {
@@ -781,6 +810,12 @@ private:
                std::int32_t fromWrite, std::int32_t k) noexcept;
 
     std::vector<float> buf_;        ///< channels * ring_, at 32
+    // Set only during graph preparation. Owner stages targets; audio alone
+    // controls active glides/history and resource admission at callback boundaries.
+    std::atomic<std::uint64_t>* graphSequence_ = nullptr;
+    std::atomic<std::int32_t>* graphTarget_ = nullptr;
+    std::int32_t graphWarmTarget_ = 0; // audio only
+    std::int32_t graphActiveTarget_ = 0; // configured target, audio only
     std::int32_t capacity_ = 0;     ///< the largest delay that fits
     std::int32_t ring_ = 0;         ///< capacity_ + 1; see graph.cpp
     std::int32_t delay_ = 0;
@@ -832,6 +867,7 @@ private:
 /// A DAG of nodes, scheduled per block.
 class RenderWorkers;
 class Graph final : public BlockProcessor {
+    friend struct GraphPdcTestAccess;
 public:
     Graph();
     ~Graph() override;
@@ -993,21 +1029,26 @@ public:
         return latencyHeadroom_;
     }
 
-    /// Re-read every node's `latencySamples()` and move the taps to match,
-    /// crossfaded across the next block. MESSAGE THREAD, while the audio
-    /// thread runs.
+    /// Read each node's `latencySamples()` once and publish one pending plan
+    /// containing metadata and every main/side/dry target. MESSAGE THREAD.
+    /// Audio admits it only at a physical callback boundary after its rings
+    /// hold the required history; all logical slices retain the previous plan.
     ///
     /// Returns false when some edge needs more delay than its ring holds. That
     /// is not a failure to handle here: it is the signal that this change
     /// needs new buffers, which means building a schedule off-thread and
-    /// publishing it (ADR-0019). Everything that DID fit has already been
-    /// moved, because a partial correction is closer than none.
+    /// publishing it (ADR-0019). No partial metadata or target change is exposed:
+    /// the previous complete plan remains active until the new one is ready.
     bool retapLatency() noexcept;
+    /// Audio owner: admit one coherent metadata/delay plan at the physical
+    /// callback boundary. Repeated logical slices with this ID retain that plan.
+    /// Prepared storage only, bounded reads, no locks/allocation/refcounting.
+    void pinPhysicalPdc(std::uint64_t renderBlock) noexcept;
 
-    /// ADR-0085. For every edge whose required delay does not fit its ring,
-    /// ALLOCATE a bigger one here -- on the message thread -- and hand it over.
-    /// The audio thread primes it against the old one and switches when it
-    /// genuinely holds the history. Returns how many edges were grown.
+    /// ADR-0085. Allocate insufficient edge capacity here, on the owner. Audio
+    /// admits offers at a physical boundary, carries the current audible tap
+    /// into the larger ring, then primes the pending target's history before
+    /// admitting the complete PDC plan. Returns how many offers were accepted.
     ///
     /// This is the escalation ADR-0079 decision 4 named. It is per EDGE and
     /// not per graph: growing one ring leaves every other edge's history
@@ -1289,13 +1330,21 @@ private:
     void acknowledgeController(const Event &, bool delivered) noexcept;
     [[nodiscard]] bool hasPendingNoteOff(std::uint64_t noteId) const noexcept;
 
-    /// Each slot's `latencySamples()` as last asked on the message thread
-    /// (prepare, retap), for the audio thread to read when it forwards events
-    /// (ADR-0123). Sized at prepare, never resized on the audio thread.
+    /// Public diagnostic mirrors of the audio-applied plan. Callback processing
+    /// reads the plain audio-owned arrays below, not these per-node atomics.
     std::vector<std::atomic<std::int32_t>> slotLatency_;
-    /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
-    /// audio thread stamps an input tap with it.
+    /// Each slot's applied arrival, likewise.
     std::vector<std::atomic<std::int32_t>> slotArrival_;
+    // One owner writer publishes atomic scalar cells under an even/odd sequence.
+    // Layout: node latencies, arrivals, every main/side/dry target, graph latency.
+    std::vector<std::atomic<std::int32_t>> pdcPending_;
+    std::vector<std::int32_t> pdcOwner_,pdcCandidate_,pdcScratch_,pdcActiveLatency_,pdcActiveArrival_;
+    std::vector<DelayLine*> pdcLines_;
+    std::atomic<std::uint64_t> pdcSequence_{0};
+    std::uint64_t pdcApplied_=0,pdcCandidateVersion_=0,pdcPhysical_=0; // audio only
+    void preparePdcStorage();
+    bool computePdcOwner() noexcept;
+    void publishPdcOwner() noexcept;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
@@ -1316,13 +1365,12 @@ private:
     std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
     std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
-    // ATOMIC, because `retapLatency` writes it from the message thread while
-    // the transport may be reading it to compensate the playhead. A torn read
+    // Audio publishes the applied total when a coherent plan is admitted;
+    // owner diagnostics and transport may read it concurrently. A torn read
     // is not the real risk on the platforms we target; the data race is, and
     // an int32 costs nothing to do properly.
     std::atomic<std::int32_t> graphLatency_{0};
-    // How many retaps have started glides (`retapLatency`), released after
-    // the glides it started: a sleeping node that sees it unmoved since its
+    // Audio-applied resource/plan generation: a sleeping node that sees it unmoved since its
     // lines were checked need not check them again (`Slot::dozeGlides`).
     std::atomic<std::uint64_t> glides_{0};
     std::int32_t latencyHeadroom_ = 8192;
@@ -1331,6 +1379,7 @@ private:
     NodePreparePolicy nodePreparePolicy_ = NodePreparePolicy::PrepareAll;
     std::int32_t renderedFrames_ = 0;
     std::uint64_t renderBlock_ = 0;
+    bool exporting_ = false;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;

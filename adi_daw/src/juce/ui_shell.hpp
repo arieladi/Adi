@@ -355,7 +355,11 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     MixViewPanel mixViewPanel{*this};
     SharedSpectrumView infoSpectrum;
     std::shared_ptr<SharedAnalysis> sharedAnalysis;
-    std::int64_t analysisTrack() const noexcept;
+    std::int64_t analysisTrack(bool selected = false) const noexcept;
+    std::int64_t analysisTrack(const SnapshotReader &, bool selected = false) const noexcept;
+    // Application wires the project-owned following analyzer window. Analysis never adds a
+    // device to a chain or changes an enabled processor's sound.
+    std::function<bool(std::int64_t)> openAnalyzer;
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
     // Where the Mix View stands docked, open or not: the arrangement's place and its track controls'.
     // Its first window opens over it, on the screen (detachMixView).
@@ -365,8 +369,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Opens or closes the Mix View and says where it goes; the application moves the panel into
     // its floating window or back (ui_floating.hpp, detachMixView). False only on a write error.
     bool setMixView(bool open, bool detached);
-    // What the Mix View and the arrangement read of what the engine has not written yet: the
-    // channels' slots and the ★ Reference track (UI-ARCHITECTURE §12). The stub until it has.
+    // Reference/audition metadata supplied to the Mix View and arrangement.
+    // Device rows and native functions come from their real authored chains.
     const MixViewProvider &mixProvider() const noexcept { return *mixProvider_; }
     void setMixProvider(const MixViewProvider &);
     // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a

@@ -143,6 +143,15 @@ struct ParamDescriptor {
     /// so compacting the list would silently repoint every held index at a
     /// different parameter.
     bool          missing = false;
+    // Optional native function pages. Empty keeps the existing ordinary panel layout.
+    // Page selection is presentation only; enabling a page is this real parameter's
+    // common automation/undo gesture, never a private UI bypass flag.
+    std::string   groupId{}, groupName{};
+    bool          groupEnableControl = false;
+    /// Explicit owner-thread configuration opt-in. Permits a common undoable
+    /// UI gesture without making this setting eligible for automation. Other
+    /// non-automatable parameters remain read-only unless they opt in.
+    bool          configurable = false;
 };
 
 /// Enough to find the plugin again, and to tell the user what is missing when

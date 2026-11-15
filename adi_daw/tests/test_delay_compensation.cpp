@@ -101,6 +101,8 @@ void alignment(Precision precision,bool enabled,bool sidechain,bool slowMain=fal
         const auto bytes=graph.compensationBytes();other.latency=48;
         const bool retapped=graph.retapLatency();Graph::Unresolved unresolved;
         const auto grown=graph.escalateLatency(&unresolved);
+        check(graph.latencySamples()==32,"retap leaves the current physical callback's latency unchanged");
+        graph.pinPhysicalPdc(0); // the next physical callback, before its transport query
         check(bytes==0 && retapped && grown==0 && unresolved.inFlight==0 && unresolved.ringless==0 && graph.latencySamples()==48 && graph.compensationBytes()==0 && graph.compensationFor(a,out)==0 && graph.compensationFor(b,out,sidechain?Bus::Sidechain:Bus::Main)==0,
             "disabled alignment has no headroom allocation and stays disabled across latency retap");
     }
