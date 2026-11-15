@@ -1,5 +1,11 @@
 # Mix View seat
 
+## 15 November 2026 — native EQ review repairs pushed
+
+#548 `770bf1b0` now targets main and addresses DF-M29/30/31. Width handoff forces stopped prepare only on actual precision changes. Export-created EQs use a serialized Offline owner without a worker, completing available configuration before physical-block admission; live processing retains its threaded parked owner and allocation-free path. Recovery text names remove/Undo instead of a nonexistent reload command. Strict Debug build, seven integration suites, 667 explicit fake-peer Mix View checks and four validators pass; the extended native suite passes72 checks,248,832 sample pairs and live callback allocation/free0/0. Fresh offline whole/split replays are exact with different Main-pump schedules. This is component verification, not a full app/export live check or new CPU claim. The PR includes a short acceptance brief; win re-reviews/merges.
+
+#578 has since landed at main `ac5050bd`. Next work remains DF-M16/17/18 before registering the internal-key Clean compressor DF-M28; no new inaccessible-core refinement is substituted for that device. No other core repair or new native compressor is claimed in this checkpoint. No new PR, self-merge, fenced edit or live desktop test.
+
 ## 15 November 2026 — reachable devices next; native EQ review first
 
 Director answers awaiting ADR coverage: With tools is the default channel scope; the analyzer right dock is optional. Clip and Limiter have independent enables in Clip → Limiter order. EQ/Carve/Focus use separate pages, independent enables in EQ → Carve → Focus order, and suggestions require explicit application. Focus recall uses current settings rather than hidden edit history. Still remains an ordinary plug-in. Versatile retains its per-instance seed for repeatable recall. The reference sketch is a starting point, not an all-expanded layout requirement. Multi-channel relative/absolute edit behavior is not settled.
