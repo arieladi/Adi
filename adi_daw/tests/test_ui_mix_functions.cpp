@@ -528,6 +528,37 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     peer.removeChildComponent(&root);
     peer.removeFromDesktop();
 }
+void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
+    std::string error;auto document=ProjectDocument::open(directory/"key-menu.adi",true,{},error);
+    if(!document){check(false,"key menu component document opens");return;}
+    AdiRootComponent root(document->view(),document->ops(),document->mailbox(),commands,document->views(),document->sessionState(),"key-menu");
+    root.setSize(960,620);auto publication=std::make_shared<ParameterPublication>();
+    auto native=makePanel(44,false,"EQ");native.sidechainChannels=2;publication->push_back(native);
+    auto& strip=root.devices;strip.setVisible(true);strip.publication=[&]{return publication;};
+    strip.targetCurrent=[&](std::int64_t id,const engine::DeviceRuntimeToken&,std::uint64_t stamp){return id==44 && publication->front().instance==stamp;};
+    strip.keyChoices=[](const DevicePanelData&){return std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false},{2,"pre_fx","Kick",true},{2,"post_fx","Kick",false},{2,"post_mixer","Kick",false}};};
+    int actions=0;std::optional<std::int64_t> source;std::string tap;
+    strip.setKey=[&](const DevicePanelData& expected,std::optional<std::int64_t> from,const std::string& point){++actions;source=from;tap=point;return expected.id==44 && expected.instance==71;};
+    strip.frame(2);
+    const auto submenu=[](const juce::PopupMenu& menu,const char* name){
+        for(juce::PopupMenu::MenuItemIterator it(menu);it.next();)if(it.getItem().text==name && it.getItem().subMenu)return *it.getItem().subMenu;
+        return juce::PopupMenu{};
+    };
+    auto menu=strip.panels.front()->commands();auto keys=submenu(menu,"Sidechain Input");auto kick=submenu(keys,"Kick");
+    auto items=menuItems(kick);
+    check(items.size()==3 && items[0].ticked && !items[1].ticked && !items[2].ticked,"declared key menu shows three actual taps with the current choice ticked");
+    if(items.size()==3 && items[2].action)items[2].action();
+    check(actions==1 && source==2 && tap=="post_mixer","sidechain menu delegates exact source, tap and runtime to one document command");
+    items=menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input"));
+    if(!items.empty() && items[0].action)items[0].action();
+    check(actions==2 && !source,"None delegates a route removal through the same command");
+    auto old=menuItems(submenu(submenu(strip.panels.front()->commands(),"Sidechain Input"),"Kick"));
+    publication->front().instance++;
+    if(!old.empty() && old[0].action)old[0].action();
+    check(actions==2,"retained stale sidechain menu cannot reroute a replacement runtime");
+    publication->front().sidechainChannels=0;strip.frame(2);
+    check(menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input")).empty(),"internal-only devices expose no invented external key control");
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI init;
@@ -537,6 +568,7 @@ int main() {
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
     cleanCompressor(commands, temporary.path());
+    keyMenus(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
 }
