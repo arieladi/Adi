@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -157,6 +158,75 @@ void refusals() {
     check(deleteNotes(broken, {3}).refusal.find("duplicate note ids") != std::string::npos, "and says what is wrong with them");
 }
 
+void clipFields() {
+    const auto bar = textproj::kWhole;
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    c.lengthTicks = 2 * bar;
+    check(endMarkerOf(c) == 2 * bar && loopLengthOf(c) == 2 * bar, "with no End marker or loop of its own, the clip's length gives both");
+    const auto start = setClipStart(c, beat);
+    check(start.ops.size() == 1 && start.ops[0].opType == "clip.setStartMarker" && start.ops[0].label == "Set Clip Start" &&
+              start.ops[0].payload == Payload({{"id", 7}, {"ticks", beat}}),
+          "Start: one clip.setStartMarker");
+    check(setClipStart(c, 0).ops.empty() && setClipStart(c, 0).refusal.empty(), "Start where it is writes nothing");
+    check(!setClipStart(c, 2 * bar).refusal.empty() && !setClipStart(c, -1).refusal.empty(),
+          "Start at or past the End, or before the beginning, is refused");
+    const auto end = setClipEnd(c, bar);
+    check(end.ops.size() == 1 && end.ops[0].opType == "clip.setEndMarker" && end.ops[0].payload == Payload({{"id", 7}, {"ticks", bar}}) &&
+              end.ops[0].label == "Set Clip End",
+          "End: one clip.setEndMarker");
+    check(!setClipEnd(c, 0).refusal.empty() && setClipEnd(c, 2 * bar).ops.empty(), "End at the Start is refused; where it is, nothing");
+
+    // The Loop switch: a clip that never had a window gets Start to End; one that has keeps it.
+    const auto on = toggleClipLoop(c);
+    check(on.ops.size() == 1 && on.ops[0].label == "Activate Loop" &&
+              on.ops[0].payload == Payload({{"id", 7}, {"on", true}, {"start", 0}, {"length", 2 * bar}}),
+          "the Loop switch on a clip with no loop window: on, from Start to End");
+    c.loopStartTicks = beat;
+    c.loopLengthTicks = bar;
+    check(toggleClipLoop(c).ops[0].payload == Payload({{"id", 7}, {"on", true}}), "with a window already, only the switch");
+    c.loopEnabled = true;
+    const auto off = toggleClipLoop(c);
+    check(off.ops[0].payload == Payload({{"id", 7}, {"on", false}}) && off.ops[0].label == "Deactivate Loop", "and off, the same");
+    const auto moved = setClipLoop(c, 2 * beat, bar);
+    check(moved.ops.size() == 1 && moved.ops[0].label == "Set Loop Position" &&
+              moved.ops[0].payload == Payload({{"id", 7}, {"on", true}, {"start", 2 * beat}, {"length", bar}}),
+          "the loop's Position: the window moved, the switch as it is");
+    check(setClipLoop(c, beat, 2 * bar).ops[0].label == "Set Loop Length" && setClipLoop(c, beat, bar).ops.empty(),
+          "its Length; and the same window writes nothing");
+    check(!setClipLoop(c, -1, bar).refusal.empty() && !setClipLoop(c, 0, 0).refusal.empty(), "a loop before the beginning, or with no length, is refused");
+
+    const auto signature = setClipSignature(c, 3, 4);
+    check(signature.ops.size() == 1 && signature.ops[0].opType == "clip.setTimeSignature" &&
+              signature.ops[0].payload == Payload({{"id", 7}, {"num", 3}, {"den", 4}}) &&
+              signature.ops[0].label == "Change Clip Time Signature",
+          "the Signature: one clip.setTimeSignature");
+    check(setClipSignature(c, 4, 4).ops.size() == 1, "4/4 on a clip that inherits is still the clip's own choice");
+    c.signature.local = true;
+    check(setClipSignature(c, 4, 4).ops.empty(), "and writes nothing once it is");
+    check(!setClipSignature(c, 0, 4).refusal.empty() && !setClipSignature(c, 100, 4).refusal.empty() &&
+              !setClipSignature(c, 3, 5).refusal.empty() && !setClipSignature(c, 3, 32).refusal.empty(),
+          "1 to 99 over 1, 2, 4, 8 or 16; anything else is refused");
+
+    // What is typed.
+    check(parseBarsBeats("2.0.0") == BarsBeats{2, 0, 0} && parseBarsBeats("1. 2. 3") == BarsBeats{1, 2, 3} &&
+              parseBarsBeats("4") == BarsBeats{4, 0, 0} && parseBarsBeats("0:1") == BarsBeats{0, 1, 0},
+          "a length as bars, beats and sixteenths from zero, the later ones 0 when left out");
+    check(!parseBarsBeats("") && !parseBarsBeats("two") && !parseBarsBeats("1.2.3.4") && !parseBarsBeats("1234567"),
+          "nothing, words, a fourth part and an endless number are not lengths");
+    const textproj::Meter four{0, 4, 4}, six{0, 6, 8};
+    check(ticksOf(BarsBeats{1, 2, 1}, four) == bar + 2 * beat + beat / 4 && ticksOf(BarsBeats{1, 1, 0}, six) == 3 * beat + beat / 2,
+          "a length in ticks, in the clip's meter");
+    check(barsBeats(ticksOf(BarsBeats{3, 1, 2}, four), four) == BarsBeats{3, 1, 2}, "and back");
+    check(parseSignature("3/4") == std::pair<std::int64_t, std::int64_t>{3, 4} &&
+              parseSignature("6 8") == std::pair<std::int64_t, std::int64_t>{6, 8} &&
+              parseSignature(" 12 / 16 ") == std::pair<std::int64_t, std::int64_t>{12, 16},
+          "a signature as 3/4 or 6 8");
+    check(!parseSignature("3") && !parseSignature("3/4/4") && !parseSignature("three four") && !parseSignature(""),
+          "one number, three, or words are not signatures");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -201,6 +271,7 @@ int main() {
     velocities();
     activating();
     refusals();
+    clipFields();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
