@@ -665,6 +665,139 @@ inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vecto
     }
     return edit;
 }
+// Quantize (manual 10.5.11; Ctrl/Cmd+U): the notes' starts to the grid, in full, as Live's default
+// settings do. `grid` is the step and `origin` a grid line, both in the clip's own ticks. The engine's
+// one op carries every setting (OPS 9.5), and its inverse restores the notes exactly.
+inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t grid,
+                              std::int64_t origin) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    if (notes.empty() || grid <= 0)
+        return edit;
+    // Nothing to write when every start is on the grid already.
+    const bool off = std::any_of(notes.begin(), notes.end(), [&](const auto *n) { return ((n->startTicks - origin) % grid) != 0; });
+    if (!off)
+        return edit;
+    edit.ops.push_back(op("note.quantize",
+                          {{"clip", clip.id},
+                           {"note_ids", idsOf(notes)},
+                           {"grid_ticks", grid},
+                           {"origin_ticks", origin},
+                           {"strength", 10000},
+                           {"swing", 0},
+                           {"starts", true},
+                           {"ends", false}},
+                          "Quantize Notes"));
+    return edit;
+}
+
+namespace note_edits_detail {
+// A piece of `n` from `start` for `duration`, as a new note carrying what `n` carries.
+inline void piece(NoteEdit &edit, std::int64_t clip, const engine::ClipNote &n, std::uint64_t id, std::int64_t start,
+                  std::int64_t duration, const char *label) {
+    edit.ops.push_back(op("note.insert",
+                          {{"clip", clip},
+                           {"note", id},
+                           {"start", start},
+                           {"dur", duration},
+                           {"key", n.key},
+                           {"vel", std::clamp<int>(n.velocity, 1, 127)},
+                           {"velOff", n.releaseVelocity},
+                           {"chan", n.channel},
+                           {"prob", n.probability},
+                           {"cents", static_cast<double>(n.tuningCents)}},
+                          label));
+    if (!n.active)
+        edit.ops.push_back(op("note.setMute", {{"clip", clip}, {"note", id}, {"muted", true}}, label));
+    edit.select.push_back(id);
+}
+} // namespace note_edits_detail
+
+// Split (manual 10.5.8.1; Ctrl/Cmd+E with no note selected): every note sounding at `at` is cut
+// there; the part after it is a new note.
+inline NoteEdit splitNotesAt(const engine::ClipDetails &clip, std::int64_t at) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto &n : clip.notes) {
+        if (at <= n.startTicks || at >= n.startTicks + n.durationTicks)
+            continue;
+        edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", n.id}, {"dur", at - n.startTicks}}, "Split Notes"));
+        piece(edit, clip.id, n, id++, at, n.startTicks + n.durationTicks - at, "Split Notes");
+    }
+    return edit;
+}
+
+// Chop (manual 10.5.8.2; Ctrl/Cmd+E with notes selected): each selected note is cut at every grid
+// line that crosses it. `grid` is the step and `origin` a grid line, in the clip's own ticks.
+inline NoteEdit chopNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t grid,
+                          std::int64_t origin) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    if (grid <= 0)
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto *n : pick(clip, ids)) {
+        const auto end = n->startTicks + n->durationTicks;
+        // The first grid line after the note's start.
+        auto rel = n->startTicks - origin;
+        auto line = origin + (rel >= 0 ? rel / grid + 1 : -((-rel) / grid)) * grid;
+        if (line <= n->startTicks)
+            line += grid;
+        if (line >= end) {
+            edit.select.push_back(n->id);
+            continue;
+        }
+        edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", n->id}, {"dur", line - n->startTicks}}, "Chop Notes"));
+        edit.select.push_back(n->id);
+        for (; line < end && edit.ops.size() < 4096; line += grid)
+            piece(edit, clip.id, *n, id++, line, std::min(grid, end - line), "Chop Notes");
+    }
+    return edit;
+}
+
+// Join (manual 10.5.8.3; Ctrl/Cmd+J): the selected notes of each key become one note, from the first
+// one's start to the last one's end; the first survives and the others go.
+inline NoteEdit joinNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    auto notes = pick(clip, ids);
+    std::stable_sort(notes.begin(), notes.end(), [](const auto *a, const auto *b) {
+        return a->key != b->key ? a->key < b->key : a->startTicks < b->startTicks;
+    });
+    for (std::size_t i = 0; i < notes.size();) {
+        std::size_t j = i + 1;
+        auto end = notes[i]->startTicks + notes[i]->durationTicks;
+        while (j < notes.size() && notes[j]->key == notes[i]->key) {
+            end = std::max(end, notes[j]->startTicks + notes[j]->durationTicks);
+            ++j;
+        }
+        edit.select.push_back(notes[i]->id);
+        if (j - i > 1) {
+            for (std::size_t k = i + 1; k < j; ++k)
+                edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", notes[k]->id}}, "Join Notes"));
+            if (end - notes[i]->startTicks != notes[i]->durationTicks)
+                edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", notes[i]->id}, {"dur", end - notes[i]->startTicks}}, "Join Notes"));
+        }
+        i = j;
+    }
+    return edit;
+}
+
 // Live's overlap rule, as measured on Live 12.4 (manual 10.5.4): where an edit puts a note over
 // another on the same key, the note just placed survives whole. An older note that begins inside it
 // is removed; an older note that began before it is cut to end where it begins, and what the older

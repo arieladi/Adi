@@ -4719,10 +4719,39 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     ed.select({});
 
+    // Quantize (Ctrl/Cmd+U), Split and Chop (Ctrl/Cmd+E) and Join (Ctrl/Cmd+J).
+    ed.select({});
+    check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 50}, {"start", 4 * beat + beat / 8}, {"dur", 3 * beat}, {"key", 76}}, "Add Note")).ok,
+          "an E4 a little after the fifth beat, three beats long");
+    root.frame();
+    ed.select({50});
+    check(ed.keyPressed(juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0)) && note(50).startTicks == 4 * beat &&
+              note(50).durationTicks == 3 * beat && undoIs("Quantize Notes", 1),
+          "Ctrl/Cmd+U puts its start on the grid and keeps its length, one undo step");
+    check(ed.keyPressed(juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) && ed.selected().size() == 3 &&
+              note(50).durationTicks == beat && undoIs("Chop Notes", 3),
+          "Ctrl/Cmd+E with the note selected chops it on the grid: three notes of a beat, selected, one undo step");
+    check(ed.keyPressed(juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)) && ed.selected() == std::vector<std::uint64_t>{50} &&
+              note(50).durationTicks == 3 * beat && undoIs("Join Notes", 3),
+          "Ctrl/Cmd+J joins them into one again");
+    const juce::Point<float> cutAt(xAt(5 * beat) + 4.f, static_cast<float>(area.getY() + 3));
+    ed.mouseDown(pressAt(ed, cutAt));
+    ed.mouseUp(pressAt(ed, cutAt));
+    const auto countBeforeSplit = panel.details()->notes.size();
+    check(ed.insertMarker() == 5 * beat && ed.keyPressed(juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) &&
+              note(50).durationTicks == beat && panel.details()->notes.size() > countBeforeSplit &&
+              submitter.nextUndo()->label == "Split Notes",
+          "with no note selected, Ctrl/Cmd+E splits every note under the insert marker there");
+    check(root.command(AppCommands::Undo), "undo the split");
+    root.frame();
+    check(submitter.submit(op("note.delete", {{"clip", 11}, {"note", 50}}, "Delete Note")).ok, "the E4 removed");
+    root.frame();
+    ed.select({});
+
     // Cut, Copy and Paste of notes, and the insert marker (manual 10.5.2, 10.5.4).
     ed.select({});
     const auto clipCount = panel.details()->notes.size();
-    check(!ed.insertMarker() && ed.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) &&
+    check(panel.noteClipboard.empty() && ed.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) &&
               panel.details()->notes.size() == clipCount,
           "Paste with nothing copied is the editor's and does nothing");
     ed.select({1, 2});

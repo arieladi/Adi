@@ -520,6 +520,59 @@ void overlaps() {
     check(withOverlaps(elsewhere, addNote(c, 28 * beat, 4 * beat, 60)).ops.size() == 1, "another clip's ops in the batch are not this clip's");
 }
 
+void quantizeSplitJoin() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 90;
+        return n;
+    };
+    c.notes = {note(1, 60, beat / 8, beat), note(2, 60, 2 * beat, beat), note(3, 64, beat, 3 * beat)};
+    const auto q = quantizeNotes(c, {1, 2}, beat, 0);
+    check(q.ops.size() == 1 && q.ops[0].opType == "note.quantize" && q.ops[0].label == "Quantize Notes" &&
+              q.ops[0].payload == Payload({{"clip", 7}, {"note_ids", std::vector<std::uint64_t>{1, 2}}, {"grid_ticks", beat}, {"origin_ticks", 0},
+                                           {"strength", 10000}, {"swing", 0}, {"starts", true}, {"ends", false}}),
+          "Quantize: one note.quantize with every setting, the starts in full");
+    check(quantizeNotes(c, {2, 3}, beat, 0).ops.empty(), "notes already on the grid write nothing");
+    check(quantizeNotes(c, {}, beat, 0).ops[0].payload.at("note_ids").size() == 3, "with none selected, every note");
+    check(quantizeNotes(c, {2}, beat, beat / 2).ops.size() == 1, "the grid's origin decides what is on it");
+
+    const auto split = splitNotesAt(c, 2 * beat + beat / 2);
+    check(split.ops.size() == 4 && split.ops[0].opType == "note.resize" && split.ops[0].payload.at("note") == 2 &&
+              split.ops[0].payload.at("dur") == beat / 2 && split.ops[1].opType == "note.insert" &&
+              split.ops[1].payload.at("start") == 2 * beat + beat / 2 && split.ops[1].payload.at("dur") == beat / 2 &&
+              split.ops[1].payload.at("key") == 60 && split.ops[1].payload.at("vel") == 90 && split.ops[2].payload.at("note") == 3 &&
+              split.ops[0].label == "Split Notes" && split.select.size() == 2,
+          "Split cuts every note sounding at the point; the part after is a new note carrying the same");
+    check(splitNotesAt(c, 2 * beat).ops.size() == 2, "a note that starts at the point is not cut; one that crosses it is");
+    check(splitNotesAt(c, 100 * beat).ops.empty(), "where nothing sounds, nothing is cut");
+
+    const auto chop = chopNotes(c, {3}, beat, 0);
+    check(chop.ops.size() == 3 && chop.ops[0].opType == "note.resize" && chop.ops[0].payload.at("dur") == beat &&
+              chop.ops[1].payload.at("start") == 2 * beat && chop.ops[2].payload.at("start") == 3 * beat &&
+              chop.ops[2].payload.at("dur") == beat && chop.ops[0].label == "Chop Notes" && chop.select.size() == 3,
+          "Chop cuts a three-beat note at each grid line: three notes of a beat, all selected");
+    const auto offGrid = chopNotes(c, {1}, beat, 0);
+    check(offGrid.ops.size() == 2 && offGrid.ops[0].payload.at("dur") == beat - beat / 8 && offGrid.ops[1].payload.at("dur") == beat / 8,
+          "a note off the grid is cut where the grid line crosses it");
+    check(chopNotes(c, {2}, beat, 0).ops.empty() && chopNotes(c, {2}, beat, 0).select == std::vector<std::uint64_t>{2},
+          "a note no grid line crosses is left whole");
+
+    const auto join = joinNotes(c, {1, 2, 3});
+    check(join.ops.size() == 2 && join.ops[0].opType == "note.delete" && join.ops[0].payload.at("note") == 2 &&
+              join.ops[1].opType == "note.resize" && join.ops[1].payload.at("note") == 1 &&
+              join.ops[1].payload.at("dur") == 3 * beat - beat / 8 && join.ops[0].label == "Join Notes" &&
+              join.select == std::vector<std::uint64_t>({1, 3}),
+          "Join: the two C3s become one from the first start to the last end; the E3, alone on its key, is left");
+    check(joinNotes(c, {3}).ops.empty(), "one note has nothing to join");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -574,6 +627,7 @@ int main() {
     handlesAndTrim();
     pasting();
     overlaps();
+    quantizeSplitJoin();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
