@@ -798,6 +798,102 @@ inline NoteEdit joinNotes(const engine::ClipDetails &clip, const std::vector<std
     return edit;
 }
 
+// ---- Velocity and note functions (ADR-0242 d1: N4, N5; Cubase Pro 15 manual, MIDI functions) ------
+// ADI's additions. Each acts on the selected notes, or on every note when none is selected.
+
+// Compress or Expand: every velocity multiplied by `percent` (under 100 compresses, over 100 expands),
+// within 1 to 127.
+inline NoteEdit scaleVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int percent) {
+    using namespace note_edits_detail;
+    std::vector<std::pair<std::uint64_t, int>> values;
+    for (const auto *n : targets(clip, ids))
+        values.emplace_back(n->id, static_cast<int>((static_cast<std::int64_t>(n->velocity) * std::max(0, percent) + 50) / 100));
+    auto edit = drawVelocities(clip, values, percent < 100 ? "Compress Velocities" : "Expand Velocities");
+    edit.select = ids;
+    return edit;
+}
+// Limit: every velocity brought inside `low` to `high`.
+inline NoteEdit limitVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int low, int high) {
+    using namespace note_edits_detail;
+    const int floor = std::clamp(std::min(low, high), 1, 127), ceiling = std::clamp(std::max(low, high), 1, 127);
+    std::vector<std::pair<std::uint64_t, int>> values;
+    for (const auto *n : targets(clip, ids))
+        values.emplace_back(n->id, std::clamp<int>(n->velocity, floor, ceiling));
+    auto edit = drawVelocities(clip, values, "Limit Velocities");
+    edit.select = ids;
+    return edit;
+}
+// Add or Subtract: `amount` added to every velocity, within 1 to 127.
+inline NoteEdit addToVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int amount) {
+    using namespace note_edits_detail;
+    std::vector<std::pair<std::uint64_t, int>> values;
+    for (const auto *n : targets(clip, ids))
+        values.emplace_back(n->id, static_cast<int>(n->velocity) + amount);
+    auto edit = drawVelocities(clip, values, amount < 0 ? "Subtract Velocity" : "Add Velocity");
+    edit.select = ids;
+    return edit;
+}
+// Delete Doubles: of notes on the same key that start together, the first stays and the others go.
+inline NoteEdit deleteDoubles(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    const auto notes = targets(clip, ids);
+    for (std::size_t i = 0; i < notes.size(); ++i) {
+        bool doubled = false;
+        for (std::size_t j = 0; j < i && !doubled; ++j)
+            doubled = notes[j]->key == notes[i]->key && notes[j]->startTicks == notes[i]->startTicks;
+        if (doubled)
+            edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", notes[i]->id}}, "Delete Doubles"));
+        else if (!ids.empty())
+            edit.select.push_back(notes[i]->id);
+    }
+    return edit;
+}
+// Restrict Polyphony: no more than `voices` notes sound at once. Where a note begins while that many
+// already sound, the ones that began earliest are cut to end there.
+inline NoteEdit restrictPolyphony(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int voices) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    struct Sounding {
+        const engine::ClipNote *note;
+        std::int64_t end;
+    };
+    auto notes = targets(clip, ids);
+    std::stable_sort(notes.begin(), notes.end(), [](const auto *a, const auto *b) { return a->startTicks < b->startTicks; });
+    std::vector<Sounding> sounding, all;
+    const std::size_t limit = static_cast<std::size_t>(std::max(1, voices));
+    for (const auto *n : notes) {
+        std::erase_if(sounding, [&](const Sounding &s) { return s.end <= n->startTicks; });
+        // Notes that start together are one chord: only earlier notes are cut for it.
+        while (sounding.size() >= limit) {
+            auto earliest = std::min_element(sounding.begin(), sounding.end(), [](const Sounding &a, const Sounding &b) {
+                return a.note->startTicks < b.note->startTicks;
+            });
+            if (earliest->note->startTicks >= n->startTicks)
+                break;
+            for (auto &kept : all)
+                if (kept.note == earliest->note)
+                    kept.end = n->startTicks;
+            sounding.erase(earliest);
+        }
+        sounding.push_back({n, n->startTicks + n->durationTicks});
+        all.push_back({n, n->startTicks + n->durationTicks});
+    }
+    for (const auto &kept : all)
+        if (kept.end != kept.note->startTicks + kept.note->durationTicks)
+            edit.ops.push_back(op("note.resize",
+                                  {{"clip", clip.id}, {"note", kept.note->id}, {"dur", std::max(kShortestNote, kept.end - kept.note->startTicks)}},
+                                  "Restrict Polyphony"));
+    return edit;
+}
+
 // Live's overlap rule, as measured on Live 12.4 (manual 10.5.4): where an edit puts a note over
 // another on the same key, the note just placed survives whole. An older note that begins inside it
 // is removed; an older note that began before it is cut to end where it begins, and what the older
