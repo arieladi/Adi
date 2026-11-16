@@ -209,6 +209,36 @@ inline NoteEdit copyNotes(const engine::ClipDetails &clip, const std::vector<std
     }
     return edit;
 }
+// Notes pasted into a clip (manual 10.5.4): `notes` hold their times relative to the first of them
+// (the earliest starts at 0); each is inserted at `at` plus its own time, with a new id and all it
+// carried. The pasted notes become the selection.
+inline NoteEdit pasteNotes(const engine::ClipDetails &clip, const std::vector<engine::ClipNote> &notes, std::int64_t at) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    auto id = freeNoteId(clip);
+    const char *label = notes.size() == 1 ? "Paste Note" : "Paste Notes";
+    for (const auto &n : notes) {
+        edit.ops.push_back(op("note.insert",
+                              {{"clip", clip.id},
+                               {"note", id},
+                               {"start", at + n.startTicks},
+                               {"dur", std::max(kShortestNote, n.durationTicks)},
+                               {"key", n.key},
+                               {"vel", std::clamp<int>(n.velocity, 1, 127)},
+                               {"velOff", n.releaseVelocity},
+                               {"chan", n.channel},
+                               {"prob", n.probability},
+                               {"cents", static_cast<double>(n.tuningCents)}},
+                              label));
+        if (!n.active)
+            edit.ops.push_back(op("note.setMute", {{"clip", clip.id}, {"note", id}, {"muted", true}}, label));
+        edit.select.push_back(id++);
+    }
+    return edit;
+}
 // The span of time the notes cover: from the first start to the last end; nothing for none.
 inline std::int64_t spanOf(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
     const auto notes = note_edits_detail::pick(clip, ids);

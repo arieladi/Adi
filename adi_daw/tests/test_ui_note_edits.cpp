@@ -455,6 +455,25 @@ void handlesAndTrim() {
     check(drawVelocities(c, {{3, 50}}, "Tilt Velocities").ops[0].label == "Tilt Velocities", "a handle's batch carries its own label");
 }
 
+void pasting() {
+    const auto c = clip(); // ids 3, 9, 4; a free id is 10
+    auto a = c.notes[0], b = c.notes[1];
+    a.startTicks = 0;
+    b.startTicks = beat;
+    b.active = false;
+    const auto paste = pasteNotes(c, {a, b}, 8 * beat);
+    check(paste.ops.size() == 3 && paste.ops[0].opType == "note.insert" && paste.ops[0].label == "Paste Notes" &&
+              paste.ops[0].payload.at("note") == 10 && paste.ops[0].payload.at("start") == 8 * beat &&
+              paste.ops[0].payload.at("key") == 60 && paste.ops[1].payload.at("start") == 9 * beat &&
+              paste.ops[1].payload.at("dur") == 2 * beat && paste.ops[2].opType == "note.setMute" &&
+              paste.select == std::vector<std::uint64_t>({10, 11}),
+          "pasted notes land at the place given plus their own times, with new ids and what they carried, selected");
+    check(pasteNotes(c, {a}, 0).ops[0].label == "Paste Note" && pasteNotes(c, {}, 0).ops.empty(), "one note is named in the singular; nothing pastes nothing");
+    auto audio = c;
+    audio.kind = "audio";
+    check(!pasteNotes(audio, {a}, 0).refusal.empty(), "an audio clip takes no notes");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -507,6 +526,7 @@ int main() {
     chordEditing();
     laneShapes();
     handlesAndTrim();
+    pasting();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -352,6 +352,51 @@ void NoteEditor::zoomBack() {
     time.back();
     repaint();
 }
+bool NoteEditor::copySelected() {
+    const auto *clip = panel.details();
+    if (clip == nullptr || !anySelected())
+        return false;
+    // Each note with its place in the song, so notes of several clips keep their places to each
+    // other; then counted from the earliest.
+    std::vector<engine::ClipNote> copied;
+    const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        const auto window = ClipWindow::of(of);
+        for (const auto &n : of.notes)
+            if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                copied.push_back(n);
+                copied.back().startTicks = window.toArrangement(n.startTicks);
+            }
+    };
+    take(*clip, selected_);
+    if (!panel.focus())
+        for (const auto &layer : panel.others())
+            take(layer.details, selectedIn(layer.details.id));
+    if (copied.empty())
+        return false;
+    auto first = copied.front().startTicks;
+    for (const auto &n : copied)
+        first = std::min(first, n.startTicks);
+    for (auto &n : copied)
+        n.startTicks -= first;
+    panel.noteClipboard = std::move(copied);
+    return true;
+}
+bool NoteEditor::cutSelected() {
+    if (!copySelected())
+        return false;
+    auto cut = across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); });
+    for (auto &o : cut.ops)
+        o.label = cut.ops.size() == 1 ? "Cut Note" : "Cut Notes";
+    return commit(std::move(cut));
+}
+bool NoteEditor::paste() {
+    const auto *clip = panel.details();
+    if (clip == nullptr || panel.noteClipboard.empty())
+        return false;
+    // At the insert marker, else at the clip's start; into the clip being edited.
+    const auto window = ClipWindow::of(*clip);
+    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(insert_.value_or(window.pos))));
+}
 bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
     if (clip == nullptr || selected_.empty())
@@ -707,6 +752,9 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         if (!e.mods.isShiftDown()) {
             selected_.clear();
             otherSelected_.clear();
+            // The insert marker goes where the click is, on the grid (manual 10.5.2).
+            const auto at = time.tick(static_cast<double>(from_.x - notesArea().getX()));
+            insert_ = snapping(e.mods) ? time.snap(at, false) : at;
         }
         bandBase_ = selected_;
         drag_ = Drag::Band;
@@ -862,6 +910,19 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             commit(across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); }));
         return true;
     }
+    // Cut, Copy and Paste are the editor's while it has the keyboard (manual 10.5.4).
+    if (k == juce::KeyPress('c', juce::ModifierKeys::commandModifier, 0)) {
+        copySelected();
+        return true;
+    }
+    if (k == juce::KeyPress('x', juce::ModifierKeys::commandModifier, 0)) {
+        cutSelected();
+        return true;
+    }
+    if (k == juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) {
+        paste();
+        return true;
+    }
     if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) {
         // Duplicate is the editor's while it has the keyboard, with or without notes selected.
         duplicate();
@@ -951,6 +1012,7 @@ void NoteEditor::resized() {
             time.fit(from, from + length + length / 24, area.getWidth(), false);
             // Live opens on the notes; an empty clip opens around middle C.
             folded_ = false;
+            insert_.reset();
             keys.unfold(area.getHeight());
             keys.keyHeight = KeyTracks::kDefaultHeight;
             const auto range = keyRange(every);
@@ -1101,6 +1163,12 @@ void NoteEditor::paint(juce::Graphics &g) {
                     g.drawRect(r, 1.f);
                 }
             }
+        }
+        if (insert_) {
+            // The insert marker: a thin line down the key tracks.
+            const int x = area.getX() + static_cast<int>(std::clamp(time.x(*insert_), -1e6, 1e6));
+            g.setColour(look::text);
+            g.fillRect(x, area.getY(), 1, area.getHeight());
         }
         if (drag_ == Drag::Trim) {
             g.setColour(juce::Colours::white.withAlpha(0.8f));
