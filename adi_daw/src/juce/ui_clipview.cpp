@@ -1212,6 +1212,7 @@ void NoteEditor::gridKey(int key) {
     }
     repaint();
     panel.repaint();
+    panel.keepSettings();
 }
 // ---- Time inside the clip (manual 10.7) --------------------------------------------------------
 bool NoteEditor::crop() {
@@ -2000,6 +2001,7 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         highlightScale = !highlightScale;
         repaint();
         panel.repaint();
+        panel.keepSettings();
         return true;
     }
     if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey) {
@@ -2610,6 +2612,33 @@ juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
     const auto highlight = highlightBox();
     return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
 }
+void ClipViewPanel::applyState(const WindowState &state) {
+    notes.time.grid = {state.noteGridSnap, state.noteGridFixed, state.noteGridTriplet, state.noteGridNarrow, state.noteGridFixedQuarters};
+    notes.highlightScale = state.highlightScale;
+    notes.noteColours = static_cast<NoteEditor::NoteColours>(std::clamp(state.noteColours, 0, 4));
+    quantizeValue_ = static_cast<std::size_t>(std::clamp(state.quantizeValue, 0, static_cast<int>(kQuantizeValues.size()) - 1));
+    quantizeAmount = state.quantizeAmount;
+    quantizeSwing = state.quantizeSwing;
+    quantizeStarts = state.quantizeStarts;
+    quantizeEnds = state.quantizeEnds;
+}
+void ClipViewPanel::keepSettings() {
+    auto &state = root.state();
+    const auto &grid = notes.time.grid;
+    state.noteGridSnap = grid.snap;
+    state.noteGridFixed = grid.fixed;
+    state.noteGridTriplet = grid.triplet;
+    state.noteGridNarrow = grid.narrow;
+    state.noteGridFixedQuarters = grid.fixedQuarters;
+    state.highlightScale = notes.highlightScale;
+    state.noteColours = static_cast<int>(notes.noteColours);
+    state.quantizeValue = static_cast<int>(quantizeValue_);
+    state.quantizeAmount = quantizeAmount;
+    state.quantizeSwing = quantizeSwing;
+    state.quantizeStarts = quantizeStarts;
+    state.quantizeEnds = quantizeEnds;
+    root.persist();
+}
 juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
     return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
 }
@@ -2652,6 +2681,7 @@ bool ClipViewPanel::chooseGrid(int item) {
     }
     notes.repaint();
     repaint();
+    keepSettings();
     return true;
 }
 juce::Rectangle<int> ClipViewPanel::coloursBox() const noexcept {
@@ -2670,6 +2700,7 @@ bool ClipViewPanel::chooseColours(int item) {
     notes.noteColours = static_cast<NoteEditor::NoteColours>(item - 1);
     notes.repaint();
     repaint();
+    keepSettings();
     return true;
 }
 juce::Rectangle<int> ClipViewPanel::filterChooserBox() const noexcept {
@@ -2833,6 +2864,7 @@ bool ClipViewPanel::chooseQuantize(int item) {
         return false;
     quantizeValue_ = static_cast<std::size_t>(item - 1);
     repaint();
+    keepSettings();
     return true;
 }
 std::int64_t ClipViewPanel::quantizeGrid() const noexcept {
@@ -2877,6 +2909,8 @@ void ClipViewPanel::numberChanged(Field field, bool typed) {
         randomize();
     else if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC)
         applyFilter();
+    else if (field == Field::QuantizeAmount || field == Field::QuantizeSwing)
+        keepSettings();
 }
 void ClipViewPanel::resized() {
     notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
@@ -3781,11 +3815,13 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (quantizeStartBox().contains(at)) {
         quantizeStarts = !quantizeStarts;
         repaint();
+        keepSettings();
         return;
     }
     if (quantizeEndBox().contains(at)) {
         quantizeEnds = !quantizeEnds;
         repaint();
+        keepSettings();
         return;
     }
     if (filterChooserBox().contains(at)) {
@@ -3837,6 +3873,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         notes.highlightScale = !notes.highlightScale;
         notes.repaint();
         repaint();
+        keepSettings();
         return;
     }
     if (scaleModeBox().contains(at)) {

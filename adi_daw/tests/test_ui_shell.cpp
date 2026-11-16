@@ -6116,6 +6116,40 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(undo() && note(2).startTicks == beat, "undo");
         ed.keyPressed(key(juce::KeyPress::escapeKey));
     }
+
+    // The editor's settings are kept with the window: the grid, Highlight Scale, the notes' colours, the Quantize settings.
+    {
+        using Field = ClipViewPanel::Field;
+        const auto kept = [&] { return ViewStateStore(*store).load("clip-view-clip-time"); };
+        check(kept().noteGridNarrow == 0 && kept().highlightScale && kept().noteColours == 0 && kept().quantizeAmount == 100 && kept().quantizeStarts,
+              "a window that changed none of the editor's settings holds their defaults");
+        check(ed.keyPressed(key('1', command)) && kept().noteGridNarrow == 1 && ed.keyPressed(key('3', command)) && kept().noteGridTriplet &&
+                  ed.keyPressed(key('4', command)) && !kept().noteGridSnap,
+              "the grid's keys in the editor are kept as they are pressed");
+        check(panel.chooseGrid(16) && kept().noteGridFixed && kept().noteGridFixedQuarters == 0.5, "and the grid's chooser");
+        check(ed.keyPressed(key('k')) && !kept().highlightScale && panel.chooseColours(3) && kept().noteColours == 2, "Highlight Scale and the notes' colours");
+        panel.setToolsTab(1);
+        panel.mouseDown(pressAt(panel, panel.quantizeEndBox().getCentre().toFloat()));
+        panel.mouseUp(pressAt(panel, panel.quantizeEndBox().getCentre().toFloat()));
+        check(panel.chooseQuantize(5) && panel.typeField(Field::QuantizeAmount, "60") && panel.typeField(Field::QuantizeSwing, "25") &&
+                  kept().quantizeValue == 4 && kept().quantizeAmount == 60 && kept().quantizeSwing == 25 && kept().quantizeEnds && kept().quantizeStarts,
+              "the Quantize settings: the value, the amount, swing, and which ends move");
+        // A window opening on that state takes them up.
+        const auto saved = kept();
+        WindowState fresh;
+        panel.applyState(fresh);
+        check(ed.time.grid.snap && !ed.time.grid.triplet && ed.highlightScale && ed.noteColours == NoteEditor::NoteColours::Clip && panel.quantizeAmount == 100 &&
+                  panel.quantizeValue() == 0 && !panel.quantizeEnds,
+              "the defaults put back in the editor");
+        panel.applyState(saved);
+        check(!ed.time.grid.snap && ed.time.grid.triplet && ed.time.grid.fixed && ed.time.grid.fixedQuarters == 0.5 && !ed.highlightScale &&
+                  ed.noteColours == NoteEditor::NoteColours::Pitch && panel.quantizeValue() == 4 && panel.quantizeAmount == 60 && panel.quantizeSwing == 25 &&
+                  panel.quantizeEnds && panel.quantizeStarts,
+              "a window opening on the kept state has every one of them back");
+        panel.applyState(fresh);
+        panel.keepSettings();
+        panel.setToolsTab(0);
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
