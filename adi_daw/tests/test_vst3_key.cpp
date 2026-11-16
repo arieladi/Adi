@@ -32,8 +32,10 @@ void contract() {
     // separate build output (which would have independent process globals).
     const juce::File bundle(juce::String::fromUTF8(ADI_TEST_VST3));
     juce::File binary;
-    for(const auto& file:bundle.getChildFile("Contents").findChildFiles(juce::File::findFiles,true))
-        if(file.getFileNameWithoutExtension()==bundle.getFileNameWithoutExtension())binary=file;
+    for (const auto &file :
+         bundle.getChildFile("Contents").findChildFiles(juce::File::findFiles, true))
+        if (file.getFileNameWithoutExtension() == bundle.getFileNameWithoutExtension())
+            binary = file;
     juce::DynamicLibrary module(binary.getFullPathName());
     auto first = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyFirst"));
     auto last = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyLast"));
@@ -54,11 +56,15 @@ void contract() {
             d.willBeHanded(wide ? engine::Precision::Float64 : engine::Precision::Float32);
             d.prepare(48000, 32);
             check(d.usingRawProcessor(), "test exercises production raw VST3 bus tables");
-            std::array<float, 32> in{}, keyL{}, keyR{}, outL{}, outR{};
-            std::array<double, 32> in64{}, keyL64{}, keyR64{}, outL64{}, outR64{};
+            std::array<float, 32> in{}, inR{}, keyL{}, keyR{}, outL{}, outR{};
+            std::array<double, 32> in64{}, inR64{}, keyL64{}, keyR64{}, outL64{}, outR64{};
             for (std::size_t i = 0; i < 32; ++i) {
-                in[i] = .875f;
-                in64[i] = .875;
+                in[i] = (static_cast<float>(i) - 16.f) / 32.f;
+                inR[i] = .75f - static_cast<float>(i) / 64.f;
+                // Distinct channel patterns and double-only low bits catch
+                // channel swaps, offsets and an unintended float round-trip.
+                in64[i] = static_cast<double>(in[i]) + static_cast<double>(i + 1) * 1e-11;
+                inR64[i] = static_cast<double>(inR[i]) - static_cast<double>(i + 1) * 3e-11;
                 keyL[i] = static_cast<float>(i) / 32;
                 keyL64[i] = static_cast<double>(i) / 32;
                 keyR[i] = .5f;
@@ -66,10 +72,10 @@ void contract() {
                 outL[i] = outR[i] = -1;
                 outL64[i] = outR64[i] = -1;
             }
-            const float *input[]{in.data(), in.data()};
+            const float *input[]{in.data(), inR.data()};
             const float *key[]{keyL.data(), keyR.data()};
             float *output[]{outL.data(), outR.data()};
-            const double *input64[]{in64.data(), in64.data()};
+            const double *input64[]{in64.data(), inR64.data()};
             const double *key64[]{keyL64.data(), keyR64.data()};
             double *output64[]{outL64.data(), outR64.data()};
             engine::NodeIo io;
@@ -91,10 +97,30 @@ void contract() {
             check(channels() == (mono ? 1 : 2) && first() == 7. / 32 &&
                       last() == (mono ? 17. / 32 : .5),
                   "exact mono/stereo key segment reaches the aux bus at native/narrowed precision");
-            check(wide ? (outL64[7] == .875 && outR64[17] == .875 && outL64[6] == -1 &&
-                          outL64[18] == -1)
-                       : (outL[7] == .875f && outR[17] == .875f && outL[6] == -1 && outL[18] == -1),
-                  "programme passes bit-exactly and output outside segment is untouched");
+            const auto programmeExact = [&] {
+                for (std::size_t i = 0; i < 32; ++i) {
+                    const bool inside = i >= 7 && i < 18;
+                    if (wide) {
+                        const double left =
+                            inside ? (d.processingDouble()
+                                          ? in64[i]
+                                          : static_cast<double>(static_cast<float>(in64[i])))
+                                   : -1.;
+                        const double right =
+                            inside ? (d.processingDouble()
+                                          ? inR64[i]
+                                          : static_cast<double>(static_cast<float>(inR64[i])))
+                                   : -1.;
+                        if (outL64[i] != left || outR64[i] != right)
+                            return false;
+                    } else if (outL[i] != (inside ? in[i] : -1.f) ||
+                               outR[i] != (inside ? inR[i] : -1.f))
+                        return false;
+                }
+                return true;
+            };
+            check(programmeExact(), "all programme samples/channels retain exact supported "
+                                    "precision and segment bounds");
             const auto activations = d.activations();
             d.prepare(48000, 32);
             check(d.activations() == activations, "unchanged rebuild never restarts the plugin");
@@ -102,6 +128,8 @@ void contract() {
             io.sidechain64 = nullptr;
             io.sidechainSilent = true;
             d.process(io);
+            check(programmeExact(),
+                  "clearing the key preserves the entire programme array exactly");
             check(first() == 0 && last() == 0,
                   "disconnected key is silent, not stale data or programme");
             check(d.configureSidechain(false), "owner can disable a formerly requested key");
