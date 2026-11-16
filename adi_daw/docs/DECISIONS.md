@@ -18689,3 +18689,51 @@ JUCE version was one of his open ADI-View questions (D7).
 | ADR-0208 | for the Clip View only, win writes in the window lane's area (d2) |
 | ADR-0237 d4 | a channel set's load replaces the native set, one undo step (d3) |
 | `docs/DEFERRED.md` | DF-M27 closed; DF-M23 carries d3; the window rows DF-W1 to DF-W7 added |
+
+## ADR-0241 — The Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §4; AMENDS FEATURES LINE 114, PLAN MI-07, MI-08, MI-09**
+
+**His words (16 November):** asked the four decisions of `docs/CLIP-VIEW-ADDITIONS.md` §4, each with
+win's recommendation: "yes to all 4, keep going". Earlier the same day: "don't forget Cubase
+variaudio and Cubase clip view tools (all we need to add from Cubase that is missing in Ableton and
+also bitwig (the grid or maybe instead taken from reason 14) modulation parts, MPE supports".
+
+### Decisions
+
+1. **Pitch editing of audio is P1** (was P3, FEATURES line 114): segments of a monophonic recording
+   on a piano roll over the waveform, each with its pitch, time, straightening, tilt, formant and
+   volume, pitch quantized to the clip's scale, and notes extracted to MIDI. It comes after the
+   Sample Editor's warp markers (TM-WT-02, TM-WT-06) and stands on the same analysis; its pitch
+   tracker is the one Convert Melody to MIDI needs (TM-WT-09). It is an addition shown in the audio
+   editor (ADR-0203 d2), under a name of ADI's own (ADR-0176 d5), with whole new tables designed
+   with it (ADR-0144 d3) and a parity gate against Cubase (ADR-0108). Win adds its plan card; the
+   research `docs/CLIP-VIEW-ADDITIONS.md` §5 lists comes first.
+2. **Four note-editor additions from Cubase's Key Editor, in this order**, none changing the file:
+   - line tools in the Velocity lane and the controller lanes (line, parabola, sine, triangle,
+     square, paint);
+   - chord editing (triads and four-note chords from a note, inversions, drop 2, drop 3);
+   - the trim tool and the length functions Live lacks (fixed lengths, delete overlaps);
+   - handles on a selection of velocity or controller events: tilt, compress, scale.
+   Each is a composition of the note and controller ops that exist, one undo step, shown in the
+   Clip View where its Live neighbours are.
+3. **Per-note gain and pan curves are edited beside Live's pitch, slide and pressure**, in the MPE
+   tab, as Bitwig's note expressions are. The file stores them already (SPEC 6.3.2); the ops and the
+   playback are MI-08's, which now covers the five dimensions.
+4. **Bitwig's operators are taken:** repeats (ratchets), occurrence and recurrence, with chance,
+   which was decided. They are properties of a note, stored in a side table with Live 12's
+   probability groups (MI-09), and need the engine to play them. This strikes MI-07's and MI-09's
+   "reject Bitwig's operators", which was win's placement. Their priority is win's placement until
+   he says otherwise: P2, with MI-09.
+
+Not reopened: the Grid tier stays his answer of 5 November, the hybrid on Pure Data (DEV-15), and no
+feature is taken from Reason; `docs/CLIP-VIEW-ADDITIONS.md` §3.3 says what its rack and its pitch
+editor are used for.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| FEATURES line 114; PLAN §1.6 | pitch editing of audio is P1, after the warp markers (d1) |
+| ADR-0240 d1 | "nothing added" stood for the approved picture; these are the first additions (d2, d3) |
+| PLAN MI-08 | the editing UI and playback cover gain and pan as well as pitch, slide and pressure (d3) |
+| PLAN MI-07, MI-09 | the rejection of Bitwig's operators is struck; they are P2 with MI-09 (d4) |
+| `docs/CLIP-VIEW-ADDITIONS.md` | §4 answered; `docs/DEFERRED.md` DF-W10 split into the rows that build it |

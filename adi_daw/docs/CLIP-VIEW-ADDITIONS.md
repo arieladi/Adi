@@ -2,9 +2,10 @@
 
 **Status:** a decision list for the director, written by win on 16 November 2026 after his word that
 day: keep building the Clip View, and do not forget what Cubase, Bitwig and Reason have that Live
-lacks (audio pitch editing, Cubase's editor tools, modulation, MPE and per-note expression). Nothing
-in sections 3 and 4 is built until he rules on it (ADR-0203 d1: an addition needs "a yes and a
-priority"). Tracked as DF-W10 in `docs/DEFERRED.md`.
+lacks (audio pitch editing, Cubase's editor tools, modulation, MPE and per-note expression). **He
+answered section 4 the same day: yes to all four (ADR-0241).** Everything else in section 3,
+section 3.5 included, is built only when he picks it (ADR-0203 d1: an addition needs "a yes and a
+priority"). Tracked in `docs/DEFERRED.md` as DF-W10 to DF-W14.
 
 **Sources:** the ADR log, `docs/PLAN.md`, `docs/FEATURES.md`, the Master Reference (Part III
 chapters 4 to 6) and the Dream Reference for what is already decided; the manuals under
@@ -101,7 +102,67 @@ measured.
 | O2 | FL Studio: slide notes, chord stamp, strum | One guide of 88 pages; FL is not installed | Needs research before anything can be said |
 | O3 | Studio One, Logic | Nothing | Needs research |
 
-## 4. The four decisions that shape everything else
+### 3.5 More candidates, for the director to pick from
+
+He asked on 16 November whether there is more than the four tools of decision 2. There is. The
+"From" column says how well each is known: **manual** (the DAW's manual at hand describes it),
+**research** (his research has rows on it), **memory** (win knows it from the product but nothing at
+hand describes it, so it needs research before it is specified). Win's picks are marked ★.
+
+**The note editor**
+
+| # | Tool | DAW | From | Needs a file change |
+|---|---|---|---|---|
+| N1 ★ | Note colours by velocity, pitch, channel or scale degree, chosen in the editor | Cubase | manual | no |
+| N2 ★ | Quantize panel: strength (iterative quantize), catch range, swing, tuplets, quantize ends and lengths | Cubase | manual; ranges missing | no |
+| N3 ★ | Quantize that can be taken back later (unquantize), and freeze | REAPER | manual | yes: the unquantized positions |
+| N4 ★ | Velocity functions: add or subtract, compress or expand, limit to a range | Cubase | manual | no |
+| N5 ★ | Delete doubles; restrict polyphony | Cubase | manual | no |
+| N6 ★ | Several controller lanes shown at once, with lane presets | Cubase, REAPER | manual | no |
+| N7 ★ | Scale help beyond Live's: snap live input to the scale, show only the scale's pitches, suggest scales from the selected notes | Cubase | manual; the ranking is missing | no |
+| N8 | Mirror (flip in pitch or time around a chosen point) | Cubase | manual; the pivots are missing | no |
+| N9 | Step input and setting a note's pitch from the MIDI keyboard | Cubase | manual | no (Live's step input is already P2) |
+| N10 | Strum and flam; arpeggiate a chord; chord stamp | FL Studio | memory | no |
+| N11 | Slide notes (a note that bends a held note to its pitch) | FL Studio | memory | no: per-note pitch curves |
+| N12 | Histogram tools on velocities and expressions: mean, spread, chaos | Bitwig | manual | spread: yes |
+| N13 | Slice at repeats, expand, consolidate; a seed per clip | Bitwig | manual | with the operators |
+| N14 | Named notes and an event list beside the piano roll | REAPER, Cubase | manual | no |
+| N15 | Drum editor with drum maps | Cubase | manual | yes: drum maps |
+| N16 | Tempo, signature and chord lanes shown inside the editor | Cubase | manual | no |
+| N17 | Dynamics lane (written dynamics such as p and f that scale velocity) | Cubase | manual | yes |
+| N18 | Brush tool for painting repeated notes; time handles that stretch a selection | Logic | memory | no |
+| N19 | Fill with notes, thin out, distribute, apply scale as menu actions | Studio One | memory | no |
+
+**The audio editor**
+
+| # | Tool | DAW | From | Needs a file change |
+|---|---|---|---|---|
+| A1 ★ | Harmony voices generated from a monophonic clip (up to four) | Cubase | manual | with pitch editing |
+| A2 ★ | Detect Silence: cut a clip into the parts that sound | Cubase | manual | no |
+| A3 ★ | Clip gain as a drawn curve inside the editor | Cubase, Studio One | manual | decided already as the event volume curve on the clip (AU-07) |
+| A4 ★ | Pitch, formant, gain and pan per audio event as curves | Bitwig | manual (5.2) | yes |
+| A5 | Free warp with a rate slope per segment | REAPER | manual | yes |
+| A6 | Spectral edits: a region in time and frequency with gain, a gate or a compressor | REAPER | manual; ranges missing | yes |
+| A7 | Regions inside a clip, with a list | Cubase | manual | yes |
+| A8 | Drawing samples by hand at high zoom | Cubase | manual (two conflicting descriptions) | writes a new file |
+| A9 | Drift and transition per pitch segment (how fast a note reaches its pitch) | Reason | research | with pitch editing |
+| A10 | Comping lanes inside the editor | Cubase, Bitwig | manual | comping is its own plan item |
+| A11 | Chord track that re-pitches audio to follow it | Studio One | memory | with pitch editing |
+
+**Clips, envelopes and modulation**
+
+| # | Tool | DAW | From | Needs a file change |
+|---|---|---|---|---|
+| M1 ★ | Take envelopes for pitch and mute as well as volume and pan | REAPER | manual | yes |
+| M2 ★ | An LFO or shape tool that writes points into an envelope or a lane | FL Studio, Cubase | memory, manual | no |
+| M3 | Automation items: pooled, loopable pieces of automation with their own baseline and amplitude | REAPER | manual; the combination rule is missing | yes |
+| M4 | Effects on one clip (take FX) | REAPER | manual | decided as clip-level offline processing |
+| M5 | Clip regions and versions (Make Unique, pooled clips) | REAPER, FL | manual | partly decided |
+
+Not offered again, because they are ruled: notation (out), the List and in-place editors (one MIDI
+editor), the Logical Editor and Expression Maps (P3), the chord track (P3), the Grid tier (Pure Data).
+
+## 4. The four decisions that shape everything else: answered, yes to all four (ADR-0241)
 
 1. **Pitch editing of audio (C1):** raise it from P3, and to what? Win recommends P1, after the
    Sample Editor's warp markers, since both stand on the same analysis.
@@ -110,7 +171,13 @@ measured.
 3. **Per-note expression beyond Live's (B1, B2):** build gain and pan with the MPE tab, yes or no.
 4. **Operators (B3):** take Bitwig's repeats, occurrence and recurrence, or keep the plan's no.
 
-The Grid and Reason need no new decision unless he wants to reopen his answer of 5 November.
+The Grid and Reason need no new decision unless he wants to reopen his answer of 5 November. That
+answer, in plain words: ADI does not build a second modular environment of its own. Pure Data is the
+patching layer, where modules are wired; ADI itself owns the notes, the timing, the modulation, saving
+and Undo; and the heavy sound processing inside a patch is done by compiled parts of ADI's. It is the
+plan's DEV-15, in the last milestone, and an ADR must answer eight design points before any of it is
+built. From Reason nothing is taken as a feature: its rack and Combinator are used to test ADI's racks
+and macros against, and its pitch editor's per-note controls are a second reference for decision 1.
 
 ## 5. What the research still lacks
 
