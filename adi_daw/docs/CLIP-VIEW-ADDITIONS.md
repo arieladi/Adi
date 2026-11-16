@@ -5,7 +5,7 @@ day: keep building the Clip View, and do not forget what Cubase, Bitwig and Reas
 lacks (audio pitch editing, Cubase's editor tools, modulation, MPE and per-note expression). **He
 answered section 4 the same day: yes to all four (ADR-0241).** Everything else in section 3,
 section 3.5 included, is built only when he picks it (ADR-0203 d1: an addition needs "a yes and a
-priority"). Tracked in `docs/DEFERRED.md` as DF-W10 to DF-W14.
+priority"). Section 3.5 was answered the same day too (ADR-0242). Tracked in `docs/DEFERRED.md` as DF-W10 to DF-W18.
 
 **Sources:** the ADR log, `docs/PLAN.md`, `docs/FEATURES.md`, the Master Reference (Part III
 chapters 4 to 6) and the Dream Reference for what is already decided; the manuals under
@@ -102,7 +102,11 @@ measured.
 | O2 | FL Studio: slide notes, chord stamp, strum | One guide of 88 pages; FL is not installed | Needs research before anything can be said |
 | O3 | Studio One, Logic | Nothing | Needs research |
 
-### 3.5 More candidates, for the director to pick from
+### 3.5 More candidates: answered on 16 November (ADR-0242)
+
+**His answer:** the starred rows are taken; N11 (slide notes) and N15 (a drum editor with drum maps)
+are not; every other row is taken on condition that it impairs no function of Live's; and Reason's
+drift and transition (A9) go into the pitch editing. The tables below are as they were put to him.
 
 He asked on 16 November whether there is more than the four tools of decision 2. There is. The
 "From" column says how well each is known: **manual** (the DAW's manual at hand describes it),
