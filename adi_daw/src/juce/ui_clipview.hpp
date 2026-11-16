@@ -24,6 +24,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -454,8 +455,16 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name
     };
+    // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
+    // colour, one of the palette's fourteen. With several clips shown both act on all of them
+    // (manual 10.8); one undo step. Item 1 is Rename; items 100 on are the colours.
+    static constexpr int kTitleColours = 14;
+    juce::PopupMenu titleMenu() const;
+    bool chooseTitleItem(int item);
+    bool rename(const juce::String &name);
+    bool recolour(int colour);
     // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
     // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
     // chosen filter's controls, Invert and Select. A control changed applies the filter and selects
@@ -622,6 +631,8 @@ class ClipViewPanel final : public juce::Component {
     std::optional<engine::ClipDetails> details_;
     std::string problem_;
     const engine::ClipNode *node_ = nullptr;
+    // The edited clip's track's name, from this frame's snapshot: what an unnamed clip's title reads.
+    std::string_view trackName_;
     juce::Colour colour_;
     textproj::Meter meter_;
     std::vector<textproj::Meter> clipMeters_;

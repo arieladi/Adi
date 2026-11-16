@@ -3125,10 +3125,12 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     notes.time.meters = &reader.meters();
     sample.time.meters = &reader.meters();
     node_ = nullptr;
+    trackName_ = {};
     colour_ = look::trackColour(0);
     if (details_) {
         const auto rows = root.arrangement.geometry.rows(reader);
         if (const auto at = rows.find(details_->trackId); at < rows.size()) {
+            trackName_ = rows[at].track->name;
             colour_ = details_->color ? look::paletteColour(*details_->color)
                                       : root.arrangement.colourFor(rows[at].position);
             for (const auto &c : rows[at].track->clips)
@@ -3156,7 +3158,10 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
                     layer.details.scale.local == d.scale.local;
     }
     // The title: the clip's name; with several clips shown, how many (manual 10.8).
-    out.title = others_.empty() ? juce::String(d.name) : juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips";
+    // A clip with no name reads its track's (manual 10.8).
+    out.title = !others_.empty() ? juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips"
+                : !d.name.empty() ? juce::String(d.name)
+                                  : juce::String(juce::CharPointer_UTF8(trackName_.data()), juce::CharPointer_UTF8(trackName_.data() + trackName_.size()));
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
@@ -3234,6 +3239,8 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
             return {};
         return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
     }
+    if (field == Field::Name)
+        return titleArea().withTrimmedLeft(20).reduced(0, 1);
     if (field == Field::QuantizeAmount || field == Field::QuantizeSwing) {
         // Under Start and End, at the foot of the Functions tab.
         const auto above = field == Field::QuantizeAmount ? quantizeStartBox() : quantizeEndBox();
@@ -3719,6 +3726,8 @@ bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
 bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (!details_)
         return false;
+    if (field == Field::Name)
+        return rename(typed);
     const auto text = typed.toStdString();
     {
         int low = 0, high = 0;
@@ -3819,6 +3828,38 @@ bool ClipViewPanel::commitForAll(const std::function<TrackEdit(const engine::Cli
         }
     return commit(std::move(all));
 }
+juce::PopupMenu ClipViewPanel::titleMenu() const {
+    juce::PopupMenu menu, colours;
+    menu.addItem(1, "Rename");
+    for (int i = 0; i < kTitleColours; ++i) {
+        juce::PopupMenu::Item item("Color " + juce::String(i + 1));
+        item.itemID = 100 + i;
+        item.isTicked = details_ && details_->color && *details_->color == i;
+        auto swatch = std::make_unique<juce::DrawableRectangle>();
+        swatch->setRectangle(juce::Parallelogram<float>(juce::Rectangle<float>(0.f, 0.f, 14.f, 14.f)));
+        swatch->setFill(look::paletteColour(i));
+        item.image = std::move(swatch);
+        colours.addItem(std::move(item));
+    }
+    menu.addSubMenu("Color", colours);
+    return menu;
+}
+bool ClipViewPanel::chooseTitleItem(int item) {
+    if (!details_)
+        return false;
+    if (item == 1) {
+        openEditor(Field::Name);
+        return true;
+    }
+    return item >= 100 && item < 100 + kTitleColours && recolour(item - 100);
+}
+bool ClipViewPanel::rename(const juce::String &name) {
+    const auto text = name.trim().toStdString();
+    return commitForAll([&](const engine::ClipDetails &clip) { return renameClip(clip, text); });
+}
+bool ClipViewPanel::recolour(int colour) {
+    return commitForAll([colour](const engine::ClipDetails &clip) { return recolourClip(clip, colour); });
+}
 bool ClipViewPanel::toggleLoop() {
     if (!details_)
         return false;
@@ -3838,7 +3879,9 @@ void ClipViewPanel::openEditor(Field field) {
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
-    editor_.setText(value.removeCharacters(" "), false);
+    editor_.setJustification(field == Field::Name ? juce::Justification::centredLeft : juce::Justification::centredRight);
+    // A name keeps its spaces; the other fields are read without them.
+    editor_.setText(field == Field::Name ? juce::String(details_->name) : value.removeCharacters(" "), false);
     editor_.setVisible(true);
     editor_.selectAll();
     editor_.grabKeyboardFocus();
@@ -3851,6 +3894,14 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     pressed_ = Field::None;
     dragged_ = false;
     dragSteps_ = 0;
+    if (details_ && e.mods.isPopupMenu() && titleArea().contains(e.getPosition())) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        titleMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [safe](int item) {
+            if (safe != nullptr && item > 0)
+                safe->chooseTitleItem(item);
+        });
+        return;
+    }
     if (!details_ || e.mods.isPopupMenu())
         return;
     const auto at = e.getPosition();

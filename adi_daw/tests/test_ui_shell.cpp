@@ -6378,6 +6378,23 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
     }
 
+    // The title bar's context menu (manual 8.1.1, 10.8): Rename and the colour, for every shown clip.
+    {
+        const auto edited = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto another = [&]() -> const engine::ClipDetails & { return panel.others()[0].details; };
+        check(panel.titleMenu().getNumItems() == 2 && panel.chooseTitleItem(1), "the title's menu: Rename, and Color; Rename opens the name for typing");
+        check(panel.typeField(ClipViewPanel::Field::Name, "  Verse A ") && edited().name == "Verse A" && another().name == "Verse A" &&
+                  submitter.nextUndo()->label == "Rename Clip" && submitter.nextUndo()->opCount == 2 && panel.readings().title == "2 MIDI Clips",
+              "a name typed names both shown clips, without the spaces at its ends: one undo step");
+        const auto renamed = submitter.nextUndo()->txnId;
+        check(panel.rename("Verse A") && submitter.nextUndo()->txnId == renamed, "the same name again writes nothing");
+        check(panel.chooseTitleItem(105) && edited().color == 5 && another().color == 5 && submitter.nextUndo()->label == "Change Clip Color" &&
+                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(2),
+              "a colour chosen colours both: one undo step");
+        root.frame();
+        check(panel.colour() == look::paletteColour(5) && panel.others()[0].colour == look::paletteColour(5), "and the editor draws both clips in it");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -6397,6 +6414,8 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.clip() == 11 && panel.others().empty() && ed.barsHeight() == 0 && ed.rulerArea().getY() == 0,
           "one clip selected again: one clip shown, no loop bars");
     check(!ed.keyPressed(juce::KeyPress('n')), "and N is not the editor's with one clip");
+    check(panel.readings().title == "Verse A" && panel.rename("") && panel.details()->name.empty() && panel.readings().title == "Keys",
+          "one clip shown: the title is its name; a clip with no name reads its track's");
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
