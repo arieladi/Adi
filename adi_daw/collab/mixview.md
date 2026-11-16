@@ -1,5 +1,9 @@
 # Mix View seat
 
+## 16 November 2026 — dynamics repair ownership and reachable Clean device
+
+The director explicitly requests continuous work through DF-M16/17/18 and then the addable internal-key Clean compressor DF-M28; stop only for a required decision or attention-worthy issue. Claim the existing `mix/filters`, `key_eq`, `deesser`, `gate`, `opto`, `clean_key` and necessary `compressor` source/test/rate-admission paths for those repairs. Preserve finite-input numerical paths and all saved-output gates; add nonfinite recovery and high-rate coverage without claiming reference parity at unmeasured rates. After repair proof, the Clean provider owns its new native adapter/common menu/state/undo integration, with no external keys or missing-style controls. Fenced operation files remain untouched. Local integration combines held component tips solely for verification; it is not a new public PR or a claim those fixes have landed. Existing PR fixes will be carried at their owning boundaries. CPU timing remains deferred; live tests stay with Claude.
+
 ## 15 November 2026 — native EQ review repairs pushed
 
 #548 `770bf1b0` now targets main and addresses DF-M29/30/31. Width handoff forces stopped prepare only on actual precision changes. Export-created EQs use a serialized Offline owner without a worker, completing available configuration before physical-block admission; live processing retains its threaded parked owner and allocation-free path. Recovery text names remove/Undo instead of a nonexistent reload command. Strict Debug build, seven integration suites, 667 explicit fake-peer Mix View checks and four validators pass; the extended native suite passes72 checks,248,832 sample pairs and live callback allocation/free0/0. Fresh offline whole/split replays are exact with different Main-pump schedules. This is component verification, not a full app/export live check or new CPU claim. The PR includes a short acceptance brief; win re-reviews/merges.
