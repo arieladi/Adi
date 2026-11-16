@@ -1571,9 +1571,18 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return false;
             chooseClip(id);
         } else {
-            // A Time copy pastes its material as a range: Paste Time is what inserts the time.
-            const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held);
-            const auto &rangeCopy = time != nullptr ? time->material : std::get<clip_edit::RangeCopy>(board.held);
+            // A Time copy's material goes back onto the tracks it came from, at the paste point,
+            // without inserting time (Paste Time inserts it). Its track list is the whole Set's,
+            // Main and the returns too, so it is not laid out from the selected track.
+            if (const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held)) {
+                if (!commitEdit(clip_edit::preparePasteRange(store, time->material, time->material.selection.tracks,
+                                                             {0, at}, options)))
+                    return false;
+                timeSelection(origin, origin, at, at + time->ticks);
+                succeeded();
+                return true;
+            }
+            const auto &rangeCopy = std::get<clip_edit::RangeCopy>(board.held);
             // As many tracks as the copy came from, in order, from the selected one: the shown
             // tracks that can hold clips.
             const auto wanted = rangeCopy.selection.tracks.size();
@@ -1699,14 +1708,17 @@ bool AdiRootComponent::timeCommand(int id) {
         if (const auto file = board.sourceFile(); !file.empty() && file != projectFile(store))
             return fail("The clipboard holds a copy from another project: copy again in this one.");
         if (const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held)) {
+            // The engine takes a Time copy only at the rate it was copied at.
+            if (time->referenceRate != rate)
+                return fail("The sample rate changed since the time was copied: copy it again (Ctrl/Cmd+Shift+C).");
             if (!commitEdit(clip_edit::preparePasteTime(store, *time, at, rate)))
                 return false;
             select(at, at + time->ticks);
             return done();
         }
         if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held)) {
-            // A plain copy's material, with its length of time inserted on every track first; it
-            // lands on the tracks it came from.
+            // A plain copy's material, with its length of time inserted across the whole Set first
+            // (every track, the locators, the loop); the material lands on the tracks it came from.
             if (!commitEdit(clip_edit::preparePasteRange(store, *range, range->selection.tracks, {0, at}, rate, true)))
                 return false;
             select(at, at + (range->selection.end.value - range->selection.begin.value));

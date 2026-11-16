@@ -3344,10 +3344,28 @@ void timeCommands(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the paste and the cut");
     root.frame();
     // Copy Time and Duplicate Time.
+    commands.clipClipboard().held = std::monostate{};
     select(2 * bar, 3 * bar);
     check(root.keyPressed(juce::KeyPress('c', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) &&
+              std::holds_alternative<clip_edit::TimeCopy>(commands.clipClipboard().held) && root.error().empty() &&
               clipsOf(2) == Clips{{2 * bar, bar}},
-          "Copy Time leaves the arrangement as it was");
+          "Copy Time holds the time and leaves the arrangement as it was");
+    // A plain Paste of the Time copy: its material back on its own tracks at the marker, no time inserted.
+    select(6 * bar, 6 * bar);
+    check(root.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+V of the Time copy at bar 7");
+    root.frame();
+    check(clipsOf(2) == Clips{{2 * bar, bar}, {6 * bar, bar}} && clipsOf(3) == Clips{{4 * bar, bar}} && locator() == 4 * bar &&
+              root.error().empty(),
+          "the bar's clip lands on 1 MIDI at bar 7; nothing later moves");
+    check(root.command(AppCommands::Undo), "undo the paste");
+    root.frame();
+    // A Time copy taken at another sample rate says to copy again.
+    std::get<clip_edit::TimeCopy>(commands.clipClipboard().held).referenceRate += 1.0;
+    select(2 * bar, 2 * bar);
+    check(!root.command(AppCommands::PasteTime) && root.error().find("sample rate changed") != std::string::npos,
+          "Paste Time after a rate change says to copy again");
+    std::get<clip_edit::TimeCopy>(commands.clipClipboard().held).referenceRate -= 1.0;
+    select(2 * bar, 3 * bar);
     check(root.keyPressed(juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
           "Ctrl/Cmd+Shift+D over bar 3");
     root.frame();
