@@ -119,6 +119,14 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 **Since: E2** ([#549](https://github.com/arieladi/Adi/pull/549) `window/e2`): Cut, Copy, Paste and Duplicate for clips and time selections (Ctrl/Cmd+X, C, V, D; the Edit menu; a clip's menu). The clipboard is the app's, a value from the engine's `copyClip`/`copyRange`, moved to the new file on Save As. Paste goes at the insert marker, from the top selected track; a range goes back in order onto the shown tracks that hold clips. Duplicate goes right after the selection. Each is one undo step. The Mix View's STACK and a focused device keep the four first. Three review passes; every confirmed finding is fixed. For the engine: `preparePaste` and `preparePasteRange` accept MIDI material onto an audio track and the reverse; the window refuses it, but the engine could check, as `preparePasteTime` does. #538 (E1) is merged.
 
+**For the director: C5's picture** (`collab/window/pictures/2026-11-16-c5-remarks.png`, asked for in win's note of 16 November). It shows remark pips on a track, a clip, a device and a parameter, and the split Info View, drawn over the window's own renders. Nothing of C5 is built until he answers. The choices, all ADI's since Live has no remarks:
+- The pip is a folded corner at the top-right of the thing remarked on. It takes no room and moves nothing, and there is one pip however many remarks; the Info View gives the count.
+- A person's pip is light, in Live's text colour. An agent's is violet with a white diamond, so the two read apart in colour and in grey.
+- Hovering a pip splits the Info View. Live's help stays on top; below a rule, a bar names the remark's author and time, then its words follow. Add, Edit, Resolve and Remove are on the object's right-click menu, each one undo step (`remark.*`).
+- A resolved remark loses its pip. A remark whose object was deleted (`anchorMissing`) shows on its track's title as a hollow, dashed fold.
+
+His questions: the violet for agents; whether a resolved remark keeps a faint pip; whether the Mixer's strips show pips as well as the headers. E3 is in review; E4 (fades) is next.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
