@@ -535,8 +535,38 @@ template <class T> void retainedResetLifecycle() {
               "retained-cache continuation preserves physical cadence in both precisions");
     }
 }
+template<class T> void nonfiniteRecovery() {
+        for(const auto source : {g::KeySource::Internal,g::KeySource::External}) {
+            g::Settings s;s.keySource=source;s.thresholdDb=-20;
+            g::Core dirty,zeroed;g::PrepareSpec spec{48000,256,2};
+            check(dirty.prepare(spec,s)==g::Status::Ok&&zeroed.prepare(spec,s)==g::Status::Ok,"nonfinite gate fixtures prepare");
+            auto a=signal<T>(),b=a,key=signal<T>(),expectedKey=key;
+            a[0][17]=std::numeric_limits<T>::quiet_NaN();b[0][17]=0;
+            a[1][33]=std::numeric_limits<T>::infinity();b[1][33]=0;
+            key[0][9]=-std::numeric_limits<T>::infinity();expectedKey[0][9]=0;
+            key[1][70]=std::numeric_limits<T>::quiet_NaN();expectedKey[1][70]=0;
+            bool ok=true;
+            for(std::size_t offset=0;offset<count;offset+=256) {
+                T* x[]{a[0].data()+offset,a[1].data()+offset};T* y[]{b[0].data()+offset,b[1].data()+offset};
+                const T* k[]{key[0].data()+offset,key[1].data()+offset};const T* z[]{expectedKey[0].data()+offset,expectedKey[1].data()+offset};
+                audioCall=true;
+                const auto cx=dirty.beginBlock(256),cy=zeroed.beginBlock(256);
+                ok=(dirty.process(cx,0,256,x,k,2,s)==g::Status::Ok)&&ok;
+                ok=(zeroed.process(cy,0,256,y,z,2,s)==g::Status::Ok)&&ok;
+                audioCall=false;
+            }
+            check(ok&&equal(a,b),"gate recovers exactly as zero-substituted inputs without reset");
+        }
+}
+void highRates() {
+    for(double rate : {176400.,192000.,384000.,768000.}) {
+        g::Core core;g::Settings s;auto a=signal<float>();
+        check(core.prepare({rate,257,2},s)==g::Status::Ok&&run(core,s,a),"gate accepts DAW high rates and processes programme");
+    }
+}
 } // namespace
 int main() {
+    nonfiniteRecovery<float>();nonfiniteRecovery<double>();highRates();
     mappingsAndHold();
     generatedContinuity();
     routingAndPrecision();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "adi/mix/filters/FiniteInput.hpp"
 #include "ControlMapping.hpp"
 #include "detail/InclusivePeak.hpp"
 #include <algorithm>
@@ -74,7 +75,7 @@ Status validate(const Settings &s) noexcept {
 Status validate(const PrepareSpec &s) noexcept {
     if (std::fegetround() != FE_TONEAREST)
         return Status::UnsupportedEnvironment;
-    if (!std::isfinite(s.sampleRate) || s.sampleRate < 44100 || s.sampleRate > 96000 ||
+    if (!std::isfinite(s.sampleRate) || s.sampleRate < 44100 || s.sampleRate > 768000 ||
         s.maximumFrames <= 0 || s.maximumFrames > (1 << 24))
         return Status::InvalidSpec;
     return s.mainChannels == 2 ? Status::Ok : Status::UnsupportedLayout;
@@ -330,11 +331,12 @@ struct Core::Impl {
     template <class T, bool Common>
     void render(std::int32_t offset, std::int32_t frames, T *const *main, const T *const *key,
                 std::int32_t keyChannels) noexcept {
+        filters::sanitizeProgramme(main, offset, frames);
         for (std::int32_t i = offset; i < offset + frames; ++i) {
             const std::array<float, 2> audio{f(main[0][i]), f(main[1][i])};
             const std::array<float, 2> input = settings.keySource == KeySource::Internal ? audio
                                                : keyChannels
-                                                   ? std::array<float, 2>{f(key[0][i]), f(key[1][i])}
+                                                   ? std::array<float, 2>{filters::finiteInput(key[0][i]), filters::finiteInput(key[1][i])}
                                                    : std::array<float, 2>{0, 0};
             const std::array<float, 2> held{
                 hold[0].push(pre[0].step(std::abs(input[0]), prePlan, *table, i)),

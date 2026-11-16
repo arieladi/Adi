@@ -45,7 +45,7 @@ class Core final {
     Core &operator=(Core &&) = delete;
 
     // Fresh Classic stereo stream, base rate, zero latency. Failure preserves
-    // the entire previous stream. Accepted sample rates: 44.1..96 kHz, rounded
+    // the entire previous stream. Accepted sample rates: 44.1..768 kHz, rounded
     // to float. Generated test coverage uses 44.1/48/96 kHz, not every rate.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
     // Stopped processing restart at the same float-rounded rate/layout. Keeps

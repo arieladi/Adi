@@ -47,7 +47,8 @@ Two distinct main planes are required. An explicit external key has two complete
 planes, or zero planes for temporary silence on that same route. It never falls
 back to the programme. Mono, partial/null planes and partial overlaps are
 refused. Exact key/main aliases, including crossed channels, are supported.
-Samples must be finite and within float's finite range. Double I/O rounds to
+Non-finite or float-unrepresentable input samples become zero before they
+reach recursive histories; external key memory is never modified. Double I/O rounds to
 float on entry and widens on output; envelope history uses double precision.
 
 Physical callbacks use `beginBlock` followed by contiguous segments whose
