@@ -28,7 +28,13 @@ void contract() {
     const auto scan = host.scanFile(juce::String::fromUTF8(ADI_TEST_VST3), list, config);
     check(scan.complete && list.getNumTypes() == 3,
           "dedicated scanner discovers only owned fixture variants");
-    juce::DynamicLibrary module(juce::String::fromUTF8(ADI_TEST_VST3_MODULE));
+    // Observe the exact module the format loaded inside its bundle, not the
+    // separate build output (which would have independent process globals).
+    const juce::File bundle(juce::String::fromUTF8(ADI_TEST_VST3));
+    juce::File binary;
+    for(const auto& file:bundle.getChildFile("Contents").findChildFiles(juce::File::findFiles,true))
+        if(file.getFileNameWithoutExtension()==bundle.getFileNameWithoutExtension())binary=file;
+    juce::DynamicLibrary module(binary.getFullPathName());
     auto first = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyFirst"));
     auto last = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyLast"));
     auto channels = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureKeyChannels"));

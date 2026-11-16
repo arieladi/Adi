@@ -68,9 +68,9 @@ struct PlannedEdge {
     std::size_t to = 0;
     Bus bus = Bus::Main;
     std::string kind;          ///< the `routing.kind` that produced it, or "default"
-    /// The send's routing row (ADR-0203 d3), 0 for every edge that is not a
-    /// send. A send plays through a node of its own, which the realiser asks
-    /// for by this id.
+    /// The send or device-key routing row, 0 for implicit main edges. A send
+    /// or key plays through a node of its own, which the realiser identifies
+    /// by this stable row id.
     std::int64_t routingId = 0;
     Tap tap = Tap::Tail;
     /// A return's send into itself, Live's feedback loop (ADR-0203 d3): from

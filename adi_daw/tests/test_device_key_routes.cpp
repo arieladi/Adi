@@ -107,6 +107,8 @@ void preparedAndDocument(){
     check(target.sidechainChannels==2,"declared auxiliary capability is published to both surfaces");
     const auto before=instance->prepares;
     check(doc->setDeviceKey(target,2,"post_fx"),"document source and tap use actual prepared graph authority");
+    const auto sameHead=OpJournal(doc->store()).headSeq();
+    check(doc->setDeviceKey(target,2,"post_fx") && OpJournal(doc->store()).headSeq()==sameHead,"choosing current key is a no-op without an Undo entry");
     const auto after=instance->prepares;
     check(after>=before && doc->deviceKeyChoices(target).size()==10,"menu choices come from real channels and three taps");
     const auto start=OpJournal(doc->store()).headSeq();const auto count=instance->prepares;
