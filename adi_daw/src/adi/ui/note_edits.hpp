@@ -11,9 +11,11 @@
 #include "adi/ops.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/note_geometry.hpp"
+#include "adi/ui/scales.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -208,6 +210,143 @@ inline NoteEdit toggleNotesActive(const engine::ClipDetails &clip, const std::ve
     for (const auto *n : notes)
         if (n->active == !allOff)
             edit.ops.push_back(op("note.setMute", {{"clip", clip.id}, {"note", n->id}, {"muted", !allOff}}, label));
+    return edit;
+}
+// ---- The Pitch and Time utilities (manual 8.5, 10.5.9; STEP-7-PLAN 7.7 step 4) ---------------------
+// Each acts on the selected notes, or on every note of the clip when none is selected, as Live's
+// do, and is one batch of the same note ops, so one undo step.
+namespace note_edits_detail {
+// The notes a utility acts on: those named, or all of them when none is.
+inline std::vector<const engine::ClipNote *> targets(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    if (!ids.empty())
+        return pick(clip, ids);
+    std::vector<const engine::ClipNote *> out;
+    for (const auto &n : clip.notes)
+        out.push_back(&n);
+    return out;
+}
+inline std::vector<std::uint64_t> idsOf(const std::vector<const engine::ClipNote *> &notes) {
+    std::vector<std::uint64_t> out;
+    for (const auto *n : notes)
+        out.push_back(n->id);
+    return out;
+}
+// A note placed at `start` on `key` for `duration`: the ops that differ from where it is.
+inline void place(NoteEdit &edit, std::int64_t clip, const engine::ClipNote &n, std::int64_t start, int key,
+                  std::int64_t duration, const char *label) {
+    if (start != n.startTicks || key != n.key)
+        edit.ops.push_back(op("note.move", {{"clip", clip}, {"note", n.id}, {"start", start}, {"key", key}}, label));
+    if (duration != n.durationTicks)
+        edit.ops.push_back(op("note.resize", {{"clip", clip}, {"note", n.id}, {"dur", duration}}, label));
+}
+} // namespace note_edits_detail
+
+// Transpose (manual 8.5.1): by semitones; the notes stop together at the ruler's ends.
+inline NoteEdit transposeNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int semitones) {
+    using namespace note_edits_detail;
+    auto edit = moveNotes(clip, idsOf(targets(clip, ids)), 0, semitones);
+    for (auto &o : edit.ops)
+        o.label = "Transpose Notes";
+    edit.select = ids;
+    return edit;
+}
+
+// Fit to Scale (manual 8.5.1): a note outside the scale moves to the nearest key in it, the lower
+// one when two are as near. `root` is 0 to 11, `mask` the scale's pitches above the root.
+inline NoteEdit fitNotesToScale(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int root,
+                                std::int64_t mask) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    for (const auto *n : targets(clip, ids))
+        place(edit, clip.id, *n, n->startTicks, nearestInScale(n->key, root, mask), n->durationTicks, "Fit to Scale");
+    return edit;
+}
+
+// Invert (manual 8.5.1): the notes mirrored in pitch between their lowest and highest key.
+inline NoteEdit invertNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    int low = kNoteKeys - 1, high = 0;
+    for (const auto *n : notes) {
+        low = std::min(low, static_cast<int>(n->key));
+        high = std::max(high, static_cast<int>(n->key));
+    }
+    for (const auto *n : notes)
+        place(edit, clip.id, *n, n->startTicks, low + high - n->key, n->durationTicks, "Invert Notes");
+    return edit;
+}
+
+// Stretch by `numerator`/`denominator` (manual 8.5.2: x2 and /2): starts and lengths scaled together
+// from the first note's start.
+inline NoteEdit stretchNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids,
+                             std::int64_t numerator, std::int64_t denominator) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    if (notes.empty() || numerator <= 0 || denominator <= 0)
+        return edit;
+    std::int64_t from = notes.front()->startTicks;
+    for (const auto *n : notes)
+        from = std::min(from, n->startTicks);
+    for (const auto *n : notes)
+        place(edit, clip.id, *n, from + (n->startTicks - from) * numerator / denominator, n->key,
+              std::max(kShortestNote, n->durationTicks * numerator / denominator), "Stretch Notes");
+    return edit;
+}
+
+// Reverse (manual 8.5.2): the notes mirrored in time between the first start and the last end.
+inline NoteEdit reverseNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    if (notes.empty())
+        return edit;
+    std::int64_t from = notes.front()->startTicks, to = from;
+    for (const auto *n : notes) {
+        from = std::min(from, n->startTicks);
+        to = std::max(to, n->startTicks + n->durationTicks);
+    }
+    for (const auto *n : notes)
+        place(edit, clip.id, *n, from + (to - (n->startTicks + n->durationTicks)), n->key, n->durationTicks,
+              "Reverse Notes");
+    return edit;
+}
+
+// Legato (manual 8.5.2): each note lasts until the next later start among them; the last keep
+// their length.
+inline NoteEdit legatoNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    for (const auto *n : notes) {
+        std::optional<std::int64_t> next;
+        for (const auto *other : notes)
+            if (other->startTicks > n->startTicks && (!next || other->startTicks < *next))
+                next = other->startTicks;
+        if (next)
+            place(edit, clip.id, *n, n->startTicks, n->key, *next - n->startTicks, "Legato");
+    }
     return edit;
 }
 } // namespace adi::ui

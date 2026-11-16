@@ -227,6 +227,83 @@ void clipFields() {
           "one number, three, or words are not signatures");
 }
 
+void scales() {
+    check(kScales.size() == 35 && std::string(kScales.front().name) == "Major" && findScale("major")->mask == 2741,
+          "the catalogue starts with Major, whose mask is the engine's default");
+    bool rooted = true, distinct = true;
+    for (std::size_t i = 0; i < kScales.size(); ++i) {
+        rooted = rooted && (kScales[i].mask & 1) != 0 && kScales[i].mask <= 0xfff;
+        for (std::size_t j = i + 1; j < kScales.size(); ++j)
+            distinct = distinct && std::string(kScales[i].id) != kScales[j].id && std::string(kScales[i].name) != kScales[j].name;
+    }
+    check(rooted && distinct, "every scale holds its root, and no id or name is used twice");
+    check(findScale("minor-pentatonic")->mask == scaleMask({0, 3, 5, 7, 10}) && findScale("nowhere") == nullptr,
+          "a scale is found by its id; an id from elsewhere is not in the catalogue");
+    const auto major = findScale("major")->mask;
+    check(inScale(60, 0, major) && !inScale(61, 0, major) && inScale(62, 2, major) && !inScale(60, 2, major) && inScale(1, 2, major),
+          "a key belongs to a scale by its distance above the root, in every octave");
+    check(nearestInScale(60, 0, major) == 60 && nearestInScale(61, 0, major) == 60 && nearestInScale(66, 0, major) == 65 &&
+              nearestInScale(63, 0, findScale("minor-pentatonic")->mask) == 63,
+          "the nearest key of the scale: itself, or the lower of two as near");
+    check(nearestInScale(127, 1, scaleMask({0})) == 121 && nearestInScale(0, 1, scaleMask({0})) == 1 && nearestInScale(64, 0, 0) == 64,
+          "at the ruler's ends it stays within the keys; an empty scale moves nothing");
+}
+
+void utilities() {
+    const auto c = clip(); // C3 at 0 for a beat; E3 at beat 1 for two; F#8 at 0, the shortest
+    const auto up = transposeNotes(c, {}, 12);
+    check(up.ops.size() == 3 && up.ops[0].label == "Transpose Notes" && up.ops[0].payload.at("key") == 61 &&
+              up.ops[2].payload.at("key") == 127 && up.select.empty(),
+          "Transpose with none selected moves every note, stopping together at the top key; nothing becomes selected");
+    const auto one = transposeNotes(c, {3}, -12);
+    check(one.ops.size() == 1 && one.ops[0].payload.at("key") == 48 && one.select == std::vector<std::uint64_t>{3},
+          "with one selected, only that note, and it stays selected");
+    const auto fit = fitNotesToScale(c, {}, 0, findScale("major")->mask);
+    check(fit.ops.size() == 1 && fit.ops[0].opType == "note.move" && fit.ops[0].label == "Fit to Scale" &&
+              fit.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{4}}, {"start", 0}, {"key", 125}}),
+          "Fit to Scale moves only the note outside the scale, to the nearest key in it");
+    const auto invert = invertNotes(c, {3, 9});
+    check(invert.ops.size() == 2 && invert.ops[0].payload.at("key") == 64 && invert.ops[1].payload.at("key") == 60 &&
+              invert.ops[0].label == "Invert Notes",
+          "Invert swaps the lowest and the highest");
+    const auto twice = stretchNotes(c, {3, 9}, 2, 1);
+    check(twice.ops.size() == 3 && twice.ops[0].opType == "note.resize" && twice.ops[0].payload.at("dur") == 2 * beat &&
+              twice.ops[1].opType == "note.move" && twice.ops[1].payload.at("start") == 2 * beat &&
+              twice.ops[2].payload.at("dur") == 4 * beat && twice.ops[0].label == "Stretch Notes",
+          "x2: starts and lengths doubled from the first start");
+    const auto half = stretchNotes(c, {9}, 1, 2);
+    check(half.ops.size() == 1 && half.ops[0].opType == "note.resize" && half.ops[0].payload.at("dur") == beat,
+          "/2 on one note: its start is where the stretch is from, its length halves");
+    check(stretchNotes(c, {4}, 1, 2).ops.empty(), "a note already the shortest is not made shorter");
+    const auto reverse = reverseNotes(c, {3, 9});
+    check(reverse.ops.size() == 2 && reverse.ops[0].payload.at("start") == 2 * beat && reverse.ops[1].payload.at("start") == 0 &&
+              reverse.ops[0].label == "Reverse Notes",
+          "Reverse: the first note ends where the last ended, the last starts where the first did");
+    const auto legato = legatoNotes(c, {});
+    check(legato.ops.size() == 1 && legato.ops[0].opType == "note.resize" && legato.ops[0].payload.at("note") == 4 &&
+              legato.ops[0].payload.at("dur") == beat && legato.ops[0].label == "Legato",
+          "Legato: a note lasts until the next later start; the last keeps its length");
+    auto broken = clip();
+    broken.notesProblem = "duplicate note ids";
+    check(!transposeNotes(broken, {}, 1).refusal.empty() && !fitNotesToScale(broken, {}, 0, 2741).refusal.empty() &&
+              !invertNotes(broken, {}).refusal.empty() && !stretchNotes(broken, {}, 2, 1).refusal.empty() &&
+              !reverseNotes(broken, {}).refusal.empty() && !legatoNotes(broken, {}).refusal.empty(),
+          "a clip whose notes could not be read refuses the utilities too");
+
+    ClipDetails plain;
+    plain.id = 7;
+    plain.kind = "midi";
+    const auto scale = setClipScale(plain, 2, "dorian", findScale("dorian")->mask);
+    check(scale.ops.size() == 1 && scale.ops[0].opType == "clip.setScale" && scale.ops[0].label == "Change Clip Scale" &&
+              scale.ops[0].payload == Payload({{"id", 7}, {"root", 2}, {"scale", "dorian"}, {"mask", findScale("dorian")->mask}}),
+          "the clip's scale: one clip.setScale with its root, id and mask");
+    check(!setClipScale(plain, 12, "dorian", 2741).refusal.empty() && !setClipScale(plain, 0, "", 2741).refusal.empty() &&
+              !setClipScale(plain, 0, "odd", 2740).refusal.empty(),
+          "a root past B, no id, or a scale without its root is refused");
+    plain.scale.local = true;
+    check(setClipScale(plain, plain.scale.root, plain.scale.id, plain.scale.mask).ops.empty(), "the same scale again writes nothing");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -272,6 +349,8 @@ int main() {
     activating();
     refusals();
     clipFields();
+    scales();
+    utilities();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

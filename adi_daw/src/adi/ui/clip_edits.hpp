@@ -132,6 +132,19 @@ inline TrackEdit setClipSignature(const engine::ClipDetails &clip, std::int64_t 
                               "Change Clip Time Signature"));
     return edit;
 }
+// The clip's own scale (manual 8.2.5): its root, 0 to 11, the scale's id and its pitches above the
+// root as a 12-bit mask that holds the root.
+inline TrackEdit setClipScale(const engine::ClipDetails &clip, std::int64_t root, const std::string &id,
+                              std::int64_t mask) {
+    using track_edits_detail::op;
+    TrackEdit edit;
+    if (root < 0 || root > 11 || id.empty() || (mask & 1) == 0 || mask < 0 || mask > 0xfff)
+        edit.refusal = "A scale has a root and holds it.";
+    else if (!clip.scale.local || clip.scale.root != root || clip.scale.id != id || clip.scale.mask != mask)
+        edit.ops.push_back(op("clip.setScale", {{"id", clip.id}, {"root", root}, {"scale", id}, {"mask", mask}},
+                              "Change Clip Scale"));
+    return edit;
+}
 
 namespace clip_edits_detail {
 inline bool digit(char c) noexcept { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
