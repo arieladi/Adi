@@ -2272,8 +2272,11 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
         g.setColour(juce::Colours::black.withAlpha(0.85f));
         g.strokePath(line, juce::PathStrokeType(1.f));
     };
-    draw(left, xIn, true, c.fadeInCurve, inTension);
-    draw(xOut, right, false, c.fadeOutCurve, outTension);
+    const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
+    const bool bendingOut = fadeDrag_ && fadeDrag_->curve && !fadeDrag_->in && outTension != c.fadeOutTension;
+    const auto inCurve = bendingIn ? kBentFadeCurve : c.fadeInCurve, outCurve = bendingOut ? kBentFadeCurve : c.fadeOutCurve;
+    draw(left, xIn, true, inCurve, inTension);
+    draw(xOut, right, false, outCurve, outTension);
     if (!fadeHandlesShown(c))
         return;
     const auto square = [&](float x, bool chosen) {
@@ -2298,9 +2301,9 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
     square(std::max(left + 3.5f, xIn), chosen(true, false));
     square(std::min(right - 3.5f, xOut), chosen(false, false));
     if (in > 0)
-        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, c.fadeInCurve, inTension)), chosen(true, true));
+        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
     if (out > 0)
-        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, c.fadeOutCurve, outTension)), chosen(false, true));
+        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
 }
 std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h) const {
     for (const auto &b : clipBodies()) {
@@ -2316,8 +2319,9 @@ std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeH
             return juce::Point<float>(h.in ? std::max(b.left + 3.5f, xIn) : std::min(b.right - 3.5f, xOut), b.top + 3.5f);
         if ((h.in ? in : out) == 0)
             return std::nullopt;
-        const auto shape = engine::clipFadeShape(0.5, h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve,
-                                                 h.in ? inTension : outTension);
+        const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
+        const auto curve = bending ? kBentFadeCurve : h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve;
+        const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
         return juce::Point<float>(h.in ? (b.left + xIn) / 2.f : (xOut + b.right) / 2.f,
                                   b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
     }
@@ -2568,7 +2572,8 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
     // The audio clip under the mouse shows its fade handles (manual 6.8).
     std::int64_t over = 0;
     for (const auto &b : clipBodies())
-        if (b.clip->audio && e.x >= b.left && e.x < b.right && e.y >= b.top - kClipBarHeight && e.y <= b.bottom)
+        if (const auto mx = static_cast<float>(e.x), my = static_cast<float>(e.y);
+            b.clip->audio && mx >= b.left && mx < b.right && my >= b.top - kClipBarHeight && my <= b.bottom)
             over = b.clip->id;
     if (over != hoverClip_) {
         hoverClip_ = over;

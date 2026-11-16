@@ -11,6 +11,8 @@ namespace adi::ui {
 // clip: a fade in from the clip's start and a fade out to its end, each a length in ticks and a
 // curve, written by `clip.setFades` (a plain op: one batch, one undo step). The two fades of a clip
 // never overlap: their lengths together are at most the clip's. Only audio clips have fades.
+// The curve a fade bent by its handle takes: the engine's Bezier, which tension bends either way.
+inline constexpr std::int64_t kBentFadeCurve = 5;
 namespace fade_edits_detail {
 inline bool isAudio(const engine::ClipNode &c) { return c.audio.has_value(); }
 // One clip's fades set, either side or both; a side left out keeps what it has.
@@ -22,16 +24,21 @@ inline OpRequest setFades(std::int64_t clip, std::optional<std::int64_t> in, std
         Payload side = Payload::object();
         if (in)
             side["ticks"] = *in;
-        if (inTension)
+        if (inTension) {
+            // A bent fade is the engine's Bezier curve (`curves.hpp`): the linear curve ignores tension.
             side["tension"] = *inTension;
+            side["curve"] = kBentFadeCurve;
+        }
         payload["in"] = side;
     }
     if (out || outTension) {
         Payload side = Payload::object();
         if (out)
             side["ticks"] = *out;
-        if (outTension)
+        if (outTension) {
             side["tension"] = *outTension;
+            side["curve"] = kBentFadeCurve;
+        }
         payload["out"] = side;
     }
     auto r = track_edits_detail::op("clip.setFades", std::move(payload), label);

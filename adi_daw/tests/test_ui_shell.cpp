@@ -10,6 +10,8 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/engine/clip_fade.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -4672,18 +4674,6 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         const int y = static_cast<int>(peak->y) + 6;
         check(image.getPixelAt(x0, y).getBrightness() < image.getPixelAt(x1, y).getBrightness(),
               "the faded start of the clip is drawn darker than its middle");
-        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
-            juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
-            {
-                juce::Graphics g(picture);
-                g.addTransform(juce::AffineTransform::scale(2.f));
-                root.paintEntireComponent(g, true);
-            }
-            const auto file = juce::File(folder).getChildFile("adi-fades.png");
-            file.deleteFile();
-            juce::FileOutputStream out(file);
-            juce::PNGImageFormat().writeImageToStream(picture, out);
-        }
     }
     // The curve's diamond, dragged up, writes the fade's tension.
     if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
@@ -4692,7 +4682,9 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         canvas.mouseDrag(dragAt(canvas, *diamond, up));
         canvas.mouseUp(dragAt(canvas, *diamond, up));
         root.frame();
-        check(clips()[0]->fadeInTension.has_value() && *clips()[0]->fadeInTension > 0.2 &&
+        const auto bent = engine::clipFadeShape(0.5, clips()[0]->fadeInCurve, clips()[0]->fadeInTension);
+        check(clips()[0]->fadeInTension.has_value() && std::abs(*clips()[0]->fadeInTension) > 0.2 &&
+                  clips()[0]->fadeInCurve == kBentFadeCurve && std::abs(bent - 0.5) > 0.05 &&
                   document->ops().nextUndo()->label == "Change Fade Curve",
               "the diamond dragged up bends the curve, one step");
         check(root.command(AppCommands::Undo), "undo the curve");
@@ -4740,6 +4732,44 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     sel.start = bar / 4;
     sel.end = bar / 2;
     check(!root.command(AppCommands::CreateFade) && !root.error().empty(), "a selection inside a clip has no fade to make");
+    // For the picture beside Live 12's: a curved fade in, a crossfade at the boundary, a fade out,
+    // the handles shown by F, the waveforms drawn.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        std::vector<OpRequest> fades;
+        for (const auto &[id, in, out, tension] :
+             {std::tuple{first, bar / 3, bar / 4, 0.6}, std::tuple{second, bar / 4, bar / 2, 0.0}}) {
+            OpRequest r;
+            r.opType = "clip.setFades";
+            r.payload = {{"id", id}, {"in", {{"ticks", in}, {"tension", tension}, {"curve", kBentFadeCurve}}}, {"out", {{"ticks", out}}}};
+            fades.push_back(std::move(r));
+        }
+        document->ops().submit(std::move(fades));
+        document->synchronise();
+        sel = {};
+        sel.track = 2;
+        canvas.showFades = true;
+        auto &waves = document->waveforms();
+        root.frame();
+        juce::Image warm(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(warm);
+            canvas.paintEntireComponent(g, true);
+        }
+        for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        root.frame();
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-fades.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+        canvas.showFades = false;
+    }
     commands.detach(root);
     document->release();
 }
