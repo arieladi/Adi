@@ -1384,6 +1384,103 @@ std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
     }
     return songTick;
 }
+// ---- The editor's context menu -----------------------------------------------------------------
+juce::PopupMenu NoteEditor::contextMenu() const {
+    juce::PopupMenu menu;
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return menu;
+    const bool notes = anySelected(), timed = timeSelection().has_value();
+    bool allOff = notes;
+    for (const auto &n : clip->notes)
+        if (isSelected(n.id) && n.active)
+            allOff = false;
+    menu.addItem(kCut, "Cut", notes);
+    menu.addItem(kCopy, "Copy", notes);
+    menu.addItem(kPaste, "Paste", !panel.noteClipboard.empty());
+    menu.addItem(kDuplicate, "Duplicate", !selected_.empty());
+    menu.addItem(kDelete, "Delete", notes);
+    menu.addSeparator();
+    menu.addItem(kDeactivate, allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes);
+    menu.addSeparator();
+    menu.addItem(kSelectAll, "Select All");
+    menu.addItem(kInvertSelection, "Invert Selection", !clip->notes.empty());
+    menu.addSeparator();
+    menu.addItem(kQuantize, "Quantize", !clip->notes.empty());
+    menu.addItem(kQuantizeSettings, "Quantize Settings...");
+    menu.addItem(kSplit, notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
+                 notes || timed || insert_.has_value());
+    menu.addItem(kJoin, "Join Notes", notes);
+    menu.addSeparator();
+    menu.addItem(kCrop, timed ? "Crop Clip to Time Selection" : "Crop Clip");
+    menu.addItem(kDuplicateTime, "Duplicate Time", timed);
+    menu.addItem(kDeleteTime, "Delete Time", timed);
+    menu.addItem(kInsertTime, "Insert Time", timed);
+    menu.addItem(kDuplicateLoop, "Duplicate Loop", loopLengthOf(*clip) > 0);
+    menu.addSeparator();
+    menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
+    menu.addItem(kFoldToNotes, "Fold to Notes", true, folded_);
+    menu.addItem(kFoldToScale, "Fold to Scale", scaleOn(), scaleFolded_);
+    menu.addItem(kHighlightScale, "Highlight Scales", true, highlightScale);
+    return menu;
+}
+bool NoteEditor::chooseContextItem(int item) {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto key = [this](int code, int mods = 0) { return keyPressed(juce::KeyPress(code, juce::ModifierKeys(mods), 0)); };
+    const int command = juce::ModifierKeys::commandModifier;
+    switch (item) {
+    case kCut:
+        return cutSelected();
+    case kCopy:
+        return copySelected();
+    case kPaste:
+        return paste();
+    case kDuplicate:
+        return duplicate();
+    case kDelete:
+        return anySelected() && key(juce::KeyPress::deleteKey);
+    case kDeactivate:
+        return anySelected() && key('0');
+    case kSelectAll:
+        return key('a', command);
+    case kInvertSelection:
+        invertSelection();
+        return true;
+    case kQuantize:
+        return quantize();
+    case kQuantizeSettings:
+        panel.setToolsTab(1);
+        return true;
+    case kSplit:
+        return splitOrChop();
+    case kJoin:
+        return join();
+    case kCrop:
+        return crop();
+    case kDuplicateTime:
+        return timeCommand(TimeCommand::Duplicate);
+    case kDeleteTime:
+        return timeCommand(TimeCommand::Delete);
+    case kInsertTime:
+        return timeCommand(TimeCommand::Insert);
+    case kDuplicateLoop:
+        return duplicateLoop();
+    case kFoldToNotes:
+        setFold(!folded_);
+        panel.repaint();
+        return true;
+    case kFoldToScale:
+        setScaleFold(!scaleFolded_);
+        panel.repaint();
+        return true;
+    case kHighlightScale:
+        return key('k');
+    default:
+        return item >= kGridItems && panel.chooseGrid(item - kGridItems);
+    }
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1519,7 +1616,22 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     typedVelocity_.clear();
     from_ = to_ = e.getPosition();
     const auto *clip = panel.details();
-    if (clip == nullptr || e.mods.isPopupMenu())
+    if (clip != nullptr && e.mods.isPopupMenu()) {
+        // A right-click: a note under it that is not selected is selected first; then the menu.
+        if (const auto *n = noteAt(from_); n != nullptr && !isSelected(n->id)) {
+            selected_ = {n->id};
+            otherSelected_.clear();
+            head_.reset();
+        }
+        repaint();
+        juce::Component::SafePointer<NoteEditor> safe(this);
+        contextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [safe](int item) {
+            if (safe != nullptr && item > 0)
+                safe->chooseContextItem(item);
+        });
+        return;
+    }
+    if (clip == nullptr)
         return;
     if (std::uint64_t picked = 0; noteAt(from_) == nullptr) {
         if (const auto other = otherClipAt(from_, &picked); other != 0 && picked != 0 && e.mods.isShiftDown() && !panel.focus()) {
@@ -2709,20 +2821,20 @@ void ClipViewPanel::keepSettings() {
 juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
     return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
 }
-juce::PopupMenu ClipViewPanel::gridMenu() const {
+juce::PopupMenu ClipViewPanel::gridMenu(int idOffset) const {
     using Geometry = ArrangementGeometry;
     const auto &grid = notes.time.grid;
     juce::PopupMenu menu, adaptive, fixed;
     for (std::size_t i = 0; i < Geometry::kAdaptiveNames.size(); ++i)
-        adaptive.addItem(static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
+        adaptive.addItem(idOffset + static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
                          !grid.fixed && grid.narrow == static_cast<int>(i) - Geometry::kGridNarrowest);
-    int id = 10;
+    int id = idOffset + 10;
     for (double quarters = Geometry::kWidestGrid; quarters >= Geometry::kFinestGrid; quarters /= 2)
         fixed.addItem(id++, gridLabel(quarters, false), true, grid.fixed && grid.fixedQuarters == quarters);
     menu.addSubMenu("Adaptive Grid", adaptive);
     menu.addSubMenu("Fixed Grid", fixed);
-    menu.addItem(30, "Triplet Grid", true, grid.triplet);
-    menu.addItem(31, "Snap to Grid", true, grid.snap);
+    menu.addItem(idOffset + 30, "Triplet Grid", true, grid.triplet);
+    menu.addItem(idOffset + 31, "Snap to Grid", true, grid.snap);
     return menu;
 }
 bool ClipViewPanel::chooseGrid(int item) {

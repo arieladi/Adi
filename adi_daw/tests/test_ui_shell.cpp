@@ -6188,6 +6188,59 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.state().clipView && panel.details() != nullptr, "and shows it again");
         ed.fitWidth();
     }
+
+    // The editor's context menu: its commands under a right-click.
+    {
+        using Ids = std::vector<std::uint64_t>;
+        const auto enabled = [&](int id) {
+            const auto menu = ed.contextMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().itemID == id)
+                    return it.getItem().isEnabled;
+            return false;
+        };
+        const auto named = [&](int id) {
+            const auto menu = ed.contextMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().itemID == id)
+                    return it.getItem().text;
+            return juce::String();
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        check(!enabled(NoteEditor::kCut) && !enabled(NoteEditor::kDelete) && !enabled(NoteEditor::kJoin) && !enabled(NoteEditor::kDuplicateTime) &&
+                  enabled(NoteEditor::kSelectAll) && enabled(NoteEditor::kQuantize) && enabled(NoteEditor::kCrop) &&
+                  named(NoteEditor::kCrop) == "Crop Clip" && !enabled(NoteEditor::kFoldToScale),
+              "with nothing selected the menu greys what needs notes or time, and Fold to Scale without a scale of the clip's own");
+        // A right-click on a note that is not selected selects it.
+        if (const auto box = ed.boxOf(note(2))) {
+            const juce::Point<float> on(static_cast<float>(box->x + box->width / 2), static_cast<float>(box->y + box->height / 2));
+            ed.mouseDown(pressAt(ed, on, juce::ModifierKeys(juce::ModifierKeys::popupMenuClickModifier)));
+        }
+        check(ed.selected() == Ids({2}) && enabled(NoteEditor::kCut) && enabled(NoteEditor::kDeactivate) && named(NoteEditor::kDeactivate) == "Deactivate Note(s)" &&
+                  named(NoteEditor::kSplit) == "Chop Notes on Grid",
+              "a right-click on a note selects it; the menu's note commands are live");
+        check(ed.chooseContextItem(NoteEditor::kDeactivate) && !note(2).active && named(NoteEditor::kDeactivate) == "Activate Note(s)" &&
+                  ed.chooseContextItem(NoteEditor::kDeactivate) && note(2).active,
+              "Deactivate Note(s) from the menu, and Activate again");
+        check(ed.chooseContextItem(NoteEditor::kCopy) && panel.noteClipboard.size() == 1 && ed.chooseContextItem(NoteEditor::kSelectAll) &&
+                  ed.selected().size() == details().notes.size() && ed.chooseContextItem(NoteEditor::kInvertSelection) && ed.selected().empty(),
+              "Copy, Select All and Invert Selection");
+        ed.selectTime(song(0), song(2 * beat));
+        check(enabled(NoteEditor::kDuplicateTime) && named(NoteEditor::kCrop) == "Crop Clip to Time Selection" &&
+                  named(NoteEditor::kSplit) == "Split Notes at Time Selection" && ed.chooseContextItem(NoteEditor::kInsertTime) && undoIs("Insert Time") && undo(),
+              "with time selected the time commands are live, and Crop and Split name the time selection");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        const auto narrow = ed.time.grid.narrow;
+        check(ed.chooseContextItem(NoteEditor::kGridItems + 31) && !ed.time.grid.snap && ed.chooseContextItem(NoteEditor::kGridItems + 31) && ed.time.grid.snap &&
+                  ed.time.grid.narrow == narrow && ed.chooseContextItem(NoteEditor::kFoldToNotes) && ed.folded() &&
+                  ed.chooseContextItem(NoteEditor::kFoldToNotes) && !ed.folded() && ed.chooseContextItem(NoteEditor::kHighlightScale) &&
+                  ed.chooseContextItem(NoteEditor::kHighlightScale) && ed.chooseContextItem(NoteEditor::kQuantizeSettings) && panel.toolsTab() == 1 &&
+                  !ed.chooseContextItem(999),
+              "the grid's submenu, the folds, Highlight Scales and Quantize Settings from the menu");
+        panel.setToolsTab(0);
+        ed.select({});
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {

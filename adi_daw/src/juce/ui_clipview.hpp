@@ -88,6 +88,16 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // The editor's context menu (manual 10.5.2 and on: Live names these commands in the Edit menu
+    // and the editor's own menu). A right-click on a note that is not selected selects it first.
+    // Every entry is a command the editor already has; one that cannot act now is greyed.
+    enum ContextItem {
+        kCut = 1, kCopy, kPaste, kDuplicate, kDelete, kDeactivate, kSelectAll, kInvertSelection, kQuantize, kQuantizeSettings,
+        kSplit, kJoin, kCrop, kDuplicateTime, kDeleteTime, kInsertTime, kDuplicateLoop, kFoldToNotes, kFoldToScale, kHighlightScale,
+        kGridItems = 1000
+    };
+    juce::PopupMenu contextMenu() const;
+    bool chooseContextItem(int item);
     // MIDI Note Stretch (manual 10.5.6). With two or more notes selected, or time selected over
     // notes, a pair of markers hangs under the ruler at the selection's start and end. One dragged
     // stretches the notes in proportion, the other staying; dragged past the other it mirrors them.
@@ -501,7 +511,7 @@ class ClipViewPanel final : public juce::Component {
     // widths, the fixed ones, triplets and snapping. Items 1 to 5 are the adaptive widths, widest
     // first; 10 on, the fixed ones from 8 Bars to 1/32; 30 Triplet Grid; 31 Snap to Grid.
     juce::Rectangle<int> gridBox() const noexcept;
-    juce::PopupMenu gridMenu() const;
+    juce::PopupMenu gridMenu(int idOffset = 0) const;
     bool chooseGrid(int item);
     juce::PopupMenu coloursMenu() const;
     bool chooseColours(int item);
