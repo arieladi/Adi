@@ -4588,6 +4588,58 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo) && ed.chooseShape(1) && ed.laneShape() == LaneShape::Pointer, "undone; Pointer is Live's lane again");
     root.frame();
 
+    // The trim tool (ADR-0241 d2, from Cubase): the header's switch; a stroke down across a note cuts it there, on the grid.
+    ed.select({1});
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)) &&
+              ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)) && note(1).durationTicks == 3 * beat,
+          "the first C3 is made three beats long");
+    panel.mouseDown(pressAt(panel, panel.trimBox().getCentre().toFloat()));
+    panel.mouseUp(pressAt(panel, panel.trimBox().getCentre().toFloat()));
+    check(ed.trimMode() && !ed.drawMode(), "the header's Trim switch turns the trim tool on");
+    const juce::Point<float> cutFrom(xAt(2 * beat) + 3.f, yOf(60) - 3.f), cutTo(xAt(2 * beat) + 3.f, yOf(60) + 3.f);
+    ed.mouseDown(pressAt(ed, cutFrom));
+    ed.mouseDrag(dragAt(ed, cutFrom, cutTo));
+    check(ed.trimmedLengths() == std::vector<std::pair<std::uint64_t, std::int64_t>>{{1, 2 * beat}} && note(1).durationTicks == 3 * beat &&
+              ed.shown(note(1)).durationTicks == 2 * beat,
+          "a stroke across it just past the third beat shows it cut on the grid, two beats long; nothing written yet");
+    ed.mouseUp(pressAt(ed, cutTo));
+    check(note(1).durationTicks == 2 * beat && undoIs("Trim Note", 1), "let go, it is two beats long: one undo step");
+    panel.mouseDown(pressAt(panel, panel.trimBox().getCentre().toFloat()));
+    panel.mouseUp(pressAt(panel, panel.trimBox().getCentre().toFloat()));
+    check(!ed.trimMode(), "and the switch turns the tool off");
+
+    // The handles on a selection of velocities (ADR-0241 d2, from Cubase): tilt, scale, compress.
+    ed.select({1});
+    check(ed.handleBox(LaneHandle::Scale).isEmpty() && ed.handleAt({0, 0}) == LaneHandle::None, "one selected note shows no handles");
+    ed.select({1, 2});
+    const auto tilt = ed.handleBox(LaneHandle::TiltRight);
+    check(!tilt.isEmpty() && !ed.handleBox(LaneHandle::TiltLeft).isEmpty() && !ed.handleBox(LaneHandle::Scale).isEmpty() &&
+              !ed.handleBox(LaneHandle::Compress).isEmpty() && ed.handleAt(tilt.getCentre()) == LaneHandle::TiltRight,
+          "two selected notes show the four handles over their velocities");
+    const auto hLane = ed.velocityArea().withTrimmedTop(1);
+    const double hHeight = hLane.getHeight() - 10;
+    const int v1 = note(1).velocity, v2 = note(2).velocity;
+    const juce::Point<float> grabTilt = tilt.getCentre().toFloat();
+    ed.mouseDown(pressAt(ed, grabTilt));
+    ed.mouseDrag(dragAt(ed, grabTilt, {grabTilt.x, grabTilt.y - 8.f}));
+    const int raised = std::clamp(static_cast<int>(std::lround(v2 + 8. * 127. / hHeight)), 1, 127);
+    check(ed.shown(note(1)).velocity == v1 && ed.shown(note(2)).velocity == raised && note(2).velocity == v2,
+          "the right tilt handle dragged up raises the later note and leaves the earlier, shown while held");
+    ed.mouseUp(pressAt(ed, {grabTilt.x, grabTilt.y - 8.f}));
+    check(note(1).velocity == v1 && note(2).velocity == raised && undoIs("Tilt Velocities", 1) && ed.selected().size() == 2,
+          "let go, one undo step, and both stay selected");
+    const juce::Point<float> grabScale = ed.handleBox(LaneHandle::Scale).getCentre().toFloat();
+    const int s1 = note(1).velocity, s2 = note(2).velocity;
+    ed.mouseDown(pressAt(ed, grabScale));
+    ed.mouseDrag(dragAt(ed, grabScale, {grabScale.x, grabScale.y + 12.f}));
+    ed.mouseUp(pressAt(ed, {grabScale.x, grabScale.y + 12.f}));
+    check(note(1).velocity < s1 && note(2).velocity < s2 && std::abs(note(1).velocity * s2 - note(2).velocity * s1) <= s1 + s2 &&
+              undoIs("Scale Velocities", 2),
+          "the Scale handle dragged down lowers both in proportion, one undo step");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "both undone");
+    root.frame();
+    ed.select({});
+
     // The playhead: hidden while stopped; while the song plays, a line where the song is.
     check(!ed.playhead.isVisible(), "stopped, the editor shows no playhead");
     engine::Transport driver;

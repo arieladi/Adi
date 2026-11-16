@@ -427,6 +427,29 @@ void laneShapes() {
           "drawn velocities: an op for each note that changes, within 1 to 127; a note the clip lacks is left out");
 }
 
+void handlesAndTrim() {
+    check(handleValue(LaneHandle::TiltLeft, 60, 0, 20, 0, 0) == 80 && handleValue(LaneHandle::TiltLeft, 60, 1, 20, 0, 0) == 60 &&
+              handleValue(LaneHandle::TiltLeft, 60, .5, 20, 0, 0) == 70,
+          "Tilt from the left raises the first value and leaves the last");
+    check(handleValue(LaneHandle::TiltRight, 60, 0, -20, 0, 0) == 60 && handleValue(LaneHandle::TiltRight, 60, 1, -20, 0, 0) == 40,
+          "Tilt from the right moves the last value and leaves the first");
+    check(handleValue(LaneHandle::Scale, 100, 0, -50, 0, 100) == 50 && handleValue(LaneHandle::Scale, 40, 0, -50, 0, 100) == 20 &&
+              handleValue(LaneHandle::Scale, 40, 0, -500, 0, 100) == 0,
+          "Scale multiplies every value so the highest follows the pointer, never below nothing");
+    check(handleValue(LaneHandle::Compress, 100, 0, -20, 60, 100) == 80 && handleValue(LaneHandle::Compress, 20, 0, -20, 60, 100) == 40 &&
+              handleValue(LaneHandle::Compress, 60, 0, -20, 60, 100) == 60 && handleValue(LaneHandle::Compress, 100, 0, 20, 60, 100) == 120,
+          "Compress draws values towards their mean, or away from it");
+    check(handleValue(LaneHandle::None, 77, .3, 50, 10, 90) == 77, "no handle changes nothing");
+
+    const auto c = clip(); // C3 for a beat; E3 for two beats; F#8, the shortest
+    const auto trim = trimNotesTo(c, {{9, beat}, {3, beat}, {4, 1}, {555, beat}});
+    check(trim.ops.size() == 1 && trim.ops[0].opType == "note.resize" && trim.ops[0].label == "Trim Notes" &&
+              trim.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{9}}, {"dur", beat}}),
+          "the trim writes a length for each note that changes; never shorter than the shortest");
+    check(trimNotesTo(c, {{9, beat}}).ops[0].label == "Trim Note", "one note is named in the singular");
+    check(drawVelocities(c, {{3, 50}}, "Tilt Velocities").ops[0].label == "Tilt Velocities", "a handle's batch carries its own label");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -478,6 +501,7 @@ int main() {
     drawing();
     chordEditing();
     laneShapes();
+    handlesAndTrim();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

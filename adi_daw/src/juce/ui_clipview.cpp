@@ -182,8 +182,111 @@ void NoteEditor::shapeStroke() {
             n.id, std::clamp(static_cast<int>(std::lround(shapeValue(shape_, t, first, last, cycles))), 1, 127));
     }
 }
+void NoteEditor::setTrimMode(bool on) {
+    trimMode_ = on;
+    if (on)
+        drawMode_ = false;
+    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    panel.repaint();
+}
+void NoteEditor::trimStroke() {
+    trimPreview_.clear();
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    // Each note the stroke crosses (its key track between the stroke's ends, the stroke inside its
+    // length) ends where the stroke is, on the grid unless snapping is bypassed.
+    const auto area = notesArea();
+    const auto window = ClipWindow::of(*clip);
+    const auto at = time.tick(static_cast<double>(to_.x - area.getX()));
+    const auto cut = window.toSource(time.grid.snap ? time.snap(at, false) : at);
+    const int top = std::min(from_.y, to_.y), bottom = std::max(from_.y, to_.y);
+    for (const auto &n : clip->notes) {
+        const auto box = boxOf(n);
+        if (!box || box->y > bottom || box->y + box->height <= top)
+            continue;
+        if (static_cast<double>(to_.x) <= box->x || static_cast<double>(to_.x) >= box->x + box->width)
+            continue;
+        if (cut > n.startTicks && cut < n.startTicks + n.durationTicks)
+            trimPreview_.emplace_back(n.id, cut - n.startTicks);
+    }
+}
+juce::Rectangle<int> NoteEditor::selectedVelocityFrame() const noexcept {
+    const auto *clip = panel.details();
+    const auto lane = velocityArea().withTrimmedTop(1);
+    if (clip == nullptr || lane.isEmpty() || selected_.size() < 2 || shape_ != LaneShape::Pointer)
+        return {};
+    const double top = lane.getY() + 5, height = lane.getHeight() - 10;
+    const auto window = ClipWindow::of(*clip);
+    int left = 0, right = 0, high = 0, low = 0;
+    bool any = false;
+    for (const auto &stored : clip->notes) {
+        if (!isSelected(stored.id))
+            continue;
+        const auto n = shown(stored);
+        const int x = lane.getX() + static_cast<int>(std::clamp(time.x(window.toArrangement(n.startTicks)), -1e6, 1e6));
+        const int y = static_cast<int>(velocityY(n.velocity, top, height));
+        left = any ? std::min(left, x) : x;
+        right = any ? std::max(right, x) : x;
+        high = any ? std::min(high, y) : y;
+        low = any ? std::max(low, y) : y;
+        any = true;
+    }
+    return any ? juce::Rectangle<int>(left, high, std::max(1, right - left), std::max(1, low - high)) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> NoteEditor::handleBox(LaneHandle handle) const noexcept {
+    const auto frame = selectedVelocityFrame();
+    if (frame.isEmpty() || handle == LaneHandle::None)
+        return {};
+    // Above the selection's frame: the tilt handles at its ends, Scale at its middle; Compress under Scale.
+    const int y = std::max(velocityArea().getY() + 2, frame.getY() - 9);
+    const int x = handle == LaneHandle::TiltLeft    ? frame.getX() - 3
+                  : handle == LaneHandle::TiltRight ? frame.getRight() - 3
+                                                    : frame.getCentreX() - 3;
+    return {x, handle == LaneHandle::Compress ? y + 9 : y, 7, 7};
+}
+LaneHandle NoteEditor::handleAt(juce::Point<int> at) const noexcept {
+    for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
+        if (const auto box = handleBox(handle); !box.isEmpty() && box.expanded(2).contains(at))
+            return handle;
+    return LaneHandle::None;
+}
+void NoteEditor::handleDrag() {
+    shapePreview_.clear();
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    // The drag in lane units: up raises.
+    const auto lane = velocityArea().withTrimmedTop(1);
+    const double height = std::max(1, lane.getHeight() - 10);
+    const double by = static_cast<double>(from_.y - to_.y) * 127. / height;
+    std::int64_t first = 0, last = 0;
+    double sum = 0, highest = 0;
+    std::size_t count = 0;
+    for (const auto &n : clip->notes) {
+        if (!isSelected(n.id))
+            continue;
+        first = count == 0 ? n.startTicks : std::min(first, n.startTicks);
+        last = count == 0 ? n.startTicks : std::max(last, n.startTicks);
+        sum += n.velocity;
+        highest = std::max(highest, static_cast<double>(n.velocity));
+        ++count;
+    }
+    if (count == 0)
+        return;
+    const double mean = sum / static_cast<double>(count);
+    for (const auto &n : clip->notes) {
+        if (!isSelected(n.id))
+            continue;
+        const double t = last == first ? 0. : static_cast<double>(n.startTicks - first) / static_cast<double>(last - first);
+        const double value = handleValue(handle_, n.velocity, t, by, mean, highest);
+        shapePreview_.emplace_back(n.id, std::clamp(static_cast<int>(std::lround(value)), 1, 127));
+    }
+}
 void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
+    if (on)
+        trimMode_ = false;
     setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
     panel.repaint();
 }
@@ -332,7 +435,13 @@ const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) 
 }
 engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
     auto out = note;
-    if (drag_ == Drag::Shape) {
+    if (drag_ == Drag::Trim) {
+        for (const auto &[id, length] : trimPreview_)
+            if (id == note.id)
+                out.durationTicks = length;
+        return out;
+    }
+    if (drag_ == Drag::Shape || drag_ == Drag::Handle) {
         for (const auto &[id, value] : shapePreview_)
             if (id == note.id)
                 out.velocity = static_cast<std::uint8_t>(value);
@@ -398,6 +507,13 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             repaint();
             return;
         }
+        if (const auto handle = handleAt(from_); handle != LaneHandle::None) {
+            handle_ = handle;
+            drag_ = Drag::Handle;
+            handleDrag();
+            repaint();
+            return;
+        }
         // The marker nearest the pointer, within a few pixels.
         const auto window = ClipWindow::of(*clip);
         const engine::ClipNote *best = nullptr;
@@ -415,6 +531,12 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             anchor_ = best->id;
             drag_ = Drag::Velocity;
         }
+        repaint();
+        return;
+    }
+    if (trimMode_ && notesArea().contains(from_)) {
+        drag_ = Drag::Trim;
+        trimStroke();
         repaint();
         return;
     }
@@ -487,6 +609,10 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
             dragVelocity_ = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10) - static_cast<int>(n->velocity);
     } else if (drag_ == Drag::Shape) {
         shapeStroke();
+    } else if (drag_ == Drag::Trim) {
+        trimStroke();
+    } else if (drag_ == Drag::Handle) {
+        handleDrag();
     } else if (drag_ == Drag::Band) {
         // The notes the rectangle touches, added to what Shift kept.
         const juce::Rectangle<int> band(from_, to_);
@@ -522,6 +648,18 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
     else if (kind == Drag::Shape) {
         const auto values = std::exchange(shapePreview_, {});
         commit(drawVelocities(*clip, values));
+    } else if (kind == Drag::Handle) {
+        const auto values = std::exchange(shapePreview_, {});
+        const auto handle = std::exchange(handle_, LaneHandle::None);
+        commit(drawVelocities(*clip, values,
+                              handle == LaneHandle::Scale      ? "Scale Velocities"
+                              : handle == LaneHandle::Compress ? "Compress Velocities"
+                                                               : "Tilt Velocities"));
+    } else if (kind == Drag::Trim) {
+        const auto lengths = std::exchange(trimPreview_, {});
+        const auto keep = selected_;
+        if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
+            select(keep);
     } else if (kind == Drag::Draw) {
         drag_ = Drag::Draw;
         const auto steps = drawnSteps();
@@ -745,6 +883,10 @@ void NoteEditor::paint(juce::Graphics &g) {
                 }
             }
         }
+        if (drag_ == Drag::Trim) {
+            g.setColour(juce::Colours::white.withAlpha(0.8f));
+            g.fillRect(to_.x, std::min(from_.y, to_.y), 1, std::max(1, std::abs(to_.y - from_.y)));
+        }
         if (drag_ == Drag::Band) {
             const juce::Rectangle<int> band(from_, to_);
             g.setColour(juce::Colours::white.withAlpha(0.18f));
@@ -823,6 +965,13 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.setFont(look::font(9.5f));
         g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
+        for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
+            if (const auto box = handleBox(handle); !box.isEmpty()) {
+                g.setColour(juce::Colours::white);
+                g.fillRect(box);
+                g.setColour(look::outline);
+                g.drawRect(box, 1);
+            }
         if (drag_ == Drag::Shape && shape_ != LaneShape::Paint) {
             g.setColour(juce::Colours::white.withAlpha(0.6f));
             g.drawLine(static_cast<float>(from_.x), static_cast<float>(from_.y), static_cast<float>(to_.x),
@@ -958,6 +1107,10 @@ juce::Rectangle<int> ClipViewPanel::foldBox() const noexcept {
 juce::Rectangle<int> ClipViewPanel::drawBox() const noexcept {
     const auto fold = foldBox();
     return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4);
+}
+juce::Rectangle<int> ClipViewPanel::trimBox() const noexcept {
+    const auto draw = drawBox();
+    return draw.isEmpty() ? draw : draw.withX(draw.getRight() + 4);
 }
 juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
@@ -1464,6 +1617,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         notes.setDrawMode(!notes.drawMode());
         return;
     }
+    if (trimBox().contains(at)) {
+        notes.setTrimMode(!notes.trimMode());
+        return;
+    }
     for (const auto tool : kTools)
         if (toolBox(tool).contains(at)) {
             runTool(tool);
@@ -1650,8 +1807,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto draw = drawBox();
         look::box(g, draw.toFloat(), notes.drawMode() ? look::accent : look::button);
         text("Draw", draw, juce::Justification::centred, look::text, 10.f);
+        const auto trim = trimBox();
+        look::box(g, trim.toFloat(), notes.trimMode() ? look::accent : look::button);
+        text("Trim", trim, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 92 : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 132 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())
