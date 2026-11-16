@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
 #include "adi/mix/filters/MatchedSection.hpp"
+#include "adi/mix/filters/FiniteInput.hpp"
 #include "detail/InclusivePeak.hpp"
 #include <algorithm>
 #include <array>
@@ -90,7 +91,7 @@ Status validate(const Settings &s) noexcept {
     return Status::Ok;
 }
 Status validate(const PrepareSpec &s) noexcept {
-    if (!std::isfinite(s.sampleRate) || s.sampleRate < 44100 || s.sampleRate > 96000 ||
+    if (!std::isfinite(s.sampleRate) || s.sampleRate < 44100 || s.sampleRate > 768000 ||
         s.maximumFrames <= 0 || s.maximumFrames > (1 << 24))
         return Status::InvalidSpec;
     return s.mainChannels == 2 ? Status::Ok : Status::UnsupportedLayout;
@@ -353,7 +354,7 @@ struct Core::Impl {
                 settings.keySource == KeySource::Internal
                     ? programme
                     : (keyChannels == 0 ? std::array<float, 2>{0, 0}
-                                        : std::array<float, 2>{f(key[0][i]), f(key[1][i])});
+                                        : std::array<float, 2>{filters::finiteInput(key[0][i]), filters::finiteInput(key[1][i])});
             const float side = (programme[1] - programme[0]) * .5f, mid = side + programme[0];
             for (std::size_t ch = 0; ch < 2; ++ch) {
                 const float keySide = (detector[1 - ch] - detector[ch]) * .5f;
@@ -362,7 +363,7 @@ struct Core::Impl {
                 auto &channel = channels[ch];
                 float filtered = selected;
                 for (std::size_t j = 0; j < keySections; ++j)
-                    filtered = channel.key[j].process(filtered);
+                    filtered = channel.key[j].processFinite(filtered);
                 if constexpr (Monitoring == Monitor::Sidechain)
                     main[ch][i] = static_cast<T>(filtered);
                 else {
@@ -395,6 +396,7 @@ struct Core::Impl {
             return Status::UnsupportedLayout;
         if (!buffers(main, key, keyChannels, blockFrames))
             return Status::InvalidBuffers;
+        filters::sanitizeProgramme(main, offset, frames);
         if (settings.monitor == Monitor::Sidechain)
             render<T, false, Monitor::Sidechain>(offset, frames, main, key, keyChannels);
         else if (settings.mode == Mode::SingleVocal) {

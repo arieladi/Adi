@@ -29,9 +29,9 @@ Conversion helpers are stateless; controller deadbands and host setter history
 are not part of these helpers. Singular/unsupported coefficient designs fail
 preparation without replacing the previous stream.
 
-Accepted sample rates are 44.1..96 kHz; coefficients use the float-rounded rate.
-Generated checks exercise 44.1, 48 and 96 kHz, plus equal-rounded fractional
-rates. This does not establish reference equality at every accepted rate or
+Accepted sample rates are 44.1..768 kHz; coefficients use the float-rounded rate.
+Generated checks cover 44.1, 48, 96, 176.4, 192, 384 and 768 kHz, plus
+equal-rounded fractional rates. Reference audio above 96 kHz remains unverified. This does not establish reference equality at every accepted rate or
 cutoff. Split Band, oversampling, lookahead, bypass transitions, moving controls,
 mono layout and changed-state restore are not implemented or silently ignored.
 
@@ -65,3 +65,7 @@ silence, monitor routing, failed allocation continuation, lifecycle/refusal and
 callback allocation/free counts. It contains no external recordings or private
 reference data. Standalone build: configure this directory with CMake, build
 `adi_mix_deesser_tests`, then run CTest.
+
+Programme samples that are non-finite or unrepresentable as float become zero
+before filtering; external key samples are sanitized while read, without modifying
+the caller's key memory. Finite programme and key samples keep their original path.

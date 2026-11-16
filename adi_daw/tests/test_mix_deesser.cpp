@@ -375,8 +375,50 @@ void selectiveAndFilters() {
               run(b, y, static_cast<const Audio<float> *>(nullptr), s) && equal(x, y),
           "equal float rounded rate coefficient contract");
 }
+template<class T> void nonfiniteRecovery() {
+    for (const auto source : {d::KeySource::Internal,d::KeySource::External})
+        for (const auto monitor : {d::Monitor::Normal,d::Monitor::Sidechain}) {
+            d::Settings s;s.keySource=source;s.monitor=monitor;
+            d::Core dirty,zeroed;
+            check(dirty.prepare({},s)==d::Status::Ok&&zeroed.prepare({},s)==d::Status::Ok,"nonfinite DS fixtures prepare");
+            bool ok=true,exact=true;
+            for(int block=0;block<128;++block) {
+                std::array<std::array<T,256>,2> a{},key{};
+                for(std::size_t ch=0;ch<2;++ch) for(std::size_t i=0;i<256;++i) {
+                    a[ch][i]=static_cast<T>(.02*std::sin(static_cast<double>(block*256)+static_cast<double>(i)*.7));
+                    key[ch][i]=static_cast<T>(.1*std::cos(static_cast<double>(i)*.13));
+                }
+                auto b=a,expectedKey=key;
+                if(block==0) {
+                    a[0][17]=std::numeric_limits<T>::quiet_NaN();b[0][17]=0;
+                    a[1][33]=std::numeric_limits<T>::infinity();b[1][33]=0;
+                    key[0][9]=-std::numeric_limits<T>::infinity();expectedKey[0][9]=0;
+                    key[1][70]=std::numeric_limits<T>::quiet_NaN();expectedKey[1][70]=0;
+                }
+                const auto savedKey=key;
+                T* x[]{a[0].data(),a[1].data()};T* y[]{b[0].data(),b[1].data()};
+                const T* k[]{key[0].data(),key[1].data()};const T* z[]{expectedKey[0].data(),expectedKey[1].data()};
+                audio=true;
+                const auto cx=dirty.beginBlock(256),cy=zeroed.beginBlock(256);
+                ok=(dirty.process(cx,0,17,x,k,2,s)==d::Status::Ok)&&ok;
+                ok=(dirty.process(cx,17,239,x,k,2,s)==d::Status::Ok)&&ok;
+                ok=(zeroed.process(cy,0,256,y,z,2,s)==d::Status::Ok)&&ok;
+                audio=false;
+                exact=(a==b)&&std::memcmp(&key,&savedKey,sizeof(key))==0&&exact;
+            }
+            check(ok&&exact,"DS bad programme/key samples equal explicit zeros, recover without reset and leave const keys unchanged");
+        }
+}
+void highRates() {
+    for(double rate : {176400.,192000.,384000.,768000.}) {
+        d::Core core;d::Settings s;
+        auto a=signal<float>();
+        check(core.prepare({rate,512,2},s)==d::Status::Ok&&run(core,a,static_cast<const Audio<float>*>(nullptr),s),"DS accepts DAW high rates and processes finite programme");
+    }
+}
 } // namespace
 int main() {
+    nonfiniteRecovery<float>();nonfiniteRecovery<double>();highRates();
     mappings();
     queue();
     splitsAndPrecision();

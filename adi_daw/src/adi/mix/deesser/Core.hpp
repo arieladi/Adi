@@ -41,7 +41,7 @@ class Core final {
     Core &operator=(Core &&) = delete;
 
     // Fresh stream; failure preserves the entire previous stream. Stereo Wide,
-    // base rate, 44.1..96 kHz only. Settings are fixed until fresh preparation.
+    // base rate, 44.1..768 kHz only. Settings are fixed until fresh preparation.
     // SingleVocal link >100%, zero Range, Threshold below -48 dB and the zero-dB
     // endpoint are unsupported. Accepted rates form a range; tested rates are
     // 44.1/48/96 kHz. Fractional-rate reference equality is not established.
