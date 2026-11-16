@@ -4603,6 +4603,41 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
           "Z fills the editor with the selected note");
     check(ed.keyPressed(juce::KeyPress('x')) && ed.time.scale == scale && ed.time.left == left, "X goes back to the view before");
 
+    // Draw Mode (B, or the header's switch): a stroke across empty space draws a note at each grid step on
+    // the key it began on, one undo step; steps a note already fills are skipped; a click on a note deletes it.
+    check(!ed.drawMode() && ed.keyPressed(juce::KeyPress('b')) && ed.drawMode() && !panel.drawBox().isEmpty(), "B turns Draw Mode on");
+    const auto area = ed.notesArea();
+    const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX() + static_cast<int>(ed.time.x(tick))); };
+    const auto yOf = [&](int key) { return static_cast<float>(area.getY() + *ed.keys.y(key) + kh / 2); };
+    const auto countBefore = panel.details()->notes.size();
+    ed.mouseDown(pressAt(ed, {xAt(4 * beat) + 5.f, yOf(67)}));
+    ed.mouseDrag(dragAt(ed, {xAt(4 * beat) + 5.f, yOf(67)}, {xAt(6 * beat) + 5.f, yOf(62)}));
+    check(ed.drawnSteps() == std::vector<std::int64_t>({4 * beat, 5 * beat, 6 * beat}) && panel.details()->notes.size() == countBefore,
+          "a stroke across three grid steps shows three notes to come, on the key it began on, nothing written yet");
+    ed.mouseUp(pressAt(ed, {xAt(6 * beat) + 5.f, yOf(62)}));
+    int drawn = 0;
+    for (const auto &n : panel.details()->notes)
+        if (n.key == 67 && n.durationTicks == beat && (n.startTicks == 4 * beat || n.startTicks == 5 * beat || n.startTicks == 6 * beat))
+            ++drawn;
+    check(panel.details()->notes.size() == countBefore + 3 && drawn == 3 && ed.selected().size() == 3 && undoIs("Draw Notes", 3),
+          "let go, three G3s a grid step long, selected, one undo step");
+    ed.mouseDown(pressAt(ed, {xAt(0) + 5.f, yOf(60)}));
+    ed.mouseUp(pressAt(ed, {xAt(0) + 5.f, yOf(60)}));
+    check(panel.details()->notes.size() == countBefore + 2 && undoIs("Delete Note", 1), "in Draw Mode a click on a note deletes it");
+    check(root.command(AppCommands::Undo), "undo the delete");
+    root.frame();
+    ed.mouseDown(pressAt(ed, {xAt(beat) + 5.f, yOf(60)}));
+    ed.mouseDrag(dragAt(ed, {xAt(beat) + 5.f, yOf(60)}, {xAt(2 * beat) + 5.f, yOf(60)}));
+    ed.mouseUp(pressAt(ed, {xAt(2 * beat) + 5.f, yOf(60)}));
+    check(panel.details()->notes.size() == countBefore + 4 && undoIs("Draw Notes", 1),
+          "a stroke over a step a note already fills draws only the empty step");
+    const auto beforeDouble = submitter.nextUndo()->txnId;
+    ed.mouseDoubleClick(pressAt(ed, {xAt(7 * beat) + 5.f, yOf(62)}));
+    check(submitter.nextUndo()->txnId == beforeDouble, "a double-click adds nothing of its own in Draw Mode");
+    panel.mouseDown(pressAt(panel, panel.drawBox().getCentre().toFloat()));
+    panel.mouseUp(pressAt(panel, panel.drawBox().getCentre().toFloat()));
+    check(!ed.drawMode(), "the header's switch turns it off");
+
     // The playhead: hidden while stopped; while the song plays, a line where the song is.
     check(!ed.playhead.isVisible(), "stopped, the editor shows no playhead");
     engine::Transport driver;

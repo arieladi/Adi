@@ -121,6 +121,26 @@ void NoteEditor::frame() {
     playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
 }
+void NoteEditor::setDrawMode(bool on) {
+    drawMode_ = on;
+    setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
+    panel.repaint();
+}
+std::vector<std::int64_t> NoteEditor::drawnSteps() const {
+    std::vector<std::int64_t> out;
+    const auto *clip = panel.details();
+    if (clip == nullptr || drag_ != Drag::Draw)
+        return out;
+    // Every grid step from where the stroke began to where it is, whichever way it went.
+    const auto area = notesArea();
+    const auto window = ClipWindow::of(*clip);
+    const auto a = time.snap(time.tick(static_cast<double>(std::min(from_.x, to_.x) - area.getX())), false);
+    const auto b = time.tick(static_cast<double>(std::max(from_.x, to_.x) - area.getX()));
+    const auto step = gridTicks();
+    for (auto at = a; at <= b && out.size() < 4096; at += step)
+        out.push_back(window.toSource(at));
+    return out;
+}
 void NoteEditor::setFold(bool fold) {
     const auto *clip = panel.details();
     const int height = notesArea().getHeight();
@@ -313,6 +333,18 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    if (drawMode_ && notesArea().contains(from_)) {
+        // On a note, it deletes it; on empty space, a stroke begins on that key.
+        if (const auto *n = noteAt(from_)) {
+            commit(deleteNotes(*clip, {n->id}));
+        } else if (const auto key = keys.keyAt(from_.y - notesArea().getY())) {
+            drawKey_ = *key;
+            selected_.clear();
+            drag_ = Drag::Draw;
+        }
+        repaint();
+        return;
+    }
     NotePart part = NotePart::None;
     if (const auto *n = noteAt(from_, &part)) {
         // A click selects the note; Shift adds it to the selection or takes it out (manual 10.5.2).
@@ -400,12 +432,20 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         commit(resizeNotes(*clip, selected_, ticks));
     else if (kind == Drag::Velocity)
         commit(changeVelocities(*clip, selected_, velocity));
+    else if (kind == Drag::Draw) {
+        drag_ = Drag::Draw;
+        const auto steps = drawnSteps();
+        drag_ = Drag::None;
+        commit(drawNotes(*clip, steps, gridTicks(), drawKey_));
+    }
 }
 void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (clip == nullptr || e.mods.isPopupMenu())
         return;
     drag_ = Drag::None;
+    if (drawMode_)
+        return;
     const auto at = e.getPosition();
     const auto area = notesArea();
     // On a note, it deletes it; on empty space, it adds one a grid step long (manual 10.4).
@@ -438,6 +478,10 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) {
         // Duplicate is the editor's while it has the keyboard, with or without notes selected.
         duplicate();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B')) {
+        setDrawMode(!drawMode_);
         return true;
     }
     if (!mods.isAnyModifierKeyDown() && (code == 'f' || code == 'F')) {
@@ -591,6 +635,24 @@ void NoteEditor::paint(juce::Graphics &g) {
             if (isSelected(note.id) && r.getWidth() > 4.f && r.getHeight() > 4.f) {
                 g.setColour(juce::Colours::white);
                 g.drawRect(r.reduced(1.f), 1.f);
+            }
+        }
+        if (drag_ == Drag::Draw) {
+            // The stroke held: the notes it would draw.
+            const auto step = gridTicks();
+            for (const auto start : drawnSteps()) {
+                engine::ClipNote ghost;
+                ghost.key = static_cast<std::uint8_t>(drawKey_);
+                ghost.startTicks = start;
+                ghost.durationTicks = step;
+                if (const auto box = boxOf(ghost)) {
+                    const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
+                                                   static_cast<float>(box->width), static_cast<float>(box->height));
+                    g.setColour(base.withAlpha(0.7f));
+                    g.fillRect(r);
+                    g.setColour(look::outline);
+                    g.drawRect(r, 1.f);
+                }
             }
         }
         if (drag_ == Drag::Band) {
@@ -790,6 +852,10 @@ juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
 juce::Rectangle<int> ClipViewPanel::foldBox() const noexcept {
     const auto header = headerArea();
     return midi() ? juce::Rectangle<int>(header.getX() + 6, header.getY() + 2, 36, 13) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::drawBox() const noexcept {
+    const auto fold = foldBox();
+    return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4);
 }
 juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
@@ -1216,6 +1282,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    if (drawBox().contains(at)) {
+        notes.setDrawMode(!notes.drawMode());
+        return;
+    }
     for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato})
         if (toolBox(tool).contains(at)) {
             runTool(tool);
@@ -1385,8 +1455,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto fold = foldBox(); !fold.isEmpty()) {
         look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
         text("Fold", fold, juce::Justification::centred, look::text, 10.f);
+        const auto draw = drawBox();
+        look::box(g, draw.toFloat(), notes.drawMode() ? look::accent : look::button);
+        text("Draw", draw, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 52 : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 92 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())

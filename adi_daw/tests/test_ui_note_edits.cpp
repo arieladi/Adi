@@ -325,6 +325,20 @@ void copies() {
     check(spanOf(c, {3, 9}) == 3 * beat && spanOf(c, {3}) == beat && spanOf(c, {}) == 0, "the span the notes cover");
 }
 
+void drawing() {
+    const auto c = clip(); // C3 at 0 for a beat; E3 at beat 1 for two; F#8 at 0, the shortest
+    const auto stroke = drawNotes(c, {0, beat, 2 * beat, 3 * beat}, beat, 64);
+    check(stroke.ops.size() == 2 && stroke.ops[0].opType == "note.insert" && stroke.ops[0].label == "Draw Notes" &&
+              stroke.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{10}}, {"start", 0}, {"dur", beat}, {"key", 64}, {"vel", 100}}) &&
+              stroke.ops[1].payload.at("start") == 3 * beat && stroke.ops[1].payload.at("note") == 11 &&
+              stroke.select == std::vector<std::uint64_t>({10, 11}),
+          "a stroke draws a note at each step, skipping the steps a note on that key already fills");
+    check(drawNotes(c, {5 * beat}, beat, 60).ops[0].label == "Draw Note" && drawNotes(c, {}, beat, 60).ops.empty(),
+          "one step is one note; no step, nothing");
+    check(drawNotes(c, {0}, 1, 10).ops[0].payload.at("dur") == kShortestNote && !drawNotes(c, {0}, beat, 128).refusal.empty(),
+          "a drawn note is never shorter than the shortest, and there is no key past the top");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -373,6 +387,7 @@ int main() {
     scales();
     utilities();
     copies();
+    drawing();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
