@@ -3,6 +3,7 @@
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/clip_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -148,7 +149,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows", "Split", "Clip View"};
+                                  "Show Plug-In Windows", "Split", "Clip View",
+                                  "Insert Empty MIDI Clip(s)"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -272,6 +274,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case InsertMidiTrack:
         info.addDefaultKeypress('t', cmd | shift);
+        break;
+    case InsertMidiClip:
+        // Live 12's Create menu: Insert Empty MIDI Clip(s), on a time selection (§41.1).
+        info.addDefaultKeypress('m', cmd | shift);
         break;
     case DeleteTrack:
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
@@ -1888,6 +1894,27 @@ bool AdiRootComponent::insertTrack(bool midi) {
     publishSelection();
     return true;
 }
+bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step, and the first new clip is selected.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Inserting a clip needs an open project.");
+    auto edit = ::adi::ui::insertMidiClips(*current, tracks, start, end);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    auto &sel = arrangement.geometry.selection;
+    sel.track = edit.select;
+    sel.toTrack = 0;
+    sel.picked.clear();
+    sel.clip = edit.clip;
+    sel.pickedClips.clear();
+    sel.start = start;
+    sel.end = end;
+    publishSelection();
+    return true;
+}
 bool AdiRootComponent::insertReturnTrack() {
     // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
     // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
@@ -2743,6 +2770,13 @@ bool AdiRootComponent::command(int id) {
             return fail(why);
         break;
     }
+    case AppCommands::InsertMidiClip: {
+        const auto &sel = arrangement.geometry.selection;
+        if (!insertMidiClips(arrangement.geometry.selectedTracks(reader()), std::min(sel.start, sel.end),
+                             std::max(sel.start, sel.end)))
+            return false;
+        break;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -2933,7 +2967,8 @@ const std::vector<MenuEntries> &menuBar() {
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place
         // in Live 12's Create menu is to be read on Live.
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange, 0,
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, 0,
+                    C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",

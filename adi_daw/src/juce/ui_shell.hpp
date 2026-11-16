@@ -127,7 +127,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         TogglePluginWindows,
         Split,
         ToggleClipView,
-        LastId = ToggleClipView
+        InsertMidiClip,
+        LastId = InsertMidiClip
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -536,6 +537,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool showDeviceView();
     // Shows the Clip View if it is hidden: a double-click on a clip (manual 8).
     bool showClipView();
+    // Live's Insert Empty MIDI Clip(s) (Ctrl/Cmd+Shift+M): an empty MIDI clip from `start` to `end`
+    // on each MIDI track of `tracks`, one undo step; the first is selected.
+    bool insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
