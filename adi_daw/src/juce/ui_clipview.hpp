@@ -9,6 +9,7 @@
 #pragma once
 #include "adi/engine/clip_details.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/clip_edits.hpp"
 #include "adi/ui/note_edits.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/snapshot_reader.hpp"
@@ -59,6 +60,9 @@ class NoteEditor final : public juce::Component {
     juce::Rectangle<int> velocityArea() const noexcept;
     juce::Rectangle<int> rulerArea() const noexcept;
     juce::Rectangle<int> keysArea() const noexcept;
+    // The loop brace in the time ruler (manual 8.2.2): its left and right edge in this component;
+    // none for a clip with no loop window.
+    std::optional<juce::Range<int>> loopBrace() const noexcept;
     // A note's box in this component; none while Fold hides its key.
     std::optional<NoteBox> boxOf(const engine::ClipNote &) const noexcept;
     // Opens on a clip: its whole length across the editor, its notes in view (manual 10.2).
@@ -108,8 +112,29 @@ class ClipViewPanel final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
 
     static constexpr int kPanelWidth = 156, kTitleHeight = 17, kHeaderHeight = 17;
+    // The Main panel's fields (manual 8.2). A drag on one changes it by bars, beats or sixteenths,
+    // as the part of the field grabbed; a click opens it for typing; Start, End, Position and
+    // Length have Live's Set button, which takes the arrangement's insert marker. Each change is
+    // one of the clip's own ops (N33), one undo step.
+    enum class Field { None, Start, End, Position, Length, Signature, Scale };
+    juce::Rectangle<int> fieldBox(Field) const noexcept;
+    juce::Rectangle<int> setBox(Field) const noexcept;
+    juce::Rectangle<int> loopBox() const noexcept;
+    Field fieldAt(juce::Point<int>) const noexcept;
+    // A value typed into a field: a position as 1.1.1, a length as 2.0.0, a signature as 3/4.
+    bool typeField(Field, const juce::String &);
+    // A field set to a time, in the clip's own ticks.
+    bool setField(Field, std::int64_t ticks);
+    // The field's Set button.
+    bool setFieldHere(Field);
+    bool toggleLoop();
+    // The field open for typing, and its editor.
+    Field editing() const noexcept { return editing_; }
+    juce::TextEditor &fieldEditor() noexcept { return editor_; }
     // The clip shown: 0 for none. It stays while nothing else is selected, as Live's does.
     std::int64_t clip() const noexcept { return clip_; }
     const engine::ClipDetails *details() const noexcept { return details_ ? &*details_ : nullptr; }
@@ -143,6 +168,12 @@ class ClipViewPanel final : public juce::Component {
 
   private:
     void read(const SnapshotReader &);
+    bool commit(TrackEdit);
+    std::int64_t fieldTicks(Field) const noexcept;
+    std::int64_t draggedTicks() const noexcept;
+    std::pair<std::int64_t, std::int64_t> draggedSignature() const noexcept;
+    void openEditor(Field);
+    void closeEditor();
     std::int64_t clip_ = 0, wanted_ = 0;
     std::uint64_t generation_ = 0;
     bool read_ = false;
@@ -153,6 +184,11 @@ class ClipViewPanel final : public juce::Component {
     textproj::Meter meter_;
     std::vector<textproj::Meter> clipMeters_;
     mutable std::vector<juce::Rectangle<int>> labels_;
+    Field pressed_ = Field::None, editing_ = Field::None;
+    bool dragged_ = false;
+    int pressPart_ = 0, dragSteps_ = 0;
+    juce::Point<int> pressAt_;
+    juce::TextEditor editor_;
 };
 
 // The Clip View's top edge: dragging it grows the view, and dragging it to the window's foot

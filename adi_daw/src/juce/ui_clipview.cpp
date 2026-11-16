@@ -139,6 +139,17 @@ std::optional<NoteBox> NoteEditor::boxOf(const engine::ClipNote &note) const noe
     const double end = time.x(window.toArrangement(note.startTicks + note.durationTicks));
     return NoteBox{static_cast<double>(area.getX()) + x, std::max(1., end - x), area.getY() + *y, keys.keyHeight};
 }
+std::optional<juce::Range<int>> NoteEditor::loopBrace() const noexcept {
+    const auto *clip = panel.details();
+    if (clip == nullptr || loopLengthOf(*clip) <= 0)
+        return std::nullopt;
+    const auto window = ClipWindow::of(*clip);
+    const auto ruler = rulerArea();
+    const auto at = [&](std::int64_t source) {
+        return ruler.getX() + static_cast<int>(std::clamp(time.x(window.toArrangement(source)), -1e6, 1e6));
+    };
+    return juce::Range<int>(at(clip->loopStartTicks), at(clip->loopStartTicks + loopLengthOf(*clip)));
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -434,6 +445,15 @@ void NoteEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
+    if (const auto brace = loopBrace()) {
+        // The loop brace (manual 8.2.2): over the loop's window, lit while the clip loops.
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(ruler);
+        g.setColour(clip->loopEnabled ? look::textOnBand : look::textOnBand.withAlpha(0.35f));
+        g.fillRect(brace->getStart(), ruler.getY() + 1, std::max(1, brace->getLength()), 3);
+        g.fillRect(brace->getStart(), ruler.getY() + 1, 2, 6);
+        g.fillRect(brace->getEnd() - 2, ruler.getY() + 1, 2, 6);
+    }
     const auto window = ClipWindow::of(*clip);
     const int rows = keys.rowCount();
     const int firstRow = std::max(0, keys.scrollY / std::max(1, keys.keyHeight));
@@ -636,6 +656,27 @@ ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sampl
     setOpaque(true);
     addChildComponent(notes);
     addChildComponent(sample);
+    // One editor for whichever field is typed into: Enter keeps the value, Esc and a click
+    // elsewhere leave the field as it was.
+    addChildComponent(editor_);
+    editor_.setFont(look::font(11.f));
+    editor_.setJustification(juce::Justification::centredRight);
+    editor_.setIndents(2, 0);
+    editor_.setBorder({});
+    editor_.setColour(juce::TextEditor::backgroundColourId, juce::Colours::white);
+    editor_.setColour(juce::TextEditor::textColourId, look::text);
+    editor_.setColour(juce::TextEditor::outlineColourId, look::outline);
+    editor_.setColour(juce::TextEditor::focusedOutlineColourId, look::outline);
+    editor_.setTitle("Clip field");
+    editor_.onReturnKey = [this] {
+        const auto field = editing_;
+        const auto text = editor_.getText();
+        closeEditor();
+        if (field != Field::None)
+            typeField(field, text);
+    };
+    editor_.onEscapeKey = [this] { closeEditor(); };
+    editor_.onFocusLost = [this] { closeEditor(); };
 }
 juce::Rectangle<int> ClipViewPanel::titleArea() const noexcept { return {0, 0, kPanelWidth, kTitleHeight}; }
 juce::Rectangle<int> ClipViewPanel::activatorArea() const noexcept { return {4, 3, 11, 11}; }
@@ -705,6 +746,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         sample.setVisible(audio());
         notes.prune();
         if (other) {
+            closeEditor();
             notes.select({});
             notes.showClip();
             sample.showClip();
@@ -733,26 +775,245 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     if (!details_)
         return out;
     const auto &d = *details_;
-    const auto length = d.lengthTicks.value_or(0);
     out.start = positionText(d.startMarkerTicks, clipMeters_);
-    out.end = positionText(d.endMarkerTicks.value_or(d.startMarkerTicks + length), clipMeters_);
+    out.end = positionText(endMarkerOf(d), clipMeters_);
     out.loop = d.loopEnabled;
     out.position = positionText(d.loopStartTicks, clipMeters_);
-    out.length = lengthText(d.loopLengthTicks.value_or(length), meter_);
+    out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
     // The scale's root and its name, the clip's own or the one it inherits (manual 8.2.5).
     auto scaleName = juce::String(d.scale.id);
     out.scale = juce::String(pitchClassName(static_cast<int>(d.scale.root))) + " " +
                 scaleName.substring(0, 1).toUpperCase() + scaleName.substring(1);
+    // While a field is dragged it reads where the drag would put it.
+    if (dragged_ && pressed_ != Field::None) {
+        if (pressed_ == Field::Signature) {
+            const auto s = draggedSignature();
+            out.signature = juce::String(s.first) + " / " + juce::String(s.second);
+        } else if (pressed_ == Field::Length) {
+            out.length = lengthText(draggedTicks(), meter_);
+        } else {
+            auto &shown = pressed_ == Field::Start ? out.start : pressed_ == Field::End ? out.end : out.position;
+            shown = positionText(draggedTicks(), clipMeters_);
+        }
+    }
     const auto &time = midi() ? notes.time : sample.time;
     out.grid = juce::String(gridLabel(time.gridQuarters(), time.grid.triplet));
     return out;
 }
+// ---- The Main panel's fields (manual 8.2; worklist G2) ----------------------------------------
+namespace {
+constexpr int kFieldLabel = 15, kFieldBox = 16;
+constexpr int kDenominators[] = {1, 2, 4, 8, 16};
+}
+juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
+    const auto main = mainArea().reduced(6, 5);
+    const int half = (main.getWidth() - 6) / 2;
+    const int row = field == Field::Start || field == Field::End          ? 0
+                    : field == Field::Position || field == Field::Length ? 58
+                                                                         : 95;
+    const int column = field == Field::End || field == Field::Length || field == Field::Scale ? 1 : 0;
+    if (field == Field::None)
+        return {};
+    return {main.getX() + column * (half + 6), main.getY() + row + kFieldLabel, half, kFieldBox};
+}
+juce::Rectangle<int> ClipViewPanel::setBox(Field field) const noexcept {
+    if (field != Field::Start && field != Field::End && field != Field::Position && field != Field::Length)
+        return {};
+    const auto box = fieldBox(field);
+    return {box.getRight() - 24, box.getY() - kFieldLabel + 2, 24, 11};
+}
+juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
+    const auto main = mainArea().reduced(6, 5);
+    return {main.getX(), main.getY() + 37, main.getWidth(), kFieldBox};
+}
+std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
+    if (!details_)
+        return 0;
+    const auto &d = *details_;
+    switch (field) {
+    case Field::Start:
+        return d.startMarkerTicks;
+    case Field::End:
+        return endMarkerOf(d);
+    case Field::Position:
+        return d.loopStartTicks;
+    case Field::Length:
+        return loopLengthOf(d);
+    default:
+        return 0;
+    }
+}
+ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
+    for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature})
+        if (fieldBox(field).contains(at))
+            return field;
+    return Field::None;
+}
+bool ClipViewPanel::commit(TrackEdit edit) {
+    repaint();
+    if (!edit.refusal.empty()) {
+        root.say(std::move(edit.refusal));
+        return false;
+    }
+    if (edit.ops.empty())
+        return true;
+    if (!root.submitEdits(std::move(edit.ops)))
+        return false;
+    reread();
+    return true;
+}
+bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
+    if (!details_)
+        return false;
+    const auto &d = *details_;
+    switch (field) {
+    case Field::Start:
+        return commit(setClipStart(d, ticks));
+    case Field::End:
+        return commit(setClipEnd(d, ticks));
+    case Field::Position:
+        return commit(setClipLoop(d, ticks, loopLengthOf(d)));
+    case Field::Length:
+        return commit(setClipLoop(d, d.loopStartTicks, ticks));
+    default:
+        return false;
+    }
+}
+bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
+    if (!details_)
+        return false;
+    const auto text = typed.toStdString();
+    if (field == Field::Signature) {
+        const auto signature = parseSignature(text);
+        if (!signature) {
+            root.say("Type a time signature as 3/4.");
+            return false;
+        }
+        return commit(setClipSignature(*details_, signature->first, signature->second));
+    }
+    if (field == Field::Length) {
+        const auto length = parseBarsBeats(text);
+        if (!length) {
+            root.say("Type a length as bars, beats and sixteenths: 2.0.0.");
+            return false;
+        }
+        return setField(field, ticksOf(*length, meter_));
+    }
+    // A position: bar, beat and sixteenth from 1, in the clip's own time.
+    const auto position = parsePosition(text);
+    const auto tick = position ? tickOf(*position, clipMeters_) : std::optional<std::int64_t>{};
+    if (!tick) {
+        root.say("Type a position as bar, beat and sixteenth: 1.1.1.");
+        return false;
+    }
+    return setField(field, *tick);
+}
+bool ClipViewPanel::setFieldHere(Field field) {
+    // Live's Set buttons take the current position (manual 8.2.1): here, the arrangement's insert
+    // marker, in the clip's own time. For Length it is the distance from the loop's start.
+    if (!details_)
+        return false;
+    const auto here = ClipWindow::of(*details_).toSource(root.arrangement.geometry.selection.insert);
+    return setField(field, field == Field::Length ? here - details_->loopStartTicks : here);
+}
+bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*details_)); }
+void ClipViewPanel::openEditor(Field field) {
+    editing_ = field;
+    const auto r = readings();
+    const auto &value = field == Field::Start      ? r.start
+                        : field == Field::End      ? r.end
+                        : field == Field::Position ? r.position
+                        : field == Field::Length   ? r.length
+                                                   : r.signature;
+    editor_.setBounds(fieldBox(field));
+    editor_.setText(value.removeCharacters(" "), false);
+    editor_.setVisible(true);
+    editor_.selectAll();
+    editor_.grabKeyboardFocus();
+}
+void ClipViewPanel::closeEditor() {
+    editing_ = Field::None;
+    editor_.setVisible(false);
+}
 void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
+    pressed_ = Field::None;
+    dragged_ = false;
+    dragSteps_ = 0;
+    if (!details_ || e.mods.isPopupMenu())
+        return;
+    const auto at = e.getPosition();
     // The Clip Activator (manual 8.1.1): one click, one undo step.
-    if (details_ && activatorArea().expanded(2).contains(e.getPosition()) && !e.mods.isPopupMenu())
+    if (activatorArea().expanded(2).contains(at)) {
         root.submitEdit("clip.setMute", {{"id", clip_}, {"muted", !details_->muted}},
                         details_->muted ? "Activate Clip" : "Deactivate Clip");
+        return;
+    }
+    for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length})
+        if (setBox(field).contains(at)) {
+            setFieldHere(field);
+            return;
+        }
+    if (loopBox().contains(at)) {
+        toggleLoop();
+        return;
+    }
+    // A field: a drag changes it, by bars, beats or sixteenths as the part of the field grabbed; a
+    // click opens it for typing.
+    pressed_ = fieldAt(at);
+    if (pressed_ != Field::None) {
+        const auto box = fieldBox(pressed_);
+        pressAt_ = at;
+        pressPart_ = pressed_ == Field::Signature ? (at.x < box.getCentreX() ? 0 : 1)
+                                                  : std::clamp((at.x - box.getX()) * 3 / std::max(1, box.getWidth()), 0, 2);
+    }
+}
+void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
+    if (pressed_ == Field::None)
+        return;
+    const int steps = (pressAt_.y - e.y) / 4;
+    if (steps != 0)
+        dragged_ = true;
+    if (steps != dragSteps_) {
+        dragSteps_ = steps;
+        repaint();
+    }
+}
+std::int64_t ClipViewPanel::draggedTicks() const noexcept {
+    const std::int64_t beat = meter_.denominator == 0 ? 0 : textproj::kWhole / meter_.denominator;
+    const std::int64_t unit = pressPart_ == 0 ? meter_.barTicks() : pressPart_ == 1 ? beat : textproj::kPPQ / 4;
+    return fieldTicks(pressed_) + dragSteps_ * unit;
+}
+std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const noexcept {
+    std::int64_t numerator = meter_.numerator, denominator = meter_.denominator;
+    if (pressPart_ == 0)
+        numerator = std::clamp<std::int64_t>(numerator + dragSteps_, 1, 99);
+    else {
+        int at = 2;
+        for (int i = 0; i < 5; ++i)
+            if (kDenominators[i] == denominator)
+                at = i;
+        denominator = kDenominators[std::clamp(at + dragSteps_, 0, 4)];
+    }
+    return {numerator, denominator};
+}
+void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
+    // The drag's value, read before the state is cleared; one op, one undo step.
+    const auto field = pressed_;
+    const bool dragged = dragged_;
+    const auto ticks = draggedTicks();
+    const auto signature = draggedSignature();
+    pressed_ = Field::None;
+    dragged_ = false;
+    dragSteps_ = 0;
+    if (field == Field::None || !details_)
+        return;
+    if (!dragged)
+        openEditor(field);
+    else if (field == Field::Signature)
+        commit(setClipSignature(*details_, signature.first, signature.second));
+    else
+        setField(field, ticks);
 }
 std::vector<juce::Rectangle<int>> ClipViewPanel::textAreas() const {
     auto out = labels_;
@@ -800,29 +1061,32 @@ void ClipViewPanel::paint(juce::Graphics &g) {
 
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
     const auto r = readings();
-    const auto main = mainArea().reduced(6, 5);
-    const int half = (main.getWidth() - 6) / 2, rowH = 15, fieldH = 16;
-    auto field = [&](const juce::String &name, const juce::String &value, int column, int y, int width) {
-        const int x = main.getX() + column * (half + 6);
-        text(name, {x, y, width, rowH}, juce::Justification::centredLeft, look::text, 10.5f);
-        const juce::Rectangle<int> box(x, y + rowH, width, fieldH);
+    auto field = [&](Field which, const juce::String &name, const juce::String &value) {
+        const auto box = fieldBox(which);
+        const auto set = setBox(which);
+        text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
+             juce::Justification::centredLeft, look::text, 10.5f);
+        // Live's Set button: a small pill beside the field's name.
+        if (!set.isEmpty()) {
+            g.setColour(look::button);
+            g.fillRoundedRectangle(set.toFloat(), 5.f);
+            g.setColour(look::outline);
+            g.drawRoundedRectangle(set.toFloat().reduced(0.5f), 5.f, 1.f);
+            text("Set", set, juce::Justification::centred, look::text, 9.f);
+        }
         look::box(g, box.toFloat(), look::chooser);
         text(value, box.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
     };
-    int y = main.getY();
-    field("Start", r.start, 0, y, half);
-    field("End", r.end, 1, y, half);
-    y += rowH + fieldH + 6;
-    const juce::Rectangle<int> loop(main.getX(), y, main.getWidth(), fieldH);
+    field(Field::Start, "Start", r.start);
+    field(Field::End, "End", r.end);
+    const auto loop = loopBox();
     look::box(g, loop.toFloat(), r.loop ? look::accent : look::button);
     text("Loop", loop, juce::Justification::centred, look::text, 11.f);
-    y += fieldH + 5;
-    field("Position", r.position, 0, y, half);
-    field("Length", r.length, 1, y, half);
-    y += rowH + fieldH + 6;
-    field("Signature", r.signature, 0, y, half);
+    field(Field::Position, "Position", r.position);
+    field(Field::Length, "Length", r.length);
+    field(Field::Signature, "Signature", r.signature);
     if (midi())
-        field("Scale", r.scale, 1, y, half);
+        field(Field::Scale, "Scale", r.scale);
 
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(8).withWidth(60),

@@ -4016,6 +4016,162 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
 }
+// The Clip View's Main panel (worklist G2; manual 8.2): Start, End, the Loop switch, the loop's Position
+// and Length and the clip's Signature act, typed, dragged or through Live's Set buttons, each one of
+// the clip's own ops and one undo step; what the engine would refuse is refused with a reason; the
+// Note Editor shows the loop brace.
+void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-fields.adi", err);
+    check(store != nullptr, "the clip fields project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Fields')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Loop"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    check(made, "a MIDI track with a two-bar clip in bar 2");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-fields");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    root.arrangement.geometry.resizeTrack(1, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    using Field = ClipViewPanel::Field;
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(bar)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.clip() == 11 && panel.readings().start == "1. 1. 1" && panel.readings().end == "3. 1. 1" &&
+              panel.readings().position == "1. 1. 1" && panel.readings().length == "2. 0. 0" && !panel.readings().loop,
+          "the clip as made: Start 1.1.1, End 3.1.1, the loop off over its two bars");
+    const auto undoIs = [&](const char *label) {
+        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == 1;
+    };
+    const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+    const auto centreOf = [](juce::Rectangle<int> r) { return r.getCentre().toFloat(); };
+
+    // Typed: End, then Start; a Start past the End is refused, and so is what is not a position.
+    check(panel.typeField(Field::End, "2.1.1") && panel.readings().end == "2. 1. 1" && endMarkerOf(details()) == bar &&
+              undoIs("Set Clip End"),
+          "End typed as 2.1.1: one bar in, one undo step");
+    check(panel.typeField(Field::Start, "1.2") && panel.readings().start == "1. 2. 1" &&
+              details().startMarkerTicks == beat && undoIs("Set Clip Start"),
+          "Start typed as 1.2: the second beat, one undo step");
+    const auto beforeRefusal = submitter.nextUndo()->txnId;
+    check(!panel.typeField(Field::Start, "5") && submitter.nextUndo()->txnId == beforeRefusal && !root.error().empty() &&
+              details().startMarkerTicks == beat,
+          "a Start past the End is refused, nothing written, the reason in the Status Bar");
+    check(!panel.typeField(Field::Start, "soon") && !panel.typeField(Field::Length, "long") &&
+              !panel.typeField(Field::Signature, "waltz") && submitter.nextUndo()->txnId == beforeRefusal,
+          "what is not a position, a length or a signature is refused");
+
+    // A click on a field opens it for typing: Enter keeps the value, Esc leaves the field as it was.
+    panel.mouseDown(pressAt(panel, centreOf(panel.fieldBox(Field::End))));
+    panel.mouseUp(pressAt(panel, centreOf(panel.fieldBox(Field::End))));
+    check(panel.editing() == Field::End && panel.fieldEditor().isVisible() && panel.fieldEditor().getText() == "2.1.1" &&
+              panel.fieldEditor().getBounds() == panel.fieldBox(Field::End),
+          "a click on End opens its editor over the field, holding 2.1.1");
+    panel.fieldEditor().setText("3.1.1", false);
+    panel.fieldEditor().onReturnKey();
+    check(panel.editing() == Field::None && !panel.fieldEditor().isVisible() && panel.readings().end == "3. 1. 1" &&
+              undoIs("Set Clip End"),
+          "Enter keeps what was typed and closes the editor");
+    panel.mouseDown(pressAt(panel, centreOf(panel.fieldBox(Field::End))));
+    panel.mouseUp(pressAt(panel, centreOf(panel.fieldBox(Field::End))));
+    panel.fieldEditor().setText("9.1.1", false);
+    const auto beforeEscape = submitter.nextUndo()->txnId;
+    panel.fieldEditor().onEscapeKey();
+    check(panel.editing() == Field::None && panel.readings().end == "3. 1. 1" && submitter.nextUndo()->txnId == beforeEscape,
+          "Esc closes it and leaves the field as it was");
+
+    // Dragged: the bars part of Position, up two steps; it reads the new value while held and is one
+    // step when let go.
+    const auto position = panel.fieldBox(Field::Position);
+    const juce::Point<float> bars(static_cast<float>(position.getX() + 4), static_cast<float>(position.getCentreY()));
+    panel.mouseDown(pressAt(panel, bars));
+    panel.mouseDrag(dragAt(panel, bars, {bars.x, bars.y - 8.f}));
+    check(panel.readings().position == "3. 1. 1" && details().loopStartTicks == 0 && submitter.nextUndo()->txnId == beforeEscape,
+          "while Position's bars are dragged up two steps it reads 3.1.1, and nothing is written");
+    panel.mouseUp(pressAt(panel, {bars.x, bars.y - 8.f}));
+    check(panel.readings().position == "3. 1. 1" && details().loopStartTicks == 2 * bar && panel.editing() == Field::None &&
+              undoIs("Set Loop Position"),
+          "let go, the loop starts at 3.1.1: one undo step, and no editor opens after a drag");
+    // The sixteenths part of Length, down one step.
+    const auto length = panel.fieldBox(Field::Length);
+    const juce::Point<float> sixteenths(static_cast<float>(length.getRight() - 4), static_cast<float>(length.getCentreY()));
+    const auto lengthBefore = loopLengthOf(details());
+    panel.mouseDown(pressAt(panel, sixteenths));
+    panel.mouseDrag(dragAt(panel, sixteenths, {sixteenths.x, sixteenths.y + 4.f}));
+    panel.mouseUp(pressAt(panel, {sixteenths.x, sixteenths.y + 4.f}));
+    check(loopLengthOf(details()) == lengthBefore - beat / 4 && undoIs("Set Loop Length"),
+          "Length's sixteenths dragged down a step: a sixteenth shorter");
+    check(panel.typeField(Field::Length, "1.2.0") && loopLengthOf(details()) == bar + 2 * beat &&
+              panel.readings().length == "1. 2. 0" && undoIs("Set Loop Length"),
+          "Length typed as 1.2.0: a bar and two beats");
+
+    // The Loop switch, and the loop brace in the Note Editor's ruler.
+    auto &ed = panel.notes;
+    panel.mouseDown(pressAt(panel, centreOf(panel.loopBox())));
+    panel.mouseUp(pressAt(panel, centreOf(panel.loopBox())));
+    check(details().loopEnabled && panel.readings().loop && undoIs("Activate Loop") && details().loopStartTicks == 2 * bar &&
+              loopLengthOf(details()) == bar + 2 * beat,
+          "the Loop switch turns the loop on, its window as it was set, one undo step");
+    const auto brace = ed.loopBrace();
+    const auto window = ClipWindow::of(details());
+    check(brace && brace->getStart() == ed.rulerArea().getX() + static_cast<int>(ed.time.x(window.toArrangement(2 * bar))) &&
+              brace->getEnd() ==
+                  ed.rulerArea().getX() + static_cast<int>(ed.time.x(window.toArrangement(2 * bar + bar + 2 * beat))),
+          "the Note Editor's ruler shows the loop brace over the loop's window");
+    panel.mouseDown(pressAt(panel, centreOf(panel.loopBox())));
+    panel.mouseUp(pressAt(panel, centreOf(panel.loopBox())));
+    check(!details().loopEnabled && undoIs("Deactivate Loop") && loopLengthOf(details()) == bar + 2 * beat,
+          "and off again, keeping its window");
+
+    // Live's Set buttons take the arrangement's insert marker, in the clip's own time.
+    geo.selection.insert = bar + 6 * beat;
+    panel.mouseDown(pressAt(panel, centreOf(panel.setBox(Field::End))));
+    panel.mouseUp(pressAt(panel, centreOf(panel.setBox(Field::End))));
+    check(endMarkerOf(details()) == details().startMarkerTicks + 6 * beat && undoIs("Set Clip End") &&
+              panel.editing() == Field::None,
+          "End's Set puts the End marker at the insert marker, one undo step");
+    geo.selection.insert = bar + 2 * beat;
+    check(panel.setFieldHere(Field::Start) && details().startMarkerTicks == window.toSource(bar + 2 * beat) &&
+              undoIs("Set Clip Start"),
+          "Start's Set puts the Start marker there");
+
+    // The Signature: typed, dragged by its denominator, refused when it is not one.
+    check(panel.typeField(Field::Signature, "3/4") && panel.readings().signature == "3 / 4" && details().signature.local &&
+              details().signature.numerator == 3 && undoIs("Change Clip Time Signature"),
+          "the Signature typed as 3/4 is the clip's own, one undo step");
+    const auto signature = panel.fieldBox(Field::Signature);
+    const juce::Point<float> denominator(static_cast<float>(signature.getRight() - 4), static_cast<float>(signature.getCentreY()));
+    panel.mouseDown(pressAt(panel, denominator));
+    panel.mouseDrag(dragAt(panel, denominator, {denominator.x, denominator.y - 4.f}));
+    check(panel.readings().signature == "3 / 8", "its denominator dragged up a step reads 3 / 8 while held");
+    panel.mouseUp(pressAt(panel, {denominator.x, denominator.y - 4.f}));
+    check(details().signature.denominator == 8 && undoIs("Change Clip Time Signature"), "and is 3/8 when let go");
+    const auto beforeBad = submitter.nextUndo()->txnId;
+    check(!panel.typeField(Field::Signature, "3/5") && submitter.nextUndo()->txnId == beforeBad && !root.error().empty(),
+          "3/5 is not a time signature: refused with the reason");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    root.frame();
+    check(!details().signature.local && panel.readings().signature == "4 / 4", "take the clip back to the song's 4/4");
+}
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
@@ -10361,6 +10517,7 @@ int main(int argc, char **argv) {
     clipToTrack(commands, temp.path());
     clipView(commands, temp.path(), write);
     clipViewNotes(commands, temp.path());
+    clipViewFields(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
