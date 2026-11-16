@@ -4980,6 +4980,220 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
 // Multi-clip editing (Live 12 manual 10.8; ADR-0242 d5): several selected MIDI clips are shown in one
 // Note Editor, each clip's notes in its own colour, a loop bar for each above the ruler; a click on
 // another clip's note or bar makes it the clip being edited; Focus (N) greys the others.
+// The Note Editor's time selection, the insert marker's keys and the note-selection keys (manual 10.5.2).
+void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-time.adi", err);
+    check(store != nullptr, "the time selection project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Time')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Tune"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    // In the song: C3 from beat 4 to 5, E3 from 5 to 6, a long C3 from 6 to 8 and a G3 from 6 to 7.
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 2}, {"start", beat}, {"dur", beat}, {"key", 64}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 3}, {"start", 2 * beat}, {"dur", 2 * beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 4}, {"start", 2 * beat}, {"dur", beat}, {"key", 67}}, "Add Note")}).ok && made;
+    check(made, "a MIDI clip of four notes");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-time");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    root.arrangement.geometry.resizeTrack(1, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(bar)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->notes.size() == 4, "the clip is open in the Note Editor");
+    if (panel.details() == nullptr)
+        return;
+    const auto area = ed.notesArea();
+    const auto g = ed.gridTicks();
+    const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX()) + static_cast<float>(ed.time.x(tick)); };
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : panel.details()->notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    using Ids = std::vector<std::uint64_t>;
+    using Span = std::optional<std::pair<std::int64_t, std::int64_t>>;
+    const auto key = [](int code, int mods = 0) { return juce::KeyPress(code, juce::ModifierKeys(mods), 0); };
+    const int shift = juce::ModifierKeys::shiftModifier, alt = juce::ModifierKeys::altModifier, command = juce::ModifierKeys::commandModifier;
+    const int left = juce::KeyPress::leftKey, right = juce::KeyPress::rightKey, up = juce::KeyPress::upKey, down = juce::KeyPress::downKey;
+    check(g > 0 && beat % g == 0, "the editing grid divides the beat");
+
+    // The insert marker and the arrows.
+    const juce::Point<float> empty(xAt(6 * beat) + 4.f, static_cast<float>(area.getY() + 3));
+    ed.mouseDown(pressAt(ed, empty));
+    ed.mouseUp(pressAt(ed, empty));
+    check(ed.insertMarker() == 6 * beat && !ed.timeSelection(), "a click on empty space places the insert marker; no time is selected");
+    check(ed.keyPressed(key(right)) && ed.insertMarker() == 6 * beat + g, "Right moves the insert marker a grid step on");
+    check(ed.keyPressed(key(left)) && ed.keyPressed(key(left)) && ed.insertMarker() == 6 * beat - g, "and Left, back");
+    const auto beforeKeys = submitter.nextUndo()->txnId;
+    check(ed.keyPressed(key(right, shift)) && ed.keyPressed(key(right, shift)) && ed.timeSelection() == Span({6 * beat - g, 6 * beat + g}) &&
+              ed.insertMarker() == 6 * beat - g,
+          "Shift and Right select time from the insert marker, a grid step each");
+    check(ed.keyPressed(key(left, shift)) && ed.timeSelection() == Span({6 * beat - g, 6 * beat}), "Shift and Left narrow it");
+    check(ed.keyPressed(key(left, shift)) && !ed.timeSelection() && ed.keyPressed(key(left, shift)) &&
+              ed.timeSelection() == Span({6 * beat - 2 * g, 6 * beat - g}),
+          "narrowed to nothing it is a point again, and one more step selects the time before the marker");
+    check(ed.keyPressed(key(right)) && !ed.timeSelection() && ed.insertMarker() == 6 * beat - g,
+          "Right alone collapses the time selection to its end");
+    ed.selectTime(5 * beat, 6 * beat);
+    check(ed.keyPressed(key(left)) && !ed.timeSelection() && ed.insertMarker() == 5 * beat, "and Left alone, to its start");
+    check(ed.keyPressed(key(juce::KeyPress::homeKey)) && ed.insertMarker() == bar && ed.keyPressed(key(left)) && ed.insertMarker() == bar,
+          "Home takes the marker to the clip's start, and Left goes no further");
+    check(ed.keyPressed(key(juce::KeyPress::endKey)) && ed.insertMarker() == 3 * bar && ed.keyPressed(key(right)) && ed.insertMarker() == 3 * bar,
+          "End takes it to the clip's end, and Right goes no further");
+    check(submitter.nextUndo()->txnId == beforeKeys, "none of it is an undo step");
+
+    // A drag across empty space selects the time it spans and the notes it touches.
+    const juce::Point<float> from(xAt(4 * beat) + 2.f, static_cast<float>(area.getY() + 2));
+    const juce::Point<float> to(xAt(6 * beat) - 2.f, static_cast<float>(area.getBottom() - 2));
+    ed.mouseDown(pressAt(ed, from));
+    ed.mouseDrag(dragAt(ed, from, to));
+    ed.mouseUp(dragAt(ed, from, to));
+    check(ed.timeSelection() == Span({4 * beat, 6 * beat}) && ed.selected() == Ids({1, 2}),
+          "a drag from beat 4 to beat 6 selects that time, on the grid, and the two notes inside it");
+    check(ed.keyPressed(key(juce::KeyPress::returnKey)) && ed.selected().empty() && ed.timeSelection() == Span({4 * beat, 6 * beat}),
+          "Enter leaves the time selected and lets the notes go");
+    check(ed.keyPressed(key(juce::KeyPress::returnKey)) && ed.selected() == Ids({1, 2}) && ed.timeSelection() == Span({4 * beat, 6 * beat}),
+          "Enter again selects the notes that begin inside it");
+    check(ed.keyPressed(key(juce::KeyPress::escapeKey)) && ed.selected().empty() && !ed.timeSelection() && ed.insertMarker() == 4 * beat,
+          "Esc collapses both; the insert marker stays at the start");
+    check(!ed.keyPressed(key(juce::KeyPress::returnKey)), "with neither notes nor time selected, Enter is not the editor's");
+    ed.select({3});
+    check(ed.keyPressed(key(juce::KeyPress::returnKey)) && ed.selected().empty() && ed.timeSelection() == Span({6 * beat, 8 * beat}),
+          "with a note selected and no time, Enter selects the time the note occupies");
+    // A click on a note collapses the time selection.
+    if (const auto box = ed.boxOf(note(2))) {
+        const juce::Point<float> on(static_cast<float>(box->x + box->width / 2), static_cast<float>(box->y + box->height / 2));
+        ed.mouseDown(pressAt(ed, on));
+        ed.mouseUp(pressAt(ed, on));
+    }
+    check(ed.selected() == Ids({2}) && !ed.timeSelection(), "a click on a note selects it and collapses the time selection");
+
+    // Split at the time selection's edges.
+    ed.select({});
+    ed.selectTime(4 * beat + beat / 2, 7 * beat);
+    check(ed.keyPressed(key('e', command)) && panel.details()->notes.size() == 6 && note(1).durationTicks == beat / 2 &&
+              note(3).durationTicks == beat && note(4).durationTicks == beat && note(2).durationTicks == beat &&
+              submitter.nextUndo()->label == "Split Notes" && submitter.nextUndo()->opCount == 4,
+          "Ctrl+E with time selected and no note cuts the notes crossing its two edges: one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(panel.details()->notes.size() == 4 && note(3).durationTicks == 2 * beat, "and Undo joins them again");
+
+    // Paste lands on the time selection's start, whichever way it was drawn.
+    ed.select({2});
+    check(ed.keyPressed(key('c', command)), "E3 copied");
+    ed.select({});
+    ed.selectTime(7 * beat, 6 * beat);
+    check(ed.timeSelection() == Span({6 * beat, 7 * beat}) && ed.keyPressed(key('v', command)) && ed.selected().size() == 1 &&
+              note(ed.selected().front()).startTicks == 2 * beat && note(ed.selected().front()).key == 64,
+          "Paste puts it at the time selection's start");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+
+    // Z zooms to the time selection; X goes back.
+    ed.select({});
+    ed.selectTime(5 * beat, 6 * beat);
+    const double scaleBefore = ed.time.scale;
+    check(ed.keyPressed(key('z')) && std::abs(ed.time.x(5 * beat)) < 1.0 && ed.time.x(6 * beat) > area.getWidth() * 0.9 &&
+              ed.time.x(6 * beat) <= area.getWidth(),
+          "Z fills the editor with the selected time");
+    check(ed.keyPressed(key('x')) && std::abs(ed.time.scale - scaleBefore) < 1e-9, "and X goes back");
+
+    // Alt and the arrows walk the notes.
+    check(ed.keyPressed(key(juce::KeyPress::escapeKey)) || true, "nothing selected");
+    ed.keyPressed(key(juce::KeyPress::homeKey));
+    check(ed.keyPressed(key(down, alt)) && ed.selected() == Ids({1}), "Alt and Down with no note selected takes the note nearest the insert marker");
+    check(ed.keyPressed(key(down, alt)) && ed.selected() == Ids({2}) && ed.keyPressed(key(down, alt)) && ed.selected() == Ids({3}) &&
+              ed.keyPressed(key(down, alt)) && ed.selected() == Ids({4}),
+          "again, the next note in time; of two that begin together, the lower first");
+    check(ed.keyPressed(key(down, alt)) && ed.selected() == Ids({4}), "at the last note it stays");
+    check(ed.keyPressed(key(up, alt)) && ed.selected() == Ids({3}), "Alt and Up, the previous note");
+    check(ed.keyPressed(key(up, alt | shift)) && ed.selected() == Ids({3, 2}), "with Shift, the previous note joins the selection");
+    ed.select({3});
+    check(ed.keyPressed(key(left, alt)) && ed.selected() == Ids({1}) && ed.keyPressed(key(right, alt)) && ed.selected() == Ids({3}) &&
+              ed.keyPressed(key(right, alt)) && ed.selected() == Ids({3}),
+          "Alt and Left or Right go to the previous and next note on the same key");
+    check(submitter.nextUndo()->txnId == beforeKeys, "walking the notes moves none of them");
+    // With no note selected, Alt and Left or Right take the insert marker to the next note edge.
+    ed.select({});
+    ed.keyPressed(key(juce::KeyPress::homeKey));
+    check(ed.keyPressed(key(right, alt)) && ed.insertMarker() == 5 * beat && ed.keyPressed(key(right, alt)) && ed.insertMarker() == 6 * beat &&
+              ed.keyPressed(key(right, alt)) && ed.insertMarker() == 7 * beat && ed.keyPressed(key(right, alt)) && ed.insertMarker() == 8 * beat &&
+              ed.keyPressed(key(right, alt)) && ed.insertMarker() == 8 * beat,
+          "Alt and Right: the insert marker goes from note edge to note edge, and stops at the last");
+    check(ed.keyPressed(key(left, alt | shift)) && ed.timeSelection() == Span({7 * beat, 8 * beat}),
+          "with Shift, the time selection reaches to the previous note edge");
+
+    // Invert Selection.
+    ed.keyPressed(key(juce::KeyPress::escapeKey));
+    ed.select({1});
+    check(ed.keyPressed(key('a', command | shift)) && ed.selected() == Ids({2, 3, 4}), "Ctrl+Shift+A selects every other note instead");
+
+    // The piano's keys select their key tracks.
+    const auto pianoKey = [&](int k) {
+        return juce::Point<float>(5.f, static_cast<float>(ed.keysArea().getY() + ed.keys.y(k).value_or(0) + 2));
+    };
+    ed.mouseDown(pressAt(ed, pianoKey(60)));
+    ed.mouseUp(pressAt(ed, pianoKey(60)));
+    check(ed.selected() == Ids({1, 3}), "a click on the piano's C3 selects the notes on that key");
+    ed.mouseDown(pressAt(ed, pianoKey(64), juce::ModifierKeys(shift)));
+    ed.mouseUp(pressAt(ed, pianoKey(64), juce::ModifierKeys(shift)));
+    check(ed.selected() == Ids({1, 3, 2}), "Shift and a click on E3 adds that key's notes");
+    ed.mouseDown(pressAt(ed, pianoKey(60), juce::ModifierKeys(shift)));
+    ed.mouseUp(pressAt(ed, pianoKey(60), juce::ModifierKeys(shift)));
+    check(ed.selected() == Ids({2}), "Shift and a click on a key whose notes are all selected takes them out");
+    ed.mouseDown(pressAt(ed, pianoKey(61)));
+    ed.mouseUp(pressAt(ed, pianoKey(61)));
+    check(ed.selected().empty() && submitter.nextUndo()->txnId == beforeKeys, "a click on a key with no notes selects none; no selecting is an undo step");
+
+    // With a note selected the arrows still move it.
+    ed.select({2});
+    check(ed.keyPressed(key(right)) && note(2).startTicks == beat + g && submitter.nextUndo()->label == "Move Note",
+          "with a note selected, Right still moves the note, not the marker");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        ed.select({});
+        ed.selectTime(5 * beat, 7 * beat);
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics gr(picture);
+            gr.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(gr, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-view-time.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+}
+
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-multi.adi", err);
@@ -11769,6 +11983,7 @@ int main(int argc, char **argv) {
     clipViewFields(commands, temp.path());
     clipViewTools(commands, temp.path());
     clipViewMore(commands, temp.path());
+    clipViewTime(commands, temp.path());
     clipViewMulti(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());

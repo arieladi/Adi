@@ -329,6 +329,11 @@ void NoteEditor::zoomToNotes() {
     const auto *clip = panel.details();
     if (clip == nullptr)
         return;
+    if (const auto span = timeSelection(); span && !anySelected()) {
+        time.fit(span->first, span->second + std::max<std::int64_t>(1, (span->second - span->first) / 24), notesArea().getWidth());
+        repaint();
+        return;
+    }
     std::vector<engine::ClipNote> shownNotes;
     for (const auto &n : clip->notes)
         if (selected_.empty() || isSelected(n.id))
@@ -368,9 +373,12 @@ bool NoteEditor::splitOrChop() {
         return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
             return chopNotes(of, ids, grid, ClipWindow::of(of).toSource(0));
         }));
+    const auto window = ClipWindow::of(*clip);
+    if (const auto span = timeSelection())
+        return commit(splitNotesAtEach(*clip, {window.toSource(span->first), window.toSource(span->second)}));
     if (!insert_)
         return false;
-    return commit(splitNotesAt(*clip, ClipWindow::of(*clip).toSource(*insert_)));
+    return commit(splitNotesAt(*clip, window.toSource(*insert_)));
 }
 bool NoteEditor::join() {
     if (!anySelected())
@@ -418,9 +426,10 @@ bool NoteEditor::paste() {
     const auto *clip = panel.details();
     if (clip == nullptr || panel.noteClipboard.empty())
         return false;
-    // At the insert marker, else at the clip's start; into the clip being edited.
+    // At the insert marker or the time selection's start, else at the clip's start; into the clip being edited.
     const auto window = ClipWindow::of(*clip);
-    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(insert_.value_or(window.pos))));
+    const auto span = timeSelection();
+    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(span ? span->first : insert_.value_or(window.pos))));
 }
 bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
@@ -558,6 +567,171 @@ NoteEdit NoteEditor::across(const Build &build) const {
             all.ops.push_back(std::move(o));
     }
     return all;
+}
+std::optional<std::pair<std::int64_t, std::int64_t>> NoteEditor::timeSelection() const noexcept {
+    if (!insert_ || !head_ || *head_ == *insert_)
+        return std::nullopt;
+    return std::pair{std::min(*insert_, *head_), std::max(*insert_, *head_)};
+}
+void NoteEditor::selectTime(std::int64_t from, std::int64_t to) {
+    insert_ = from;
+    head_ = to;
+    if (from == to)
+        head_.reset();
+    repaint();
+}
+void NoteEditor::placeMarker(std::int64_t at, bool extend) {
+    if (extend) {
+        if (!insert_)
+            insert_ = at;
+        head_ = at;
+        if (*head_ == *insert_)
+            head_.reset();
+    } else {
+        insert_ = at;
+        head_.reset();
+    }
+    // Kept in view.
+    const auto area = notesArea();
+    if (const double x = time.x(at); x < 0)
+        time.pan(x - 24);
+    else if (area.getWidth() > 0 && x > area.getWidth())
+        time.pan(x - area.getWidth() + 24);
+    repaint();
+}
+bool NoteEditor::toggleTimeAndNotes() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    if (anySelected()) {
+        // The notes give way to the time they occupy; a time selection that already holds them stays.
+        std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min(), last = to;
+        const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+            const auto window = ClipWindow::of(of);
+            for (const auto &n : of.notes)
+                if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                    from = std::min(from, window.toArrangement(n.startTicks));
+                    last = std::max(last, window.toArrangement(n.startTicks));
+                    to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+                }
+        };
+        take(*clip, selected_);
+        if (!panel.focus())
+            for (const auto &layer : panel.others())
+                take(layer.details, selectedIn(layer.details.id));
+        if (from >= to)
+            return false;
+        if (const auto span = timeSelection(); !span || span->first > from || span->second <= last) {
+            insert_ = from;
+            head_ = to;
+        }
+        selected_.clear();
+        otherSelected_.clear();
+        repaint();
+        return true;
+    }
+    const auto span = timeSelection();
+    if (!span)
+        return false;
+    // The notes the time holds: those that begin inside it.
+    const auto inside = [&](const engine::ClipDetails &of, const engine::ClipNote &n) {
+        const auto at = ClipWindow::of(of).toArrangement(n.startTicks);
+        return at >= span->first && at < span->second;
+    };
+    for (const auto &n : clip->notes)
+        if (inside(*clip, n))
+            selected_.push_back(n.id);
+    if (!panel.focus())
+        for (const auto &layer : panel.others())
+            for (const auto &n : layer.details.notes)
+                if (inside(layer.details, n))
+                    otherIds(layer.details.id).push_back(n.id);
+    repaint();
+    return true;
+}
+void NoteEditor::invertSelection() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    std::vector<std::uint64_t> inverted;
+    for (const auto &n : clip->notes)
+        if (!isSelected(n.id))
+            inverted.push_back(n.id);
+    if (!panel.focus())
+        for (const auto &layer : panel.others()) {
+            const auto was = selectedIn(layer.details.id);
+            auto &ids = otherIds(layer.details.id);
+            ids.clear();
+            for (const auto &n : layer.details.notes)
+                if (std::find(was.begin(), was.end(), n.id) == was.end())
+                    ids.push_back(n.id);
+        }
+    selected_ = std::move(inverted);
+    repaint();
+}
+bool NoteEditor::walk(bool sideways, bool forward, bool extend) {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    if (selected_.empty()) {
+        if (sideways) {
+            // The insert marker, or the time selection's moving end, to the next note edge.
+            const auto from = extend ? head_.value_or(insert_.value_or(window.pos)) : insert_.value_or(window.pos);
+            std::optional<std::int64_t> best;
+            for (const auto &n : clip->notes)
+                for (const auto edge : {window.toArrangement(n.startTicks), window.toArrangement(n.startTicks + n.durationTicks)})
+                    if ((forward ? edge > from : edge < from) && (!best || (forward ? edge < *best : edge > *best)))
+                        best = edge;
+            if (best) {
+                if (extend && !insert_)
+                    insert_ = window.pos;
+                placeMarker(*best, extend);
+            }
+            return true;
+        }
+        // The note nearest the insert marker.
+        const auto at = insert_.value_or(window.pos);
+        const engine::ClipNote *nearest = nullptr;
+        for (const auto &n : clip->notes)
+            if (nearest == nullptr ||
+                std::abs(window.toArrangement(n.startTicks) - at) < std::abs(window.toArrangement(nearest->startTicks) - at))
+                nearest = &n;
+        if (nearest != nullptr) {
+            selected_ = {nearest->id};
+            anchor_ = nearest->id;
+        }
+        repaint();
+        return true;
+    }
+    // From the note last picked: the next or the previous in time, or on its own key.
+    const auto *from = note_edits_detail::find(*clip, isSelected(anchor_) ? anchor_ : selected_.back());
+    if (from == nullptr)
+        return true;
+    const auto before = [](const engine::ClipNote &a, const engine::ClipNote &b) {
+        return a.startTicks != b.startTicks ? a.startTicks < b.startTicks : a.key != b.key ? a.key < b.key : a.id < b.id;
+    };
+    const engine::ClipNote *next = nullptr;
+    for (const auto &n : clip->notes) {
+        if (n.id == from->id || (sideways && n.key != from->key))
+            continue;
+        if (forward ? !before(*from, n) : !before(n, *from))
+            continue;
+        if (next == nullptr || (forward ? before(n, *next) : before(*next, n)))
+            next = &n;
+    }
+    if (next != nullptr) {
+        if (!extend) {
+            selected_.clear();
+            otherSelected_.clear();
+        }
+        if (!isSelected(next->id))
+            selected_.push_back(next->id);
+        anchor_ = next->id;
+        head_.reset();
+    }
+    repaint();
+    return true;
 }
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
@@ -699,6 +873,30 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             return;
         }
     }
+    if (const auto piano = keysArea(); piano.contains(from_)) {
+        // A piano key selects its key track's notes; with Shift it adds them, or takes them out
+        // when all of them are in (manual 10.5.2).
+        if (const auto key = keys.keyAt(from_.y - piano.getY())) {
+            std::vector<std::uint64_t> track;
+            for (const auto &n : clip->notes)
+                if (n.key == *key)
+                    track.push_back(n.id);
+            if (!e.mods.isShiftDown()) {
+                otherSelected_.clear();
+                selected_ = track;
+            } else {
+                const bool all = !track.empty() && std::all_of(track.begin(), track.end(), [this](std::uint64_t id) { return isSelected(id); });
+                for (const auto id : track)
+                    if (all)
+                        std::erase(selected_, id);
+                    else if (!isSelected(id))
+                        selected_.push_back(id);
+            }
+            head_.reset();
+        }
+        repaint();
+        return;
+    }
     if (shapeBox().contains(from_)) {
         juce::Component::SafePointer<NoteEditor> safe(this);
         shapeMenu().showMenuAsync(
@@ -766,6 +964,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     NotePart part = NotePart::None;
     if (const auto *n = noteAt(from_, &part)) {
         // A click selects the note; Shift adds it to the selection or takes it out (manual 10.5.2).
+        head_.reset();
         if (e.mods.isShiftDown()) {
             if (isSelected(n->id))
                 std::erase(selected_, n->id);
@@ -785,6 +984,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             // The insert marker goes where the click is, on the grid (manual 10.5.2).
             const auto at = time.tick(static_cast<double>(from_.x - notesArea().getX()));
             insert_ = snapping(e.mods) ? time.snap(at, false) : at;
+            head_.reset();
         }
         bandBase_ = selected_;
         drag_ = Drag::Band;
@@ -839,6 +1039,13 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     } else if (drag_ == Drag::Band) {
         // The notes the rectangle touches, added to what Shift kept.
         const juce::Rectangle<int> band(from_, to_);
+        if (!e.mods.isShiftDown() && insert_) {
+            // And the time it spans, from the insert marker, on the grid (manual 10.5.2).
+            const auto at = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
+            head_ = snapping(e.mods) ? time.snap(at, to_.x > from_.x) : at;
+            if (*head_ == *insert_)
+                head_.reset();
+        }
         if (!e.mods.isShiftDown())
             otherSelected_.clear();
         if (!panel.focus())
@@ -1004,9 +1211,46 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         repaint();
         return true;
     }
-    if (code == juce::KeyPress::escapeKey && anySelected()) {
+    if (code == juce::KeyPress::escapeKey && (anySelected() || timeSelection())) {
+        // Esc collapses the note selection and the time selection (manual 10.5.2).
+        head_.reset();
         select({});
         return true;
+    }
+    if (code == juce::KeyPress::returnKey && !mods.isAnyModifierKeyDown())
+        return toggleTimeAndNotes();
+    if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        invertSelection();
+        return true;
+    }
+    {
+        const bool sideways = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
+        const bool upDown = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
+        const bool forward = code == juce::KeyPress::rightKey || code == juce::KeyPress::downKey;
+        const auto window = ClipWindow::of(*clip);
+        // Home and End take the insert marker to the clip's start and end.
+        if ((code == juce::KeyPress::homeKey || code == juce::KeyPress::endKey) && !mods.isAnyModifierKeyDown()) {
+            placeMarker(code == juce::KeyPress::homeKey ? window.pos : window.end(), false);
+            return true;
+        }
+        // Alt and the arrows walk the notes and their edges. The manual's shortcut table gives Alt on
+        // Windows and Option on the Mac; its text says Ctrl on Windows, which the table gives to velocity.
+        if (mods.isAltDown() && !mods.isCommandDown() && (sideways || upDown))
+            return walk(sideways, forward, mods.isShiftDown());
+        // With no note selected, left and right move the insert marker by the grid; with Shift they
+        // select time from it; over a time selection, an arrow alone collapses it to that side.
+        if (sideways && !anySelected() && !mods.isCommandDown() && !mods.isAltDown()) {
+            const bool extend = mods.isShiftDown();
+            if (const auto span = timeSelection(); span && !extend) {
+                placeMarker(forward ? span->second : span->first, false);
+                return true;
+            }
+            if (extend && !insert_)
+                insert_ = window.pos;
+            const auto from = extend ? head_.value_or(*insert_) : insert_.value_or(window.pos);
+            placeMarker(std::clamp(time.nextGridLine(from, forward), window.pos, window.end()), extend);
+            return true;
+        }
     }
     // 0 deactivates the selected notes, or activates them when all are off (manual 10.5.7).
     if (code == '0' && !mods.isAnyModifierKeyDown() && anySelected()) {
@@ -1056,6 +1300,7 @@ void NoteEditor::resized() {
             // Live opens on the notes; an empty clip opens around middle C.
             folded_ = false;
             insert_.reset();
+            head_.reset();
             keys.unfold(area.getHeight());
             keys.keyHeight = KeyTracks::kDefaultHeight;
             const auto range = keyRange(every);
@@ -1207,7 +1452,13 @@ void NoteEditor::paint(juce::Graphics &g) {
                 }
             }
         }
-        if (insert_) {
+        if (const auto span = timeSelection()) {
+            // The time selection: a lighter band down the key tracks.
+            const int left = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
+            const int right = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
+            g.setColour(juce::Colours::white.withAlpha(0.16f));
+            g.fillRect(juce::Rectangle<int>(left, area.getY(), std::max(1, right - left), area.getHeight()).getIntersection(area));
+        } else if (insert_) {
             // The insert marker: a thin line down the key tracks.
             const int x = area.getX() + static_cast<int>(std::clamp(time.x(*insert_), -1e6, 1e6));
             g.setColour(look::text);

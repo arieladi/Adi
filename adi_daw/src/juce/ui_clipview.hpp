@@ -104,6 +104,16 @@ class NoteEditor final : public juce::Component {
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }
+    // The time selection (manual 10.5.2): from the insert marker to where a drag across empty space,
+    // or Shift and the arrows, took its other end. In the song's time, the earlier end first; none
+    // while it is a point. Enter swaps between it and the notes that begin inside it; Esc, a click
+    // outside, or an arrow collapses it. Split cuts at its two edges; Paste lands on its start; Z
+    // zooms to it.
+    std::optional<std::pair<std::int64_t, std::int64_t>> timeSelection() const noexcept;
+    void selectTime(std::int64_t from, std::int64_t to);
+    bool toggleTimeAndNotes();
+    // Every note that was not selected, and none that was (Ctrl/Cmd+Shift+A).
+    void invertSelection();
     // Cut, Copy and Paste of notes (manual 10.5.4; Ctrl/Cmd+X, C, V): the selected notes of every
     // shown clip are copied with their places in the song; Paste puts them into the edited clip at
     // the insert marker, the earliest on it, selected; one undo step.
@@ -176,7 +186,13 @@ class NoteEditor final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
     std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> otherSelected_;
-    std::optional<std::int64_t> insert_;
+    std::optional<std::int64_t> insert_, head_;
+    // The insert marker, or with `extend` the time selection's moving end, put at `at` and kept in view.
+    void placeMarker(std::int64_t at, bool extend);
+    // Alt and an arrow (manual 10.5.2, 41.12): with no note selected, left and right take the marker
+    // to the next note edge and up and down select the note nearest it; with one, up and down go to
+    // the previous and next note in time, left and right to those on the same key. Shift extends.
+    bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
