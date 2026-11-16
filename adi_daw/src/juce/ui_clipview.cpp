@@ -2797,9 +2797,27 @@ ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sampl
     editor_.onEscapeKey = [this] { closeEditor(); };
     editor_.onFocusLost = [this] { closeEditor(); };
 }
-juce::Rectangle<int> ClipViewPanel::titleArea() const noexcept { return {0, 0, kPanelWidth, kTitleHeight}; }
+juce::Rectangle<int> ClipViewPanel::titleArea() const noexcept {
+    // Folded, the title is the whole strip.
+    return panelsFolded_ ? juce::Rectangle<int>(0, 0, kFoldedWidth, getHeight()) : juce::Rectangle<int>(0, 0, kPanelWidth, kTitleHeight);
+}
+void ClipViewPanel::foldPanels(bool fold) {
+    if (fold == panelsFolded_)
+        return;
+    panelsFolded_ = fold;
+    closeEditor();
+    resized();
+    repaint();
+    keepSettings();
+}
+void ClipViewPanel::mouseDoubleClick(const juce::MouseEvent &e) {
+    if (details_ && titleArea().contains(e.getPosition()) && !activatorArea().expanded(2).contains(e.getPosition()))
+        foldPanels(!panelsFolded_);
+}
 juce::Rectangle<int> ClipViewPanel::activatorArea() const noexcept { return {4, 3, 11, 11}; }
 juce::Rectangle<int> ClipViewPanel::mainArea() const noexcept {
+    if (panelsFolded_)
+        return {};
     return {0, kTitleHeight, kPanelWidth, std::max(0, getHeight() - kTitleHeight)};
 }
 juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
@@ -2854,6 +2872,7 @@ void ClipViewPanel::applyState(const WindowState &state) {
     notes.highlightScale = state.highlightScale;
     notes.setLaneHeight(state.noteLaneHeight);
     notes.spelling = static_cast<NoteSpelling>(std::clamp(state.noteSpelling, 0, 4));
+    panelsFolded_ = state.clipPanelsFolded;
     notes.noteColours = static_cast<NoteEditor::NoteColours>(std::clamp(state.noteColours, 0, 4));
     quantizeValue_ = static_cast<std::size_t>(std::clamp(state.quantizeValue, 0, static_cast<int>(kQuantizeValues.size()) - 1));
     quantizeAmount = state.quantizeAmount;
@@ -2872,6 +2891,7 @@ void ClipViewPanel::keepSettings() {
     state.highlightScale = notes.highlightScale;
     state.noteLaneHeight = notes.laneHeight();
     state.noteSpelling = static_cast<int>(notes.spelling);
+    state.clipPanelsFolded = panelsFolded_;
     state.noteColours = static_cast<int>(notes.noteColours);
     state.quantizeValue = static_cast<int>(quantizeValue_);
     state.quantizeAmount = quantizeAmount;
@@ -3223,7 +3243,7 @@ juce::Rectangle<int> ClipViewPanel::highlightBox() const noexcept {
     return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4).withWidth(54);
 }
 juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
-    if (!midi())
+    if (!midi() || panelsFolded_)
         return {};
     const auto box = fieldBox(Field::Scale);
     return {box.getRight() - 24, box.getY() - 15 + 2, 24, 11};
@@ -3414,6 +3434,9 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     const int column = field == Field::End || field == Field::Length || field == Field::Scale ? 1 : 0;
     if (field == Field::None)
         return {};
+    if (panelsFolded_ && (field == Field::Start || field == Field::End || field == Field::Position || field == Field::Length ||
+                          field == Field::Signature || field == Field::Scale))
+        return {};
     if (field == Field::Transpose) {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
@@ -3436,7 +3459,7 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
     }
     if (field == Field::Name)
-        return titleArea().withTrimmedLeft(20).reduced(0, 1);
+        return panelsFolded_ ? juce::Rectangle<int>() : titleArea().withTrimmedLeft(20).reduced(0, 1);
     if (field == Field::QuantizeAmount || field == Field::QuantizeSwing) {
         // Under Start and End, at the foot of the Functions tab.
         const auto above = field == Field::QuantizeAmount ? quantizeStartBox() : quantizeEndBox();
@@ -3465,7 +3488,7 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
 }
 // ---- The Pitch and Time panel (manual 8.5; STEP-7-PLAN 7.7 step 4) -----------------------------
 juce::Rectangle<int> ClipViewPanel::toolsArea() const noexcept {
-    return midi() ? juce::Rectangle<int>(kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()) : juce::Rectangle<int>();
+    return midi() && !panelsFolded_ ? juce::Rectangle<int>(kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()) : juce::Rectangle<int>();
 }
 juce::Rectangle<int> ClipViewPanel::rangeBox() const noexcept {
     const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
@@ -3856,9 +3879,13 @@ juce::Rectangle<int> ClipViewPanel::setBox(Field field) const noexcept {
     if (field != Field::Start && field != Field::End && field != Field::Position && field != Field::Length)
         return {};
     const auto box = fieldBox(field);
+    if (box.isEmpty())
+        return {};
     return {box.getRight() - 24, box.getY() - kFieldLabel + 2, 24, 11};
 }
 juce::Rectangle<int> ClipViewPanel::loopBox() const noexcept {
+    if (panelsFolded_)
+        return {};
     const auto main = mainArea().reduced(6, 5);
     return {main.getX(), main.getY() + 37, main.getWidth(), kFieldBox};
 }
@@ -4352,8 +4379,9 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.setColour(look::field);
     g.fillRect(header);
     g.setColour(look::band);
-    g.fillRect(kPanelWidth, 0, 1, getHeight());
-    if (midi())
+    if (!panelsFolded_)
+        g.fillRect(kPanelWidth, 0, 1, getHeight());
+    if (midi() || panelsFolded_)
         g.fillRect(panelWidth(), 0, 1, getHeight());
     if (!details_) {
         g.setColour(look::field);
@@ -4383,9 +4411,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             g.drawLine(static_cast<float>(x), static_cast<float>(title.getBottom()), static_cast<float>(x + title.getHeight()),
                        static_cast<float>(title.getY()), 2.f);
     }
-    text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
+    if (!panelsFolded_)
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
     auto field = [&](Field which, const juce::String &name, const juce::String &value) {
         const auto box = fieldBox(which);
+        if (box.isEmpty())
+            return; // folded
         const auto set = setBox(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
              juce::Justification::centredLeft, look::text, 10.5f);
@@ -4403,17 +4434,19 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Start, "Start", r.start);
     field(Field::End, "End", r.end);
     const auto loop = loopBox();
-    look::box(g, loop.toFloat(), r.loop && !r.loopMixed ? look::accent : look::button);
-    if (r.loopMixed) {
+    if (!loop.isEmpty())
+        look::box(g, loop.toFloat(), r.loop && !r.loopMixed ? look::accent : look::button);
+    if (r.loopMixed && !loop.isEmpty()) {
         // Looped and unlooped clips together: the button is half lit (manual 10.8).
         g.setColour(look::accent);
         g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
     }
-    text("Loop", loop, juce::Justification::centred, look::text, 11.f);
+    if (!loop.isEmpty())
+        text("Loop", loop, juce::Justification::centred, look::text, 11.f);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
-    if (midi()) {
+    if (midi() && !panelsFolded_) {
         field(Field::Scale, "Scale", r.scale);
         // Scale Mode's switch (manual 8.2.4): lit while the clip holds a scale of its own.
         const auto mode = scaleModeBox();
