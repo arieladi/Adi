@@ -999,6 +999,38 @@ inline NoteEdit addInterval(const engine::ClipDetails &clip, const std::vector<s
     return edit;
 }
 
+// ---- MIDI Note Stretch (manual 10.5.6) ------------------------------------------------------------
+// A place between `a` and `b` carried to the same share of the way between `a2` and `b2`; with
+// `a2` after `b2` the order is turned round.
+inline std::int64_t stretchPoint(std::int64_t t, std::int64_t a, std::int64_t b, std::int64_t a2, std::int64_t b2) noexcept {
+    if (b == a)
+        return a2;
+    return a2 + static_cast<std::int64_t>(std::llround(static_cast<double>(t - a) * static_cast<double>(b2 - a2) / static_cast<double>(b - a)));
+}
+// The pseudo marker's map: what lies between `a` and `p` goes between `a` and `p2`, what lies
+// between `p` and `b` goes between `p2` and `b`; outside `a` to `b` nothing moves.
+inline std::int64_t stretchPointAround(std::int64_t t, std::int64_t a, std::int64_t p, std::int64_t b, std::int64_t p2) noexcept {
+    if (t <= a || t >= b)
+        return t;
+    return t <= p ? stretchPoint(t, a, p, a, p2) : stretchPoint(t, p, b, p2, b);
+}
+// The named notes with their starts and ends carried through `map`, a place in the clip's ticks
+// to its new place: stretched in proportion; a map that turns the order round mirrors them.
+template <class Map>
+NoteEdit remapNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, Map &&map, const char *label = "Stretch Notes") {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    for (const auto *n : pick(clip, ids)) {
+        const std::int64_t a = map(n->startTicks), b = map(n->startTicks + n->durationTicks);
+        place(edit, clip.id, *n, std::min(a, b), n->key, std::max(kShortestNote, std::abs(b - a)), label);
+    }
+    return edit;
+}
+
 // ---- Time inside the clip (manual 10.7) -----------------------------------------------------------
 // Crop Clip (10.7.1; Ctrl/Cmd+Shift+J): the notes outside `from` to `to` go. With `cut`, a note that
 // crosses an edge is cut there: the loop on, or a time selection (as measured on Live). Without

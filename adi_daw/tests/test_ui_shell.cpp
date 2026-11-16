@@ -6051,6 +6051,71 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(1),
               "with no note selected, every note; undone, and the Duration back on Grid");
     }
+
+    // MIDI Note Stretch (manual 10.5.6): the pair of markers under the ruler.
+    {
+        using Part = NoteEditor::StretchPart;
+        using Ids = std::vector<std::uint64_t>;
+        using Span = std::optional<std::pair<std::int64_t, std::int64_t>>;
+        const auto area = ed.notesArea();
+        const auto at = [&](std::int64_t songTick, float dx = 0.f) {
+            return juce::Point<float>(static_cast<float>(area.getX()) + static_cast<float>(ed.time.x(songTick)) + dx,
+                                      static_cast<float>(ed.stretchArea().getY() + 3));
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        check(!ed.stretchSpan() && ed.stretchPartAt(at(song(2 * beat)).roundToInt()) == Part::None, "with nothing selected there are no stretch markers");
+        ed.select({1});
+        check(!ed.stretchSpan(), "nor with one note");
+        // C3 at 0, D3 at 1 and the two-beat E3 at 2: the clip's first four beats.
+        ed.select({1, 2, 3});
+        check(ed.stretchSpan() == Span({song(0), song(4 * beat)}) && ed.stretchPartAt(at(song(0)).roundToInt()) == Part::Start &&
+                  ed.stretchPartAt(at(song(4 * beat)).roundToInt()) == Part::End && ed.stretchPartAt(at(song(2 * beat)).roundToInt()) == Part::Middle &&
+                  ed.stretchPartAt(at(song(5 * beat)).roundToInt()) == Part::None &&
+                  ed.stretchPartAt(juce::Point<float>(at(song(4 * beat)).x, static_cast<float>(area.getY() + 2)).roundToInt()) == Part::None &&
+                  ed.stretchArea().getBottom() == area.getY() && ed.stretchArea().getY() == ed.rulerArea().getBottom(),
+              "with several notes selected a pair of markers stands at the selection's start and end, in their own strip between the ruler and the key tracks");
+        // The End marker dragged from beat 4 to beat 6: half as long again. The F3 at 5 is not selected and stays.
+        const auto unwritten = submitter.nextUndo()->txnId;
+        ed.mouseDown(pressAt(ed, at(song(4 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(4 * beat)), at(song(6 * beat), 2.f)));
+        check(ed.stretchSpan() == Span({song(0), song(6 * beat)}) && submitter.nextUndo()->txnId == unwritten && note(3).startTicks == 2 * beat,
+              "while the End marker is held the pair follows it, on the grid, and nothing is written");
+        ed.mouseUp(dragAt(ed, at(song(4 * beat)), at(song(6 * beat), 2.f)));
+        check(note(1).startTicks == 0 && note(1).durationTicks == 3 * beat / 2 && note(2).startTicks == 3 * beat / 2 && note(2).durationTicks == 3 * beat / 2 &&
+                  note(3).startTicks == 3 * beat && note(3).durationTicks == 3 * beat && note(4).startTicks == 5 * beat && undoIs("Stretch Notes") &&
+                  ed.selected() == Ids({1, 2, 3}) && ed.stretchSpan() == Span({song(0), song(6 * beat)}),
+              "released, the selected notes are stretched in proportion: one undo step; the note not selected stays; the markers are at the new ends");
+        check(undo() && note(3).startTicks == 2 * beat && note(3).durationTicks == 2 * beat, "undo");
+        // The Start marker dragged past the End marker mirrors the notes.
+        ed.mouseDown(pressAt(ed, at(song(0))));
+        ed.mouseDrag(dragAt(ed, at(song(0)), at(song(8 * beat))));
+        ed.mouseUp(dragAt(ed, at(song(0)), at(song(8 * beat))));
+        check(note(1).startTicks == 7 * beat && note(2).startTicks == 6 * beat && note(3).startTicks == 4 * beat && note(3).durationTicks == 2 * beat &&
+                  note(1).durationTicks == beat && undoIs("Stretch Notes"),
+              "the Start marker dragged to the far side of the End marker mirrors the notes about it: the first is the last");
+        check(undo() && note(1).startTicks == 0, "undo");
+        // A drag begun between the two: the pseudo marker. From beat 2 to beat 3.
+        ed.mouseDown(pressAt(ed, at(song(2 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(2 * beat)), at(song(3 * beat))));
+        ed.mouseUp(dragAt(ed, at(song(2 * beat)), at(song(3 * beat))));
+        check(note(1).startTicks == 0 && note(1).durationTicks == 3 * beat / 2 && note(2).startTicks == 3 * beat / 2 && note(3).startTicks == 3 * beat &&
+                  note(3).durationTicks == beat && ed.stretchSpan() == Span({song(0), song(4 * beat)}),
+              "a drag from between the markers: what was before the place stretches, what was after it shrinks, and the pair's ends stay");
+        check(undo() && note(3).durationTicks == 2 * beat, "undo");
+        // Time selected over notes, with no note selected.
+        ed.select({});
+        ed.selectTime(song(0), song(2 * beat));
+        check(ed.stretchSpan() == Span({song(0), song(2 * beat)}), "with time selected over notes the markers stand at the time's ends");
+        ed.mouseDown(pressAt(ed, at(song(2 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(2 * beat)), at(song(beat))));
+        ed.mouseUp(dragAt(ed, at(song(2 * beat)), at(song(beat))));
+        check(note(1).durationTicks == beat / 2 && note(2).startTicks == beat / 2 && note(2).durationTicks == beat / 2 && note(3).startTicks == 2 * beat &&
+                  ed.timeSelection() == Span({song(0), song(beat)}) && ed.selected().empty(),
+              "its End marker dragged in to half: the notes that begin in the time are squeezed, and the time selection is as long as the pair");
+        check(undo() && note(2).startTicks == beat, "undo");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
@@ -6110,7 +6175,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               panel.others()[0].colour != panel.colour(),
           "with a second MIDI clip selected, both are shown, each in its own track's colour; the edited clip stays");
     check(ed.barsHeight() == 2 * NoteEditor::kLoopBarHeight + 2 && ed.rulerArea().getY() == ed.barsHeight() &&
-              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight && !panel.focusBox().isEmpty(),
+              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight + NoteEditor::kStretchHeight && !panel.focusBox().isEmpty(),
           "a loop bar for each clip sits above the ruler, the editor moves down under them, and the Focus switch appears");
     const auto own = ed.loopBar(0), other = ed.loopBar(1);
     check(own.getX() == NoteEditor::kKeysWidth + static_cast<int>(ed.time.x(0)) &&

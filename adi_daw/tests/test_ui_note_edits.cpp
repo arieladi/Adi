@@ -986,6 +986,48 @@ void intervals() {
           "a note outside the scale counts from the nearest degree");
 }
 
+void noteStretch() {
+    check(stretchPoint(2 * beat, 0, 4 * beat, 0, 8 * beat) == 4 * beat && stretchPoint(3 * beat, beat, 5 * beat, beat, 3 * beat) == 2 * beat &&
+              stretchPoint(beat, 0, 4 * beat, 4 * beat, 0) == 3 * beat && stretchPoint(7, 5, 5, 9, 20) == 9,
+          "a place keeps its share of the way between the markers; turned round, it is mirrored");
+    check(stretchPointAround(beat, 0, 2 * beat, 4 * beat, 3 * beat) == 3 * beat / 2 && stretchPointAround(3 * beat, 0, 2 * beat, 4 * beat, 3 * beat) == 7 * beat / 2 &&
+              stretchPointAround(5 * beat, 0, 2 * beat, 4 * beat, 3 * beat) == 5 * beat && stretchPointAround(0, 0, 2 * beat, 4 * beat, 3 * beat) == 0,
+          "the pseudo marker: what is before it and after it stretch to meet it; outside the pair nothing moves");
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 90;
+        return n;
+    };
+    c.notes = {note(1, 60, 0, beat), note(2, 62, beat, beat), note(3, 64, 3 * beat, beat), note(4, 65, 8 * beat, beat)};
+    const auto value = [](const NoteEdit &e, std::uint64_t id, const char *type, const char *field) -> std::int64_t {
+        for (const auto &o : e.ops)
+            if (o.opType == type && o.payload.at("note") == id)
+                return o.payload.at(field).get<std::int64_t>();
+        return -1;
+    };
+    // The three notes from 0 to 4 stretched to twice the length: the End marker dragged from 4 to 8.
+    const auto twice = remapNotes(c, {1, 2, 3}, [](std::int64_t t) { return stretchPoint(t, 0, 4 * beat, 0, 8 * beat); });
+    check(value(twice, 1, "note.move", "start") == -1 && value(twice, 1, "note.resize", "dur") == 2 * beat && value(twice, 2, "note.move", "start") == 2 * beat &&
+              value(twice, 2, "note.resize", "dur") == 2 * beat && value(twice, 3, "note.move", "start") == 6 * beat &&
+              value(twice, 3, "note.resize", "dur") == 2 * beat && value(twice, 4, "note.move", "start") == -1 && twice.ops[0].label == "Stretch Notes" &&
+              twice.select == std::vector<std::uint64_t>({1, 2, 3}),
+          "the notes stretched to twice their span: starts and lengths in proportion; a note not named is left");
+    // Mirrored: the End marker dragged to the Start marker's other side.
+    const auto mirror = remapNotes(c, {1, 2, 3}, [](std::int64_t t) { return stretchPoint(t, 0, 4 * beat, 4 * beat, 0); });
+    check(value(mirror, 1, "note.move", "start") == 3 * beat && value(mirror, 3, "note.move", "start") == 0 && value(mirror, 2, "note.move", "start") == 2 * beat &&
+              value(mirror, 1, "note.resize", "dur") == -1,
+          "a marker dragged past the other mirrors the notes: the first is last, each as long as it was");
+    const auto flat = remapNotes(c, {1, 2}, [](std::int64_t) { return std::int64_t{0}; });
+    check(value(flat, 1, "note.resize", "dur") == kShortestNote && value(flat, 2, "note.move", "start") == 0, "squeezed to nothing, a note is the shortest note long");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -1048,6 +1090,7 @@ int main() {
     noteFilters();
     clipTime();
     intervals();
+    noteStretch();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

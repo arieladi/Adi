@@ -86,6 +86,18 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // MIDI Note Stretch (manual 10.5.6). With two or more notes selected, or time selected over
+    // notes, a pair of markers hangs under the ruler at the selection's start and end. One dragged
+    // stretches the notes in proportion, the other staying; dragged past the other it mirrors them.
+    // A drag begun between the two moves a marker of its own: what lies before it and what lies
+    // after it stretch to meet it, and nothing outside the pair moves. On the grid unless snapping
+    // is bypassed; shown while held; one undo step.
+    enum class StretchPart { None, Start, End, Middle };
+    std::optional<std::pair<std::int64_t, std::int64_t>> stretchSpan() const;
+    StretchPart stretchPartAt(juce::Point<int>) const;
+    // The markers' own strip, between the ruler and the key tracks, as Live's marker row.
+    static constexpr int kStretchHeight = 8;
+    juce::Rectangle<int> stretchArea() const noexcept;
     // Getting about, as Live's (manual 8.7, 10.2). W fits the shown clips to the editor's width, H
     // the notes to its height; + and - zoom in time around the time selection, the insert marker
     // or the middle; Page Up and Down scroll an octave, with Shift a key track, with Ctrl/Cmd a
@@ -243,7 +255,14 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch };
+    // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
+    // now (all in the song's ticks), and the notes it carries.
+    StretchPart stretchPart_ = StretchPart::None;
+    std::int64_t stretchA_ = 0, stretchB_ = 0, stretchP_ = 0, stretchNow_ = 0;
+    std::vector<std::uint64_t> stretchIds_;
+    std::vector<std::uint64_t> stretchTargets() const;
+    std::int64_t stretchMap(std::int64_t songTick) const noexcept;
     // A drag on the time ruler or the piano: where the pointer last was, and the zoom's count.
     juce::Point<int> viewLast_;
     int zoomFrom_ = 0;

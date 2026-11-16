@@ -543,9 +543,12 @@ juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
     const int h = getHeight() - kRulerHeight - barsHeight() >= kVelocityHeight + 48 ? kVelocityHeight : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
 }
+juce::Rectangle<int> NoteEditor::stretchArea() const noexcept {
+    return {kKeysWidth, barsHeight() + kRulerHeight, std::max(0, getWidth() - kKeysWidth), kStretchHeight};
+}
 juce::Rectangle<int> NoteEditor::notesArea() const noexcept {
     const int bottom = getHeight() - velocityArea().getHeight();
-    const int top = barsHeight() + kRulerHeight;
+    const int top = barsHeight() + kRulerHeight + kStretchHeight;
     return {kKeysWidth, top, std::max(0, getWidth() - kKeysWidth), std::max(0, bottom - top)};
 }
 juce::Rectangle<int> NoteEditor::keysArea() const noexcept {
@@ -1266,6 +1269,72 @@ bool NoteEditor::duplicateLoop() {
     repaint();
     return true;
 }
+// ---- MIDI Note Stretch (manual 10.5.6) ---------------------------------------------------------
+std::vector<std::uint64_t> NoteEditor::stretchTargets() const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return {};
+    if (selected_.size() >= 2)
+        return selected_;
+    std::vector<std::uint64_t> ids;
+    if (const auto span = timeSelection(); span && selected_.empty()) {
+        const auto window = ClipWindow::of(*clip);
+        for (const auto &n : clip->notes)
+            if (const auto at = window.toArrangement(n.startTicks); at >= span->first && at < span->second)
+                ids.push_back(n.id);
+    }
+    return ids;
+}
+std::optional<std::pair<std::int64_t, std::int64_t>> NoteEditor::stretchSpan() const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return std::nullopt;
+    if (drag_ == Drag::Stretch)
+        // Held: the pair as the drag has it.
+        return stretchPart_ == StretchPart::Start ? std::pair{stretchNow_, stretchB_}
+               : stretchPart_ == StretchPart::End ? std::pair{stretchA_, stretchNow_}
+                                                  : std::pair{stretchA_, stretchB_};
+    const auto window = ClipWindow::of(*clip);
+    if (selected_.size() >= 2) {
+        std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
+        for (const auto &n : clip->notes)
+            if (isSelected(n.id)) {
+                from = std::min(from, window.toArrangement(n.startTicks));
+                to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+            }
+        return from < to ? std::optional(std::pair{from, to}) : std::nullopt;
+    }
+    if (const auto span = timeSelection(); span && selected_.empty())
+        for (const auto &n : clip->notes)
+            if (const auto at = window.toArrangement(n.startTicks); at >= span->first && at < span->second)
+                return span;
+    return std::nullopt;
+}
+NoteEditor::StretchPart NoteEditor::stretchPartAt(juce::Point<int> at) const {
+    const auto area = stretchArea();
+    const auto span = stretchSpan();
+    if (!span || !area.contains(at))
+        return StretchPart::None;
+    const int a = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
+    const int b = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
+    const int toA = std::abs(at.x - a), toB = std::abs(at.x - b);
+    if (std::min(toA, toB) <= 5)
+        return toB < toA ? StretchPart::End : StretchPart::Start;
+    return at.x > a && at.x < b ? StretchPart::Middle : StretchPart::None;
+}
+std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
+    switch (stretchPart_) {
+    case StretchPart::Start:
+        return stretchPoint(songTick, stretchA_, stretchB_, stretchNow_, stretchB_);
+    case StretchPart::End:
+        return stretchPoint(songTick, stretchA_, stretchB_, stretchA_, stretchNow_);
+    case StretchPart::Middle:
+        return stretchPointAround(songTick, stretchA_, stretchP_, stretchB_, stretchNow_);
+    case StretchPart::None:
+        break;
+    }
+    return songTick;
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1322,6 +1391,18 @@ const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) 
 }
 engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
     auto out = note;
+    if (drag_ == Drag::Stretch) {
+        if (std::find(stretchIds_.begin(), stretchIds_.end(), note.id) == stretchIds_.end())
+            return out;
+        if (const auto *clip = panel.details()) {
+            const auto window = ClipWindow::of(*clip);
+            const auto a = window.toSource(stretchMap(window.toArrangement(note.startTicks)));
+            const auto b = window.toSource(stretchMap(window.toArrangement(note.startTicks + note.durationTicks)));
+            out.startTicks = std::min(a, b);
+            out.durationTicks = std::max(kShortestNote, std::abs(b - a));
+        }
+        return out;
+    }
     if (drag_ == Drag::Trim) {
         for (const auto &[id, length] : trimPreview_)
             if (id == note.id)
@@ -1518,6 +1599,24 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    if (const auto part = stretchPartAt(from_); part != StretchPart::None) {
+        const auto span = *stretchSpan();
+        stretchIds_ = stretchTargets();
+        stretchA_ = span.first;
+        stretchB_ = span.second;
+        // The place grabbed between the two, on the nearest grid line unless snapping is bypassed.
+        auto grabbed = time.tick(static_cast<double>(from_.x - notesArea().getX()));
+        if (snapping(e.mods)) {
+            const auto below = time.snap(grabbed, false), above = time.snap(grabbed, true);
+            grabbed = grabbed - below <= above - grabbed ? below : above;
+        }
+        stretchP_ = std::clamp(grabbed, span.first + 1, span.second - 1);
+        stretchNow_ = part == StretchPart::Start ? span.first : part == StretchPart::End ? span.second : stretchP_;
+        stretchPart_ = part;
+        drag_ = Drag::Stretch;
+        repaint();
+        return;
+    }
     if (trimMode_ && notesArea().contains(from_)) {
         drag_ = Drag::Trim;
         trimStroke();
@@ -1613,6 +1712,16 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::Stretch) {
+        // The marker follows the pointer, on the nearest grid line unless snapping is bypassed; the
+        // marker of a drag begun between the two stays between them.
+        const auto raw = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
+        auto at = raw;
+        if (snapping(e.mods)) {
+            const auto below = time.snap(raw, false), above = time.snap(raw, true);
+            at = raw - below <= above - raw ? below : above;
+        }
+        stretchNow_ = stretchPart_ == StretchPart::Middle ? std::clamp(at, stretchA_ + 1, stretchB_ - 1) : at;
     } else if (drag_ == Drag::Zoom) {
         // Sideways scrolls; down zooms in and up out, around the pointer.
         time.pan(static_cast<double>(viewLast_.x - to_.x));
@@ -1710,6 +1819,21 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         const auto keep = selected_;
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
+    } else if (kind == Drag::Stretch) {
+        const auto window = ClipWindow::of(*clip);
+        const auto ids = std::exchange(stretchIds_, {});
+        const auto timed = timeSelection().has_value() && selected_.empty();
+        const auto part = stretchPart_;
+        auto stretched = remapNotes(*clip, ids, [&](std::int64_t source) { return window.toSource(stretchMap(window.toArrangement(source))); });
+        const auto a = part == StretchPart::Start ? stretchNow_ : stretchA_, b = part == StretchPart::End ? stretchNow_ : stretchB_;
+        stretchPart_ = StretchPart::None;
+        const auto keep = selected_;
+        if (commit(std::move(stretched))) {
+            // The selection it began from stays: the notes, or the time, now as long as the pair.
+            select(keep);
+            if (timed)
+                selectTime(std::min(a, b), std::max(a, b));
+        }
     } else if (kind == Drag::Ruler) {
         const auto part = std::exchange(rulerDrag_, RulerPart::None);
         const auto loop = std::exchange(loopPreview_, std::nullopt);
@@ -2056,7 +2180,7 @@ void NoteEditor::paint(juce::Graphics &g) {
     g.fillAll(look::lane);
     const auto ruler = rulerArea(), area = notesArea(), keyboard = keysArea(), velocity = velocityArea();
     g.setColour(look::band);
-    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight);
+    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight + kStretchHeight);
     const auto *clip = panel.details();
     if (barsHeight() > 0) {
         // The loop bars: each clip's in its colour, the edited clip's outlined; with Focus on the
@@ -2081,6 +2205,9 @@ void NoteEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
+    // The stretch markers' strip, under the ruler.
+    g.setColour(look::lane.darker(0.25f));
+    g.fillRect(stretchArea());
     if (const auto brace = loopBrace()) {
         // The loop brace (manual 8.2.2): over the loop's window, lit while the clip loops.
         juce::Graphics::ScopedSaveState state(g);
@@ -2208,6 +2335,25 @@ void NoteEditor::paint(juce::Graphics &g) {
             const int x = area.getX() + static_cast<int>(std::clamp(time.x(*insert_), -1e6, 1e6));
             g.setColour(look::text);
             g.fillRect(x, area.getY(), 1, area.getHeight());
+        }
+        if (const auto pair = stretchSpan()) {
+            // The Note Stretch markers: a pair of downward pointers at the selection's start and end.
+            const auto strip = stretchArea();
+            const auto top = static_cast<float>(strip.getY());
+            for (const auto tick : {pair->first, pair->second}) {
+                const auto x = static_cast<float>(area.getX()) + static_cast<float>(std::clamp(time.x(tick), -1e6, 1e6));
+                juce::Path pointer;
+                pointer.addTriangle(x - 4.f, top + 1.f, x + 4.f, top + 1.f, x, top + static_cast<float>(kStretchHeight));
+                g.setColour(juce::Colours::white);
+                g.fillPath(pointer);
+                g.setColour(look::outline);
+                g.strokePath(pointer, juce::PathStrokeType(1.f));
+            }
+            if (drag_ == Drag::Stretch && stretchPart_ == StretchPart::Middle) {
+                const int x = area.getX() + static_cast<int>(std::clamp(time.x(stretchNow_), -1e6, 1e6));
+                g.setColour(juce::Colours::white.withAlpha(0.7f));
+                g.fillRect(x, area.getY(), 1, area.getHeight());
+            }
         }
         if (drag_ == Drag::Trim) {
             g.setColour(juce::Colours::white.withAlpha(0.8f));
