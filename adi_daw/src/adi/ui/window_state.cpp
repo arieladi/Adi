@@ -74,6 +74,8 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 5);
         state.mixViewDetached = j.value("mixViewDetached", false);
         state.mixAnalyzerDock = j.value("mixAnalyzerDock", false);
+        state.clipView = j.value("clipView", false);
+        state.clipViewHeight = std::clamp(j.value("clipViewHeight", 260), 0, 4000);
         state.mixAnalyzerWidth = std::clamp(j.value("mixAnalyzerWidth", 300), 240, 420);
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
@@ -165,6 +167,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixViewTab", state.mixViewTab},
                             {"mixViewDetached", state.mixViewDetached},
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"clipView", state.clipView},
+                            {"clipViewHeight", state.clipViewHeight},
                             {"mixAnalyzerWidth", state.mixAnalyzerWidth},
                             {"mixAnalyzerSource", state.mixAnalyzerSource},
                             {"mixAnalyzerPoint", state.mixAnalyzerPoint},

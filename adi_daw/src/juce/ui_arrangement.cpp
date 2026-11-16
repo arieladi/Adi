@@ -2626,6 +2626,26 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         view.root.say(note);
     return true;
 }
+void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live: a double-click on a clip opens it in the Clip View (manual 8).
+    if (e.mods.isPopupMenu())
+        return;
+    const auto *t = view.geometry.trackAt(view.reader(), e.y);
+    const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
+    if (c == nullptr) {
+        // On an empty part of a MIDI track's lane it makes a clip of the bar under the pointer and
+        // opens it (Live 12 makes a clip on a double-click there; its length is to be measured).
+        if (t == nullptr || !isMidiTrack(*t) || view.geometry.meters == nullptr)
+            return;
+        const auto bar = view.geometry.barHolding(view.geometry.tick(e.x));
+        if (view.root.insertMidiClips({t->id}, bar.start, bar.end))
+            view.root.showClipView();
+        return;
+    }
+    if (view.geometry.selection.clip != c->id)
+        view.selectClip(t->id, c->id);
+    view.root.showClipView();
+}
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
