@@ -5675,6 +5675,38 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.setToolsTab(0);
     }
 
+    // Note colours (ADR-0242 d1, N1; from Cubase): by the clip (Live's, the default), velocity, pitch, channel or scale degree.
+    {
+        using Colours = NoteEditor::NoteColours;
+        const auto paler = [&](int velocity) {
+            return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+        };
+        check(ed.noteColours == Colours::Clip && !panel.coloursBox().isEmpty() && panel.headerArea().contains(panel.coloursBox()) &&
+                  !panel.coloursBox().intersects(panel.findBox()) && panel.coloursMenu().getNumItems() == 5,
+              "the header has a chooser of what the notes are coloured by: five ways, the clip's first");
+        check(ed.noteFill(note(1)) == paler(note(1).velocity) && ed.noteFill(note(2)) == paler(note(2).velocity) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)),
+              "by default, as Live: the clip's colour, paler as the velocity falls");
+        check(panel.chooseColours(2) && ed.noteColours == Colours::Velocity && ed.noteFill(note(1)) != ed.noteFill(note(2)) &&
+                  ed.noteFill(note(1)) == ed.noteFill(note(70)) && ed.noteFill(note(1)) != paler(note(1).velocity),
+              "by velocity: notes of one velocity share a colour, others differ, whatever the clip's colour");
+        check(panel.chooseColours(3) && ed.noteFill(note(1)) == ed.noteFill(note(3)) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
+              "by pitch: every C has one colour in any octave; E and G have their own");
+        check(panel.chooseColours(4) && ed.noteFill(note(1)) == ed.noteFill(note(2)) && ed.noteFill(note(1)) == ed.noteFill(note(70)),
+              "by channel: these notes are all on one channel, and one colour");
+        check(panel.chooseColours(5) && ed.noteFill(note(70)) == juce::Colour(0xff6e6e6e) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
+              "by scale degree: the root, the third and the fifth each have a colour; the C# outside C Major is dark grey");
+        ed.select({2});
+        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a) && panel.chooseColours(2) &&
+                  ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a),
+              "a deactivated note is grey whatever the notes are coloured by");
+        check(ed.keyPressed(key('0')) && note(2).active && panel.chooseColours(1) && ed.noteColours == Colours::Clip && !panel.chooseColours(9),
+              "activated again; the clip's colours again");
+        ed.select({});
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

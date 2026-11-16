@@ -86,6 +86,15 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // Note colours (ADR-0242 d1, N1; from Cubase's event colours): what the edited clip's notes
+    // are coloured by. Clip is Live's, the clip's colour paler as the velocity falls, and the
+    // default. Velocity runs from blue for the softest to red for the loudest; Pitch gives each of
+    // the twelve pitches its colour in every octave; Channel each MIDI channel; Degree each degree
+    // of the clip's scale, with the notes outside it dark grey. A deactivated note is grey in all.
+    enum class NoteColours { Clip, Velocity, Pitch, Channel, Degree };
+    static constexpr std::array<const char *, 5> kNoteColourNames = {"Clip", "Velocity", "Pitch", "Channel", "Degree"};
+    NoteColours noteColours = NoteColours::Clip;
+    juce::Colour noteFill(const engine::ClipNote &) const;
     // What the Status Bar reads while notes are selected (manual 3.2; as measured on Live): their
     // time in the song from the first one's start to the last one's end with its length, their
     // pitch, velocity and probability, each as a value or a range; or the editor's time selection.
@@ -393,6 +402,10 @@ class ClipViewPanel final : public juce::Component {
     bool clickFilterToggle(int index);
     juce::Rectangle<int> filterArea() const noexcept;
     juce::Rectangle<int> findBox() const noexcept;
+    // The header's chooser of what the notes are coloured by.
+    juce::Rectangle<int> coloursBox() const noexcept;
+    juce::PopupMenu coloursMenu() const;
+    bool chooseColours(int item);
     juce::Rectangle<int> filterChooserBox() const noexcept;
     juce::Rectangle<int> filterToggleBox(int index) const noexcept;
     juce::Rectangle<int> filterInvertBox() const noexcept;

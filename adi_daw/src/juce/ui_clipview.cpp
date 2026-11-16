@@ -1080,6 +1080,38 @@ juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) 
            "   Velocity: " + (lowVelocity == highVelocity ? juce::String(lowVelocity) : juce::String(lowVelocity) + " - " + juce::String(highVelocity)) +
            "   Probability: " + (lowChance == highChance ? percent(lowChance) : percent(lowChance) + " - " + percent(highChance));
 }
+juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
+    if (!note.active)
+        return juce::Colour(0xff9a9a9a);
+    const auto *clip = panel.details();
+    const int velocity = std::clamp<int>(note.velocity, 1, 127);
+    switch (noteColours) {
+    case NoteColours::Velocity:
+        return juce::Colour::fromHSV(0.62f * static_cast<float>(127 - velocity) / 126.f, 0.62f, 0.95f, 1.f);
+    case NoteColours::Pitch:
+        return juce::Colour::fromHSV(static_cast<float>(note.key % 12) / 12.f, 0.5f, 0.95f, 1.f);
+    case NoteColours::Channel:
+        return juce::Colour::fromHSV(static_cast<float>(note.channel % 16) / 16.f, 0.58f, 0.92f, 1.f);
+    case NoteColours::Degree: {
+        if (clip == nullptr || !inScale(note.key, static_cast<int>(clip->scale.root), clip->scale.mask))
+            return juce::Colour(0xff6e6e6e);
+        // Which degree of the scale it is, and of how many.
+        const int above = (note.key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12;
+        int degree = 0, degrees = 0;
+        for (int step = 0; step < 12; ++step)
+            if (((clip->scale.mask >> step) & 1) != 0) {
+                if (step < above)
+                    ++degree;
+                ++degrees;
+            }
+        return juce::Colour::fromHSV(static_cast<float>(degree) / static_cast<float>(std::max(1, degrees)), 0.55f, 0.95f, 1.f);
+    }
+    case NoteColours::Clip:
+        break;
+    }
+    // Live's: the clip's colour, paler as the velocity falls.
+    return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1903,9 +1935,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
                 box->y >= area.getBottom() || box->y + box->height <= area.getY())
                 continue;
-            const float light = 0.55f * static_cast<float>(127 - std::clamp<int>(note.velocity, 1, 127)) / 126.f;
-            const auto fill = note.active ? base.interpolatedWith(juce::Colours::white, light)
-                                          : juce::Colour(0xff9a9a9a);
+            const auto fill = noteFill(note);
             const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
                                            static_cast<float>(box->width), static_cast<float>(box->height));
             g.setColour(fill);
@@ -2202,6 +2232,24 @@ juce::Rectangle<int> ClipViewPanel::filterArea() const noexcept {
 juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
     const auto highlight = highlightBox();
     return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
+}
+juce::Rectangle<int> ClipViewPanel::coloursBox() const noexcept {
+    const auto find = findBox();
+    return find.isEmpty() ? find : find.withX(find.getRight() + 4).withWidth(62);
+}
+juce::PopupMenu ClipViewPanel::coloursMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < NoteEditor::kNoteColourNames.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, NoteEditor::kNoteColourNames[i], true, static_cast<std::size_t>(notes.noteColours) == i);
+    return menu;
+}
+bool ClipViewPanel::chooseColours(int item) {
+    if (item < 1 || item > static_cast<int>(NoteEditor::kNoteColourNames.size()))
+        return false;
+    notes.noteColours = static_cast<NoteEditor::NoteColours>(item - 1);
+    notes.repaint();
+    repaint();
+    return true;
 }
 juce::Rectangle<int> ClipViewPanel::filterChooserBox() const noexcept {
     const auto bar = filterArea();
@@ -3187,6 +3235,16 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         showFilters(!filtersShown_);
         return;
     }
+    if (coloursBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        coloursMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(coloursBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseColours(item);
+            });
+        return;
+    }
     if (quantizeChooserBox().contains(at)) {
         juce::Component::SafePointer<ClipViewPanel> safe(this);
         quantizeMenu().showMenuAsync(
@@ -3550,6 +3608,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto find = findBox();
         look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
         text("Find", find, juce::Justification::centred, look::text, 10.f);
+        // What the notes are coloured by (ADI's addition).
+        const auto colours = coloursBox();
+        look::box(g, colours.toFloat(), look::chooser);
+        text(NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], colours.reduced(4, 0), juce::Justification::centredLeft,
+             look::text, 10.f);
     }
     if (const auto bar = filterArea(); !bar.isEmpty()) {
         // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
@@ -3584,7 +3647,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         look::box(g, select.toFloat(), look::button);
         text("Select", select, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? findBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())
