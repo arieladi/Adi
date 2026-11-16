@@ -11,18 +11,18 @@ Status: **built**, **partial**, **open** (planned, not built), **waits** (a Need
 
 | # | Live's behaviour | Manual | ADI's plan | Status |
 |---|---|---|---|---|
-| 1 | The Clip View opens on a double-click on a clip, its toggle in the Status Bar, or Ctrl/Cmd+Alt+3; it always shows the selected clip | §8 | The same three ways; the detail row | open |
-| 2 | Opened with the Device View open, the Clip View stacks above it | §8 | The detail row holds both, the Clip View on top | open; measure the split between them |
-| 3 | Its top border drags to resize it; dragged to the window's bottom, it closes | §8 | The same, through the dock's resizer | open |
+| 1 | The Clip View opens on a double-click on a clip, its toggle in the Status Bar, or Ctrl/Cmd+Alt+3; it always shows the selected clip | §8 | The same three ways; the detail row | built: the double-click, Ctrl/Cmd+Alt+3 and the Status Bar's selector; with no clip selected the view keeps the clip it shows (measure) |
+| 2 | Opened with the Device View open, the Clip View stacks above it | §8 | The detail row holds both, the Clip View on top | built; measure the split between them |
+| 3 | Its top border drags to resize it; dragged to the window's bottom, it closes | §8 | The same, through the dock's resizer | built: its own top edge; let go at its floor, it closes |
 | 4 | Ctrl/Cmd+Alt+E toggles it to its full height | §10.2 | The same | open |
-| 5 | The title bar: the clip's activator, name and colour; Rename and the colour from its context menu; a double-click folds the panels | §8.1.1 | The activator through `clip.setMute`; the name and colour shown once the snapshot carries them (N6, N32); Rename through `clip.setName` | waits (N6, N32) |
+| 5 | The title bar: the clip's activator, name and colour; Rename and the colour from its context menu; a double-click folds the panels | §8.1.1 | The activator through `clip.setMute`; the name and colour shown once the snapshot carries them (N6, N32); Rename through `clip.setName` | partial: the activator (one undo step), the name and the colour; Rename, the colour menu and the fold are open |
 | 6 | Panels on the left, an editor on the right; the panels go vertical when dragged narrow, or by the View menu | §8.1.2 | Horizontal first; vertical later | open (horizontal), later (vertical) |
-| 7 | The editor's tabs: Notes, Envelopes, MPE for MIDI; Sample, Envelopes for audio; Alt/Option+Tab switches | §8.1.3 | The tabs drawn; Notes and Sample first | open; Envelopes, MPE later |
-| 8 | Main panel: Start and End with Set buttons; Loop; Position and Length with Set; Signature; Groove; Scale | §8.2 | Shown from the snapshot's position and length, read-only until the clip ops exist | waits (N33) |
+| 7 | The editor's tabs: Notes, Envelopes, MPE for MIDI; Sample, Envelopes for audio; Alt/Option+Tab switches | §8.1.3 | The tabs drawn; Notes and Sample first | partial: Notes for MIDI and Sample for audio, drawn; Envelopes, MPE later |
+| 8 | Main panel: Start and End with Set buttons; Loop; Position and Length with Set; Signature; Groove; Scale | §8.2 | Shown from the snapshot's position and length, read-only until the clip ops exist | partial: Start, End, Loop, Position, Length, Signature and Scale read from the clip (N32); they act with N33's ops next |
 | 9 | Duplicate (MIDI): doubles the loop and its notes, Ctrl/Cmd+D on the loop brace | §8.9, §10.7.3 | Through `note.insert` and the loop op | waits (N32, N33) |
-| 10 | The Clip View Selector in the Status Bar: the whole clip in miniature; drag in it to scroll and zoom | §8.7, §10.2 | In the Status Bar's second field, which is free (the flip arrows are in Live's strip, #293) | open |
-| 11 | Zoom and scroll as in the arrangement: drag the time ruler; Ctrl/Cmd+wheel zooms; Z zooms to the selection, X back step by step | §8.7, §10.2 | Shares the arrangement's zoom code | open |
-| 12 | The note ruler: C-2 to C8 with a piano keyboard; scroll it for octaves, drag sideways to zoom key tracks; Alt/Option+wheel zooms them | §10.1, §10.2 | Middle C is C3, English names (the director's defaults; Master Reference 5.1) | open |
+| 10 | The Clip View Selector in the Status Bar: the whole clip in miniature; drag in it to scroll and zoom | §8.7, §10.2 | In the Status Bar's second field, which is free (the flip arrows are in Live's strip, #293) | partial: the clip's notes in miniature in the second field, and a click toggles the view; dragging in it to scroll and zoom is open |
+| 11 | Zoom and scroll as in the arrangement: drag the time ruler; Ctrl/Cmd+wheel zooms; Z zooms to the selection, X back step by step | §8.7, §10.2 | Shares the arrangement's zoom code | partial: Ctrl/Cmd+wheel zooms and Shift+wheel scrolls; the ruler drag, Z and X are open |
+| 12 | The note ruler: C-2 to C8 with a piano keyboard; scroll it for octaves, drag sideways to zoom key tracks; Alt/Option+wheel zooms them | §10.1, §10.2 | Middle C is C3, English names (the director's defaults; Master Reference 5.1) | partial: the names, the piano, the wheel, and Alt/Option+wheel; dragging the ruler is open |
 | 13 | Page Up/Down scroll an octave; with Shift, one key track | §10.2 | The same | open |
 | 14 | A double-click on the note or time ruler zooms to the selection, or to the notes when nothing is selected | §10.2 | The same | open |
 | 15 | The grid: its chooser on the editor's header, Ctrl/Cmd+4 switches snapping, Alt (Cmd on the Mac) bypasses it; notes snap to their offset from the grid | §10.2.1 | The arrangement's grid code; offset snapping is new | open |
