@@ -6,6 +6,27 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-16 to 17 — win builds the Clip View: Live's note editor, piece by piece, and the first additions from Cubase
+
+**For the seats — read first.**
+- **Window lane.** The Clip View is win's by the director's word of 16 November (ADR-0240); your list is `collab/prompts/2026-11-16-window-lane.md`, with the Plug-Ins browser first (DF-W9: a MIDI clip is silent until an instrument can be put on its track from the window). Win's Clip View work touched three shared places since your last pull: `ui_shell.cpp` (`selectionText` reads the Note Editor first; `toggleClipViewFull`), `ui_shell.hpp` (the same two), and `window_state.hpp` (the Clip View's default height is 278). No command id was added after `DeleteFades`. Pull before you push.
+- **Mix View seat.** Nothing of yours moved in this stretch. #579 still waits for DF-M32, #580 for DF-M33, #548 for DF-M29 and DF-M30.
+- **Engine seat.** The window now leans on these of yours every day: `readClipDetails`, `note.insert/delete/move/resize/setVelocity/setMute/quantize`, `clip.setLoop/setStartMarker/setEndMarker/setScale/setTimeSignature`. Three things the editor cannot do until notes carry more: Velocity Deviation and probability groups (MI-09), per-note expression (MI-08).
+
+**The rulings.** ADR-0240: the Clip View of 28 October is approved and win builds it. ADR-0241: audio pitch editing is P1 after warp markers; four note-editor tools from Cubase; per-note gain and pan with the MPE tab; Bitwig's operators, P2. ADR-0242: win's picks of the candidates are taken, slide notes and a drum editor are not, the rest is taken on condition that none impairs a function of Live's; Live's own clip editing was audited against our list (`collab/window/live-clip-view-audit-2026-11-16.md`), and it found that editing several clips together was one "later" row against some thirty behaviours in the manual. That was built first.
+
+**What is on main, in the order it landed (#586 to #612).** The frame and the read-only notes; creating a MIDI clip; adding, moving, resizing and deleting notes; the Main panel's fields and Set buttons; Pitch and Time's first tools; Fold, Draw Mode, zoom; chord editing, line tools, the trim tool and handles on velocities (ADR-0241 d2); several clips in one editor, each in its colour, with Focus; note cut, copy and paste and the insert marker; Live's overlap rule as the director measured it; Quantize, Split, Chop, Join; the Functions tab (velocity functions, Delete Doubles, Restrict Polyphony); time selection, the insert marker's keys and walking the notes by keys; the loop brace and the Start and End markers dragged; the Velocity lane as Live's, with Draw Mode in it; Randomize and Ramp; Scale Mode with Highlight Scale and Fold to Scale; the Status Bar's note readout.
+
+**In CI or waiting behind it.** #613 carries four steps in one PR: Find and Select Notes, the Quantize settings with swing, note colours, and getting about (Page keys, W and H, ruler and piano drags, the grid's keys and chooser, Follow, full height). Two more are committed and wait for it: time inside the clip (Crop Clip, Duplicate, Delete and Insert Time, Duplicate Loop), and Pitch and Time as Live's (Interval and Add Interval, the Stretch control, Duration and Set Length), which moves ADI's chord and overlap tools to a third tab, Chords.
+
+**How the work is checked.** Every rule that can live without a window does: `adi/ui/note_edits.hpp`, `note_filters.hpp`, `clip_edits.hpp`, `note_geometry.hpp`, tested by `adi_ui_note_edits_tests` (219 checks) and `adi_ui_note_geometry_tests` (49). The window suite drives the real components headless (2,547 checks) and still counts allocations in a steady frame: zero. Nothing was driven on the director's desktop.
+
+**The macOS runner.** Jobs shown as "cancelled" with no log were never run: the annotation reads "the job was not acquired by Runner of type hosted", GitHub's macOS arm64 capacity. One run per stacked PR starved it. The stack now lands through its top PR alone (`land_top.sh` in win's scratch: it re-runs cancelled jobs, stops on a real failure, retargets to main, merges, and closes the lower PRs as landed). #607 to #609 landed through #609, #610 to #612 through #612.
+
+**Left open, each written in the parity list beside its row** (`collab/window/parity-7.7-clip-view.md`): points to check on Live (which modifier walks the notes on Windows: the manual's text says Ctrl, its shortcut table Alt, and ADI follows the table; whether Up is the previous note; the units of the Time and Duration filters; what a note crossing a time selection's edge does in the time commands); points to read on Cubase (the trim tool's start side, the handles' formulas, the chord list, swing's range). Not built because the engine has no home for it yet: Velocity Deviation, the Chance lane and probability groups, the MPE tab, hearing a note as it is clicked. Not built yet at all: Humanize, the MIDI Tools, the Envelopes tab, the Sample Editor beyond its waveform, Note Stretch markers, the Clip View's own window.
+
+**Suites at this entry.** Window 2,547 checks; note edits 219; note geometry 49; 242 ADRs.
+
 ## 2026-11-13 to 16 — the register; the Mix View's first functions and its analyser stack land; the seat turned toward what a user can reach; the window lane's next list
 
 **For the seats — read first.**
