@@ -118,6 +118,15 @@ NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
 void NoteEditor::frame() {
     // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
     const auto area = notesArea();
+    if (panel.details() != nullptr && panel.root.playing() && panel.root.state().follow && !panel.root.arrangement.followPaused &&
+        area.getWidth() > 0) {
+        // Follow (manual 8.7, 10.2.2): a page at a time, as the playhead leaves the editor.
+        const auto tick = panel.root.timelineTick();
+        if (const double at = time.x(tick); at < 0 || at >= area.getWidth()) {
+            time.left = std::max(0., static_cast<double>(tick) / textproj::kPPQ);
+            repaint();
+        }
+    }
     const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
     playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
@@ -416,10 +425,10 @@ void NoteEditor::zoomBack() {
     repaint();
 }
 bool NoteEditor::quantize() {
-    const auto grid = gridTicks();
+    const auto grid = panel.quantizeGrid();
     return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
         // The grid's lines stand in the song; in the clip's own time one of them is the song's start.
-        return quantizeNotes(of, ids, grid, ClipWindow::of(of).toSource(0));
+        return quantizeNotes(of, ids, grid, ClipWindow::of(of).toSource(0), panel.quantizeSettings());
     }));
 }
 bool NoteEditor::splitOrChop() {
@@ -1080,6 +1089,123 @@ juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) 
            "   Velocity: " + (lowVelocity == highVelocity ? juce::String(lowVelocity) : juce::String(lowVelocity) + " - " + juce::String(highVelocity)) +
            "   Probability: " + (lowChance == highChance ? percent(lowChance) : percent(lowChance) + " - " + percent(highChance));
 }
+juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
+    if (!note.active)
+        return juce::Colour(0xff9a9a9a);
+    const auto *clip = panel.details();
+    const int velocity = std::clamp<int>(note.velocity, 1, 127);
+    switch (noteColours) {
+    case NoteColours::Velocity:
+        return juce::Colour::fromHSV(0.62f * static_cast<float>(127 - velocity) / 126.f, 0.62f, 0.95f, 1.f);
+    case NoteColours::Pitch:
+        return juce::Colour::fromHSV(static_cast<float>(note.key % 12) / 12.f, 0.5f, 0.95f, 1.f);
+    case NoteColours::Channel:
+        return juce::Colour::fromHSV(static_cast<float>(note.channel % 16) / 16.f, 0.58f, 0.92f, 1.f);
+    case NoteColours::Degree: {
+        if (clip == nullptr || !inScale(note.key, static_cast<int>(clip->scale.root), clip->scale.mask))
+            return juce::Colour(0xff6e6e6e);
+        // Which degree of the scale it is, and of how many.
+        const int above = (note.key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12;
+        int degree = 0, degrees = 0;
+        for (int step = 0; step < 12; ++step)
+            if (((clip->scale.mask >> step) & 1) != 0) {
+                if (step < above)
+                    ++degree;
+                ++degrees;
+            }
+        return juce::Colour::fromHSV(static_cast<float>(degree) / static_cast<float>(std::max(1, degrees)), 0.55f, 0.95f, 1.f);
+    }
+    case NoteColours::Clip:
+        break;
+    }
+    // Live's: the clip's colour, paler as the velocity falls.
+    return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+}
+// ---- Getting about (manual 8.7, 10.2) ----------------------------------------------------------
+void NoteEditor::fitWidth() {
+    const auto *clip = panel.details();
+    const auto area = notesArea();
+    if (clip == nullptr || area.getWidth() <= 0)
+        return;
+    const auto window = ClipWindow::of(*clip);
+    auto from = window.pos, to = window.end();
+    for (const auto &layer : panel.others()) {
+        const auto other = ClipWindow::of(layer.details);
+        from = std::min(from, other.pos);
+        to = std::max(to, other.end());
+    }
+    const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
+    time.fit(from, from + length + length / 24, area.getWidth());
+    panel.root.arrangement.followPaused = true;
+    repaint();
+}
+void NoteEditor::fitHeight() {
+    const auto *clip = panel.details();
+    const auto area = notesArea();
+    if (clip == nullptr || area.getHeight() <= 0)
+        return;
+    if (keys.isFolded()) {
+        keys.keyHeight = std::clamp(area.getHeight() / std::max(1, keys.rowCount()), KeyTracks::kMinHeight, KeyTracks::kMaxHeight);
+        keys.scrollY = 0;
+        keys.clampScroll(area.getHeight());
+        repaint();
+        return;
+    }
+    int low = 60, high = 71;
+    bool any = false;
+    const auto take = [&](const std::vector<engine::ClipNote> &notes) {
+        for (const auto &n : notes) {
+            low = any ? std::min<int>(low, n.key) : n.key;
+            high = any ? std::max<int>(high, n.key) : n.key;
+            any = true;
+        }
+    };
+    take(clip->notes);
+    for (const auto &layer : panel.others())
+        take(layer.details.notes);
+    keys.keyHeight = std::clamp(area.getHeight() / (high - low + 1), KeyTracks::kMinHeight, KeyTracks::kMaxHeight);
+    keys.show(low, high, area.getHeight());
+    repaint();
+}
+void NoteEditor::zoomTime(bool in) {
+    const auto area = notesArea();
+    const auto span = timeSelection();
+    const auto at = span ? (span->first + span->second) / 2 : insert_ ? *insert_ : time.tick(area.getWidth() / 2.);
+    time.zoomAround(in ? 1.25 : 0.8, at);
+    panel.root.arrangement.followPaused = true;
+    repaint();
+    panel.repaint();
+}
+void NoteEditor::gridKey(int key) {
+    // The arrangement's rule (manual 6.10, 10.2.1), on the editor's own grid.
+    auto &grid = time.grid;
+    switch (key) {
+    case 1:
+    case 2: {
+        const bool narrower = key == 1;
+        if (grid.fixed)
+            grid.fixedQuarters = std::clamp(grid.fixedQuarters * (narrower ? .5 : 2.), ArrangementGeometry::kFinestGrid, ArrangementGeometry::kWidestGrid);
+        else
+            grid.narrow = std::clamp(grid.narrow + (narrower ? 1 : -1), -ArrangementGeometry::kGridNarrowest, ArrangementGeometry::kGridNarrowest);
+        break;
+    }
+    case 3:
+        grid.triplet = !grid.triplet;
+        break;
+    case 4:
+        grid.snap = !grid.snap;
+        break;
+    case 5:
+        if (!grid.fixed)
+            grid.fixedQuarters = time.plainGridQuarters();
+        grid.fixed = !grid.fixed;
+        break;
+    default:
+        return;
+    }
+    repaint();
+    panel.repaint();
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1222,6 +1348,8 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             return;
         }
     }
+    if (!e.mods.isShiftDown())
+        panel.clearFilters(); // a plain click in the editor lets every applied filter go (manual 10.5.3)
     if (const auto part = rulerPartAt(from_); part != RulerPart::None) {
         // A ruler handle: it is selected, for the arrows, and a drag begins.
         selected_.clear();
@@ -1236,6 +1364,12 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     picked_ = RulerPart::None; // anything else pressed lets the brace or the marker go
+    if (rulerArea().contains(from_)) {
+        // The time ruler, as the arrangement's: a drag scrolls sideways and zooms up and down.
+        viewLast_ = from_;
+        drag_ = Drag::Zoom;
+        return;
+    }
     if (const auto piano = keysArea(); piano.contains(from_)) {
         // A piano key selects its key track's notes; with Shift it adds them, or takes them out
         // when all of them are in (manual 10.5.2).
@@ -1257,6 +1391,9 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             }
             head_.reset();
         }
+        viewLast_ = from_;
+        zoomFrom_ = from_.x;
+        drag_ = Drag::Keys;
         repaint();
         return;
     }
@@ -1416,6 +1553,21 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::Zoom) {
+        // Sideways scrolls; down zooms in and up out, around the pointer.
+        time.pan(static_cast<double>(viewLast_.x - to_.x));
+        time.zoom(std::pow(1.012, static_cast<double>(to_.y - viewLast_.y)), static_cast<double>(to_.x - rulerArea().getX()));
+        viewLast_ = to_;
+        panel.root.arrangement.followPaused = true;
+        panel.repaint();
+    } else if (drag_ == Drag::Keys) {
+        // The piano dragged: up and down scrolls it; sideways zooms the key tracks, a step every six pixels.
+        keys.scrollBy(viewLast_.y - to_.y, area.getHeight());
+        if (const int steps = (to_.x - zoomFrom_) / 6; steps != 0) {
+            keys.zoom(keys.keyHeight + steps, to_.y - area.getY(), area.getHeight());
+            zoomFrom_ += steps * 6;
+        }
+        viewLast_ = to_;
     } else if (drag_ == Drag::Ruler) {
         rulerDrag(e.mods);
     } else if (drag_ == Drag::Shape) {
@@ -1518,6 +1670,10 @@ void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     if (clip == nullptr || e.mods.isPopupMenu())
         return;
     drag_ = Drag::None;
+    if (rulerArea().contains(e.getPosition()) || keysArea().contains(e.getPosition())) {
+        zoomToNotes();
+        return;
+    }
     if (drawMode_)
         return;
     const auto at = e.getPosition();
@@ -1593,6 +1749,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         quantize();
         return true;
     }
+    if (k == juce::KeyPress('u', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        // Quantize Settings: shown on the tools panel's Functions tab.
+        panel.setToolsTab(1);
+        return true;
+    }
     if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) {
         splitOrChop();
         return true;
@@ -1643,6 +1804,39 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         panel.repaint();
         return true;
     }
+    if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey) {
+        const bool up = code == juce::KeyPress::pageUpKey;
+        const auto view = notesArea();
+        if (mods.isCommandDown()) {
+            time.pan((up ? -0.8 : 0.8) * view.getWidth());
+            panel.root.arrangement.followPaused = true;
+        } else {
+            keys.page(up, mods.isShiftDown(), view.getHeight());
+        }
+        repaint();
+        return true;
+    }
+    if (mods.isCommandDown() && !mods.isShiftDown() && !mods.isAltDown() && code >= '1' && code <= '5') {
+        gridKey(code - '0');
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'w' || code == 'W')) {
+        fitWidth();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'h' || code == 'H')) {
+        fitHeight();
+        return true;
+    }
+    if (!mods.isCommandDown() && !mods.isAltDown() && (code == '+' || code == '=' || code == '-')) {
+        zoomTime(code != '-');
+        return true;
+    }
+    if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) {
+        // The Clip View at its full height, and back (manual 10.2).
+        panel.root.toggleClipViewFull();
+        return true;
+    }
     if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z')) {
         zoomToNotes();
         return true;
@@ -1672,6 +1866,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     }
     if (code == juce::KeyPress::returnKey && !mods.isAnyModifierKeyDown())
         return toggleTimeAndNotes();
+    if (k == juce::KeyPress('f', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        // Show or hide the note filters (as measured on Live: Ctrl+Shift+F is the filter bar's key).
+        panel.showFilters(!panel.filtersShown());
+        return true;
+    }
     if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
         invertSelection();
         return true;
@@ -1769,6 +1968,8 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
+    else
+        panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -1891,9 +2092,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
                 box->y >= area.getBottom() || box->y + box->height <= area.getY())
                 continue;
-            const float light = 0.55f * static_cast<float>(127 - std::clamp<int>(note.velocity, 1, 127)) / 126.f;
-            const auto fill = note.active ? base.interpolatedWith(juce::Colours::white, light)
-                                          : juce::Colour(0xff9a9a9a);
+            const auto fill = noteFill(note);
             const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
                                            static_cast<float>(box->width), static_cast<float>(box->height));
             g.setColour(fill);
@@ -2182,6 +2381,252 @@ juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
 }
+// ---- Find and Select Notes (manual 10.5.3) -----------------------------------------------------
+juce::Rectangle<int> ClipViewPanel::filterArea() const noexcept {
+    const auto area = editorArea();
+    return midi() && filtersShown_ ? area.withHeight(std::min(kStripHeight, area.getHeight())) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
+    const auto highlight = highlightBox();
+    return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
+}
+juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
+    return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
+}
+juce::PopupMenu ClipViewPanel::gridMenu() const {
+    using Geometry = ArrangementGeometry;
+    const auto &grid = notes.time.grid;
+    juce::PopupMenu menu, adaptive, fixed;
+    for (std::size_t i = 0; i < Geometry::kAdaptiveNames.size(); ++i)
+        adaptive.addItem(static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
+                         !grid.fixed && grid.narrow == static_cast<int>(i) - Geometry::kGridNarrowest);
+    int id = 10;
+    for (double quarters = Geometry::kWidestGrid; quarters >= Geometry::kFinestGrid; quarters /= 2)
+        fixed.addItem(id++, gridLabel(quarters, false), true, grid.fixed && grid.fixedQuarters == quarters);
+    menu.addSubMenu("Adaptive Grid", adaptive);
+    menu.addSubMenu("Fixed Grid", fixed);
+    menu.addItem(30, "Triplet Grid", true, grid.triplet);
+    menu.addItem(31, "Snap to Grid", true, grid.snap);
+    return menu;
+}
+bool ClipViewPanel::chooseGrid(int item) {
+    using Geometry = ArrangementGeometry;
+    auto &grid = notes.time.grid;
+    if (item >= 1 && item <= static_cast<int>(Geometry::kAdaptiveNames.size())) {
+        grid.fixed = false;
+        grid.narrow = item - 1 - Geometry::kGridNarrowest;
+    } else if (item >= 10 && item < 30) {
+        double quarters = Geometry::kWidestGrid;
+        for (int i = 10; i < item; ++i)
+            quarters /= 2;
+        if (quarters < Geometry::kFinestGrid)
+            return false;
+        grid.fixed = true;
+        grid.fixedQuarters = quarters;
+    } else if (item == 30) {
+        grid.triplet = !grid.triplet;
+    } else if (item == 31) {
+        grid.snap = !grid.snap;
+    } else {
+        return false;
+    }
+    notes.repaint();
+    repaint();
+    return true;
+}
+juce::Rectangle<int> ClipViewPanel::coloursBox() const noexcept {
+    const auto find = findBox();
+    return find.isEmpty() ? find : find.withX(find.getRight() + 4).withWidth(62);
+}
+juce::PopupMenu ClipViewPanel::coloursMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < NoteEditor::kNoteColourNames.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, NoteEditor::kNoteColourNames[i], true, static_cast<std::size_t>(notes.noteColours) == i);
+    return menu;
+}
+bool ClipViewPanel::chooseColours(int item) {
+    if (item < 1 || item > static_cast<int>(NoteEditor::kNoteColourNames.size()))
+        return false;
+    notes.noteColours = static_cast<NoteEditor::NoteColours>(item - 1);
+    notes.repaint();
+    repaint();
+    return true;
+}
+juce::Rectangle<int> ClipViewPanel::filterChooserBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getX() + 6, bar.getY() + 3, 84, 13);
+}
+juce::Rectangle<int> ClipViewPanel::filterInvertBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getRight() - 98, bar.getY() + 3, 44, 13);
+}
+juce::Rectangle<int> ClipViewPanel::filterSelectBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getRight() - 50, bar.getY() + 3, 44, 13);
+}
+int ClipViewPanel::filterFieldCount() const noexcept {
+    switch (filter_) {
+    case NoteFilter::Time:
+        return 3;
+    case NoteFilter::Chance:
+    case NoteFilter::Count:
+    case NoteFilter::Duration:
+    case NoteFilter::Velocity:
+        return 2;
+    default:
+        return 0;
+    }
+}
+const char *ClipViewPanel::filterFieldName(int slot) const noexcept {
+    if (filter_ == NoteFilter::Time)
+        return slot == 0 ? "Start" : slot == 1 ? "Length" : "Repeat";
+    if (filter_ == NoteFilter::Count)
+        return slot == 0 ? "Every" : "Offset";
+    return slot == 0 ? "Min" : "Max";
+}
+int ClipViewPanel::filterToggleCount() const noexcept {
+    return filter_ == NoteFilter::Pitch ? 12 : filter_ == NoteFilter::Condition ? 3 : filter_ == NoteFilter::Count || filter_ == NoteFilter::Scale ? 1 : 0;
+}
+const char *ClipViewPanel::filterToggleName(int index) const noexcept {
+    static constexpr const char *kClasses[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    if (filter_ == NoteFilter::Pitch)
+        return kClasses[std::clamp(index, 0, 11)];
+    if (filter_ == NoteFilter::Condition)
+        return index == 0 ? "Active" : index == 1 ? "Chance" : "Deviation";
+    return filter_ == NoteFilter::Count ? "Quantized" : "Clip Scale";
+}
+juce::Rectangle<int> ClipViewPanel::filterToggleBox(int index) const noexcept {
+    const auto chooser = filterChooserBox();
+    if (chooser.isEmpty() || index < 0 || index >= filterToggleCount())
+        return {};
+    const int left = chooser.getRight() + 8 + filterFieldCount() * 92;
+    const int width = filter_ == NoteFilter::Pitch ? 22 : filter_ == NoteFilter::Condition ? 58 : 66;
+    return {left + index * (width + 2), chooser.getY(), width, chooser.getHeight()};
+}
+bool ClipViewPanel::filterToggle(int index) const noexcept {
+    switch (filter_) {
+    case NoteFilter::Pitch:
+        return ((filters.pitches >> index) & 1) != 0;
+    case NoteFilter::Condition:
+        return index == 0 ? filters.conditionActive : index == 1 ? filters.conditionChance : filters.conditionDeviation;
+    case NoteFilter::Count:
+        return filters.quantized;
+    case NoteFilter::Scale:
+        return filters.useClipScale;
+    default:
+        return false;
+    }
+}
+bool ClipViewPanel::clickFilterToggle(int index) {
+    if (index < 0 || index >= filterToggleCount())
+        return false;
+    switch (filter_) {
+    case NoteFilter::Pitch:
+        filters.pitches ^= 1 << index;
+        break;
+    case NoteFilter::Condition:
+        (index == 0 ? filters.conditionActive : index == 1 ? filters.conditionChance : filters.conditionDeviation) = !filterToggle(index);
+        break;
+    case NoteFilter::Count:
+        filters.quantized = !filters.quantized;
+        break;
+    case NoteFilter::Scale:
+        filters.useClipScale = !filters.useClipScale;
+        break;
+    default:
+        break;
+    }
+    return applyFilter();
+}
+void ClipViewPanel::showFilters(bool show) {
+    filtersShown_ = show && midi();
+    if (!filtersShown_)
+        filters.clear();
+    closeEditor();
+    resized();
+    repaint();
+}
+void ClipViewPanel::clearFilters() {
+    if (!filters.any())
+        return;
+    filters.clear();
+    repaint();
+}
+juce::PopupMenu ClipViewPanel::filterMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kNoteFilterCount; ++i)
+        // An applied filter has a dot beside its name.
+        menu.addItem(static_cast<int>(i) + 1, juce::String(kNoteFilterNames[i]) + (filters.applied[i] ? juce::String::fromUTF8("  \xe2\x97\x8f") : juce::String()),
+                     true, static_cast<std::size_t>(filter_) == i);
+    return menu;
+}
+bool ClipViewPanel::chooseFilter(int item) {
+    if (item < 1 || item > static_cast<int>(kNoteFilterCount))
+        return false;
+    filter_ = static_cast<NoteFilter>(item - 1);
+    closeEditor();
+    repaint();
+    return true;
+}
+bool ClipViewPanel::toggleFilterInvert() {
+    const auto at = static_cast<std::size_t>(filter_);
+    filters.invert[at] = !filters.invert[at];
+    return applyFilter();
+}
+bool ClipViewPanel::applyFilter() {
+    if (!details_ || !midi())
+        return false;
+    // The bar's whole beats and sixteenths, in the clip's ticks; beats count from the clip's Start.
+    filters.timeStart = details_->startMarkerTicks + static_cast<std::int64_t>(filterTimeStart) * textproj::kPPQ;
+    filters.timeLength = static_cast<std::int64_t>(filterTimeLength) * textproj::kPPQ;
+    filters.timeRepeat = static_cast<std::int64_t>(filterTimeRepeat) * textproj::kPPQ;
+    filters.durationMin = static_cast<std::int64_t>(filterDurationMin) * textproj::kPPQ / 4;
+    filters.durationMax = static_cast<std::int64_t>(filterDurationMax) * textproj::kPPQ / 4;
+    filters.applied[static_cast<std::size_t>(filter_)] = true;
+    notes.select(findNotes(*details_, filters, notes.gridTicks(), ClipWindow::of(*details_).toSource(0)));
+    repaint();
+    return true;
+}
+// ---- The Quantize settings (manual 10.5.11) ----------------------------------------------------
+juce::Rectangle<int> ClipViewPanel::quantizeChooserBox() const noexcept {
+    const auto button = toolBox(Tool::Quantize);
+    if (button.isEmpty())
+        return {};
+    return button.withX(button.getRight() + 6);
+}
+juce::Rectangle<int> ClipViewPanel::quantizeStartBox() const noexcept {
+    const auto button = toolBox(Tool::Quantize);
+    return button.isEmpty() ? button : button.withY(button.getY() + 22);
+}
+juce::Rectangle<int> ClipViewPanel::quantizeEndBox() const noexcept {
+    const auto start = quantizeStartBox();
+    return start.isEmpty() ? start : start.withX(start.getRight() + 6);
+}
+juce::PopupMenu ClipViewPanel::quantizeMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kQuantizeValues.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, kQuantizeValues[i].name, true, i == quantizeValue_);
+    return menu;
+}
+bool ClipViewPanel::chooseQuantize(int item) {
+    if (item < 1 || item > static_cast<int>(kQuantizeValues.size()))
+        return false;
+    quantizeValue_ = static_cast<std::size_t>(item - 1);
+    repaint();
+    return true;
+}
+std::int64_t ClipViewPanel::quantizeGrid() const noexcept {
+    const auto fixed = kQuantizeValues[quantizeValue_].ticks;
+    return fixed > 0 ? fixed : notes.gridTicks();
+}
+QuantizeSettings ClipViewPanel::quantizeSettings() const noexcept {
+    QuantizeSettings s;
+    s.strength = std::clamp(quantizeAmount, 0, 100) * 100;
+    s.swing = std::clamp(quantizeSwing, 0, 100) * 100;
+    s.starts = quantizeStarts;
+    s.ends = quantizeEnds;
+    return s;
+}
 juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
     const auto area = editorArea();
     return midi() && area.getHeight() >= 140 ? area.withTop(area.getBottom() - kStripHeight) : juce::Rectangle<int>();
@@ -2210,9 +2655,11 @@ void ClipViewPanel::numberChanged(Field field, bool typed) {
         ramp();
     else if (field == Field::RandomAmount && typed)
         randomize();
+    else if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC)
+        applyFilter();
 }
 void ClipViewPanel::resized() {
-    notes.setBounds(editorArea().withTrimmedBottom(velocityStripArea().getHeight()));
+    notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
 void ClipViewPanel::read(const SnapshotReader &reader) {
@@ -2448,6 +2895,19 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
+        // In the filter bar: each after its name, beside the chooser.
+        const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
+        const auto chooser = filterChooserBox();
+        if (chooser.isEmpty() || slot >= filterFieldCount())
+            return {};
+        return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
+    }
+    if (field == Field::QuantizeAmount || field == Field::QuantizeSwing) {
+        // Under Start and End, at the foot of the Functions tab.
+        const auto above = field == Field::QuantizeAmount ? quantizeStartBox() : quantizeEndBox();
+        return above.isEmpty() ? above : above.withY(above.getY() + 22);
+    }
     if (field == Field::RandomAmount || field == Field::RampStart || field == Field::RampEnd) {
         // In the strip under the lanes: the amount beside Randomize, then the Ramp's two values.
         const auto button = randomizeBox();
@@ -2501,6 +2961,9 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::RestrictPolyphony:
         row = 7;
         break;
+    case Tool::Quantize:
+        row = 8, column = 0;
+        break;
     case Tool::FitToScale:
         break;
     case Tool::Invert:
@@ -2547,7 +3010,7 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
 }
 int ClipViewPanel::tabOf(Tool tool) noexcept {
     return tool == Tool::VelocityAdd || tool == Tool::VelocityScale || tool == Tool::VelocityLimit ||
-                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony
+                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony || tool == Tool::Quantize
                ? 1
                : 0;
 }
@@ -2569,6 +3032,30 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
         if (high != nullptr)
             *high = b;
     };
+    if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
+        const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
+        if (!filtersShown_ || slot >= filterFieldCount())
+            return nullptr;
+        switch (filter_) {
+        case NoteFilter::Time:
+            range(slot == 1 ? 1 : 0, 9999);
+            return slot == 0 ? &filterTimeStart : slot == 1 ? &filterTimeLength : &filterTimeRepeat;
+        case NoteFilter::Chance:
+            range(0, 100);
+            return slot == 0 ? &filters.chanceMin : &filters.chanceMax;
+        case NoteFilter::Count:
+            range(slot == 0 ? 1 : 0, 64);
+            return slot == 0 ? &filters.every : &filters.offset;
+        case NoteFilter::Duration:
+            range(1, 512);
+            return slot == 0 ? &filterDurationMin : &filterDurationMax;
+        case NoteFilter::Velocity:
+            range(1, 127);
+            return slot == 0 ? &filters.velocityMin : &filters.velocityMax;
+        default:
+            return nullptr;
+        }
+    }
     switch (field) {
     case Field::VelocityAmount:
         range(-127, 127);
@@ -2585,6 +3072,12 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::QuantizeAmount:
+        range(0, 100);
+        return &quantizeAmount;
+    case Field::QuantizeSwing:
+        range(0, 100);
+        return &quantizeSwing;
     case Field::RandomAmount:
         range(0, 127);
         return &randomAmount;
@@ -2610,6 +3103,8 @@ const char *ClipViewPanel::toolName(Tool tool) noexcept {
         return "Del. Doubles";
     case Tool::RestrictPolyphony:
         return "Restrict Poly";
+    case Tool::Quantize:
+        return "Quantize";
     case Tool::FitToScale:
         return "Fit to Scale";
     case Tool::Invert:
@@ -2705,6 +3200,8 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(deleteDoubles(d, ids));
     case Tool::RestrictPolyphony:
         return notes.apply(restrictPolyphony(d, ids, voices));
+    case Tool::Quantize:
+        return notes.quantize();
     }
     return false;
 }
@@ -2776,7 +3273,8 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
-                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd})
+                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
+                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -2932,6 +3430,72 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         }
     if (randomizeBox().contains(at)) {
         randomize();
+        return;
+    }
+    if (findBox().contains(at)) {
+        showFilters(!filtersShown_);
+        return;
+    }
+    if (gridBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        gridMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(gridBox())),
+                                 [safe](int item) {
+                                     if (safe != nullptr && item > 0)
+                                         safe->chooseGrid(item);
+                                 });
+        return;
+    }
+    if (coloursBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        coloursMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(coloursBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseColours(item);
+            });
+        return;
+    }
+    if (quantizeChooserBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        quantizeMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(quantizeChooserBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseQuantize(item);
+            });
+        return;
+    }
+    if (quantizeStartBox().contains(at)) {
+        quantizeStarts = !quantizeStarts;
+        repaint();
+        return;
+    }
+    if (quantizeEndBox().contains(at)) {
+        quantizeEnds = !quantizeEnds;
+        repaint();
+        return;
+    }
+    if (filterChooserBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        filterMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(filterChooserBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseFilter(item);
+            });
+        return;
+    }
+    for (int i = 0; i < filterToggleCount(); ++i)
+        if (filterToggleBox(i).contains(at)) {
+            clickFilterToggle(i);
+            return;
+        }
+    if (filterInvertBox().contains(at)) {
+        toggleFilterInvert();
+        return;
+    }
+    if (filterSelectBox().contains(at)) {
+        applyFilter();
         return;
     }
     if (foldBox().contains(at)) {
@@ -3168,6 +3732,25 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             number(Field::VelocityLow, "");
             number(Field::VelocityHigh, "");
             number(Field::Voices, "");
+            // The Quantize settings: the value, which ends move, how far, and swing.
+            const auto value = quantizeChooserBox();
+            look::box(g, value.toFloat(), look::chooser);
+            text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+            const auto starts = quantizeStartBox(), ends = quantizeEndBox();
+            look::box(g, starts.toFloat(), quantizeStarts ? look::accent : look::button);
+            text("Start", starts, juce::Justification::centred, look::text, 10.f);
+            look::box(g, ends.toFloat(), quantizeEnds ? look::accent : look::button);
+            text("End", ends, juce::Justification::centred, look::text, 10.f);
+            const auto named = [&](Field which, const char *name) {
+                const auto box = fieldBox(which);
+                int low = 0, high = 0;
+                const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+                look::box(g, box.toFloat(), look::chooser);
+                text(name, box.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
+                text(juce::String(shown) + "%", box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+            };
+            named(Field::QuantizeAmount, "Amt");
+            named(Field::QuantizeSwing, "Swing");
         }
         if (toolsTab_ == 0) {
             const auto range = rangeBox();
@@ -3232,8 +3815,49 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), 10.f);
         look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
         text("Highlight", highlight, juce::Justification::centred, look::text, 10.f);
+        const auto find = findBox();
+        look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
+        text("Find", find, juce::Justification::centred, look::text, 10.f);
+        // What the notes are coloured by (ADI's addition).
+        const auto colours = coloursBox();
+        look::box(g, colours.toFloat(), look::chooser);
+        text(NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], colours.reduced(4, 0), juce::Justification::centredLeft,
+             look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? highlightBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+    if (const auto bar = filterArea(); !bar.isEmpty()) {
+        // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
+        g.setColour(look::field);
+        g.fillRect(bar);
+        g.setColour(look::band);
+        g.fillRect(bar.withY(bar.getBottom() - 1).withHeight(1));
+        const auto chooser = filterChooserBox();
+        look::box(g, chooser.toFloat(), look::chooser);
+        text(kNoteFilterNames[static_cast<std::size_t>(filter_)], chooser.reduced(4, 0), juce::Justification::centredLeft, look::text, 10.5f);
+        if (filters.applied[static_cast<std::size_t>(filter_)]) {
+            g.setColour(look::accent);
+            g.fillEllipse(static_cast<float>(chooser.getRight() - 10), static_cast<float>(chooser.getY() + 4), 5.f, 5.f);
+        }
+        for (int slot = 0; slot < filterFieldCount(); ++slot) {
+            const auto which = slot == 0 ? Field::FilterA : slot == 1 ? Field::FilterB : Field::FilterC;
+            const auto box = fieldBox(which);
+            int low = 0, high = 0;
+            const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+            text(filterFieldName(slot), {box.getX() - 46, box.getY(), 42, box.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+            look::box(g, box.toFloat(), look::chooser);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+        }
+        for (int i = 0; i < filterToggleCount(); ++i) {
+            const auto box = filterToggleBox(i);
+            look::box(g, box.toFloat(), filterToggle(i) ? look::accent : look::button);
+            text(filterToggleName(i), box, juce::Justification::centred, look::text, 9.5f);
+        }
+        const auto invert = filterInvertBox(), select = filterSelectBox();
+        look::box(g, invert.toFloat(), filters.invert[static_cast<std::size_t>(filter_)] ? look::accent : look::button);
+        text("Invert", invert, juce::Justification::centred, look::text, 10.f);
+        look::box(g, select.toFloat(), look::button);
+        text("Select", select, juce::Justification::centred, look::text, 10.f);
+    }
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())

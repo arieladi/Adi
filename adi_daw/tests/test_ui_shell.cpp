@@ -5509,6 +5509,310 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.selectionText() == before, "and with neither, the arrangement's again");
     }
 
+    // Find and Select Notes (manual 10.5.3): the header's Find switch, the filter bar, the eight filters.
+    {
+        using Field = ClipViewPanel::Field;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto found = [&] {
+            auto ids = ed.selected();
+            std::sort(ids.begin(), ids.end());
+            return ids;
+        };
+        const auto letGo = [&] {
+            const juce::Point<float> empty(xAt(9 * beat) + 4.f, static_cast<float>(ed.notesArea().getY() + 3));
+            ed.mouseDown(pressAt(ed, empty));
+            ed.mouseUp(pressAt(ed, empty));
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        const int top = ed.getY();
+        check(!panel.filtersShown() && panel.filterArea().isEmpty() && !panel.findBox().isEmpty() && panel.headerArea().contains(panel.findBox()) &&
+                  !panel.findBox().intersects(panel.highlightBox()),
+              "the header has a Find switch; the filter bar is hidden");
+        click(panel.findBox());
+        check(panel.filtersShown() && ed.getY() == top + ClipViewPanel::kStripHeight && ed.getY() == panel.filterArea().getBottom() &&
+                  panel.filter() == NoteFilter::Pitch && !panel.filters.any() && panel.filterMenu().getNumItems() == 8 &&
+                  panel.filterArea().contains(panel.filterChooserBox()) && panel.filterArea().contains(panel.filterSelectBox()) &&
+                  !panel.filterInvertBox().intersects(panel.filterSelectBox()) && panel.filterToggleCount() == 12 &&
+                  panel.filterToggleBox(11).getRight() < panel.filterInvertBox().getX(),
+              "the Find switch shows the filter bar under the header, the editor below it: the chooser of eight filters, Pitch's twelve switches, Invert and Select");
+        check(ed.keyPressed(key('f', command | shift)) && !panel.filtersShown() && ed.getY() == top && ed.keyPressed(key('f', command | shift)) &&
+                  panel.filtersShown(),
+              "Ctrl+Shift+F in the editor hides the bar and shows it again");
+        // Pitch.
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 3}) && panel.filters.applied[0], "Select with the Pitch filter on C selects the Cs; the filter is applied");
+        click(panel.filterToggleBox(4));
+        check(found() == Ids({1, 2, 3}) && panel.filterToggle(4), "E switched on: the Es are selected with them at once");
+        click(panel.filterInvertBox());
+        check(found() == Ids({4, 70}), "Invert selects the notes that are neither");
+        // A second filter narrows the first.
+        check(panel.chooseFilter(8) && panel.filter() == NoteFilter::Velocity && panel.filterToggleCount() == 0 &&
+                  !panel.fieldBox(Field::FilterA).isEmpty() && !panel.fieldBox(Field::FilterB).isEmpty() && panel.fieldBox(Field::FilterC).isEmpty() &&
+                  panel.typeField(Field::FilterA, "90") && panel.filters.velocityMin == 90 && found() == Ids({70}) && panel.filters.applied[7],
+              "the Velocity filter with its lowest typed as 90, while Pitch is still applied: the notes both find");
+        letGo();
+        check(!panel.filters.any() && ed.selected().empty() && panel.filtersShown(), "a plain click in the editor lets every filter go and deselects; the bar stays");
+        // Count.
+        check(panel.chooseFilter(5), "Count");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 3, 4}), "Count, every second: notes that begin together count as one");
+        check(panel.typeField(Field::FilterB, "1") && found() == Ids({2, 70}), "its Offset typed as 1: the others");
+        // Time.
+        letGo();
+        check(panel.chooseFilter(2) && panel.typeField(Field::FilterA, "1") && found() == Ids({2}), "Time: from beat 1 of the clip, one beat long");
+        check(panel.typeField(Field::FilterB, "2") && found() == Ids({2, 3, 4}), "two beats long");
+        check(panel.typeField(Field::FilterA, "0") && panel.typeField(Field::FilterB, "1") && panel.typeField(Field::FilterC, "2") &&
+                  found() == Ids({1, 3, 4}),
+              "one beat from the start, repeated every two beats");
+        // Duration.
+        letGo();
+        check(panel.chooseFilter(6) && panel.typeField(Field::FilterA, "5") && panel.typeField(Field::FilterB, "8") && found() == Ids({3}),
+              "Duration: five to eight sixteenths finds the two-beat note");
+        // Scale.
+        letGo();
+        check(panel.chooseFilter(7) && panel.filterToggleCount() == 1 && panel.filterToggle(0), "Scale, on the clip's own scale");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 2, 3, 4}), "every note in C Major: not the C#");
+        // Condition.
+        letGo();
+        check(panel.chooseFilter(4) && panel.filterToggleCount() == 3, "Condition");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 2, 3, 4, 70}), "Active: every note that is not deactivated");
+        click(panel.filterToggleBox(0));
+        check(found().empty() && !panel.filterToggle(0), "with no condition on, none");
+        // Chance.
+        letGo();
+        check(panel.chooseFilter(3) && panel.typeField(Field::FilterB, "99") && found().empty() && panel.typeField(Field::FilterB, "100") &&
+                  found().size() == 5,
+              "Chance: up to 99 per cent finds none of these; up to 100, all");
+        check(!panel.typeField(Field::FilterA, "often") && !root.error().empty(), "a word is refused");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            panel.chooseFilter(1);
+            click(panel.filterSelectBox());
+            juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics gr(picture);
+                gr.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(gr, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-clip-view-find.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+        }
+        click(panel.findBox());
+        check(!panel.filtersShown() && !panel.filters.any() && ed.getY() == top, "the Find switch hides the bar and lets the filters go");
+        ed.select({});
+    }
+
+    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab.
+    {
+        using Field = ClipViewPanel::Field;
+        using Tool = ClipViewPanel::Tool;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        panel.setToolsTab(0);
+        check(ed.keyPressed(key('u', command | shift)) && panel.toolsTab() == 1, "Ctrl+Shift+U shows the Quantize settings: the Functions tab");
+        {
+            const std::vector<juce::Rectangle<int>> boxes = {panel.toolBox(Tool::RestrictPolyphony), panel.toolBox(Tool::Quantize),
+                                                             panel.quantizeChooserBox(),             panel.quantizeStartBox(),
+                                                             panel.quantizeEndBox(),                 panel.fieldBox(Field::QuantizeAmount),
+                                                             panel.fieldBox(Field::QuantizeSwing)};
+            bool apart = true;
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                    apart = apart && !boxes[i].isEmpty() && !boxes[i].intersects(boxes[j]) && panel.toolsArea().contains(boxes[j]);
+            check(apart, "the Quantize button, its value chooser, Start, End, the amount and swing each have their own place under the note functions");
+        }
+        check(panel.quantizeValue() == 0 && panel.quantizeAmount == 100 && panel.quantizeSwing == 0 && panel.quantizeStarts && !panel.quantizeEnds &&
+                  panel.quantizeGrid() == ed.gridTicks() && panel.quantizeMenu().getNumItems() == 8,
+              "as Live's defaults: to the editing grid, starts, in full");
+        // A note an eighth of a beat late.
+        check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 80}, {"start", 6 * beat + beat / 8}, {"dur", beat}, {"key", 72}}, "Add Note")).ok,
+              "a C4 an eighth of a beat after beat 6 of the clip");
+        root.frame();
+        check(panel.chooseQuantize(2) && panel.quantizeGrid() == beat, "the value chosen as 1/4");
+        ed.select({80});
+        click(panel.toolBox(Tool::Quantize));
+        check(note(80).startTicks == 6 * beat && note(80).durationTicks == beat && undoIs("Quantize Notes", 1),
+              "the Quantize button moves the note's start to the beat, its length kept: one undo step");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(panel.typeField(Field::QuantizeAmount, "50") && panel.quantizeAmount == 50 && ed.keyPressed(key('u', command)) &&
+                  note(80).startTicks == 6 * beat + beat / 16,
+              "with the amount at 50 per cent, Ctrl+U moves it half the way");
+        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeAmount, "100"), "undo; in full again");
+        root.frame();
+        click(panel.quantizeEndBox());
+        click(panel.quantizeStartBox());
+        check(panel.quantizeEnds && !panel.quantizeStarts && ed.keyPressed(key('u', command)) && note(80).startTicks == 6 * beat + beat / 8 &&
+                  note(80).startTicks + note(80).durationTicks == 7 * beat,
+              "End alone: the note's end goes to the beat and its start stays");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        click(panel.quantizeEndBox());
+        click(panel.quantizeStartBox());
+        check(panel.quantizeStarts && !panel.quantizeEnds, "starts alone again");
+        // Swing (ADI's addition): every other division is delayed.
+        check(panel.typeField(Field::QuantizeSwing, "50") && panel.quantizeSwing == 50, "swing at 50 per cent");
+        ed.select({2, 3});
+        check(ed.keyPressed(key('u', command)) && note(2).startTicks > beat && note(2).startTicks <= beat + beat / 2 && note(3).startTicks == 2 * beat &&
+                  undoIs("Quantize Notes", 1),
+              "a note on the second beat is delayed, by no more than half a beat; one on the third stays");
+        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeSwing, "0") && panel.chooseQuantize(1), "undo; no swing; the editing grid again");
+        root.frame();
+        check(note(2).startTicks == beat, "and the note is back on its beat");
+        ed.select({});
+        panel.setToolsTab(0);
+    }
+
+    // Note colours (ADR-0242 d1, N1; from Cubase): by the clip (Live's, the default), velocity, pitch, channel or scale degree.
+    {
+        using Colours = NoteEditor::NoteColours;
+        const auto paler = [&](int velocity) {
+            return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+        };
+        check(ed.noteColours == Colours::Clip && !panel.coloursBox().isEmpty() && panel.headerArea().contains(panel.coloursBox()) &&
+                  !panel.coloursBox().intersects(panel.findBox()) && panel.coloursMenu().getNumItems() == 5,
+              "the header has a chooser of what the notes are coloured by: five ways, the clip's first");
+        check(ed.noteFill(note(1)) == paler(note(1).velocity) && ed.noteFill(note(2)) == paler(note(2).velocity) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)),
+              "by default, as Live: the clip's colour, paler as the velocity falls");
+        check(panel.chooseColours(2) && ed.noteColours == Colours::Velocity && ed.noteFill(note(1)) != ed.noteFill(note(2)) &&
+                  ed.noteFill(note(1)) == ed.noteFill(note(70)) && ed.noteFill(note(1)) != paler(note(1).velocity),
+              "by velocity: notes of one velocity share a colour, others differ, whatever the clip's colour");
+        check(panel.chooseColours(3) && ed.noteFill(note(1)) == ed.noteFill(note(3)) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
+              "by pitch: every C has one colour in any octave; E and G have their own");
+        check(panel.chooseColours(4) && ed.noteFill(note(1)) == ed.noteFill(note(2)) && ed.noteFill(note(1)) == ed.noteFill(note(70)),
+              "by channel: these notes are all on one channel, and one colour");
+        check(panel.chooseColours(5) && ed.noteFill(note(70)) == juce::Colour(0xff6e6e6e) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+                  ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
+              "by scale degree: the root, the third and the fifth each have a colour; the C# outside C Major is dark grey");
+        ed.select({2});
+        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a) && panel.chooseColours(2) &&
+                  ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a),
+              "a deactivated note is grey whatever the notes are coloured by");
+        check(ed.keyPressed(key('0')) && note(2).active && panel.chooseColours(1) && ed.noteColours == Colours::Clip && !panel.chooseColours(9),
+              "activated again; the clip's colours again");
+        ed.select({});
+    }
+
+    // Getting about in the editor, as Live's (manual 8.7, 10.2).
+    {
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        const auto notesView = ed.notesArea();
+        const auto ruler = ed.rulerArea();
+        // Page Up and Down.
+        const int scrolled = ed.keys.scrollY;
+        check(ed.keyPressed(key(juce::KeyPress::pageUpKey)) && ed.keys.scrollY == scrolled - 12 * ed.keys.keyHeight &&
+                  ed.keyPressed(key(juce::KeyPress::pageDownKey)) && ed.keys.scrollY == scrolled,
+              "Page Up and Page Down scroll the key tracks an octave");
+        check(ed.keyPressed(key(juce::KeyPress::pageDownKey, shift)) && ed.keys.scrollY == scrolled + ed.keys.keyHeight &&
+                  ed.keyPressed(key(juce::KeyPress::pageUpKey, shift)) && ed.keys.scrollY == scrolled,
+              "with Shift, one key track");
+        const double timeLeft = ed.time.left;
+        check(ed.keyPressed(key(juce::KeyPress::pageDownKey, command)) && ed.time.left > timeLeft && ed.keyPressed(key(juce::KeyPress::pageUpKey, command)) &&
+                  std::abs(ed.time.left - timeLeft) < 1e-9,
+              "with Ctrl, a page sideways and back");
+        // The grid's keys act on the editor's own grid.
+        const auto arrangementGrid = geo.grid;
+        const auto grid = ed.gridTicks();
+        check(ed.keyPressed(key('1', command)) && ed.gridTicks() == grid / 2 && ed.keyPressed(key('2', command)) && ed.gridTicks() == grid,
+              "Ctrl+1 narrows the editing grid and Ctrl+2 widens it");
+        check(ed.keyPressed(key('3', command)) && ed.time.grid.triplet && ed.gridTicks() == grid * 2 / 3 && ed.keyPressed(key('3', command)) &&
+                  !ed.time.grid.triplet,
+              "Ctrl+3 switches the triplet grid");
+        check(ed.keyPressed(key('4', command)) && !ed.time.grid.snap && ed.keyPressed(key('4', command)) && ed.time.grid.snap,
+              "Ctrl+4 switches snapping");
+        check(ed.keyPressed(key('5', command)) && ed.time.grid.fixed && ed.gridTicks() == grid && ed.keyPressed(key('5', command)) &&
+                  !ed.time.grid.fixed && geo.grid == arrangementGrid,
+              "Ctrl+5 fixes the grid at the width it has; the arrangement's grid is left alone");
+        // The header's grid chooser.
+        check(!panel.gridBox().isEmpty() && panel.headerArea().contains(panel.gridBox()) && panel.chooseGrid(16) && ed.time.grid.fixed &&
+                  ed.gridTicks() == beat / 2 && panel.readings().grid == "1/8",
+              "the header's grid chooser: Fixed Grid, 1/8");
+        check(panel.chooseGrid(30) && ed.time.grid.triplet && panel.chooseGrid(30) && panel.chooseGrid(31) && !ed.time.grid.snap && panel.chooseGrid(31) &&
+                  panel.chooseGrid(3) && !ed.time.grid.fixed && ed.time.grid.narrow == 0 && ed.gridTicks() == grid && !panel.chooseGrid(99),
+              "its Triplet Grid and Snap to Grid; and the adaptive grid's Medium, as it was");
+        // Zoom in time; W and H.
+        const double scale = ed.time.scale;
+        check(ed.keyPressed(key('+')) && ed.time.scale > scale && ed.keyPressed(key('-')) && std::abs(ed.time.scale - scale) < 1e-6,
+              "+ zooms in time and - out again");
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        check(ed.keyPressed(key('w')) && ed.time.x(bar) >= -0.5 && ed.time.x(bar) < 1.0 && ed.time.x(3 * bar) <= notesView.getWidth() &&
+                  ed.time.x(3 * bar) > notesView.getWidth() * 0.9,
+              "W fits the clip to the editor's width");
+        ed.keys.keyHeight = 30;
+        check(ed.keyPressed(key('h')) && ed.keys.keyHeight < 30 && ed.keys.y(72).value_or(-1) >= 0 &&
+                  ed.keys.y(60).value_or(100000) + ed.keys.keyHeight <= notesView.getHeight(),
+              "H fits the notes, C3 to C4, to the editor's height");
+        // The time ruler dragged, away from its handles: sideways scrolls, down zooms in.
+        const juce::Point<float> grab(xAt(8 * beat), static_cast<float>(ruler.getBottom() - 3));
+        check(ed.rulerPartAt(grab.roundToInt()) == NoteEditor::RulerPart::None, "a place on the ruler with no handle");
+        const double leftBefore = ed.time.left, zoomBefore = ed.time.scale;
+        ed.mouseDown(pressAt(ed, grab));
+        ed.mouseDrag(dragAt(ed, grab, {grab.x - 40.f, grab.y}));
+        check(ed.time.left > leftBefore && std::abs(ed.time.scale - zoomBefore) < 1e-9, "dragged left, the editor scrolls on in time");
+        ed.mouseDrag(dragAt(ed, grab, {grab.x - 40.f, grab.y + 30.f}));
+        ed.mouseUp(dragAt(ed, grab, {grab.x - 40.f, grab.y + 30.f}));
+        check(ed.time.scale > zoomBefore && ed.rulerSelection() == NoteEditor::RulerPart::None, "dragged down, it zooms in");
+        ed.keyPressed(key('w'));
+        // The piano dragged: up and down scrolls, sideways zooms the key tracks.
+        const juce::Point<float> piano(5.f, static_cast<float>(ed.keysArea().getY() + 40));
+        const int scrollBefore = ed.keys.scrollY, heightBefore = ed.keys.keyHeight;
+        ed.mouseDown(pressAt(ed, piano));
+        ed.mouseDrag(dragAt(ed, piano, {piano.x, piano.y - 24.f}));
+        check(ed.keys.scrollY == scrollBefore + 24 && ed.keys.keyHeight == heightBefore, "the piano dragged up scrolls the key tracks");
+        ed.mouseDrag(dragAt(ed, piano, {piano.x + 18.f, piano.y - 24.f}));
+        ed.mouseUp(dragAt(ed, piano, {piano.x + 18.f, piano.y - 24.f}));
+        check(ed.keys.keyHeight == heightBefore + 3, "dragged sideways, the key tracks grow a step every six pixels");
+        // A double-click on either ruler zooms to the notes.
+        ed.select({});
+        ed.keyPressed(key('h'));
+        ed.keyPressed(key('+'));
+        ed.mouseDoubleClick(pressAt(ed, grab));
+        check(ed.keys.y(60).value_or(-1) >= 0 && ed.keys.y(72).value_or(-1) >= 0 && ed.time.x(bar) >= -0.5 && ed.time.x(bar) < 2.0,
+              "a double-click on the time ruler zooms to the notes");
+        check(ed.keyPressed(key('x')), "X goes back");
+        // Full height.
+        const int height = root.clipArea().getHeight();
+        check(ed.keyPressed(key('e', command | alt)) && root.clipViewFull() && root.clipArea().getHeight() > height + 100 &&
+                  ed.keyPressed(key('e', command | alt)) && !root.clipViewFull() && root.clipArea().getHeight() == height,
+              "Ctrl+Alt+E gives the Clip View its full height, and again the height it had");
+        // Follow: the editor turns its page with the playhead.
+        if (!root.state().follow)
+            root.command(AppCommands::Follow);
+        ed.time.left = 400;
+        engine::Transport driver;
+        driver.play(true);
+        mailbox.publish(driver);
+        root.frame();
+        check(root.playing() && root.state().follow && ed.playhead.isVisible() && ed.time.x(root.timelineTick()) >= 0 &&
+                  ed.time.x(root.timelineTick()) < ed.notesArea().getWidth(),
+              "playing with Follow on, the editor turns to the page the playhead is on");
+        ed.mouseWheelMove(pressAt(ed, {static_cast<float>(notesView.getCentreX()), static_cast<float>(notesView.getCentreY())}, juce::ModifierKeys(shift)),
+                          juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+        const double scrolledTo = ed.time.left;
+        root.frame();
+        check(root.arrangement.followPaused && std::abs(ed.time.left - scrolledTo) < 1e-9, "a scroll in time pauses Follow: the editor stays where it was put");
+        driver.play(false);
+        mailbox.publish(driver);
+        root.frame();
+        ed.keyPressed(key('w'));
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

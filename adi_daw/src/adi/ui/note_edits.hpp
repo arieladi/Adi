@@ -668,8 +668,15 @@ inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vecto
 // Quantize (manual 10.5.11; Ctrl/Cmd+U): the notes' starts to the grid, in full, as Live's default
 // settings do. `grid` is the step and `origin` a grid line, both in the clip's own ticks. The engine's
 // one op carries every setting (OPS 9.5), and its inverse restores the notes exactly.
+// The Quantize settings (manual 10.5.11, the Quantize tool): how far towards the grid, in hundredths
+// of a per cent; whether starts and ends move; and swing, the engine's, which delays every other
+// division by up to half of one (ADI's addition, ADR-0242 d1).
+struct QuantizeSettings {
+    int strength = 10000, swing = 0;
+    bool starts = true, ends = false;
+};
 inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t grid,
-                              std::int64_t origin) {
+                              std::int64_t origin, QuantizeSettings settings = {}) {
     using namespace note_edits_detail;
     NoteEdit edit;
     edit.refusal = closed(clip);
@@ -677,10 +684,15 @@ inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector
         return edit;
     edit.select = ids;
     const auto notes = targets(clip, ids);
-    if (notes.empty() || grid <= 0)
+    const int strength = std::clamp(settings.strength, 0, 10000), swing = std::clamp(settings.swing, 0, 10000);
+    if (notes.empty() || grid <= 0 || strength == 0 || (!settings.starts && !settings.ends))
         return edit;
-    // Nothing to write when every start is on the grid already.
-    const bool off = std::any_of(notes.begin(), notes.end(), [&](const auto *n) { return ((n->startTicks - origin) % grid) != 0; });
+    // Nothing to write when every start and end that would move is on the grid already; with
+    // swing the grid's own lines move, so the engine is asked.
+    const bool off = swing != 0 || std::any_of(notes.begin(), notes.end(), [&](const auto *n) {
+        return (settings.starts && ((n->startTicks - origin) % grid) != 0) ||
+               (settings.ends && ((n->startTicks + n->durationTicks - origin) % grid) != 0);
+    });
     if (!off)
         return edit;
     edit.ops.push_back(op("note.quantize",
@@ -688,10 +700,10 @@ inline NoteEdit quantizeNotes(const engine::ClipDetails &clip, const std::vector
                            {"note_ids", idsOf(notes)},
                            {"grid_ticks", grid},
                            {"origin_ticks", origin},
-                           {"strength", 10000},
-                           {"swing", 0},
-                           {"starts", true},
-                           {"ends", false}},
+                           {"strength", strength},
+                           {"swing", swing},
+                           {"starts", settings.starts},
+                           {"ends", settings.ends}},
                           "Quantize Notes"));
     return edit;
 }

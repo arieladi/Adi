@@ -12,12 +12,14 @@
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
+#include "adi/ui/note_filters.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/scales.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <array>
 #include <optional>
 #include <random>
 #include <string>
@@ -84,6 +86,27 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // Getting about, as Live's (manual 8.7, 10.2). W fits the shown clips to the editor's width, H
+    // the notes to its height; + and - zoom in time around the time selection, the insert marker
+    // or the middle; Page Up and Down scroll an octave, with Shift a key track, with Ctrl/Cmd a
+    // page sideways. A drag on the time ruler away from its handles scrolls sideways and zooms up
+    // and down; a drag on the piano scrolls it and, sideways, zooms the key tracks; a double-click
+    // on either zooms to the selection, or to the notes. Ctrl/Cmd+1 to 5 are the editing grid's
+    // keys, on the editor's own grid: narrower, wider, triplets, snapping, fixed. While the song
+    // plays with Follow on, the editor turns its page with the playhead; a scroll or an edit pauses it.
+    void fitWidth();
+    void fitHeight();
+    void zoomTime(bool in);
+    void gridKey(int key);
+    // Note colours (ADR-0242 d1, N1; from Cubase's event colours): what the edited clip's notes
+    // are coloured by. Clip is Live's, the clip's colour paler as the velocity falls, and the
+    // default. Velocity runs from blue for the softest to red for the loudest; Pitch gives each of
+    // the twelve pitches its colour in every octave; Channel each MIDI channel; Degree each degree
+    // of the clip's scale, with the notes outside it dark grey. A deactivated note is grey in all.
+    enum class NoteColours { Clip, Velocity, Pitch, Channel, Degree };
+    static constexpr std::array<const char *, 5> kNoteColourNames = {"Clip", "Velocity", "Pitch", "Channel", "Degree"};
+    NoteColours noteColours = NoteColours::Clip;
+    juce::Colour noteFill(const engine::ClipNote &) const;
     // What the Status Bar reads while notes are selected (manual 3.2; as measured on Live): their
     // time in the song from the first one's start to the last one's end with its length, their
     // pitch, velocity and probability, each as a value or a range; or the editor's time selection.
@@ -209,7 +232,10 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys };
+    // A drag on the time ruler or the piano: where the pointer last was, and the zoom's count.
+    juce::Point<int> viewLast_;
+    int zoomFrom_ = 0;
     // A velocity drag: the value the pointer last stood for, and whether it began on a note.
     int velocityLast_ = 0;
     juce::Point<int> laneLast_;
@@ -306,13 +332,39 @@ class ClipViewPanel final : public juce::Component {
     enum class Tool {
         FitToScale, Invert, Reverse, Double, Halve, Legato,
         FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3,
-        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony
+        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony, Quantize
     };
     static constexpr Tool kTools[] = {Tool::FitToScale, Tool::Invert,       Tool::Reverse,      Tool::Double,     Tool::Halve,
                                       Tool::Legato,     Tool::FixedLength,  Tool::OverlapsMono, Tool::OverlapsPoly, Tool::Chord,
                                       Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3,
                                       Tool::VelocityAdd, Tool::VelocityScale, Tool::VelocityLimit, Tool::DeleteDoubles,
-                                      Tool::RestrictPolyphony};
+                                      Tool::RestrictPolyphony, Tool::Quantize};
+    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab; Ctrl/Cmd+U and the
+    // Quantize button use them, Ctrl/Cmd+Shift+U shows them. The value is the editing grid or a
+    // fixed one; Start and End say which ends move; the amount is how far towards the grid. Swing
+    // is ADI's addition (ADR-0242 d1, from Cubase's quantize panel; the engine's op carries it).
+    struct QuantizeValue {
+        const char *name;
+        std::int64_t ticks; // 0: the editing grid
+    };
+    static constexpr std::array<QuantizeValue, 8> kQuantizeValues = {{{"Grid", 0},
+                                                                     {"1/4", textproj::kPPQ},
+                                                                     {"1/8", textproj::kPPQ / 2},
+                                                                     {"1/8T", textproj::kPPQ / 3},
+                                                                     {"1/16", textproj::kPPQ / 4},
+                                                                     {"1/16T", textproj::kPPQ / 6},
+                                                                     {"1/32", textproj::kPPQ / 8},
+                                                                     {"1/32T", textproj::kPPQ / 12}}};
+    std::size_t quantizeValue() const noexcept { return quantizeValue_; }
+    juce::PopupMenu quantizeMenu() const;
+    bool chooseQuantize(int item);
+    std::int64_t quantizeGrid() const noexcept;
+    QuantizeSettings quantizeSettings() const noexcept;
+    juce::Rectangle<int> quantizeChooserBox() const noexcept;
+    juce::Rectangle<int> quantizeStartBox() const noexcept;
+    juce::Rectangle<int> quantizeEndBox() const noexcept;
+    int quantizeAmount = 100, quantizeSwing = 0;
+    bool quantizeStarts = true, quantizeEnds = false;
     // The tools panel has two tabs: Live's Pitch and Time, with the chord tools, and Functions, ADI's
     // additions from Cubase's MIDI functions (ADR-0242 d1): velocities added to, compressed or
     // expanded, and limited; Delete Doubles; Restrict Polyphony. Their amounts are fields on the tab.
@@ -343,8 +395,44 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing
     };
+    // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
+    // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
+    // chosen filter's controls, Invert and Select. A control changed applies the filter and selects
+    // what every applied filter finds; an applied filter has a dot in the chooser; a plain click in
+    // the editor lets all of them go. The number fields are the chosen filter's: Time counts whole
+    // beats from the clip's Start (start, length, repeat), Duration counts sixteenths.
+    bool filtersShown() const noexcept { return filtersShown_; }
+    void showFilters(bool);
+    void clearFilters();
+    NoteFilter filter() const noexcept { return filter_; }
+    juce::PopupMenu filterMenu() const;
+    bool chooseFilter(int item);
+    bool applyFilter();
+    bool toggleFilterInvert();
+    // The chosen filter's switches: Pitch has twelve, Condition three, Count and Scale one each.
+    int filterToggleCount() const noexcept;
+    bool filterToggle(int index) const noexcept;
+    bool clickFilterToggle(int index);
+    juce::Rectangle<int> filterArea() const noexcept;
+    juce::Rectangle<int> findBox() const noexcept;
+    // The header's chooser of what the notes are coloured by.
+    juce::Rectangle<int> coloursBox() const noexcept;
+    // The editing grid's chooser, on the header's grid readout (manual 10.2.1): the adaptive
+    // widths, the fixed ones, triplets and snapping. Items 1 to 5 are the adaptive widths, widest
+    // first; 10 on, the fixed ones from 8 Bars to 1/32; 30 Triplet Grid; 31 Snap to Grid.
+    juce::Rectangle<int> gridBox() const noexcept;
+    juce::PopupMenu gridMenu() const;
+    bool chooseGrid(int item);
+    juce::PopupMenu coloursMenu() const;
+    bool chooseColours(int item);
+    juce::Rectangle<int> filterChooserBox() const noexcept;
+    juce::Rectangle<int> filterToggleBox(int index) const noexcept;
+    juce::Rectangle<int> filterInvertBox() const noexcept;
+    juce::Rectangle<int> filterSelectBox() const noexcept;
+    NoteFilters filters;
+    int filterTimeStart = 0, filterTimeLength = 1, filterTimeRepeat = 0, filterDurationMin = 1, filterDurationMax = 4;
     // Live's Velocity Controls (manual 10.5.12), in a strip under the editor's lanes: Randomize
     // with its amount, and the Ramp's start and end values. Randomize raises or lowers each
     // selected note's velocity (every note's when none is selected) by up to the amount; typing
@@ -441,6 +529,12 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    bool filtersShown_ = false;
+    NoteFilter filter_ = NoteFilter::Pitch;
+    // How many number fields the chosen filter has, and their names.
+    int filterFieldCount() const noexcept;
+    const char *filterFieldName(int slot) const noexcept;
+    const char *filterToggleName(int index) const noexcept;
     std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
     std::vector<std::int64_t> shown_;
@@ -458,7 +552,7 @@ class ClipViewPanel final : public juce::Component {
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
-    std::size_t chord_ = 0;
+    std::size_t chord_ = 0, quantizeValue_ = 0;
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;

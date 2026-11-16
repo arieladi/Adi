@@ -574,6 +574,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
     void resizeDevices(int height);
     void resizeClipView(int height);
+    // Ctrl/Cmd+Alt+E in the Clip View (manual 10.2): its full height, as far as the layout gives it,
+    // and back to the height it had.
+    void toggleClipViewFull();
+    bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
     bool insertTrack(bool midi);
@@ -601,6 +605,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::string window_;
     WindowState state_;
     DirtySet dirty_;
+    int clipViewRestore_ = 0;
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
     bool pluginWindowsShown_ = true;
