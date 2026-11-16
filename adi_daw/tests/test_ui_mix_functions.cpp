@@ -6,6 +6,7 @@
 #include "temp_directory.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include "ui_fake_peer.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -143,6 +144,14 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     native->enabled.onClick();
     check(op == "device.remove" && payload.at("id").get<std::int64_t>() == 20,
           "native function deactivation removes it through the shared undoable device op");
+    auto submit = strip.submit;
+    strip.submit = [](const std::string &, Payload) { return false; };
+    native->enabled.setToggleState(false, juce::dontSendNotification);
+    native->enabled.onClick();
+    check(native->enabled.getToggleState(), "refused native removal restores its authored active state");
+    strip.submit = submit;
+    check(strip.setEnabledExpected(publication->back(), false) && op == "device.remove",
+          "shared compact/native activation authority removes instead of bypassing");
     ordinary->enabled.onClick();
     check(op == "device.setEnabled" && payload.at("id").get<std::int64_t>() == 21,
           "ordinary plug-in activator keeps ordinary bypass semantics");
@@ -189,6 +198,15 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     control->slider.onDragStart(); peer.setVisible(false);
     check(events.size() == 2 && events.back().kind == engine::ParamEventKind::End,
           "ancestor hiding ends a native gesture without a frame or native input");
+    bool foreignLive = true;
+    const auto beforeForeign = additions;
+    strip.setVisible(false);
+    auto foreign = menuItems(strip.functionMenuFor(3, [&] { return foreignLive; }));
+    foreign[1].action();
+    check(additions == beforeForeign + 1 && menuItems(strip.functionMenu())[4].ticked,
+          "explicit-target add menu works for another visible owner without retargeting the hidden strip");
+    foreignLive = false; foreign[1].action();
+    check(additions == beforeForeign + 1, "expired foreign add-menu owner cannot add later");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
 DevicePanelData makePagedPanel() {
@@ -357,6 +375,7 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     strip.setVisible(true);
     strip.publication = [&] { return doc->parameterFeed().current(); };
     strip.functionAvailability = device::mixFunctionAvailability;
+    strip.addFunction = [&](mix::Function kind, std::int64_t track) { return doc->addMixFunction(kind, track); };
     strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &runtime,
                               std::uint64_t stamp) {
         const auto p = doc->parameterFeed().current();
@@ -392,6 +411,7 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
                   "visible Clean drag has one common undo");
         }
     }
+    root.arrangement.geometry.selection.track = 2;
     root.command(AppCommands::ToggleMixView);
     root.chooseMixViewTab(1);
     root.mark(DirtySet::All);
@@ -407,6 +427,43 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     check(stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
               item.row.valid() && item.place == stack::ItemPlace::Chain && !stack.rows().empty(),
           "actual Clean device appears in the default With Tools STACK row");
+    const auto bounds = stack.getBounds();
+    bool fits = true;
+    for (int width : {320, 480, 816, 1200}) {
+        stack.setSize(width, 650);
+        fits = fits && !stack.addFunction.getBounds().intersects(stack.search.getBounds()) &&
+            stack.getLocalBounds().contains(stack.addFunction.getBounds()) &&
+            stack.getLocalBounds().contains(stack.search.getBounds());
+    }
+    stack.setBounds(bounds);
+    check(fits, "Mix View add and search controls stay distinct and inside narrow/wide headers");
+    strip.frame(3);
+    auto add = menuItems(stack.functionMenu());
+    check(stack.addFunction.isVisible() && stack.addFunction.isEnabled() && add.size() == 5 &&
+              add[1].ticked && !add[1].enabled && add[0].enabled,
+          "Mix View offers a selected-channel add control with present and unavailable capabilities explicit");
+    if (add.size() == 5) {
+        add[0].action(); doc->tick(3);
+        const auto after = doc->parameterFeed().current();
+        const auto eq = std::find_if(after->begin(), after->end(), [](const auto &d) { return d.uid == "org.adidaw.mix.eq" && d.track == 2; });
+        check(eq != after->end() && !menuItems(strip.functionMenu())[0].ticked && root.arrangement.geometry.selection.track == 2,
+              "Mix View adds to its selected channel without selecting or altering the device-strip channel");
+        const bool undo = doc->ops().undo().ok && doc->synchronise(); doc->tick(4);
+        check(undo && doc->session().instanceFor(found->id), "one Undo removes only the function added in Mix View");
+        root.frame(); stack.frameAt(root.reader(), 1);
+        auto expired = menuItems(stack.functionMenu());
+        const auto count = doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt();
+        stack.cancelInteractions();
+        if (expired.size() == 5) expired[0].action();
+        check(doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt() == count,
+              "cancelled Mix View add menu cannot mutate a later publication");
+        auto oldSelection = menuItems(stack.functionMenu());
+        root.arrangement.geometry.selection.track = 3; stack.frameAt(root.reader(), 2);
+        root.arrangement.geometry.selection.track = 2; stack.frameAt(root.reader(), 3);
+        if (oldSelection.size() == 5) oldSelection[0].action();
+        check(doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt() == count,
+              "selection away and back cannot revive an old Mix View add menu");
+    }
     peer.removeChildComponent(&root);
     peer.removeFromDesktop();
 }

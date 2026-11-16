@@ -71,7 +71,8 @@ struct StackTab::State : juce::ScrollBar::Listener {
     juce::ScrollBar scrollbar{true};
     RenameEditor rename;
     bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
-    std::uint64_t frame = 0, layout = 0;
+    std::uint64_t frame = 0, layout = 0, addMenuEpoch = 0;
+    std::int64_t addTrack = 0;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
     std::string parameter;
@@ -320,6 +321,16 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
         layoutRows();
     };
     addAndMakeVisible(channelScope);
+    addFunction.setTitle("Add Mix View function");
+    addFunction.setMouseClickGrabsKeyboardFocus(false);
+    addFunction.onClick = [this] {
+        const auto safe = juce::Component::SafePointer<StackTab>(this);
+        cancelInteractions();
+        if (!safe)
+            return;
+        functionMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&addFunction));
+    };
+    addAndMakeVisible(addFunction);
     rowSize.setTitle("Channel height");
     rowSize.setSliderStyle(juce::Slider::LinearHorizontal);
     rowSize.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -335,13 +346,24 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     }
     autoZoom.setToggleState(true, juce::dontSendNotification);
     navigator.setToggleState(true, juce::dontSendNotification);
-    autoZoom.onClick = [this] { effects(model().setAutoZoom(autoZoom.getToggleState(), clockNow()), false); };
-    pinsOnly.onClick = [this] { effects(model().setFilterPinned(pinsOnly.getToggleState(), clockNow()), false); layoutRows(); };
-    navigator.onClick = [this] { effects(model().setNavigator(navigator.getToggleState(), false, clockNow()), false); layoutRows(); };
+    autoZoom.onClick = [this] {
+        effects(model().setAutoZoom(autoZoom.getToggleState(), clockNow()), false);
+    };
+    pinsOnly.onClick = [this] {
+        effects(model().setFilterPinned(pinsOnly.getToggleState(), clockNow()), false);
+        layoutRows();
+    };
+    navigator.onClick = [this] {
+        effects(model().setNavigator(navigator.getToggleState(), false, clockNow()), false);
+        layoutRows();
+    };
     state_->rename.setTitle("Channel name");
     state_->rename.onCommit = [this] { endRename(true); };
     state_->rename.onCancel = [this] { endRename(false); };
-    state_->rename.onFocusLost = [this] { if (!state_->ending) endRename(true); };
+    state_->rename.onFocusLost = [this] {
+        if (!state_->ending)
+            endRename(true);
+    };
     state_->rename.onTab = [this](bool forward) {
         effects(model().key(stack::Key::Tab, {!forward, false, false}, clockNow()));
         layoutRows();
@@ -350,7 +372,8 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
 }
 StackTab::~StackTab() {
     state_->destroying = true;
-    if (root.devices.parameterDemand) root.devices.parameterDemand(this, {});
+    if (root.devices.parameterDemand)
+        root.devices.parameterDemand(this, {});
     cancelInteractions();
     giveAwayKeyboardFocus();
     state_->canvas.removeMouseListener(this);
@@ -363,7 +386,7 @@ StackModel &StackTab::model() noexcept { return state_->model; }
 const StackModel &StackTab::model() const noexcept { return state_->model; }
 const MixViewProvider &StackTab::provider() const noexcept { return root.mixProvider(); }
 int StackTab::toolbarHeight() const noexcept {
-    return kHeaderHeight * (getWidth() >= 720 ? 1 : getWidth() >= 370 ? 2 : 3);
+    return kHeaderHeight * (getWidth() >= 816 ? 1 : getWidth() >= 370 ? 2 : 3);
 }
 juce::Rectangle<int> StackTab::display() const noexcept {
     return {look::gap, toolbarHeight(), std::max(0, getWidth() - 2 * look::gap), kDisplayHeight};
@@ -429,7 +452,9 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
     }
     const juce::Component::SafePointer<StackTab> alive(this);
     const auto frame = ++state_->frame, layout = state_->layout;
-    const auto current = [&] { return alive && state_->frame == frame && state_->layout == layout; };
+    const auto current = [&] {
+        return alive && state_->frame == frame && state_->layout == layout;
+    };
     // Keep the prior record storage alive until every component has adopted the new feed.
     const auto old = state_->publication;
     (void)old; // its ownership deliberately lasts through every present() below
@@ -437,16 +462,30 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
         // A getter may destroy this surface or synchronously present a newer pose.
         // Validate before touching state, including the publication assignment itself.
         auto next = root.devices.publication();
-        if (!current()) return;
+        if (!current())
+            return;
         state_->publication = std::move(next);
     }
-    if (!current()) return;
+    if (!current())
+        return;
     refreshRows(reader, time);
-    if (!current()) return;
+    if (!current())
+        return;
+    const auto track = root.arrangement.geometry.selection.track;
+    if (state_->addTrack != track) {
+        ++state_->addMenuEpoch;
+        state_->addTrack = track;
+    }
+    const auto *selected = reader.findTrack(track);
+    addFunction.setEnabled(selected != nullptr);
+    addFunction.setTooltip(selected ? "Add a Mix View function to " + juce::String(selected->name)
+                                    : "Select a channel to add a Mix View function.");
     effects(model().setSelection(root.arrangement.geometry.selection.track, time), false);
-    if (!current()) return;
+    if (!current())
+        return;
     effects(model().advance(time), false);
-    if (!current()) return;
+    if (!current())
+        return;
     layoutRows();
 }
 void StackTab::syncScroll() {
@@ -574,19 +613,35 @@ void StackTab::resized() {
     const bool oneRow = toolbarHeight() == kHeaderHeight;
     const bool compact = available < 476;
     channelScope.setBounds(look::gap, 4, 120, 22);
-    search.setBounds(channelScope.getRight() + 6, 4,
-                     std::max(50, std::min(230, available - (oneRow ? 610 : 126))), 22);
+    addFunction.setBounds(channelScope.getRight() + 6, 4, 90, 22);
+    search.setBounds(addFunction.getRight() + 6, 4,
+                     std::max(50, std::min(230, available - (oneRow ? 706 : 222))), 22);
     const int secondY = oneRow ? 4 : kHeaderHeight + 4;
     rowSize.setBounds(oneRow ? search.getRight() + 8 : look::gap, secondY, compact ? 60 : 90, 22);
     autoZoom.setBounds(rowSize.getRight() + 6, secondY, compact ? 78 : 94, 22);
     const bool thirdRow = toolbarHeight() == kHeaderHeight * 3;
     const int lastY = thirdRow ? kHeaderHeight * 2 + 4 : secondY;
-    pinsOnly.setBounds(thirdRow ? look::gap : autoZoom.getRight() + 4, lastY, compact ? 62 : 78, 22);
+    pinsOnly.setBounds(thirdRow ? look::gap : autoZoom.getRight() + 4, lastY, compact ? 62 : 78,
+                       22);
     navigator.setBounds(pinsOnly.getRight() + 4, lastY, compact ? 84 : 100, 22);
     state_->canvas.setBounds(listArea());
-    state_->scrollbar.setBounds(listArea().getRight(), listArea().getY(), 8, listArea().getHeight());
+    state_->scrollbar.setBounds(listArea().getRight(), listArea().getY(), 8,
+                                listArea().getHeight());
     effects(model().setViewport(listArea().getWidth(), listArea().getHeight(), clockNow()), false);
     layoutRows();
+}
+juce::PopupMenu StackTab::functionMenu() {
+    const auto safe = juce::Component::SafePointer<StackTab>(this);
+    const auto track = root.arrangement.geometry.selection.track;
+    const auto epoch = ++state_->addMenuEpoch;
+    const auto snapshot = root.current();
+    return root.devices.functionMenuFor(track, [safe, track, epoch, snapshot] {
+        return safe && safe->isShowing() && safe->root.state().mixView &&
+               safe->root.state().mixViewTab == 1 && safe->state_->addMenuEpoch == epoch &&
+               safe->root.current() == snapshot &&
+               safe->root.arrangement.geometry.selection.track == track && safe->root.current() &&
+               safe->root.current()->findTrack(track);
+    });
 }
 juce::String StackTab::emptyMessage() const {
     if (!search.getText().isEmpty())
@@ -594,7 +649,8 @@ juce::String StackTab::emptyMessage() const {
     if (model().windowView().filterPinned)
         return "No pinned channels in this view.";
     if (model().windowView().channelScope == stack::ChannelScope::WithTools)
-        return "No channels with Mix View tools. Choose All channels, select a channel, then add a tool with + in Device View.";
+        return "No channels with Mix View tools. Choose All channels, select a channel, then add a "
+               "tool with + Function here.";
     return "No channels in this view.";
 }
 void StackTab::paint(juce::Graphics &g) {
@@ -701,24 +757,39 @@ void StackTab::mouseExit(const juce::MouseEvent &e) {
 }
 void StackTab::mouseDown(const juce::MouseEvent &e) {
     const juce::Component::SafePointer<StackTab> alive(this);
-    if (!fromList(e)) return;
+    if (!fromList(e))
+        return;
     const auto p = modelPoint(e);
     // Hit the geometry that supplied the visible components. Reflowing a newer document
     // here would hit an unseen row at this screen point. Validate the seen identity against
     // current state instead; the next frame adopts its new position.
     const auto presented = presentedHit(p.x, p.y);
     const auto current = root.current();
-    if (presented.row.valid() && (!current || !current->findTrack(presented.row.track))) return;
-    if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item)) return;
-    const auto button = e.mods.isPopupMenu() ? stack::Button::Right
-                      : e.mods.isMiddleButtonDown() ? stack::Button::Middle : stack::Button::Left;
-    const auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, clockNow());
+    if (presented.row.valid() && (!current || !current->findTrack(presented.row.track)))
+        return;
+    if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item))
+        return;
+    const auto button = e.mods.isPopupMenu()          ? stack::Button::Right
+                        : e.mods.isMiddleButtonDown() ? stack::Button::Middle
+                                                      : stack::Button::Left;
+    const auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods),
+                                                 e.getNumberOfClicks(), presented, clockNow());
     effects(fx, e.eventComponent == &state_->canvas);
-    if (!alive) return;
+    if (!alive)
+        return;
     if (fx.hit.part == stack::HitPart::ChainPill && button == stack::Button::Left &&
         p.y >= fx.hit.rect.y && p.y < fx.hit.rect.y + 16 && validTarget(fx.hit.item)) {
-        if (const auto *data = device(fx.hit.item.device); data && data->available)
-            root.devices.action("device.setEnabled", {{"id", data->id}, {"enabled", !data->enabled}});
+        const auto target = fx.hit.item;
+        if (const auto *data = device(target.device); data && data->available) {
+            const bool native = !data->plugin && mix::functionForUid(data->uid);
+            if (native)
+                cancelInteractions();
+            if (!alive)
+                return;
+            if (validTarget(target))
+                if (const auto *deviceData = device(target.device))
+                    root.devices.setEnabledExpected(*deviceData, !deviceData->enabled);
+        }
         if (!alive) return;
         layoutRows();
         return;
@@ -748,7 +819,7 @@ void StackTab::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelD
     layoutRows();
 }
 bool StackTab::hasToolbarFocus() const {
-    return channelScope.hasKeyboardFocus(true) || search.hasKeyboardFocus(true) || rowSize.hasKeyboardFocus(true) ||
+    return channelScope.hasKeyboardFocus(true) || addFunction.hasKeyboardFocus(true) || search.hasKeyboardFocus(true) || rowSize.hasKeyboardFocus(true) ||
            autoZoom.hasKeyboardFocus(true) || pinsOnly.hasKeyboardFocus(true) || navigator.hasKeyboardFocus(true);
 }
 bool StackTab::hasDeviceContext() const {
@@ -970,6 +1041,7 @@ bool StackTab::editParameter(const stack::ItemRef &target, const std::string &pa
 }
 void StackTab::cancelInteractions() {
     if (!state_ || state_->ending) return;
+    ++state_->addMenuEpoch;
     const juce::Component::SafePointer<StackTab> alive(this);
     endRename(false);
     if (!alive) return;
