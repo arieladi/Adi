@@ -171,6 +171,40 @@ An unavailable/unwarmed field is shown as `--`, without claiming that every nega
 reading is an unwarmed window. Freeze and Reset affect the local picture only; they never
 pause or reset the shared Main measurement. Closing the last view adds no meter DSP work.
 
+## Unregistered compressor component
+
+`mix::compressor::Core` supplies Clean compression at the input rate with zero latency. It is
+a framework-free component, not an available native Compressor function. The factory, channel
+catalog and existing processing paths are unchanged. Other styles, quality conversion,
+lookahead, key EQ, audition and wet/dry mixing are not accepted component settings.
+Fixed active Hold (above float epsilon in milliseconds) is admitted for internal-key fully
+linked stereo with Auto Release and Auto Gain off. It retains an inclusive peak window and a
+separate post-envelope. Other active-Hold routes/combinations are refused; zero/near-zero Hold
+preserves the existing admissions.
+
+Validated settings and complete pointer/context/layout checks precede each contiguous segment.
+Threshold, ratio, knee, range, attack/release and automatic controls retain running envelope
+history. Prepare/reset start a new stream; settings-only restore does not rewind it. Key
+source, link amount, M/S mode and Hold are fixed for that prepared stream; unsupported combinations
+are rejected explicitly. A temporarily absent external key means silence on the same route
+(`keyChannels=0`); partial/null planes are rejected. This is not a fabricated key source or
+arbitrary live route migration.
+
+The processing rate is rounded to float. Double I/O uses the same float engine and widens its
+output; it is not a double-precision engine. Finite audio within float range is a caller
+precondition, avoiding a redundant whole-buffer scan. Curve storage is prepared off audio,
+coefficients use a bounded per-instance cache, invariant control work is retained, and a fixed
+fully linked stream evaluates its identical detector envelope once. Hold's bounded maximum
+storage is allocated in prepare and reused without callback allocation; its one linked
+post-envelope retains history across physical and segmented blocks.
+The maximum queue has bounded amortized work. Constant held-peak coefficients are cached;
+zero Hold selects its existing sample kernel without queue or post-envelope work.
+These properties do not establish every Hold control/quality combination or a whole-product
+CPU comparison. The zero-Hold path keeps the existing gain expression unchanged.
+These are structural work properties, not a measured CPU or whole-product parity claim. The
+component remains unregistered
+until the complete controller/state/style/quality and real key-route paths are ready.
+
 ## Build and verification
 
 JUCE is pinned to 9.0.5 / d60b7a78030661574a615b586d9325ba7a7fa7dd. CMake accepts an
