@@ -304,6 +304,27 @@ void utilities() {
     check(setClipScale(plain, plain.scale.root, plain.scale.id, plain.scale.mask).ops.empty(), "the same scale again writes nothing");
 }
 
+void copies() {
+    auto c = clip(); // C3 at 0 for a beat; E3 at beat 1 for two; F#8 at 0, the shortest
+    c.notes[1].active = false;
+    c.notes[1].releaseVelocity = 40;
+    c.notes[1].channel = 3;
+    const auto copy = copyNotes(c, {3, 9}, 4 * beat, 2, "Copy Notes");
+    check(copy.ops.size() == 3 && copy.ops[0].opType == "note.insert" && copy.ops[0].label == "Copy Notes" &&
+              copy.ops[0].payload.at("note") == 10 && copy.ops[0].payload.at("start") == 4 * beat &&
+              copy.ops[0].payload.at("key") == 62 && copy.ops[0].payload.at("dur") == beat && copy.ops[0].payload.at("vel") == 100 &&
+              copy.ops[1].payload.at("note") == 11 && copy.ops[1].payload.at("key") == 66 && copy.ops[1].payload.at("velOff") == 40 &&
+              copy.ops[1].payload.at("chan") == 3 && copy.ops[2].opType == "note.setMute" &&
+              copy.ops[2].payload == Payload({{"clip", 7}, {"note", std::uint64_t{11}}, {"muted", true}}) &&
+              copy.select == std::vector<std::uint64_t>({10, 11}),
+          "copies take new ids, their originals' length, velocities and channel, stay deactivated, and are selected");
+    const auto top = copyNotes(c, {3, 4}, 0, 12, "Copy Notes");
+    check(top.ops[0].payload.at("key") == 61 && top.ops[1].payload.at("key") == 127, "copies stop together at the top key");
+    check(copyNotes(c, {}, beat, 0, "Copy Notes").ops.empty() && copyNotes(c, {555}, beat, 0, "Copy Notes").ops.empty(),
+          "nothing selected, or a note the clip does not hold, copies nothing");
+    check(spanOf(c, {3, 9}) == 3 * beat && spanOf(c, {3}) == beat && spanOf(c, {}) == 0, "the span the notes cover");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -351,6 +372,7 @@ int main() {
     clipFields();
     scales();
     utilities();
+    copies();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
