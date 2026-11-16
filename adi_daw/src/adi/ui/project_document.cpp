@@ -389,7 +389,9 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
     for(const auto& held:parameterOps_.pendingGestures())if(held.deviceId==target.id){error_="Finish the device edit before changing its sidechain.";return false;}
     auto prepared=prepareDeviceKey(*store_,target.id,source,tap);
     if(!prepared.ok){error_=prepared.error;return false;}
-    if(!prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_))return false;
+    // Removing edges cannot introduce feedback or an unavailable tap. Keep
+    // recovery possible when another stored key is already unavailable.
+    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_))return false;
     const auto result=ops_.commitPrepared(std::move(prepared),[](Store& store,PreparedDeviceKey& p,Actor actor){return commitDeviceKey(store,p,actor);});
     error_=result.error;if(!result.ok || !synchronise())return false;
     feed_.publish(session_,realisedGeneration_);return true;

@@ -78,10 +78,11 @@ struct Fixture {
 struct KeyInstance final:device::DeviceInstance {
     device::DeviceIdentity identity_;
     unsigned prepares=0;
+    bool keysAvailable=true;
     KeyInstance(){identity_.format="internal";identity_.uid="owned-key-fixture";identity_.name="Key fixture";}
     const device::DeviceIdentity& identity()const noexcept override{return identity_;}
     bool loaded()const noexcept override{return true;}
-    std::int32_t sidechainInputChannels()const noexcept override{return 2;}
+    std::int32_t sidechainInputChannels()const noexcept override{return keysAvailable?2:0;}
     void prepare(double,std::int32_t)override{++prepares;}
     void process(const NodeIo&)noexcept override{}
 };
@@ -127,6 +128,10 @@ void preparedAndDocument(){
     auto staleTarget=target;staleTarget.instance++;
     check(!doc->setDeviceKey(staleTarget,2,"post_fx"),"stale runtime presentation cannot redirect routing");
     check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.empty(),"None disconnects through common document authority");
+    check(doc->setDeviceKey(target,2,"post_fx") && doc->deviceAction("device.insert",{{"id",31},{"chain",3},{"ord",1},{"ref",77},{"name","Other target"}}),"two separate target devices can be authored");
+    auto* other=static_cast<KeyInstance*>(doc->session().instanceFor(31));other->keysAvailable=false;
+    check(doc->deviceAction("routing.connect",{{"id",99},{"srcKind","track"},{"src",2},{"dstKind","device"},{"dst",31},{"kind","sidechain"}}),"unavailable imported key remains a named stored route");
+    check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.size()==1 && doc->session().model().routing.front().dstId==31,"None can recover one route despite an unrelated unavailable key");
 }
 void persistence() {
     Fixture f;
