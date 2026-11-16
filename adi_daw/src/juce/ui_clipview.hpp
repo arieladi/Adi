@@ -24,6 +24,12 @@ namespace adi::ui {
 class AdiRootComponent;
 class ClipViewPanel;
 
+// Another of the selected MIDI clips, shown with the one being edited (manual 10.8).
+struct ClipLayer {
+    engine::ClipDetails details;
+    juce::Colour colour;
+};
+
 // Live's MIDI Note Editor (manual 10.1): the time ruler along the top, the note ruler with its
 // piano keys down the left, the key tracks with the clip's notes, and the Velocity lane below.
 class NoteEditor final : public juce::Component {
@@ -110,6 +116,16 @@ class NoteEditor final : public juce::Component {
     // The loop brace in the time ruler (manual 8.2.2): its left and right edge in this component;
     // none for a clip with no loop window.
     std::optional<juce::Range<int>> loopBrace() const noexcept;
+    // Multi-clip editing (manual 10.8): while several clips are shown, a loop bar for each sits above
+    // the time ruler in the clip's colour, the edited clip's first. A click on another clip's bar, or
+    // on one of its notes, makes that clip the one being edited.
+    static constexpr int kLoopBarHeight = 7;
+    int barsHeight() const noexcept;
+    juce::Rectangle<int> loopBar(std::size_t index) const noexcept;
+    // The other clip whose loop bar or note is at a point, and that note; 0 for none.
+    std::int64_t otherClipAt(juce::Point<int>, std::uint64_t *note = nullptr) const noexcept;
+    // A note of any shown clip, placed through that clip's own position and start marker.
+    std::optional<NoteBox> boxOf(const engine::ClipNote &, const engine::ClipDetails &) const noexcept;
     // A note's box in this component; none while Fold hides its key.
     std::optional<NoteBox> boxOf(const engine::ClipNote &) const noexcept;
     // Opens on a clip: its whole length across the editor, its notes in view (manual 10.2).
@@ -232,6 +248,15 @@ class ClipViewPanel final : public juce::Component {
     const std::string &problem() const noexcept { return problem_; }
     bool midi() const noexcept { return details_ && details_->kind == "midi"; }
     bool audio() const noexcept { return details_ && details_->kind == "audio"; }
+    // Multi-clip editing (manual 10.8): the other selected MIDI clips, up to eight in all, drawn in
+    // the same editor, each in its own colour. Editing applies to the clip being edited; `activate`
+    // makes another of them that clip. Focus (N, and the header's switch) greys the others.
+    static constexpr std::size_t kMaxClips = 8;
+    const std::vector<ClipLayer> &others() const noexcept { return others_; }
+    bool activate(std::int64_t clip);
+    bool focus() const noexcept { return focus_; }
+    void setFocus(bool);
+    juce::Rectangle<int> focusBox() const noexcept;
     // The clip in the frame's snapshot: its audio source and its track.
     const engine::ClipNode *node() const noexcept { return node_; }
     juce::Colour colour() const noexcept { return colour_; }
@@ -272,6 +297,9 @@ class ClipViewPanel final : public juce::Component {
     void closeEditor();
     void showScaleMenu(bool roots);
     std::int64_t clip_ = 0, wanted_ = 0;
+    std::vector<std::int64_t> shown_;
+    std::vector<ClipLayer> others_;
+    bool focus_ = false;
     std::uint64_t generation_ = 0;
     bool read_ = false;
     std::optional<engine::ClipDetails> details_;
