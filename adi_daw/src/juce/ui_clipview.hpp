@@ -151,6 +151,17 @@ class NoteEditor final : public juce::Component {
     bool quantize();
     bool splitOrChop();
     bool join();
+    // Time inside the clip (manual 10.7), one undo step each. Crop Clip (Ctrl/Cmd+Shift+J): the
+    // notes outside the time selection go, or with none those outside the loop, and with the loop
+    // off those outside the Start and End markers; a crossing note is cut at the edge, but kept
+    // whole with the loop off, as measured on Live. With time selected: Duplicate Time
+    // (Ctrl/Cmd+Shift+D), Delete Time (Ctrl/Cmd+Shift+Delete) and Insert Time (Ctrl/Cmd+I); the
+    // clip's markers and loop stay. With the loop brace selected, Ctrl/Cmd+D is Duplicate Loop: the
+    // loop twice as long, its notes copied, later notes moved on, and the editor zoomed out to show it.
+    bool crop();
+    enum class TimeCommand { Duplicate, Delete, Insert };
+    bool timeCommand(TimeCommand);
+    bool duplicateLoop();
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }

@@ -966,6 +966,85 @@ inline NoteEdit restrictPolyphony(const engine::ClipDetails &clip, const std::ve
     return edit;
 }
 
+// ---- Time inside the clip (manual 10.7) -----------------------------------------------------------
+// Crop Clip (10.7.1; Ctrl/Cmd+Shift+J): the notes outside `from` to `to` go. With `cut`, a note that
+// crosses an edge is cut there: the loop on, or a time selection (as measured on Live). Without
+// it a crossing note is kept whole: the loop off, between the Start and End markers.
+inline NoteEdit cropNotes(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to, bool cut) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty() || to <= from)
+        return edit;
+    for (const auto &n : clip.notes) {
+        const auto end = n.startTicks + n.durationTicks;
+        if (end <= from || n.startTicks >= to) {
+            edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", n.id}}, "Crop Clip"));
+            continue;
+        }
+        if (!cut)
+            continue;
+        const auto start = std::max(n.startTicks, from), stop = std::min(end, to);
+        place(edit, clip.id, n, start, n.key, std::max(kShortestNote, stop - start), "Crop Clip");
+    }
+    return edit;
+}
+// Duplicate Time (10.7.2): a copy of the notes that begin in `from` to `to` is placed after it, and
+// the notes that begin at or after `to` move on by its length. Duplicate Loop (10.7.3) is the same
+// over the loop, under its own name; the loop's new length is the caller's op.
+inline NoteEdit duplicateTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to, const char *label = "Duplicate Time") {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto &n : clip.notes) {
+        if (n.startTicks >= to)
+            place(edit, clip.id, n, n.startTicks + length, n.key, n.durationTicks, label);
+        else if (n.startTicks >= from)
+            piece(edit, clip.id, n, id++, n.startTicks + length, n.durationTicks, label);
+    }
+    edit.select.clear();
+    return edit;
+}
+// Delete Time (10.7.2): the notes that begin in `from` to `to` go; later notes move back by its
+// length; a note from before that reaches into it ends at `from`, or loses the deleted time when
+// it reaches past `to`.
+inline NoteEdit deleteTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    for (const auto &n : clip.notes) {
+        const auto end = n.startTicks + n.durationTicks;
+        if (n.startTicks >= to)
+            place(edit, clip.id, n, n.startTicks - length, n.key, n.durationTicks, "Delete Time");
+        else if (n.startTicks >= from)
+            edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", n.id}}, "Delete Time"));
+        else if (end > from)
+            place(edit, clip.id, n, n.startTicks, n.key, std::max(kShortestNote, (end <= to ? from : end - length) - n.startTicks), "Delete Time");
+    }
+    return edit;
+}
+// Insert Time (10.7.2): as much empty time as `from` to `to` holds, before it: the notes that begin
+// at or after `from` move on by its length.
+inline NoteEdit insertTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    for (const auto &n : clip.notes)
+        if (n.startTicks >= from)
+            place(edit, clip.id, n, n.startTicks + length, n.key, n.durationTicks, "Insert Time");
+    return edit;
+}
+
 // Live's overlap rule, as measured on Live 12.4 (manual 10.5.4): where an edit puts a note over
 // another on the same key, the note just placed survives whole. An older note that begins inside it
 // is removed; an older note that began before it is cut to end where it begins, and what the older

@@ -5829,6 +5829,135 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     }
 }
 
+// Time inside the clip (manual 10.7): Crop Clip, Duplicate, Delete and Insert Time, Duplicate Loop.
+void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-clip-time.adi", err);
+    check(store != nullptr, "the clip time project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Clip Time')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Tune"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    // In the clip's own beats: C3 at 0, D3 at 1, a two-beat E3 at 2, F3 at 5 and G3 at 7.
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 2}, {"start", beat}, {"dur", beat}, {"key", 62}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 3}, {"start", 2 * beat}, {"dur", 2 * beat}, {"key", 64}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 4}, {"start", 5 * beat}, {"dur", beat}, {"key", 65}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 5}, {"start", 7 * beat}, {"dur", beat}, {"key", 67}}, "Add Note")}).ok && made;
+    check(made, "a MIDI clip of five notes");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-clip-time");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    root.arrangement.geometry.resizeTrack(1, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(bar)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->notes.size() == 5, "the clip is open in the Note Editor");
+    if (panel.details() == nullptr)
+        return;
+    const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : details().notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    const auto undoIs = [&](const char *label) { return submitter.nextUndo()->label == label; };
+    const auto undo = [&] {
+        const bool done = root.command(AppCommands::Undo);
+        root.frame();
+        return done;
+    };
+    const auto key = [](int code, int mods = 0) { return juce::KeyPress(code, juce::ModifierKeys(mods), 0); };
+    const int shift = juce::ModifierKeys::shiftModifier, command = juce::ModifierKeys::commandModifier;
+    const auto song = [&](std::int64_t clipBeats) { return bar + clipBeats; }; // the clip starts at the song's second bar
+
+    // The time commands, over the clip's beats 2 to 4.
+    ed.selectTime(song(2 * beat), song(4 * beat));
+    check(ed.keyPressed(key('d', command | shift)) && details().notes.size() == 6 && note(4).startTicks == 7 * beat && note(5).startTicks == 9 * beat &&
+              note(3).startTicks == 2 * beat && note(2).startTicks == beat && undoIs("Duplicate Time") && details().startMarkerTicks == 0 &&
+              endMarkerOf(details()) == 8 * beat,
+          "Ctrl+Shift+D with time selected: the E3 in it is copied after it and the later notes move on two beats; the clip's markers stay");
+    bool copyAtFour = false;
+    for (const auto &n : details().notes)
+        copyAtFour = copyAtFour || (n.id > 5 && n.key == 64 && n.startTicks == 4 * beat && n.durationTicks == 2 * beat);
+    check(copyAtFour && undo() && details().notes.size() == 5 && note(4).startTicks == 5 * beat, "the copy begins where the time ended; one Undo takes it all back");
+    check(ed.keyPressed(key('i', command)) && details().notes.size() == 5 && note(3).startTicks == 4 * beat && note(4).startTicks == 7 * beat &&
+              note(2).startTicks == beat && undoIs("Insert Time") && undo(),
+          "Ctrl+I: as much empty time before the selection; the notes from its start on move on");
+    check(ed.keyPressed(key(juce::KeyPress::deleteKey, command | shift)) && details().notes.size() == 4 && note(3).id == 0 &&
+              note(4).startTicks == 3 * beat && note(5).startTicks == 5 * beat && undoIs("Delete Time") && !ed.timeSelection() &&
+              ed.insertMarker() == song(2 * beat),
+          "Ctrl+Shift+Delete: the time and the note in it go, later notes move back; the insert marker stands where it was");
+    check(undo() && details().notes.size() == 5 && note(3).durationTicks == 2 * beat, "undo");
+    const auto before = submitter.nextUndo()->txnId;
+    ed.keyPressed(key(juce::KeyPress::escapeKey));
+    check(!ed.timeSelection() && ed.keyPressed(key(juce::KeyPress::deleteKey, command | shift)) && submitter.nextUndo()->txnId == before,
+          "with no time selected, Ctrl+Shift+Delete deletes nothing");
+
+    // Crop Clip.
+    ed.selectTime(song(beat), song(6 * beat));
+    check(ed.keyPressed(key('j', command | shift)) && details().notes.size() == 3 && note(1).id == 0 && note(5).id == 0 && note(2).startTicks == beat &&
+              undoIs("Crop Clip") && undo(),
+          "Ctrl+Shift+J with time selected crops to it: the notes outside go");
+    ed.keyPressed(key(juce::KeyPress::escapeKey));
+    check(ed.keyPressed(key('j', command | shift)) && submitter.nextUndo()->txnId == before, "with no time selected and every note between the markers, nothing to crop");
+    check(submitter.submit(op("clip.setEndMarker", {{"id", 11}, {"ticks", 5 * beat + beat / 2}}, "Set Clip End")).ok, "the End marker in the middle of the F3");
+    root.frame();
+    check(!details().loopEnabled && ed.keyPressed(key('j', command | shift)) && details().notes.size() == 4 && note(5).id == 0 &&
+              note(4).durationTicks == beat && undoIs("Crop Clip") && undo(),
+          "the loop off: the note past the End marker goes, and the one crossing it is kept whole, as measured on Live");
+    check(submitter.submit(op("clip.setLoop", {{"id", 11}, {"on", true}, {"start", 3 * beat}, {"length", 2 * beat + beat / 2}}, "Set Loop Position")).ok,
+          "the loop on, from the middle of the E3 to the middle of the F3");
+    root.frame();
+    check(ed.keyPressed(key('j', command | shift)) && details().notes.size() == 2 && note(3).startTicks == 3 * beat && note(3).durationTicks == beat &&
+              note(4).startTicks == 5 * beat && note(4).durationTicks == beat / 2 && undoIs("Crop Clip") && undo(),
+          "the loop on: the notes outside it go, and the two crossing its edges are cut there");
+
+    // Duplicate Loop: Ctrl+D with the brace selected.
+    const auto ruler = ed.rulerArea();
+    const juce::Point<float> brace(static_cast<float>(ruler.getX()) + static_cast<float>(ed.time.x(song(4 * beat))), static_cast<float>(ruler.getY() + 3));
+    ed.mouseDown(pressAt(ed, brace));
+    ed.mouseUp(pressAt(ed, brace));
+    check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && details().notes.size() == 5, "the loop brace selected");
+    check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 5 * beat && details().loopStartTicks == 3 * beat && details().loopEnabled &&
+              details().notes.size() == 6 && note(5).startTicks == 9 * beat + beat / 2 && note(4).startTicks == 5 * beat && undoIs("Duplicate Loop") &&
+              submitter.nextUndo()->opCount == 3,
+          "Ctrl+D doubles the loop, copies the note that begins in it and moves the later note on by the loop's length: one undo step");
+    bool copied = false;
+    for (const auto &n : details().notes)
+        copied = copied || (n.id > 5 && n.key == 65 && n.startTicks == 7 * beat + beat / 2);
+    const auto loopEnd = static_cast<int>(ed.time.x(song(8 * beat)));
+    check(copied && loopEnd <= ed.notesArea().getWidth() && ed.time.x(song(3 * beat)) >= 0, "the copy is a loop's length after its note, and the whole loop is in view");
+    check(undo() && details().loopLengthTicks == 2 * beat + beat / 2 && details().notes.size() == 5 && note(5).startTicks == 7 * beat,
+          "one Undo gives back the loop and the notes");
+    ed.select({4});
+    check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && ed.keyPressed(key(juce::KeyPress::escapeKey)), "the brace let go");
+    check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 2 * beat + beat / 2 && undoIs("Duplicate Note"),
+          "without the brace selected Ctrl+D duplicates the selected note, as before");
+}
+
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-multi.adi", err);
@@ -12619,6 +12748,7 @@ int main(int argc, char **argv) {
     clipViewTools(commands, temp.path());
     clipViewMore(commands, temp.path());
     clipViewTime(commands, temp.path());
+    clipViewClipTime(commands, temp.path());
     clipViewMulti(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());

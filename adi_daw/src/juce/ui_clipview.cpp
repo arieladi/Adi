@@ -888,6 +888,10 @@ bool NoteEditor::rulerKey(const juce::KeyPress &k) {
         repaint();
         return true;
     }
+    if (picked_ == RulerPart::Loop && k == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) {
+        duplicateLoop();
+        return true;
+    }
     const bool sideways = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
     const bool upDown = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
     if (!sideways && !upDown)
@@ -1205,6 +1209,62 @@ void NoteEditor::gridKey(int key) {
     }
     repaint();
     panel.repaint();
+}
+// ---- Time inside the clip (manual 10.7) --------------------------------------------------------
+bool NoteEditor::crop() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    if (const auto span = timeSelection())
+        return commit(cropNotes(*clip, window.toSource(span->first), window.toSource(span->second), true));
+    if (clip->loopEnabled)
+        return commit(cropNotes(*clip, clip->loopStartTicks, clip->loopStartTicks + loopLengthOf(*clip), true));
+    return commit(cropNotes(*clip, clip->startMarkerTicks, endMarkerOf(*clip), false));
+}
+bool NoteEditor::timeCommand(TimeCommand command) {
+    const auto *clip = panel.details();
+    const auto span = timeSelection();
+    if (clip == nullptr || !span)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    const auto from = window.toSource(span->first), to = window.toSource(span->second);
+    const bool done = commit(command == TimeCommand::Duplicate ? duplicateTime(*clip, from, to)
+                             : command == TimeCommand::Delete  ? deleteTime(*clip, from, to)
+                                                               : insertTime(*clip, from, to));
+    // The deleted time is gone: the insert marker stands where it was.
+    if (done && command == TimeCommand::Delete)
+        placeMarker(span->first, false);
+    return done;
+}
+bool NoteEditor::duplicateLoop() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto start = clip->loopStartTicks, length = loopLengthOf(*clip);
+    if (length <= 0)
+        return false;
+    auto edit = duplicateTime(*clip, start, start + length, "Duplicate Loop");
+    if (!edit.refusal.empty())
+        return commit(std::move(edit));
+    OpRequest loop;
+    loop.opType = "clip.setLoop";
+    loop.payload = {{"id", clip->id}, {"on", clip->loopEnabled}, {"start", start}, {"length", 2 * length}};
+    loop.label = "Duplicate Loop";
+    // The loop's op first: the step is named for it even when the loop holds no notes.
+    edit.ops.insert(edit.ops.begin(), std::move(loop));
+    if (!commit(std::move(edit)))
+        return false;
+    // Zoomed out as far as needed to show the whole loop.
+    const auto window = ClipWindow::of(*clip);
+    const auto area = notesArea();
+    if (const auto end = window.toArrangement(start + 2 * length); time.x(end) > area.getWidth() || time.x(window.toArrangement(start)) < 0) {
+        const auto from = std::min(window.pos, window.toArrangement(start));
+        const auto to = std::max(window.end(), end);
+        time.fit(from, to + (to - from) / 24, area.getWidth());
+    }
+    repaint();
+    return true;
 }
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
@@ -1736,6 +1796,20 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
             return true;
         }
+    }
+    // Time inside the clip (manual 10.7): Crop Clip, and the time commands over a time selection.
+    if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        crop();
+        return true;
+    }
+    if (timeSelection()) {
+        const bool both = mods.isCommandDown() && mods.isShiftDown() && !mods.isAltDown();
+        if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+            return timeCommand(TimeCommand::Duplicate), true;
+        if (both && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey))
+            return timeCommand(TimeCommand::Delete), true;
+        if (k == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0))
+            return timeCommand(TimeCommand::Insert), true;
     }
     // Delete is the editor's while it has the keyboard: with no note selected it does nothing,
     // and never reaches the arrangement's selection.
