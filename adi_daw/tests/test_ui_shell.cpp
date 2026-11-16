@@ -4172,6 +4172,168 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(!details().signature.local && panel.readings().signature == "4 / 4", "take the clip back to the song's 4/4");
 }
+// The Clip View's Pitch and Time panel and its Scale chooser (STEP-7-PLAN 7.7 step 4; manual 8.5, 8.2.5):
+// a MIDI clip has the panel beside the Main panel; Fit to Scale, Invert, Reverse, x2, /2 and Legato act on
+// the selected notes, or on all when none is selected, one undo step each; Transpose is dragged or typed;
+// the Scale field's choosers set the clip's own scale.
+void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-tools.adi", err);
+    check(store != nullptr, "the clip tools project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Tools')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("track.create", {{"id", 2}, {"kind", "audio"}, {"name", "Audio"}, {"index", 1}}, "Create track")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Tune"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 12}, {"track", 2}, {"kind", "audio"}, {"name", "Take"}, {"pos", bar}, {"length", bar}}, "Create clip")).ok && made;
+    // C3, E3 and F#3, a beat each, one after the other.
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 2}, {"start", beat}, {"dur", beat}, {"key", 64}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 3}, {"start", 2 * beat}, {"dur", beat}, {"key", 66}}, "Add Note")}).ok && made;
+    check(made, "a MIDI clip of three notes and an audio clip");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-tools");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    for (std::int64_t id = 1; id <= 2; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    using Field = ClipViewPanel::Field;
+    using Tool = ClipViewPanel::Tool;
+    const auto open = [&](std::int64_t track) {
+        canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(bar)) + 20.f, static_cast<float>(laneTop(root, track) + 30)}));
+        root.frame();
+    };
+    const auto click = [&](juce::Rectangle<int> box) {
+        panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+        panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+    };
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : panel.details()->notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    const auto undoIs = [&](const char *label, int ops) {
+        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+    };
+
+    // An audio clip has the Main panel only; a MIDI clip has the Pitch and Time panel beside it.
+    open(2);
+    check(panel.audio() && panel.toolsArea().isEmpty() && panel.panelWidth() == ClipViewPanel::kPanelWidth &&
+              panel.sample.getX() == ClipViewPanel::kPanelWidth + 1 && panel.fieldAt(panel.fieldBox(Field::Scale).getCentre()) == Field::None,
+          "an audio clip: the Main panel only, the Sample Editor right beside it, no Scale field");
+    open(1);
+    const int both = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth;
+    check(panel.midi() && !panel.toolsArea().isEmpty() && panel.panelWidth() == both && ed.getX() == both + 1 &&
+              panel.readings().range == "C3 - F#3" && panel.readings().transpose == "0 st" && panel.readings().scale == "C Major",
+          "a MIDI clip: the Pitch and Time panel, the Note Editor beside both; the range C3 - F#3, C Major");
+    const auto fit = ed.boxOf(note(3));
+    check(fit && fit->x + fit->width <= ed.notesArea().getRight(), "and the editor still opens with the whole clip in view");
+
+    // Fit to Scale: F#3 is not in C major, and goes to F3, the lower of its two neighbours.
+    click(panel.toolBox(Tool::FitToScale));
+    check(note(1).key == 60 && note(2).key == 64 && note(3).key == 65 && undoIs("Fit to Scale", 1),
+          "Fit to Scale moves F#3 to F3 and leaves the others, one undo step");
+    // Invert, between the lowest and the highest.
+    click(panel.toolBox(Tool::Invert));
+    check(note(1).key == 65 && note(2).key == 61 && note(3).key == 60 && undoIs("Invert Notes", 3), "Invert mirrors the three in pitch");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Reverse, between the first start and the last end.
+    click(panel.toolBox(Tool::Reverse));
+    check(note(1).startTicks == 2 * beat && note(2).startTicks == beat && note(3).startTicks == 0 && undoIs("Reverse Notes", 2),
+          "Reverse mirrors them in time: the last is first");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // x2 and /2.
+    click(panel.toolBox(Tool::Double));
+    check(note(1).startTicks == 0 && note(1).durationTicks == 2 * beat && note(2).startTicks == 2 * beat &&
+              note(3).startTicks == 4 * beat && note(3).durationTicks == 2 * beat && undoIs("Stretch Notes", 5),
+          "x2 doubles the starts and the lengths from the first note, one undo step");
+    click(panel.toolBox(Tool::Halve));
+    check(note(2).startTicks == beat && note(3).startTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Stretch Notes", 5),
+          "/2 halves them again");
+    // Legato: with the middle note gone, the first lasts until the last begins.
+    const auto beforeLegato = submitter.nextUndo()->txnId;
+    check(panel.runTool(Tool::Legato) && submitter.nextUndo()->txnId == beforeLegato, "Legato on notes that already touch writes nothing");
+    ed.select({2});
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "the middle note deleted");
+    click(panel.toolBox(Tool::Legato));
+    check(note(1).durationTicks == 2 * beat && note(3).durationTicks == beat && undoIs("Legato", 1),
+          "Legato makes the first note last until the next begins");
+
+    // Transpose: dragged, it reads the semitones while held and moves the notes when let go; typed too.
+    const auto semitones = panel.fieldBox(Field::Transpose);
+    const juce::Point<float> grab(static_cast<float>(semitones.getCentreX()), static_cast<float>(semitones.getCentreY()));
+    panel.mouseDown(pressAt(panel, grab));
+    panel.mouseDrag(dragAt(panel, grab, {grab.x, grab.y - 12.f}));
+    check(panel.readings().transpose == "+3 st" && note(1).key == 60, "Transpose dragged up three steps reads +3 st, nothing written yet");
+    panel.mouseUp(pressAt(panel, {grab.x, grab.y - 12.f}));
+    check(note(1).key == 63 && note(3).key == 68 && panel.readings().transpose == "0 st" && panel.readings().range == "D#3 - G#3" &&
+              undoIs("Transpose Notes", 2),
+          "let go, both notes are three semitones up, one undo step, and the field reads 0 st again");
+    check(panel.typeField(Field::Transpose, "-3") && note(1).key == 60 && note(3).key == 65, "typed as -3, they are back");
+    const auto beforeBad = submitter.nextUndo()->txnId;
+    check(!panel.typeField(Field::Transpose, "up") && !panel.typeField(Field::Transpose, "3-") &&
+              submitter.nextUndo()->txnId == beforeBad,
+          "what is not a number of semitones is refused");
+    // With a note selected, the utilities act on it alone, and the range reads it alone.
+    ed.select({3});
+    check(panel.readings().range == "F3 - F3" && panel.transpose(12) && note(3).key == 77 && note(1).key == 60 &&
+              undoIs("Transpose Notes", 1) && ed.selected() == std::vector<std::uint64_t>{3},
+          "with one note selected, Transpose moves that note alone and it stays selected");
+    ed.select({});
+
+    // The Scale field's choosers: twelve roots, the catalogue's scales; a choice is the clip's own scale.
+    check(panel.scaleMenu(true).getNumItems() == 12 && panel.scaleMenu(false).getNumItems() == static_cast<int>(kScales.size()),
+          "the Scale field's choosers: twelve root notes, and the scales");
+    check(panel.chooseScale(true, 3) && panel.readings().scale == "D Major" && panel.details()->scale.local &&
+              panel.details()->scale.root == 2 && undoIs("Change Clip Scale", 1),
+          "the root chosen as D: D Major, the clip's own, one undo step");
+    check(panel.chooseScale(false, 11) && panel.readings().scale == "D Minor Blues" && panel.details()->scale.id == "minor-blues" &&
+              panel.details()->scale.mask == findScale("minor-blues")->mask,
+          "the scale chosen as Minor Blues: D Minor Blues");
+    check(!panel.chooseScale(true, 13) && !panel.chooseScale(false, 0) && !panel.chooseScale(false, 99), "an item the chooser does not have does nothing");
+    check(panel.transpose(1) && note(1).key == 61 && note(3).key == 78, "a semitone up, neither note is in D Minor Blues");
+    click(panel.toolBox(Tool::FitToScale));
+    check(inScale(note(1).key, 2, panel.details()->scale.mask) && inScale(note(3).key, 2, panel.details()->scale.mask) &&
+              undoIs("Fit to Scale", 2),
+          "Fit to Scale then fits the notes to D Minor Blues");
+
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-view-tools.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+}
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
@@ -10518,6 +10680,7 @@ int main(int argc, char **argv) {
     clipView(commands, temp.path(), write);
     clipViewNotes(commands, temp.path());
     clipViewFields(commands, temp.path());
+    clipViewTools(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());

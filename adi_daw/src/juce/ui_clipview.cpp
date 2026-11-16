@@ -684,10 +684,10 @@ juce::Rectangle<int> ClipViewPanel::mainArea() const noexcept {
     return {0, kTitleHeight, kPanelWidth, std::max(0, getHeight() - kTitleHeight)};
 }
 juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
-    return {kPanelWidth + 1, 0, std::max(0, getWidth() - kPanelWidth - 1), kHeaderHeight};
+    return {panelWidth() + 1, 0, std::max(0, getWidth() - panelWidth() - 1), kHeaderHeight};
 }
 juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
-    return {kPanelWidth + 1, kHeaderHeight, std::max(0, getWidth() - kPanelWidth - 1),
+    return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
 }
 void ClipViewPanel::resized() {
@@ -745,6 +745,7 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         notes.setVisible(midi());
         sample.setVisible(audio());
         notes.prune();
+        resized();
         if (other) {
             closeEditor();
             notes.select({});
@@ -782,12 +783,28 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
     // The scale's root and its name, the clip's own or the one it inherits (manual 8.2.5).
+    // A scale of the catalogue reads by its name; one from elsewhere, by its id.
+    const auto *known = findScale(d.scale.id);
     auto scaleName = juce::String(d.scale.id);
     out.scale = juce::String(pitchClassName(static_cast<int>(d.scale.root))) + " " +
-                scaleName.substring(0, 1).toUpperCase() + scaleName.substring(1);
+                (known != nullptr ? juce::String(known->name)
+                                  : scaleName.substring(0, 1).toUpperCase() + scaleName.substring(1));
+    // The Pitch and Time panel: the lowest and highest key of the notes it would act on, and the
+    // transposition, which is nothing until its field is dragged or typed into.
+    out.transpose = "0 st";
+    {
+        std::vector<engine::ClipNote> acted;
+        for (const auto &n : d.notes)
+            if (notes.selected().empty() || notes.isSelected(n.id))
+                acted.push_back(n);
+        if (const auto keys = keyRange(acted))
+            out.range = juce::String(noteName(keys->low)) + " - " + juce::String(noteName(keys->high));
+    }
     // While a field is dragged it reads where the drag would put it.
     if (dragged_ && pressed_ != Field::None) {
-        if (pressed_ == Field::Signature) {
+        if (pressed_ == Field::Transpose) {
+            out.transpose = (dragSteps_ > 0 ? juce::String("+") : juce::String()) + juce::String(dragSteps_) + " st";
+        } else if (pressed_ == Field::Signature) {
             const auto s = draggedSignature();
             out.signature = juce::String(s.first) + " / " + juce::String(s.second);
         } else if (pressed_ == Field::Length) {
@@ -815,7 +832,123 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     const int column = field == Field::End || field == Field::Length || field == Field::Scale ? 1 : 0;
     if (field == Field::None)
         return {};
+    if (field == Field::Transpose) {
+        const auto fit = toolBox(Tool::FitToScale);
+        return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
+    }
     return {main.getX() + column * (half + 6), main.getY() + row + kFieldLabel, half, kFieldBox};
+}
+// ---- The Pitch and Time panel (manual 8.5; STEP-7-PLAN 7.7 step 4) -----------------------------
+juce::Rectangle<int> ClipViewPanel::toolsArea() const noexcept {
+    return midi() ? juce::Rectangle<int>(kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::rangeBox() const noexcept {
+    const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
+    return inner.isEmpty() ? inner : inner.withHeight(kFieldBox);
+}
+juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
+    const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
+    if (inner.isEmpty())
+        return {};
+    const int half = (inner.getWidth() - 6) / 2;
+    // Two columns under the range: Transpose's field has the first place.
+    int row = 1, column = 1;
+    switch (tool) {
+    case Tool::FitToScale:
+        break;
+    case Tool::Invert:
+        row = 2, column = 0;
+        break;
+    case Tool::Reverse:
+        row = 2;
+        break;
+    case Tool::Double:
+        row = 3, column = 0;
+        break;
+    case Tool::Halve:
+        row = 3;
+        break;
+    case Tool::Legato:
+        row = 4, column = 0;
+        break;
+    }
+    return {inner.getX() + column * (half + 6), inner.getY() + row * 22, half, kFieldBox};
+}
+const char *ClipViewPanel::toolName(Tool tool) noexcept {
+    switch (tool) {
+    case Tool::FitToScale:
+        return "Fit to Scale";
+    case Tool::Invert:
+        return "Invert";
+    case Tool::Reverse:
+        return "Reverse";
+    case Tool::Double:
+        return "x2";
+    case Tool::Halve:
+        return "/2";
+    case Tool::Legato:
+        return "Legato";
+    }
+    return "";
+}
+bool ClipViewPanel::runTool(Tool tool) {
+    if (!details_ || !midi())
+        return false;
+    const auto &d = *details_;
+    const auto &ids = notes.selected();
+    switch (tool) {
+    case Tool::FitToScale:
+        return notes.apply(fitNotesToScale(d, ids, static_cast<int>(d.scale.root), d.scale.mask));
+    case Tool::Invert:
+        return notes.apply(invertNotes(d, ids));
+    case Tool::Reverse:
+        return notes.apply(reverseNotes(d, ids));
+    case Tool::Double:
+        return notes.apply(stretchNotes(d, ids, 2, 1));
+    case Tool::Halve:
+        return notes.apply(stretchNotes(d, ids, 1, 2));
+    case Tool::Legato:
+        return notes.apply(legatoNotes(d, ids));
+    }
+    return false;
+}
+bool ClipViewPanel::transpose(int semitones) {
+    return details_ && midi() && notes.apply(transposeNotes(*details_, notes.selected(), semitones));
+}
+juce::PopupMenu ClipViewPanel::scaleMenu(bool roots) const {
+    // Live's two choosers (manual 8.2.5): the root note, and the scale's name. Item ids are from 1.
+    juce::PopupMenu menu;
+    if (!details_)
+        return menu;
+    if (roots) {
+        for (int note = 0; note < 12; ++note)
+            menu.addItem(note + 1, pitchClassName(note), true, details_->scale.root == note);
+    } else {
+        int id = 1;
+        for (const auto &scale : kScales)
+            menu.addItem(id++, scale.name, true, details_->scale.id == scale.id);
+    }
+    return menu;
+}
+bool ClipViewPanel::chooseScale(bool roots, int item) {
+    if (!details_ || item < 1)
+        return false;
+    const auto &d = *details_;
+    if (roots)
+        return item <= 12 && commit(setClipScale(d, item - 1, d.scale.id, d.scale.mask));
+    if (item > static_cast<int>(kScales.size()))
+        return false;
+    const auto &scale = kScales[static_cast<std::size_t>(item - 1)];
+    return commit(setClipScale(d, d.scale.root, scale.id, scale.mask));
+}
+void ClipViewPanel::showScaleMenu(bool roots) {
+    juce::Component::SafePointer<ClipViewPanel> safe(this);
+    scaleMenu(roots).showMenuAsync(
+        juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(fieldBox(Field::Scale))),
+        [safe, roots](int item) {
+            if (safe != nullptr && item > 0)
+                safe->chooseScale(roots, item);
+        });
 }
 juce::Rectangle<int> ClipViewPanel::setBox(Field field) const noexcept {
     if (field != Field::Start && field != Field::End && field != Field::Position && field != Field::Length)
@@ -845,8 +978,9 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
     }
 }
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
-    for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature})
-        if (fieldBox(field).contains(at))
+    for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
+                             Field::Transpose})
+        if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
 }
@@ -884,6 +1018,17 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (!details_)
         return false;
     const auto text = typed.toStdString();
+    if (field == Field::Transpose) {
+        const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false);
+        if (trimmed.isEmpty() || !trimmed.containsOnly("+-0123456789") || trimmed.lastIndexOfAnyOf("+-") > 0 ||
+            trimmed.length() > 4 || !trimmed.containsAnyOf("0123456789")) {
+            root.say("Type a transposition in semitones: 12 or -7.");
+            return false;
+        }
+        return transpose(trimmed.getIntValue());
+    }
+    if (field == Field::Scale)
+        return false;
     if (field == Field::Signature) {
         const auto signature = parseSignature(text);
         if (!signature) {
@@ -921,10 +1066,11 @@ bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*det
 void ClipViewPanel::openEditor(Field field) {
     editing_ = field;
     const auto r = readings();
-    const auto &value = field == Field::Start      ? r.start
-                        : field == Field::End      ? r.end
-                        : field == Field::Position ? r.position
-                        : field == Field::Length   ? r.length
+    const auto value = field == Field::Start       ? r.start
+                       : field == Field::End       ? r.end
+                       : field == Field::Position  ? r.position
+                       : field == Field::Length    ? r.length
+                       : field == Field::Transpose ? juce::String("0")
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
     editor_.setText(value.removeCharacters(" "), false);
@@ -958,6 +1104,11 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         toggleLoop();
         return;
     }
+    for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato})
+        if (toolBox(tool).contains(at)) {
+            runTool(tool);
+            return;
+        }
     // A field: a drag changes it, by bars, beats or sixteenths as the part of the field grabbed; a
     // click opens it for typing.
     pressed_ = fieldAt(at);
@@ -970,6 +1121,8 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
 }
 void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
     if (pressed_ == Field::None)
+        return;
+    if (pressed_ == Field::Scale)
         return;
     const int steps = (pressAt_.y - e.y) / 4;
     if (steps != 0)
@@ -1003,13 +1156,19 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
     const bool dragged = dragged_;
     const auto ticks = draggedTicks();
     const auto signature = draggedSignature();
+    const int steps = dragSteps_;
     pressed_ = Field::None;
     dragged_ = false;
     dragSteps_ = 0;
     if (field == Field::None || !details_)
         return;
-    if (!dragged)
+    if (field == Field::Scale)
+        // The root's part of the field opens the root notes; the rest, the scales.
+        showScaleMenu(pressPart_ == 0);
+    else if (!dragged)
         openEditor(field);
+    else if (field == Field::Transpose)
+        transpose(steps);
     else if (field == Field::Signature)
         commit(setClipSignature(*details_, signature.first, signature.second));
     else
@@ -1039,6 +1198,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.fillRect(header);
     g.setColour(look::band);
     g.fillRect(kPanelWidth, 0, 1, getHeight());
+    if (midi())
+        g.fillRect(panelWidth(), 0, 1, getHeight());
     if (!details_) {
         g.setColour(look::field);
         g.fillRect(title);
@@ -1087,6 +1248,26 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Signature, "Signature", r.signature);
     if (midi())
         field(Field::Scale, "Scale", r.scale);
+
+    if (const auto tools = toolsArea(); !tools.isEmpty()) {
+        // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
+        // Transpose, and the utilities.
+        g.setColour(look::field);
+        g.fillRect(tools.withHeight(kTitleHeight));
+        text("Pitch and Time", tools.withHeight(kTitleHeight).withTrimmedLeft(6), juce::Justification::centredLeft,
+             look::text, 11.f, true);
+        const auto range = rangeBox();
+        look::box(g, range.toFloat(), look::display);
+        text(r.range, range.reduced(4, 0), juce::Justification::centred, juce::Colours::white, 11.f);
+        const auto semitones = fieldBox(Field::Transpose);
+        look::box(g, semitones.toFloat(), look::chooser);
+        text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+        for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato}) {
+            const auto box = toolBox(tool);
+            look::box(g, box.toFloat(), look::button);
+            text(toolName(tool), box, juce::Justification::centred, look::text, 10.5f);
+        }
+    }
 
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(8).withWidth(60),

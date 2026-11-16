@@ -12,6 +12,7 @@
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/note_edits.hpp"
 #include "adi/ui/note_geometry.hpp"
+#include "adi/ui/scales.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <optional>
@@ -40,6 +41,8 @@ class NoteEditor final : public juce::Component {
     // deactivate (manual 10.5).
     bool keyPressed(const juce::KeyPress &) override;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
+    // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
+    bool apply(NoteEdit edit) { return commit(std::move(edit)); }
     // The selected notes, by id: this view's own, kept while the notes exist.
     const std::vector<std::uint64_t> &selected() const noexcept { return selected_; }
     bool isSelected(std::uint64_t id) const noexcept;
@@ -115,12 +118,28 @@ class ClipViewPanel final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
 
-    static constexpr int kPanelWidth = 156, kTitleHeight = 17, kHeaderHeight = 17;
+    static constexpr int kPanelWidth = 156, kToolsWidth = 150, kTitleHeight = 17, kHeaderHeight = 17;
+    // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.
+    int panelWidth() const noexcept { return midi() ? kPanelWidth + kToolsWidth : kPanelWidth; }
+    // The Pitch and Time panel (manual 8.5), for a MIDI clip: the notes' range, Transpose, and the
+    // utilities. Each acts on the selected notes, or on all of them when none is selected, and is
+    // one undo step.
+    enum class Tool { FitToScale, Invert, Reverse, Double, Halve, Legato };
+    juce::Rectangle<int> toolsArea() const noexcept;
+    juce::Rectangle<int> rangeBox() const noexcept;
+    juce::Rectangle<int> toolBox(Tool) const noexcept;
+    static const char *toolName(Tool) noexcept;
+    bool runTool(Tool);
+    bool transpose(int semitones);
+    // The Scale field's two choosers (manual 8.2.5): the root notes, or the scales' names; and one
+    // of their items chosen, from 1.
+    juce::PopupMenu scaleMenu(bool roots) const;
+    bool chooseScale(bool roots, int item);
     // The Main panel's fields (manual 8.2). A drag on one changes it by bars, beats or sixteenths,
     // as the part of the field grabbed; a click opens it for typing; Start, End, Position and
     // Length have Live's Set button, which takes the arrangement's insert marker. Each change is
     // one of the clip's own ops (N33), one undo step.
-    enum class Field { None, Start, End, Position, Length, Signature, Scale };
+    enum class Field { None, Start, End, Position, Length, Signature, Scale, Transpose };
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
@@ -153,7 +172,7 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {
-        juce::String start, end, position, length, signature, scale, grid;
+        juce::String start, end, position, length, signature, scale, grid, transpose, range;
         bool loop = false;
     };
     Readings readings() const;
@@ -174,6 +193,7 @@ class ClipViewPanel final : public juce::Component {
     std::pair<std::int64_t, std::int64_t> draggedSignature() const noexcept;
     void openEditor(Field);
     void closeEditor();
+    void showScaleMenu(bool roots);
     std::int64_t clip_ = 0, wanted_ = 0;
     std::uint64_t generation_ = 0;
     bool read_ = false;
