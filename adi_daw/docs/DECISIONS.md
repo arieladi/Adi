@@ -18737,3 +18737,47 @@ editor are used for.
 | PLAN MI-08 | the editing UI and playback cover gain and pan as well as pitch, slide and pressure (d3) |
 | PLAN MI-07, MI-09 | the rejection of Bitwig's operators is struck; they are P2 with MI-09 (d4) |
 | `docs/CLIP-VIEW-ADDITIONS.md` | §4 answered; `docs/DEFERRED.md` DF-W10 split into the rows that build it |
+
+## ADR-0242 — More Clip View additions: win's picks and Reason's drift are taken; the rest of the candidates on one condition; slide notes and a drum editor are not; Live's own clip editing is audited — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §3.3 AND §3.5**
+
+**His words (16 November),** to the candidates of `docs/CLIP-VIEW-ADDITIONS.md` §3.5 and win's question
+about Reason's pitch editor:
+- "yes to all your picks and reason drift, keep going"
+- "slide notes (FL), a drum editor with drum maps (Cubase) are not needed (drum editor of Ableton is
+  better) but the rest you suggested if not crippling the Ableton functions then please add them"
+- "also go on Ableton complete research on salon-tv to make sure we don't miss any Ableton
+  qualities, like i can put 2 different midi channel different colors then select both and open them
+  together to see different color midi and edit both channel at once etc.. not sure we know Ableton
+  can do it from our doc.. (and it defiantly can)"
+
+### Decisions
+
+1. **Win's picks are taken** (§3.5's starred rows): N1 note colours, N2 the quantize panel, N3
+   quantize that can be taken back, N4 velocity functions, N5 delete doubles and restrict polyphony,
+   N6 several controller lanes at once, N7 scale help; A1 harmony voices, A2 Detect Silence, A3 clip
+   gain drawn in the editor, A4 pitch, formant, gain and pan per audio event; M1 take envelopes for
+   pitch and mute, M2 a shape tool that writes points.
+2. **Reason's Drift and Transition per pitch segment** (A9) are part of the pitch editing of audio
+   (ADR-0241 d1).
+3. **Not taken:** slide notes (N11) and a drum editor with drum maps (N15); Live's own way of editing
+   drums stays.
+4. **The rest of §3.5 is taken on one condition: none may impair a function of Live's.** N8, N9, N10,
+   N12, N13, N14, N16 to N19; A5 to A8, A10, A11; M3 to M5. Where one would change how a Live
+   function behaves, win brings that one back to him before building it. Their order is win's
+   placement: what needs no file change first; what needs tables or the engine with those; and what
+   is known only from memory (FL Studio, Logic, Studio One) after it is researched.
+5. **Live's own clip editing is audited** against ADI's parity list from his Ableton research and
+   the manual, so that nothing of Live's is missed. Editing several clips together (each clip's
+   notes in its own colour, all editable at once), which the plan had placed later, is built now.
+
+Each addition keeps ADR-0241's terms: shown where its Live neighbours are, one undo step, a parity
+gate against the DAW it comes from (ADR-0108).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `docs/CLIP-VIEW-ADDITIONS.md` §3.3, §3.5 | answered (d1 to d4) |
+| ADR-0241 d1 | the pitch editing gains drift and transition per segment (d2) |
+| STEP-7-PLAN 7.7 step 5; ADR-0047 d2; FEATURES line 129 | multi-clip editing is built now, not later (d5) |
+| `docs/DEFERRED.md` | DF-W10 reworded; DF-W15 to DF-W18 added |
