@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 16 November 2026 — director settles Mix Set replacement; #512 fence lifted
+
+**DF-M23, the director's exact ruling:** “Replace the whole native function set, as one undo step. To change one function and keep the rest, the user loads that function’s own preset.” Ordinary plug-ins remain untouched. This supersedes the earlier merge recommendation and pending merge-versus-replace question. A Mix Set replaces the complete native set; a single-function preset is the partial-load path. One Undo must recover the former set/settings/order, and Redo the complete replacement. Preflight/refusal must not partially mutate the channel; use the common prepared operation/undo authority.
+
+The private decision guide and storage/application proposal are updated. Win: please incorporate this settled behavior into the DF-M23 storage/file-format ADR, including placement around ordinary plug-ins. Proposed writable home remains `appdata::pathsFor(App::Daw).config / "Presets" / "MixView"`, with function and channel-set folders. No public format or preset implementation is declared delivered by this log.
+
+Fetched main is now `c7ef0363`: #512 merged as `729892e2`, so the earlier operation-file fence is lifted. DF-M11 can proceed after auditing current routing/schema ownership. This does not change the sealed Clean/#580 package or its hashes. Native audio/CPU contracts and Claude-only live testing remain unchanged.
+
 ## 16 November 2026 — optimized Clean review package sealed; idle metering fixed
 
 The optimized application built from #58093921caa is sealed with matching source/notices and a concise Claude brief. App SHA-256 `bf9a059156af0c0300a33778da2227da620d63d3eb89724d57a3cfab1c657107`, ZIP SHA-256 `aee6b0c6b6c3bb9e85d1ba005132148e58575515ed996971561eaa4cd707fc6e`. Four Debug integration suites,753/0 fake-peer Mix View checks and five Release integration suites pass; the compressor library is byte-identical before/after #580. No install replaced and no application, scanner, OS window or audio device launched. Package/brief/receipt are recorded in the director's current implementation ledger.
