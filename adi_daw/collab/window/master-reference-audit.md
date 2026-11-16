@@ -88,7 +88,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Partial (E1): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy and silence over a range, and Insert and Delete Time wait (N17) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Built (E1, E2, E3): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy, paste and duplicate over a range (E2); Cut, Copy, Paste, Duplicate and Delete Time (Ctrl/Cmd+Shift+X, C, V, D, Delete) and Insert Silence (Ctrl/Cmd+I) across every track, locators, the loop and time signature markers moving with the time (E3). Silence over a range that keeps the time (Live's Delete on a time selection leaves silence) is Delete's |
 | Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
