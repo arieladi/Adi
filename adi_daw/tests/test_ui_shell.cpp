@@ -5264,6 +5264,112 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(ed.rulerSelection() == Part::None && ed.insertMarker() == 9 * beat, "a click in the notes lets the marker go");
     }
 
+    // The Velocity lane as Live's (manual 10.5.12).
+    {
+        const auto lane = ed.velocityArea().withTrimmedTop(1);
+        const double vTop = lane.getY() + 5, vHeight = lane.getHeight() - 10;
+        const auto yOf = [&](int velocity) { return static_cast<float>(static_cast<int>(velocityY(velocity, vTop, vHeight))); };
+        const auto mark = [&](std::int64_t tick, int velocity) {
+            return juce::Point<float>(static_cast<float>(lane.getX() + static_cast<int>(ed.time.x(tick))), yOf(velocity));
+        };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+#if JUCE_MAC
+        const juce::ModifierKeys bypass(command);
+#else
+        const juce::ModifierKeys bypass(alt);
+#endif
+        check(!lane.isEmpty() && note(1).velocity == 100, "the lane is shown; the notes are at 100");
+        check(submitter.submit(op("note.setVelocity", {{"clip", 11}, {"note", 2}, {"vel", 40}}, "Change Velocity")).ok, "E3 set to 40");
+        root.frame();
+        ed.select({});
+        check(ed.velocityReadout().isEmpty(), "with no note selected the lane's header reads nothing");
+        ed.mouseDown(pressAt(ed, mark(4 * beat, 100)));
+        ed.mouseUp(pressAt(ed, mark(4 * beat, 100)));
+        check(ed.selected() == Ids({1}) && ed.velocityReadout() == "100", "a click on a marker selects its note; the header reads its velocity");
+        ed.mouseDown(pressAt(ed, mark(5 * beat, 40), juce::ModifierKeys(shift)));
+        ed.mouseUp(pressAt(ed, mark(5 * beat, 40), juce::ModifierKeys(shift)));
+        check(ed.selected() == Ids({1, 2}) && ed.velocityReadout() == "40 - 100", "Shift and a click adds a marker; the header reads the range");
+        ed.mouseDown(pressAt(ed, mark(5 * beat, 40), juce::ModifierKeys(shift)));
+        ed.mouseUp(pressAt(ed, mark(5 * beat, 40), juce::ModifierKeys(shift)));
+        check(ed.selected() == Ids({1}), "and again takes it out");
+        ed.select({1, 2});
+        // The lower marker dragged to the top takes the higher one there first, where it waits; back down, they are one value.
+        const auto grab = mark(5 * beat, 40);
+        const juce::Point<float> top(grab.x, yOf(127)), middle(grab.x, yOf(64));
+        const auto before = submitter.nextUndo()->txnId;
+        ed.mouseDown(pressAt(ed, grab));
+        ed.mouseDrag(dragAt(ed, grab, top));
+        check(ed.velocityReadout() == "127" && note(1).velocity == 100 && submitter.nextUndo()->txnId == before,
+              "the lower marker dragged to the top: both read 127 while held, and nothing is written");
+        ed.mouseDrag(dragAt(ed, grab, middle));
+        ed.mouseUp(dragAt(ed, grab, middle));
+        const int level = velocityAt(middle.y, vTop, vHeight);
+        check(note(1).velocity == level && note(2).velocity == level && level > 55 && level < 75 && undoIs("Change Velocity", 2) &&
+                  ed.selected() == Ids({1, 2}),
+              "brought back down, both have the one value under the pointer: one undo step");
+        // Typed.
+        check(ed.keyPressed(key('9')) && ed.keyPressed(key('0')) && ed.velocityReadout() == "90" && note(1).velocity == level,
+              "digits typed with notes selected show in the header, and nothing is written yet");
+        check(ed.keyPressed(key(juce::KeyPress::returnKey)) && note(1).velocity == 90 && note(2).velocity == 90 && undoIs("Set Velocity", 2) &&
+                  ed.velocityReadout() == "90" && ed.selected() == Ids({1, 2}) && !ed.timeSelection(),
+              "Enter sets both notes to 90: one undo step; Enter did not swap to a time selection");
+        check(ed.keyPressed(key('2')) && ed.keyPressed(key('0')) && ed.keyPressed(key('0')) && ed.keyPressed(key(juce::KeyPress::returnKey)) &&
+                  note(1).velocity == 127,
+              "200 typed is 127");
+        check(ed.keyPressed(key('5')) && ed.keyPressed(key('5')) && ed.keyPressed(key(juce::KeyPress::backspaceKey)) && ed.velocityReadout() == "5" &&
+                  panel.details()->notes.size() == 4,
+              "Backspace takes a typed digit back; it deletes no note");
+        check(ed.keyPressed(key(juce::KeyPress::escapeKey)) && ed.velocityReadout() == "127" && ed.selected() == Ids({1, 2}),
+              "Esc drops what was typed and keeps the selection");
+        check(ed.keyPressed(key('0')) && !note(1).active && ed.velocityReadout() == "127" && ed.keyPressed(key('0')) && note(1).active,
+              "a 0 typed first is still the deactivate key");
+        // Ctrl/Cmd and up or down.
+        check(ed.keyPressed(key(down, command)) && note(1).velocity == 117 && note(2).velocity == 117 && undoIs("Change Velocity", 2),
+              "Ctrl and Down take 10 off the selected notes' velocity");
+        check(ed.keyPressed(key(up, command | shift)) && note(1).velocity == 118, "with Shift, Up adds 1");
+        // Alt (Cmd on the Mac) and a vertical drag on a note.
+        ed.select({});
+        if (const auto box = ed.boxOf(note(2))) {
+            const juce::Point<float> on(static_cast<float>(box->x + box->width / 2), static_cast<float>(box->y + box->height / 2));
+            const juce::Point<float> higher(on.x + 30.f, on.y - 5.f);
+            ed.mouseDown(pressAt(ed, on, bypass));
+            ed.mouseDrag(dragAt(ed, on, higher, bypass));
+            check(ed.velocityReadout() == "123", "Alt and a drag up on a note: its velocity rises a value a pixel, shown while held");
+            ed.mouseUp(dragAt(ed, on, higher, bypass));
+        }
+        check(note(2).velocity == 123 && note(2).startTicks == beat && note(2).key == 64 && undoIs("Change Velocity", 1) && ed.selected() == Ids({2}),
+              "released: the velocity is set and the note has not moved");
+
+        // Draw Mode in the lane (manual 10.5.12.1).
+        ed.select({});
+        ed.setDrawMode(true);
+        const juce::Point<float> from1(mark(4 * beat, 30).x + 2.f, yOf(30)), to1(mark(6 * beat, 30).x + 2.f, yOf(30));
+        ed.mouseDown(pressAt(ed, from1));
+        ed.mouseDrag(dragAt(ed, from1, to1));
+        ed.mouseUp(dragAt(ed, from1, to1));
+        const int drawn = velocityAt(from1.y, vTop, vHeight);
+        check(note(1).velocity == drawn && note(2).velocity == drawn && note(3).velocity == drawn && note(4).velocity == drawn && drawn > 25 &&
+                  drawn < 35 && undoIs("Draw Velocities", 4) && ed.selected().empty(),
+              "with Draw Mode on, a stroke along the lane gives every note of the grid steps it crosses its height: one undo step");
+        ed.select({1});
+        const juce::Point<float> from2(from1.x, yOf(80)), to2(to1.x, yOf(80));
+        ed.mouseDown(pressAt(ed, from2));
+        ed.mouseDrag(dragAt(ed, from2, to2));
+        ed.mouseUp(dragAt(ed, from2, to2));
+        check(note(1).velocity == velocityAt(from2.y, vTop, vHeight) && note(2).velocity == drawn && note(3).velocity == drawn &&
+                  undoIs("Draw Velocities", 1) && ed.selected() == Ids({1}),
+              "with a note selected the stroke changes only that note, and it stays selected");
+        ed.select({});
+        const juce::Point<float> single(mark(5 * beat, 100).x, yOf(100));
+        ed.mouseDown(pressAt(ed, single, bypass));
+        ed.mouseUp(pressAt(ed, single, bypass));
+        check(note(2).velocity == velocityAt(single.y, vTop, vHeight) && note(3).velocity == drawn && undoIs("Draw Velocities", 1),
+              "with snapping bypassed, a press sets the one marker under the pointer");
+        ed.setDrawMode(false);
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

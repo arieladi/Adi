@@ -872,10 +872,104 @@ bool NoteEditor::rulerKey(const juce::KeyPress &k) {
     panel.commit(std::move(both));
     return true;
 }
+// ---- The Velocity lane as Live's (manual 10.5.12) ----------------------------------------------
+juce::Rectangle<int> NoteEditor::readoutBox() const noexcept {
+    const auto lane = velocityArea();
+    return lane.isEmpty() ? juce::Rectangle<int>() : juce::Rectangle<int>(2, lane.getY() + 35, kKeysWidth - 5, 12);
+}
+juce::String NoteEditor::velocityReadout() const {
+    if (typedVelocity_.isNotEmpty())
+        return typedVelocity_;
+    const auto *clip = panel.details();
+    if (clip == nullptr || selected_.empty())
+        return {};
+    int low = 128, high = 0;
+    for (const auto &n : clip->notes)
+        if (isSelected(n.id)) {
+            const int v = shown(n).velocity;
+            low = std::min(low, v);
+            high = std::max(high, v);
+        }
+    if (low > high)
+        return {};
+    return low == high ? juce::String(low) : juce::String(low) + " - " + juce::String(high);
+}
+void NoteEditor::beginVelocityDrag(bool byNote) {
+    const auto *clip = panel.details();
+    shapePreview_.clear();
+    velocityByNote_ = byNote;
+    velocityLast_ = 0;
+    if (clip == nullptr)
+        return;
+    for (const auto &n : clip->notes)
+        if (isSelected(n.id))
+            shapePreview_.emplace_back(n.id, static_cast<int>(n.velocity));
+    // In the lane the marker held goes to the pointer; on a note the drag counts from where it began.
+    if (const auto *held = note_edits_detail::find(*clip, anchor_); held != nullptr && !byNote)
+        velocityLast_ = held->velocity;
+    drag_ = Drag::Velocity;
+}
+void NoteEditor::velocityDrag() {
+    // In the lane the marker held follows the pointer, and the others move as far as it does: one
+    // that reaches the top or the foot waits there, so the marker farthest from an end, dragged to
+    // it and back, gives them all one value. On a note the drag counts a value a pixel.
+    int target = from_.y - to_.y;
+    if (!velocityByNote_) {
+        const auto lane = velocityArea().withTrimmedTop(1);
+        target = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10);
+    }
+    const int step = target - velocityLast_;
+    velocityLast_ = target;
+    for (auto &entry : shapePreview_)
+        entry.second = std::clamp(entry.second + step, 1, 127);
+}
+void NoteEditor::laneDrawStroke(const juce::ModifierKeys &mods) {
+    const auto *clip = panel.details();
+    const auto lane = velocityArea().withTrimmedTop(1);
+    if (clip == nullptr || lane.isEmpty())
+        return;
+    const auto window = ClipWindow::of(*clip);
+    // From where the pointer last was to where it is, so a fast stroke misses no step: the value
+    // at a place along it is the stroke's height there.
+    const auto a = std::exchange(laneLast_, to_), b = to_;
+    const auto valueAt = [&](double x) {
+        const double t = a.x == b.x ? 1. : std::clamp((x - a.x) / static_cast<double>(b.x - a.x), 0., 1.);
+        return velocityAt(a.y + t * (b.y - a.y), lane.getY() + 5, lane.getHeight() - 10);
+    };
+    const auto set = [&](std::uint64_t id, int value) {
+        for (auto &entry : shapePreview_)
+            if (entry.first == id) {
+                entry.second = value;
+                return;
+            }
+        shapePreview_.emplace_back(id, value);
+    };
+    const auto mine = [&](const engine::ClipNote &n) { return selected_.empty() || isSelected(n.id); };
+    const int left = std::min(a.x, b.x), right = std::max(a.x, b.x);
+    if (snapping(mods)) {
+        // Every note that begins in a grid step the stroke crosses.
+        const auto from = time.snap(time.tick(static_cast<double>(std::max(0, left - lane.getX()))), false);
+        const auto to = time.nextGridLine(time.snap(time.tick(static_cast<double>(std::max(0, right - lane.getX()))), false), true);
+        for (const auto &n : clip->notes) {
+            const auto start = window.toArrangement(n.startTicks);
+            if (!mine(n) || start < from || start >= to)
+                continue;
+            // The step's value is the stroke's where it crosses the step, nearest its marker.
+            const double x = std::clamp(lane.getX() + time.x(start), static_cast<double>(left), static_cast<double>(right));
+            set(n.id, valueAt(x));
+        }
+        return;
+    }
+    // Off the grid: the markers the stroke passes over, each alone.
+    for (const auto &n : clip->notes)
+        if (const double x = lane.getX() + time.x(window.toArrangement(n.startTicks)); mine(n) && x >= left - 5 && x <= right + 5)
+            set(n.id, valueAt(x));
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
 void NoteEditor::select(std::vector<std::uint64_t> ids) {
+    typedVelocity_.clear();
     if (ids.empty())
         otherSelected_.clear();
     selected_ = std::move(ids);
@@ -931,7 +1025,7 @@ engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept 
                 out.durationTicks = length;
         return out;
     }
-    if (drag_ == Drag::Shape || drag_ == Drag::Handle) {
+    if (drag_ == Drag::Shape || drag_ == Drag::Handle || drag_ == Drag::Velocity || drag_ == Drag::LaneDraw) {
         for (const auto &[id, value] : shapePreview_)
             if (id == note.id)
                 out.velocity = static_cast<std::uint8_t>(value);
@@ -959,8 +1053,6 @@ engine::ClipNote NoteEditor::dragged(const engine::ClipNote &note) const noexcep
         out.durationTicks -= by;
     } else if (drag_ == Drag::End) {
         out.durationTicks = std::max(kShortestNote, note.durationTicks + dragTicks_);
-    } else if (drag_ == Drag::Velocity) {
-        out.velocity = static_cast<std::uint8_t>(std::clamp(static_cast<int>(note.velocity) + dragVelocity_, 1, 127));
     }
     return out;
 }
@@ -990,7 +1082,8 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     drag_ = Drag::None;
     copying_ = false;
     dragTicks_ = 0;
-    dragKeys_ = dragVelocity_ = 0;
+    dragKeys_ = 0;
+    typedVelocity_.clear();
     from_ = to_ = e.getPosition();
     const auto *clip = panel.details();
     if (clip == nullptr || e.mods.isPopupMenu())
@@ -1069,6 +1162,15 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             repaint();
             return;
         }
+        if (drawMode_ && from_.x >= lane.getX()) {
+            // Draw Mode in the lane (manual 10.5.12.1): the stroke sets the velocities it crosses.
+            shapePreview_.clear();
+            laneLast_ = from_;
+            drag_ = Drag::LaneDraw;
+            laneDrawStroke(e.mods);
+            repaint();
+            return;
+        }
         if (const auto handle = handleAt(from_); handle != LaneHandle::None) {
             handle_ = handle;
             drag_ = Drag::Handle;
@@ -1087,11 +1189,17 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
                 best = &n;
             }
         }
-        if (best != nullptr) {
+        if (best != nullptr && e.mods.isShiftDown()) {
+            // Shift adds the marker to the selection, or takes it out (manual 10.5.12).
+            if (isSelected(best->id))
+                std::erase(selected_, best->id);
+            else
+                selected_.push_back(best->id);
+        } else if (best != nullptr) {
             if (!isSelected(best->id))
                 selected_ = {best->id};
             anchor_ = best->id;
-            drag_ = Drag::Velocity;
+            beginVelocityDrag(false);
         }
         repaint();
         return;
@@ -1129,6 +1237,14 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         if (isSelected(n->id)) {
             anchor_ = n->id;
             drag_ = part == NotePart::Start ? Drag::Start : part == NotePart::End ? Drag::End : Drag::Move;
+#if JUCE_MAC
+            const bool velocity = e.mods.isCommandDown();
+#else
+            const bool velocity = e.mods.isAltDown();
+#endif
+            // Alt (Cmd on the Mac) held at the press: a vertical drag changes velocity (manual 10.5.12).
+            if (velocity && !e.mods.isShiftDown())
+                beginVelocityDrag(true);
         }
     } else if (notesArea().contains(from_)) {
         if (!e.mods.isShiftDown()) {
@@ -1180,9 +1296,9 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
                     }
         dragKeys_ = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
     } else if (drag_ == Drag::Velocity) {
-        const auto lane = velocityArea().withTrimmedTop(1);
-        if (const auto *n = note_edits_detail::find(*clip, anchor_))
-            dragVelocity_ = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10) - static_cast<int>(n->velocity);
+        velocityDrag();
+    } else if (drag_ == Drag::LaneDraw) {
+        laneDrawStroke(e.mods);
     } else if (drag_ == Drag::Ruler) {
         rulerDrag(e.mods);
     } else if (drag_ == Drag::Shape) {
@@ -1226,7 +1342,7 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
 void NoteEditor::mouseUp(const juce::MouseEvent &) {
     const auto kind = std::exchange(drag_, Drag::None);
     const auto ticks = std::exchange(dragTicks_, 0);
-    const int keysBy = std::exchange(dragKeys_, 0), velocity = std::exchange(dragVelocity_, 0);
+    const int keysBy = std::exchange(dragKeys_, 0);
     const auto *clip = panel.details();
     repaint();
     if (clip == nullptr)
@@ -1242,9 +1358,15 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return trimNotes(of, ids, ticks); }));
     else if (kind == Drag::End)
         commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return resizeNotes(of, ids, ticks); }));
-    else if (kind == Drag::Velocity)
-        commit(changeVelocities(*clip, selected_, velocity));
-    else if (kind == Drag::Shape) {
+    else if (kind == Drag::Velocity) {
+        const auto values = std::exchange(shapePreview_, {});
+        commit(drawVelocities(*clip, values, "Change Velocity"));
+    } else if (kind == Drag::LaneDraw) {
+        const auto values = std::exchange(shapePreview_, {});
+        const auto keep = selected_;
+        if (commit(drawVelocities(*clip, values)))
+            select(keep);
+    } else if (kind == Drag::Shape) {
         const auto values = std::exchange(shapePreview_, {});
         commit(drawVelocities(*clip, values));
     } else if (kind == Drag::Handle) {
@@ -1305,6 +1427,43 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     const auto mods = k.getModifiers();
     if (rulerKey(k))
         return true;
+    {
+        // A velocity typed for the selected notes (manual 10.5.12): digits, then Enter. A 0 typed
+        // first is the deactivate key, as before.
+        const int digit = code >= '0' && code <= '9'                                              ? code - '0'
+                          : code >= juce::KeyPress::numberPad0 && code <= juce::KeyPress::numberPad9 ? code - juce::KeyPress::numberPad0
+                                                                                                     : -1;
+        if (digit >= 0 && !mods.isAnyModifierKeyDown() && !selected_.empty() && (digit != 0 || typedVelocity_.isNotEmpty())) {
+            if (typedVelocity_.length() < 3)
+                typedVelocity_ << digit;
+            repaint();
+            return true;
+        }
+        if (typedVelocity_.isNotEmpty()) {
+            const auto typed = std::exchange(typedVelocity_, {});
+            repaint();
+            if (code == juce::KeyPress::returnKey) {
+                std::vector<std::pair<std::uint64_t, int>> values;
+                for (const auto id : selected_)
+                    values.emplace_back(id, typed.getIntValue());
+                commit(drawVelocities(*clip, values, "Set Velocity"));
+                return true;
+            }
+            if (code == juce::KeyPress::backspaceKey) {
+                typedVelocity_ = typed.dropLastCharacters(1);
+                return true;
+            }
+            if (code == juce::KeyPress::escapeKey)
+                return true;
+        }
+        // Ctrl/Cmd and up or down: the selected notes' velocity by 10; with Shift, by 1.
+        if (mods.isCommandDown() && !mods.isAltDown() && anySelected() &&
+            (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey)) {
+            const int by = (code == juce::KeyPress::upKey ? 1 : -1) * (mods.isShiftDown() ? 1 : 10);
+            commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
+            return true;
+        }
+    }
     // Delete is the editor's while it has the keyboard: with no note selected it does nothing,
     // and never reaches the arrangement's selection.
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
@@ -1725,6 +1884,12 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.setFont(look::font(9.5f));
         g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
+        // The selected notes' velocity, or their range, or the value being typed (manual 10.5.12).
+        const auto readout = readoutBox();
+        labels_.push_back(readout);
+        g.setColour(typedVelocity_.isNotEmpty() ? juce::Colours::white : look::text);
+        g.setFont(look::font(9.5f));
+        g.drawText(velocityReadout(), readout, juce::Justification::centredLeft);
         for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
             if (const auto box = handleBox(handle); !box.isEmpty()) {
                 g.setColour(juce::Colours::white);
