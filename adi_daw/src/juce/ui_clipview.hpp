@@ -110,6 +110,11 @@ class NoteEditor final : public juce::Component {
     std::string named(int key) const;
     juce::PopupMenu spellingMenu() const;
     bool chooseSpelling(int item);
+    // Whether the editor is the view in use: it has the keyboard. The window's Edit menu then acts
+    // on its notes, as the same commands' keys do. A headless test, whose components never hold the
+    // keyboard, says which through `contextOverride`.
+    bool hasContext() const;
+    std::optional<bool> contextOverride;
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
     // What a right-click does before its menu opens: a note under it that is not selected is selected.

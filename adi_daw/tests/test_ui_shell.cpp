@@ -6312,6 +6312,35 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.mouseDoubleClick(pressAt(panel, panel.activatorArea().getCentre().toFloat()));
         check(!panel.panelsFolded() && details().muted == muted, "a double-click on the activator folds nothing");
     }
+
+    // The window's Edit menu reaches the editor while it has the keyboard (manual 10.5).
+    {
+        using Ids = std::vector<std::uint64_t>;
+        const auto arrangementSelection = geo.selection.clip;
+        ed.select({2});
+        check(!ed.hasContext() && !root.noteEditorHasContext(), "a headless editor holds no keyboard: the Edit menu is the arrangement's");
+        ed.contextOverride = true;
+        check(root.noteEditorHasContext() && root.command(AppCommands::Copy) && panel.noteClipboard.size() == 1 && panel.noteClipboard[0].key == 62,
+              "with the editor in use, Edit > Copy copies the selected note");
+        check(root.command(AppCommands::SelectAll) && ed.selected().size() == details().notes.size() && geo.selection.clip == arrangementSelection,
+              "Edit > Select All selects the editor's notes and leaves the arrangement's selection");
+        ed.select({2});
+        check(root.command(AppCommands::Duplicate) && details().notes.size() == 6 && undoIs("Duplicate Note") && undo(),
+              "Edit > Duplicate duplicates the selected note");
+        ed.select({2});
+        check(root.command(AppCommands::Cut) && details().notes.size() == 4 && undoIs("Cut Note"), "Edit > Cut takes it out");
+        ed.selectTime(song(beat), song(beat));
+        check(root.command(AppCommands::Paste) && details().notes.size() == 5 && undoIs("Paste Note") && ed.selected().size() == 1 &&
+                  note(ed.selected().front()).startTicks == beat && note(ed.selected().front()).key == 62,
+              "Edit > Paste puts it back at the insert marker");
+        check(undo() && undo() && details().notes.size() == 5 && note(2).startTicks == beat, "the paste and the cut undone: the clip is as it was");
+        ed.contextOverride = false;
+        const auto selectedBefore = ed.selected();
+        root.command(AppCommands::SelectAll);
+        check(ed.selected() == selectedBefore, "with the editor not in use, Edit > Select All is the arrangement's again");
+        ed.contextOverride.reset();
+        ed.select({});
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {

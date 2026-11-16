@@ -586,6 +586,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Ctrl/Cmd+Alt+E in the Clip View (manual 10.2): its full height, as far as the layout gives it,
     // and back to the height it had.
     void toggleClipViewFull();
+    // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
+    bool noteEditorHasContext() const;
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:
