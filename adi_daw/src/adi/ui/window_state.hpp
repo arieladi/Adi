@@ -34,6 +34,10 @@ struct WindowState {
     int deviceHeight;
     int deviceFloor; // from DesktopDefaults, never persisted
     bool docked = true;
+    // Live's Clip View (manual 8; STEP-7-PLAN 7.7): in the detail row above the Device View, hidden
+    // until a clip is opened; and its height, which its top edge drags.
+    bool clipView = false;
+    int clipViewHeight = 260;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
     double timelineLeft = 0, pixelsPerQuarter = 48;

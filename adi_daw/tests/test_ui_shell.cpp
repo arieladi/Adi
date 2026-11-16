@@ -3541,6 +3541,243 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         browser.setListing({});
     }
 }
+// The Clip View (STEP-7-PLAN 7.7, ADR-0240): a double-click on a clip opens it above the Device View;
+// it shows the clip's properties and its notes on the song's time axis, follows the project through
+// edits, undo and deletion, and its activator is one undo step. Its picture masks every text.
+void clipViewReference(ClipViewPanel &panel, const char *name, bool write) {
+    juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        panel.paintEntireComponent(g, true);
+    }
+    {
+        // Each platform's fonts differ: every place the panel draws text is blacked out, with two
+        // pixels around it, since a glyph's edge can overhang the box it is drawn in.
+        juce::Graphics g(image);
+        g.setColour(juce::Colours::black);
+        for (const auto &r : panel.textAreas())
+            g.fillRect(r.expanded(2));
+    }
+    const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
+    if (write) {
+        file.deleteFile();
+        auto stream = file.createOutputStream();
+        check(stream != nullptr, "write the Clip View's reference");
+        if (stream)
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        return;
+    }
+    const auto expected = juce::ImageFileFormat::loadFrom(file);
+    check(expected.isValid(), "the Clip View's reference exists");
+    if (!expected.isValid())
+        return;
+    int differences = expected.getWidth() == image.getWidth() && expected.getHeight() == image.getHeight() ? 0 : -1;
+    if (differences == 0)
+        for (int y = 0; y < image.getHeight(); ++y)
+            for (int x = 0; x < image.getWidth(); ++x)
+                if (image.getPixelAt(x, y) != expected.getPixelAt(x, y))
+                    ++differences;
+    check(differences == 0, name);
+    if (differences != 0) {
+        std::printf("%s: %d differing pixels\n", name, differences);
+        const auto diagnostic = juce::File::getCurrentWorkingDirectory().getChildFile(juce::String(name) + "-masked-actual.png");
+        diagnostic.deleteFile();
+        if (auto stream = diagnostic.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
+}
+void clipView(AppCommands &commands, const std::filesystem::path &dir, bool write) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view.adi", err);
+    check(store != nullptr, "the Clip View's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Chords"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("track.create", {{"id", 2}, {"kind", "audio"}, {"name", "Rise"}, {"index", 1}}, "Create track")).ok && made;
+    // A two-bar MIDI clip in bar 2: C3 for a beat, E3 a beat later for two, a quiet G3 in its second bar.
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Chords"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}, {"vel", 100}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 2}, {"start", beat}, {"dur", 2 * beat}, {"key", 64}, {"vel", 127}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 3}, {"start", bar}, {"dur", beat}, {"key", 67}, {"vel", 30}}, "Add Note")}).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 12}, {"track", 1}, {"kind", "midi"}, {"name", "Empty"}, {"pos", 4 * bar}, {"length", bar}}, "Create clip")).ok && made;
+    check(made, "a MIDI track with a two-bar clip of three notes and an empty clip, and an audio track");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    for (std::int64_t id = 1; id <= 2; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+
+    // Hidden until asked for; the Device View is where it was.
+    const auto deviceAlone = root.deviceArea();
+    check(!root.state().clipView && root.clipArea().isEmpty() && !panel.isVisible() && !root.clipResizer.isVisible(),
+          "the Clip View is hidden until a clip is opened");
+
+    // A double-click on the clip selects it and opens the view above the Device View.
+    canvas.mouseDoubleClick(pressAt(canvas, {x(bar) + 20, lane(1)}));
+    root.frame();
+    const auto clipArea = root.clipArea(), deviceArea = root.deviceArea();
+    check(root.state().clipView && panel.isVisible() && geo.selection.clip == 11 && panel.clip() == 11,
+          "a double-click on a clip selects it and opens the Clip View on it");
+    check(!clipArea.isEmpty() && clipArea.getBottom() + look::gap == deviceArea.getY() &&
+              clipArea.getX() == deviceArea.getX() && clipArea.getWidth() == deviceArea.getWidth() &&
+              deviceArea.getBottom() == deviceAlone.getBottom() && clipArea.getHeight() >= AdiRootComponent::kClipViewFloor,
+          "it stacks above the Device View, a gap between them, the Device View still at the window's foot");
+    check(root.arrangement.getBottom() <= clipArea.getY(), "and the arrangement ends above it");
+    check(root.status.clipToggle.getToggleState(), "the Status Bar's Clip View Selector is lit");
+    juce::ApplicationCommandInfo info(AppCommands::ToggleClipView);
+    commands.getCommandInfo(AppCommands::ToggleClipView, info);
+    check((info.flags & juce::ApplicationCommandInfo::isTicked) != 0 && info.defaultKeypresses.size() == 1 &&
+              info.defaultKeypresses[0] ==
+                  juce::KeyPress('3', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0),
+          "the View menu's Clip View is ticked, on Ctrl/Cmd+Alt+3");
+
+    // What it reads: the clip's kind and name, its markers as Live's fields read them, its notes.
+    const auto *d = panel.details();
+    check(d != nullptr && panel.midi() && !panel.audio() && d->name == "Chords" && d->notes.size() == 3 &&
+              panel.notes.isVisible() && !panel.sample.isVisible() && panel.problem().empty(),
+          "a MIDI clip: its name, its three notes, and the Note Editor");
+    if (d == nullptr)
+        return;
+    const auto r = panel.readings();
+    check(r.start == "1. 1. 1" && r.end == "3. 1. 1" && r.position == "1. 1. 1" && r.length == "2. 0. 0" &&
+              r.signature == "4 / 4" && !r.loop,
+          "Start 1.1.1, End 3.1.1, Length 2.0.0, 4/4, the loop off");
+
+    // The notes on the song's time axis and the note ruler: the editor opened on the whole clip and
+    // on its notes.
+    auto &editor = panel.notes;
+    const auto area = editor.notesArea();
+    const auto c3 = editor.boxOf(d->notes[0]), e3 = editor.boxOf(d->notes[1]), g3 = editor.boxOf(d->notes[2]);
+    check(c3 && e3 && g3, "every note has a box");
+    if (!c3 || !e3 || !g3)
+        return;
+    check(std::abs(c3->x - (area.getX() + editor.time.x(bar))) < 0.01 &&
+              std::abs(e3->x - (area.getX() + editor.time.x(bar + beat))) < 0.01 &&
+              std::abs(g3->x - (area.getX() + editor.time.x(2 * bar))) < 0.01,
+          "a note starts where the clip's position puts it in the song");
+    check(std::abs(e3->width - 2 * c3->width) < 0.01 && c3->width > 4, "a two-beat note is twice as wide as a one-beat note");
+    check(g3->y < e3->y && e3->y < c3->y && c3->y - e3->y == 4 * editor.keys.keyHeight &&
+              e3->y - g3->y == 3 * editor.keys.keyHeight,
+          "higher keys are higher up, a key track for each semitone");
+    check(c3->x >= area.getX() && g3->x + g3->width <= area.getRight() && g3->y >= area.getY() &&
+              c3->y + c3->height <= area.getBottom(),
+          "opened, the whole clip and all its notes are in view");
+    check(editor.time.x(bar) == 0. && editor.time.x(3 * bar) <= area.getWidth(), "the clip starts at the editor's left edge");
+    check(!editor.velocityArea().isEmpty() && editor.velocityArea().getY() == area.getBottom(),
+          "the Velocity lane is under the key tracks");
+
+    clipViewReference(panel, "clip-view-midi", write);
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-view.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+
+    // The wheel scrolls the key tracks; with Alt it zooms them; with Ctrl/Cmd it zooms time.
+    juce::MouseWheelDetails wheel;
+    wheel.deltaX = 0.f;
+    wheel.deltaY = -0.1f;
+    wheel.isReversed = wheel.isSmooth = wheel.isInertial = false;
+    const juce::Point<float> inNotes(static_cast<float>(area.getCentreX()), static_cast<float>(area.getCentreY()));
+    const int scrolled = editor.keys.scrollY;
+    editor.mouseWheelMove(pressAt(editor, inNotes), wheel);
+    check(editor.keys.scrollY == scrolled + 18, "the wheel scrolls the key tracks");
+    editor.mouseWheelMove(pressAt(editor, inNotes, juce::ModifierKeys(juce::ModifierKeys::altModifier)), wheel);
+    check(editor.keys.keyHeight == KeyTracks::kDefaultHeight - 2, "Alt and the wheel zoom the key tracks");
+    const double scale = editor.time.scale;
+    wheel.deltaY = 0.5f;
+    editor.mouseWheelMove(pressAt(editor, inNotes, juce::ModifierKeys(juce::ModifierKeys::commandModifier)), wheel);
+    check(editor.time.scale == 2 * scale, "Ctrl/Cmd and the wheel zoom time");
+
+    // The Clip Activator: one click, one undo step, and Undo brings the clip back on.
+    const auto dot = panel.activatorArea().getCentre().toFloat();
+    panel.mouseDown(pressAt(panel, dot));
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->muted && submitter.nextUndo()->label == "Deactivate Clip" &&
+              submitter.nextUndo()->opCount == 1,
+          "the activator deactivates the clip in one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(panel.details() != nullptr && !panel.details()->muted, "and Undo activates it again");
+
+    // It follows the project: a note added by any edit is read, and gone again after Undo.
+    check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 4}, {"start", bar + beat}, {"dur", beat}, {"key", 72}}, "Add Note")).ok,
+          "a fourth note is added");
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->notes.size() == 4, "the view reads it on the next frame");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->notes.size() == 3, "and after Undo it shows three again");
+
+    // With nothing selected the shown clip stays; another clip replaces it; a deleted clip leaves none.
+    canvas.mouseDown(pressAt(canvas, {x(8 * bar), lane(2)}));
+    canvas.mouseUp(pressAt(canvas, {x(8 * bar), lane(2)}));
+    root.frame();
+    check(geo.selection.clip == 0 && panel.clip() == 11, "a click on an empty lane selects no clip, and the view keeps its clip");
+    canvas.mouseDoubleClick(pressAt(canvas, {x(4 * bar) + 20, lane(1)}));
+    root.frame();
+    check(panel.clip() == 12 && panel.details() != nullptr && panel.details()->notes.empty() && panel.readings().length == "1. 0. 0",
+          "a double-click on the empty clip shows it: no notes, one bar");
+    const auto c3Row = editor.keys.y(60);
+    check(c3Row && *c3Row >= 0 && *c3Row + editor.keys.keyHeight <= editor.notesArea().getHeight(),
+          "an empty clip opens around middle C");
+    check(submitter.submit(op("clip.delete", {{"id", 12}}, "Delete Clip")).ok, "the clip is deleted");
+    root.frame();
+    check(panel.clip() == 0 && panel.details() == nullptr && !editor.isVisible(), "deleted, the view shows no clip");
+
+    // Its top edge: dragged up it grows, the arrangement giving way; dragged to the foot it closes.
+    auto &resizer = root.clipResizer;
+    const int before = root.clipArea().getHeight();
+    resizer.mouseDown(pressAt(resizer, {100.f, 3.f}));
+    resizer.mouseDrag(dragAt(resizer, {100.f, 3.f}, {100.f, -57.f}));
+    resizer.mouseUp(pressAt(resizer, {100.f, -57.f}));
+    check(root.clipArea().getHeight() == before + 60 && root.state().clipViewHeight == before + 60 &&
+              ViewStateStore(*store).load("clip-view").clipViewHeight == before + 60,
+          "dragging its top edge up grows it, and the height is kept");
+    resizer.mouseDown(pressAt(resizer, {100.f, 3.f}));
+    resizer.mouseDrag(dragAt(resizer, {100.f, 3.f}, {100.f, 600.f}));
+    check(root.state().clipView && root.clipArea().getHeight() == AdiRootComponent::kClipViewFloor,
+          "dragged down it stops at its floor while the mouse is held");
+    resizer.mouseUp(pressAt(resizer, {100.f, 600.f}));
+    check(!root.state().clipView && root.clipArea().isEmpty() && root.deviceArea() == deviceAlone &&
+              !ViewStateStore(*store).load("clip-view").clipView,
+          "let go at the foot it closes, and the Device View is as it was");
+
+    // The Status Bar's selector and the command open it again.
+    root.status.clipToggle.onClick();
+    check(root.state().clipView && ViewStateStore(*store).load("clip-view").clipView, "the Clip View Selector opens it, and that is kept");
+    check(root.command(AppCommands::ToggleClipView) && !root.state().clipView, "and the command hides it");
+}
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
@@ -7709,10 +7946,13 @@ int main(int argc, char **argv) {
                       exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
-                      C::LastId == C::Split,
+                      C::ToggleClipView == C::Split + 1 && C::LastId == C::ToggleClipView,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
-                  "Show/Hide Plug-In Windows, then Split (the last id), each named");
+                  "Show/Hide Plug-In Windows, Split, then Clip View (the last id), each named");
+            juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
+            commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
+            check(clipViewInfo.shortName == "Clip View", "the last id is named Clip View");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -9874,6 +10114,7 @@ int main(int argc, char **argv) {
     colorCabTile(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
+    clipView(commands, temp.path(), write);
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());

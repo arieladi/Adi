@@ -18,6 +18,7 @@
 #include "ui_look.hpp"
 #include "adi/clip_commands.hpp"
 #include "ui_devices.hpp"
+#include "ui_clipview.hpp"
 #include "ui_analysis.hpp"
 #include "ui_mixer.hpp"
 #include "ui_mixview.hpp"
@@ -125,7 +126,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Duplicate,
         TogglePluginWindows,
         Split,
-        LastId = Split
+        ToggleClipView,
+        LastId = ToggleClipView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -223,6 +225,10 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
+    // or hides the Clip View (manual 8).
+    juce::TextButton clipToggle{""};
+    juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
     juce::TextButton mixerOptions{""};
 
@@ -300,6 +306,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void hover(juce::Component *);
     // Laid-out rectangles, in the root's logical units, for tests and children.
     juce::Rectangle<int> deviceArea() const noexcept { return deviceArea_; }
+    juce::Rectangle<int> clipArea() const noexcept { return clipArea_; }
     juce::Rectangle<int> infoArea() const noexcept { return infoArea_; }
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
     juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
@@ -349,6 +356,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
+    // Live's Clip View, above the Device View in the detail row (STEP-7-PLAN 7.7).
+    ClipViewPanel clipView{*this};
+    ClipViewResizer clipResizer{*this};
+    static constexpr int kClipViewFloor = 150;
     MixerPanel mixer;
     MixerPanel mixerView{*this, true};
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
@@ -523,12 +534,15 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
     // Concepts): shown if it is hidden, the selected track's devices in it.
     bool showDeviceView();
+    // Shows the Clip View if it is hidden: a double-click on a clip (manual 8).
+    bool showClipView();
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
     void resizeDevices(int height);
+    void resizeClipView(int height);
 
   private:
     bool insertTrack(bool midi);
@@ -568,7 +582,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
+    juce::Rectangle<int> clipArea_, deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;

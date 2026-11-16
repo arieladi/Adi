@@ -148,7 +148,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows", "Split"};
+                                  "Show Plug-In Windows", "Split", "Clip View"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -200,6 +200,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         // corner open the Mixer View in the Arrangement (manual 6.1, p. 162; §41.1).
         info.addDefaultKeypress('m', cmd | alt);
         info.setTicked(active_ != nullptr && active_->state().mixerView);
+        break;
+    case ToggleClipView:
+        // Live 12: the View menu's Clip View and the Clip View Selector at the window's foot
+        // (manual 8; §41.1).
+        info.addDefaultKeypress('3', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->state().clipView);
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
@@ -569,6 +575,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     detailToggle.setTitle("Detail View");
     detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4.");
     detailToggle.onClick = [this] { root_.command(AppCommands::ToggleDeviceView); };
+    addAndMakeVisible(clipToggle);
+    clipToggle.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    clipToggle.setColour(juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
+    clipToggle.setTitle("Clip View");
+    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3.");
+    clipToggle.setClickingTogglesState(false);
+    clipToggle.onClick = [this] { root_.command(AppCommands::ToggleClipView); };
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
@@ -588,6 +601,7 @@ void StatusBar::resized() {
     const int w = getWidth();
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
+    clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
 }
@@ -595,7 +609,7 @@ void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
     const juce::Rectangle<int> message(35, 8, std::max(0, w - 419), 22);
-    const juce::Rectangle<int> second(w - 376, 8, 206, 22), track(w - 162, 8, 124, 22);
+    const juce::Rectangle<int> second = secondField(), track(w - 162, 8, 124, 22);
     for (auto r : {message, second, track}) {
         g.setColour(look::band);
         g.fillRect(r);
@@ -603,6 +617,33 @@ void StatusBar::paint(juce::Graphics &g) {
         g.fillRect(r.reduced(3));
     }
     // The Mixer View Control's arrow, pointing down to its menu.
+    // The Clip View Selector: the shown clip's notes in miniature, in its colour; lit while the
+    // Clip View is open.
+    if (clipToggle.getToggleState()) {
+        g.setColour(look::accent);
+        g.drawRect(second.reduced(2), 1);
+    }
+    if (const auto *clip = root_.clipView.details(); clip != nullptr && clip->lengthTicks.value_or(0) > 0) {
+        const auto inner = second.reduced(5, 4).toFloat();
+        const double length = static_cast<double>(*clip->lengthTicks);
+        const auto range = keyRange(clip->notes);
+        g.setColour(root_.clipView.colour().darker(0.45f));
+        if (!range)
+            g.fillRect(inner.withSizeKeepingCentre(inner.getWidth(), 2.f));
+        else
+            for (const auto &note : clip->notes) {
+                const double from = static_cast<double>(note.startTicks - clip->startMarkerTicks) / length;
+                const double to = from + static_cast<double>(note.durationTicks) / length;
+                if (to <= 0 || from >= 1)
+                    continue;
+                const float span = static_cast<float>(std::max(1, range->high - range->low));
+                const float y = inner.getBottom() - 2.f -
+                                (inner.getHeight() - 2.f) * static_cast<float>(note.key - range->low) / span;
+                const float x0 = inner.getX() + inner.getWidth() * static_cast<float>(std::max(0., from));
+                const float x1 = inner.getX() + inner.getWidth() * static_cast<float>(std::min(1., to));
+                g.fillRect(x0, y, std::max(1.f, x1 - x0), 2.f);
+            }
+    }
     look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
                    juce::MathConstants<float>::halfPi, look::text);
     // The corner buttons: dark and round, with Live's light triangles.
@@ -652,6 +693,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
     addAndMakeVisible(dockResizer);
+    addChildComponent(clipView);
+    addChildComponent(clipResizer);
     addAndMakeVisible(mixer);
     addAndMakeVisible(strip);
     strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
@@ -858,6 +901,14 @@ void AdiRootComponent::frame() noexcept {
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
+    // The Clip View follows the selected clip and the project, shown or not: the Status Bar's
+    // selector draws the same clip.
+    {
+        const auto shown = clipView.clip();
+        clipView.frame(reader());
+        if (shown != clipView.clip() || (lastDrain_ & DirtySet::Content) != 0)
+            status.repaint();
+    }
     followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
@@ -942,16 +993,25 @@ void AdiRootComponent::resized() {
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
     // a row when it can.
+    // Live 12's Clip View stacks above the Device View (manual 8); the Device View leaves it its
+    // floor, and it takes what it asks for while the arrangement keeps its ruler and a row.
+    const int clipFloor = state_.clipView ? kClipViewFloor + gap : 0;
     const int dock = state_.docked ? std::min(body, std::max(state_.deviceFloor,
-                                                             std::min(state_.deviceHeight, body - 100)))
+                                                             std::min(state_.deviceHeight, body - 100 - clipFloor)))
                                    : 0;
-    const int row = dock > 0 ? dock : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
+    const int clipRoom = std::max(0, body - dock - (dock > 0 ? gap : 0));
+    const int clip = state_.clipView
+                         ? std::min(clipRoom, std::max(kClipViewFloor, std::min(state_.clipViewHeight, clipRoom - 100)))
+                         : 0;
+    const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
+    const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
     const int rowY = bottom - row;
     // Live's Info View sits in the bottom-left corner beside the Device View.
     const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
     infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
     const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, dock)
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
                            : juce::Rectangle<int>();
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
@@ -1091,6 +1151,12 @@ void AdiRootComponent::resized() {
     devices.setBounds(deviceArea_.reduced(look::border));
     dockResizer.setBounds(deviceArea_.getX(), deviceArea_.getY() - 3, deviceArea_.getWidth(), 6);
     dockResizer.toFront(false);
+    clipView.setVisible(!clipArea_.isEmpty());
+    clipResizer.setVisible(!clipArea_.isEmpty());
+    clipView.setBounds(clipArea_.reduced(look::border));
+    clipResizer.setBounds(clipArea_.getX(), clipArea_.getY() - 3, clipArea_.getWidth(), 6);
+    clipResizer.toFront(false);
+    status.clipToggle.setToggleState(state_.clipView, juce::dontSendNotification);
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -1102,6 +1168,8 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     };
     if (!deviceArea_.isEmpty())
         panel(deviceArea_);
+    if (!clipArea_.isEmpty())
+        panel(clipArea_);
     // Live's Info View: a title bar with the element's name, its description below.
     if (!infoArea_.isEmpty()) {
         panel(infoArea_);
@@ -1159,6 +1227,10 @@ void AdiRootComponent::resizeMixerView(int height) {
     state_.mixerViewHeight =
         std::clamp(height, 120,
                    std::max(120, body - arrangement.topHeight() - state_.laneHeight));
+    resized();
+}
+void AdiRootComponent::resizeClipView(int height) {
+    state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
 void AdiRootComponent::resizeDevices(int height) {
@@ -2414,6 +2486,7 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
+bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -2586,6 +2659,13 @@ bool AdiRootComponent::command(int id) {
         state_.mixView = !state_.mixView;
         if (!persist()) {
             state_.mixView = !state_.mixView;
+            return fail(error_);
+        }
+        break;
+    case AppCommands::ToggleClipView:
+        state_.clipView = !state_.clipView;
+        if (!persist()) {
+            state_.clipView = !state_.clipView;
             return fail(error_);
         }
         break;
@@ -2859,7 +2939,7 @@ const std::vector<MenuEntries> &menuBar() {
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleDeviceView, C::TogglePluginWindows,
+          C::PlayReference, C::ToggleClipView, C::ToggleDeviceView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

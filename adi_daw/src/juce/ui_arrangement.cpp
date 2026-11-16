@@ -2626,6 +2626,18 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         view.root.say(note);
     return true;
 }
+void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live: a double-click on a clip opens it in the Clip View (manual 8).
+    if (e.mods.isPopupMenu())
+        return;
+    const auto *t = view.geometry.trackAt(view.reader(), e.y);
+    const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
+    if (c == nullptr)
+        return;
+    if (view.geometry.selection.clip != c->id)
+        view.selectClip(t->id, c->id);
+    view.root.showClipView();
+}
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
