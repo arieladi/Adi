@@ -70,11 +70,25 @@ void contract() {
     const auto bad=temp.path()/"invalid.vst3";std::ofstream(bad)<<"not a module";
     check(device::scanVst3File(*scanner,juce::String::fromUTF8(utf8(bad).c_str()),descriptions).state==scan::State::Failed,"invalid VST3 module becomes a named child scan failure");
     const auto held=descriptions.size();scan::Result callback;bool refused=false;error="untouched";
+    // MSVC checked iterators allocate vector proxies even for an empty result
+    // and its return/move. Measure that exact typed-return control separately:
+    // the rejection may add NOTHING; optimized builds must have literal zero.
+    const auto emptyReturn=[]()->scan::Result {scan::Result value;value.state=scan::State::CallbackRefused;return value;};
+    scan::Result control;allocations=0;
+    {audio::CallbackScope scope;control=emptyReturn();}
+    const auto checkedIteratorOverhead=allocations.exchange(0);
+#if defined(_MSC_VER) && defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL > 0
+    const auto allowedInstrumentation=checkedIteratorOverhead;
+#else
+    check(checkedIteratorOverhead==0,"empty result return control has zero optimized callback allocations");
+    constexpr unsigned allowedInstrumentation=0;
+#endif
     {audio::CallbackScope scope;callback=device::scanVst3File(*scanner,parent,descriptions);
         refused=!device::decodeVst3Metadata(result.plugins,canonical,&decoded,error);}
-    if(callback.state!=scan::State::CallbackRefused || !refused || allocations!=0 || audio::callbackFileIo!=0 || error!="untouched" || descriptions.size()!=held)
+    if(callback.state!=scan::State::CallbackRefused || !refused || allocations!=allowedInstrumentation || audio::callbackFileIo!=0 || error!="untouched" || descriptions.size()!=held)
         std::printf("callback diagnostic state=%d refused=%d allocations=%u fileIO=%u error=%s descriptions=%zu/%zu\n",static_cast<int>(callback.state),refused,allocations.load(),audio::callbackFileIo.load(),error.c_str(),descriptions.size(),held);
-    check(callback.state==scan::State::CallbackRefused && refused && allocations==0 && audio::callbackFileIo==0 &&
+    std::printf("callback allocations: observed=%u, checked-iterator-only control=%u\n",allocations.load(),checkedIteratorOverhead);
+    check(callback.state==scan::State::CallbackRefused && refused && allocations==allowedInstrumentation && audio::callbackFileIo==0 &&
         error=="untouched" && descriptions.size()==held,"VST3 discovery/decoder callbacks refuse before allocation or descriptor/diagnostic/OS mutation");
 }
 } // namespace
