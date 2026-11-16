@@ -3177,9 +3177,9 @@ bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
     return root_->keyStateChanged(isKeyDown);
 }
 AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices,
-                                             std::function<void(std::optional<ImportChoices>)> answer)
+                                             std::function<void(std::optional<ImportChoices>)> reply)
     : title_(files == 1 ? juce::String("Import Audio") : "Import " + juce::String(static_cast<int>(files)) + " Audio Files"),
-      answer_(std::move(answer)) {
+      answer_(std::move(reply)) {
     for (auto *b : {&warp, &fades, &copy})
         addAndMakeVisible(*b);
     warp.setToggleState(choices.warp, juce::dontSendNotification);
@@ -3200,8 +3200,8 @@ AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoi
     addAndMakeVisible(mode);
     addAndMakeVisible(import);
     addAndMakeVisible(cancel);
-    import.onClick = [this] { answer(true); };
-    cancel.onClick = [this] { answer(false); };
+    import.onClick = [this] { this->answer(true); };
+    cancel.onClick = [this] { this->answer(false); };
     setWantsKeyboardFocus(true);
 }
 ImportChoices AdiRootComponent::ImportPrompt::choices() const {
@@ -3234,7 +3234,8 @@ void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
     g.setFont(look::font(11.f));
     g.drawFittedText("All off by default. The last choices are kept; Settings > Editing > Audio import options "
                      "turns this prompt off.",
-                     getLocalBounds().withTrimmedTop(126).withHeight(34).reduced(10, 0), juce::Justification::topLeft, 2);
+                     getLocalBounds().withTrimmedTop(122).withHeight(44).reduced(10, 0), juce::Justification::topLeft, 3,
+                     1.0f);
     g.setColour(look::separator);
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.f, 1.f);
 }

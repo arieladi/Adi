@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
-#include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
@@ -351,18 +350,6 @@ void importWithChoices(const std::filesystem::path &dir) {
     check(doc != nullptr, "a project for the import with choices");
     if (!doc)
         return;
-    // A fresh settings file: every choice off, and the prompt asks.
-    {
-        settings::AppSettings fresh(appdata::App::Daw, dir / "import-settings.json");
-        check(ui::importChoicesFrom(fresh) == ui::ImportChoices{} && ui::importAsks(fresh),
-              "the prompt's defaults are all off, and it asks");
-        ui::ImportChoices chosen;
-        chosen.copyIn = true;
-        chosen.edgeFades = true;
-        std::string why;
-        check(ui::keepImportChoices(fresh, chosen, why) && ui::importChoicesFrom(fresh) == chosen,
-              "Import keeps the choices as the last ones");
-    }
     // A second of a tone, outside the project's folder.
     const auto outside = dir / "outside";
     std::filesystem::create_directories(outside);

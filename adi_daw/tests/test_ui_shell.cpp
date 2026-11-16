@@ -3270,6 +3270,11 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     root.frame();
     commands.activate(root);
     std::string why;
+    // A fresh settings file: every choice off, and the prompt asks.
+    {
+        settings::AppSettings fresh(appdata::App::Daw, dir / "import-settings.json");
+        check(importChoicesFrom(fresh) == ImportChoices{} && importAsks(fresh), "the prompt's defaults are all off, and it asks");
+    }
     settings.set("editing.importOptions", std::string("ask"), {}, why);
     check(keepImportChoices(settings, ImportChoices{}, why), "the choices start off");
     const auto audioTrack = [&] {
@@ -3304,8 +3309,7 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
             juce::FileOutputStream out(file);
             juce::PNGImageFormat().writeImageToStream(picture, out);
         }
-        prompt->import.triggerClick();
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        prompt->answer(true); // as the Import button does (a button click is asynchronous)
     }
     root.frame();
     check(root.importPrompt() == nullptr && asked.size() == 1 && asked[0].copyIn && !asked[0].warp && clipsOn() == 1,
@@ -3316,19 +3320,20 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
               root.importPrompt()->choices().copyIn,
           "the prompt opens again with the last choices");
     if (auto *prompt = root.importPrompt())
-        prompt->cancel.triggerClick();
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        prompt->answer(false); // as Cancel does
     root.frame();
     check(root.importPrompt() == nullptr && asked.size() == 1 && clipsOn() == 1, "Cancel imports nothing");
     // Not asking: the last choices are used straight away.
     settings.set("editing.importOptions", std::string("never"), {}, why);
-    check(root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted") && root.importPrompt() == nullptr &&
-              asked.size() == 2 && asked[1].copyIn && clipsOn() == 2,
+    const bool silent = root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted");
+    root.frame();
+    check(silent && root.importPrompt() == nullptr && asked.size() == 2 && asked[1].copyIn && clipsOn() == 2,
           "with the prompt off, the last choices import at once");
     // All off and not asking: the plain import, as before E5.
     keepImportChoices(settings, ImportChoices{}, why);
-    check(root.dropAudio(wav.string(), audioTrack, 8 * textproj::kWhole, "Prompted") && asked.size() == 2 && clipsOn() == 3,
-          "every choice off: the plain import, no material import");
+    const bool plain = root.dropAudio(wav.string(), audioTrack, 8 * textproj::kWhole, "Prompted");
+    root.frame();
+    check(plain && asked.size() == 2 && clipsOn() == 3, "every choice off: the plain import, no material import");
     settings.set("editing.importOptions", std::string("ask"), {}, why);
     settings.save(why);
     commands.detach(root);
