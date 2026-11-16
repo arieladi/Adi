@@ -12,6 +12,7 @@
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
+#include "adi/ui/note_filters.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/scales.hpp"
 #include "adi/ui/snapshot_reader.hpp"
@@ -343,8 +344,34 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC
     };
+    // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
+    // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
+    // chosen filter's controls, Invert and Select. A control changed applies the filter and selects
+    // what every applied filter finds; an applied filter has a dot in the chooser; a plain click in
+    // the editor lets all of them go. The number fields are the chosen filter's: Time counts whole
+    // beats from the clip's Start (start, length, repeat), Duration counts sixteenths.
+    bool filtersShown() const noexcept { return filtersShown_; }
+    void showFilters(bool);
+    void clearFilters();
+    NoteFilter filter() const noexcept { return filter_; }
+    juce::PopupMenu filterMenu() const;
+    bool chooseFilter(int item);
+    bool applyFilter();
+    bool toggleFilterInvert();
+    // The chosen filter's switches: Pitch has twelve, Condition three, Count and Scale one each.
+    int filterToggleCount() const noexcept;
+    bool filterToggle(int index) const noexcept;
+    bool clickFilterToggle(int index);
+    juce::Rectangle<int> filterArea() const noexcept;
+    juce::Rectangle<int> findBox() const noexcept;
+    juce::Rectangle<int> filterChooserBox() const noexcept;
+    juce::Rectangle<int> filterToggleBox(int index) const noexcept;
+    juce::Rectangle<int> filterInvertBox() const noexcept;
+    juce::Rectangle<int> filterSelectBox() const noexcept;
+    NoteFilters filters;
+    int filterTimeStart = 0, filterTimeLength = 1, filterTimeRepeat = 0, filterDurationMin = 1, filterDurationMax = 4;
     // Live's Velocity Controls (manual 10.5.12), in a strip under the editor's lanes: Randomize
     // with its amount, and the Ramp's start and end values. Randomize raises or lowers each
     // selected note's velocity (every note's when none is selected) by up to the amount; typing
@@ -441,6 +468,12 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    bool filtersShown_ = false;
+    NoteFilter filter_ = NoteFilter::Pitch;
+    // How many number fields the chosen filter has, and their names.
+    int filterFieldCount() const noexcept;
+    const char *filterFieldName(int slot) const noexcept;
+    const char *filterToggleName(int index) const noexcept;
     std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
     std::vector<std::int64_t> shown_;

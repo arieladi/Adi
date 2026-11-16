@@ -1222,6 +1222,8 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             return;
         }
     }
+    if (!e.mods.isShiftDown())
+        panel.clearFilters(); // a plain click in the editor lets every applied filter go (manual 10.5.3)
     if (const auto part = rulerPartAt(from_); part != RulerPart::None) {
         // A ruler handle: it is selected, for the arrows, and a drag begins.
         selected_.clear();
@@ -1672,6 +1674,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     }
     if (code == juce::KeyPress::returnKey && !mods.isAnyModifierKeyDown())
         return toggleTimeAndNotes();
+    if (k == juce::KeyPress('f', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        // Show or hide the note filters (as measured on Live: Ctrl+Shift+F is the filter bar's key).
+        panel.showFilters(!panel.filtersShown());
+        return true;
+    }
     if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
         invertSelection();
         return true;
@@ -2182,6 +2189,150 @@ juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
 }
+// ---- Find and Select Notes (manual 10.5.3) -----------------------------------------------------
+juce::Rectangle<int> ClipViewPanel::filterArea() const noexcept {
+    const auto area = editorArea();
+    return midi() && filtersShown_ ? area.withHeight(std::min(kStripHeight, area.getHeight())) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
+    const auto highlight = highlightBox();
+    return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
+}
+juce::Rectangle<int> ClipViewPanel::filterChooserBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getX() + 6, bar.getY() + 3, 84, 13);
+}
+juce::Rectangle<int> ClipViewPanel::filterInvertBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getRight() - 98, bar.getY() + 3, 44, 13);
+}
+juce::Rectangle<int> ClipViewPanel::filterSelectBox() const noexcept {
+    const auto bar = filterArea();
+    return bar.isEmpty() ? bar : juce::Rectangle<int>(bar.getRight() - 50, bar.getY() + 3, 44, 13);
+}
+int ClipViewPanel::filterFieldCount() const noexcept {
+    switch (filter_) {
+    case NoteFilter::Time:
+        return 3;
+    case NoteFilter::Chance:
+    case NoteFilter::Count:
+    case NoteFilter::Duration:
+    case NoteFilter::Velocity:
+        return 2;
+    default:
+        return 0;
+    }
+}
+const char *ClipViewPanel::filterFieldName(int slot) const noexcept {
+    if (filter_ == NoteFilter::Time)
+        return slot == 0 ? "Start" : slot == 1 ? "Length" : "Repeat";
+    if (filter_ == NoteFilter::Count)
+        return slot == 0 ? "Every" : "Offset";
+    return slot == 0 ? "Min" : "Max";
+}
+int ClipViewPanel::filterToggleCount() const noexcept {
+    return filter_ == NoteFilter::Pitch ? 12 : filter_ == NoteFilter::Condition ? 3 : filter_ == NoteFilter::Count || filter_ == NoteFilter::Scale ? 1 : 0;
+}
+const char *ClipViewPanel::filterToggleName(int index) const noexcept {
+    static constexpr const char *kClasses[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    if (filter_ == NoteFilter::Pitch)
+        return kClasses[std::clamp(index, 0, 11)];
+    if (filter_ == NoteFilter::Condition)
+        return index == 0 ? "Active" : index == 1 ? "Chance" : "Deviation";
+    return filter_ == NoteFilter::Count ? "Quantized" : "Clip Scale";
+}
+juce::Rectangle<int> ClipViewPanel::filterToggleBox(int index) const noexcept {
+    const auto chooser = filterChooserBox();
+    if (chooser.isEmpty() || index < 0 || index >= filterToggleCount())
+        return {};
+    const int left = chooser.getRight() + 8 + filterFieldCount() * 92;
+    const int width = filter_ == NoteFilter::Pitch ? 22 : filter_ == NoteFilter::Condition ? 58 : 66;
+    return {left + index * (width + 2), chooser.getY(), width, chooser.getHeight()};
+}
+bool ClipViewPanel::filterToggle(int index) const noexcept {
+    switch (filter_) {
+    case NoteFilter::Pitch:
+        return ((filters.pitches >> index) & 1) != 0;
+    case NoteFilter::Condition:
+        return index == 0 ? filters.conditionActive : index == 1 ? filters.conditionChance : filters.conditionDeviation;
+    case NoteFilter::Count:
+        return filters.quantized;
+    case NoteFilter::Scale:
+        return filters.useClipScale;
+    default:
+        return false;
+    }
+}
+bool ClipViewPanel::clickFilterToggle(int index) {
+    if (index < 0 || index >= filterToggleCount())
+        return false;
+    switch (filter_) {
+    case NoteFilter::Pitch:
+        filters.pitches ^= 1 << index;
+        break;
+    case NoteFilter::Condition:
+        (index == 0 ? filters.conditionActive : index == 1 ? filters.conditionChance : filters.conditionDeviation) = !filterToggle(index);
+        break;
+    case NoteFilter::Count:
+        filters.quantized = !filters.quantized;
+        break;
+    case NoteFilter::Scale:
+        filters.useClipScale = !filters.useClipScale;
+        break;
+    default:
+        break;
+    }
+    return applyFilter();
+}
+void ClipViewPanel::showFilters(bool show) {
+    filtersShown_ = show && midi();
+    if (!filtersShown_)
+        filters.clear();
+    closeEditor();
+    resized();
+    repaint();
+}
+void ClipViewPanel::clearFilters() {
+    if (!filters.any())
+        return;
+    filters.clear();
+    repaint();
+}
+juce::PopupMenu ClipViewPanel::filterMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kNoteFilterCount; ++i)
+        // An applied filter has a dot beside its name.
+        menu.addItem(static_cast<int>(i) + 1, juce::String(kNoteFilterNames[i]) + (filters.applied[i] ? juce::String::fromUTF8("  \xe2\x97\x8f") : juce::String()),
+                     true, static_cast<std::size_t>(filter_) == i);
+    return menu;
+}
+bool ClipViewPanel::chooseFilter(int item) {
+    if (item < 1 || item > static_cast<int>(kNoteFilterCount))
+        return false;
+    filter_ = static_cast<NoteFilter>(item - 1);
+    closeEditor();
+    repaint();
+    return true;
+}
+bool ClipViewPanel::toggleFilterInvert() {
+    const auto at = static_cast<std::size_t>(filter_);
+    filters.invert[at] = !filters.invert[at];
+    return applyFilter();
+}
+bool ClipViewPanel::applyFilter() {
+    if (!details_ || !midi())
+        return false;
+    // The bar's whole beats and sixteenths, in the clip's ticks; beats count from the clip's Start.
+    filters.timeStart = details_->startMarkerTicks + static_cast<std::int64_t>(filterTimeStart) * textproj::kPPQ;
+    filters.timeLength = static_cast<std::int64_t>(filterTimeLength) * textproj::kPPQ;
+    filters.timeRepeat = static_cast<std::int64_t>(filterTimeRepeat) * textproj::kPPQ;
+    filters.durationMin = static_cast<std::int64_t>(filterDurationMin) * textproj::kPPQ / 4;
+    filters.durationMax = static_cast<std::int64_t>(filterDurationMax) * textproj::kPPQ / 4;
+    filters.applied[static_cast<std::size_t>(filter_)] = true;
+    notes.select(findNotes(*details_, filters, notes.gridTicks(), ClipWindow::of(*details_).toSource(0)));
+    repaint();
+    return true;
+}
 juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
     const auto area = editorArea();
     return midi() && area.getHeight() >= 140 ? area.withTop(area.getBottom() - kStripHeight) : juce::Rectangle<int>();
@@ -2210,9 +2361,11 @@ void ClipViewPanel::numberChanged(Field field, bool typed) {
         ramp();
     else if (field == Field::RandomAmount && typed)
         randomize();
+    else if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC)
+        applyFilter();
 }
 void ClipViewPanel::resized() {
-    notes.setBounds(editorArea().withTrimmedBottom(velocityStripArea().getHeight()));
+    notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
 void ClipViewPanel::read(const SnapshotReader &reader) {
@@ -2448,6 +2601,14 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
+        // In the filter bar: each after its name, beside the chooser.
+        const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
+        const auto chooser = filterChooserBox();
+        if (chooser.isEmpty() || slot >= filterFieldCount())
+            return {};
+        return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
+    }
     if (field == Field::RandomAmount || field == Field::RampStart || field == Field::RampEnd) {
         // In the strip under the lanes: the amount beside Randomize, then the Ramp's two values.
         const auto button = randomizeBox();
@@ -2569,6 +2730,30 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
         if (high != nullptr)
             *high = b;
     };
+    if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
+        const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
+        if (!filtersShown_ || slot >= filterFieldCount())
+            return nullptr;
+        switch (filter_) {
+        case NoteFilter::Time:
+            range(slot == 1 ? 1 : 0, 9999);
+            return slot == 0 ? &filterTimeStart : slot == 1 ? &filterTimeLength : &filterTimeRepeat;
+        case NoteFilter::Chance:
+            range(0, 100);
+            return slot == 0 ? &filters.chanceMin : &filters.chanceMax;
+        case NoteFilter::Count:
+            range(slot == 0 ? 1 : 0, 64);
+            return slot == 0 ? &filters.every : &filters.offset;
+        case NoteFilter::Duration:
+            range(1, 512);
+            return slot == 0 ? &filterDurationMin : &filterDurationMax;
+        case NoteFilter::Velocity:
+            range(1, 127);
+            return slot == 0 ? &filters.velocityMin : &filters.velocityMax;
+        default:
+            return nullptr;
+        }
+    }
     switch (field) {
     case Field::VelocityAmount:
         range(-127, 127);
@@ -2776,7 +2961,8 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
-                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd})
+                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
+                             Field::FilterA, Field::FilterB, Field::FilterC})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -2932,6 +3118,33 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         }
     if (randomizeBox().contains(at)) {
         randomize();
+        return;
+    }
+    if (findBox().contains(at)) {
+        showFilters(!filtersShown_);
+        return;
+    }
+    if (filterChooserBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        filterMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(filterChooserBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseFilter(item);
+            });
+        return;
+    }
+    for (int i = 0; i < filterToggleCount(); ++i)
+        if (filterToggleBox(i).contains(at)) {
+            clickFilterToggle(i);
+            return;
+        }
+    if (filterInvertBox().contains(at)) {
+        toggleFilterInvert();
+        return;
+    }
+    if (filterSelectBox().contains(at)) {
+        applyFilter();
         return;
     }
     if (foldBox().contains(at)) {
@@ -3232,8 +3445,44 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), 10.f);
         look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
         text("Highlight", highlight, juce::Justification::centred, look::text, 10.f);
+        const auto find = findBox();
+        look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
+        text("Find", find, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? highlightBox().getRight() - header.getX() + 10 : 8).withWidth(60),
+    if (const auto bar = filterArea(); !bar.isEmpty()) {
+        // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
+        g.setColour(look::field);
+        g.fillRect(bar);
+        g.setColour(look::band);
+        g.fillRect(bar.withY(bar.getBottom() - 1).withHeight(1));
+        const auto chooser = filterChooserBox();
+        look::box(g, chooser.toFloat(), look::chooser);
+        text(kNoteFilterNames[static_cast<std::size_t>(filter_)], chooser.reduced(4, 0), juce::Justification::centredLeft, look::text, 10.5f);
+        if (filters.applied[static_cast<std::size_t>(filter_)]) {
+            g.setColour(look::accent);
+            g.fillEllipse(static_cast<float>(chooser.getRight() - 10), static_cast<float>(chooser.getY() + 4), 5.f, 5.f);
+        }
+        for (int slot = 0; slot < filterFieldCount(); ++slot) {
+            const auto which = slot == 0 ? Field::FilterA : slot == 1 ? Field::FilterB : Field::FilterC;
+            const auto box = fieldBox(which);
+            int low = 0, high = 0;
+            const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+            text(filterFieldName(slot), {box.getX() - 46, box.getY(), 42, box.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+            look::box(g, box.toFloat(), look::chooser);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+        }
+        for (int i = 0; i < filterToggleCount(); ++i) {
+            const auto box = filterToggleBox(i);
+            look::box(g, box.toFloat(), filterToggle(i) ? look::accent : look::button);
+            text(filterToggleName(i), box, juce::Justification::centred, look::text, 9.5f);
+        }
+        const auto invert = filterInvertBox(), select = filterSelectBox();
+        look::box(g, invert.toFloat(), filters.invert[static_cast<std::size_t>(filter_)] ? look::accent : look::button);
+        text("Invert", invert, juce::Justification::centred, look::text, 10.f);
+        look::box(g, select.toFloat(), look::button);
+        text("Select", select, juce::Justification::centred, look::text, 10.f);
+    }
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? findBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())

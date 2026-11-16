@@ -6,6 +6,7 @@
 #include "adi/ui/clip_edits.hpp"
 #include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
+#include "adi/ui/note_filters.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -743,6 +744,116 @@ void scaleMode() {
     check(setClipScaleMode(c, true).ops.empty(), "on, when it already holds one, writes nothing");
 }
 
+void noteFilters() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    c.scale.root = 0;
+    c.scale.mask = 2741; // C major
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration, int velocity) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = static_cast<std::uint8_t>(velocity);
+        return n;
+    };
+    // A C major chord on beat 0, then C#3, D3, E4 and a long C2, a beat apart.
+    c.notes = {note(1, 60, 0, beat, 100),        note(2, 64, 0, beat, 80),          note(3, 67, 0, beat, 60), note(4, 61, beat, beat / 2, 100),
+               note(5, 62, 2 * beat, beat, 40), note(6, 76, 3 * beat, beat / 4, 127), note(7, 48, 4 * beat, 4 * beat, 100)};
+    c.notes[4].probability = 5000;
+    c.notes[5].active = false;
+    using Ids = std::vector<std::uint64_t>;
+    NoteFilters f;
+    check(findNotes(c, f).empty() && !f.any(), "with no filter applied, nothing is found");
+    const auto only = [&](NoteFilter which) {
+        f.clear();
+        f.invert.fill(false);
+        f.applied[static_cast<std::size_t>(which)] = true;
+    };
+    // Pitch: in every octave.
+    only(NoteFilter::Pitch);
+    f.pitches = 1;
+    check(findNotes(c, f) == Ids({1, 7}), "Pitch: C finds the Cs in every octave");
+    f.pitches = (1 << 4) | (1 << 2);
+    check(findNotes(c, f) == Ids({2, 5, 6}), "several pitches at once");
+    f.invert[0] = true;
+    check(findNotes(c, f) == Ids({1, 3, 4, 7}), "Invert selects the notes the filter does not find");
+    // Time.
+    only(NoteFilter::Time);
+    f.timeStart = beat;
+    f.timeLength = 2 * beat;
+    f.timeRepeat = 0;
+    check(findNotes(c, f) == Ids({4, 5}), "Time: the notes that begin in the range");
+    f.timeStart = 0;
+    f.timeLength = beat;
+    f.timeRepeat = 2 * beat;
+    check(findNotes(c, f) == Ids({1, 2, 3, 5, 7}), "with Repeat the range comes again: beats 0, 2 and 4");
+    // Chance.
+    only(NoteFilter::Chance);
+    f.chanceMin = 0;
+    f.chanceMax = 99;
+    check(findNotes(c, f) == Ids({5}), "Chance: the notes whose probability is in the range");
+    f.chanceMin = 100;
+    f.chanceMax = 50;
+    check(findNotes(c, f).size() == 7, "the range reads the same either way round");
+    // Condition.
+    only(NoteFilter::Condition);
+    f.conditionActive = true;
+    f.conditionChance = false;
+    check(findNotes(c, f) == Ids({1, 2, 3, 4, 5, 7}), "Condition, Active: the notes that are not deactivated");
+    f.conditionActive = false;
+    f.conditionChance = true;
+    check(findNotes(c, f) == Ids({5}), "Condition, Chance: the notes under 100 per cent");
+    f.conditionActive = true;
+    check(findNotes(c, f) == Ids({1, 2, 3, 4, 5, 7}), "two conditions on: a note that meets either");
+    f.conditionActive = f.conditionChance = false;
+    f.conditionDeviation = true;
+    check(findNotes(c, f).empty(), "Velocity Deviation: no note has one yet");
+    // Count: the chord is one.
+    only(NoteFilter::Count);
+    f.every = 2;
+    f.offset = 0;
+    f.quantized = false;
+    check(findNotes(c, f) == Ids({1, 2, 3, 5, 7}), "Count, every second: the chord counts as one, so the first, third and fifth in time");
+    f.offset = 1;
+    check(findNotes(c, f) == Ids({4, 6}), "Offset moves which one is the first");
+    f.every = 1;
+    f.offset = 0;
+    check(findNotes(c, f).size() == 7, "every first is every note");
+    f.every = 4;
+    f.quantized = true;
+    check(findNotes(c, f, beat, 0) == Ids({1, 2, 3, 7}), "Quantized: the grid's steps are counted, empty ones too; every fourth beat");
+    check(findNotes(c, f, beat / 2, 0) == Ids({1, 2, 3, 5, 7}), "on a finer grid, every fourth half beat");
+    // Duration.
+    only(NoteFilter::Duration);
+    f.durationMin = beat / 4;
+    f.durationMax = beat / 2;
+    check(findNotes(c, f) == Ids({4, 6}), "Duration: the notes whose length is in the range");
+    // Scale.
+    only(NoteFilter::Scale);
+    f.useClipScale = true;
+    check(findNotes(c, f) == Ids({1, 2, 3, 5, 6, 7}), "Scale, the clip's own: every note but the C#");
+    f.useClipScale = false;
+    f.scaleRoot = 1;
+    f.scaleMask = 2741; // C# major
+    check(findNotes(c, f) == Ids({1, 4, 7}), "Scale, another: C# major holds C (its seventh) and C#");
+    // Velocity.
+    only(NoteFilter::Velocity);
+    f.velocityMin = 60;
+    f.velocityMax = 100;
+    check(findNotes(c, f) == Ids({1, 2, 3, 4, 7}), "Velocity: the notes whose velocity is in the range");
+    // Combined: all of them must pass.
+    f.applied[static_cast<std::size_t>(NoteFilter::Pitch)] = true;
+    f.pitches = 1;
+    check(findNotes(c, f) == Ids({1, 7}), "two filters applied: the notes both find");
+    f.invert[static_cast<std::size_t>(NoteFilter::Pitch)] = true;
+    check(findNotes(c, f) == Ids({2, 3, 4}), "one of them inverted");
+    f.clear();
+    check(findNotes(c, f).empty(), "cleared, nothing is found");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -802,6 +913,7 @@ int main() {
     splitsAtEdges();
     velocityControls();
     scaleMode();
+    noteFilters();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

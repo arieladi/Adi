@@ -5509,6 +5509,106 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.selectionText() == before, "and with neither, the arrangement's again");
     }
 
+    // Find and Select Notes (manual 10.5.3): the header's Find switch, the filter bar, the eight filters.
+    {
+        using Field = ClipViewPanel::Field;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto found = [&] {
+            auto ids = ed.selected();
+            std::sort(ids.begin(), ids.end());
+            return ids;
+        };
+        const auto letGo = [&] {
+            const juce::Point<float> empty(xAt(9 * beat) + 4.f, static_cast<float>(ed.notesArea().getY() + 3));
+            ed.mouseDown(pressAt(ed, empty));
+            ed.mouseUp(pressAt(ed, empty));
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        const int top = ed.getY();
+        check(!panel.filtersShown() && panel.filterArea().isEmpty() && !panel.findBox().isEmpty() && panel.headerArea().contains(panel.findBox()) &&
+                  !panel.findBox().intersects(panel.highlightBox()),
+              "the header has a Find switch; the filter bar is hidden");
+        click(panel.findBox());
+        check(panel.filtersShown() && ed.getY() == top + ClipViewPanel::kStripHeight && ed.getY() == panel.filterArea().getBottom() &&
+                  panel.filter() == NoteFilter::Pitch && !panel.filters.any() && panel.filterMenu().getNumItems() == 8 &&
+                  panel.filterArea().contains(panel.filterChooserBox()) && panel.filterArea().contains(panel.filterSelectBox()) &&
+                  !panel.filterInvertBox().intersects(panel.filterSelectBox()) && panel.filterToggleCount() == 12 &&
+                  panel.filterToggleBox(11).getRight() < panel.filterInvertBox().getX(),
+              "the Find switch shows the filter bar under the header, the editor below it: the chooser of eight filters, Pitch's twelve switches, Invert and Select");
+        check(ed.keyPressed(key('f', command | shift)) && !panel.filtersShown() && ed.getY() == top && ed.keyPressed(key('f', command | shift)) &&
+                  panel.filtersShown(),
+              "Ctrl+Shift+F in the editor hides the bar and shows it again");
+        // Pitch.
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 3}) && panel.filters.applied[0], "Select with the Pitch filter on C selects the Cs; the filter is applied");
+        click(panel.filterToggleBox(4));
+        check(found() == Ids({1, 2, 3}) && panel.filterToggle(4), "E switched on: the Es are selected with them at once");
+        click(panel.filterInvertBox());
+        check(found() == Ids({4, 70}), "Invert selects the notes that are neither");
+        // A second filter narrows the first.
+        check(panel.chooseFilter(8) && panel.filter() == NoteFilter::Velocity && panel.filterToggleCount() == 0 &&
+                  !panel.fieldBox(Field::FilterA).isEmpty() && !panel.fieldBox(Field::FilterB).isEmpty() && panel.fieldBox(Field::FilterC).isEmpty() &&
+                  panel.typeField(Field::FilterA, "90") && panel.filters.velocityMin == 90 && found() == Ids({70}) && panel.filters.applied[7],
+              "the Velocity filter with its lowest typed as 90, while Pitch is still applied: the notes both find");
+        letGo();
+        check(!panel.filters.any() && ed.selected().empty() && panel.filtersShown(), "a plain click in the editor lets every filter go and deselects; the bar stays");
+        // Count.
+        check(panel.chooseFilter(5), "Count");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 3, 4}), "Count, every second: notes that begin together count as one");
+        check(panel.typeField(Field::FilterB, "1") && found() == Ids({2, 70}), "its Offset typed as 1: the others");
+        // Time.
+        letGo();
+        check(panel.chooseFilter(2) && panel.typeField(Field::FilterA, "1") && found() == Ids({2}), "Time: from beat 1 of the clip, one beat long");
+        check(panel.typeField(Field::FilterB, "2") && found() == Ids({2, 3, 4}), "two beats long");
+        check(panel.typeField(Field::FilterA, "0") && panel.typeField(Field::FilterB, "1") && panel.typeField(Field::FilterC, "2") &&
+                  found() == Ids({1, 3, 4}),
+              "one beat from the start, repeated every two beats");
+        // Duration.
+        letGo();
+        check(panel.chooseFilter(6) && panel.typeField(Field::FilterA, "5") && panel.typeField(Field::FilterB, "8") && found() == Ids({3}),
+              "Duration: five to eight sixteenths finds the two-beat note");
+        // Scale.
+        letGo();
+        check(panel.chooseFilter(7) && panel.filterToggleCount() == 1 && panel.filterToggle(0), "Scale, on the clip's own scale");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 2, 3, 4}), "every note in C Major: not the C#");
+        // Condition.
+        letGo();
+        check(panel.chooseFilter(4) && panel.filterToggleCount() == 3, "Condition");
+        click(panel.filterSelectBox());
+        check(found() == Ids({1, 2, 3, 4, 70}), "Active: every note that is not deactivated");
+        click(panel.filterToggleBox(0));
+        check(found().empty() && !panel.filterToggle(0), "with no condition on, none");
+        // Chance.
+        letGo();
+        check(panel.chooseFilter(3) && panel.typeField(Field::FilterB, "99") && found().empty() && panel.typeField(Field::FilterB, "100") &&
+                  found().size() == 5,
+              "Chance: up to 99 per cent finds none of these; up to 100, all");
+        check(!panel.typeField(Field::FilterA, "often") && !root.error().empty(), "a word is refused");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            panel.chooseFilter(1);
+            click(panel.filterSelectBox());
+            juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics gr(picture);
+                gr.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(gr, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-clip-view-find.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+        }
+        click(panel.findBox());
+        check(!panel.filtersShown() && !panel.filters.any() && ed.getY() == top, "the Find switch hides the bar and lets the filters go");
+        ed.select({});
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);
