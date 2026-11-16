@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_clipview.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/waveform.hpp"
 #include <algorithm>
@@ -510,6 +511,8 @@ std::optional<juce::Range<int>> NoteEditor::loopBrace() const noexcept {
     const auto at = [&](std::int64_t source) {
         return ruler.getX() + static_cast<int>(std::clamp(time.x(window.toArrangement(source)), -1e6, 1e6));
     };
+    if (loopPreview_)
+        return juce::Range<int>(at(loopPreview_->first), at(loopPreview_->first + loopPreview_->second));
     return juce::Range<int>(at(clip->loopStartTicks), at(clip->loopStartTicks + loopLengthOf(*clip)));
 }
 const std::vector<std::uint64_t> &NoteEditor::selectedIn(std::int64_t clip) const noexcept {
@@ -733,6 +736,142 @@ bool NoteEditor::walk(bool sideways, bool forward, bool extend) {
     repaint();
     return true;
 }
+int NoteEditor::markerX(bool end) const noexcept {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return 0;
+    const auto window = ClipWindow::of(*clip);
+    auto source = end ? endMarkerOf(*clip) : clip->startMarkerTicks;
+    if (markerPreview_ && rulerDrag_ == (end ? RulerPart::EndMarker : RulerPart::StartMarker))
+        source = *markerPreview_;
+    return rulerArea().getX() + static_cast<int>(std::clamp(time.x(window.toArrangement(source)), -1e6, 1e6));
+}
+NoteEditor::RulerPart NoteEditor::rulerPartAt(juce::Point<int> at) const noexcept {
+    const auto *clip = panel.details();
+    const auto ruler = rulerArea();
+    if (clip == nullptr || !ruler.contains(at))
+        return RulerPart::None;
+    // The brace has the ruler's upper half, the markers its lower.
+    if (at.y < ruler.getY() + ruler.getHeight() / 2) {
+        if (const auto brace = loopBrace()) {
+            const int toStart = std::abs(at.x - brace->getStart()), toEnd = std::abs(at.x - brace->getEnd());
+            if (std::min(toStart, toEnd) <= 4)
+                return toEnd <= toStart ? RulerPart::LoopEnd : RulerPart::LoopStart;
+            if (at.x > brace->getStart() && at.x < brace->getEnd())
+                return RulerPart::Loop;
+        }
+        return RulerPart::None;
+    }
+    const int toStart = std::abs(at.x - markerX(false)), toEnd = std::abs(at.x - markerX(true));
+    if (std::min(toStart, toEnd) > 6)
+        return RulerPart::None;
+    return toEnd < toStart ? RulerPart::EndMarker : RulerPart::StartMarker;
+}
+void NoteEditor::rulerDrag(const juce::ModifierKeys &mods) {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    const auto window = ClipWindow::of(*clip);
+    const auto area = rulerArea();
+    // Where the pointer is, on the nearest grid line; and how far it has come, in whole grid steps.
+    const auto raw = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
+    auto at = raw;
+    if (snapping(mods)) {
+        const auto below = time.snap(raw, false), above = time.snap(raw, true);
+        at = raw - below <= above - raw ? below : above;
+    }
+    const double moved = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
+    const auto step = static_cast<double>(gridTicks());
+    const auto by = snapping(mods) ? static_cast<std::int64_t>(std::llround(moved / step) * static_cast<long long>(step))
+                                   : static_cast<std::int64_t>(std::llround(moved));
+    const auto start = clip->loopStartTicks, length = loopLengthOf(*clip);
+    loopPreview_.reset();
+    markerPreview_.reset();
+    if (to_ == from_)
+        return;
+    switch (rulerDrag_) {
+    case RulerPart::LoopStart: {
+        const auto to = std::clamp<std::int64_t>(window.toSource(at), 0, start + length - 1);
+        loopPreview_ = {to, start + length - to};
+        break;
+    }
+    case RulerPart::LoopEnd:
+        loopPreview_ = {start, std::max<std::int64_t>(1, window.toSource(at) - start)};
+        break;
+    case RulerPart::Loop:
+        loopPreview_ = {std::max<std::int64_t>(0, start + by), length};
+        break;
+    case RulerPart::StartMarker:
+        markerPreview_ = std::clamp<std::int64_t>(window.toSource(at), 0, endMarkerOf(*clip) - 1);
+        break;
+    case RulerPart::EndMarker:
+        markerPreview_ = std::max(window.toSource(at), clip->startMarkerTicks + 1);
+        break;
+    case RulerPart::None:
+        break;
+    }
+}
+bool NoteEditor::rulerKey(const juce::KeyPress &k) {
+    const auto *clip = panel.details();
+    if (clip == nullptr || picked_ == RulerPart::None)
+        return false;
+    const auto code = k.getKeyCode();
+    const auto mods = k.getModifiers();
+    if (code == juce::KeyPress::escapeKey) {
+        picked_ = RulerPart::None;
+        repaint();
+        return true;
+    }
+    const bool sideways = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
+    const bool upDown = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
+    if (!sideways && !upDown)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    if (picked_ == RulerPart::Loop) {
+        if (mods.isShiftDown() || mods.isAltDown())
+            return true;
+        // As the Arrangement's brace (manual 8.9), on the song's grid.
+        const auto key = code == juce::KeyPress::leftKey    ? BraceKey::Left
+                         : code == juce::KeyPress::rightKey ? BraceKey::Right
+                         : code == juce::KeyPress::upKey    ? BraceKey::Up
+                                                            : BraceKey::Down;
+        const auto from = window.toArrangement(clip->loopStartTicks);
+        const auto to = braceKey(LoopRange{from, from + loopLengthOf(*clip)}, key, mods.isCommandDown(),
+                                 [this](std::int64_t tick, bool forward) { return time.nextGridLine(tick, forward); });
+        if (to)
+            panel.commit(setClipLoop(*clip, window.toSource(to->start), to->length()));
+        return true;
+    }
+    if (!sideways || mods.isCommandDown() || mods.isShiftDown())
+        return true;
+    // A marker: by the grid; with Alt/Option, the whole region, both markers together.
+    const auto by = code == juce::KeyPress::rightKey ? gridTicks() : -gridTicks();
+    const auto start = clip->startMarkerTicks, end = endMarkerOf(*clip);
+    if (!mods.isAltDown()) {
+        panel.commit(picked_ == RulerPart::StartMarker ? setClipStart(*clip, start + by) : setClipEnd(*clip, end + by));
+        return true;
+    }
+    // The one that leads goes first, so the region is never empty between the two ops.
+    auto moved = *clip;
+    TrackEdit both;
+    if (by > 0) {
+        both = setClipEnd(*clip, end + by);
+        moved.endMarkerTicks = end + by;
+    } else {
+        both = setClipStart(*clip, start + by);
+        moved.startMarkerTicks = start + by;
+    }
+    if (both.refusal.empty()) {
+        auto second = by > 0 ? setClipStart(moved, start + by) : setClipEnd(moved, end + by);
+        both.refusal = std::move(second.refusal);
+        for (auto &o : second.ops)
+            both.ops.push_back(std::move(o));
+        for (auto &o : both.ops)
+            o.label = "Move Clip Region";
+    }
+    panel.commit(std::move(both));
+    return true;
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -873,6 +1012,20 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             return;
         }
     }
+    if (const auto part = rulerPartAt(from_); part != RulerPart::None) {
+        // A ruler handle: it is selected, for the arrows, and a drag begins.
+        selected_.clear();
+        otherSelected_.clear();
+        head_.reset();
+        picked_ = part == RulerPart::LoopStart || part == RulerPart::LoopEnd ? RulerPart::Loop : part;
+        rulerDrag_ = part;
+        loopPreview_.reset();
+        markerPreview_.reset();
+        drag_ = Drag::Ruler;
+        repaint();
+        return;
+    }
+    picked_ = RulerPart::None; // anything else pressed lets the brace or the marker go
     if (const auto piano = keysArea(); piano.contains(from_)) {
         // A piano key selects its key track's notes; with Shift it adds them, or takes them out
         // when all of them are in (manual 10.5.2).
@@ -1030,6 +1183,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         const auto lane = velocityArea().withTrimmedTop(1);
         if (const auto *n = note_edits_detail::find(*clip, anchor_))
             dragVelocity_ = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10) - static_cast<int>(n->velocity);
+    } else if (drag_ == Drag::Ruler) {
+        rulerDrag(e.mods);
     } else if (drag_ == Drag::Shape) {
         shapeStroke();
     } else if (drag_ == Drag::Trim) {
@@ -1104,6 +1259,14 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         const auto keep = selected_;
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
+    } else if (kind == Drag::Ruler) {
+        const auto part = std::exchange(rulerDrag_, RulerPart::None);
+        const auto loop = std::exchange(loopPreview_, std::nullopt);
+        const auto marker = std::exchange(markerPreview_, std::nullopt);
+        if (loop)
+            panel.commit(setClipLoop(*clip, loop->first, loop->second));
+        else if (marker)
+            panel.commit(part == RulerPart::StartMarker ? setClipStart(*clip, *marker) : setClipEnd(*clip, *marker));
     } else if (kind == Drag::Draw) {
         drag_ = Drag::Draw;
         const auto steps = drawnSteps();
@@ -1140,6 +1303,8 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         return false;
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
+    if (rulerKey(k))
+        return true;
     // Delete is the editor's while it has the keyboard: with no note selected it does nothing,
     // and never reaches the arrangement's selection.
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
@@ -1357,10 +1522,24 @@ void NoteEditor::paint(juce::Graphics &g) {
         // The loop brace (manual 8.2.2): over the loop's window, lit while the clip loops.
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(ruler);
-        g.setColour(clip->loopEnabled ? look::textOnBand : look::textOnBand.withAlpha(0.35f));
+        const auto lit = picked_ == RulerPart::Loop ? juce::Colours::white : look::textOnBand;
+        g.setColour(clip->loopEnabled ? lit : lit.withAlpha(0.35f));
         g.fillRect(brace->getStart(), ruler.getY() + 1, std::max(1, brace->getLength()), 3);
         g.fillRect(brace->getStart(), ruler.getY() + 1, 2, 6);
         g.fillRect(brace->getEnd() - 2, ruler.getY() + 1, 2, 6);
+    }
+    {
+        // The clip's Start and End markers (manual 8.8): flags along the ruler's foot, pointing into the clip.
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(ruler);
+        const auto foot = static_cast<float>(ruler.getBottom());
+        for (const bool end : {false, true}) {
+            const auto x = static_cast<float>(markerX(end));
+            juce::Path flag;
+            flag.addTriangle(x, foot - 8.f, x + (end ? -6.f : 6.f), foot - 4.f, x, foot);
+            g.setColour(picked_ == (end ? RulerPart::EndMarker : RulerPart::StartMarker) ? juce::Colours::white : look::textOnBand);
+            g.fillPath(flag);
+        }
     }
     const auto window = ClipWindow::of(*clip);
     const int rows = keys.rowCount();

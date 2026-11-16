@@ -5178,6 +5178,92 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
 
+    // The ruler's handles (manual 8.8, 8.9): the loop brace along its top, the Start and End markers along its foot.
+    {
+        using Part = NoteEditor::RulerPart;
+        const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto ruler = ed.rulerArea();
+        const float top = static_cast<float>(ruler.getY() + 3), foot = static_cast<float>(ruler.getBottom() - 3);
+        const auto part = [&](float x, float y) { return ed.rulerPartAt(juce::Point<float>(x, y).roundToInt()); };
+        const auto drag = [&](juce::Point<float> a, juce::Point<float> b, bool release = true) {
+            ed.mouseDown(pressAt(ed, a));
+            ed.mouseDrag(dragAt(ed, a, b));
+            if (release)
+                ed.mouseUp(dragAt(ed, a, b));
+        };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        // The clip never looped: its loop is its whole length, from beat 4 to beat 12 of the song.
+        check(!details().loopEnabled && loopLengthOf(details()) == 8 * beat && details().startMarkerTicks == 0 && endMarkerOf(details()) == 8 * beat,
+              "the clip's loop and its markers span its eight beats");
+        check(part(xAt(4 * beat), top) == Part::LoopStart && part(xAt(12 * beat), top) == Part::LoopEnd && part(xAt(8 * beat), top) == Part::Loop &&
+                  part(xAt(4 * beat) + 1.f, foot) == Part::StartMarker && part(xAt(12 * beat) - 1.f, foot) == Part::EndMarker &&
+                  part(xAt(8 * beat), foot) == Part::None && ed.rulerSelection() == Part::None,
+              "the brace's ends and its bar are in the ruler's upper half, the two markers in its lower");
+        const auto marker = ed.insertMarker();
+        // The brace's end, dragged.
+        drag({xAt(12 * beat), top}, {xAt(8 * beat) + 2.f, top}, false);
+        check(ed.loopBrace() && std::abs(ed.loopBrace()->getEnd() - static_cast<int>(xAt(8 * beat))) <= 1 && loopLengthOf(details()) == 8 * beat,
+              "while its end is held the brace follows the pointer, on the grid, and nothing is written");
+        ed.mouseUp(dragAt(ed, {xAt(12 * beat), top}, {xAt(8 * beat) + 2.f, top}));
+        check(details().loopLengthTicks == 4 * beat && details().loopStartTicks == 0 && !details().loopEnabled && undoIs("Set Loop Length", 1) &&
+                  ed.rulerSelection() == Part::Loop,
+              "released, the loop is four beats long: one undo step; the switch stays off and the brace is selected");
+        // The bar, dragged, moves it; its start, dragged, keeps its end.
+        drag({xAt(6 * beat), top}, {xAt(7 * beat), top});
+        check(details().loopStartTicks == beat && details().loopLengthTicks == 4 * beat && undoIs("Set Loop Position", 1),
+              "the brace dragged by its bar moves a beat on, its length kept");
+        drag({xAt(5 * beat), top}, {xAt(6 * beat), top});
+        check(details().loopStartTicks == 2 * beat && details().loopLengthTicks == 3 * beat && undoIs("Set Loop Position", 1),
+              "its start dragged a beat on leaves its end where it was");
+        // The selected brace's keys, as the Arrangement's.
+        check(ed.keyPressed(key(right)) && details().loopStartTicks == 2 * beat + g && details().loopLengthTicks == 3 * beat &&
+                  ed.keyPressed(key(left)) && details().loopStartTicks == 2 * beat,
+              "Right and Left nudge the selected brace by the grid");
+        check(ed.keyPressed(key(up)) && details().loopStartTicks == 5 * beat && ed.keyPressed(key(down)) && details().loopStartTicks == 2 * beat,
+              "Up and Down move it by its length");
+        check(ed.keyPressed(key(right, command)) && details().loopLengthTicks == 3 * beat + g && ed.keyPressed(key(left, command)) &&
+                  details().loopLengthTicks == 3 * beat && details().loopStartTicks == 2 * beat,
+              "Ctrl and Right or Left lengthen and shorten it by the grid");
+        check(ed.keyPressed(key(up, command)) && details().loopLengthTicks == 6 * beat && ed.keyPressed(key(down, command)) &&
+                  details().loopLengthTicks == 3 * beat && undoIs("Set Loop Length", 1),
+              "Ctrl and Up or Down double and halve it");
+        check(ed.insertMarker() == marker && note(2).startTicks == beat, "the arrows were the brace's: no note and no insert marker moved");
+        check(ed.keyPressed(key(juce::KeyPress::escapeKey)) && ed.rulerSelection() == Part::None, "Esc lets the brace go");
+
+        // The End marker, dragged and by keys.
+        drag({xAt(12 * beat) - 1.f, foot}, {xAt(10 * beat), foot}, false);
+        check(std::abs(ed.markerX(true) - static_cast<int>(xAt(10 * beat))) <= 1 && endMarkerOf(details()) == 8 * beat,
+              "while the End marker is held it follows the pointer");
+        ed.mouseUp(dragAt(ed, {xAt(12 * beat) - 1.f, foot}, {xAt(10 * beat), foot}));
+        check(endMarkerOf(details()) == 6 * beat && undoIs("Set Clip End", 1) && ed.rulerSelection() == Part::EndMarker,
+              "released at beat 10 of the song, the clip's End is its sixth beat: one undo step, the marker selected");
+        check(ed.keyPressed(key(right)) && endMarkerOf(details()) == 6 * beat + g && ed.keyPressed(key(left)) && endMarkerOf(details()) == 6 * beat,
+              "Right and Left move the selected marker by the grid");
+        check(ed.keyPressed(key(right, alt)) && details().startMarkerTicks == g && endMarkerOf(details()) == 6 * beat + g &&
+                  undoIs("Move Clip Region", 2),
+              "with Alt both markers move together: one undo step");
+        check(ed.keyPressed(key(left, alt)) && details().startMarkerTicks == 0 && endMarkerOf(details()) == 6 * beat, "and back");
+        // The Start marker.
+        drag({xAt(4 * beat) + 1.f, foot}, {xAt(5 * beat), foot});
+        check(details().startMarkerTicks == beat && undoIs("Set Clip Start", 1) && ed.rulerSelection() == Part::StartMarker,
+              "the Start marker dragged a beat on: the clip starts a beat into its notes");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(details().startMarkerTicks == 0, "and Undo puts it back");
+        const auto beforeRefusal = submitter.nextUndo()->txnId;
+        ed.mouseDown(pressAt(ed, {xAt(4 * beat) + 1.f, foot}));
+        ed.mouseUp(pressAt(ed, {xAt(4 * beat) + 1.f, foot}));
+        check(ed.rulerSelection() == Part::StartMarker && submitter.nextUndo()->txnId == beforeRefusal, "a click on a marker selects it and writes nothing");
+        check(ed.keyPressed(key(left)) && details().startMarkerTicks == 0 && !root.error().empty() && submitter.nextUndo()->txnId == beforeRefusal,
+              "Left at the clip's beginning is refused, with the reason");
+        const juce::Point<float> away(xAt(9 * beat) + 4.f, static_cast<float>(area.getY() + 3));
+        ed.mouseDown(pressAt(ed, away));
+        ed.mouseUp(pressAt(ed, away));
+        check(ed.rulerSelection() == Part::None && ed.insertMarker() == 9 * beat, "a click in the notes lets the marker go");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);
