@@ -4,6 +4,8 @@
 #include "../src/juce/ui_shell.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
+#include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "ui_fake_peer.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -322,6 +324,92 @@ void parameterPages(AppCommands &commands, const std::filesystem::path &director
     check(events.empty(), "page enable rejects a replaced runtime before mutation");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void cleanCompressor(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc =
+        ProjectDocument::open(directory / "clean.adi", true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Compressor, 2),
+          "real Clean device can be added for component presentation");
+    if (!doc)
+        return;
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [](const auto &p) {
+        return p.uid == "org.adidaw.mix.compressor";
+    });
+    if (found == publication->end()) {
+        check(false, "Clean publication exists");
+        return;
+    }
+    doc->setParameterDemand(doc.get(), {found->id});
+    doc->tick(1);
+    AdiRootComponent root(doc->view(), doc->ops(), doc->mailbox(), commands, doc->views(),
+                          doc->sessionState(), "clean");
+    root.setSize(1200, 800);
+    UiPeerRoot peer;
+    peer.setSize(1200, 800);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    peer.addAndMakeVisible(root);
+    check(peer.getPeer() && !peer.getPeer()->getNativeHandle(),
+          "Clean presentation uses only a software peer");
+    auto &strip = root.devices;
+    strip.setVisible(true);
+    strip.publication = [&] { return doc->parameterFeed().current(); };
+    strip.functionAvailability = device::mixFunctionAvailability;
+    strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &runtime,
+                              std::uint64_t stamp) {
+        const auto p = doc->parameterFeed().current();
+        return std::any_of(p->begin(), p->end(), [&](const auto &d) {
+            return d.id == id && d.runtime.sameInstance(runtime) && d.instance == stamp &&
+                   d.available;
+        });
+    };
+    strip.guardedGesture = [&](std::int64_t id, const std::string &parameter,
+                               engine::ParamEventKind kind, double value,
+                               const engine::DeviceRuntimeToken &runtime, std::uint64_t stamp) {
+        return doc->parameterGestureExpected(id, parameter, kind, value, runtime, stamp);
+    };
+    strip.frame(2);
+    check(strip.panels.size() == 1, "Clean creates one native device tab");
+    if (strip.panels.size() == 1) {
+        auto *panel = strip.panels.front().get();
+        check(panel->controls.size() == 8 && panel->title.getTooltip().contains("0 samples"),
+              "Clean shows eight live controls and real zero latency");
+        check(panel->parameterPages.size() == 1 && panel->parameterPages.front().name == "Clean",
+              "Clean has no unavailable style pages");
+        if (!panel->controls.empty()) {
+            auto *control = panel->controls.front().get();
+            control->slider.onDragStart();
+            control->slider.setValue(.25, juce::sendNotificationSync);
+            control->slider.onDragEnd();
+            check(doc->session().instanceFor(found->id)->getParam("0").normalized == .25,
+                  "visible Clean control reaches the actual core parameter");
+            const bool undo = doc->ops().undo().ok && doc->synchronise();
+            doc->tick(2);
+            check(undo && std::abs(doc->session().instanceFor(found->id)->getParam("0").normalized -
+                                   .7) < 1e-6,
+                  "visible Clean drag has one common undo");
+        }
+    }
+    root.command(AppCommands::ToggleMixView);
+    root.chooseMixViewTab(1);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &stack = root.mixViewPanel.stack;
+    stack.frameAt(root.reader(), 0);
+    const auto item = stack.model().chainRef(2, found->id);
+    if (!item.row.valid() || stack.rows().empty())
+        std::printf("STACK diagnostic: panel=%d stack=%d rows=%zu scope=%d item=%d/%d area=%d,%d error=%s\n",
+          root.mixViewPanel.isVisible(), stack.isVisible(), stack.rows().size(),
+          static_cast<int>(stack.model().windowView().channelScope), item.row.valid(),static_cast<int>(item.place),
+          stack.getWidth(),stack.getHeight(),root.error().c_str());
+    check(stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+              item.row.valid() && item.place == stack::ItemPlace::Chain && !stack.rows().empty(),
+          "actual Clean device appears in the default With Tools STACK row");
+    peer.removeChildComponent(&root);
+    peer.removeFromDesktop();
+}
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI init;
@@ -330,6 +418,7 @@ int main() {
     AppCommands commands(settings);
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
+    cleanCompressor(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
 }

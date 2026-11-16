@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Actual native factory and generated audio; no editor, device or reference host.
+#include "adi/engine/param_automation.hpp"
+#include "adi/mix/compressor/Core.hpp"
+#include "adi/ui/project_document.hpp"
+#include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
+#include "temp_directory.hpp"
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <new>
+#include <type_traits>
+
+namespace {
+thread_local bool audio = false;
+std::atomic<unsigned> allocations{0}, frees{0};
+} // namespace
+void *operator new(std::size_t n) {
+    if (audio)
+        ++allocations;
+    if (auto *p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void *p) noexcept {
+    if (audio && p)
+        ++frees;
+    std::free(p);
+}
+void operator delete[](void *p) noexcept { ::operator delete(p); }
+void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
+void operator delete[](void *p, std::size_t) noexcept { ::operator delete(p); }
+namespace {
+using namespace adi;
+namespace c = mix::compressor;
+int checks = 0, failures = 0;
+void check(bool value, const char *label) {
+    ++checks;
+    if (!value) {
+        ++failures;
+        std::printf("FAIL %s\n", label);
+    }
+}
+std::unique_ptr<device::DeviceInstance> make(int channels = 2) {
+    rows::PluginRef ref;
+    ref.format = "internal";
+    ref.uid = "org.adidaw.mix.compressor";
+    ref.name = "Compressor";
+    engine::DeviceRequest request;
+    request.ref = &ref;
+    request.channels = channels;
+    std::string error;
+    return device::withBuiltinDevices()(request, error);
+}
+c::Settings controls(const device::DeviceInstance &device) {
+    c::Settings s;
+    s.thresholdDb = static_cast<float>(device.getParam("0").real);
+    s.ratio = static_cast<float>(device.getParam("1").real);
+    s.kneeDb = static_cast<float>(device.getParam("2").real);
+    s.rangeDb = static_cast<float>(device.getParam("3").real);
+    s.attack = static_cast<float>(device.getParam("4").normalized);
+    s.release = static_cast<float>(device.getParam("5").normalized);
+    s.autoGain = device.getParam("7").normalized != 0;
+    s.autoRelease = device.getParam("6").normalized != 0;
+    return s;
+}
+template <class T> using Audio = std::array<std::array<T, 64>, 2>;
+template <class T>
+void process(device::DeviceInstance &device, Audio<T> &data, std::uint64_t block, bool split) {
+    const T *in[]{data[0].data(), data[1].data()};
+    T *out[]{data[0].data(), data[1].data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.renderBlock = block;
+    io.frames = split ? 17 : 64;
+    if constexpr (std::is_same_v<T, float>) {
+        io.in = in;
+        io.out = out;
+    } else {
+        io.in64 = in;
+        io.out64 = out;
+    }
+    audio = true;
+    device.process(io);
+    if (split) {
+        io.blockOffset = 17;
+        io.frames = 47;
+        device.process(io);
+    }
+    audio = false;
+}
+template <class T> void exactAudio(double rate) {
+    auto whole = make(), split = make();
+    check(whole && split, "normal builtin loader creates Clean compressor");
+    if (!whole || !split)
+        return;
+    whole->setParam("7", device::ParamValue::fromNormalized(0));
+    split->setParam("7", device::ParamValue::fromNormalized(0));
+    whole->prepare(rate, 64);
+    split->prepare(rate, 64);
+    c::Core reference;
+    check(reference.prepare({rate, 64, 2}, controls(*whole)) == c::Status::Ok,
+          "direct Clean comparison prepares");
+    bool exact = true, reduces = false;
+    for (std::uint64_t block = 1; block <= 64; ++block) {
+        if (block == 8 || block == 16 || block == 24 || block == 32 || block == 40 || block == 48) {
+            const char *id = block == 8    ? "0"
+                             : block == 16 ? "1"
+                             : block == 24 ? "7"
+                             : block == 32 ? "6"
+                             : block == 40 ? "2"
+                                           : "3";
+            const double v = block == 24 || block == 32 ? 1. : .3;
+            whole->setParam(id, device::ParamValue::fromNormalized(v));
+            split->setParam(id, device::ParamValue::fromNormalized(v));
+        }
+        if (block == 20) {
+            whole->prepare(rate, 64);
+            split->prepare(rate, 64);
+        }
+        Audio<T> a{};
+        for (std::size_t ch = 0; ch < 2; ++ch)
+            for (std::size_t i = 0; i < 64; ++i)
+                a[ch][i] = static_cast<T>(.6 * std::sin(.13 * static_cast<double>(block * 64 + i) +
+                                                        static_cast<double>(ch)));
+        if (block == 50)
+            a[0][17] = std::numeric_limits<T>::quiet_NaN();
+        if (block == 51)
+            a[1][33] = std::numeric_limits<T>::infinity();
+        auto b = a, expected = a;
+        for (auto &channel : expected)
+            for (auto &sample : channel)
+                if (!std::isfinite(static_cast<float>(sample)))
+                    sample = 0;
+        const auto dry = expected;
+        auto settings = controls(*whole);
+        T *planes[]{expected[0].data(), expected[1].data()};
+        audio = true;
+        const auto context = reference.beginBlock(64);
+        const auto result = reference.process(context, 0, 64, planes, nullptr, 0, settings);
+        audio = false;
+        process(*whole, a, block, false);
+        process(*split, b, block, true);
+        exact = (result == c::Status::Ok && a == expected && b == expected) && exact;
+        if (block > 2 && block < 24)
+            reduces = reduces || std::abs(a[0][63]) < std::abs(dry[0][63]) * .9;
+    }
+    check(exact, "native whole/split, live controls, same-format prepare and sanitized input equal "
+                 "direct Clean samples");
+    check(reduces, "loaded native compressor actually reduces programme level");
+}
+void stateAndDescriptors() {
+    auto a = make(), b = make();
+    check(a && b && a->paramCount() == 8 && a->latencySamples() == 0,
+          "eight implemented controls and zero latency are declared");
+    if (!a || !b)
+        return;
+    bool declared = true;
+    for (int i = 0; i < a->paramCount(); ++i) {
+        const auto *d = a->paramAt(i);
+        declared = declared && d && d->automatable && d->groupId == "compressor" &&
+                   d->groupName == "Clean";
+    }
+    check(declared && !a->paramAt(8), "Clean page contains only implemented automatable controls");
+    check(std::abs(a->getParam("4").real - .25) < .001 &&
+              std::abs(a->getParam("5").real - 200) < .001,
+          "default display times use the canonical control domain");
+    check(a->getParam("2").real == 18 && a->getParam("7").normalized == 1,
+          "fresh Clean uses authored knee and automatic-gain defaults");
+    const auto text = a->paramText("5", a->getParam("5").normalized);
+    a->setParam("4", device::ParamValue::fromNormalized(.8));
+    check(a->paramText("5", a->getParam("5").normalized) == text,
+          "manual release display stays independent of its internal coupled coefficient");
+    a->setParam("6", device::ParamValue::fromNormalized(1));
+    check(a->paramText("5", a->getParam("5").normalized).find("Auto") != std::string::npos,
+          "automatic release does not claim a fixed measured duration");
+    const auto state = a->saveState("state");
+    check(b->loadState("state", state) && b->saveState("state") == state,
+          "all authored state recalls exactly");
+    auto bad = Payload::from_cbor(state);
+    bad["params"]["1"] = std::numeric_limits<double>::quiet_NaN();
+    check(!b->loadState("state", Payload::to_cbor(bad)) && b->saveState("state") == state,
+          "bad state refuses atomically");
+    check(!b->setParam("0", device::ParamValue::fromNormalized(2)) &&
+              !b->setParam("style", device::ParamValue::fromNormalized(0)),
+          "out-of-range and unavailable style edits refuse");
+}
+void automationAndRefusal() {
+    auto a = make(), b = make();
+    a->prepare(48000, 64);
+    b->prepare(48000, 64);
+    rows::Model model;
+    const std::array<double, 8> target{.3, .5, .1, .6, .2, .4, 1, 0};
+    for (int i = 0; i < 8; ++i) {
+        rows::AutomationLane lane;
+        lane.id = i + 1;
+        lane.ownerKind = "device";
+        lane.ownerId = 1;
+        lane.paramRef = a->paramAt(i)->id;
+        lane.valueDomain = "normalized";
+        lane.enabled = true;
+        lane.defaultValue = target[static_cast<std::size_t>(i)];
+        model.automationLanes.push_back(lane);
+        b->setParam(lane.paramRef, device::ParamValue::fromNormalized(lane.defaultValue));
+    }
+    engine::Transport transport;
+    auto program = engine::compileAutomation(model, 48000);
+    auto binding = engine::bindDeviceAutomation(program, {}, transport, 48000);
+    check(binding->problems.empty() && binding->byDevice.contains(1),
+          "all eight published IDs bind through real engine automation");
+    if (!binding->byDevice.contains(1))
+        return;
+    std::array<engine::Event, 16> events{};
+    engine::EventList list(events.data(), 16);
+    audio = true;
+    binding->byDevice.at(1)->emit(list, 64);
+    audio = false;
+    check(list.size() == 8, "automation chases every Clean control once");
+    Audio<float> x{}, y{};
+    for (auto &ch : x)
+        ch.fill(.5f);
+    y = x;
+    const float *in[]{x[0].data(), x[1].data()};
+    float *out[]{x[0].data(), x[1].data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.in = in;
+    io.out = out;
+    io.events = {list.begin(), list.size()};
+    audio = true;
+    a->process(io);
+    audio = false;
+    process(*b, y, 1, false);
+    bool exact = x == y;
+    for (int i = 0; i < 8; ++i)
+        exact = exact && a->getParam(a->paramAt(i)->id).normalized ==
+                             b->getParam(b->paramAt(i)->id).normalized;
+    check(exact,
+          "real automation events and owner edits produce identical Clean samples and targets");
+    // Rejected buffers must never admit an unfinished logical core block.
+    io.events = {};
+    out[1] = out[0];
+    audio = true;
+    a->process(io);
+    audio = false;
+    x = {};
+    for (auto &ch : x)
+        ch.fill(.3f);
+    y = x;
+    out[1] = x[1].data();
+    audio = true;
+    a->process(io);
+    audio = false;
+    process(*b, y, 2, false);
+    check(x == y, "overlapping planes refuse without poisoning the next valid callback");
+    auto mono = make(1);
+    mono->prepare(48000, 64);
+    c::Core reference;
+    check(reference.prepare({48000, 64, 1}, controls(*mono)) == c::Status::Ok,
+          "mono Clean reference prepares");
+    x = {};
+    for (auto &ch : x)
+        ch.fill(.4f);
+    y = x;
+    const float *mi[]{x[0].data()};
+    float *mo[]{x[0].data()};
+    float *expected[]{y[0].data()};
+    io.in = mi;
+    io.out = mo;
+    io.channels = 1;
+    const auto monoSettings = controls(*mono);
+    audio = true;
+    mono->process(io);
+    const auto block = reference.beginBlock(64);
+    const auto status = reference.process(block, 0, 64, expected, nullptr, 0, monoSettings);
+    audio = false;
+    check(status == c::Status::Ok && x == y, "mono native Clean preserves exact engine sound");
+}
+void documentPipeline() {
+    test::TempDirectory temp("clean_device", "project");
+    const auto path = temp.path() / "song.adi";
+    std::string error;
+    auto doc = ui::ProjectDocument::open(path, true, device::withBuiltinDevices(), error);
+    check(doc && doc->addMixFunction(mix::Function::Compressor, 2),
+          "actual document adds compressor through shared prepared insertion");
+    if (!doc)
+        return;
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto found = std::find_if(publication->begin(), publication->end(), [](const auto &d) {
+        return d.uid == "org.adidaw.mix.compressor";
+    });
+    check(found != publication->end() && found->available,
+          "inserted compressor is realized and published");
+    if (found == publication->end())
+        return;
+    const auto id = found->id;
+    doc->setParameterDemand(doc.get(), {id});
+    doc->tick(1);
+    const auto *instance = doc->session().instanceFor(id);
+    const double before = instance->getParam("0").normalized;
+    using K = engine::ParamEventKind;
+    check(doc->parameterGesture(id, "0", K::Begin, before) &&
+              doc->parameterGesture(id, "0", K::Value, .25) &&
+              doc->parameterGesture(id, "0", K::End, .25),
+          "common Begin/Value/End edits native compressor");
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    doc->tick(2);
+    check(undone &&
+              std::abs(doc->session().instanceFor(id)->getParam("0").normalized - before) < 1e-7,
+          "one Undo restores the parameter gesture");
+    check(doc->ops().redo().ok && doc->synchronise(), "parameter redo applies");
+    doc->tick(3);
+    check(!doc->addMixFunction(mix::Function::Compressor, 2),
+          "one compressor per channel is enforced by shared insertion");
+    check(doc->deviceAction("device.remove", {{"id", id}}) && doc->ops().undo().ok &&
+              doc->synchronise(),
+          "remove and Undo restore the native function");
+    doc->tick(4);
+    doc.reset();
+    doc = ui::ProjectDocument::open(path, false, device::withBuiltinDevices(), error);
+    instance = doc ? doc->session().instanceFor(id) : nullptr;
+    check(instance && std::abs(instance->getParam("0").normalized - .25) < 1e-7,
+          "project reopen restores authored compressor settings");
+}
+} // namespace
+int main() {
+    stateAndDescriptors();
+    for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
+        exactAudio<float>(rate);
+        exactAudio<double>(rate);
+    }
+    automationAndRefusal();
+    documentPipeline();
+    check(allocations.load() == 0 && frees.load() == 0,
+          "native audio callbacks allocate and free nothing");
+    std::printf("Native Clean: %d checks, %d failures; callback allocations %u/%u\n", checks,
+                failures, allocations.load(), frees.load());
+    return failures ? 1 : 0;
+}
