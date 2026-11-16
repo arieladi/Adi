@@ -381,7 +381,14 @@ class ClipViewPanel final : public juce::Component {
 
     static constexpr int kPanelWidth = 156, kToolsWidth = 196, kTitleHeight = 17, kHeaderHeight = 17;
     // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.
-    int panelWidth() const noexcept { return midi() ? kPanelWidth + kToolsWidth : kPanelWidth; }
+    int panelWidth() const noexcept { return panelsFolded_ ? kFoldedWidth : midi() ? kPanelWidth + kToolsWidth : kPanelWidth; }
+    // A double-click on the title folds the panels (manual 8.1.1): the Main panel and the tools
+    // give their place to the editor, and a narrow strip in the clip's colour stays, with the
+    // activator; a double-click on the strip brings them back. Kept with the window.
+    static constexpr int kFoldedWidth = 20;
+    bool panelsFolded() const noexcept { return panelsFolded_; }
+    void foldPanels(bool fold);
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     // The Pitch and Time panel (manual 8.5), for a MIDI clip: the notes' range, Transpose, and the
     // utilities. Each acts on the selected notes, or on all of them when none is selected, and is
     // one undo step.
@@ -643,6 +650,7 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    bool panelsFolded_ = false;
     // An edit of the Main panel's that belongs to every shown clip (manual 10.8: loop, signature and
     // scale apply to all the selected clips): `build` makes it for one clip; one batch, one undo
     // step. The edited clip's refusal refuses it; another clip that cannot take it is passed over.

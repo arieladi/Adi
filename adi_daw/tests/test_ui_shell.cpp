@@ -6286,6 +6286,32 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(ed.chooseSpelling(1) && kept() == 0 && undo() && details().notes.size() == 5, "sharps again; the test note taken back");
         ed.select({});
     }
+
+    // A double-click on the title folds the panels (manual 8.1.1).
+    {
+        using Field = ClipViewPanel::Field;
+        const int open = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth;
+        check(!panel.panelsFolded() && panel.panelWidth() == open && ed.getX() == open + 1, "the panels are open: the Main panel, the tools, then the editor");
+        const juce::Point<float> onTitle(80.f, 8.f);
+        panel.mouseDoubleClick(pressAt(panel, onTitle));
+        check(panel.panelsFolded() && panel.panelWidth() == ClipViewPanel::kFoldedWidth && ed.getX() == ClipViewPanel::kFoldedWidth + 1 &&
+                  panel.toolsArea().isEmpty() && panel.fieldBox(Field::Start).isEmpty() && panel.loopBox().isEmpty() && panel.scaleModeBox().isEmpty() &&
+                  panel.setBox(Field::Start).isEmpty() && panel.fieldAt({80, 60}) == Field::None &&
+                  panel.titleArea().getHeight() == panel.getHeight() && !panel.velocityStripArea().isEmpty() &&
+                  ViewStateStore(*store).load("clip-view-clip-time").clipPanelsFolded,
+              "a double-click on the title folds them to a strip: the editor takes their place, none of their controls is there, and it is kept with the window");
+        const auto beforeFold = submitter.nextUndo()->txnId;
+        panel.mouseDown(pressAt(panel, {80.f, 60.f}));
+        panel.mouseUp(pressAt(panel, {80.f, 60.f}));
+        check(submitter.nextUndo()->txnId == beforeFold, "a click where a field used to be does nothing");
+        panel.mouseDoubleClick(pressAt(panel, {10.f, 100.f}));
+        check(!panel.panelsFolded() && panel.panelWidth() == open && ed.getX() == open + 1 && !panel.fieldBox(Field::Start).isEmpty() &&
+                  !ViewStateStore(*store).load("clip-view-clip-time").clipPanelsFolded,
+              "a double-click on the strip brings them back");
+        const bool muted = details().muted;
+        panel.mouseDoubleClick(pressAt(panel, panel.activatorArea().getCentre().toFloat()));
+        check(!panel.panelsFolded() && details().muted == muted, "a double-click on the activator folds nothing");
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
