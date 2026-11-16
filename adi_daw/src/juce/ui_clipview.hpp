@@ -17,6 +17,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -93,6 +94,15 @@ class NoteEditor final : public juce::Component {
     // Moves the playhead: called on the window's frame.
     void frame();
     ArrangementPlayhead playhead;
+    // With several clips shown and Focus off, notes of the other clips can be selected too (a drag
+    // from empty space, Ctrl/Cmd+A, Shift and a click), and a drag, the arrows, Delete, 0 and
+    // Duplicate act on every selected note of every clip, as one undo step (manual 10.8).
+    const std::vector<std::uint64_t> &selectedIn(std::int64_t clip) const noexcept;
+    bool anySelected() const noexcept;
+    // When another clip becomes the edited one, each clip keeps its own selected notes.
+    void rehome(std::int64_t from, std::int64_t to);
+    // A note of another shown clip as it is drawn while a drag is held.
+    engine::ClipNote shownIn(const engine::ClipNote &, std::int64_t clip) const noexcept;
     // The selected notes, by id: this view's own, kept while the notes exist.
     const std::vector<std::uint64_t> &selected() const noexcept { return selected_; }
     bool isSelected(std::uint64_t id) const noexcept;
@@ -140,11 +150,16 @@ class NoteEditor final : public juce::Component {
     void handleDrag();
     juce::Rectangle<int> selectedVelocityFrame() const noexcept;
     bool commit(NoteEdit);
+    using Build = std::function<NoteEdit(const engine::ClipDetails &, const std::vector<std::uint64_t> &)>;
+    NoteEdit across(const Build &) const;
+    engine::ClipNote dragged(const engine::ClipNote &) const noexcept;
+    std::vector<std::uint64_t> &otherIds(std::int64_t clip);
     bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
     bool fitPending_ = false;
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
+    std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> otherSelected_;
     Drag drag_ = Drag::None;
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
