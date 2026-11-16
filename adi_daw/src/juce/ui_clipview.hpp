@@ -104,6 +104,18 @@ class NoteEditor final : public juce::Component {
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }
+    // The ruler's handles (manual 8.8, 8.9). The loop brace along its top: an end dragged changes
+    // the loop's start or length, the bar dragged moves it. The clip's Start and End markers along
+    // its foot, dragged. On the grid, shown while held, one undo step at the release. A press
+    // selects the brace or the marker, and the arrows are then its own: for the brace, left and
+    // right nudge it by the grid, up and down move it by its length, and with Ctrl/Cmd left and
+    // right shorten or lengthen it and up and down double or halve it, as the Arrangement's brace;
+    // for a marker, left and right move it by the grid, and with Alt/Option both markers together.
+    enum class RulerPart { None, LoopStart, LoopEnd, Loop, StartMarker, EndMarker };
+    RulerPart rulerPartAt(juce::Point<int>) const noexcept;
+    RulerPart rulerSelection() const noexcept { return picked_; }
+    // Where a marker stands in the ruler, as shown: the Start marker, or the End marker.
+    int markerX(bool end) const noexcept;
     // The time selection (manual 10.5.2): from the insert marker to where a drag across empty space,
     // or Shift and the arrows, took its other end. In the song's time, the earlier end first; none
     // while it is a point. Enter swaps between it and the notes that begin inside it; Esc, a click
@@ -170,7 +182,13 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler };
+    RulerPart picked_ = RulerPart::None, rulerDrag_ = RulerPart::None;
+    // While a ruler handle is held: the loop's start and length, or the marker, in the clip's ticks.
+    std::optional<std::pair<std::int64_t, std::int64_t>> loopPreview_;
+    std::optional<std::int64_t> markerPreview_;
+    void rulerDrag(const juce::ModifierKeys &);
+    bool rulerKey(const juce::KeyPress &);
     void shapeStroke();
     void trimStroke();
     void handleDrag();
@@ -354,6 +372,7 @@ class ClipViewPanel final : public juce::Component {
 
   private:
     void read(const SnapshotReader &);
+    friend class NoteEditor;
     bool commit(TrackEdit);
     std::int64_t fieldTicks(Field) const noexcept;
     std::int64_t draggedTicks() const noexcept;
