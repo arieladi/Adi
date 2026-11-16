@@ -6150,6 +6150,44 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.keepSettings();
         panel.setToolsTab(0);
     }
+
+    // The Clip View Selector in the Status Bar (manual 8.7): a drag scrolls and zooms the editor; its view is framed.
+    {
+        auto &statusBar = root.status;
+        auto &toggle = statusBar.clipToggle;
+        ed.fitWidth();
+        root.frame();
+        const auto whole = statusBar.clipViewFrame();
+        const auto inner = statusBar.secondField().reduced(5, 4).toFloat();
+        check(root.state().clipView && !whole.isEmpty() && std::abs(whole.getX() - inner.getX()) < 1.5f && whole.getWidth() > inner.getWidth() * 0.9f,
+              "with the whole clip in the editor, the selector's frame spans the whole field");
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        root.frame();
+        const auto zoomed = statusBar.clipViewFrame();
+        check(zoomed.getWidth() < whole.getWidth() * 0.7f, "zoomed in, the frame is as much narrower as the editor shows less");
+        const juce::Point<float> start(40.f, 8.f);
+        const double left0 = ed.time.left, scale0 = ed.time.scale;
+        statusBar.mouseDown(pressAt(toggle, start));
+        statusBar.mouseDrag(dragAt(toggle, start, {start.x + 20.f, start.y}));
+        check(ed.time.left > left0 && std::abs(ed.time.scale - scale0) < 1e-9 && root.arrangement.followPaused,
+              "a drag to the right in the selector scrolls the editor on, by that share of the clip; it pauses Follow");
+        const double moved = (ed.time.left - left0) * static_cast<double>(beat);
+        check(std::abs(moved - 20. / static_cast<double>(inner.getWidth()) * static_cast<double>(2 * bar)) < static_cast<double>(beat) / 16,
+              "twenty pixels of the field are that share of the clip's two bars");
+        statusBar.mouseDrag(dragAt(toggle, start, {start.x + 20.f, start.y + 15.f}));
+        check(ed.time.scale > scale0, "dragged down, it zooms in");
+        statusBar.clipClicked();
+        check(root.state().clipView, "letting go after a drag is not the click that hides the view");
+        statusBar.mouseDown(pressAt(toggle, start));
+        statusBar.clipClicked();
+        check(!root.state().clipView, "a press let go where it began still hides the Clip View");
+        statusBar.clipClicked();
+        root.frame();
+        check(root.state().clipView && panel.details() != nullptr, "and shows it again");
+        ed.fitWidth();
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {

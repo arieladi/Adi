@@ -475,6 +475,11 @@ class ClipViewPanel final : public juce::Component {
     // colours, the Quantize settings): taken from the window's state as it opens, and written back
     // whenever one of them changes.
     void applyState(const WindowState &);
+    // The Status Bar's Clip View Selector (manual 8.7): a drag in it scrolls the shown editor by
+    // that share of the clip's length, and zooms it by the pixels moved up or down; and the time
+    // the editor shows, in the song's ticks, for the selector's frame.
+    void selectorDrag(double clipShare, int downBy);
+    std::pair<std::int64_t, std::int64_t> shownSpan() const noexcept;
     void keepSettings();
     bool filtersShown() const noexcept { return filtersShown_; }
     void showFilters(bool);

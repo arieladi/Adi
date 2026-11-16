@@ -620,7 +620,8 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     clipToggle.setTitle("Clip View");
     clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3.");
     clipToggle.setClickingTogglesState(false);
-    clipToggle.onClick = [this] { root_.command(AppCommands::ToggleClipView); };
+    clipToggle.onClick = [this] { clipClicked(); };
+    clipToggle.addMouseListener(this, false);
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
@@ -643,6 +644,44 @@ void StatusBar::resized() {
     clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
+}
+void StatusBar::clipClicked() {
+    // The end of a drag in the selector is not a click.
+    if (std::exchange(selectorDragged_, false))
+        return;
+    root_.command(AppCommands::ToggleClipView);
+}
+void StatusBar::mouseDown(const juce::MouseEvent &e) {
+    if (e.eventComponent != &clipToggle)
+        return;
+    selectorLast_ = e.getPosition();
+    selectorDragged_ = false;
+}
+void StatusBar::mouseDrag(const juce::MouseEvent &e) {
+    if (e.eventComponent != &clipToggle || !root_.state().clipView)
+        return;
+    const auto at = e.getPosition();
+    if (!selectorDragged_ && at.getDistanceFrom(selectorLast_) < 3)
+        return;
+    selectorDragged_ = true;
+    const double width = std::max(1, secondField().reduced(5, 4).getWidth());
+    root_.clipView.selectorDrag(static_cast<double>(at.x - selectorLast_.x) / width, at.y - selectorLast_.y);
+    selectorLast_ = at;
+    repaint();
+}
+juce::Rectangle<float> StatusBar::clipViewFrame() const {
+    const auto *clip = root_.clipView.details();
+    if (clip == nullptr || !root_.state().clipView || clip->lengthTicks.value_or(0) <= 0)
+        return {};
+    const auto inner = secondField().reduced(5, 4).toFloat();
+    const auto shown = root_.clipView.shownSpan();
+    const double start = static_cast<double>(clip->posTicks.value_or(0)), length = static_cast<double>(*clip->lengthTicks);
+    const double from = std::clamp((static_cast<double>(shown.first) - start) / length, 0., 1.);
+    const double to = std::clamp((static_cast<double>(shown.second) - start) / length, 0., 1.);
+    if (to <= from)
+        return {};
+    return {inner.getX() + inner.getWidth() * static_cast<float>(from), inner.getY() - 1.f,
+            std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -682,6 +721,11 @@ void StatusBar::paint(juce::Graphics &g) {
                 const float x1 = inner.getX() + inner.getWidth() * static_cast<float>(std::min(1., to));
                 g.fillRect(x0, y, std::max(1.f, x1 - x0), 2.f);
             }
+    }
+    if (const auto frame = clipViewFrame(); !frame.isEmpty()) {
+        // The part of the clip the Clip View's editor shows.
+        g.setColour(look::text.withAlpha(0.75f));
+        g.drawRect(frame, 1.f);
     }
     look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
                    juce::MathConstants<float>::halfPi, look::text);

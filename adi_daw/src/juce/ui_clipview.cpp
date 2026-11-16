@@ -1095,6 +1095,9 @@ std::uint64_t NoteEditor::statusStamp() const noexcept {
     mix(static_cast<std::uint64_t>(drag_));
     mix(static_cast<std::uint64_t>(dragTicks_));
     mix(static_cast<std::uint64_t>(dragKeys_));
+    // The Clip View Selector frames what the editor shows.
+    mix(static_cast<std::uint64_t>(time.tick(0.)));
+    mix(static_cast<std::uint64_t>(std::llround(time.scale * 1024.)));
     for (const auto &entry : shapePreview_)
         mix(entry.first * 131 + static_cast<std::uint64_t>(entry.second));
     return stamp;
@@ -2656,6 +2659,25 @@ juce::Rectangle<int> ClipViewPanel::filterArea() const noexcept {
 juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
     const auto highlight = highlightBox();
     return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
+}
+void ClipViewPanel::selectorDrag(double clipShare, int downBy) {
+    if (!details_)
+        return;
+    auto &time = midi() ? notes.time : sample.time;
+    const int width = midi() ? notes.notesArea().getWidth() : sample.getWidth();
+    time.left = std::max(0., time.left + clipShare * static_cast<double>(details_->lengthTicks.value_or(0)) / textproj::kPPQ);
+    if (downBy != 0)
+        time.zoom(std::pow(1.012, static_cast<double>(downBy)), width / 2.);
+    // A scroll of the user's pauses Follow, as in the editor itself.
+    root.arrangement.followPaused = true;
+    notes.repaint();
+    sample.repaint();
+    repaint();
+}
+std::pair<std::int64_t, std::int64_t> ClipViewPanel::shownSpan() const noexcept {
+    const auto &time = midi() ? notes.time : sample.time;
+    const int width = midi() ? notes.notesArea().getWidth() : sample.getWidth();
+    return {time.tick(0.), time.tick(static_cast<double>(std::max(0, width)))};
 }
 void ClipViewPanel::applyState(const WindowState &state) {
     notes.time.grid = {state.noteGridSnap, state.noteGridFixed, state.noteGridTriplet, state.noteGridNarrow, state.noteGridFixedQuarters};
