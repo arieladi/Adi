@@ -498,7 +498,7 @@ bool validBand(const Band &b) noexcept {
 }
 
 Status build(double sampleRate, const Band &band, Cascade &output) noexcept {
-    if (!std::isfinite(sampleRate) || sampleRate < 8000 || sampleRate > 384000 || !validBand(band))
+    if (!std::isfinite(sampleRate) || sampleRate < 8000 || sampleRate > 768000 || !validBand(band))
         return Status::InvalidArgument;
     constexpr std::array<int, 10> shapes{7, 2, 3, 5, 0, 10, 8, 6, 12, 11};
     const int shape = shapes[static_cast<std::size_t>(band.shape)];

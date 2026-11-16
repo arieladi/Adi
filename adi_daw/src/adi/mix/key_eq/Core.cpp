@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "adi/mix/filters/FiniteInput.hpp"
 #include "Policy.hpp"
 #include <algorithm>
 #include <array>
@@ -45,7 +46,7 @@ Core::Core(Core &&) noexcept = default;
 Core &Core::operator=(Core &&) noexcept = default;
 
 Status Core::prepare(const Preparation &p, const Settings &settings) noexcept {
-    if (!std::isfinite(p.sampleRate) || p.sampleRate < 8000 || p.sampleRate > 384000 ||
+    if (!std::isfinite(p.sampleRate) || p.sampleRate < 8000 || p.sampleRate > 768000 ||
         p.maximumBlockSize <= 0 || p.maximumBlockSize > 1048576)
         return Status::InvalidArgument;
     if (p.channels != 2)
@@ -114,6 +115,8 @@ Status Core::process(float *left, float *right, int frames) noexcept {
         return Status::InvalidArgument;
     if (frames == 0)
         return Status::Ok;
+    float* programme[]{left, right};
+    filters::sanitizeProgramme(programme, 0, frames);
     for (int i = 0; i < frames; ++i) {
         const float l = left[i], r = right[i];
         const float side = (r - l) * .5f;
@@ -131,7 +134,7 @@ Status Core::process(float *left, float *right, int frames) noexcept {
             if (stage.blend != 1)
                 std::copy_n(audio, samples, impl_->blendDry.get());
             for (std::size_t section = 0; section < stage.count; ++section)
-                stage.channels[axis][section].processInPlace({audio, samples});
+                stage.channels[axis][section].processFiniteInPlace({audio, samples});
             if (stage.blend != 1)
                 for (std::size_t sample = 0; sample < samples; ++sample) {
                     const float dry = impl_->blendDry[sample];

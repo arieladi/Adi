@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
+#include <numbers>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -236,8 +238,52 @@ void routingAndBlend() {
     }
     check(allocations == 0 && deallocations == 0, "all key processing allocates and deallocates nothing");
 }
+double magnitudeDb(const k::Cascade& cascade,double rate,double frequency) {
+    const auto z=std::polar(1.,-2*std::numbers::pi*frequency/rate);
+    std::complex<double> response=1;
+    for(std::size_t i=0;i<cascade.count;++i) {
+        const auto& c=cascade.sections[i];
+        response*=(c.b0+c.b1*z+c.b2*z*z)/(1.+c.a1*z+c.a2*z*z);
+    }
+    return 20*std::log10(std::abs(response));
+}
+void magnitudeGrid() {
+    double largestDifference=0;
+    for(double rate:{44100.,48000.,96000.}) for(float frequency:{100.f,1000.f,10000.f,15000.f,20000.f})
+        for(float q:{.707f,5.f,20.f,40.f}) for(int slope=1;slope<=8;++slope)
+            for(const auto shape:{k::Shape::Bell,k::Shape::BandPass}) {
+                k::Band band;band.enabled=true;band.shape=shape;band.frequencyHz=frequency;band.q=q;
+                band.slope=static_cast<float>(slope);band.gainDb=shape==k::Shape::Bell?12.f:0.f;
+                k::Cascade host,high;
+                const bool built=k::build(rate,band,host)==k::Status::Ok&&k::build(384000,band,high)==k::Status::Ok;
+                const double h=built?magnitudeDb(host,rate,frequency):0;
+                const double r=built?magnitudeDb(high,384000,frequency):0;
+                check(built&&std::isfinite(h)&&std::isfinite(r),"generated host/high-rate response grid has finite centre magnitudes");
+                largestDifference=std::max(largestDifference,std::abs(h-r));
+                if(slope==1)
+                    check(std::abs(h-band.gainDb)<.01&&std::abs(r-band.gainDb)<.01,"second-order centre normalization holds across the response grid");
+            }
+    // Higher-order anchor/cap policies are rate-dependent: this is a measured
+    // difference diagnostic, not permission to replace the authored response
+    // with the high-rate design. Audio compatibility is checked separately.
+    check(largestDifference>1&&largestDifference<60,"response grid detects the high-order rate-dependent magnitude difference");
+    std::printf("Key EQ host/384k maximum centre-magnitude difference: %.9f dB\n",largestDifference);
+}
 } // namespace
 int main() {
+    magnitudeGrid();
+    {
+        k::Settings s;s.bands[0].enabled=true;
+        k::Core dirty,zeroed;
+        bool exact=dirty.prepare({},s)==k::Status::Ok&&zeroed.prepare({},s)==k::Status::Ok;
+        std::array<float,256> a{},b{},x{},y{};
+        a.fill(.2f);b.fill(-.1f);x=a;y=b;
+        a[17]=std::numeric_limits<float>::quiet_NaN();x[17]=0;
+        b[31]=std::numeric_limits<float>::infinity();y[31]=0;
+        exact=dirty.process(a.data(),b.data(),256)==k::Status::Ok&&zeroed.process(x.data(),y.data(),256)==k::Status::Ok&&exact;
+        check(exact&&a==x&&b==y,"key EQ sanitizes before M/S conversion and recursive histories");
+    }
+
     policy();
     lifecycle();
     routingAndBlend();

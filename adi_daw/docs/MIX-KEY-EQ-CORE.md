@@ -42,3 +42,15 @@ failed-prepare behavior, invalid buffer calls, split blocks, reset/reprepare,
 placement, audition, near-zero blending and zero callback allocation/free.
 Their authored multiband/routing mechanics are not additional native parity
 evidence. Private reference fixtures and tools remain outside public sources.
+
+## Numerical recovery and rate coverage
+
+Non-finite programme samples become zero before mid/side conversion. Cascade
+sections use the finite-input entry after that one scan. Prepared rates now cover
+8..768 kHz; this is functional admission, not reference validation at every rate.
+
+DF-M18 adds generated host/384-kHz magnitude diagnostics across 100 Hz..20 kHz,
+Q and slopes 1..8. Second-order centre normalization and higher-order
+rate-dependent cascade response are distinct contracts. Preserve the existing
+coefficient policy: separate full-output measurement checks confirmed its response
+on the examined edge cases. A higher-rate redesign would change the sound.
