@@ -4154,6 +4154,14 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
               undoIs("Set Clip Start"),
           "Start's Set puts the Start marker there");
 
+    // On the loop, Live's Set also switches it on: Set Position moves its start to the marker.
+    geo.selection.insert = bar + 3 * beat;
+    const auto loopHere = ClipWindow::of(details()).toSource(bar + 3 * beat);
+    check(!details().loopEnabled && panel.setFieldHere(Field::Position) && details().loopEnabled &&
+              details().loopStartTicks == loopHere && undoIs("Set Loop Position"),
+          "the loop's Set Position moves its start to the marker and switches the loop on, one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // The Signature: typed, dragged by its denominator, refused when it is not one.
     check(panel.typeField(Field::Signature, "3/4") && panel.readings().signature == "3 / 4" && details().signature.local &&
               details().signature.numerator == 3 && undoIs("Change Clip Time Signature"),

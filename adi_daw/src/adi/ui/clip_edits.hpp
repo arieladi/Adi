@@ -106,17 +106,20 @@ inline TrackEdit toggleClipLoop(const engine::ClipDetails &clip) {
     edit.ops.push_back(op("clip.setLoop", std::move(payload), on ? "Activate Loop" : "Deactivate Loop"));
     return edit;
 }
-// The loop's Position and Length (manual 8.2.2): the switch stays as it is.
-inline TrackEdit setClipLoop(const engine::ClipDetails &clip, std::int64_t start, std::int64_t length) {
+// The loop's Position and Length (manual 8.2.2): the switch stays as it is, unless `on` says
+// otherwise (Live's Set buttons switch the loop on).
+inline TrackEdit setClipLoop(const engine::ClipDetails &clip, std::int64_t start, std::int64_t length,
+                             std::optional<bool> on = std::nullopt) {
     using track_edits_detail::op;
     TrackEdit edit;
     if (start < 0)
         edit.refusal = "A loop cannot start before the clip's beginning.";
     else if (length <= 0)
         edit.refusal = "A loop needs a length.";
-    else if (start != clip.loopStartTicks || length != loopLengthOf(clip) || !clip.loopLengthTicks)
+    else if (start != clip.loopStartTicks || length != loopLengthOf(clip) || !clip.loopLengthTicks ||
+             on.value_or(clip.loopEnabled) != clip.loopEnabled)
         edit.ops.push_back(op("clip.setLoop",
-                              {{"id", clip.id}, {"on", clip.loopEnabled}, {"start", start}, {"length", length}},
+                              {{"id", clip.id}, {"on", on.value_or(clip.loopEnabled)}, {"start", start}, {"length", length}},
                               start != clip.loopStartTicks ? "Set Loop Position" : "Set Loop Length"));
     return edit;
 }

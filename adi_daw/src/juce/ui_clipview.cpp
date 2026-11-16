@@ -1559,12 +1559,20 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     return setField(field, *tick);
 }
 bool ClipViewPanel::setFieldHere(Field field) {
-    // Live's Set buttons take the current position (manual 8.2.1): here, the arrangement's insert
-    // marker, in the clip's own time. For Length it is the distance from the loop's start.
+    // Live's Set buttons take the playhead while the song plays (manual 8.2.1); stopped, ADI takes
+    // the arrangement's insert marker. In the clip's own time. On the loop they also switch it on:
+    // Set Position moves the loop's start there; Set Length moves its end there, or, when the loop
+    // was off, keeps its length.
     if (!details_)
         return false;
-    const auto here = ClipWindow::of(*details_).toSource(root.arrangement.geometry.selection.insert);
-    return setField(field, field == Field::Length ? here - details_->loopStartTicks : here);
+    const auto &d = *details_;
+    const auto at = root.playing() ? root.timelineTick() : root.arrangement.geometry.selection.insert;
+    const auto here = ClipWindow::of(d).toSource(at);
+    if (field == Field::Position)
+        return commit(setClipLoop(d, here, loopLengthOf(d), true));
+    if (field == Field::Length)
+        return commit(setClipLoop(d, d.loopStartTicks, d.loopEnabled ? here - d.loopStartTicks : loopLengthOf(d), true));
+    return setField(field, here);
 }
 bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*details_)); }
 void ClipViewPanel::openEditor(Field field) {
