@@ -33,6 +33,8 @@ struct ScopedFlushDenormals {
     unsigned previous = _mm_getcsr();
     ScopedFlushDenormals() noexcept { _mm_setcsr(previous | 0x8040U); }
     ~ScopedFlushDenormals() { _mm_setcsr(previous); }
+#else
+    ScopedFlushDenormals() noexcept {}
 #endif
 };
 constexpr std::size_t count = 8;
