@@ -14,7 +14,7 @@ the original programme. The inner child's External enum identifies the supplied
 filtered key planes; it does not select a DAW external bus. There is no second
 M/S conversion or filtered-key substitution for programme audio.
 
-Preparation admits rates44.1..96kHz, maximum physical callback1..4096, fixed
+Preparation admits rates44.1..768kHz, maximum physical callback1..4096, fixed
 link1/Mid, Auto controls off and Hold at or below float epsilon. The existing
 legal static threshold/ratio/knee/range/unit-attack/release laws remain available.
 The first optional moving path retains exactly one selected EQ lane in one
@@ -66,3 +66,6 @@ future-span isolation, stopped reset and zero callback C++ allocation/free.
 Private saved arrays and native observations remain outside public sources and
 tests. CPU efficiency requires a later quiet matched-process comparison;
 prepared storage and shared existing kernels are structural properties only.
+
+Rates above 96 kHz have generated admission/continuity coverage; full native
+reference validation at those rates remains unverified.
