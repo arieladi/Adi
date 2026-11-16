@@ -88,6 +88,9 @@ public:
     LatencyChange pendingLatencyChange() const noexcept;
     void acknowledgeLatencyChange(std::uint64_t token) noexcept;
     void setMeteringOptions(bool truePeak, bool paused) noexcept;
+    // False suspends all loudness work/history; reenabling resumes the retained
+    // recording. resetLoudness() explicitly starts a fresh measurement.
+    // This does not disable ordinary peaks/RMS or change audio processing.
     void setLoudnessRecording(bool recording) noexcept;
     void resetLoudness() noexcept;
     void resetMeters() noexcept;

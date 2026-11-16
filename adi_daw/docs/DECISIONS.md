@@ -18632,3 +18632,60 @@ JUCE version was one of his open ADI-View questions (D7).
 | ADR-0233 d8 | confirmed: standalone first (d2) |
 | PLAN CTL-05 | both options, user's choice |
 | `docs/DEFERRED.md` | new: the register (d3) |
+
+## ADR-0240 — The Clip View is approved and win builds it; loading a channel's Mix Set replaces its native functions; the Mix View answers that lived only in the seat's log — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; OPENS STEP-7-PLAN 7.7; ANSWERS DF-M23's LOAD QUESTION; CLOSES DF-M27**
+
+**His words (16 November):**
+- The Clip View, shown its picture of 28 October again: "yes build the clip view", and "i will give
+  window lane your prompt and you build the clip view".
+- Loading a channel's Mix Set, asked by the Mix View seat whether it merges into or replaces what
+  the channel has: he chose replace. As the seat recorded it: "Replace the whole native function
+  set, as one undo step. To change one function and keep the rest, the user loads that function's
+  own preset."
+
+### Decisions
+
+1. **The Clip View and the MIDI Note Editor are approved as pictured**
+   (`collab/window/pictures/2026-10-28-clip-view.png`): Live 12's Clip View in ADI's look, nothing
+   added. STEP-7-PLAN 7.7's build order stands, and `collab/window/parity-7.7-clip-view.md` holds
+   the rows to check against Live 12.
+2. **Win builds it.** The window lane keeps its own list (`collab/prompts/2026-11-16-window-lane.md`)
+   so neither waits for the other. For this item win writes in the window lane's area (ADR-0208):
+   new files `src/juce/ui_clipview.*` and `src/adi/ui/note_*.hpp`, `clip_edits.hpp`, and small
+   changes in `ui_shell.*`, `ui_arrangement.cpp` and `ProjectDocument`. The lane's ownership of
+   everything else is unchanged.
+3. **Loading a channel's Mix Set replaces the channel's whole native function set, as one undo
+   step** (ADR-0237 d4 made precise).
+   - Functions the set holds are added or take its settings; functions it does not hold are removed.
+   - Ordinary plug-ins on the channel are untouched.
+   - One Undo restores the former functions, their settings and their order; Redo applies the set
+     again. A load that is refused changes nothing.
+   - The way to change one function and keep the rest is that function's own preset.
+   Where preset files live, their format, and where a set's functions sit among a channel's ordinary
+   plug-ins are not ruled here; win writes that ADR from the seat's proposal (DF-M23).
+4. **The director's earlier answers to the Mix View seat, until now only in its log**
+   (`collab/mixview.md`, entries of 13 to 16 November). They are recorded as the seat wrote them
+   down; where one is wrong he strikes it here.
+   - The Mix View's rows show **channels that have Mix View tools** by default; all channels is the
+     other choice.
+   - **An analyser dock at the right of the rows is optional**, shown and hidden by the user, off by
+     default; the separate analyser tab stays.
+   - **Clip and Limiter** have independent switches, in the order Clip → Limiter.
+   - **EQ, Carve and Focus** are separate pages with independent switches, in the order
+     EQ → Carve → Focus. A suggestion changes nothing until the user applies it.
+   - **Focus** recalls from its current settings; no hidden history of how the knobs were moved is
+     kept.
+   - **ADI Still stays an ordinary plug-in** (ADR-0237 d2 had left its place open).
+   - **The Versatile limiter style keeps its per-instance seed**, so a recall repeats.
+   - The reference sketch of the Mix View is a starting point, not a requirement that every row is
+     expanded.
+   - Not settled: whether an edit across several channels is relative or absolute.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| STEP-7-PLAN 7.7 | approved; the build is win's (d1, d2) |
+| ADR-0208 | for the Clip View only, win writes in the window lane's area (d2) |
+| ADR-0237 d4 | a channel set's load replaces the native set, one undo step (d3) |
+| `docs/DEFERRED.md` | DF-M27 closed; DF-M23 carries d3; the window rows DF-W1 to DF-W7 added |

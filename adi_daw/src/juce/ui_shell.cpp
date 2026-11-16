@@ -3,6 +3,7 @@
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/clip_edits.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -149,7 +150,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows", "Split", "Create Fade In/Out", "Delete Fades/Crossfades"};
+                                  "Show Plug-In Windows", "Split", "Clip View",
+                                  "Insert Empty MIDI Clip(s)", "Cut Time", "Copy Time", "Paste Time",
+                                  "Duplicate Time", "Delete Time", "Insert Silence", "Create Fade In/Out",
+                                  "Delete Fades/Crossfades"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -201,6 +205,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         // corner open the Mixer View in the Arrangement (manual 6.1, p. 162; §41.1).
         info.addDefaultKeypress('m', cmd | alt);
         info.setTicked(active_ != nullptr && active_->state().mixerView);
+        break;
+    case ToggleClipView:
+        // Live 12: the View menu's Clip View and the Clip View Selector at the window's foot
+        // (manual 8; §41.1).
+        info.addDefaultKeypress('3', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->state().clipView);
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
@@ -267,6 +277,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case InsertMidiTrack:
         info.addDefaultKeypress('t', cmd | shift);
+        break;
+    case InsertMidiClip:
+        // Live 12's Create menu: Insert Empty MIDI Clip(s), on a time selection (§41.1).
+        info.addDefaultKeypress('m', cmd | shift);
         break;
     case DeleteTrack:
         // On a selected locator, Delete removes it (Live 12 manual 6.4).
@@ -373,6 +387,24 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd | alt);
         info.addDefaultKeypress(juce::KeyPress::deleteKey, cmd | alt);
         info.setActive(active_ != nullptr);
+        break;
+    // Live's …Time commands (manual 6.11, 41.5): Ctrl/Cmd+Shift with X, C, V, D and Delete; Insert
+    // Silence on Ctrl/Cmd+I.
+    case CutTime:
+    case CopyTime:
+    case PasteTime:
+    case DuplicateTime:
+        info.addDefaultKeypress(id == CutTime ? 'x' : id == CopyTime ? 'c' : id == PasteTime ? 'v' : 'd', cmd | shift);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
+        break;
+    case DeleteTime:
+        info.addDefaultKeypress(juce::KeyPress::deleteKey, cmd | shift);
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd | shift);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
+        break;
+    case InsertSilence:
+        info.addDefaultKeypress('i', cmd);
+        info.setActive(active_ != nullptr && active_->canTimeCommand(static_cast<int>(id)));
         break;
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
         info.addDefaultKeypress('e', cmd);
@@ -582,6 +614,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     detailToggle.setTitle("Detail View");
     detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4.");
     detailToggle.onClick = [this] { root_.command(AppCommands::ToggleDeviceView); };
+    addAndMakeVisible(clipToggle);
+    clipToggle.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    clipToggle.setColour(juce::TextButton::buttonOnColourId, juce::Colours::transparentBlack);
+    clipToggle.setTitle("Clip View");
+    clipToggle.setTooltip("Shows or hides the Clip View. Ctrl/Cmd+Alt+3.");
+    clipToggle.setClickingTogglesState(false);
+    clipToggle.onClick = [this] { root_.command(AppCommands::ToggleClipView); };
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
@@ -601,6 +640,7 @@ void StatusBar::resized() {
     const int w = getWidth();
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
+    clipToggle.setBounds(secondField());
     mixerToggle.setBounds(w - 86, 11, 36, 16);
     mixerOptions.setBounds(w - 49, 11, 8, 16);
 }
@@ -608,7 +648,7 @@ void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
     const juce::Rectangle<int> message(35, 8, std::max(0, w - 419), 22);
-    const juce::Rectangle<int> second(w - 376, 8, 206, 22), track(w - 162, 8, 124, 22);
+    const juce::Rectangle<int> second = secondField(), track(w - 162, 8, 124, 22);
     for (auto r : {message, second, track}) {
         g.setColour(look::band);
         g.fillRect(r);
@@ -616,6 +656,33 @@ void StatusBar::paint(juce::Graphics &g) {
         g.fillRect(r.reduced(3));
     }
     // The Mixer View Control's arrow, pointing down to its menu.
+    // The Clip View Selector: the shown clip's notes in miniature, in its colour; lit while the
+    // Clip View is open.
+    if (clipToggle.getToggleState()) {
+        g.setColour(look::accent);
+        g.drawRect(second.reduced(2), 1);
+    }
+    if (const auto *clip = root_.clipView.details(); clip != nullptr && clip->lengthTicks.value_or(0) > 0) {
+        const auto inner = second.reduced(5, 4).toFloat();
+        const double length = static_cast<double>(*clip->lengthTicks);
+        const auto range = keyRange(clip->notes);
+        g.setColour(root_.clipView.colour().darker(0.45f));
+        if (!range)
+            g.fillRect(inner.withSizeKeepingCentre(inner.getWidth(), 2.f));
+        else
+            for (const auto &note : clip->notes) {
+                const double from = static_cast<double>(note.startTicks - clip->startMarkerTicks) / length;
+                const double to = from + static_cast<double>(note.durationTicks) / length;
+                if (to <= 0 || from >= 1)
+                    continue;
+                const float span = static_cast<float>(std::max(1, range->high - range->low));
+                const float y = inner.getBottom() - 2.f -
+                                (inner.getHeight() - 2.f) * static_cast<float>(note.key - range->low) / span;
+                const float x0 = inner.getX() + inner.getWidth() * static_cast<float>(std::max(0., from));
+                const float x1 = inner.getX() + inner.getWidth() * static_cast<float>(std::min(1., to));
+                g.fillRect(x0, y, std::max(1.f, x1 - x0), 2.f);
+            }
+    }
     look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
                    juce::MathConstants<float>::halfPi, look::text);
     // The corner buttons: dark and round, with Live's light triangles.
@@ -665,6 +732,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(devices);
     addChildComponent(infoSpectrum);
     addAndMakeVisible(dockResizer);
+    addChildComponent(clipView);
+    addChildComponent(clipResizer);
     addAndMakeVisible(mixer);
     addAndMakeVisible(strip);
     strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
@@ -871,6 +940,14 @@ void AdiRootComponent::frame() noexcept {
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
+    // The Clip View follows the selected clip and the project, shown or not: the Status Bar's
+    // selector draws the same clip.
+    {
+        const auto shown = clipView.clip();
+        clipView.frame(reader());
+        if (shown != clipView.clip() || (lastDrain_ & DirtySet::Content) != 0)
+            status.repaint();
+    }
     followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
@@ -955,16 +1032,25 @@ void AdiRootComponent::resized() {
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
     // a row when it can.
+    // Live 12's Clip View stacks above the Device View (manual 8); the Device View leaves it its
+    // floor, and it takes what it asks for while the arrangement keeps its ruler and a row.
+    const int clipFloor = state_.clipView ? kClipViewFloor + gap : 0;
     const int dock = state_.docked ? std::min(body, std::max(state_.deviceFloor,
-                                                             std::min(state_.deviceHeight, body - 100)))
+                                                             std::min(state_.deviceHeight, body - 100 - clipFloor)))
                                    : 0;
-    const int row = dock > 0 ? dock : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
+    const int clipRoom = std::max(0, body - dock - (dock > 0 ? gap : 0));
+    const int clip = state_.clipView
+                         ? std::min(clipRoom, std::max(kClipViewFloor, std::min(state_.clipViewHeight, clipRoom - 100)))
+                         : 0;
+    const int detail = dock + clip + (dock > 0 && clip > 0 ? gap : 0);
+    const int row = detail > 0 ? detail : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
     const int rowY = bottom - row;
     // Live's Info View sits in the bottom-left corner beside the Device View.
     const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
     infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
     const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, dock)
+    clipArea_ = clip > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, clip) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, bottom - dock, w - deviceX - gap, dock)
                            : juce::Rectangle<int>();
     // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
@@ -1104,6 +1190,12 @@ void AdiRootComponent::resized() {
     devices.setBounds(deviceArea_.reduced(look::border));
     dockResizer.setBounds(deviceArea_.getX(), deviceArea_.getY() - 3, deviceArea_.getWidth(), 6);
     dockResizer.toFront(false);
+    clipView.setVisible(!clipArea_.isEmpty());
+    clipResizer.setVisible(!clipArea_.isEmpty());
+    clipView.setBounds(clipArea_.reduced(look::border));
+    clipResizer.setBounds(clipArea_.getX(), clipArea_.getY() - 3, clipArea_.getWidth(), 6);
+    clipResizer.toFront(false);
+    status.clipToggle.setToggleState(state_.clipView, juce::dontSendNotification);
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -1115,6 +1207,8 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     };
     if (!deviceArea_.isEmpty())
         panel(deviceArea_);
+    if (!clipArea_.isEmpty())
+        panel(clipArea_);
     // Live's Info View: a title bar with the element's name, its description below.
     if (!infoArea_.isEmpty()) {
         panel(infoArea_);
@@ -1172,6 +1266,10 @@ void AdiRootComponent::resizeMixerView(int height) {
     state_.mixerViewHeight =
         std::clamp(height, 120,
                    std::max(120, body - arrangement.topHeight() - state_.laneHeight));
+    resized();
+}
+void AdiRootComponent::resizeClipView(int height) {
+    state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
 void AdiRootComponent::resizeDevices(int height) {
@@ -1544,14 +1642,7 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
         // At the insert marker, or a time selection's start.
         const auto at = from != to ? from : sel.marked ? sel.insert : 0;
         // A copy from another project: the engine refuses it, so say so before reading its tracks.
-        const auto heldFile = std::visit(
-            [](const auto &copy) -> std::string {
-                if constexpr (std::is_same_v<std::decay_t<decltype(copy)>, std::monostate>)
-                    return {};
-                else
-                    return copy.sourceFile;
-            },
-            board.held);
+        const auto heldFile = board.sourceFile();
         if (!heldFile.empty() && heldFile != projectFile(store))
             return fail("The clipboard holds a copy from another project: copy again in this one.");
         const auto origin = pasteOrigin();
@@ -1572,6 +1663,17 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
                 return false;
             chooseClip(id);
         } else {
+            // A Time copy's material goes back onto the tracks it came from, at the paste point,
+            // without inserting time (Paste Time inserts it). Its track list is the whole Set's,
+            // Main and the returns too, so it is not laid out from the selected track.
+            if (const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held)) {
+                if (!commitEdit(clip_edit::preparePasteRange(store, time->material, time->material.selection.tracks,
+                                                             {0, at}, options)))
+                    return false;
+                timeSelection(origin, origin, at, at + time->ticks);
+                succeeded();
+                return true;
+            }
             const auto &rangeCopy = std::get<clip_edit::RangeCopy>(board.held);
             // As many tracks as the copy came from, in order, from the selected one: the shown
             // tracks that can hold clips.
@@ -1685,6 +1787,112 @@ bool AdiRootComponent::deleteFades() {
         return false;
     arrangement.changed();
     return true;
+}
+bool AdiRootComponent::canTimeCommand(int id) const {
+    if (!view_.current())
+        return false;
+    const auto &sel = arrangement.geometry.selection;
+    if (id == AppCommands::PasteTime) {
+        const auto &held = commands_.clipClipboard().held;
+        return (std::holds_alternative<clip_edit::TimeCopy>(held) || std::holds_alternative<clip_edit::RangeCopy>(held)) &&
+               (sel.marked || sel.start != sel.end);
+    }
+    return sel.start != sel.end;
+}
+bool AdiRootComponent::timeCommand(int id) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The …Time commands need an open project.");
+    auto &sel = arrangement.geometry.selection;
+    auto &board = commands_.clipClipboard();
+    auto &store = submitter_.store();
+    const auto rate = editRate();
+    const auto from = std::max<std::int64_t>(0, std::min(sel.start, sel.end)), to = std::max(sel.start, sel.end);
+    const auto length = to - from;
+    if (id != AppCommands::PasteTime && length <= 0)
+        return fail("Select the time to act on first: drag across the lanes.");
+    // The selection after an edit: a span of time on the tracks it was on, or the marker.
+    const auto select = [&](std::int64_t a, std::int64_t b) {
+        sel.clip = 0;
+        sel.pickedClips.clear();
+        sel.insert = sel.start = a;
+        sel.end = b;
+        sel.marked = true;
+    };
+    const auto done = [&] {
+        error_.clear();
+        dirty_.mark(DirtySet::Status);
+        commands_.manager.commandStatusChanged();
+        arrangement.changed();
+        return true;
+    };
+    switch (id) {
+    case AppCommands::CopyTime: {
+        auto copy = clip_edit::copyTime(store, from, to, rate);
+        if (!copy.ok)
+            return fail(copy.error);
+        board.held = std::move(copy);
+        return done();
+    }
+    case AppCommands::CutTime: {
+        // The copy is kept only once the cut is in.
+        auto cut = clip_edit::prepareCutTime(store, from, to, rate);
+        if (!cut.copy.ok)
+            return fail(cut.copy.error);
+        if (!commitEdit(std::move(cut.edit)))
+            return false;
+        board.held = std::move(cut.copy);
+        select(from, from);
+        return done();
+    }
+    case AppCommands::PasteTime: {
+        // At the insert marker, or the selection's start: the copy's time is inserted there.
+        const auto at = from != to ? from : sel.marked ? sel.insert : 0;
+        if (board.empty())
+            return fail("Copy Time first (Ctrl/Cmd+Shift+C).");
+        if (const auto file = board.sourceFile(); !file.empty() && file != projectFile(store))
+            return fail("The clipboard holds a copy from another project: copy again in this one.");
+        if (const auto *time = std::get_if<clip_edit::TimeCopy>(&board.held)) {
+            // The engine takes a Time copy only at the rate it was copied at.
+            if (time->referenceRate != rate)
+                return fail("The sample rate changed since the time was copied: copy it again (Ctrl/Cmd+Shift+C).");
+            if (!commitEdit(clip_edit::preparePasteTime(store, *time, at, rate)))
+                return false;
+            select(at, at + time->ticks);
+            return done();
+        }
+        if (const auto *range = std::get_if<clip_edit::RangeCopy>(&board.held)) {
+            // A plain copy's material, with its length of time inserted across the whole Set first
+            // (every track, the locators, the loop); the material lands on the tracks it came from.
+            if (!commitEdit(clip_edit::preparePasteRange(store, *range, range->selection.tracks, {0, at}, rate, true)))
+                return false;
+            select(at, at + (range->selection.end.value - range->selection.begin.value));
+            return done();
+        }
+        return fail("A clip's copy has no time to paste: use Paste (Ctrl/Cmd+V), or Copy Time.");
+    }
+    case AppCommands::DuplicateTime: {
+        if (!commitEdit(clip_edit::prepareDuplicateTime(store, from, to, rate)))
+            return false;
+        select(to, to + length);
+        return done();
+    }
+    case AppCommands::DeleteTime: {
+        if (!commitEdit(clip_edit::prepareDeleteTime(store, from, to, rate)))
+            return false;
+        select(from, from);
+        return done();
+    }
+    case AppCommands::InsertSilence: {
+        // The selection's length at its start (manual 6.11); the silence stays selected.
+        if (!commitEdit(clip_edit::prepareInsertSilence(store, from, length, rate)))
+            return false;
+        select(from, to);
+        return done();
+    }
+    default:
+        return false;
+    }
 }
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
@@ -1879,6 +2087,27 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
+    publishSelection();
+    return true;
+}
+bool AdiRootComponent::insertMidiClips(const std::vector<std::int64_t> &tracks, std::int64_t start, std::int64_t end) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step, and the first new clip is selected.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Inserting a clip needs an open project.");
+    auto edit = ::adi::ui::insertMidiClips(*current, tracks, start, end);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    auto &sel = arrangement.geometry.selection;
+    sel.track = edit.select;
+    sel.toTrack = 0;
+    sel.picked.clear();
+    sel.clip = edit.clip;
+    sel.pickedClips.clear();
+    sel.start = start;
+    sel.end = end;
     publishSelection();
     return true;
 }
@@ -2480,6 +2709,7 @@ bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
+bool AdiRootComponent::showClipView() { return state_.clipView || command(AppCommands::ToggleClipView); }
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -2655,6 +2885,13 @@ bool AdiRootComponent::command(int id) {
             return fail(error_);
         }
         break;
+    case AppCommands::ToggleClipView:
+        state_.clipView = !state_.clipView;
+        if (!persist()) {
+            state_.clipView = !state_.clipView;
+            return fail(error_);
+        }
+        break;
     case AppCommands::ToggleDeviceView:
         state_.docked = !state_.docked;
         if (!persist()) {
@@ -2729,6 +2966,13 @@ bool AdiRootComponent::command(int id) {
             return fail(why);
         break;
     }
+    case AppCommands::InsertMidiClip: {
+        const auto &sel = arrangement.geometry.selection;
+        if (!insertMidiClips(arrangement.geometry.selectedTracks(reader()), std::min(sel.start, sel.end),
+                             std::max(sel.start, sel.end)))
+            return false;
+        break;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -2797,6 +3041,13 @@ bool AdiRootComponent::command(int id) {
         return deleteFades();
     case AppCommands::Split:
         return splitAtMarker();
+    case AppCommands::CutTime:
+    case AppCommands::CopyTime:
+    case AppCommands::PasteTime:
+    case AppCommands::DuplicateTime:
+    case AppCommands::DeleteTime:
+    case AppCommands::InsertSilence:
+        return timeCommand(id);
     case AppCommands::TogglePluginWindows:
         // Every plug-in window hidden, or shown again where it stood (Auto-Hide still applies).
         pluginWindowsShown_ = !pluginWindowsShown_;
@@ -2918,19 +3169,21 @@ const std::vector<MenuEntries> &menuBar() {
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
         // clipboard's and the selection's, where Consolidate and Crop will join it.
-        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::CutTime, C::CopyTime,
+                  C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
                   C::SelectLoop, 0, C::Split, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
         // menu is to be read on Live.
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange, 0,
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertMidiClip, 0,
+                    C::InsertTimeSignatureChange, 0,
                     C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleDeviceView, C::TogglePluginWindows,
+          C::PlayReference, C::ToggleClipView, C::ToggleDeviceView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

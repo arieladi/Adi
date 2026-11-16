@@ -514,7 +514,9 @@ struct DspEngine::Implementation
     void meterOutput(const float* const* output, int count, float decay, bool paused) noexcept
     {
         const auto recording = loudnessRecording.load(std::memory_order_relaxed);
-        loudness.process(output, count, !paused && recording);
+        // Recording is the demand gate, distinct from a paused visible meter.
+        // A disabled consumer must not filter samples or advance rolling history.
+        if (recording) loudness.process(output, count, !paused);
         const auto peakEnabled = measureTruePeak.load(std::memory_order_relaxed);
         if (peakEnabled && !peakWasEnabled) truePeak.reset();
         if (peakEnabled) truePeak.process(output, peakPointers.data(), count);
