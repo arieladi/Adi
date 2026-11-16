@@ -86,6 +86,18 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // MIDI Note Stretch (manual 10.5.6). With two or more notes selected, or time selected over
+    // notes, a pair of markers hangs under the ruler at the selection's start and end. One dragged
+    // stretches the notes in proportion, the other staying; dragged past the other it mirrors them.
+    // A drag begun between the two moves a marker of its own: what lies before it and what lies
+    // after it stretch to meet it, and nothing outside the pair moves. On the grid unless snapping
+    // is bypassed; shown while held; one undo step.
+    enum class StretchPart { None, Start, End, Middle };
+    std::optional<std::pair<std::int64_t, std::int64_t>> stretchSpan() const;
+    StretchPart stretchPartAt(juce::Point<int>) const;
+    // The markers' own strip, between the ruler and the key tracks, as Live's marker row.
+    static constexpr int kStretchHeight = 8;
+    juce::Rectangle<int> stretchArea() const noexcept;
     // Getting about, as Live's (manual 8.7, 10.2). W fits the shown clips to the editor's width, H
     // the notes to its height; + and - zoom in time around the time selection, the insert marker
     // or the middle; Page Up and Down scroll an octave, with Shift a key track, with Ctrl/Cmd a
@@ -151,6 +163,17 @@ class NoteEditor final : public juce::Component {
     bool quantize();
     bool splitOrChop();
     bool join();
+    // Time inside the clip (manual 10.7), one undo step each. Crop Clip (Ctrl/Cmd+Shift+J): the
+    // notes outside the time selection go, or with none those outside the loop, and with the loop
+    // off those outside the Start and End markers; a crossing note is cut at the edge, but kept
+    // whole with the loop off, as measured on Live. With time selected: Duplicate Time
+    // (Ctrl/Cmd+Shift+D), Delete Time (Ctrl/Cmd+Shift+Delete) and Insert Time (Ctrl/Cmd+I); the
+    // clip's markers and loop stay. With the loop brace selected, Ctrl/Cmd+D is Duplicate Loop: the
+    // loop twice as long, its notes copied, later notes moved on, and the editor zoomed out to show it.
+    bool crop();
+    enum class TimeCommand { Duplicate, Delete, Insert };
+    bool timeCommand(TimeCommand);
+    bool duplicateLoop();
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }
@@ -232,7 +255,14 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch };
+    // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
+    // now (all in the song's ticks), and the notes it carries.
+    StretchPart stretchPart_ = StretchPart::None;
+    std::int64_t stretchA_ = 0, stretchB_ = 0, stretchP_ = 0, stretchNow_ = 0;
+    std::vector<std::uint64_t> stretchIds_;
+    std::vector<std::uint64_t> stretchTargets() const;
+    std::int64_t stretchMap(std::int64_t songTick) const noexcept;
     // A drag on the time ruler or the piano: where the pointer last was, and the zoom's count.
     juce::Point<int> viewLast_;
     int zoomFrom_ = 0;
@@ -320,7 +350,7 @@ class ClipViewPanel final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
 
-    static constexpr int kPanelWidth = 156, kToolsWidth = 150, kTitleHeight = 17, kHeaderHeight = 17;
+    static constexpr int kPanelWidth = 156, kToolsWidth = 196, kTitleHeight = 17, kHeaderHeight = 17;
     // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.
     int panelWidth() const noexcept { return midi() ? kPanelWidth + kToolsWidth : kPanelWidth; }
     // The Pitch and Time panel (manual 8.5), for a MIDI clip: the notes' range, Transpose, and the
@@ -332,13 +362,41 @@ class ClipViewPanel final : public juce::Component {
     enum class Tool {
         FitToScale, Invert, Reverse, Double, Halve, Legato,
         FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3,
-        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony, Quantize
+        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony, Quantize, AddInterval
     };
     static constexpr Tool kTools[] = {Tool::FitToScale, Tool::Invert,       Tool::Reverse,      Tool::Double,     Tool::Halve,
                                       Tool::Legato,     Tool::FixedLength,  Tool::OverlapsMono, Tool::OverlapsPoly, Tool::Chord,
                                       Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3,
                                       Tool::VelocityAdd, Tool::VelocityScale, Tool::VelocityLimit, Tool::DeleteDoubles,
-                                      Tool::RestrictPolyphony, Tool::Quantize};
+                                      Tool::RestrictPolyphony, Tool::Quantize, Tool::AddInterval};
+    // The tools panel's three tabs. Pitch and Time is Live's panel (manual 10.5.9): the range,
+    // Transpose, Fit to Scale, Invert, Reverse, the Interval size with Add Interval, the Stretch
+    // control with x2 and /2, the Duration chooser with Set Length, and Legato. Functions and
+    // Chords hold ADI's additions: the velocity and note functions with the Quantize settings, and
+    // the chord and overlap tools.
+    static constexpr int kToolTabs = 3;
+    // Add Interval: the size, in semitones, or in the scale's degrees while the clip's Scale Mode is on.
+    int intervalSize = 7;
+    // The Stretch control (manual 10.5.9.5): a factor in per cent, typed or dragged; it stretches the
+    // selected notes, or all, from the first one's start, and reads 100 again.
+    bool stretch(int percent);
+    // The Duration chooser beside Set Length (manual 10.5.9.6): the editing grid's step, or a fixed length.
+    struct Duration {
+        const char *name;
+        std::int64_t ticks; // 0: the editing grid's step
+    };
+    static constexpr std::array<Duration, 7> kDurations = {{{"Grid", 0},
+                                                           {"1/32", textproj::kPPQ / 8},
+                                                           {"1/16", textproj::kPPQ / 4},
+                                                           {"1/8", textproj::kPPQ / 2},
+                                                           {"1/4", textproj::kPPQ},
+                                                           {"1/2", 2 * textproj::kPPQ},
+                                                           {"1 Bar", textproj::kWhole}}};
+    std::size_t duration() const noexcept { return duration_; }
+    juce::PopupMenu durationMenu() const;
+    bool chooseDuration(int item);
+    std::int64_t durationTicks() const noexcept;
+    juce::Rectangle<int> durationBox() const noexcept;
     // The Quantize settings (manual 10.5.11), at the foot of the Functions tab; Ctrl/Cmd+U and the
     // Quantize button use them, Ctrl/Cmd+Shift+U shows them. The value is the editing grid or a
     // fixed one; Start and End say which ends move; the amount is how far towards the grid. Swing
@@ -395,7 +453,7 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch
     };
     // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
     // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
@@ -552,7 +610,7 @@ class ClipViewPanel final : public juce::Component {
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
-    std::size_t chord_ = 0, quantizeValue_ = 0;
+    std::size_t chord_ = 0, quantizeValue_ = 0, duration_ = 0;
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;

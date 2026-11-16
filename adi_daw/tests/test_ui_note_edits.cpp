@@ -880,6 +880,154 @@ void noteFilters() {
     check(findNotes(c, f).empty(), "cleared, nothing is found");
 }
 
+void clipTime() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 90;
+        return n;
+    };
+    // Before, crossing in, inside, crossing out, after; and one across the whole range.
+    c.notes = {note(1, 60, 0, beat),         note(2, 61, beat, 2 * beat), note(3, 62, 3 * beat, beat),
+               note(4, 63, 5 * beat, 2 * beat), note(5, 64, 7 * beat, beat), note(6, 65, beat, 6 * beat)};
+    const auto kind = [](const NoteEdit &e, std::uint64_t id, const char *type) {
+        for (const auto &o : e.ops)
+            if (o.opType == type && o.payload.at("note") == id)
+                return true;
+        return false;
+    };
+    const auto value = [](const NoteEdit &e, std::uint64_t id, const char *type, const char *field) -> std::int64_t {
+        for (const auto &o : e.ops)
+            if (o.opType == type && o.payload.at("note") == id)
+                return o.payload.at(field).get<std::int64_t>();
+        return -1;
+    };
+    // Crop to beats 2 to 6, cutting.
+    const auto cut = cropNotes(c, 2 * beat, 6 * beat, true);
+    check(kind(cut, 1, "note.delete") && kind(cut, 5, "note.delete") && !kind(cut, 3, "note.delete") && !kind(cut, 3, "note.move") &&
+              !kind(cut, 3, "note.resize"),
+          "Crop Clip: the notes outside go; a note inside is left as it is");
+    check(value(cut, 2, "note.move", "start") == 2 * beat && value(cut, 2, "note.resize", "dur") == beat && !kind(cut, 4, "note.move") &&
+              value(cut, 4, "note.resize", "dur") == beat && value(cut, 6, "note.move", "start") == 2 * beat &&
+              value(cut, 6, "note.resize", "dur") == 4 * beat && cut.ops[0].label == "Crop Clip",
+          "a note crossing an edge is cut at the edge; one crossing both, at both");
+    const auto whole = cropNotes(c, 2 * beat, 6 * beat, false);
+    check(whole.ops.size() == 2 && kind(whole, 1, "note.delete") && kind(whole, 5, "note.delete"),
+          "with the loop off, as measured on Live, a crossing note is kept whole: only the notes wholly outside go");
+    check(cropNotes(c, 0, 8 * beat, true).ops.empty() && cropNotes(c, 4 * beat, 4 * beat, true).ops.empty(), "nothing outside, nothing to do; no range, nothing");
+    // Duplicate Time, beats 3 to 5.
+    const auto twice = duplicateTime(c, 3 * beat, 5 * beat);
+    int inserts = 0;
+    std::int64_t copied = -1;
+    for (const auto &o : twice.ops)
+        if (o.opType == "note.insert") {
+            ++inserts;
+            copied = o.payload.at("start").get<std::int64_t>();
+        }
+    check(inserts == 1 && copied == 5 * beat && value(twice, 4, "note.move", "start") == 7 * beat && value(twice, 5, "note.move", "start") == 9 * beat &&
+              !kind(twice, 1, "note.move") && !kind(twice, 2, "note.move") && !kind(twice, 6, "note.move") && twice.ops[0].label == "Duplicate Time" &&
+              twice.select.empty(),
+          "Duplicate Time: the note that begins in the time is copied after it, and the notes after it move on by its length");
+    check(duplicateTime(c, 3 * beat, 5 * beat, "Duplicate Loop").ops[0].label == "Duplicate Loop", "Duplicate Loop is the same, under its own name");
+    // Delete Time, beats 3 to 5.
+    const auto gone = deleteTime(c, 3 * beat, 5 * beat);
+    check(kind(gone, 3, "note.delete") && value(gone, 4, "note.move", "start") == 3 * beat && value(gone, 5, "note.move", "start") == 5 * beat &&
+              !kind(gone, 2, "note.resize") && !kind(gone, 1, "note.move") && gone.ops[0].label == "Delete Time",
+          "Delete Time: the note that begins in the time goes, later notes move back; a note that ends where it begins is left");
+    check(value(gone, 6, "note.resize", "dur") == 4 * beat && !kind(gone, 6, "note.move"), "a note sounding across the whole deleted time loses that much length");
+    const auto into = deleteTime(c, 2 * beat, 4 * beat);
+    check(value(into, 2, "note.resize", "dur") == beat, "a note from before that ends inside the deleted time ends where it begins");
+    // Insert Time, beats 3 to 5.
+    const auto room = insertTime(c, 3 * beat, 5 * beat);
+    check(room.ops.size() == 3 && value(room, 3, "note.move", "start") == 5 * beat && value(room, 4, "note.move", "start") == 7 * beat &&
+              value(room, 5, "note.move", "start") == 9 * beat && room.ops[0].label == "Insert Time",
+          "Insert Time: the notes that begin at or after the time's start move on by its length");
+    ClipDetails audio = c;
+    audio.kind = "audio";
+    check(!cropNotes(audio, 0, beat, true).refusal.empty() && !deleteTime(audio, 0, beat).refusal.empty(), "an audio clip refuses them");
+}
+
+void intervals() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = beat;
+        n.velocity = 77;
+        return n;
+    };
+    c.notes = {note(1, 60, 0), note(2, 61, beat), note(3, 125, 2 * beat)};
+    const auto keyOf = [](const NoteEdit &e, std::size_t i) { return e.ops[i].payload.at("key").get<int>(); };
+    const auto fifth = addInterval(c, {1}, 7);
+    check(fifth.ops.size() == 1 && fifth.ops[0].opType == "note.insert" && keyOf(fifth, 0) == 67 && fifth.ops[0].payload.at("start") == 0 &&
+              fifth.ops[0].payload.at("dur") == beat && fifth.ops[0].payload.at("vel") == 77 && fifth.ops[0].label == "Add Interval" &&
+              fifth.select.size() == 1 && fifth.select[0] == fifth.ops[0].payload.at("note").get<std::uint64_t>(),
+          "Add Interval: a new note a fifth above, with its note's start, length and velocity; the new note is the selection");
+    const auto all = addInterval(c, {}, -12);
+    check(all.ops.size() == 3 && keyOf(all, 0) == 48 && keyOf(all, 1) == 49 && keyOf(all, 2) == 113, "with none selected, beside every note; a negative size goes below");
+    check(addInterval(c, {3}, 7).ops.empty() && addInterval(c, {1}, 0).ops.empty(), "a note that would leave the ruler is left out; a size of 0 adds none");
+    // By the degrees of C major (mask 2741).
+    const auto third = addInterval(c, {1}, 2, 2741, 0);
+    check(third.ops.size() == 1 && keyOf(third, 0) == 64, "with the scale on, the size counts its degrees: two above C is E");
+    const auto below = addInterval(c, {1}, -1, 2741, 0);
+    check(keyOf(below, 0) == 59, "one degree below C is B");
+    const auto outside = addInterval(c, {2}, 1, 2741, 0);
+    check(outside.ops.size() == 1 && (keyOf(outside, 0) == 62 || keyOf(outside, 0) == 64),
+          "a note outside the scale counts from the nearest degree");
+}
+
+void noteStretch() {
+    check(stretchPoint(2 * beat, 0, 4 * beat, 0, 8 * beat) == 4 * beat && stretchPoint(3 * beat, beat, 5 * beat, beat, 3 * beat) == 2 * beat &&
+              stretchPoint(beat, 0, 4 * beat, 4 * beat, 0) == 3 * beat && stretchPoint(7, 5, 5, 9, 20) == 9,
+          "a place keeps its share of the way between the markers; turned round, it is mirrored");
+    check(stretchPointAround(beat, 0, 2 * beat, 4 * beat, 3 * beat) == 3 * beat / 2 && stretchPointAround(3 * beat, 0, 2 * beat, 4 * beat, 3 * beat) == 7 * beat / 2 &&
+              stretchPointAround(5 * beat, 0, 2 * beat, 4 * beat, 3 * beat) == 5 * beat && stretchPointAround(0, 0, 2 * beat, 4 * beat, 3 * beat) == 0,
+          "the pseudo marker: what is before it and after it stretch to meet it; outside the pair nothing moves");
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 90;
+        return n;
+    };
+    c.notes = {note(1, 60, 0, beat), note(2, 62, beat, beat), note(3, 64, 3 * beat, beat), note(4, 65, 8 * beat, beat)};
+    const auto value = [](const NoteEdit &e, std::uint64_t id, const char *type, const char *field) -> std::int64_t {
+        for (const auto &o : e.ops)
+            if (o.opType == type && o.payload.at("note") == id)
+                return o.payload.at(field).get<std::int64_t>();
+        return -1;
+    };
+    // The three notes from 0 to 4 stretched to twice the length: the End marker dragged from 4 to 8.
+    const auto twice = remapNotes(c, {1, 2, 3}, [](std::int64_t t) { return stretchPoint(t, 0, 4 * beat, 0, 8 * beat); });
+    check(value(twice, 1, "note.move", "start") == -1 && value(twice, 1, "note.resize", "dur") == 2 * beat && value(twice, 2, "note.move", "start") == 2 * beat &&
+              value(twice, 2, "note.resize", "dur") == 2 * beat && value(twice, 3, "note.move", "start") == 6 * beat &&
+              value(twice, 3, "note.resize", "dur") == 2 * beat && value(twice, 4, "note.move", "start") == -1 && twice.ops[0].label == "Stretch Notes" &&
+              twice.select == std::vector<std::uint64_t>({1, 2, 3}),
+          "the notes stretched to twice their span: starts and lengths in proportion; a note not named is left");
+    // Mirrored: the End marker dragged to the Start marker's other side.
+    const auto mirror = remapNotes(c, {1, 2, 3}, [](std::int64_t t) { return stretchPoint(t, 0, 4 * beat, 4 * beat, 0); });
+    check(value(mirror, 1, "note.move", "start") == 3 * beat && value(mirror, 3, "note.move", "start") == 0 && value(mirror, 2, "note.move", "start") == 2 * beat &&
+              value(mirror, 1, "note.resize", "dur") == -1,
+          "a marker dragged past the other mirrors the notes: the first is last, each as long as it was");
+    const auto flat = remapNotes(c, {1, 2}, [](std::int64_t) { return std::int64_t{0}; });
+    check(value(flat, 1, "note.resize", "dur") == kShortestNote && value(flat, 2, "note.move", "start") == 0, "squeezed to nothing, a note is the shortest note long");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -940,6 +1088,9 @@ int main() {
     velocityControls();
     scaleMode();
     noteFilters();
+    clipTime();
+    intervals();
+    noteStretch();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -966,6 +966,150 @@ inline NoteEdit restrictPolyphony(const engine::ClipDetails &clip, const std::ve
     return edit;
 }
 
+// Add Interval (manual 10.5.9.4): a new note beside each note, `interval` semitones above it (below,
+// when negative), or that many degrees of the scale when `mask` is given (the clip's scale is on).
+// The new notes carry what theirs carry and are the selection. One that would leave the ruler is
+// left out.
+inline NoteEdit addInterval(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int interval, std::int64_t mask = 0,
+                            int tonic = 0) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty() || interval == 0)
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto *n : targets(clip, ids)) {
+        int key = n->key;
+        if (mask == 0) {
+            key += interval;
+        } else {
+            // By the scale's degrees, from the note's own place in it (the nearest, when it is outside).
+            key = nearestInScale(key, tonic, mask);
+            for (int step = 0; step < std::abs(interval) && key >= 0 && key < kNoteKeys; ++step)
+                do
+                    key += interval > 0 ? 1 : -1;
+                while (key >= 0 && key < kNoteKeys && !inScale(key, tonic, mask));
+        }
+        if (key < 0 || key >= kNoteKeys)
+            continue;
+        auto added = *n;
+        added.key = static_cast<std::uint8_t>(key);
+        piece(edit, clip.id, added, id++, n->startTicks, n->durationTicks, "Add Interval");
+    }
+    return edit;
+}
+
+// ---- MIDI Note Stretch (manual 10.5.6) ------------------------------------------------------------
+// A place between `a` and `b` carried to the same share of the way between `a2` and `b2`; with
+// `a2` after `b2` the order is turned round.
+inline std::int64_t stretchPoint(std::int64_t t, std::int64_t a, std::int64_t b, std::int64_t a2, std::int64_t b2) noexcept {
+    if (b == a)
+        return a2;
+    return a2 + static_cast<std::int64_t>(std::llround(static_cast<double>(t - a) * static_cast<double>(b2 - a2) / static_cast<double>(b - a)));
+}
+// The pseudo marker's map: what lies between `a` and `p` goes between `a` and `p2`, what lies
+// between `p` and `b` goes between `p2` and `b`; outside `a` to `b` nothing moves.
+inline std::int64_t stretchPointAround(std::int64_t t, std::int64_t a, std::int64_t p, std::int64_t b, std::int64_t p2) noexcept {
+    if (t <= a || t >= b)
+        return t;
+    return t <= p ? stretchPoint(t, a, p, a, p2) : stretchPoint(t, p, b, p2, b);
+}
+// The named notes with their starts and ends carried through `map`, a place in the clip's ticks
+// to its new place: stretched in proportion; a map that turns the order round mirrors them.
+template <class Map>
+NoteEdit remapNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, Map &&map, const char *label = "Stretch Notes") {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    for (const auto *n : pick(clip, ids)) {
+        const std::int64_t a = map(n->startTicks), b = map(n->startTicks + n->durationTicks);
+        place(edit, clip.id, *n, std::min(a, b), n->key, std::max(kShortestNote, std::abs(b - a)), label);
+    }
+    return edit;
+}
+
+// ---- Time inside the clip (manual 10.7) -----------------------------------------------------------
+// Crop Clip (10.7.1; Ctrl/Cmd+Shift+J): the notes outside `from` to `to` go. With `cut`, a note that
+// crosses an edge is cut there: the loop on, or a time selection (as measured on Live). Without
+// it a crossing note is kept whole: the loop off, between the Start and End markers.
+inline NoteEdit cropNotes(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to, bool cut) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty() || to <= from)
+        return edit;
+    for (const auto &n : clip.notes) {
+        const auto end = n.startTicks + n.durationTicks;
+        if (end <= from || n.startTicks >= to) {
+            edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", n.id}}, "Crop Clip"));
+            continue;
+        }
+        if (!cut)
+            continue;
+        const auto start = std::max(n.startTicks, from), stop = std::min(end, to);
+        place(edit, clip.id, n, start, n.key, std::max(kShortestNote, stop - start), "Crop Clip");
+    }
+    return edit;
+}
+// Duplicate Time (10.7.2): a copy of the notes that begin in `from` to `to` is placed after it, and
+// the notes that begin at or after `to` move on by its length. Duplicate Loop (10.7.3) is the same
+// over the loop, under its own name; the loop's new length is the caller's op.
+inline NoteEdit duplicateTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to, const char *label = "Duplicate Time") {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto &n : clip.notes) {
+        if (n.startTicks >= to)
+            place(edit, clip.id, n, n.startTicks + length, n.key, n.durationTicks, label);
+        else if (n.startTicks >= from)
+            piece(edit, clip.id, n, id++, n.startTicks + length, n.durationTicks, label);
+    }
+    edit.select.clear();
+    return edit;
+}
+// Delete Time (10.7.2): the notes that begin in `from` to `to` go; later notes move back by its
+// length; a note from before that reaches into it ends at `from`, or loses the deleted time when
+// it reaches past `to`.
+inline NoteEdit deleteTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    for (const auto &n : clip.notes) {
+        const auto end = n.startTicks + n.durationTicks;
+        if (n.startTicks >= to)
+            place(edit, clip.id, n, n.startTicks - length, n.key, n.durationTicks, "Delete Time");
+        else if (n.startTicks >= from)
+            edit.ops.push_back(op("note.delete", {{"clip", clip.id}, {"note", n.id}}, "Delete Time"));
+        else if (end > from)
+            place(edit, clip.id, n, n.startTicks, n.key, std::max(kShortestNote, (end <= to ? from : end - length) - n.startTicks), "Delete Time");
+    }
+    return edit;
+}
+// Insert Time (10.7.2): as much empty time as `from` to `to` holds, before it: the notes that begin
+// at or after `from` move on by its length.
+inline NoteEdit insertTime(const engine::ClipDetails &clip, std::int64_t from, std::int64_t to) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    const auto length = to - from;
+    if (!edit.refusal.empty() || length <= 0)
+        return edit;
+    for (const auto &n : clip.notes)
+        if (n.startTicks >= from)
+            place(edit, clip.id, n, n.startTicks + length, n.key, n.durationTicks, "Insert Time");
+    return edit;
+}
+
 // Live's overlap rule, as measured on Live 12.4 (manual 10.5.4): where an edit puts a note over
 // another on the same key, the note just placed survives whole. An older note that begins inside it
 // is removed; an older note that began before it is cut to end where it begins, and what the older

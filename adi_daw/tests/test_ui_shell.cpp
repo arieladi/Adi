@@ -4488,6 +4488,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
                                                   op("note.insert", {{"clip", 11}, {"note", 20}, {"start", 0}, {"dur", 3 * beat}, {"key", 60}, {"vel", 90}}, "Add Note")}).ok,
           "the clip holds one C3, three beats long");
     root.frame();
+    panel.setToolsTab(2);
     check(panel.chordMenu().getNumItems() == static_cast<int>(kChordTypes.size()) && !panel.chordBox().isEmpty() &&
               std::string(panel.chordType().name) == "Major",
           "the chord type's chooser lists the chord types, Major first");
@@ -4518,16 +4519,19 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &n : panel.details()->notes)
         low = std::min(low, static_cast<int>(n.key));
     check(low == 55 && undoIs("Drop 2", 1), "Drop 2 takes the G down an octave");
+    panel.setToolsTab(0);
     click(panel.toolBox(Tool::FixedLength));
     bool allStep = true;
     for (const auto &n : panel.details()->notes)
         allStep = allStep && n.durationTicks == ed.gridTicks();
-    check(allStep && undoIs("Fixed Lengths", 4), "Fixed Length makes the four notes a grid step long");
+    check(allStep && undoIs("Set Length", 4), "Set Length, its Duration on Grid, makes the four notes a grid step long");
     ed.select({});
     check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", beat / 2}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
           "a second C3 begins while the first still sounds");
     root.frame();
+    panel.setToolsTab(2);
     click(panel.toolBox(Tool::OverlapsMono));
+    panel.setToolsTab(0);
     check(note(20).durationTicks == beat / 2 && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
 
     // ADI's Functions tab (ADR-0242 d1): the velocity functions, Delete Doubles and Restrict Polyphony.
@@ -5829,6 +5833,291 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     }
 }
 
+// Time inside the clip (manual 10.7): Crop Clip, Duplicate, Delete and Insert Time, Duplicate Loop.
+void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-clip-time.adi", err);
+    check(store != nullptr, "the clip time project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Clip Time')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Tune"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    // In the clip's own beats: C3 at 0, D3 at 1, a two-beat E3 at 2, F3 at 5 and G3 at 7.
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 2}, {"start", beat}, {"dur", beat}, {"key", 62}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 3}, {"start", 2 * beat}, {"dur", 2 * beat}, {"key", 64}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 4}, {"start", 5 * beat}, {"dur", beat}, {"key", 65}}, "Add Note"),
+               op("note.insert", {{"clip", 11}, {"note", 5}, {"start", 7 * beat}, {"dur", beat}, {"key", 67}}, "Add Note")}).ok && made;
+    check(made, "a MIDI clip of five notes");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-clip-time");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    root.arrangement.geometry.resizeTrack(1, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(bar)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->notes.size() == 5, "the clip is open in the Note Editor");
+    if (panel.details() == nullptr)
+        return;
+    const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+    const auto note = [&](std::uint64_t id) {
+        for (const auto &n : details().notes)
+            if (n.id == id)
+                return n;
+        return engine::ClipNote{};
+    };
+    const auto undoIs = [&](const char *label) { return submitter.nextUndo()->label == label; };
+    const auto undo = [&] {
+        const bool done = root.command(AppCommands::Undo);
+        root.frame();
+        return done;
+    };
+    const auto key = [](int code, int mods = 0) { return juce::KeyPress(code, juce::ModifierKeys(mods), 0); };
+    const int shift = juce::ModifierKeys::shiftModifier, command = juce::ModifierKeys::commandModifier;
+    const auto song = [&](std::int64_t clipBeats) { return bar + clipBeats; }; // the clip starts at the song's second bar
+
+    // The time commands, over the clip's beats 2 to 4.
+    ed.selectTime(song(2 * beat), song(4 * beat));
+    check(ed.keyPressed(key('d', command | shift)) && details().notes.size() == 6 && note(4).startTicks == 7 * beat && note(5).startTicks == 9 * beat &&
+              note(3).startTicks == 2 * beat && note(2).startTicks == beat && undoIs("Duplicate Time") && details().startMarkerTicks == 0 &&
+              endMarkerOf(details()) == 8 * beat,
+          "Ctrl+Shift+D with time selected: the E3 in it is copied after it and the later notes move on two beats; the clip's markers stay");
+    bool copyAtFour = false;
+    for (const auto &n : details().notes)
+        copyAtFour = copyAtFour || (n.id > 5 && n.key == 64 && n.startTicks == 4 * beat && n.durationTicks == 2 * beat);
+    check(copyAtFour && undo() && details().notes.size() == 5 && note(4).startTicks == 5 * beat, "the copy begins where the time ended; one Undo takes it all back");
+    check(ed.keyPressed(key('i', command)) && details().notes.size() == 5 && note(3).startTicks == 4 * beat && note(4).startTicks == 7 * beat &&
+              note(2).startTicks == beat && undoIs("Insert Time") && undo(),
+          "Ctrl+I: as much empty time before the selection; the notes from its start on move on");
+    check(ed.keyPressed(key(juce::KeyPress::deleteKey, command | shift)) && details().notes.size() == 4 && note(3).id == 0 &&
+              note(4).startTicks == 3 * beat && note(5).startTicks == 5 * beat && undoIs("Delete Time") && !ed.timeSelection() &&
+              ed.insertMarker() == song(2 * beat),
+          "Ctrl+Shift+Delete: the time and the note in it go, later notes move back; the insert marker stands where it was");
+    check(undo() && details().notes.size() == 5 && note(3).durationTicks == 2 * beat, "undo");
+    const auto before = submitter.nextUndo()->txnId;
+    ed.keyPressed(key(juce::KeyPress::escapeKey));
+    check(!ed.timeSelection() && ed.keyPressed(key(juce::KeyPress::deleteKey, command | shift)) && submitter.nextUndo()->txnId == before,
+          "with no time selected, Ctrl+Shift+Delete deletes nothing");
+
+    // Crop Clip.
+    ed.selectTime(song(beat), song(6 * beat));
+    check(ed.keyPressed(key('j', command | shift)) && details().notes.size() == 3 && note(1).id == 0 && note(5).id == 0 && note(2).startTicks == beat &&
+              undoIs("Crop Clip") && undo(),
+          "Ctrl+Shift+J with time selected crops to it: the notes outside go");
+    ed.keyPressed(key(juce::KeyPress::escapeKey));
+    check(ed.keyPressed(key('j', command | shift)) && submitter.nextUndo()->txnId == before, "with no time selected and every note between the markers, nothing to crop");
+    check(submitter.submit(op("clip.setEndMarker", {{"id", 11}, {"ticks", 5 * beat + beat / 2}}, "Set Clip End")).ok, "the End marker in the middle of the F3");
+    root.frame();
+    check(!details().loopEnabled && ed.keyPressed(key('j', command | shift)) && details().notes.size() == 4 && note(5).id == 0 &&
+              note(4).durationTicks == beat && undoIs("Crop Clip") && undo(),
+          "the loop off: the note past the End marker goes, and the one crossing it is kept whole, as measured on Live");
+    check(submitter.submit(op("clip.setLoop", {{"id", 11}, {"on", true}, {"start", 3 * beat}, {"length", 2 * beat + beat / 2}}, "Set Loop Position")).ok,
+          "the loop on, from the middle of the E3 to the middle of the F3");
+    root.frame();
+    check(ed.keyPressed(key('j', command | shift)) && details().notes.size() == 2 && note(3).startTicks == 3 * beat && note(3).durationTicks == beat &&
+              note(4).startTicks == 5 * beat && note(4).durationTicks == beat / 2 && undoIs("Crop Clip") && undo(),
+          "the loop on: the notes outside it go, and the two crossing its edges are cut there");
+
+    // Duplicate Loop: Ctrl+D with the brace selected.
+    const auto ruler = ed.rulerArea();
+    const juce::Point<float> brace(static_cast<float>(ruler.getX()) + static_cast<float>(ed.time.x(song(4 * beat))), static_cast<float>(ruler.getY() + 3));
+    ed.mouseDown(pressAt(ed, brace));
+    ed.mouseUp(pressAt(ed, brace));
+    check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && details().notes.size() == 5, "the loop brace selected");
+    check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 5 * beat && details().loopStartTicks == 3 * beat && details().loopEnabled &&
+              details().notes.size() == 6 && note(5).startTicks == 9 * beat + beat / 2 && note(4).startTicks == 5 * beat && undoIs("Duplicate Loop") &&
+              submitter.nextUndo()->opCount == 3,
+          "Ctrl+D doubles the loop, copies the note that begins in it and moves the later note on by the loop's length: one undo step");
+    bool copied = false;
+    for (const auto &n : details().notes)
+        copied = copied || (n.id > 5 && n.key == 65 && n.startTicks == 7 * beat + beat / 2);
+    const auto loopEnd = static_cast<int>(ed.time.x(song(8 * beat)));
+    check(copied && loopEnd <= ed.notesArea().getWidth() && ed.time.x(song(3 * beat)) >= 0, "the copy is a loop's length after its note, and the whole loop is in view");
+    check(undo() && details().loopLengthTicks == 2 * beat + beat / 2 && details().notes.size() == 5 && note(5).startTicks == 7 * beat,
+          "one Undo gives back the loop and the notes");
+    ed.select({4});
+    check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && ed.keyPressed(key(juce::KeyPress::escapeKey)), "the brace let go");
+    check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 2 * beat + beat / 2 && undoIs("Duplicate Note"),
+          "without the brace selected Ctrl+D duplicates the selected note, as before");
+
+    // Pitch and Time as Live's (manual 10.5.9): Interval and Add Interval, the Stretch control, Duration and Set Length;
+    // and ADI's chord and overlap tools on their own tab.
+    {
+        using Field = ClipViewPanel::Field;
+        using Tool = ClipViewPanel::Tool;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto apart = [&](const std::vector<juce::Rectangle<int>> &boxes) {
+            bool ok = true;
+            for (std::size_t i = 0; i < boxes.size(); ++i) {
+                ok = ok && !boxes[i].isEmpty() && panel.toolsArea().contains(boxes[i]);
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                    ok = ok && !boxes[i].intersects(boxes[j]);
+            }
+            return ok;
+        };
+        check(undo() && details().notes.size() == 5, "the duplicate taken back: five notes");
+        panel.setToolsTab(0);
+        check(apart({panel.tabBox(0), panel.tabBox(1), panel.tabBox(2)}) && panel.tabBox(3).isEmpty() && panel.toolsTab() == 0,
+              "the tools panel has three tabs: Pitch and Time, Functions and Chords");
+        check(apart({panel.rangeBox(), panel.fieldBox(Field::Transpose), panel.toolBox(Tool::FitToScale), panel.toolBox(Tool::Invert),
+                     panel.toolBox(Tool::Reverse), panel.fieldBox(Field::Interval), panel.toolBox(Tool::AddInterval), panel.fieldBox(Field::Stretch),
+                     panel.toolBox(Tool::Double), panel.toolBox(Tool::Halve), panel.durationBox(), panel.toolBox(Tool::FixedLength),
+                     panel.toolBox(Tool::Legato)}) &&
+                  panel.toolBox(Tool::Chord).isEmpty() && panel.toolBox(Tool::OverlapsMono).isEmpty() && panel.chordBox().isEmpty(),
+              "Pitch and Time holds Live's tools, each in its own place: the range, Transpose, Fit to Scale, Invert, Reverse, the Interval size and Add "
+              "Interval, the Stretch control with x2 and /2, the Duration chooser and Set Length, and Legato");
+        click(panel.tabBox(2));
+        check(panel.toolsTab() == 2 && apart({panel.chordBox(), panel.toolBox(Tool::Chord), panel.toolBox(Tool::InvertUp), panel.toolBox(Tool::InvertDown),
+                                              panel.toolBox(Tool::Drop2), panel.toolBox(Tool::Drop3), panel.toolBox(Tool::OverlapsMono),
+                                              panel.toolBox(Tool::OverlapsPoly)}) &&
+                  panel.toolBox(Tool::Invert).isEmpty() && panel.rangeBox().isEmpty() && panel.fieldBox(Field::Interval).isEmpty(),
+              "the Chords tab holds ADI's chord tools and the overlap functions");
+        click(panel.tabBox(0));
+
+        // Add Interval.
+        ed.select({1});
+        click(panel.toolBox(Tool::AddInterval));
+        check(panel.intervalSize == 7 && details().notes.size() == 6 && ed.selected().size() == 1 && note(ed.selected().front()).key == 67 &&
+                  note(ed.selected().front()).startTicks == 0 && undoIs("Add Interval"),
+              "Add Interval puts a note a fifth above the selected C3 and selects it: one undo step");
+        check(panel.typeField(Field::Interval, "-12") && panel.intervalSize == -12 && details().notes.size() == 6, "the size typed as -12; typing adds nothing");
+        ed.select({});
+        click(panel.toolBox(Tool::AddInterval));
+        check(details().notes.size() == 12 && ed.selected().size() == 6 && undo() && details().notes.size() == 6,
+              "with no note selected Add Interval works on every note: six more, an octave below");
+        click(panel.scaleModeBox());
+        check(details().scale.local && panel.typeField(Field::Interval, "2"), "Scale Mode on, in C Major; the size 2");
+        ed.select({1});
+        click(panel.toolBox(Tool::AddInterval));
+        check(ed.selected().size() == 1 && note(ed.selected().front()).key == 64 && note(ed.selected().front()).startTicks == 0,
+              "with the scale on the size counts its degrees: two above C3 is E3");
+        check(undo() && undo() && !details().scale.local && undo() && details().notes.size() == 5, "undone: the note, the scale, and the fifth");
+
+        // The Stretch control.
+        ed.select({3});
+        check(panel.typeField(Field::Stretch, "150") && note(3).durationTicks == 3 * beat && note(3).startTicks == 2 * beat && undoIs("Stretch Notes"),
+              "Stretch typed as 150 makes the selected two-beat note three beats long");
+        {
+            const auto box = panel.fieldBox(Field::Stretch).getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, box));
+            panel.mouseDrag(dragAt(panel, box, box.translated(0.f, 40.f)));
+            panel.mouseUp(dragAt(panel, box, box.translated(0.f, 40.f)));
+        }
+        check(note(3).durationTicks == 3 * beat / 2 && undoIs("Stretch Notes"), "dragged down ten steps it is 50 per cent: a beat and a half");
+        const auto beforeBad = submitter.nextUndo()->txnId;
+        check(!panel.typeField(Field::Stretch, "5") && !panel.typeField(Field::Stretch, "fast") && !root.error().empty() &&
+                  submitter.nextUndo()->txnId == beforeBad && panel.typeField(Field::Stretch, "100") && submitter.nextUndo()->txnId == beforeBad,
+              "under 10 per cent and a word are refused; 100 per cent changes nothing");
+        check(undo() && undo() && note(3).durationTicks == 2 * beat, "both stretches undone");
+
+        // Duration and Set Length.
+        check(panel.duration() == 0 && panel.durationMenu().getNumItems() == 7 && panel.durationTicks() == ed.gridTicks() && panel.chooseDuration(5) &&
+                  panel.durationTicks() == beat && !panel.chooseDuration(0) && !panel.chooseDuration(8),
+              "the Duration chooser: the editing grid's step first, then fixed lengths; 1/4 chosen");
+        ed.select({3});
+        click(panel.toolBox(Tool::FixedLength));
+        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && submitter.nextUndo()->opCount == 1,
+              "Set Length gives the selected note the chosen length");
+        check(panel.chooseDuration(4), "1/8");
+        ed.select({});
+        click(panel.toolBox(Tool::FixedLength));
+        bool allEighths = true;
+        for (const auto &n : details().notes)
+            allEighths = allEighths && n.durationTicks == beat / 2;
+        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(1),
+              "with no note selected, every note; undone, and the Duration back on Grid");
+    }
+
+    // MIDI Note Stretch (manual 10.5.6): the pair of markers under the ruler.
+    {
+        using Part = NoteEditor::StretchPart;
+        using Ids = std::vector<std::uint64_t>;
+        using Span = std::optional<std::pair<std::int64_t, std::int64_t>>;
+        const auto area = ed.notesArea();
+        const auto at = [&](std::int64_t songTick, float dx = 0.f) {
+            return juce::Point<float>(static_cast<float>(area.getX()) + static_cast<float>(ed.time.x(songTick)) + dx,
+                                      static_cast<float>(ed.stretchArea().getY() + 3));
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        check(!ed.stretchSpan() && ed.stretchPartAt(at(song(2 * beat)).roundToInt()) == Part::None, "with nothing selected there are no stretch markers");
+        ed.select({1});
+        check(!ed.stretchSpan(), "nor with one note");
+        // C3 at 0, D3 at 1 and the two-beat E3 at 2: the clip's first four beats.
+        ed.select({1, 2, 3});
+        check(ed.stretchSpan() == Span({song(0), song(4 * beat)}) && ed.stretchPartAt(at(song(0)).roundToInt()) == Part::Start &&
+                  ed.stretchPartAt(at(song(4 * beat)).roundToInt()) == Part::End && ed.stretchPartAt(at(song(2 * beat)).roundToInt()) == Part::Middle &&
+                  ed.stretchPartAt(at(song(5 * beat)).roundToInt()) == Part::None &&
+                  ed.stretchPartAt(juce::Point<float>(at(song(4 * beat)).x, static_cast<float>(area.getY() + 2)).roundToInt()) == Part::None &&
+                  ed.stretchArea().getBottom() == area.getY() && ed.stretchArea().getY() == ed.rulerArea().getBottom(),
+              "with several notes selected a pair of markers stands at the selection's start and end, in their own strip between the ruler and the key tracks");
+        // The End marker dragged from beat 4 to beat 6: half as long again. The F3 at 5 is not selected and stays.
+        const auto unwritten = submitter.nextUndo()->txnId;
+        ed.mouseDown(pressAt(ed, at(song(4 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(4 * beat)), at(song(6 * beat), 2.f)));
+        check(ed.stretchSpan() == Span({song(0), song(6 * beat)}) && submitter.nextUndo()->txnId == unwritten && note(3).startTicks == 2 * beat,
+              "while the End marker is held the pair follows it, on the grid, and nothing is written");
+        ed.mouseUp(dragAt(ed, at(song(4 * beat)), at(song(6 * beat), 2.f)));
+        check(note(1).startTicks == 0 && note(1).durationTicks == 3 * beat / 2 && note(2).startTicks == 3 * beat / 2 && note(2).durationTicks == 3 * beat / 2 &&
+                  note(3).startTicks == 3 * beat && note(3).durationTicks == 3 * beat && note(4).startTicks == 5 * beat && undoIs("Stretch Notes") &&
+                  ed.selected() == Ids({1, 2, 3}) && ed.stretchSpan() == Span({song(0), song(6 * beat)}),
+              "released, the selected notes are stretched in proportion: one undo step; the note not selected stays; the markers are at the new ends");
+        check(undo() && note(3).startTicks == 2 * beat && note(3).durationTicks == 2 * beat, "undo");
+        // The Start marker dragged past the End marker mirrors the notes.
+        ed.mouseDown(pressAt(ed, at(song(0))));
+        ed.mouseDrag(dragAt(ed, at(song(0)), at(song(8 * beat))));
+        ed.mouseUp(dragAt(ed, at(song(0)), at(song(8 * beat))));
+        check(note(1).startTicks == 7 * beat && note(2).startTicks == 6 * beat && note(3).startTicks == 4 * beat && note(3).durationTicks == 2 * beat &&
+                  note(1).durationTicks == beat && undoIs("Stretch Notes"),
+              "the Start marker dragged to the far side of the End marker mirrors the notes about it: the first is the last");
+        check(undo() && note(1).startTicks == 0, "undo");
+        // A drag begun between the two: the pseudo marker. From beat 2 to beat 3.
+        ed.mouseDown(pressAt(ed, at(song(2 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(2 * beat)), at(song(3 * beat))));
+        ed.mouseUp(dragAt(ed, at(song(2 * beat)), at(song(3 * beat))));
+        check(note(1).startTicks == 0 && note(1).durationTicks == 3 * beat / 2 && note(2).startTicks == 3 * beat / 2 && note(3).startTicks == 3 * beat &&
+                  note(3).durationTicks == beat && ed.stretchSpan() == Span({song(0), song(4 * beat)}),
+              "a drag from between the markers: what was before the place stretches, what was after it shrinks, and the pair's ends stay");
+        check(undo() && note(3).durationTicks == 2 * beat, "undo");
+        // Time selected over notes, with no note selected.
+        ed.select({});
+        ed.selectTime(song(0), song(2 * beat));
+        check(ed.stretchSpan() == Span({song(0), song(2 * beat)}), "with time selected over notes the markers stand at the time's ends");
+        ed.mouseDown(pressAt(ed, at(song(2 * beat))));
+        ed.mouseDrag(dragAt(ed, at(song(2 * beat)), at(song(beat))));
+        ed.mouseUp(dragAt(ed, at(song(2 * beat)), at(song(beat))));
+        check(note(1).durationTicks == beat / 2 && note(2).startTicks == beat / 2 && note(2).durationTicks == beat / 2 && note(3).startTicks == 2 * beat &&
+                  ed.timeSelection() == Span({song(0), song(beat)}) && ed.selected().empty(),
+              "its End marker dragged in to half: the notes that begin in the time are squeezed, and the time selection is as long as the pair");
+        check(undo() && note(2).startTicks == beat, "undo");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+    }
+}
+
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "clip-view-multi.adi", err);
@@ -5886,7 +6175,7 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
               panel.others()[0].colour != panel.colour(),
           "with a second MIDI clip selected, both are shown, each in its own track's colour; the edited clip stays");
     check(ed.barsHeight() == 2 * NoteEditor::kLoopBarHeight + 2 && ed.rulerArea().getY() == ed.barsHeight() &&
-              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight && !panel.focusBox().isEmpty(),
+              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight + NoteEditor::kStretchHeight && !panel.focusBox().isEmpty(),
           "a loop bar for each clip sits above the ruler, the editor moves down under them, and the Focus switch appears");
     const auto own = ed.loopBar(0), other = ed.loopBar(1);
     check(own.getX() == NoteEditor::kKeysWidth + static_cast<int>(ed.time.x(0)) &&
@@ -12619,6 +12908,7 @@ int main(int argc, char **argv) {
     clipViewTools(commands, temp.path());
     clipViewMore(commands, temp.path());
     clipViewTime(commands, temp.path());
+    clipViewClipTime(commands, temp.path());
     clipViewMulti(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());

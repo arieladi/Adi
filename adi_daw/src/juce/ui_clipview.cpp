@@ -543,9 +543,12 @@ juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
     const int h = getHeight() - kRulerHeight - barsHeight() >= kVelocityHeight + 48 ? kVelocityHeight : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
 }
+juce::Rectangle<int> NoteEditor::stretchArea() const noexcept {
+    return {kKeysWidth, barsHeight() + kRulerHeight, std::max(0, getWidth() - kKeysWidth), kStretchHeight};
+}
 juce::Rectangle<int> NoteEditor::notesArea() const noexcept {
     const int bottom = getHeight() - velocityArea().getHeight();
-    const int top = barsHeight() + kRulerHeight;
+    const int top = barsHeight() + kRulerHeight + kStretchHeight;
     return {kKeysWidth, top, std::max(0, getWidth() - kKeysWidth), std::max(0, bottom - top)};
 }
 juce::Rectangle<int> NoteEditor::keysArea() const noexcept {
@@ -888,6 +891,10 @@ bool NoteEditor::rulerKey(const juce::KeyPress &k) {
         repaint();
         return true;
     }
+    if (picked_ == RulerPart::Loop && k == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) {
+        duplicateLoop();
+        return true;
+    }
     const bool sideways = code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey;
     const bool upDown = code == juce::KeyPress::upKey || code == juce::KeyPress::downKey;
     if (!sideways && !upDown)
@@ -1206,6 +1213,128 @@ void NoteEditor::gridKey(int key) {
     repaint();
     panel.repaint();
 }
+// ---- Time inside the clip (manual 10.7) --------------------------------------------------------
+bool NoteEditor::crop() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    if (const auto span = timeSelection())
+        return commit(cropNotes(*clip, window.toSource(span->first), window.toSource(span->second), true));
+    if (clip->loopEnabled)
+        return commit(cropNotes(*clip, clip->loopStartTicks, clip->loopStartTicks + loopLengthOf(*clip), true));
+    return commit(cropNotes(*clip, clip->startMarkerTicks, endMarkerOf(*clip), false));
+}
+bool NoteEditor::timeCommand(TimeCommand command) {
+    const auto *clip = panel.details();
+    const auto span = timeSelection();
+    if (clip == nullptr || !span)
+        return false;
+    const auto window = ClipWindow::of(*clip);
+    const auto from = window.toSource(span->first), to = window.toSource(span->second);
+    const bool done = commit(command == TimeCommand::Duplicate ? duplicateTime(*clip, from, to)
+                             : command == TimeCommand::Delete  ? deleteTime(*clip, from, to)
+                                                               : insertTime(*clip, from, to));
+    // The deleted time is gone: the insert marker stands where it was.
+    if (done && command == TimeCommand::Delete)
+        placeMarker(span->first, false);
+    return done;
+}
+bool NoteEditor::duplicateLoop() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto start = clip->loopStartTicks, length = loopLengthOf(*clip);
+    if (length <= 0)
+        return false;
+    auto edit = duplicateTime(*clip, start, start + length, "Duplicate Loop");
+    if (!edit.refusal.empty())
+        return commit(std::move(edit));
+    OpRequest loop;
+    loop.opType = "clip.setLoop";
+    loop.payload = {{"id", clip->id}, {"on", clip->loopEnabled}, {"start", start}, {"length", 2 * length}};
+    loop.label = "Duplicate Loop";
+    // The loop's op first: the step is named for it even when the loop holds no notes.
+    edit.ops.insert(edit.ops.begin(), std::move(loop));
+    if (!commit(std::move(edit)))
+        return false;
+    // Zoomed out as far as needed to show the whole loop.
+    const auto window = ClipWindow::of(*clip);
+    const auto area = notesArea();
+    if (const auto end = window.toArrangement(start + 2 * length); time.x(end) > area.getWidth() || time.x(window.toArrangement(start)) < 0) {
+        const auto from = std::min(window.pos, window.toArrangement(start));
+        const auto to = std::max(window.end(), end);
+        time.fit(from, to + (to - from) / 24, area.getWidth());
+    }
+    repaint();
+    return true;
+}
+// ---- MIDI Note Stretch (manual 10.5.6) ---------------------------------------------------------
+std::vector<std::uint64_t> NoteEditor::stretchTargets() const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return {};
+    if (selected_.size() >= 2)
+        return selected_;
+    std::vector<std::uint64_t> ids;
+    if (const auto span = timeSelection(); span && selected_.empty()) {
+        const auto window = ClipWindow::of(*clip);
+        for (const auto &n : clip->notes)
+            if (const auto at = window.toArrangement(n.startTicks); at >= span->first && at < span->second)
+                ids.push_back(n.id);
+    }
+    return ids;
+}
+std::optional<std::pair<std::int64_t, std::int64_t>> NoteEditor::stretchSpan() const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return std::nullopt;
+    if (drag_ == Drag::Stretch)
+        // Held: the pair as the drag has it.
+        return stretchPart_ == StretchPart::Start ? std::pair{stretchNow_, stretchB_}
+               : stretchPart_ == StretchPart::End ? std::pair{stretchA_, stretchNow_}
+                                                  : std::pair{stretchA_, stretchB_};
+    const auto window = ClipWindow::of(*clip);
+    if (selected_.size() >= 2) {
+        std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
+        for (const auto &n : clip->notes)
+            if (isSelected(n.id)) {
+                from = std::min(from, window.toArrangement(n.startTicks));
+                to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+            }
+        return from < to ? std::optional(std::pair{from, to}) : std::nullopt;
+    }
+    if (const auto span = timeSelection(); span && selected_.empty())
+        for (const auto &n : clip->notes)
+            if (const auto at = window.toArrangement(n.startTicks); at >= span->first && at < span->second)
+                return span;
+    return std::nullopt;
+}
+NoteEditor::StretchPart NoteEditor::stretchPartAt(juce::Point<int> at) const {
+    const auto area = stretchArea();
+    const auto span = stretchSpan();
+    if (!span || !area.contains(at))
+        return StretchPart::None;
+    const int a = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
+    const int b = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
+    const int toA = std::abs(at.x - a), toB = std::abs(at.x - b);
+    if (std::min(toA, toB) <= 5)
+        return toB < toA ? StretchPart::End : StretchPart::Start;
+    return at.x > a && at.x < b ? StretchPart::Middle : StretchPart::None;
+}
+std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
+    switch (stretchPart_) {
+    case StretchPart::Start:
+        return stretchPoint(songTick, stretchA_, stretchB_, stretchNow_, stretchB_);
+    case StretchPart::End:
+        return stretchPoint(songTick, stretchA_, stretchB_, stretchA_, stretchNow_);
+    case StretchPart::Middle:
+        return stretchPointAround(songTick, stretchA_, stretchP_, stretchB_, stretchNow_);
+    case StretchPart::None:
+        break;
+    }
+    return songTick;
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1262,6 +1391,18 @@ const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) 
 }
 engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
     auto out = note;
+    if (drag_ == Drag::Stretch) {
+        if (std::find(stretchIds_.begin(), stretchIds_.end(), note.id) == stretchIds_.end())
+            return out;
+        if (const auto *clip = panel.details()) {
+            const auto window = ClipWindow::of(*clip);
+            const auto a = window.toSource(stretchMap(window.toArrangement(note.startTicks)));
+            const auto b = window.toSource(stretchMap(window.toArrangement(note.startTicks + note.durationTicks)));
+            out.startTicks = std::min(a, b);
+            out.durationTicks = std::max(kShortestNote, std::abs(b - a));
+        }
+        return out;
+    }
     if (drag_ == Drag::Trim) {
         for (const auto &[id, length] : trimPreview_)
             if (id == note.id)
@@ -1458,6 +1599,24 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         repaint();
         return;
     }
+    if (const auto part = stretchPartAt(from_); part != StretchPart::None) {
+        const auto span = *stretchSpan();
+        stretchIds_ = stretchTargets();
+        stretchA_ = span.first;
+        stretchB_ = span.second;
+        // The place grabbed between the two, on the nearest grid line unless snapping is bypassed.
+        auto grabbed = time.tick(static_cast<double>(from_.x - notesArea().getX()));
+        if (snapping(e.mods)) {
+            const auto below = time.snap(grabbed, false), above = time.snap(grabbed, true);
+            grabbed = grabbed - below <= above - grabbed ? below : above;
+        }
+        stretchP_ = std::clamp(grabbed, span.first + 1, span.second - 1);
+        stretchNow_ = part == StretchPart::Start ? span.first : part == StretchPart::End ? span.second : stretchP_;
+        stretchPart_ = part;
+        drag_ = Drag::Stretch;
+        repaint();
+        return;
+    }
     if (trimMode_ && notesArea().contains(from_)) {
         drag_ = Drag::Trim;
         trimStroke();
@@ -1553,6 +1712,16 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::Stretch) {
+        // The marker follows the pointer, on the nearest grid line unless snapping is bypassed; the
+        // marker of a drag begun between the two stays between them.
+        const auto raw = time.tick(static_cast<double>(std::max(0, to_.x - area.getX())));
+        auto at = raw;
+        if (snapping(e.mods)) {
+            const auto below = time.snap(raw, false), above = time.snap(raw, true);
+            at = raw - below <= above - raw ? below : above;
+        }
+        stretchNow_ = stretchPart_ == StretchPart::Middle ? std::clamp(at, stretchA_ + 1, stretchB_ - 1) : at;
     } else if (drag_ == Drag::Zoom) {
         // Sideways scrolls; down zooms in and up out, around the pointer.
         time.pan(static_cast<double>(viewLast_.x - to_.x));
@@ -1650,6 +1819,21 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         const auto keep = selected_;
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
+    } else if (kind == Drag::Stretch) {
+        const auto window = ClipWindow::of(*clip);
+        const auto ids = std::exchange(stretchIds_, {});
+        const auto timed = timeSelection().has_value() && selected_.empty();
+        const auto part = stretchPart_;
+        auto stretched = remapNotes(*clip, ids, [&](std::int64_t source) { return window.toSource(stretchMap(window.toArrangement(source))); });
+        const auto a = part == StretchPart::Start ? stretchNow_ : stretchA_, b = part == StretchPart::End ? stretchNow_ : stretchB_;
+        stretchPart_ = StretchPart::None;
+        const auto keep = selected_;
+        if (commit(std::move(stretched))) {
+            // The selection it began from stays: the notes, or the time, now as long as the pair.
+            select(keep);
+            if (timed)
+                selectTime(std::min(a, b), std::max(a, b));
+        }
     } else if (kind == Drag::Ruler) {
         const auto part = std::exchange(rulerDrag_, RulerPart::None);
         const auto loop = std::exchange(loopPreview_, std::nullopt);
@@ -1736,6 +1920,20 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return changeVelocities(of, ids, by); }));
             return true;
         }
+    }
+    // Time inside the clip (manual 10.7): Crop Clip, and the time commands over a time selection.
+    if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        crop();
+        return true;
+    }
+    if (timeSelection()) {
+        const bool both = mods.isCommandDown() && mods.isShiftDown() && !mods.isAltDown();
+        if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0))
+            return timeCommand(TimeCommand::Duplicate), true;
+        if (both && (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey))
+            return timeCommand(TimeCommand::Delete), true;
+        if (k == juce::KeyPress('i', juce::ModifierKeys::commandModifier, 0))
+            return timeCommand(TimeCommand::Insert), true;
     }
     // Delete is the editor's while it has the keyboard: with no note selected it does nothing,
     // and never reaches the arrangement's selection.
@@ -1982,7 +2180,7 @@ void NoteEditor::paint(juce::Graphics &g) {
     g.fillAll(look::lane);
     const auto ruler = rulerArea(), area = notesArea(), keyboard = keysArea(), velocity = velocityArea();
     g.setColour(look::band);
-    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight);
+    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight + kStretchHeight);
     const auto *clip = panel.details();
     if (barsHeight() > 0) {
         // The loop bars: each clip's in its colour, the edited clip's outlined; with Focus on the
@@ -2007,6 +2205,9 @@ void NoteEditor::paint(juce::Graphics &g) {
     }
     const auto &meters = *time.meters;
     paintRuler(g, ruler, time, meters);
+    // The stretch markers' strip, under the ruler.
+    g.setColour(look::lane.darker(0.25f));
+    g.fillRect(stretchArea());
     if (const auto brace = loopBrace()) {
         // The loop brace (manual 8.2.2): over the loop's window, lit while the clip loops.
         juce::Graphics::ScopedSaveState state(g);
@@ -2134,6 +2335,25 @@ void NoteEditor::paint(juce::Graphics &g) {
             const int x = area.getX() + static_cast<int>(std::clamp(time.x(*insert_), -1e6, 1e6));
             g.setColour(look::text);
             g.fillRect(x, area.getY(), 1, area.getHeight());
+        }
+        if (const auto pair = stretchSpan()) {
+            // The Note Stretch markers: a pair of downward pointers at the selection's start and end.
+            const auto strip = stretchArea();
+            const auto top = static_cast<float>(strip.getY());
+            for (const auto tick : {pair->first, pair->second}) {
+                const auto x = static_cast<float>(area.getX()) + static_cast<float>(std::clamp(time.x(tick), -1e6, 1e6));
+                juce::Path pointer;
+                pointer.addTriangle(x - 4.f, top + 1.f, x + 4.f, top + 1.f, x, top + static_cast<float>(kStretchHeight));
+                g.setColour(juce::Colours::white);
+                g.fillPath(pointer);
+                g.setColour(look::outline);
+                g.strokePath(pointer, juce::PathStrokeType(1.f));
+            }
+            if (drag_ == Drag::Stretch && stretchPart_ == StretchPart::Middle) {
+                const int x = area.getX() + static_cast<int>(std::clamp(time.x(stretchNow_), -1e6, 1e6));
+                g.setColour(juce::Colours::white.withAlpha(0.7f));
+                g.fillRect(x, area.getY(), 1, area.getHeight());
+            }
         }
         if (drag_ == Drag::Trim) {
             g.setColour(juce::Colours::white.withAlpha(0.8f));
@@ -2895,6 +3115,15 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::Interval) {
+        const auto add = toolBox(Tool::AddInterval);
+        return add.isEmpty() ? add : add.withX(toolsArea().getX() + 6);
+    }
+    if (field == Field::Stretch) {
+        // In the first column, beside x2 and /2.
+        const auto fit = toolBox(Tool::FitToScale), twice = toolBox(Tool::Double);
+        return fit.isEmpty() || twice.isEmpty() ? juce::Rectangle<int>() : fit.withX(toolsArea().getX() + 6).withY(twice.getY());
+    }
     if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
         // In the filter bar: each after its name, beside the chooser.
         const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
@@ -2944,9 +3173,10 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     if (tabOf(tool) != toolsTab_)
         return {};
     const int half = (inner.getWidth() - 6) / 2;
-    // Two columns under the range: Transpose's field has the first place.
+    // Two columns of rows; on Pitch and Time the range has the first row, and a field often the first column.
     int row = 1, column = 1;
     switch (tool) {
+    // Functions.
     case Tool::VelocityAdd:
         break;
     case Tool::VelocityScale:
@@ -2964,6 +3194,7 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::Quantize:
         row = 8, column = 0;
         break;
+    // Pitch and Time, as Live's.
     case Tool::FitToScale:
         break;
     case Tool::Invert:
@@ -2972,17 +3203,36 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::Reverse:
         row = 2;
         break;
-    case Tool::Double:
-        row = 3, column = 0;
-        break;
-    case Tool::Halve:
+    case Tool::AddInterval:
         row = 3;
         break;
-    case Tool::Legato:
-        row = 4, column = 0;
-        break;
+    case Tool::Double:
+    case Tool::Halve: {
+        // x2 and /2 share the place beside the Stretch control.
+        const int each = (half - 4) / 2;
+        return {inner.getX() + half + 6 + (tool == Tool::Halve ? each + 4 : 0), inner.getY() + 4 * 22, each, kFieldBox};
+    }
     case Tool::FixedLength:
-        row = 4;
+        row = 5;
+        break;
+    case Tool::Legato:
+        row = 6, column = 0;
+        break;
+    // Chords.
+    case Tool::Chord:
+        row = 1;
+        break;
+    case Tool::InvertUp:
+        row = 2, column = 0;
+        break;
+    case Tool::InvertDown:
+        row = 2;
+        break;
+    case Tool::Drop2:
+        row = 3, column = 0;
+        break;
+    case Tool::Drop3:
+        row = 3;
         break;
     case Tool::OverlapsMono:
         row = 5, column = 0;
@@ -2990,40 +3240,72 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::OverlapsPoly:
         row = 5;
         break;
-    case Tool::Chord:
-        row = 6;
-        break;
-    case Tool::InvertUp:
-        row = 7, column = 0;
-        break;
-    case Tool::InvertDown:
-        row = 7;
-        break;
-    case Tool::Drop2:
-        row = 8, column = 0;
-        break;
-    case Tool::Drop3:
-        row = 8;
-        break;
     }
     return {inner.getX() + column * (half + 6), inner.getY() + row * 22, half, kFieldBox};
 }
 int ClipViewPanel::tabOf(Tool tool) noexcept {
-    return tool == Tool::VelocityAdd || tool == Tool::VelocityScale || tool == Tool::VelocityLimit ||
-                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony || tool == Tool::Quantize
-               ? 1
-               : 0;
+    switch (tool) {
+    case Tool::VelocityAdd:
+    case Tool::VelocityScale:
+    case Tool::VelocityLimit:
+    case Tool::DeleteDoubles:
+    case Tool::RestrictPolyphony:
+    case Tool::Quantize:
+        return 1;
+    case Tool::Chord:
+    case Tool::InvertUp:
+    case Tool::InvertDown:
+    case Tool::Drop2:
+    case Tool::Drop3:
+    case Tool::OverlapsMono:
+    case Tool::OverlapsPoly:
+        return 2;
+    default:
+        return 0;
+    }
 }
 void ClipViewPanel::setToolsTab(int tab) {
-    toolsTab_ = tab == 1 ? 1 : 0;
+    toolsTab_ = std::clamp(tab, 0, kToolTabs - 1);
     closeEditor();
     repaint();
 }
 juce::Rectangle<int> ClipViewPanel::tabBox(int tab) const noexcept {
     const auto title = toolsArea().withHeight(kTitleHeight);
-    if (title.isEmpty())
+    if (title.isEmpty() || tab < 0 || tab >= kToolTabs)
         return {};
-    return tab == 0 ? title.withWidth(88) : title.withTrimmedLeft(88);
+    return tab == 0 ? title.withWidth(88) : tab == 1 ? title.withTrimmedLeft(88).withWidth(62) : title.withTrimmedLeft(150);
+}
+juce::Rectangle<int> ClipViewPanel::durationBox() const noexcept {
+    const auto set = toolBox(Tool::FixedLength);
+    return set.isEmpty() ? set : set.withX(toolsArea().getX() + 6);
+}
+juce::PopupMenu ClipViewPanel::durationMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kDurations.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, kDurations[i].name, true, i == duration_);
+    return menu;
+}
+bool ClipViewPanel::chooseDuration(int item) {
+    if (item < 1 || item > static_cast<int>(kDurations.size()))
+        return false;
+    duration_ = static_cast<std::size_t>(item - 1);
+    repaint();
+    return true;
+}
+std::int64_t ClipViewPanel::durationTicks() const noexcept {
+    const auto fixed = kDurations[duration_].ticks;
+    return fixed > 0 ? fixed : notes.gridTicks();
+}
+bool ClipViewPanel::stretch(int percent) {
+    if (!details_ || !midi())
+        return false;
+    if (percent < 10 || percent > 1000) {
+        root.say("A stretch is 10 to 1000 per cent.");
+        return false;
+    }
+    if (percent == 100)
+        return true;
+    return notes.apply(stretchNotes(*details_, notes.selected(), percent, 100));
 }
 int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     const auto range = [&](int a, int b) {
@@ -3072,6 +3354,9 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::Interval:
+        range(-48, 48);
+        return &intervalSize;
     case Field::QuantizeAmount:
         range(0, 100);
         return &quantizeAmount;
@@ -3118,7 +3403,9 @@ const char *ClipViewPanel::toolName(Tool tool) noexcept {
     case Tool::Legato:
         return "Legato";
     case Tool::FixedLength:
-        return "Fixed Length";
+        return "Set Length";
+    case Tool::AddInterval:
+        return "Add Interval";
     case Tool::OverlapsMono:
         return "Overlap Mono";
     case Tool::OverlapsPoly:
@@ -3174,8 +3461,15 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(stretchNotes(d, ids, 1, 2));
     case Tool::Legato:
         return notes.apply(legatoNotes(d, ids));
-    case Tool::FixedLength:
-        return notes.apply(fixedLengths(d, ids, notes.gridTicks()));
+    case Tool::FixedLength: {
+        // Set Length (manual 10.5.9.6): the Duration chooser's length for the selected notes, or all.
+        auto set = fixedLengths(d, ids, durationTicks());
+        for (auto &o : set.ops)
+            o.label = "Set Length";
+        return notes.apply(std::move(set));
+    }
+    case Tool::AddInterval:
+        return notes.apply(addInterval(d, ids, intervalSize, d.scale.local ? d.scale.mask : 0, static_cast<int>(d.scale.root)));
     case Tool::OverlapsMono:
         return notes.apply(deleteOverlaps(d, ids, false));
     case Tool::OverlapsPoly:
@@ -3274,7 +3568,8 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
-                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing})
+                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
+                             Field::Interval, Field::Stretch})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -3327,6 +3622,14 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             numberChanged(field, true);
             return true;
         }
+    }
+    if (field == Field::Stretch) {
+        const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false).upToFirstOccurrenceOf("%", false, false);
+        if (trimmed.isEmpty() || !trimmed.containsOnly("0123456789") || trimmed.length() > 4) {
+            root.say("Type a stretch in per cent: 150.");
+            return false;
+        }
+        return stretch(trimmed.getIntValue());
     }
     if (field == Field::Transpose) {
         const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false);
@@ -3389,6 +3692,7 @@ void ClipViewPanel::openEditor(Field field) {
                        : field == Field::Position  ? r.position
                        : field == Field::Length    ? r.length
                        : field == Field::Transpose ? juce::String("0")
+                       : field == Field::Stretch   ? juce::String("100")
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
@@ -3423,7 +3727,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         toggleLoop();
         return;
     }
-    for (int tab = 0; tab < 2; ++tab)
+    for (int tab = 0; tab < kToolTabs; ++tab)
         if (tabBox(tab).contains(at)) {
             setToolsTab(tab);
             return;
@@ -3453,6 +3757,15 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
                 if (safe != nullptr && item > 0)
                     safe->chooseColours(item);
             });
+        return;
+    }
+    if (durationBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        durationMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(durationBox())),
+                                     [safe](int item) {
+                                         if (safe != nullptr && item > 0)
+                                             safe->chooseDuration(item);
+                                     });
         return;
     }
     if (quantizeChooserBox().contains(at)) {
@@ -3617,6 +3930,8 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
         openEditor(field);
     else if (field == Field::Transpose)
         transpose(steps);
+    else if (field == Field::Stretch)
+        stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
         commit(setClipSignature(*details_, signature.first, signature.second));
     else
@@ -3708,12 +4023,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
         // Transpose, and the utilities.
-        for (int tab = 0; tab < 2; ++tab) {
+        static constexpr const char *kTabNames[kToolTabs] = {"Pitch and Time", "Functions", "Chords"};
+        for (int tab = 0; tab < kToolTabs; ++tab) {
             const auto box = tabBox(tab);
             g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
             g.fillRect(box);
-            text(tab == 0 ? "Pitch and Time" : "Functions", box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft,
-                 look::text, 10.5f, tab == toolsTab_);
+            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, 10.5f, tab == toolsTab_);
         }
         if (toolsTab_ == 1) {
             // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
@@ -3759,6 +4074,28 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const auto semitones = fieldBox(Field::Transpose);
             look::box(g, semitones.toFloat(), look::chooser);
             text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+            // The Interval size: semitones, or the scale's degrees while Scale Mode is on.
+            const auto interval = fieldBox(Field::Interval);
+            const int size = std::clamp(intervalSize + (dragged_ && pressed_ == Field::Interval ? dragSteps_ : 0), -48, 48);
+            look::box(g, interval.toFloat(), look::chooser);
+            text((size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"), interval.reduced(3, 0),
+                 juce::Justification::centredRight, look::text, 11.f);
+            // The Stretch control: 100 per cent until it is dragged or typed.
+            const auto factor = fieldBox(Field::Stretch);
+            look::box(g, factor.toFloat(), look::chooser);
+            text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
+            text(juce::String(dragged_ && pressed_ == Field::Stretch ? std::clamp(100 + 5 * dragSteps_, 10, 1000) : 100) + "%", factor.reduced(3, 0),
+                 juce::Justification::centredRight, look::text, 11.f);
+            // The Duration chooser, beside Set Length.
+            const auto length = durationBox();
+            look::box(g, length.toFloat(), look::chooser);
+            text(kDurations[duration_].name, length.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+        }
+        if (toolsTab_ == 2) {
+            // ADI's Chords tab (ADR-0241 d2, from Cubase): the chord tools, and the overlap functions.
+            const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
+            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
             // The chord type's chooser, beside Add Chord.
             const auto chord = chordBox();
             look::box(g, chord.toFloat(), look::chooser);
