@@ -81,6 +81,8 @@ public:
         /// through, and what it passes after that (a summing group's channel
         /// half). Unset, every tap is the tail, and no send is made.
         engine::TapFn tapFor;
+        engine::KeyTapFn keyTapFor;
+        engine::DeviceKeyFn keyDeviceFor;
         engine::SendFn sendFor;
         engine::SendFn sendTailFor;
         /// And what closes a return's send into itself. Unset, no loop is made.

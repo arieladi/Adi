@@ -582,6 +582,16 @@ void Session::attach(std::shared_ptr<const GraphTransportState> timing) {
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
     rs.devicesFor = [this](std::int64_t trackId) { return trackChain(trackId); };
+    rs.keyTapFor = [this](std::int64_t track,Tap tap)->std::optional<Node*> {
+        if(tap==Tap::PreFx && frozenSources_.contains(track))return std::nullopt;
+        return tapFor(track,tap);
+    };
+    rs.keyDeviceFor = [this](std::int64_t device)->Node* {
+        const auto* entry=entryFor(device);auto* instance=instanceFor(device);
+        if(!entry || entry->retired || entry->parked || entry->placeholder || !instance ||
+           !instance->loaded() || instance->sidechainInputChannels()<=0)return nullptr;
+        return nodeFor(device);
+    };
     // ADR-0203 d3: a send leaves its track at its tap and plays through the
     // node the strips keep for its row, then, into a summing group, through
     // the channel half the summing keeps for it (ADR-0174). A Post send's

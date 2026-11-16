@@ -89,6 +89,8 @@ bool DeviceHost::rebuildNow() {
     opts.devicesFor = spec_.devicesFor ? spec_.devicesFor : chainSupplier();
     opts.sourcesFor = spec_.sourcesFor;
     opts.tapFor = spec_.tapFor;
+    opts.keyTapFor = spec_.keyTapFor;
+    opts.keyDeviceFor = spec_.keyDeviceFor;
     opts.sendFor = spec_.sendFor;
     opts.sendTailFor = spec_.sendTailFor;
     opts.feedbackFor = spec_.feedbackFor;

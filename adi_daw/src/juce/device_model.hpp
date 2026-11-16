@@ -257,6 +257,9 @@ public:
     /// 0 by default, the OPPOSITE default from the tail. See
     /// `engine::Node::latencySamples`.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
+    // Cached declaration, owner thread. Zero means no supported key input.
+    // Level 1 routes one straight channel prefix into the first auxiliary bus.
+    [[nodiscard]] virtual std::int32_t sidechainInputChannels() const noexcept { return 0; }
 
     /// Whether this device turns notes into audio, and so stops the note
     /// stream (ADR-0091). Through by default, the harmless failure: see

@@ -15,6 +15,7 @@
 //             before apply, in the same transaction.
 
 #include "adi/split_pan_ops.hpp"
+#include "adi/device_key_routes.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
@@ -719,7 +720,9 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
         if(p.contains("row")) {
             const auto& row=p.at("row");
             if(detail::signedInteger(row.at("id"))!=detail::signedInteger(p.at("id")))throw std::runtime_error("captured routing id differs");
-            detail::restoreRow(c.db,"routing",row);return true;
+            detail::restoreRow(c.db,"routing",row);
+            if(p.contains("keyTap"))writeRoutingKeyTap(c.db,p.at("id").get<std::int64_t>(),p.at("keyTap"));
+            return true;
         }
         bool pre=false;
         if(p.at("kind")=="send" && p.at("dstKind")=="track")
@@ -736,6 +739,9 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
         st.bind(6, p.at("kind").get<std::string>());
         st.bind(7,pre?1:0);
         st.exec();
+        if(p.at("kind")=="sidechain" && p.at("dstKind")=="device")
+            writeRoutingKeyTap(c.db,p.at("id").get<std::int64_t>(),p.value("keyTap",Payload{}));
+        else if(p.contains("keyTap"))throw std::runtime_error("keyTap needs a device sidechain");
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -767,6 +773,9 @@ bool routingDisconnectInverse(OpContext& c, const Payload& p, Payload& inv, std:
         inv["dst"] = st.getColumn(3).getInt64();
         inv["kind"] = st.getColumn(4).getString();
         inv["row"] = *detail::captureRow(c.db,"routing","id",p.at("id").get<std::int64_t>());
+        SQLite::Statement tap(c.db,"SELECT tap FROM routing_key_taps WHERE routing_id=?");
+        tap.bind(1,p.at("id").get<std::int64_t>());
+        if(tap.executeStep())inv["keyTap"]=tap.getColumn(0).getString();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1018,7 +1027,8 @@ constexpr Field kFRouting[] = {
     {"dst", FieldType::Int, true, "the destination's id"},
     {"kind", FieldType::Text, true,
      "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
-    {"row", FieldType::Object, false, "a captured row, as undo restores it"}};
+    {"row", FieldType::Object, false, "a captured row, as undo restores it"},
+    {"keyTap", FieldType::Text, false, "device key source tap: pre_fx, post_fx or post_mixer"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -1040,7 +1050,8 @@ constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"route", FieldType::Text, false},
                                     {"panel", FieldType::Array, false},
                                     {"rackKind", FieldType::Text, false},
-                                    {"remoteHost", FieldType::Int, false}};
+                                    {"remoteHost", FieldType::Int, false},
+                                    {"contents", FieldType::Object, false, "causal device and owned dependants, captured for Undo"}};
 constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
                                   {"chain", FieldType::Int, true},
                                   {"ord", FieldType::Int, true}};
@@ -1499,6 +1510,7 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = deviceInteger(p,"id");
+        if(p.contains("contents")) {detail::restoreDevice(c.db,id,p.at("contents"));return true;}
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
             "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
@@ -1553,16 +1565,8 @@ bool deviceInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string
 }
 
 bool deviceRemoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        // plugin_params and plugin_state cascade on device_id, so this one
-        // statement takes the parameter values and the state references with
-        // it. The inverse captured them first, which is the order OPS.md 6.1
-        // requires and the reason it requires it.
-        SQLite::Statement st(c.db, "DELETE FROM devices WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such device"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    try {detail::deleteDevice(c.db,p.at("id").get<std::int64_t>());return true;}
+    catch(const std::exception& e){err=e.what();return false;}
 }
 
 bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
@@ -1577,6 +1581,7 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
 
         inv = Payload::object();
         inv["id"]    = id;
+        inv["contents"] = detail::captureDevice(c.db,id);
         inv["chain"] = st.getColumn(0).getInt64();
         inv["ord"]   = st.getColumn(1).getInt64();
         if (st.getColumn(2).isNull()) inv["ref"] = nullptr;
@@ -2070,6 +2075,7 @@ std::span<const OpDescriptor> builtinOps() {
         const auto recording=trackRecordingOps();
         v.insert(v.end(),recording.begin(),recording.end());
         const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
+        const auto keys=deviceKeyRouteOps();v.insert(v.end(),keys.begin(),keys.end());
         const auto automation = automation::descriptors();
         v.insert(v.end(), automation.begin(), automation.end());
         const auto lanes = automation::laneDescriptors();
