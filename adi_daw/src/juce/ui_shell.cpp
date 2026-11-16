@@ -1272,6 +1272,16 @@ void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
+void AdiRootComponent::toggleClipViewFull() {
+    if (!state_.clipView)
+        return;
+    if (clipViewRestore_ > 0) {
+        resizeClipView(std::exchange(clipViewRestore_, 0));
+        return;
+    }
+    clipViewRestore_ = state_.clipViewHeight;
+    resizeClipView(4000);
+}
 void AdiRootComponent::resizeDevices(int height) {
     const int ceiling = getHeight() - kTransportHeight - kStatusHeight - look::gap -
                         arrangement.topHeight() - state_.laneHeight;

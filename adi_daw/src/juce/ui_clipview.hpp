@@ -86,6 +86,18 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // Getting about, as Live's (manual 8.7, 10.2). W fits the shown clips to the editor's width, H
+    // the notes to its height; + and - zoom in time around the time selection, the insert marker
+    // or the middle; Page Up and Down scroll an octave, with Shift a key track, with Ctrl/Cmd a
+    // page sideways. A drag on the time ruler away from its handles scrolls sideways and zooms up
+    // and down; a drag on the piano scrolls it and, sideways, zooms the key tracks; a double-click
+    // on either zooms to the selection, or to the notes. Ctrl/Cmd+1 to 5 are the editing grid's
+    // keys, on the editor's own grid: narrower, wider, triplets, snapping, fixed. While the song
+    // plays with Follow on, the editor turns its page with the playhead; a scroll or an edit pauses it.
+    void fitWidth();
+    void fitHeight();
+    void zoomTime(bool in);
+    void gridKey(int key);
     // Note colours (ADR-0242 d1, N1; from Cubase's event colours): what the edited clip's notes
     // are coloured by. Clip is Live's, the clip's colour paler as the velocity falls, and the
     // default. Velocity runs from blue for the softest to red for the loudest; Pitch gives each of
@@ -220,7 +232,10 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys };
+    // A drag on the time ruler or the piano: where the pointer last was, and the zoom's count.
+    juce::Point<int> viewLast_;
+    int zoomFrom_ = 0;
     // A velocity drag: the value the pointer last stood for, and whether it began on a note.
     int velocityLast_ = 0;
     juce::Point<int> laneLast_;
@@ -404,6 +419,12 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> findBox() const noexcept;
     // The header's chooser of what the notes are coloured by.
     juce::Rectangle<int> coloursBox() const noexcept;
+    // The editing grid's chooser, on the header's grid readout (manual 10.2.1): the adaptive
+    // widths, the fixed ones, triplets and snapping. Items 1 to 5 are the adaptive widths, widest
+    // first; 10 on, the fixed ones from 8 Bars to 1/32; 30 Triplet Grid; 31 Snap to Grid.
+    juce::Rectangle<int> gridBox() const noexcept;
+    juce::PopupMenu gridMenu() const;
+    bool chooseGrid(int item);
     juce::PopupMenu coloursMenu() const;
     bool chooseColours(int item);
     juce::Rectangle<int> filterChooserBox() const noexcept;

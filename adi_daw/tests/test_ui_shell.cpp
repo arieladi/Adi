@@ -5707,6 +5707,112 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
     }
 
+    // Getting about in the editor, as Live's (manual 8.7, 10.2).
+    {
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        const auto notesView = ed.notesArea();
+        const auto ruler = ed.rulerArea();
+        // Page Up and Down.
+        const int scrolled = ed.keys.scrollY;
+        check(ed.keyPressed(key(juce::KeyPress::pageUpKey)) && ed.keys.scrollY == scrolled - 12 * ed.keys.keyHeight &&
+                  ed.keyPressed(key(juce::KeyPress::pageDownKey)) && ed.keys.scrollY == scrolled,
+              "Page Up and Page Down scroll the key tracks an octave");
+        check(ed.keyPressed(key(juce::KeyPress::pageDownKey, shift)) && ed.keys.scrollY == scrolled + ed.keys.keyHeight &&
+                  ed.keyPressed(key(juce::KeyPress::pageUpKey, shift)) && ed.keys.scrollY == scrolled,
+              "with Shift, one key track");
+        const double timeLeft = ed.time.left;
+        check(ed.keyPressed(key(juce::KeyPress::pageDownKey, command)) && ed.time.left > timeLeft && ed.keyPressed(key(juce::KeyPress::pageUpKey, command)) &&
+                  std::abs(ed.time.left - timeLeft) < 1e-9,
+              "with Ctrl, a page sideways and back");
+        // The grid's keys act on the editor's own grid.
+        const auto arrangementGrid = geo.grid;
+        const auto grid = ed.gridTicks();
+        check(ed.keyPressed(key('1', command)) && ed.gridTicks() == grid / 2 && ed.keyPressed(key('2', command)) && ed.gridTicks() == grid,
+              "Ctrl+1 narrows the editing grid and Ctrl+2 widens it");
+        check(ed.keyPressed(key('3', command)) && ed.time.grid.triplet && ed.gridTicks() == grid * 2 / 3 && ed.keyPressed(key('3', command)) &&
+                  !ed.time.grid.triplet,
+              "Ctrl+3 switches the triplet grid");
+        check(ed.keyPressed(key('4', command)) && !ed.time.grid.snap && ed.keyPressed(key('4', command)) && ed.time.grid.snap,
+              "Ctrl+4 switches snapping");
+        check(ed.keyPressed(key('5', command)) && ed.time.grid.fixed && ed.gridTicks() == grid && ed.keyPressed(key('5', command)) &&
+                  !ed.time.grid.fixed && geo.grid == arrangementGrid,
+              "Ctrl+5 fixes the grid at the width it has; the arrangement's grid is left alone");
+        // The header's grid chooser.
+        check(!panel.gridBox().isEmpty() && panel.headerArea().contains(panel.gridBox()) && panel.chooseGrid(16) && ed.time.grid.fixed &&
+                  ed.gridTicks() == beat / 2 && panel.readings().grid == "1/8",
+              "the header's grid chooser: Fixed Grid, 1/8");
+        check(panel.chooseGrid(30) && ed.time.grid.triplet && panel.chooseGrid(30) && panel.chooseGrid(31) && !ed.time.grid.snap && panel.chooseGrid(31) &&
+                  panel.chooseGrid(3) && !ed.time.grid.fixed && ed.time.grid.narrow == 0 && ed.gridTicks() == grid && !panel.chooseGrid(99),
+              "its Triplet Grid and Snap to Grid; and the adaptive grid's Medium, as it was");
+        // Zoom in time; W and H.
+        const double scale = ed.time.scale;
+        check(ed.keyPressed(key('+')) && ed.time.scale > scale && ed.keyPressed(key('-')) && std::abs(ed.time.scale - scale) < 1e-6,
+              "+ zooms in time and - out again");
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        check(ed.keyPressed(key('w')) && ed.time.x(bar) >= -0.5 && ed.time.x(bar) < 1.0 && ed.time.x(3 * bar) <= notesView.getWidth() &&
+                  ed.time.x(3 * bar) > notesView.getWidth() * 0.9,
+              "W fits the clip to the editor's width");
+        ed.keys.keyHeight = 30;
+        check(ed.keyPressed(key('h')) && ed.keys.keyHeight < 30 && ed.keys.y(72).value_or(-1) >= 0 &&
+                  ed.keys.y(60).value_or(100000) + ed.keys.keyHeight <= notesView.getHeight(),
+              "H fits the notes, C3 to C4, to the editor's height");
+        // The time ruler dragged, away from its handles: sideways scrolls, down zooms in.
+        const juce::Point<float> grab(xAt(8 * beat), static_cast<float>(ruler.getBottom() - 3));
+        check(ed.rulerPartAt(grab.roundToInt()) == NoteEditor::RulerPart::None, "a place on the ruler with no handle");
+        const double leftBefore = ed.time.left, zoomBefore = ed.time.scale;
+        ed.mouseDown(pressAt(ed, grab));
+        ed.mouseDrag(dragAt(ed, grab, {grab.x - 40.f, grab.y}));
+        check(ed.time.left > leftBefore && std::abs(ed.time.scale - zoomBefore) < 1e-9, "dragged left, the editor scrolls on in time");
+        ed.mouseDrag(dragAt(ed, grab, {grab.x - 40.f, grab.y + 30.f}));
+        ed.mouseUp(dragAt(ed, grab, {grab.x - 40.f, grab.y + 30.f}));
+        check(ed.time.scale > zoomBefore && ed.rulerSelection() == NoteEditor::RulerPart::None, "dragged down, it zooms in");
+        ed.keyPressed(key('w'));
+        // The piano dragged: up and down scrolls, sideways zooms the key tracks.
+        const juce::Point<float> piano(5.f, static_cast<float>(ed.keysArea().getY() + 40));
+        const int scrollBefore = ed.keys.scrollY, heightBefore = ed.keys.keyHeight;
+        ed.mouseDown(pressAt(ed, piano));
+        ed.mouseDrag(dragAt(ed, piano, {piano.x, piano.y - 24.f}));
+        check(ed.keys.scrollY == scrollBefore + 24 && ed.keys.keyHeight == heightBefore, "the piano dragged up scrolls the key tracks");
+        ed.mouseDrag(dragAt(ed, piano, {piano.x + 18.f, piano.y - 24.f}));
+        ed.mouseUp(dragAt(ed, piano, {piano.x + 18.f, piano.y - 24.f}));
+        check(ed.keys.keyHeight == heightBefore + 3, "dragged sideways, the key tracks grow a step every six pixels");
+        // A double-click on either ruler zooms to the notes.
+        ed.select({});
+        ed.keyPressed(key('h'));
+        ed.keyPressed(key('+'));
+        ed.mouseDoubleClick(pressAt(ed, grab));
+        check(ed.keys.y(60).value_or(-1) >= 0 && ed.keys.y(72).value_or(-1) >= 0 && ed.time.x(bar) >= -0.5 && ed.time.x(bar) < 2.0,
+              "a double-click on the time ruler zooms to the notes");
+        check(ed.keyPressed(key('x')), "X goes back");
+        // Full height.
+        const int height = root.clipArea().getHeight();
+        check(ed.keyPressed(key('e', command | alt)) && root.clipViewFull() && root.clipArea().getHeight() > height + 100 &&
+                  ed.keyPressed(key('e', command | alt)) && !root.clipViewFull() && root.clipArea().getHeight() == height,
+              "Ctrl+Alt+E gives the Clip View its full height, and again the height it had");
+        // Follow: the editor turns its page with the playhead.
+        if (!root.state().follow)
+            root.command(AppCommands::Follow);
+        ed.time.left = 400;
+        engine::Transport driver;
+        driver.play(true);
+        mailbox.publish(driver);
+        root.frame();
+        check(root.playing() && root.state().follow && ed.playhead.isVisible() && ed.time.x(root.timelineTick()) >= 0 &&
+                  ed.time.x(root.timelineTick()) < ed.notesArea().getWidth(),
+              "playing with Follow on, the editor turns to the page the playhead is on");
+        ed.mouseWheelMove(pressAt(ed, {static_cast<float>(notesView.getCentreX()), static_cast<float>(notesView.getCentreY())}, juce::ModifierKeys(shift)),
+                          juce::MouseWheelDetails{0.f, -1.f, false, false, false});
+        const double scrolledTo = ed.time.left;
+        root.frame();
+        check(root.arrangement.followPaused && std::abs(ed.time.left - scrolledTo) < 1e-9, "a scroll in time pauses Follow: the editor stays where it was put");
+        driver.play(false);
+        mailbox.publish(driver);
+        root.frame();
+        ed.keyPressed(key('w'));
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

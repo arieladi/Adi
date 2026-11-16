@@ -118,6 +118,15 @@ NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
 void NoteEditor::frame() {
     // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
     const auto area = notesArea();
+    if (panel.details() != nullptr && panel.root.playing() && panel.root.state().follow && !panel.root.arrangement.followPaused &&
+        area.getWidth() > 0) {
+        // Follow (manual 8.7, 10.2.2): a page at a time, as the playhead leaves the editor.
+        const auto tick = panel.root.timelineTick();
+        if (const double at = time.x(tick); at < 0 || at >= area.getWidth()) {
+            time.left = std::max(0., static_cast<double>(tick) / textproj::kPPQ);
+            repaint();
+        }
+    }
     const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
     playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
@@ -1112,6 +1121,91 @@ juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
     // Live's: the clip's colour, paler as the velocity falls.
     return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
 }
+// ---- Getting about (manual 8.7, 10.2) ----------------------------------------------------------
+void NoteEditor::fitWidth() {
+    const auto *clip = panel.details();
+    const auto area = notesArea();
+    if (clip == nullptr || area.getWidth() <= 0)
+        return;
+    const auto window = ClipWindow::of(*clip);
+    auto from = window.pos, to = window.end();
+    for (const auto &layer : panel.others()) {
+        const auto other = ClipWindow::of(layer.details);
+        from = std::min(from, other.pos);
+        to = std::max(to, other.end());
+    }
+    const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
+    time.fit(from, from + length + length / 24, area.getWidth());
+    panel.root.arrangement.followPaused = true;
+    repaint();
+}
+void NoteEditor::fitHeight() {
+    const auto *clip = panel.details();
+    const auto area = notesArea();
+    if (clip == nullptr || area.getHeight() <= 0)
+        return;
+    if (keys.isFolded()) {
+        keys.keyHeight = std::clamp(area.getHeight() / std::max(1, keys.rowCount()), KeyTracks::kMinHeight, KeyTracks::kMaxHeight);
+        keys.scrollY = 0;
+        keys.clampScroll(area.getHeight());
+        repaint();
+        return;
+    }
+    int low = 60, high = 71;
+    bool any = false;
+    const auto take = [&](const std::vector<engine::ClipNote> &notes) {
+        for (const auto &n : notes) {
+            low = any ? std::min<int>(low, n.key) : n.key;
+            high = any ? std::max<int>(high, n.key) : n.key;
+            any = true;
+        }
+    };
+    take(clip->notes);
+    for (const auto &layer : panel.others())
+        take(layer.details.notes);
+    keys.keyHeight = std::clamp(area.getHeight() / (high - low + 1), KeyTracks::kMinHeight, KeyTracks::kMaxHeight);
+    keys.show(low, high, area.getHeight());
+    repaint();
+}
+void NoteEditor::zoomTime(bool in) {
+    const auto area = notesArea();
+    const auto span = timeSelection();
+    const auto at = span ? (span->first + span->second) / 2 : insert_ ? *insert_ : time.tick(area.getWidth() / 2.);
+    time.zoomAround(in ? 1.25 : 0.8, at);
+    panel.root.arrangement.followPaused = true;
+    repaint();
+    panel.repaint();
+}
+void NoteEditor::gridKey(int key) {
+    // The arrangement's rule (manual 6.10, 10.2.1), on the editor's own grid.
+    auto &grid = time.grid;
+    switch (key) {
+    case 1:
+    case 2: {
+        const bool narrower = key == 1;
+        if (grid.fixed)
+            grid.fixedQuarters = std::clamp(grid.fixedQuarters * (narrower ? .5 : 2.), ArrangementGeometry::kFinestGrid, ArrangementGeometry::kWidestGrid);
+        else
+            grid.narrow = std::clamp(grid.narrow + (narrower ? 1 : -1), -ArrangementGeometry::kGridNarrowest, ArrangementGeometry::kGridNarrowest);
+        break;
+    }
+    case 3:
+        grid.triplet = !grid.triplet;
+        break;
+    case 4:
+        grid.snap = !grid.snap;
+        break;
+    case 5:
+        if (!grid.fixed)
+            grid.fixedQuarters = time.plainGridQuarters();
+        grid.fixed = !grid.fixed;
+        break;
+    default:
+        return;
+    }
+    repaint();
+    panel.repaint();
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1270,6 +1364,12 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     picked_ = RulerPart::None; // anything else pressed lets the brace or the marker go
+    if (rulerArea().contains(from_)) {
+        // The time ruler, as the arrangement's: a drag scrolls sideways and zooms up and down.
+        viewLast_ = from_;
+        drag_ = Drag::Zoom;
+        return;
+    }
     if (const auto piano = keysArea(); piano.contains(from_)) {
         // A piano key selects its key track's notes; with Shift it adds them, or takes them out
         // when all of them are in (manual 10.5.2).
@@ -1291,6 +1391,9 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             }
             head_.reset();
         }
+        viewLast_ = from_;
+        zoomFrom_ = from_.x;
+        drag_ = Drag::Keys;
         repaint();
         return;
     }
@@ -1450,6 +1553,21 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::Zoom) {
+        // Sideways scrolls; down zooms in and up out, around the pointer.
+        time.pan(static_cast<double>(viewLast_.x - to_.x));
+        time.zoom(std::pow(1.012, static_cast<double>(to_.y - viewLast_.y)), static_cast<double>(to_.x - rulerArea().getX()));
+        viewLast_ = to_;
+        panel.root.arrangement.followPaused = true;
+        panel.repaint();
+    } else if (drag_ == Drag::Keys) {
+        // The piano dragged: up and down scrolls it; sideways zooms the key tracks, a step every six pixels.
+        keys.scrollBy(viewLast_.y - to_.y, area.getHeight());
+        if (const int steps = (to_.x - zoomFrom_) / 6; steps != 0) {
+            keys.zoom(keys.keyHeight + steps, to_.y - area.getY(), area.getHeight());
+            zoomFrom_ += steps * 6;
+        }
+        viewLast_ = to_;
     } else if (drag_ == Drag::Ruler) {
         rulerDrag(e.mods);
     } else if (drag_ == Drag::Shape) {
@@ -1552,6 +1670,10 @@ void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
     if (clip == nullptr || e.mods.isPopupMenu())
         return;
     drag_ = Drag::None;
+    if (rulerArea().contains(e.getPosition()) || keysArea().contains(e.getPosition())) {
+        zoomToNotes();
+        return;
+    }
     if (drawMode_)
         return;
     const auto at = e.getPosition();
@@ -1680,6 +1802,39 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         highlightScale = !highlightScale;
         repaint();
         panel.repaint();
+        return true;
+    }
+    if (code == juce::KeyPress::pageUpKey || code == juce::KeyPress::pageDownKey) {
+        const bool up = code == juce::KeyPress::pageUpKey;
+        const auto view = notesArea();
+        if (mods.isCommandDown()) {
+            time.pan((up ? -0.8 : 0.8) * view.getWidth());
+            panel.root.arrangement.followPaused = true;
+        } else {
+            keys.page(up, mods.isShiftDown(), view.getHeight());
+        }
+        repaint();
+        return true;
+    }
+    if (mods.isCommandDown() && !mods.isShiftDown() && !mods.isAltDown() && code >= '1' && code <= '5') {
+        gridKey(code - '0');
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'w' || code == 'W')) {
+        fitWidth();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'h' || code == 'H')) {
+        fitHeight();
+        return true;
+    }
+    if (!mods.isCommandDown() && !mods.isAltDown() && (code == '+' || code == '=' || code == '-')) {
+        zoomTime(code != '-');
+        return true;
+    }
+    if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) {
+        // The Clip View at its full height, and back (manual 10.2).
+        panel.root.toggleClipViewFull();
         return true;
     }
     if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z')) {
@@ -1813,6 +1968,8 @@ void NoteEditor::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWhee
         keys.zoom(keys.keyHeight + (w.deltaY > 0 ? 2 : -2), e.y - area.getY(), area.getHeight());
     else if (!timeWheel(time, e, w, area.getX()))
         keys.scrollBy(static_cast<int>(std::lround(-w.deltaY * 180.f)), area.getHeight());
+    else
+        panel.root.arrangement.followPaused = true; // a scroll or zoom in time pauses Follow
     repaint();
 }
 std::vector<juce::Rectangle<int>> NoteEditor::textAreas() const {
@@ -2232,6 +2389,50 @@ juce::Rectangle<int> ClipViewPanel::filterArea() const noexcept {
 juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
     const auto highlight = highlightBox();
     return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
+}
+juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
+    return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
+}
+juce::PopupMenu ClipViewPanel::gridMenu() const {
+    using Geometry = ArrangementGeometry;
+    const auto &grid = notes.time.grid;
+    juce::PopupMenu menu, adaptive, fixed;
+    for (std::size_t i = 0; i < Geometry::kAdaptiveNames.size(); ++i)
+        adaptive.addItem(static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
+                         !grid.fixed && grid.narrow == static_cast<int>(i) - Geometry::kGridNarrowest);
+    int id = 10;
+    for (double quarters = Geometry::kWidestGrid; quarters >= Geometry::kFinestGrid; quarters /= 2)
+        fixed.addItem(id++, gridLabel(quarters, false), true, grid.fixed && grid.fixedQuarters == quarters);
+    menu.addSubMenu("Adaptive Grid", adaptive);
+    menu.addSubMenu("Fixed Grid", fixed);
+    menu.addItem(30, "Triplet Grid", true, grid.triplet);
+    menu.addItem(31, "Snap to Grid", true, grid.snap);
+    return menu;
+}
+bool ClipViewPanel::chooseGrid(int item) {
+    using Geometry = ArrangementGeometry;
+    auto &grid = notes.time.grid;
+    if (item >= 1 && item <= static_cast<int>(Geometry::kAdaptiveNames.size())) {
+        grid.fixed = false;
+        grid.narrow = item - 1 - Geometry::kGridNarrowest;
+    } else if (item >= 10 && item < 30) {
+        double quarters = Geometry::kWidestGrid;
+        for (int i = 10; i < item; ++i)
+            quarters /= 2;
+        if (quarters < Geometry::kFinestGrid)
+            return false;
+        grid.fixed = true;
+        grid.fixedQuarters = quarters;
+    } else if (item == 30) {
+        grid.triplet = !grid.triplet;
+    } else if (item == 31) {
+        grid.snap = !grid.snap;
+    } else {
+        return false;
+    }
+    notes.repaint();
+    repaint();
+    return true;
 }
 juce::Rectangle<int> ClipViewPanel::coloursBox() const noexcept {
     const auto find = findBox();
@@ -3233,6 +3434,15 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     }
     if (findBox().contains(at)) {
         showFilters(!filtersShown_);
+        return;
+    }
+    if (gridBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        gridMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(gridBox())),
+                                 [safe](int item) {
+                                     if (safe != nullptr && item > 0)
+                                         safe->chooseGrid(item);
+                                 });
         return;
     }
     if (coloursBox().contains(at)) {
