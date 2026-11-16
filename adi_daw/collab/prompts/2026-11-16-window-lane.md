@@ -26,6 +26,17 @@ measure, write harnesses. How you do the work is yours.
 
 ## What needs doing, in order
 
+**Added 16 November, evening, and first:** the browser's Plug-Ins (DF-W9). The Clip View and its
+Note Editor are on main (#586, #588), a MIDI clip can be made and edited, and nothing can play it:
+no instrument can be put on a MIDI track from the window. The scanner and the registry are on main
+(`src/adi/plugin_scanner.*`, `plugin_registry.*`, `src/juce/plugin_scan_host.cpp`); the browser's
+Plug-Ins category still says it waits for them. List the registry's VST3 and CLAP plug-ins there,
+instruments and effects, and load one onto the selected track with a double-click, Enter or a drag,
+one undo step, as D4 does for ADI's own devices; then the wrench opens its window (D3) and Auto-Open
+Plug-In Windows can follow. Say in the PR what the director hears when he plays a MIDI clip through
+an instrument plug-in, and what is still missing if he hears nothing. If the registry lacks
+something the browser needs, raise it as an N row and build what can be built.
+
 1. **Finish group E**, which is the editing a user does all day:
    - E3, the …Time commands and Insert Silence.
    - E4, fade handles, Create Fade and Crossfade (C4's waveforms are in).

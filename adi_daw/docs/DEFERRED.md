@@ -66,14 +66,14 @@ cut out of something that already shipped or was ruled.
 
 | Id | What | Owner | Trigger / before |
 |---|---|---|---|
-| DF-W1 | The Clip View and the MIDI Note Editor (STEP-7-PLAN 7.7, worklist G1 to G3): the frame, the note geometry, drawing and editing notes; the Main panel's fields, the loop brace and Fit to Scale; 0 deactivates notes. Approved 16 November (ADR-0240 d1) | win | now |
+| DF-W1 | The Clip View and the MIDI Note Editor (STEP-7-PLAN 7.7, worklist G1 to G3), approved 16 November (ADR-0240 d1). On main: the view, MIDI clip creation, note editing and 0 to deactivate (#586, #588). In review: the Main panel's fields and the loop brace (#589), the Pitch and Time panel and the Scale chooser (#591) | win | closes when #589 and #591 merge |
 | DF-W2 | The Clip View's later parts, as STEP-7-PLAN 7.7 step 5 places them: the Pitch and Time utilities beyond Fit to Scale, note preview through the track, the Envelopes and MPE tabs, the Chance lane, multi-clip editing, and the Sample Editor's warp controls | win, then the window lane | after DF-W1 |
 | DF-W3 | C5, remark pips and the Info View's split: ADI's own addition, so its picture goes to the director before any of it is built. The lane was asked on 16 November to draw it | window lane → director | the picture |
 | DF-W4 | B8, Main's loudness meter in the mixer, held for the Live 12 meter readings | window lane | the readings |
 | DF-W5 | A home for `midi.port.remote` (every `midi.port.*` row is Device scope, which the app settings refuse), so the window can take MIDI in for MIDI Learn and MIDI Map Mode (N10) | win | before the window's MIDI Map Mode |
 | DF-W6 | The nullable `tracks.role` column with its four values in the schema and SPEC, a schema minor and its migration (N38); until then `track.setRole` refuses and every role reads null, so the ★ Reference cannot be chosen | win | before the Mix View's Reference; the minor after the sidechain keys' 1.22 |
 | DF-W7 | The lane's three notes for win of 10 November: the ZIP export's progress, which Live shows and `collectExport` does not report; the browser sidebar's labels beyond Samples and Places; the place of Rec-Q and Play-Q, which is ADI's own and Live has no header boxes for | win, the director for the third | next window review |
-| DF-W8 | The window cannot make a MIDI clip: only an audio drop creates a clip, so the Note Editor (#586) shows only MIDI clips a project already holds. Live's Insert Empty MIDI Clip (Ctrl/Cmd+Shift+M) and a double-click on an empty MIDI lane | win | first in the Clip View's next PR |
+| DF-W9 | A MIDI clip cannot be heard from the window. No instrument can be put on a MIDI track: the browser's Plug-Ins category lists nothing, though the scanner and the registry are on main (`plugin_scanner.*`, `plugin_registry.*`), and no built-in instrument is on main (#278 is open). The browser's Plug-Ins: list the registry's VST3 and CLAP plug-ins and load one onto the selected track, as D4 loads ADI's own devices | window lane; the engine seat if the registry lacks what the browser needs | next, ahead of the lane's list: the Note Editor (DF-W1) is silent until then |
 
 ### Engine (win's log of 12 November)
 
@@ -101,6 +101,7 @@ cut out of something that already shipped or was ruled.
 
 | Id | What | Closed by |
 |---|---|---|
+| DF-W8 | The window could not make a MIDI clip | #588 (067fb55f): a double-click on an empty MIDI lane, and Insert Empty MIDI Clip(s) on Ctrl/Cmd+Shift+M (16 Nov) |
 | DF-M20 | The native limiter measured loudness nobody reads | #581 (2fb959ec): the measurement is skipped while recording is off (16 Nov) |
 | DF-M27 | The director's answers that were only in the Mix View seat's log (rows default to channels with Mix View tools; the optional analyser dock; and seven more the seat listed) | ADR-0240 d4 (16 Nov) |
 | DF-M5 | Seek: mark the analysis epoch where the audio thread applies Locate, so no pre-seek window publishes as post-seek | #541 (7368447e): each capture span carries the transport revision the audio thread applied |
