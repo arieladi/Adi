@@ -132,6 +132,10 @@ void preparedAndDocument(){
     auto* other=static_cast<KeyInstance*>(doc->session().instanceFor(31));other->keysAvailable=false;
     check(doc->deviceAction("routing.connect",{{"id",99},{"srcKind","track"},{"src",2},{"dstKind","device"},{"dst",31},{"kind","sidechain"}}),"unavailable imported key remains a named stored route");
     check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.size()==1 && doc->session().model().routing.front().dstId==31,"None can recover one route despite an unrelated unavailable key");
+    doc->tick(10);const auto shown=doc->parameterFeed().current();
+    const auto missing=std::find_if(shown->begin(),shown->end(),[](const auto& d){return d.id==31;});
+    const auto recovery=missing==shown->end()?std::vector<ui::DeviceKeyChoice>{}:doc->deviceKeyChoices(*missing);
+    check(missing!=shown->end() && recovery.size()==1 && !recovery[0].source && doc->setDeviceKeyChoice(*missing,recovery[0]) && doc->session().model().routing.empty(),"the unavailable target can remove its own stored key through its retained-menu command");
 }
 void persistence() {
     Fixture f;

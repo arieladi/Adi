@@ -533,8 +533,11 @@ void Session::syncFlags() {
                 e.trackId = c->trackId.value_or(0);
             if (!e.placeholder) {
                 syncRoute(e, node.instance());
-                if(!node.instance().configureSidechain(keyed.contains(e.deviceId)))
-                    sessionProblems_.push_back("devices#"+std::to_string(e.deviceId)+": key input is unavailable");
+                if(!node.instance().configureSidechain(keyed.contains(e.deviceId))) {
+                    const auto problem="devices#"+std::to_string(e.deviceId)+": key input is unavailable";
+                    if(std::find(sessionProblems_.begin(),sessionProblems_.end(),problem)==sessionProblems_.end())
+                        sessionProblems_.push_back(problem);
+                }
             }
             break;
         }

@@ -361,11 +361,13 @@ std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanel
     std::vector<DeviceKeyChoice> choices;
     if(!deviceTargetCurrent(target.id,target.runtime,target.instance))return choices;
     auto* instance=session_.instanceFor(target.id);
-    if(!instance || instance->sidechainInputChannels()<=0)return choices;
+    const bool keyAvailable=instance && instance->sidechainInputChannels()>0;
     const auto& model=session_.model();
     const rows::Routing* current=nullptr;std::size_t count=0;
     for(const auto& route:model.routing)if(route.kind=="sidechain" && route.dstKind=="device" && route.dstId==target.id){current=&route;++count;}
-    choices.push_back({{},"post_mixer","None",count==0});
+    if(!keyAvailable && count==0)return choices;
+    choices.push_back({{},"post_mixer","None",count==0,view_.generation()});
+    if(!keyAvailable)return choices; // recovery only; never fabricate an input
     for(const auto& track:model.tracks){
         if(track.kind=="vca")continue;
         for(const auto& tap:{"pre_fx","post_fx","post_mixer"})

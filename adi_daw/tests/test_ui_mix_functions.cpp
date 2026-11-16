@@ -536,9 +536,10 @@ void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
     auto native=makePanel(44,false,"EQ");native.sidechainChannels=2;publication->push_back(native);
     auto& strip=root.devices;strip.setVisible(true);strip.publication=[&]{return publication;};
     strip.targetCurrent=[&](std::int64_t id,const engine::DeviceRuntimeToken&,std::uint64_t stamp){return id==44 && publication->front().instance==stamp;};
-    strip.keyChoices=[](const DevicePanelData&){return std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false},{2,"pre_fx","Kick",true},{2,"post_fx","Kick",false},{2,"post_mixer","Kick",false}};};
+    bool invalidStoredRoute=false;
+    strip.keyChoices=[&](const DevicePanelData& d){if(d.sidechainChannels<=0)return invalidStoredRoute?std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false}}:std::vector<DeviceKeyChoice>{};return std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false},{2,"pre_fx","Kick",true},{2,"post_fx","Kick",false},{2,"post_mixer","Kick",false}};};
     int actions=0;std::optional<std::int64_t> source;std::string tap;
-    strip.setKey=[&](const DevicePanelData& expected,const DeviceKeyChoice& choice){++actions;source=choice.source;tap=choice.tap;return expected.id==44 && expected.instance==71;};
+    strip.setKey=[&](const DevicePanelData& expected,const DeviceKeyChoice& choice){++actions;source=choice.source;tap=choice.tap;return expected.id==44 && expected.instance==publication->front().instance;};
     strip.frame(2);
     const auto submenu=[](const juce::PopupMenu& menu,const char* name){
         for(juce::PopupMenu::MenuItemIterator it(menu);it.next();)if(it.getItem().text==name && it.getItem().subMenu)return *it.getItem().subMenu;
@@ -558,6 +559,10 @@ void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
     check(actions==2,"retained stale sidechain menu cannot reroute a replacement runtime");
     publication->front().sidechainChannels=0;strip.frame(2);
     check(menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input")).empty(),"internal-only devices expose no invented external key control");
+    invalidStoredRoute=true;
+    auto recovery=menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input"));
+    if(recovery.size()==1 && recovery[0].action)recovery[0].action();
+    check(recovery.size()==1 && recovery[0].name=="None" && actions==3 && !source,"an unavailable stored key exposes only its recovery removal, never fabricated source choices");
 }
 } // namespace
 int main() {

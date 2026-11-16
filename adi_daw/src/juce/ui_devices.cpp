@@ -933,7 +933,7 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
-    if (data && data->sidechainChannels>0 && strip.keyChoices && strip.setKey) {
+    if (data && strip.keyChoices && strip.setKey) {
         const auto expected=*data;juce::PopupMenu keys;
         const auto choices=strip.keyChoices(expected);
         std::map<std::int64_t,std::pair<juce::String,juce::PopupMenu>> sources;
@@ -950,7 +950,7 @@ juce::PopupMenu DevicePanelView::commands() {
             else keys.addItem(std::move(item));
         }
         for(auto& [sourceId,entry]:sources){(void)sourceId;keys.addSubMenu(entry.first,entry.second);}
-        m.addSeparator();m.addSubMenu("Sidechain Input",keys);
+        if(!choices.empty()){m.addSeparator();m.addSubMenu("Sidechain Input",keys);}
     }
     if (!eqPresentation()) {
         m.addSeparator();
