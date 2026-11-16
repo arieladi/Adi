@@ -137,6 +137,58 @@ inline NoteEdit moveNotes(const engine::ClipDetails &clip, const std::vector<std
     return edit;
 }
 
+// Copies of the notes, moved by `ticks` and `keys` from their originals (manual 10.5.4: Ctrl/Option
+// and a drag; 10.5.3: Duplicate): each copy keeps its original's length, velocities, channel,
+// probability and tuning, and is deactivated if its original is. The copies become the selection.
+inline NoteEdit copyNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t ticks,
+                          int keys, const char *label) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    const auto notes = pick(clip, ids);
+    if (notes.empty())
+        return edit;
+    int low = kNoteKeys - 1, high = 0;
+    for (const auto *n : notes) {
+        low = std::min(low, static_cast<int>(n->key));
+        high = std::max(high, static_cast<int>(n->key));
+    }
+    const int by = std::clamp(keys, -low, kNoteKeys - 1 - high);
+    auto id = freeNoteId(clip);
+    for (const auto *n : notes) {
+        edit.ops.push_back(op("note.insert",
+                              {{"clip", clip.id},
+                               {"note", id},
+                               {"start", n->startTicks + ticks},
+                               {"dur", n->durationTicks},
+                               {"key", n->key + by},
+                               {"vel", n->velocity},
+                               {"velOff", n->releaseVelocity},
+                               {"chan", n->channel},
+                               {"prob", n->probability},
+                               {"cents", static_cast<double>(n->tuningCents)}},
+                              label));
+        if (!n->active)
+            edit.ops.push_back(op("note.setMute", {{"clip", clip.id}, {"note", id}, {"muted", true}}, label));
+        edit.select.push_back(id++);
+    }
+    return edit;
+}
+// The span of time the notes cover: from the first start to the last end; nothing for none.
+inline std::int64_t spanOf(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    const auto notes = note_edits_detail::pick(clip, ids);
+    if (notes.empty())
+        return 0;
+    std::int64_t from = notes.front()->startTicks, to = from;
+    for (const auto *n : notes) {
+        from = std::min(from, n->startTicks);
+        to = std::max(to, n->startTicks + n->durationTicks);
+    }
+    return to - from;
+}
+
 // The notes' ends moved (manual 10.5.5): each keeps at least the shortest length.
 inline NoteEdit resizeNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t ticks) {
     using namespace note_edits_detail;

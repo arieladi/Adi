@@ -14,6 +14,7 @@
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/scales.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <optional>
 #include <string>
@@ -43,6 +44,20 @@ class NoteEditor final : public juce::Component {
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
     bool apply(NoteEdit edit) { return commit(std::move(edit)); }
+    // Fold to Notes (manual 10.2; F): only the key tracks that hold notes. It follows the notes as
+    // they change, and unfolds for a clip with none.
+    bool folded() const noexcept { return folded_; }
+    void setFold(bool);
+    // Z zooms to the selected notes, or to all of them; X goes back (manual 10.2).
+    void zoomToNotes();
+    void zoomBack();
+    // Live's Duplicate on the selected notes (Ctrl/Cmd+D): copies right after them, selected.
+    bool duplicate();
+    // Whether a drag of notes, let go now, would copy them: Ctrl (Alt/Option on the Mac) is held.
+    bool copying() const noexcept { return copying_; }
+    // Moves the playhead: called on the window's frame.
+    void frame();
+    ArrangementPlayhead playhead;
     // The selected notes, by id: this view's own, kept while the notes exist.
     const std::vector<std::uint64_t> &selected() const noexcept { return selected_; }
     bool isSelected(std::uint64_t id) const noexcept;
@@ -82,6 +97,7 @@ class NoteEditor final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
     Drag drag_ = Drag::None;
+    bool copying_ = false, folded_ = false;
     juce::Point<int> from_, to_;
     std::int64_t dragTicks_ = 0;
     int dragKeys_ = 0, dragVelocity_ = 0;
@@ -99,6 +115,8 @@ class SampleEditor final : public juce::Component {
     ArrangementGeometry time;
     juce::Rectangle<int> waveArea() const noexcept;
     void showClip();
+    void frame();
+    ArrangementPlayhead playhead;
 
   private:
     ClipViewPanel &panel;
@@ -169,6 +187,8 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> titleArea() const noexcept;
     juce::Rectangle<int> mainArea() const noexcept;
     juce::Rectangle<int> headerArea() const noexcept;
+    // The Note Editor's Fold switch, in the header (manual 10.2).
+    juce::Rectangle<int> foldBox() const noexcept;
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {

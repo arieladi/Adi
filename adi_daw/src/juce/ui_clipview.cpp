@@ -112,6 +112,65 @@ NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
     setTitle("MIDI Note Editor");
     setOpaque(true);
     setWantsKeyboardFocus(true);
+    addChildComponent(playhead);
+}
+void NoteEditor::frame() {
+    // Live draws the playhead only while it plays; here over the key tracks and the Velocity lane.
+    const auto area = notesArea();
+    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
+    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
+}
+void NoteEditor::setFold(bool fold) {
+    const auto *clip = panel.details();
+    const int height = notesArea().getHeight();
+    if (fold && clip != nullptr && !clip->notes.empty()) {
+        keys.fold(clip->notes, height);
+        folded_ = true;
+    } else {
+        const bool was = folded_;
+        folded_ = fold && clip != nullptr;
+        keys.unfold(height);
+        // Unfolded, the notes come back into view.
+        if (was && clip != nullptr)
+            if (const auto range = keyRange(clip->notes))
+                keys.show(range->low, range->high, height);
+    }
+    repaint();
+}
+void NoteEditor::zoomToNotes() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    std::vector<engine::ClipNote> shownNotes;
+    for (const auto &n : clip->notes)
+        if (selected_.empty() || isSelected(n.id))
+            shownNotes.push_back(n);
+    const auto range = keyRange(shownNotes);
+    if (!range)
+        return;
+    std::int64_t from = shownNotes.front().startTicks, to = from;
+    for (const auto &n : shownNotes) {
+        from = std::min(from, n.startTicks);
+        to = std::max(to, n.startTicks + n.durationTicks);
+    }
+    const auto window = ClipWindow::of(*clip);
+    const auto area = notesArea();
+    const auto margin = std::max<std::int64_t>(1, (to - from) / 24);
+    time.fit(std::max<std::int64_t>(0, window.toArrangement(from)), window.toArrangement(to) + margin, area.getWidth());
+    keys.show(range->low, range->high, area.getHeight());
+    repaint();
+}
+void NoteEditor::zoomBack() {
+    time.back();
+    repaint();
+}
+bool NoteEditor::duplicate() {
+    const auto *clip = panel.details();
+    if (clip == nullptr || selected_.empty())
+        return false;
+    return commit(copyNotes(*clip, selected_, spanOf(*clip, selected_), 0,
+                            selected_.size() == 1 ? "Duplicate Note" : "Duplicate Notes"));
 }
 juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
     return {kKeysWidth, 0, std::max(0, getWidth() - kKeysWidth), kRulerHeight};
@@ -162,6 +221,8 @@ void NoteEditor::prune() {
     std::erase_if(selected_, [clip](std::uint64_t id) {
         return clip == nullptr || note_edits_detail::find(*clip, id) == nullptr;
     });
+    if (folded_)
+        setFold(true);
 }
 std::int64_t NoteEditor::gridTicks() const noexcept {
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
@@ -224,6 +285,7 @@ bool NoteEditor::commit(NoteEdit edit) {
 void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
     drag_ = Drag::None;
+    copying_ = false;
     dragTicks_ = 0;
     dragKeys_ = dragVelocity_ = 0;
     from_ = to_ = e.getPosition();
@@ -279,6 +341,11 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
     if (clip == nullptr || drag_ == Drag::None)
         return;
     to_ = e.getPosition();
+#if JUCE_MAC
+    copying_ = drag_ == Drag::Move && e.mods.isAltDown();
+#else
+    copying_ = drag_ == Drag::Move && e.mods.isCtrlDown();
+#endif
     const auto area = notesArea();
     if (drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End) {
         // Notes keep their offset from the grid: the drag moves by whole grid steps (manual 10.2.1).
@@ -322,7 +389,10 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
     repaint();
     if (clip == nullptr)
         return;
-    if (kind == Drag::Move)
+    const bool copy = std::exchange(copying_, false);
+    if (kind == Drag::Move && copy && (ticks != 0 || keysBy != 0))
+        commit(copyNotes(*clip, selected_, ticks, keysBy, selected_.size() == 1 ? "Copy Note" : "Copy Notes"));
+    else if (kind == Drag::Move)
         commit(moveNotes(*clip, selected_, ticks, keysBy));
     else if (kind == Drag::Start)
         commit(trimNotes(*clip, selected_, ticks));
@@ -363,6 +433,23 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
         if (!selected_.empty())
             commit(deleteNotes(*clip, selected_));
+        return true;
+    }
+    if (k == juce::KeyPress('d', juce::ModifierKeys::commandModifier, 0)) {
+        // Duplicate is the editor's while it has the keyboard, with or without notes selected.
+        duplicate();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'f' || code == 'F')) {
+        setFold(!folded_);
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z')) {
+        zoomToNotes();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'x' || code == 'X')) {
+        zoomBack();
         return true;
     }
     if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) {
@@ -410,6 +497,7 @@ void NoteEditor::resized() {
             const auto length = std::max<std::int64_t>(textproj::kPPQ, window.length);
             time.fit(window.pos, window.pos + length + length / 24, area.getWidth(), false);
             // Live opens on the notes; an empty clip opens around middle C.
+            folded_ = false;
             keys.unfold(area.getHeight());
             keys.keyHeight = KeyTracks::kDefaultHeight;
             const auto range = keyRange(clip->notes);
@@ -478,8 +566,14 @@ void NoteEditor::paint(juce::Graphics &g) {
         // The notes: the clip's colour, lighter as the velocity falls; a deactivated note is grey
         // (manual 10.5.7).
         const auto base = panel.colour();
+        std::vector<engine::ClipNote> drawn;
         for (const auto &stored : clip->notes) {
-            const auto note = shown(stored);
+            // A drag that would copy shows the originals in their places and the copies under the pointer.
+            if (copying_ && drag_ == Drag::Move && isSelected(stored.id))
+                drawn.push_back(stored);
+            drawn.push_back(shown(stored));
+        }
+        for (const auto &note : drawn) {
             const auto box = boxOf(note);
             if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
                 box->y >= area.getBottom() || box->y + box->height <= area.getY())
@@ -577,6 +671,13 @@ void NoteEditor::paint(juce::Graphics &g) {
 SampleEditor::SampleEditor(ClipViewPanel &p) : panel(p) {
     setTitle("Sample Editor");
     setOpaque(true);
+    addChildComponent(playhead);
+}
+void SampleEditor::frame() {
+    const auto area = waveArea();
+    const int x = static_cast<int>(std::clamp(time.x(panel.root.timelineTick()), -1e7, 1e7));
+    playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
+    playhead.setBounds(area.getX() + x, area.getY(), 1, area.getHeight());
 }
 juce::Rectangle<int> SampleEditor::waveArea() const noexcept {
     return {0, kRulerHeight, getWidth(), std::max(0, getHeight() - kRulerHeight)};
@@ -686,6 +787,10 @@ juce::Rectangle<int> ClipViewPanel::mainArea() const noexcept {
 juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
     return {panelWidth() + 1, 0, std::max(0, getWidth() - panelWidth() - 1), kHeaderHeight};
 }
+juce::Rectangle<int> ClipViewPanel::foldBox() const noexcept {
+    const auto header = headerArea();
+    return midi() ? juce::Rectangle<int>(header.getX() + 6, header.getY() + 2, 36, 13) : juce::Rectangle<int>();
+}
 juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
@@ -754,6 +859,8 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         }
         repaint();
     }
+    notes.frame();
+    sample.frame();
     // The frame's own snapshot: the clip's node and its track's colour, and the song's meters for
     // the rulers. They live until the next frame.
     notes.time.meters = &reader.meters();
@@ -1104,6 +1211,11 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         toggleLoop();
         return;
     }
+    if (foldBox().contains(at)) {
+        notes.setFold(!notes.folded());
+        repaint();
+        return;
+    }
     for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato})
         if (toolBox(tool).contains(at)) {
             runTool(tool);
@@ -1270,7 +1382,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     }
 
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(8).withWidth(60),
+    if (const auto fold = foldBox(); !fold.isEmpty()) {
+        look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
+        text("Fold", fold, juce::Justification::centred, look::text, 10.f);
+    }
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 52 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())
