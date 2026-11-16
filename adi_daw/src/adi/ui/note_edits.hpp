@@ -263,6 +263,27 @@ inline NoteEdit trimNotes(const engine::ClipDetails &clip, const std::vector<std
     return edit;
 }
 
+// Velocities drawn by a line tool (ADR-0241 d2): each note named takes its value, within 1 to 127;
+// one batch for the stroke. A note the clip does not hold, or one already at its value, is left out.
+inline NoteEdit drawVelocities(const engine::ClipDetails &clip, const std::vector<std::pair<std::uint64_t, int>> &values) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    for (const auto &[id, value] : values) {
+        const auto *n = find(clip, id);
+        const int velocity = std::clamp(value, 1, 127);
+        if (n == nullptr)
+            continue;
+        edit.select.push_back(id);
+        if (velocity != n->velocity)
+            edit.ops.push_back(
+                op("note.setVelocity", {{"clip", clip.id}, {"note", id}, {"vel", velocity}}, "Draw Velocities"));
+    }
+    return edit;
+}
+
 // The notes' velocities changed by `by` (manual 10.6): each stays within 1 to 127.
 inline NoteEdit changeVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int by) {
     using namespace note_edits_detail;
