@@ -5480,6 +5480,35 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(details().scale.local && ed.scaleOn(), "Undo gives the clip its scale back");
     }
 
+    // The Status Bar reads the selected notes (manual 3.2; the text as measured on Live).
+    {
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        root.frame();
+        const auto before = root.selectionText();
+        check(!before.startsWith("Note Selection") && ed.statusText(root.reader().meters()).isEmpty(),
+              "with no note and no time selected in the editor, the Status Bar reads the arrangement's selection");
+        check(submitter.submit(std::vector<OpRequest>{op("note.setVelocity", {{"clip", 11}, {"note", 1}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 4}, {"vel", 64}}, "Change Velocity")}).ok,
+              "C3 at 100, G3 at 64");
+        root.frame();
+        ed.select({1});
+        root.frame();
+        check(root.selectionText() == "Note Selection   Time: 2.1.1 - 2.2.1 (0.1.0)   Pitch: C3 (60)   Velocity: 100   Probability: 100%",
+              "one note selected: its time in the song with its length, its pitch with its number, its velocity and probability");
+        ed.select({1, 4});
+        root.frame();
+        check(root.selectionText() == "Note Selection   Time: 2.1.1 - 2.4.1 (0.3.0)   Pitch: C3 - G3   Velocity: 64 - 100   Probability: 100%",
+              "two notes: from the first one's start to the last one's end, and their pitch and velocity as ranges");
+        ed.select({});
+        ed.selectTime(5 * beat, 7 * beat);
+        root.frame();
+        check(root.selectionText() == "Time Selection   Start: 2.2.1   End: 2.4.1   Length: 0.2.0", "time selected in the editor: its start, end and length");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        root.frame();
+        check(root.selectionText() == before, "and with neither, the arrangement's again");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

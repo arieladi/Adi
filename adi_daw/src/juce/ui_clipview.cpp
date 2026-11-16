@@ -1022,6 +1022,64 @@ void NoteEditor::laneDrawStroke(const juce::ModifierKeys &mods) {
         if (const double x = lane.getX() + time.x(window.toArrangement(n.startTicks)); mine(n) && x >= left - 5 && x <= right + 5)
             set(n.id, valueAt(x));
 }
+std::uint64_t NoteEditor::statusStamp() const noexcept {
+    // The selection, the time selection and whatever a held drag is previewing.
+    std::uint64_t stamp = 1469598103934665603ull;
+    const auto mix = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ull; };
+    for (const auto id : selected_)
+        mix(id);
+    mix(selected_.size());
+    mix(static_cast<std::uint64_t>(insert_.value_or(-1)));
+    mix(static_cast<std::uint64_t>(head_.value_or(-1)));
+    mix(static_cast<std::uint64_t>(drag_));
+    mix(static_cast<std::uint64_t>(dragTicks_));
+    mix(static_cast<std::uint64_t>(dragKeys_));
+    for (const auto &entry : shapePreview_)
+        mix(entry.first * 131 + static_cast<std::uint64_t>(entry.second));
+    return stamp;
+}
+juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return {};
+    const auto where = [&meters](std::int64_t tick) {
+        const auto at = barPosition(tick, meters);
+        return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
+    };
+    const auto length = [&meters](std::int64_t from, std::int64_t to) {
+        const auto span = barSpan(from, to - from, meters);
+        return juce::String(span.bar) + "." + juce::String(span.beat) + "." + juce::String(span.sixteenth);
+    };
+    const auto window = ClipWindow::of(*clip);
+    std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
+    int lowKey = 128, highKey = -1, lowVelocity = 128, highVelocity = -1, lowChance = 100000, highChance = -1, count = 0;
+    for (const auto &stored : clip->notes) {
+        if (!isSelected(stored.id))
+            continue;
+        const auto n = shown(stored);
+        ++count;
+        from = std::min(from, window.toArrangement(n.startTicks));
+        to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+        lowKey = std::min<int>(lowKey, n.key);
+        highKey = std::max<int>(highKey, n.key);
+        lowVelocity = std::min<int>(lowVelocity, n.velocity);
+        highVelocity = std::max<int>(highVelocity, n.velocity);
+        lowChance = std::min<int>(lowChance, n.probability);
+        highChance = std::max<int>(highChance, n.probability);
+    }
+    if (count == 0) {
+        if (const auto span = timeSelection())
+            return "Time Selection   Start: " + where(span->first) + "   End: " + where(span->second) + "   Length: " +
+                   length(span->first, span->second);
+        return {};
+    }
+    const auto percent = [](int basisPoints) { return juce::String((basisPoints + 50) / 100) + "%"; };
+    const auto pitch = lowKey == highKey ? juce::String(noteName(lowKey)) + " (" + juce::String(lowKey) + ")"
+                                         : juce::String(noteName(lowKey)) + " - " + juce::String(noteName(highKey));
+    return "Note Selection   Time: " + where(from) + " - " + where(to) + " (" + length(from, to) + ")   Pitch: " + pitch +
+           "   Velocity: " + (lowVelocity == highVelocity ? juce::String(lowVelocity) : juce::String(lowVelocity) + " - " + juce::String(highVelocity)) +
+           "   Probability: " + (lowChance == highChance ? percent(lowChance) : percent(lowChance) + " - " + percent(highChance));
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -2299,6 +2357,11 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     }
     notes.frame();
     sample.frame();
+    // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
+    if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
+        statusStamp_ = stamp;
+        root.mark(DirtySet::Status);
+    }
     // The frame's own snapshot: the clip's node and its track's colour, and the song's meters for
     // the rulers. They live until the next frame.
     notes.time.meters = &reader.meters();
