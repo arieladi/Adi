@@ -263,9 +263,28 @@ inline NoteEdit trimNotes(const engine::ClipDetails &clip, const std::vector<std
     return edit;
 }
 
+// The trim tool (ADR-0241 d2; Cubase's Trim tool): each note named ends at its new length, never
+// shorter than the shortest; one batch for the stroke.
+inline NoteEdit trimNotesTo(const engine::ClipDetails &clip, const std::vector<std::pair<std::uint64_t, std::int64_t>> &lengths) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    const char *label = lengths.size() == 1 ? "Trim Note" : "Trim Notes";
+    for (const auto &[id, length] : lengths) {
+        const auto *n = find(clip, id);
+        const auto duration = std::max(kShortestNote, length);
+        if (n != nullptr && duration != n->durationTicks)
+            edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", id}, {"dur", duration}}, label));
+    }
+    return edit;
+}
+
 // Velocities drawn by a line tool (ADR-0241 d2): each note named takes its value, within 1 to 127;
 // one batch for the stroke. A note the clip does not hold, or one already at its value, is left out.
-inline NoteEdit drawVelocities(const engine::ClipDetails &clip, const std::vector<std::pair<std::uint64_t, int>> &values) {
+inline NoteEdit drawVelocities(const engine::ClipDetails &clip, const std::vector<std::pair<std::uint64_t, int>> &values,
+                               const char *label = "Draw Velocities") {
     using namespace note_edits_detail;
     NoteEdit edit;
     edit.refusal = closed(clip);
@@ -279,7 +298,7 @@ inline NoteEdit drawVelocities(const engine::ClipDetails &clip, const std::vecto
         edit.select.push_back(id);
         if (velocity != n->velocity)
             edit.ops.push_back(
-                op("note.setVelocity", {{"clip", clip.id}, {"note", id}, {"vel", velocity}}, "Draw Velocities"));
+                op("note.setVelocity", {{"clip", clip.id}, {"note", id}, {"vel", velocity}}, label));
     }
     return edit;
 }

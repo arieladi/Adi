@@ -45,6 +45,17 @@ class NoteEditor final : public juce::Component {
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
     bool apply(NoteEdit edit) { return commit(std::move(edit)); }
+    // The trim tool (ADR-0241 d2, from Cubase's Trim tool; the header's switch): a stroke down
+    // across notes cuts each one it crosses where the stroke is, on the grid; one undo step.
+    bool trimMode() const noexcept { return trimMode_; }
+    void setTrimMode(bool);
+    // The lengths the stroke held now would leave, by note.
+    const std::vector<std::pair<std::uint64_t, std::int64_t>> &trimmedLengths() const noexcept { return trimPreview_; }
+    // The handles on two or more selected notes' velocities (ADR-0241 d2, from Cubase's controller
+    // event editor): tilt from the left end or the right, scale, compress. A drag shows the result
+    // while held; one undo step. None while a line tool is chosen or fewer than two are selected.
+    juce::Rectangle<int> handleBox(LaneHandle) const noexcept;
+    LaneHandle handleAt(juce::Point<int>) const noexcept;
     // The Velocity lane's line tools (ADR-0241 d2, from Cubase's Line tool): with a shape chosen, a
     // stroke across the lane gives every note under it the shape's value there, shown while held,
     // one undo step. Pointer is Live's lane: a marker is dragged. The chooser is in the lane's label.
@@ -107,8 +118,11 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle };
     void shapeStroke();
+    void trimStroke();
+    void handleDrag();
+    juce::Rectangle<int> selectedVelocityFrame() const noexcept;
     bool commit(NoteEdit);
     bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
@@ -119,6 +133,9 @@ class NoteEditor final : public juce::Component {
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
     LaneShape shape_ = LaneShape::Pointer;
+    LaneHandle handle_ = LaneHandle::None;
+    bool trimMode_ = false;
+    std::vector<std::pair<std::uint64_t, std::int64_t>> trimPreview_;
     std::vector<std::pair<std::uint64_t, int>> shapePreview_;
     juce::Point<int> from_, to_;
     std::int64_t dragTicks_ = 0;
@@ -227,6 +244,8 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> foldBox() const noexcept;
     // Its Draw Mode switch beside it (manual 10.4.1).
     juce::Rectangle<int> drawBox() const noexcept;
+    // The trim tool's switch (ADR-0241 d2).
+    juce::Rectangle<int> trimBox() const noexcept;
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {

@@ -40,4 +40,29 @@ inline double shapeValue(LaneShape shape, double t, double first, double last, d
     }
     return last;
 }
+
+// The handles on a selection of lane values (ADR-0241 d2; Cubase's controller event editor): what a
+// drag of `by` lane units on a handle does to a value that stood at `value`, at `t` from 0 (the
+// selection's first event) to 1 (its last). `mean` and `highest` are the selection's own.
+//   TiltLeft and TiltRight raise or lower one end and leave the other where it is.
+//   Scale multiplies every value so that the highest follows the pointer.
+//   Compress draws every value towards the selection's mean (a drag down) or away from it (up).
+enum class LaneHandle { None, TiltLeft, TiltRight, Scale, Compress };
+inline double handleValue(LaneHandle handle, double value, double t, double by, double mean, double highest) noexcept {
+    switch (handle) {
+    case LaneHandle::TiltLeft:
+        return value + by * (1. - std::clamp(t, 0., 1.));
+    case LaneHandle::TiltRight:
+        return value + by * std::clamp(t, 0., 1.);
+    case LaneHandle::Scale:
+        return highest <= 0 ? value : value * std::max(0., (highest + by) / highest);
+    case LaneHandle::Compress: {
+        const double spread = std::max(1., highest - mean);
+        return mean + (value - mean) * std::max(0., (spread + by) / spread);
+    }
+    case LaneHandle::None:
+        break;
+    }
+    return value;
+}
 } // namespace adi::ui
