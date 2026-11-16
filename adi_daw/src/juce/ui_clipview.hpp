@@ -563,8 +563,10 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {
-        juce::String start, end, position, length, signature, scale, grid, transpose, range;
+        juce::String start, end, position, length, signature, scale, grid, transpose, range, title;
         bool loop = false;
+        // With several clips shown (manual 10.8): some loop and some do not.
+        bool loopMixed = false;
     };
     Readings readings() const;
     // Reads the clip again now: after an edit of this view's, before the next frame.
@@ -572,6 +574,13 @@ class ClipViewPanel final : public juce::Component {
     // The notes last cut or copied in this window's Clip View, each with its start counted from the
     // first of them; they stay while other clips are opened.
     std::vector<engine::ClipNote> noteClipboard;
+    // Where each of them came from, and which clips were shown, and which was being edited, when
+    // they were copied: while that is unchanged, Paste puts each note back into its own clip
+    // (manual 10.8); after another clip is chosen, all go into the edited one.
+    std::vector<std::int64_t> noteClipboardClips, noteClipboardShown;
+    std::int64_t noteClipboardEdited = 0;
+    // The shown clips' ids, the edited one first.
+    std::vector<std::int64_t> shownClips() const;
     // Every place this panel and its editor draw text, in the panel's coordinates.
     std::vector<juce::Rectangle<int>> textAreas() const;
 
@@ -593,6 +602,10 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    // An edit of the Main panel's that belongs to every shown clip (manual 10.8: loop, signature and
+    // scale apply to all the selected clips): `build` makes it for one clip; one batch, one undo
+    // step. The edited clip's refusal refuses it; another clip that cannot take it is passed over.
+    bool commitForAll(const std::function<TrackEdit(const engine::ClipDetails &)> &build);
     bool filtersShown_ = false;
     NoteFilter filter_ = NoteFilter::Pitch;
     // How many number fields the chosen filter has, and their names.

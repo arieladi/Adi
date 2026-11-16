@@ -6317,6 +6317,67 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(ed.keys.rowCount() == 2 && ed.keys.rowOf(60) == 0 && ed.keys.rowOf(53) == 1, "Fold keeps the key tracks any shown clip uses");
     ed.setFold(false);
 
+    // The panels act on every shown clip; the title counts them; notes copied from several go back each into its own (manual 10.8).
+    {
+        using Field = ClipViewPanel::Field;
+        const auto edited = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto another = [&]() -> const engine::ClipDetails & { return panel.others()[0].details; };
+        const auto command = juce::ModifierKeys::commandModifier;
+        ed.select({});
+        check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
+              "with two clips shown the title reads their number; they agree on looping and on the scale");
+        const bool looped = edited().loopEnabled;
+        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
+              "the Loop switch switches both clips: one undo step");
+        check(submitter.submit(op("clip.setLoop", {{"id", another().id}, {"on", false}}, "Deactivate Loop")).ok, "the other clip's loop switched off alone");
+        root.frame();
+        if (edited().loopEnabled) {
+            check(panel.readings().loopMixed, "one looped and one not: the Loop button is half lit");
+            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && submitter.nextUndo()->opCount == 1,
+                  "switched off, only the clip that still looped is written");
+        }
+        check(panel.typeField(Field::Signature, "3/4") && edited().signature.numerator == 3 && another().signature.numerator == 3 &&
+                  another().signature.local && submitter.nextUndo()->opCount == 2,
+              "a time signature typed is both clips'");
+        check(panel.chooseScale(true, 3) && edited().scale.root == 2 && another().scale.root == 2 && another().scale.local && edited().scale.local,
+              "a root chosen is both clips'");
+        check(submitter.submit(op("clip.setScale", {{"id", another().id}, {"root", 7}, {"scale", "major"}, {"mask", 2741}}, "Change Clip Scale")).ok,
+              "the other clip given a scale of its own");
+        root.frame();
+        check(panel.readings().scale == "*", "the clips disagree on the scale: an asterisk");
+        check(panel.chooseScale(false, 1) && another().scale.root == edited().scale.root && another().scale.id == edited().scale.id &&
+                  panel.readings().scale != "*",
+              "a scale chosen brings them together again");
+        panel.mouseDown(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
+        panel.mouseUp(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
+        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && submitter.nextUndo()->opCount == 2,
+              "Scale Mode switched off is switched off in both");
+
+        // Copy from both clips; paste goes back into both.
+        check(ed.keyPressed(juce::KeyPress('a', command, 0)) && ed.anySelected() && ed.keyPressed(juce::KeyPress('c', command, 0)) &&
+                  panel.noteClipboard.size() == edited().notes.size() + another().notes.size() &&
+                  panel.noteClipboardClips.size() == panel.noteClipboard.size() && panel.noteClipboardShown == panel.shownClips(),
+              "every note of both clips copied, each remembered with its clip");
+        const auto ownCount = edited().notes.size(), otherCount = another().notes.size();
+        const auto firstClip = edited().id, secondClip = another().id;
+        ed.selectTime(2 * bar + beat, 2 * bar + beat);
+        check(ed.keyPressed(juce::KeyPress('v', command, 0)) && edited().notes.size() == 2 * ownCount && another().notes.size() == 2 * otherCount &&
+                  submitter.nextUndo()->label == "Paste Notes" && ed.selected().size() == ownCount,
+              "Paste puts each note back into its own clip, at the insert marker: one undo step, the pasted notes selected");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(edited().notes.size() == ownCount && another().notes.size() == otherCount, "one Undo takes both clips' pasted notes back");
+        // After another clip is chosen, the paste goes into that one.
+        check(panel.activate(secondClip) && edited().id == secondClip, "the other clip chosen as the one being edited");
+        ed.selectTime(2 * bar + beat, 2 * bar + beat);
+        check(ed.keyPressed(juce::KeyPress('v', command, 0)) && edited().notes.size() == otherCount + ownCount + otherCount && another().notes.size() == ownCount,
+              "now Paste puts every copied note into the clip being edited");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(panel.activate(firstClip) && edited().id == firstClip, "the first clip is the edited one again");
+        ed.select({});
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {

@@ -459,12 +459,14 @@ bool NoteEditor::copySelected() {
     // Each note with its place in the song, so notes of several clips keep their places to each
     // other; then counted from the earliest.
     std::vector<engine::ClipNote> copied;
+    std::vector<std::int64_t> from;
     const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
         const auto window = ClipWindow::of(of);
         for (const auto &n : of.notes)
             if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
                 copied.push_back(n);
                 copied.back().startTicks = window.toArrangement(n.startTicks);
+                from.push_back(of.id);
             }
     };
     take(*clip, selected_);
@@ -479,6 +481,9 @@ bool NoteEditor::copySelected() {
     for (auto &n : copied)
         n.startTicks -= first;
     panel.noteClipboard = std::move(copied);
+    panel.noteClipboardClips = std::move(from);
+    panel.noteClipboardShown = panel.shownClips();
+    panel.noteClipboardEdited = clip->id;
     return true;
 }
 bool NoteEditor::cutSelected() {
@@ -496,7 +501,47 @@ bool NoteEditor::paste() {
     // At the insert marker or the time selection's start, else at the clip's start; into the clip being edited.
     const auto window = ClipWindow::of(*clip);
     const auto span = timeSelection();
-    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(span ? span->first : insert_.value_or(window.pos))));
+    const auto marker = span ? span->first : insert_.value_or(window.pos);
+    // Notes cut or copied from several clips go back each into its own, while the same clips are
+    // shown and the same one is being edited (manual 10.8); else all into the edited clip.
+    const bool several = std::any_of(panel.noteClipboardClips.begin(), panel.noteClipboardClips.end(),
+                                     [&](std::int64_t id) { return id != clip->id; });
+    if (several && !panel.focus() && panel.noteClipboardClips.size() == panel.noteClipboard.size() &&
+        panel.noteClipboardShown == panel.shownClips() && panel.noteClipboardEdited == clip->id) {
+        const auto own = [&](std::int64_t id) {
+            std::vector<engine::ClipNote> notes;
+            for (std::size_t i = 0; i < panel.noteClipboard.size(); ++i)
+                if (panel.noteClipboardClips[i] == id)
+                    notes.push_back(panel.noteClipboard[i]);
+            return notes;
+        };
+        auto all = pasteNotes(*clip, own(clip->id), window.toSource(marker));
+        std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> pasted;
+        for (const auto &layer : panel.others()) {
+            const auto notes = own(layer.details.id);
+            if (notes.empty() || !all.refusal.empty())
+                continue;
+            auto part = pasteNotes(layer.details, notes, ClipWindow::of(layer.details).toSource(marker));
+            if (!part.refusal.empty()) {
+                all.refusal = std::move(part.refusal);
+                break;
+            }
+            for (auto &o : part.ops)
+                all.ops.push_back(std::move(o));
+            pasted.emplace_back(layer.details.id, std::move(part.select));
+        }
+        for (auto &o : all.ops)
+            o.label = "Paste Notes";
+        if (!commit(std::move(all)))
+            return false;
+        // The pasted notes are the selection, in each clip.
+        otherSelected_.clear();
+        for (auto &entry : pasted)
+            otherIds(entry.first) = std::move(entry.second);
+        repaint();
+        return true;
+    }
+    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(marker)));
 }
 bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
@@ -2990,7 +3035,19 @@ juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
 bool ClipViewPanel::toggleScaleMode() {
     if (!details_ || !midi())
         return false;
-    const bool done = commit(setClipScaleMode(*details_, !details_->scale.local));
+    // On, every shown clip takes the edited clip's scale as its own; off, each holds none.
+    const bool on = !details_->scale.local;
+    const auto tonic = details_->scale.root;
+    const auto id = details_->scale.id;
+    const auto mask = details_->scale.mask;
+    const bool done = commitForAll([=](const engine::ClipDetails &clip) {
+        if (!on)
+            return setClipScaleMode(clip, false);
+        auto taken = setClipScale(clip, tonic, id, mask);
+        for (auto &o : taken.ops)
+            o.label = "Activate Scale";
+        return taken;
+    });
     notes.prune();
     return done;
 }
@@ -3092,6 +3149,14 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.start = positionText(d.startMarkerTicks, clipMeters_);
     out.end = positionText(endMarkerOf(d), clipMeters_);
     out.loop = d.loopEnabled;
+    bool sameScale = true;
+    for (const auto &layer : others_) {
+        out.loopMixed = out.loopMixed || layer.details.loopEnabled != d.loopEnabled;
+        sameScale = sameScale && layer.details.scale.root == d.scale.root && layer.details.scale.id == d.scale.id &&
+                    layer.details.scale.local == d.scale.local;
+    }
+    // The title: the clip's name; with several clips shown, how many (manual 10.8).
+    out.title = others_.empty() ? juce::String(d.name) : juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips";
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
@@ -3102,6 +3167,9 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.scale = juce::String(pitchClassName(static_cast<int>(d.scale.root))) + " " +
                 (known != nullptr ? juce::String(known->name)
                                   : scaleName.substring(0, 1).toUpperCase() + scaleName.substring(1));
+    // Root and scale are shown only when every shown clip agrees; else an asterisk (manual 10.8).
+    if (!sameScale)
+        out.scale = "*";
     // The Pitch and Time panel: the lowest and highest key of the notes it would act on, and the
     // transposition, which is nothing until its field is dragged or typed into.
     out.transpose = "0 st";
@@ -3555,12 +3623,22 @@ bool ClipViewPanel::chooseScale(bool roots, int item) {
     if (!details_ || item < 1)
         return false;
     const auto &d = *details_;
-    if (roots)
-        return item <= 12 && commit(setClipScale(d, item - 1, d.scale.id, d.scale.mask));
+    // Every shown clip takes the edited clip's scale as it now is (manual 10.8).
+    if (roots) {
+        if (item > 12)
+            return false;
+        const auto tonic = static_cast<std::int64_t>(item - 1);
+        const auto id = d.scale.id;
+        const auto mask = d.scale.mask;
+        return commitForAll([=](const engine::ClipDetails &clip) { return setClipScale(clip, tonic, id, mask); });
+    }
     if (item > static_cast<int>(kScales.size()))
         return false;
     const auto &scale = kScales[static_cast<std::size_t>(item - 1)];
-    return commit(setClipScale(d, d.scale.root, scale.id, scale.mask));
+    const auto tonic = d.scale.root;
+    const std::string id = scale.id;
+    const auto mask = scale.mask;
+    return commitForAll([=](const engine::ClipDetails &clip) { return setClipScale(clip, tonic, id, mask); });
 }
 void ClipViewPanel::showScaleMenu(bool roots) {
     juce::Component::SafePointer<ClipViewPanel> safe(this);
@@ -3682,7 +3760,7 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             root.say("Type a time signature as 3/4.");
             return false;
         }
-        return commit(setClipSignature(*details_, signature->first, signature->second));
+        return commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature->first, signature->second); });
     }
     if (field == Field::Length) {
         const auto length = parseBarsBeats(text);
@@ -3717,7 +3795,37 @@ bool ClipViewPanel::setFieldHere(Field field) {
         return commit(setClipLoop(d, d.loopStartTicks, d.loopEnabled ? here - d.loopStartTicks : loopLengthOf(d), true));
     return setField(field, here);
 }
-bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*details_)); }
+std::vector<std::int64_t> ClipViewPanel::shownClips() const {
+    std::vector<std::int64_t> ids;
+    if (details_)
+        ids.push_back(details_->id);
+    for (const auto &layer : others_)
+        ids.push_back(layer.details.id);
+    return ids;
+}
+bool ClipViewPanel::commitForAll(const std::function<TrackEdit(const engine::ClipDetails &)> &build) {
+    if (!details_)
+        return false;
+    auto all = build(*details_);
+    if (all.refusal.empty())
+        for (const auto &layer : others_) {
+            auto part = build(layer.details);
+            if (!part.refusal.empty())
+                continue;
+            for (auto &o : part.ops) {
+                // The step is named for the edit, whichever clip's op comes first.
+                all.ops.push_back(std::move(o));
+            }
+        }
+    return commit(std::move(all));
+}
+bool ClipViewPanel::toggleLoop() {
+    if (!details_)
+        return false;
+    // Every shown clip takes the state the edited clip is switched to.
+    const bool on = !details_->loopEnabled;
+    return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
+}
 void ClipViewPanel::openEditor(Field field) {
     editing_ = field;
     const auto r = readings();
@@ -3970,7 +4078,7 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
     else if (field == Field::Stretch)
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
-        commit(setClipSignature(*details_, signature.first, signature.second));
+        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
     else
         setField(field, ticks);
 }
@@ -4017,11 +4125,18 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.fillEllipse(dot);
     g.setColour(look::text);
     g.drawEllipse(dot.reduced(0.5f), 1.f);
-    text(juce::String(d.name), title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft,
-         look::text, 12.f, true);
-
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
     const auto r = readings();
+    if (!others_.empty()) {
+        // Several clips shown: a striped title (manual 10.8).
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(title.withTrimmedLeft(20));
+        g.setColour(juce::Colours::white.withAlpha(0.22f));
+        for (int x = title.getX() - title.getHeight(); x < title.getRight(); x += 8)
+            g.drawLine(static_cast<float>(x), static_cast<float>(title.getBottom()), static_cast<float>(x + title.getHeight()),
+                       static_cast<float>(title.getY()), 2.f);
+    }
+    text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
     auto field = [&](Field which, const juce::String &name, const juce::String &value) {
         const auto box = fieldBox(which);
         const auto set = setBox(which);
@@ -4041,7 +4156,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Start, "Start", r.start);
     field(Field::End, "End", r.end);
     const auto loop = loopBox();
-    look::box(g, loop.toFloat(), r.loop ? look::accent : look::button);
+    look::box(g, loop.toFloat(), r.loop && !r.loopMixed ? look::accent : look::button);
+    if (r.loopMixed) {
+        // Looped and unlooped clips together: the button is half lit (manual 10.8).
+        g.setColour(look::accent);
+        g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
+    }
     text("Loop", loop, juce::Justification::centred, look::text, 11.f);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
