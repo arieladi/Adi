@@ -72,6 +72,8 @@ void contract() {
     const auto held=descriptions.size();scan::Result callback;bool refused=false;error="untouched";
     {audio::CallbackScope scope;callback=device::scanVst3File(*scanner,parent,descriptions);
         refused=!device::decodeVst3Metadata(result.plugins,canonical,&decoded,error);}
+    if(callback.state!=scan::State::CallbackRefused || !refused || allocations!=0 || audio::callbackFileIo!=0 || error!="untouched" || descriptions.size()!=held)
+        std::printf("callback diagnostic state=%d refused=%d allocations=%u fileIO=%u error=%s descriptions=%zu/%zu\n",static_cast<int>(callback.state),refused,allocations.load(),audio::callbackFileIo.load(),error.c_str(),descriptions.size(),held);
     check(callback.state==scan::State::CallbackRefused && refused && allocations==0 && audio::callbackFileIo==0 &&
         error=="untouched" && descriptions.size()==held,"VST3 discovery/decoder callbacks refuse before allocation or descriptor/diagnostic/OS mutation");
 }
