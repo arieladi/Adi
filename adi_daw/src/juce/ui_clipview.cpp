@@ -585,8 +585,21 @@ juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
     return {kKeysWidth, barsHeight(), std::max(0, getWidth() - kKeysWidth), kRulerHeight};
 }
 juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
-    const int h = getHeight() - kRulerHeight - barsHeight() >= kVelocityHeight + 48 ? kVelocityHeight : 0;
+    // As high as its divider left it, while the key tracks keep their floor; with no room for both, no lane.
+    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    const int h = room >= kLaneFloor ? std::clamp(laneHeight_, kLaneFloor, room) : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
+}
+void NoteEditor::setLaneHeight(int height) {
+    // Held to the room there is once the editor has a size; before that, kept as given.
+    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    laneHeight_ = getHeight() > 0 ? std::clamp(height, kLaneFloor, std::max(kLaneFloor, room)) : std::max(kLaneFloor, height);
+    keys.clampScroll(notesArea().getHeight());
+    repaint();
+}
+juce::Rectangle<int> NoteEditor::laneDivider() const noexcept {
+    const auto lane = velocityArea();
+    return lane.isEmpty() ? lane : juce::Rectangle<int>(0, lane.getY() - 3, getWidth(), 6);
 }
 juce::Rectangle<int> NoteEditor::stretchArea() const noexcept {
     return {kKeysWidth, barsHeight() + kRulerHeight, std::max(0, getWidth() - kKeysWidth), kStretchHeight};
@@ -1712,6 +1725,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
             });
         return;
     }
+    if (laneDivider().contains(from_)) {
+        laneFrom_ = velocityArea().getHeight();
+        drag_ = Drag::LaneSize;
+        return;
+    }
     if (const auto lane = velocityArea(); lane.contains(from_)) {
         if (shape_ != LaneShape::Pointer && from_.x >= lane.getX()) {
             // A line tool's stroke begins.
@@ -1876,6 +1894,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::LaneSize) {
+        setLaneHeight(laneFrom_ + (from_.y - to_.y));
     } else if (drag_ == Drag::Stretch) {
         // The marker follows the pointer, on the nearest grid line unless snapping is bypassed; the
         // marker of a drag begun between the two stays between them.
@@ -1983,6 +2003,8 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         const auto keep = selected_;
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
+    } else if (kind == Drag::LaneSize) {
+        panel.keepSettings();
     } else if (kind == Drag::Stretch) {
         const auto window = ClipWindow::of(*clip);
         const auto ids = std::exchange(stretchIds_, {});
@@ -2797,6 +2819,7 @@ std::pair<std::int64_t, std::int64_t> ClipViewPanel::shownSpan() const noexcept 
 void ClipViewPanel::applyState(const WindowState &state) {
     notes.time.grid = {state.noteGridSnap, state.noteGridFixed, state.noteGridTriplet, state.noteGridNarrow, state.noteGridFixedQuarters};
     notes.highlightScale = state.highlightScale;
+    notes.setLaneHeight(state.noteLaneHeight);
     notes.noteColours = static_cast<NoteEditor::NoteColours>(std::clamp(state.noteColours, 0, 4));
     quantizeValue_ = static_cast<std::size_t>(std::clamp(state.quantizeValue, 0, static_cast<int>(kQuantizeValues.size()) - 1));
     quantizeAmount = state.quantizeAmount;
@@ -2813,6 +2836,7 @@ void ClipViewPanel::keepSettings() {
     state.noteGridNarrow = grid.narrow;
     state.noteGridFixedQuarters = grid.fixedQuarters;
     state.highlightScale = notes.highlightScale;
+    state.noteLaneHeight = notes.laneHeight();
     state.noteColours = static_cast<int>(notes.noteColours);
     state.quantizeValue = static_cast<int>(quantizeValue_);
     state.quantizeAmount = quantizeAmount;

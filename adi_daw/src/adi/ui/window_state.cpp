@@ -84,6 +84,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
             state.noteGridFixedQuarters = std::clamp(quarters, 1. / 8, 32.);
         state.highlightScale = j.value("highlightScale", true);
         state.noteColours = std::clamp(j.value("noteColours", 0), 0, 4);
+        state.noteLaneHeight = std::clamp(j.value("noteLaneHeight", 56), 50, 2000);
         state.quantizeValue = std::clamp(j.value("quantizeValue", 0), 0, 7);
         state.quantizeAmount = std::clamp(j.value("quantizeAmount", 100), 0, 100);
         state.quantizeSwing = std::clamp(j.value("quantizeSwing", 0), 0, 100);
@@ -189,6 +190,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"noteGridFixedQuarters", state.noteGridFixedQuarters},
                             {"highlightScale", state.highlightScale},
                             {"noteColours", state.noteColours},
+                            {"noteLaneHeight", state.noteLaneHeight},
                             {"quantizeValue", state.quantizeValue},
                             {"quantizeAmount", state.quantizeAmount},
                             {"quantizeSwing", state.quantizeSwing},

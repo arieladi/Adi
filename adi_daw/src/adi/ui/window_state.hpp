@@ -46,6 +46,7 @@ struct WindowState {
     double noteGridFixedQuarters = .25;
     bool highlightScale = true;
     int noteColours = 0;
+    int noteLaneHeight = 56; // the Velocity lane, as its divider left it
     int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
     bool quantizeStarts = true, quantizeEnds = false;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
