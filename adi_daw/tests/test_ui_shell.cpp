@@ -4672,8 +4672,8 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
         }
         const int x0 = static_cast<int>(lanes.x(bar / 64)), x1 = static_cast<int>(lanes.x(bar / 2));
         const int y = static_cast<int>(peak->y) + 6;
-        check(image.getPixelAt(x0, y).getBrightness() < image.getPixelAt(x1, y).getBrightness(),
-              "the faded start of the clip is drawn darker than its middle");
+        check(image.getPixelAt(x0, y).getBrightness() + 0.05f < image.getPixelAt(x1, y).getBrightness(),
+              "the faded start of the clip is drawn darker than its middle, over the selection's tint");
     }
     // The curve's diamond, dragged up, writes the fade's tension.
     if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
@@ -4700,6 +4700,55 @@ void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     check(clips()[0]->fadeInTicks == 0 && clips().size() == 2, "the fade is deleted; the clip stays");
     check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the delete and the drag");
     root.frame();
+    // Both clips chosen: dragging the first clip's fade-out square gives both the same fade out, one step.
+    sel = {};
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    sel.pickedClips = {second};
+    root.frame();
+    if (const auto outPeak = canvas.fadeHandlePoint(Handle{first, 4, false, false})) {
+        const juce::Point<float> in(static_cast<float>(lanes.x(bar - bar / 8)), outPeak->y);
+        canvas.mouseDown(pressAt(canvas, *outPeak));
+        canvas.mouseDrag(dragAt(canvas, *outPeak, in));
+        canvas.mouseUp(dragAt(canvas, *outPeak, in));
+        root.frame();
+        check(near(clips()[0]->fadeOutTicks, bar / 8) && clips()[1]->fadeOutTicks == clips()[0]->fadeOutTicks &&
+                  document->ops().nextUndo()->label == "Change Fade",
+              "both chosen clips take the same fade out");
+        check(root.command(AppCommands::Undo), "one undo");
+        root.frame();
+        check(clips()[0]->fadeOutTicks == 0 && clips()[1]->fadeOutTicks == 0, "takes both back");
+    } else {
+        check(false, "the chosen clip's fade-out square is shown");
+    }
+    // A fade square clicked, then another clip chosen: Delete is the new selection's, not the old fade's.
+    sel = {};
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
+    {
+        const auto square = *canvas.fadeHandlePoint(Handle{first, 4, true, false});
+        canvas.mouseDown(pressAt(canvas, square));
+        canvas.mouseUp(pressAt(canvas, square));
+    }
+    sel.clip = second;
+    sel.start = bar;
+    sel.end = 2 * bar;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete with the second clip chosen");
+    root.frame();
+    check(clips().size() == 1 && clips()[0]->id == first, "the chosen clip is deleted, as without a fade handle clicked");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Create Fade over the boundary and past the second clip's end: only a fade out, so not a crossfade.
+    sel = {};
+    sel.track = 4;
+    sel.start = bar - bar / 4;
+    sel.end = 3 * bar;
+    check(!root.selectionCrossfades(), "a selection past the right clip's end is no crossfade");
     // Create Crossfade over the two clips' boundary: both fades in one step.
     sel = {};
     sel.track = 4;

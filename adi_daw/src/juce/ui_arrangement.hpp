@@ -267,6 +267,7 @@ class ArrangementCanvas final : public juce::Component,
     // F held: every audio clip's handles show (manual 6.8, §42.25's momentary keys).
     bool showFades = false;
     bool keyStateChanged(bool isKeyDown) override;
+    void focusLost(FocusChangeType) override;
     void mouseExit(const juce::MouseEvent &) override;
 
   private:
@@ -277,6 +278,7 @@ class ArrangementCanvas final : public juce::Component,
         float left = 0, right = 0, top = 0, bottom = 0;
     };
     std::vector<ClipBody> clipBodies() const;
+    std::optional<juce::Point<float>> fadeHandlePoint(const FadeHandle &, const ClipBody &) const;
     bool fadeHandlesShown(const engine::ClipNode &) const;
     // A clip's fades as drawn: what the snapshot holds, or what a drag would set.
     void fadesOf(const engine::ClipNode &, std::int64_t &in, std::int64_t &out, std::optional<double> &inTension,

@@ -88,10 +88,11 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
                 out = fadeLimit(*c, false, b - from);
             if (!in && !out)
                 continue;
-            // A clip that ends where another begins, both inside the selection: a crossfade.
+            // A clip that ends where another begins, and both get their fade: a crossfade.
             if (holdsEnd)
                 for (const auto &n : t->clips)
-                    if (n && n.get() != c.get() && fade_edits_detail::isAudio(*n) && n->posTicks == b && b < to)
+                    if (n && n.get() != c.get() && fade_edits_detail::isAudio(*n) && n->posTicks == b && b < to &&
+                        to < n->posTicks + n->lengthTicks)
                         edit.crossfade = true;
             edit.ops.push_back(fade_edits_detail::setFades(c->id, in, out, "Create Fade"));
         }
