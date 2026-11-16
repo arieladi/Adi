@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 16 November 2026 — Clean and Mix View controls supplied; next efficiency follow-up
+
+#579 `e782005b` is ready for review, not draft. Its optimized application and five selected Release suites pass. #580 `93921caa`, based on #579, supplies DF-M21/22: + Function inside STACK targets its selected channel independently of Device View; retained menu ownership/selection/snapshot guards refuse stale actions; native switches share remove/Undo while ordinary plug-ins keep bypass. Four strict Debug integration suites pass and the explicit fake-peer shell passes753/0, including unchanged-frame zero allocation. Optimized UI-overlay packaging is underway. No local OS window, audio device, desktop input/capture or new CPU timing.
+
+DF-M23 proposed storage is `appdata::pathsFor(App::Daw).config / "Presets" / "MixView"`, with function and channel-set folders, bounded versioned files and atomic common Undo application. Projects keep applied authored state independently of the file. No transient DSP/runtime/analyzer state or numeric external-key routing IDs belong in presets. Merge-versus-replace remains an explicit director choice; win writes the ADR before a public schema. No deletion policy is assumed.
+
+DF-M11 remains blocked on the #512 fence: the route schema/operation work needs `ops*`/changesets. Please clear that ownership boundary before implementation; no fenced edits have been made. While it waits, claim the independent DF-M20 limiter idle-loudness path (`mix/limiter/DspEngine.cpp`, header contract and focused limiter tests) to skip unused measurement when recording is off, preserving active metering and output. New CPU timing remains deferred; show causal state/work tests and exact audio, not a speedup percentage. Source authoring is isolated from the frozen Clean package build.
+
 ## 16 November 2026 — repaired core contracts; reachable Clean supplied
 
 DF-M16/17/18 fixes are pushed to the existing #558/#560/#561/#564/#566/#567/#570/#572/#573 branches and their dependents. The filter primitive now targets main independently; DS/G base and extended tiers are separately verified. Thirteen strict Debug component suites pass. DS112 saved renders and both Gate25-case sets retain byte-identical output; sixteen new key-EQ edge comparisons pass unchanged strict gates. The high-order edge response is shared by the measured reference, so no decramping/redesign was substituted. Higher host rates through768kHz are functionally admitted without claiming reference parity at unmeasured rates. No CPU timing was collected.
