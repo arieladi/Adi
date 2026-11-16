@@ -10,6 +10,8 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/engine/clip_fade.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
@@ -5691,6 +5693,247 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's audio clips draw their waveforms (C4, N40; Live 12 manual 6.1, chapter 9): a stereo file
 // of decaying bursts dropped on 3 Audio, its peaks built on the document's worker, each channel in
 // a band of the clip's body, and nothing past the clip's source window once the clip is longer.
+// E4: Live's audio clip fades (Live 12 manual 6.8; N17): the handles, Create Fade and Crossfade,
+// Delete Fades, F.
+void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "fades.adi", true, {}, error);
+    check(document != nullptr, "a new project for the fades");
+    if (!document)
+        return;
+    const auto wav = dir / "Pad.wav";
+    {
+        std::vector<float> samples(2 * 96000);
+        for (std::size_t i = 0; i < 96000; ++i) {
+            const double v = .6 * std::sin(static_cast<double>(i) * 2 * 3.14159265358979 * 110 / 48000.);
+            samples[2 * i] = samples[2 * i + 1] = static_cast<float>(v);
+        }
+        audio::WavWriter writer(wav, 48000, 2, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), 96000);
+    }
+    const auto bar = textproj::kWhole;
+    for (const auto at : {std::int64_t{0}, bar}) {
+        AudioImport import;
+        check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+        auto edit = dropAudio(*document->view().current(), 4, at, "Pad", import);
+        check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
+              "a bar of Pad dropped on 3 Audio");
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "fades");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &document->waveforms();
+    root.setSize(1440, 900);
+    auto &lanes = root.arrangement.geometry;
+    lanes.scale = 40;
+    lanes.left = 0;
+    root.frame();
+    root.frame();
+    commands.activate(root);
+    auto &canvas = root.arrangement.canvas;
+    const auto clips = [&] {
+        std::vector<const engine::ClipNode *> out;
+        if (const auto *t = root.reader().findTrack(4))
+            for (const auto &c : t->clips)
+                out.push_back(c.get());
+        std::sort(out.begin(), out.end(), [](auto *a, auto *b) { return a->posTicks < b->posTicks; });
+        return out;
+    };
+    check(clips().size() == 2 && clips()[0]->audio && clips()[1]->posTicks == bar, "two adjacent bars of audio");
+    if (clips().size() != 2)
+        return;
+    const auto first = clips()[0]->id, second = clips()[1]->id;
+    auto &sel = lanes.selection;
+    // No handles until the clip is under the mouse, chosen, or F is held.
+    sel = {};
+    sel.track = 2;
+    using Handle = ArrangementCanvas::FadeHandle;
+    check(!canvas.fadeHandlePoint(Handle{first, 4, true, false}), "no handles on a clip that is not chosen");
+    check(canvas.keyPressed(juce::KeyPress('f')) && canvas.showFades &&
+              canvas.fadeHandlePoint(Handle{first, 4, true, false}) && canvas.fadeHandlePoint(Handle{second, 4, false, false}),
+          "F held: every audio clip's peak handles show");
+    canvas.showFades = false;
+    // Choose the first clip; drag its fade-in peak a quarter of a bar in: one clip.setFades, one step.
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
+    const auto peak = canvas.fadeHandlePoint(Handle{first, 4, true, false});
+    check(peak.has_value() && canvas.fadeHandleAt(static_cast<int>(peak->x), static_cast<int>(peak->y)) ==
+                                  std::optional<Handle>(Handle{first, 4, true, false}),
+          "the chosen clip's fade-in square sits at its start, at the top of its body, and is hit there");
+    if (!peak)
+        return;
+    const juce::Point<float> to(static_cast<float>(lanes.x(bar / 4)), peak->y);
+    canvas.mouseDown(pressAt(canvas, *peak));
+    canvas.mouseDrag(dragAt(canvas, *peak, to));
+    check(canvas.fadeDragging().has_value(), "the drag holds the handle");
+    canvas.mouseUp(dragAt(canvas, *peak, to));
+    root.frame();
+    const auto near = [](std::int64_t a, std::int64_t b) { return std::abs(a - b) <= textproj::kPPQ / 16; };
+    check(near(clips()[0]->fadeInTicks, bar / 4) && clips()[0]->fadeOutTicks == 0 && clips()[1]->fadeInTicks == 0 &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Change Fade",
+          "the fade in is a quarter of a bar, one undo step, the other clip untouched");
+    // The render shows the fade: the body under the fade is darker at the clip's start.
+    {
+        juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        const int x0 = static_cast<int>(lanes.x(bar / 64)), x1 = static_cast<int>(lanes.x(bar / 2));
+        const int y = static_cast<int>(peak->y) + 6;
+        check(image.getPixelAt(x0, y).getBrightness() + 0.05f < image.getPixelAt(x1, y).getBrightness(),
+              "the faded start of the clip is drawn darker than its middle, over the selection's tint");
+    }
+    // The curve's diamond, dragged up, writes the fade's tension.
+    if (const auto diamond = canvas.fadeHandlePoint(Handle{first, 4, true, true})) {
+        const juce::Point<float> up(diamond->x, diamond->y - 30.f);
+        canvas.mouseDown(pressAt(canvas, *diamond));
+        canvas.mouseDrag(dragAt(canvas, *diamond, up));
+        canvas.mouseUp(dragAt(canvas, *diamond, up));
+        root.frame();
+        const auto bent = engine::clipFadeShape(0.5, clips()[0]->fadeInCurve, clips()[0]->fadeInTension);
+        check(clips()[0]->fadeInTension.has_value() && std::abs(*clips()[0]->fadeInTension) > 0.2 &&
+                  clips()[0]->fadeInCurve == kBentFadeCurve && std::abs(bent - 0.5) > 0.05 &&
+                  document->ops().nextUndo()->label == "Change Fade Curve",
+              "the diamond dragged up bends the curve, one step");
+        check(root.command(AppCommands::Undo), "undo the curve");
+        root.frame();
+    } else {
+        check(false, "the fade's diamond is shown");
+    }
+    // The chosen fade-in square and Delete: the fade goes.
+    canvas.mouseDown(pressAt(canvas, *canvas.fadeHandlePoint(Handle{first, 4, true, false})));
+    canvas.mouseUp(pressAt(canvas, *canvas.fadeHandlePoint(Handle{first, 4, true, false})));
+    check(canvas.selectedFade().has_value() && canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete on the chosen fade");
+    root.frame();
+    check(clips()[0]->fadeInTicks == 0 && clips().size() == 2, "the fade is deleted; the clip stays");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the delete and the drag");
+    root.frame();
+    // Both clips chosen: dragging the first clip's fade-out square gives both the same fade out, one step.
+    sel = {};
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    sel.pickedClips = {second};
+    root.frame();
+    if (const auto outPeak = canvas.fadeHandlePoint(Handle{first, 4, false, false})) {
+        const juce::Point<float> in(static_cast<float>(lanes.x(bar - bar / 8)), outPeak->y);
+        canvas.mouseDown(pressAt(canvas, *outPeak));
+        canvas.mouseDrag(dragAt(canvas, *outPeak, in));
+        canvas.mouseUp(dragAt(canvas, *outPeak, in));
+        root.frame();
+        check(near(clips()[0]->fadeOutTicks, bar / 8) && clips()[1]->fadeOutTicks == clips()[0]->fadeOutTicks &&
+                  document->ops().nextUndo()->label == "Change Fade",
+              "both chosen clips take the same fade out");
+        check(root.command(AppCommands::Undo), "one undo");
+        root.frame();
+        check(clips()[0]->fadeOutTicks == 0 && clips()[1]->fadeOutTicks == 0, "takes both back");
+    } else {
+        check(false, "the chosen clip's fade-out square is shown");
+    }
+    // A fade square clicked, then another clip chosen: Delete is the new selection's, not the old fade's.
+    sel = {};
+    sel.track = 4;
+    sel.clip = first;
+    sel.start = 0;
+    sel.end = bar;
+    root.frame();
+    {
+        const auto square = *canvas.fadeHandlePoint(Handle{first, 4, true, false});
+        canvas.mouseDown(pressAt(canvas, square));
+        canvas.mouseUp(pressAt(canvas, square));
+    }
+    sel.clip = second;
+    sel.start = bar;
+    sel.end = 2 * bar;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete with the second clip chosen");
+    root.frame();
+    check(clips().size() == 1 && clips()[0]->id == first, "the chosen clip is deleted, as without a fade handle clicked");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Create Fade over the boundary and past the second clip's end: only a fade out, so not a crossfade.
+    sel = {};
+    sel.track = 4;
+    sel.start = bar - bar / 4;
+    sel.end = 3 * bar;
+    check(!root.selectionCrossfades(), "a selection past the right clip's end is no crossfade");
+    // Create Crossfade over the two clips' boundary: both fades in one step.
+    sel = {};
+    sel.track = 4;
+    sel.start = bar - bar / 4;
+    sel.end = bar + bar / 4;
+    check(root.selectionCrossfades(), "the selection crosses the boundary: Create Crossfade");
+    check(root.keyPressed(juce::KeyPress('f', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+F over the boundary");
+    root.frame();
+    const auto step = document->ops().nextUndo();
+    check(clips()[0]->fadeOutTicks == bar / 4 && clips()[1]->fadeInTicks == bar / 4 && step &&
+              step->label == "Create Crossfade",
+          "the left clip fades out and the right one in, meeting at the boundary");
+    check(root.command(AppCommands::Undo), "one undo");
+    root.frame();
+    check(clips()[0]->fadeOutTicks == 0 && clips()[1]->fadeInTicks == 0, "takes both back: one step");
+    // Create Fade In over the first clip's start.
+    sel.start = 0;
+    sel.end = bar / 2;
+    check(!root.selectionCrossfades() && root.command(AppCommands::CreateFade), "Create Fade In over the first half bar");
+    root.frame();
+    check(clips()[0]->fadeInTicks == bar / 2 && clips()[0]->fadeOutTicks == 0, "a half-bar fade in");
+    // Delete Fades/Crossfades on the time selection's clips.
+    sel.end = 2 * bar;
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::backspaceKey, juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+Backspace over both clips");
+    root.frame();
+    check(clips()[0]->fadeInTicks == 0 && document->ops().nextUndo()->label == "Delete Fades", "the fades are deleted");
+    // A selection inside a clip holds neither edge: refused, and says so.
+    sel.start = bar / 4;
+    sel.end = bar / 2;
+    check(!root.command(AppCommands::CreateFade) && !root.error().empty(), "a selection inside a clip has no fade to make");
+    // For the picture beside Live 12's: a curved fade in, a crossfade at the boundary, a fade out,
+    // the handles shown by F, the waveforms drawn.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        std::vector<OpRequest> fades;
+        for (const auto &[id, in, out, tension] :
+             {std::tuple{first, bar / 3, bar / 4, 0.6}, std::tuple{second, bar / 4, bar / 2, 0.0}}) {
+            OpRequest r;
+            r.opType = "clip.setFades";
+            r.payload = {{"id", id}, {"in", {{"ticks", in}, {"tension", tension}, {"curve", kBentFadeCurve}}}, {"out", {{"ticks", out}}}};
+            fades.push_back(std::move(r));
+        }
+        document->ops().submit(std::move(fades));
+        document->synchronise();
+        sel = {};
+        sel.track = 2;
+        canvas.showFades = true;
+        auto &waves = document->waveforms();
+        root.frame();
+        juce::Image warm(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(warm);
+            canvas.paintEntireComponent(g, true);
+        }
+        for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        root.frame();
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-fades.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+        canvas.showFades = false;
+    }
+    commands.detach(root);
+    document->release();
+}
 void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
@@ -8822,11 +9065,12 @@ int main(int argc, char **argv) {
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
                       C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
-                      C::CutTime == C::InsertMidiClip + 1 && C::LastId == C::InsertSilence,
+                      C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
+                      C::LastId == C::DeleteFades,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
-                  "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), then the …Time commands and "
-                  "Insert Silence (the last id), each named");
+                  "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
+                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades (the last id), each named");
             juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
             commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
             juce::ApplicationCommandInfo midiClipInfo(C::InsertMidiClip);
@@ -8894,9 +9138,10 @@ int main(int argc, char **argv) {
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
                                                   C::InsertMidiClip, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
-                                                  C::DeleteLocator},
+                                                  C::DeleteLocator, 0, C::CreateFade, C::DeleteFades},
               "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, then a time signature "
-              "change (§6.5), then Add and Delete Locator (§6.4)");
+              "change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
+              "Fades/Crossfades (§6.8)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
@@ -11018,6 +11263,7 @@ int main(int argc, char **argv) {
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
     clipWaveforms(commands, temp.path());
+    clipFades(commands, temp.path());
     loopMetronome(commands, settings, temp.path());
     locators(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
