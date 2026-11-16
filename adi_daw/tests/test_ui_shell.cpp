@@ -4908,6 +4908,70 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     ed.mouseUp(pressAt(ed, barOfFirst));
     check(panel.clip() == 11 && panel.others()[0].details.id == 12, "a click on a clip's loop bar makes it the edited clip");
 
+    // With Focus off, notes of both clips are selected and edited in one gesture, one undo step.
+    const auto mine = [&]() -> const engine::ClipNote & { return panel.details()->notes[0]; };
+    const auto theirs = [&]() -> const engine::ClipNote & { return panel.others()[0].details.notes[0]; };
+    const auto all = juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0);
+    check(ed.gridTicks() == beat && ed.keyPressed(all) && ed.selected() == std::vector<std::uint64_t>{1} &&
+              ed.selectedIn(12) == std::vector<std::uint64_t>{1} && ed.anySelected(),
+          "Ctrl/Cmd+A selects the notes of both clips");
+    const auto mineStart = mine().startTicks, theirStart = theirs().startTicks;
+    const int mineKey = mine().key, theirKey = theirs().key;
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat &&
+              theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+          "Right moves both clips' notes a grid step later, as one undo step of two ops");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0)) && mine().key == mineKey + 12 &&
+              theirs().key == theirKey + 12 && ed.selectedIn(12).size() == 1,
+          "Shift+Up moves both an octave up, and both stay selected");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    root.frame();
+    check(mine().startTicks == mineStart && theirs().startTicks == theirStart && mine().key == mineKey && theirs().key == theirKey,
+          "put both clips' notes back");
+    // A drag of the edited clip's note takes the other clip's selected note with it.
+    check(ed.keyPressed(all), "both selected again");
+    const auto grabBox = *ed.boxOf(mine());
+    const juce::Point<float> grab(static_cast<float>(static_cast<int>(grabBox.x + grabBox.width / 2)), static_cast<float>(grabBox.y + grabBox.height / 2));
+    const float stepPx = static_cast<float>(std::lround(ed.time.scale));
+    ed.mouseDown(pressAt(ed, grab));
+    ed.mouseDrag(dragAt(ed, grab, {grab.x + stepPx, grab.y}));
+    check(ed.shown(mine()).startTicks == mineStart + beat && ed.shownIn(theirs(), 12).startTicks == theirStart + beat &&
+              theirs().startTicks == theirStart,
+          "while the drag is held both clips' notes are drawn a step later, nothing written");
+    ed.mouseUp(pressAt(ed, {grab.x + stepPx, grab.y}));
+    check(mine().startTicks == mineStart + beat && theirs().startTicks == theirStart + beat && submitter.nextUndo()->opCount == 2,
+          "let go, both have moved: one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // Delete takes the selected notes of both clips; one Undo brings both back.
+    check(ed.keyPressed(all) && ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && panel.details()->notes.empty() &&
+              panel.others()[0].details.notes.empty() && submitter.nextUndo()->opCount == 2 && !ed.anySelected(),
+          "Delete removes the selected notes of both clips, one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(panel.details()->notes.size() == 1 && panel.others()[0].details.notes.size() == 1, "and one Undo brings both back");
+    // Shift and a click on another clip's note adds it to the selection without changing the edited clip.
+    const auto theirBox = *ed.boxOf(theirs(), panel.others()[0].details);
+    const juce::Point<float> onTheirs(static_cast<float>(static_cast<int>(theirBox.x + theirBox.width / 2)),
+                                      static_cast<float>(theirBox.y + theirBox.height / 2));
+    const juce::ModifierKeys shiftKey(juce::ModifierKeys::shiftModifier);
+    ed.mouseDown(pressAt(ed, onTheirs, shiftKey));
+    ed.mouseUp(pressAt(ed, onTheirs, shiftKey));
+    check(panel.clip() == 11 && ed.selectedIn(12) == std::vector<std::uint64_t>{1} && ed.selected().empty(),
+          "Shift and a click on the other clip's note selects it; the edited clip stays");
+    ed.mouseDown(pressAt(ed, onTheirs, shiftKey));
+    ed.mouseUp(pressAt(ed, onTheirs, shiftKey));
+    check(ed.selectedIn(12).empty() && !ed.anySelected(), "and again takes it out");
+    // With Focus on, only the edited clip's notes are selected and edited.
+    panel.setFocus(true);
+    check(ed.keyPressed(all) && ed.selected().size() == 1 && ed.selectedIn(12).empty(), "with Focus on, Ctrl/Cmd+A selects the edited clip's notes only");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && mine().startTicks == mineStart + beat && theirs().startTicks == theirStart &&
+              submitter.nextUndo()->opCount == 1,
+          "and Right moves them only");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    panel.setFocus(false);
+    ed.select({});
+
     // Focus: N, or the header's switch.
     check(!panel.focus() && ed.keyPressed(juce::KeyPress('n')) && panel.focus(), "N turns Focus on");
     panel.mouseDown(pressAt(panel, panel.focusBox().getCentre().toFloat()));
