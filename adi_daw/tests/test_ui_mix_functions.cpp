@@ -554,9 +554,11 @@ void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
     if(!items.empty() && items[0].action)items[0].action();
     check(actions==2 && !source,"None delegates a route removal through the same command");
     auto old=menuItems(submenu(submenu(strip.panels.front()->commands(),"Sidechain Input"),"Kick"));
+    publication=std::make_shared<ParameterPublication>(*publication);
     publication->front().instance++;
     if(!old.empty() && old[0].action)old[0].action();
     check(actions==2,"retained stale sidechain menu cannot reroute a replacement runtime");
+    publication=std::make_shared<ParameterPublication>(*publication);
     publication->front().sidechainChannels=0;strip.frame(2);
     check(menuItems(submenu(strip.panels.front()->commands(),"Sidechain Input")).empty(),"internal-only devices expose no invented external key control");
     invalidStoredRoute=true;
