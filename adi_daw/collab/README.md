@@ -279,6 +279,7 @@ subject, say so in your log instead of writing it twice.
 | 0238 | win | `win/adr-0238-juce` | JUCE moves from 9.0.2 to 9.0.5 (d60b7a78): his plug-ins' JUCE, the newest stable; lands with #537 (director) | used |
 | 0239 | win | `control/mcp-slice` | the control stack's open questions answered: the token both ways, the user's choice; standalone adi-mcp first; every deferral a row in docs/DEFERRED.md until done, the release gate; win merges, he decides (director) | used |
 | 0240 | win | `win/adr-0240` | the Clip View approved and built by win; loading a channel's Mix Set replaces its native functions in one undo step; the Mix View answers that lived only in the seat's log (director) | used |
+| 0241 | win | `win/clip-view-additions` | the Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
