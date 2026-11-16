@@ -4537,6 +4537,57 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     panel.mouseUp(pressAt(panel, panel.drawBox().getCentre().toFloat()));
     check(!ed.drawMode(), "the header's switch turns it off");
 
+    // The Velocity lane's line tools (ADR-0241 d2, from Cubase): with Line chosen, a stroke across the lane
+    // gives every note under it the line's value there; shown while held, one undo step.
+    check(ed.laneShape() == LaneShape::Pointer && ed.shapeMenu().getNumItems() == 7 && !ed.shapeBox().isEmpty(),
+          "the lane's chooser offers Pointer and six line tools");
+    check(ed.chooseShape(2) && ed.laneShape() == LaneShape::Line && !ed.chooseShape(0) && !ed.chooseShape(8), "Line is chosen");
+    const auto vLane = ed.velocityArea().withTrimmedTop(1);
+    const double vTop = vLane.getY() + 5, vHeight = vLane.getHeight() - 10;
+    const int yHigh = static_cast<int>(velocityY(120, vTop, vHeight)), yLow = static_cast<int>(velocityY(20, vTop, vHeight));
+    const juce::Point<float> strokeFrom(static_cast<float>(vLane.getX() + static_cast<int>(ed.time.x(0))), static_cast<float>(yHigh));
+    const juce::Point<float> strokeTo(static_cast<float>(vLane.getX() + static_cast<int>(ed.time.x(6 * beat)) + 1), static_cast<float>(yLow));
+    std::size_t under = 0;
+    for (const auto &n : panel.details()->notes)
+        if (n.startTicks >= 0 && n.startTicks <= 6 * beat)
+            ++under;
+    const auto beforeStroke = submitter.nextUndo()->txnId;
+    ed.mouseDown(pressAt(ed, strokeFrom));
+    ed.mouseDrag(dragAt(ed, strokeFrom, strokeTo));
+    check(ed.shapedVelocities().size() == under && under >= 6 && submitter.nextUndo()->txnId == beforeStroke,
+          "while the stroke is held every note under it has a value to come, and nothing is written");
+    const auto preview = ed.shapedVelocities();
+    ed.mouseUp(pressAt(ed, strokeTo));
+    bool matches = true, falls = true;
+    int firstValue = 0, lastValue = 0;
+    for (const auto &[id, value] : preview) {
+        matches = matches && note(id).velocity == value;
+        if (note(id).startTicks == 0)
+            firstValue = value;
+        if (note(id).startTicks == 6 * beat)
+            lastValue = value;
+        for (const auto &[other, otherValue] : preview)
+            if (note(other).startTicks > note(id).startTicks)
+                falls = falls && otherValue <= value;
+    }
+    check(matches && falls && firstValue == velocityAt(yHigh, vTop, vHeight) && lastValue >= velocityAt(yLow, vTop, vHeight) &&
+              lastValue <= velocityAt(yLow, vTop, vHeight) + 2 && submitter.nextUndo()->label == "Draw Velocities" &&
+              submitter.nextUndo()->txnId != beforeStroke,
+          "let go, the velocities fall along the line from about 120 to about 20, one undo step");
+    check(root.command(AppCommands::Undo), "undo the stroke");
+    root.frame();
+    check(ed.chooseShape(6), "Square is chosen");
+    ed.mouseDown(pressAt(ed, {strokeFrom.x, static_cast<float>(static_cast<int>(velocityY(64, vTop, vHeight)))}));
+    ed.mouseDrag(dragAt(ed, strokeFrom, {strokeTo.x, static_cast<float>(static_cast<int>(velocityY(100, vTop, vHeight)))}));
+    std::vector<int> levels;
+    for (const auto &[id, value] : ed.shapedVelocities())
+        if (std::find(levels.begin(), levels.end(), value) == levels.end())
+            levels.push_back(value);
+    ed.mouseUp(pressAt(ed, {strokeTo.x, static_cast<float>(static_cast<int>(velocityY(100, vTop, vHeight)))}));
+    check(levels.size() == 2 && submitter.nextUndo()->label == "Draw Velocities", "a Square stroke leaves two levels of velocity");
+    check(root.command(AppCommands::Undo) && ed.chooseShape(1) && ed.laneShape() == LaneShape::Pointer, "undone; Pointer is Live's lane again");
+    root.frame();
+
     // The playhead: hidden while stopped; while the song plays, a line where the song is.
     check(!ed.playhead.isVisible(), "stopped, the editor shows no playhead");
     engine::Transport driver;

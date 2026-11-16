@@ -4,8 +4,10 @@
 // what each gesture's batch holds, its label, what it selects, and what it refuses.
 
 #include "adi/ui/clip_edits.hpp"
+#include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -400,6 +402,31 @@ void chordEditing() {
           "on all keys: every note ends where the next later one begins; notes that start together are left");
 }
 
+void laneShapes() {
+    check(kLaneShapeNames.size() == 7 && std::string(kLaneShapeNames[1]) == "Line", "the line tools: Pointer, Line and five more");
+    check(shapeValue(LaneShape::Line, 0, 20, 100, 1) == 20 && shapeValue(LaneShape::Line, .5, 20, 100, 1) == 60 &&
+              shapeValue(LaneShape::Line, 1, 20, 100, 1) == 100 && shapeValue(LaneShape::Line, 7, 20, 100, 1) == 100,
+          "Line runs straight from the first value to the last, and stops at its ends");
+    check(shapeValue(LaneShape::Parabola, .5, 20, 100, 1) == 40 && shapeValue(LaneShape::Parabola, 1, 20, 100, 1) == 100,
+          "Parabola starts slowly: a quarter of the way at the middle");
+    check(std::abs(shapeValue(LaneShape::Sine, .25, 64, 104, 1) - 104) < 1e-9 && std::abs(shapeValue(LaneShape::Sine, .75, 64, 104, 1) - 24) < 1e-9 &&
+              std::abs(shapeValue(LaneShape::Sine, .5, 64, 104, 1) - 64) < 1e-9,
+          "Sine swings around the first value by the difference to the last");
+    check(shapeValue(LaneShape::Triangle, .25, 64, 104, 1) == 104 && shapeValue(LaneShape::Triangle, .5, 64, 104, 1) == 64 &&
+              shapeValue(LaneShape::Triangle, .75, 64, 104, 1) == 24 && shapeValue(LaneShape::Triangle, .125, 64, 104, 1) == 84,
+          "Triangle goes up to the peak, down to the trough and back, in straight lines");
+    check(shapeValue(LaneShape::Square, .1, 64, 104, 1) == 104 && shapeValue(LaneShape::Square, .6, 64, 104, 1) == 24 &&
+              shapeValue(LaneShape::Square, .3, 64, 104, 2) == 24,
+          "Square is high for the first half of each cycle and low for the second");
+
+    const auto c = clip(); // C3 velocity 100; E3 velocity 120; F#8 velocity 5
+    const auto drawn = drawVelocities(c, {{3, 100}, {9, 60}, {4, 300}, {555, 64}});
+    check(drawn.ops.size() == 2 && drawn.ops[0].opType == "note.setVelocity" && drawn.ops[0].label == "Draw Velocities" &&
+              drawn.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{9}}, {"vel", 60}}) &&
+              drawn.ops[1].payload.at("vel") == 127 && drawn.select == std::vector<std::uint64_t>({3, 9, 4}),
+          "drawn velocities: an op for each note that changes, within 1 to 127; a note the clip lacks is left out");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -450,6 +477,7 @@ int main() {
     copies();
     drawing();
     chordEditing();
+    laneShapes();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

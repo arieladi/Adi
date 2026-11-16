@@ -10,6 +10,7 @@
 #include "adi/engine/clip_details.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/clip_edits.hpp"
+#include "adi/ui/lane_shapes.hpp"
 #include "adi/ui/note_edits.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/scales.hpp"
@@ -44,6 +45,16 @@ class NoteEditor final : public juce::Component {
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
     bool apply(NoteEdit edit) { return commit(std::move(edit)); }
+    // The Velocity lane's line tools (ADR-0241 d2, from Cubase's Line tool): with a shape chosen, a
+    // stroke across the lane gives every note under it the shape's value there, shown while held,
+    // one undo step. Pointer is Live's lane: a marker is dragged. The chooser is in the lane's label.
+    LaneShape laneShape() const noexcept { return shape_; }
+    void setLaneShape(LaneShape);
+    juce::Rectangle<int> shapeBox() const noexcept;
+    juce::PopupMenu shapeMenu() const;
+    bool chooseShape(int item);
+    // The velocities the stroke held now would write, by note.
+    const std::vector<std::pair<std::uint64_t, int>> &shapedVelocities() const noexcept { return shapePreview_; }
     // Draw Mode (manual 10.4.1; B, and the header's switch): a drag across empty space draws a
     // note at each grid step on the key it began on, one undo step for the stroke; a click on a
     // note deletes it.
@@ -96,7 +107,8 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape };
+    void shapeStroke();
     bool commit(NoteEdit);
     bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
@@ -106,6 +118,8 @@ class NoteEditor final : public juce::Component {
     Drag drag_ = Drag::None;
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
+    LaneShape shape_ = LaneShape::Pointer;
+    std::vector<std::pair<std::uint64_t, int>> shapePreview_;
     juce::Point<int> from_, to_;
     std::int64_t dragTicks_ = 0;
     int dragKeys_ = 0, dragVelocity_ = 0;

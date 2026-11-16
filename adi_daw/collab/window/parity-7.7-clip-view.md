@@ -57,6 +57,6 @@ Each is gated against the DAW it comes from (ADR-0108), not against Live.
 |---|---|---|---|
 | A1 | Chord editing: a chord of a chosen type on each selected note; inversions up and down; Drop 2 and Drop 3 | Cubase Pro 15, the Key Editor's Chord Editing section | built: the Pitch and Time panel's chord chooser, Add Chord, Inversion Up and Dn, Drop 2, Drop 3, one undo step each; the list of chord types and Drop 2+4's button are to be read on Cubase |
 | A2 | Fixed Lengths; Delete Overlaps on one key (mono) and on all (poly) | Cubase Pro 15, MIDI functions | built: Fixed Length sets the editing grid's step; Overlap Mono and Overlap Poly; notes that start together are not an overlap (to be checked on Cubase) |
-| A3 | Line tools in the Velocity and controller lanes | Cubase Pro 15 | open |
+| A3 | Line tools in the Velocity and controller lanes | Cubase Pro 15, the Key Editor's Line tool | partial: in the Velocity lane, a chooser in the lane's label (Pointer, Line, Parabola, Sine, Triangle, Square, Paint); a stroke gives every note under it the shape's value, shown while held, one undo step. Sine, Triangle and Square make one cycle per four grid steps (Cubase takes the period from its length quantize: to be read on Cubase). The controller lanes take the same tools when the Envelopes tab is built |
 | A4 | The trim tool | Cubase Pro 15 | open |
 | A5 | Handles on a selection of velocity or controller events: tilt, compress, scale | Cubase Pro 15 | open |

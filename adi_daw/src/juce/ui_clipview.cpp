@@ -121,6 +121,67 @@ void NoteEditor::frame() {
     playhead.setVisible(panel.details() != nullptr && panel.root.playing() && x >= 0 && x < area.getWidth());
     playhead.setBounds(area.getX() + x, area.getY(), 1, getHeight() - area.getY());
 }
+void NoteEditor::setLaneShape(LaneShape shape) {
+    shape_ = shape;
+    repaint();
+}
+juce::Rectangle<int> NoteEditor::shapeBox() const noexcept {
+    const auto lane = velocityArea();
+    return lane.isEmpty() ? juce::Rectangle<int>() : juce::Rectangle<int>(2, lane.getY() + 18, kKeysWidth - 5, 13);
+}
+juce::PopupMenu NoteEditor::shapeMenu() const {
+    juce::PopupMenu menu;
+    int id = 1;
+    for (const auto *name : kLaneShapeNames) {
+        menu.addItem(id, name, true, static_cast<int>(shape_) == id - 1);
+        ++id;
+    }
+    return menu;
+}
+bool NoteEditor::chooseShape(int item) {
+    if (item < 1 || item > static_cast<int>(kLaneShapeNames.size()))
+        return false;
+    setLaneShape(static_cast<LaneShape>(item - 1));
+    return true;
+}
+void NoteEditor::shapeStroke() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return;
+    const auto lane = velocityArea().withTrimmedTop(1);
+    const double top = lane.getY() + 5, height = lane.getHeight() - 10;
+    const auto window = ClipWindow::of(*clip);
+    const auto xOf = [&](const engine::ClipNote &n) { return lane.getX() + time.x(window.toArrangement(n.startTicks)); };
+    if (shape_ == LaneShape::Paint) {
+        // Paint: every note the pointer passes takes the value under it, and keeps it.
+        const int value = velocityAt(to_.y, top, height);
+        for (const auto &n : clip->notes) {
+            if (std::abs(xOf(n) - to_.x) > 4)
+                continue;
+            const auto had = std::find_if(shapePreview_.begin(), shapePreview_.end(),
+                                          [&](const auto &v) { return v.first == n.id; });
+            if (had != shapePreview_.end())
+                had->second = value;
+            else
+                shapePreview_.emplace_back(n.id, value);
+        }
+        return;
+    }
+    // The others: every note between the stroke's ends takes the shape's value at its place.
+    shapePreview_.clear();
+    const double first = velocityAt(from_.y, top, height), last = velocityAt(to_.y, top, height);
+    const double x0 = from_.x, x1 = to_.x;
+    const double cycles = std::abs(x1 - x0) / time.scale * static_cast<double>(textproj::kPPQ) /
+                          (4. * static_cast<double>(gridTicks()));
+    for (const auto &n : clip->notes) {
+        const double x = xOf(n);
+        if (x < std::min(x0, x1) - .5 || x > std::max(x0, x1) + .5)
+            continue;
+        const double t = x1 == x0 ? 1. : (x - x0) / (x1 - x0);
+        shapePreview_.emplace_back(
+            n.id, std::clamp(static_cast<int>(std::lround(shapeValue(shape_, t, first, last, cycles))), 1, 127));
+    }
+}
 void NoteEditor::setDrawMode(bool on) {
     drawMode_ = on;
     setMouseCursor(on ? juce::MouseCursor::CrosshairCursor : juce::MouseCursor::NormalCursor);
@@ -271,6 +332,12 @@ const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) 
 }
 engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
     auto out = note;
+    if (drag_ == Drag::Shape) {
+        for (const auto &[id, value] : shapePreview_)
+            if (id == note.id)
+                out.velocity = static_cast<std::uint8_t>(value);
+        return out;
+    }
     if (drag_ == Drag::None || drag_ == Drag::Band || !isSelected(note.id))
         return out;
     if (drag_ == Drag::Move) {
@@ -312,7 +379,25 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (clip == nullptr || e.mods.isPopupMenu())
         return;
+    if (shapeBox().contains(from_)) {
+        juce::Component::SafePointer<NoteEditor> safe(this);
+        shapeMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(shapeBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseShape(item);
+            });
+        return;
+    }
     if (const auto lane = velocityArea(); lane.contains(from_)) {
+        if (shape_ != LaneShape::Pointer && from_.x >= lane.getX()) {
+            // A line tool's stroke begins.
+            shapePreview_.clear();
+            drag_ = Drag::Shape;
+            shapeStroke();
+            repaint();
+            return;
+        }
         // The marker nearest the pointer, within a few pixels.
         const auto window = ClipWindow::of(*clip);
         const engine::ClipNote *best = nullptr;
@@ -400,6 +485,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         const auto lane = velocityArea().withTrimmedTop(1);
         if (const auto *n = note_edits_detail::find(*clip, anchor_))
             dragVelocity_ = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10) - static_cast<int>(n->velocity);
+    } else if (drag_ == Drag::Shape) {
+        shapeStroke();
     } else if (drag_ == Drag::Band) {
         // The notes the rectangle touches, added to what Shift kept.
         const juce::Rectangle<int> band(from_, to_);
@@ -432,7 +519,10 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         commit(resizeNotes(*clip, selected_, ticks));
     else if (kind == Drag::Velocity)
         commit(changeVelocities(*clip, selected_, velocity));
-    else if (kind == Drag::Draw) {
+    else if (kind == Drag::Shape) {
+        const auto values = std::exchange(shapePreview_, {});
+        commit(drawVelocities(*clip, values));
+    } else if (kind == Drag::Draw) {
         drag_ = Drag::Draw;
         const auto steps = drawnSteps();
         drag_ = Drag::None;
@@ -726,6 +816,18 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.setFont(look::font(10.f));
         g.drawText("Velocity", name, juce::Justification::centredLeft);
+        // The line tool's chooser (ADR-0241 d2).
+        const auto shape = shapeBox();
+        look::box(g, shape.toFloat(), shape_ == LaneShape::Pointer ? look::button : look::accent);
+        labels_.push_back(shape);
+        g.setColour(look::text);
+        g.setFont(look::font(9.5f));
+        g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
+        if (drag_ == Drag::Shape && shape_ != LaneShape::Paint) {
+            g.setColour(juce::Colours::white.withAlpha(0.6f));
+            g.drawLine(static_cast<float>(from_.x), static_cast<float>(from_.y), static_cast<float>(to_.x),
+                       static_cast<float>(to_.y), 1.f);
+        }
     }
 }
 
