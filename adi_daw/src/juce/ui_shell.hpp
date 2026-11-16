@@ -125,7 +125,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Duplicate,
         TogglePluginWindows,
         Split,
-        LastId = Split
+        CreateFade,
+        DeleteFades,
+        LastId = DeleteFades
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -416,6 +418,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the insert marker; else the clips under the marker on the selected tracks, or on every track
     // when editing.splitAllWithNoSelection is on. Each clip is one undo step.
     bool splitAtMarker();
+    // Live's Create Fade In/Out and Create Crossfade (manual 6.8; Ctrl/Cmd+Alt+F, the Create menu):
+    // over the time selection's audio clip starts, ends and boundaries, one undo step. And Delete
+    // Fades/Crossfades (Ctrl/Cmd+Alt+Backspace) on the chosen clips, or the audio clips the time
+    // selection holds. E4.
+    bool createFades();
+    bool deleteFades();
+    // Whether the selection crosses two clips' boundary: Create Fade reads Create Crossfade.
+    bool selectionCrossfades() const;
     // Live's Cut, Copy, Paste and Duplicate in the Arrangement (manual 6.9, 41.5; E2): on the chosen
     // clip or the time selection; Paste at the insert marker, a range onto as many shown tracks as
     // it came from, in order, from the selected one. Each is one undo step; the engine's refusals go

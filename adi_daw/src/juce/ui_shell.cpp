@@ -3,6 +3,7 @@
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/fade_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/recording_edits.hpp"
@@ -148,7 +149,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
                                   "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate",
-                                  "Show Plug-In Windows", "Split"};
+                                  "Show Plug-In Windows", "Split", "Create Fade In/Out", "Delete Fades/Crossfades"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -361,6 +362,18 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->canClipboard(static_cast<int>(id))));
         break;
     }
+    case CreateFade: // manual 6.8: Create > Create Fade In/Out or Create Crossfade, Ctrl/Cmd+Alt+F
+        info.addDefaultKeypress('f', cmd | alt);
+        if (active_ != nullptr && active_->selectionCrossfades())
+            info.shortName = "Create Crossfade";
+        info.setActive(active_ != nullptr &&
+                       active_->arrangement.geometry.selection.start != active_->arrangement.geometry.selection.end);
+        break;
+    case DeleteFades: // manual 6.8: Delete Fades/Crossfades, Ctrl/Cmd+Alt+Backspace
+        info.addDefaultKeypress(juce::KeyPress::backspaceKey, cmd | alt);
+        info.addDefaultKeypress(juce::KeyPress::deleteKey, cmd | alt);
+        info.setActive(active_ != nullptr);
+        break;
     case Split: // manual 6.12, 41.5: Edit > Split, Ctrl/Cmd+E
         info.addDefaultKeypress('e', cmd);
         info.setActive(active_ != nullptr);
@@ -1620,6 +1633,59 @@ bool AdiRootComponent::clipClipboard(ClipCommand command) {
     }
     return false;
 }
+namespace {
+FadeEdit createFadesFor(const engine::Snapshot &current, const Selection &sel, const std::vector<std::int64_t> &tracks) {
+    return createFades(current.tracks, tracks, sel.start, sel.end);
+}
+} // namespace
+bool AdiRootComponent::selectionCrossfades() const {
+    const auto current = view_.current();
+    if (!current)
+        return false;
+    const auto &sel = arrangement.geometry.selection;
+    return createFadesFor(*current, sel, arrangement.geometry.selectedTracks(reader())).crossfade;
+}
+bool AdiRootComponent::createFades() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Fades need an open project.");
+    const auto &sel = arrangement.geometry.selection;
+    auto edit = createFadesFor(*current, sel, arrangement.geometry.selectedTracks(reader()));
+    if (!edit.refusal.empty())
+        return fail(edit.refusal);
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.changed();
+    return true;
+}
+bool AdiRootComponent::deleteFades() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Fades need an open project.");
+    const auto &sel = arrangement.geometry.selection;
+    // The chosen clip and those picked with it; else the audio clips the time selection holds.
+    std::vector<std::int64_t> clips;
+    if (sel.clip != 0)
+        clips.push_back(sel.clip);
+    clips.insert(clips.end(), sel.pickedClips.begin(), sel.pickedClips.end());
+    if (clips.empty() && sel.start != sel.end) {
+        const auto from = std::min(sel.start, sel.end), to = std::max(sel.start, sel.end);
+        for (const auto id : arrangement.geometry.selectedTracks(reader()))
+            if (const auto *t = reader().findTrack(id))
+                for (const auto &c : t->clips)
+                    if (c && c->posTicks < to && c->posTicks + c->lengthTicks > from)
+                        clips.push_back(c->id);
+    }
+    if (clips.empty())
+        return fail("Select the clips whose fades to delete.");
+    auto edit = ui::deleteFades(current->tracks, clips);
+    if (!edit.refusal.empty())
+        return fail(edit.refusal);
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.changed();
+    return true;
+}
 bool AdiRootComponent::splitAtMarker() {
     const auto current = view_.current();
     if (!current)
@@ -2725,6 +2791,10 @@ bool AdiRootComponent::command(int id) {
             return fail("Copy a clip, a time selection or a device first.");
         return clipClipboard(command);
     }
+    case AppCommands::CreateFade:
+        return createFades();
+    case AppCommands::DeleteFades:
+        return deleteFades();
     case AppCommands::Split:
         return splitAtMarker();
     case AppCommands::TogglePluginWindows:
@@ -2851,10 +2921,11 @@ const std::vector<MenuEntries> &menuBar() {
         {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
                   C::SelectLoop, 0, C::Split, 0,
                   C::GroupTracks, C::UngroupTracks}},
-        // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place
-        // in Live 12's Create menu is to be read on Live.
+        // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
+        // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
+        // menu is to be read on Live.
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange, 0,
-                    C::AddLocator, C::DeleteLocator}},
+                    C::AddLocator, C::DeleteLocator, 0, C::CreateFade, C::DeleteFades}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,

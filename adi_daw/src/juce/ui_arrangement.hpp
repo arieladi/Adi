@@ -248,8 +248,45 @@ class ArrangementCanvas final : public juce::Component,
     // Whether the clip's length is being changed from the keyboard: Enter with the insert
     // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
     bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
+    // Live's fade handles on audio clips (Live 12 manual 6.8; E4): a square at each fade's peak sets
+    // its length, a diamond on its curve its shape. They show over the clip under the mouse, on the
+    // selected clips, and on every audio clip while F is held. A drag is one `clip.setFades` batch
+    // for the dragged clip and every other selected audio clip.
+    struct FadeHandle {
+        std::int64_t clip = 0, track = 0;
+        bool in = true, curve = false;
+        friend bool operator==(const FadeHandle &, const FadeHandle &) = default;
+    };
+    std::optional<FadeHandle> fadeHandleAt(int x, int y) const;
+    // Where a handle is drawn, for its clip; nothing when the handle is not shown.
+    std::optional<juce::Point<float>> fadeHandlePoint(const FadeHandle &) const;
+    // The handle being dragged, and the fade it would set; none when no handle is.
+    std::optional<FadeHandle> fadeDragging() const noexcept { return fadeDrag_; }
+    // The handle last clicked: Delete deletes its fade (manual 6.8).
+    std::optional<FadeHandle> selectedFade() const noexcept { return selectedFade_; }
+    // F held: every audio clip's handles show (manual 6.8, §42.25's momentary keys).
+    bool showFades = false;
+    bool keyStateChanged(bool isKeyDown) override;
+    void mouseExit(const juce::MouseEvent &) override;
 
   private:
+    // A clip's body on screen (under its title strip), and the clip and track: every clip drawn.
+    struct ClipBody {
+        const engine::TrackNode *track = nullptr;
+        const engine::ClipNode *clip = nullptr;
+        float left = 0, right = 0, top = 0, bottom = 0;
+    };
+    std::vector<ClipBody> clipBodies() const;
+    bool fadeHandlesShown(const engine::ClipNode &) const;
+    // A clip's fades as drawn: what the snapshot holds, or what a drag would set.
+    void fadesOf(const engine::ClipNode &, std::int64_t &in, std::int64_t &out, std::optional<double> &inTension,
+                 std::optional<double> &outTension) const;
+    void paintFades(juce::Graphics &, const engine::ClipNode &, float left, float right, float top,
+                    float bottom) const;
+    std::optional<FadeHandle> fadeDrag_, selectedFade_;
+    std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
+    double fadeTension_ = 0, fadeTensionFrom_ = 0;
+    int fadeFromY_ = 0;
     // What a screen reader hears after a key moves the selection.
     void announce(const juce::String &);
     // Live's left and right arrows (online §41.4.1.3): by the grid, or to a clip's edge with
