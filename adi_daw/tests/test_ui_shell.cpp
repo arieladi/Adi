@@ -5437,6 +5437,49 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
     }
 
+    // Scale Mode in the editor (manual 8.2.4, 10.6): its switch, Fold to Scale (G) and Highlight Scale (K).
+    {
+        const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        ed.select({});
+        check(!details().scale.local && !ed.scaleOn() && !panel.scaleModeBox().isEmpty() && !panel.scaleFoldBox().isEmpty() &&
+                  !panel.highlightBox().isEmpty() && !panel.scaleFoldBox().intersects(panel.trimBox()) &&
+                  !panel.scaleFoldBox().intersects(panel.highlightBox()) && panel.headerArea().contains(panel.highlightBox()),
+              "the clip holds no scale of its own; the header has a Scale and a Highlight switch, the Main panel a Scale Mode switch");
+        check(ed.keyPressed(key('g')) && !ed.scaleFolded() && !ed.keys.isFolded(), "G with no scale of the clip's own folds nothing");
+        click(panel.scaleModeBox());
+        check(details().scale.local && ed.scaleOn() && details().scale.root == 0 && undoIs("Activate Scale", 1),
+              "the Scale Mode switch gives the clip the scale it shows, C Major, as its own: one undo step");
+        check(ed.keyPressed(key('g')) && ed.scaleFolded() && ed.keys.isFolded() && ed.keys.rowCount() == 75 && ed.keys.rowOf(60) && ed.keys.rowOf(62) &&
+                  !ed.keys.rowOf(61) && ed.keys.y(60).value_or(-1) >= 0 && ed.keys.y(67).value_or(-1) >= 0,
+              "G folds the editor to the scale's 75 key tracks: no C#3; the notes stay in view");
+        check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 70}, {"start", 5 * beat}, {"dur", beat}, {"key", 61}}, "Add Note")).ok,
+              "a C#3, outside the scale");
+        root.frame();
+        check(ed.keys.rowCount() == 76 && ed.keys.rowOf(61), "a key track outside the scale that holds a note is shown too");
+        check(ed.keyPressed(key('f')) && ed.folded() && ed.keys.rowCount() == 4 && ed.keyPressed(key('f')) && !ed.folded() && ed.keys.rowCount() == 76,
+              "Fold to Notes over it shows the four keys in use; switched off, the scale's fold is back");
+        click(panel.scaleFoldBox());
+        check(!ed.scaleFolded() && !ed.keys.isFolded() && ed.keys.y(60).value_or(-1) >= 0, "the header's Scale switch unfolds; the notes are in view");
+        check(ed.highlightScale && ed.keyPressed(key('k')) && !ed.highlightScale, "K switches Highlight Scale off");
+        click(panel.highlightBox());
+        check(ed.highlightScale, "and the header's Highlight switch, on again");
+        click(panel.scaleFoldBox());
+        check(ed.scaleFolded(), "folded to the scale again");
+        click(panel.scaleModeBox());
+        check(!details().scale.local && !ed.scaleOn() && !ed.scaleFolded() && !ed.keys.isFolded() && undoIs("Deactivate Scale", 1),
+              "Scale Mode switched off: the clip holds no scale, and the fold to it is gone");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(details().scale.local && ed.scaleOn(), "Undo gives the clip its scale back");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

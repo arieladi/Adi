@@ -140,6 +140,15 @@ struct KeyTracks {
                 folded.push_back(key);
         clampScroll(viewHeight);
     }
+    // Fold to Scale (manual 10.6, G): the keys `keep(key)` holds, highest first; none, and Fold stays off.
+    template <class Keep>
+    void foldWhere(Keep &&keep, int viewHeight) {
+        folded.clear();
+        for (int key = kNoteKeys - 1; key >= 0; --key)
+            if (keep(key))
+                folded.push_back(key);
+        clampScroll(viewHeight);
+    }
     void unfold(int viewHeight) noexcept {
         folded.clear();
         clampScroll(viewHeight);

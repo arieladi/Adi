@@ -96,6 +96,14 @@ class NoteEditor final : public juce::Component {
     // they change, and unfolds for a clip with none.
     bool folded() const noexcept { return folded_; }
     void setFold(bool);
+    // Scale Mode in the editor (manual 10.6), while the clip holds a scale of its own: the scale's
+    // keys are tinted on the piano. Highlight Scale (K; applied to every clip) tints their key
+    // tracks too and marks the root. Fold to Scale (G) shows only the scale's key tracks and those
+    // that hold notes; Fold to Notes, when on, has the say.
+    bool scaleOn() const noexcept;
+    bool scaleFolded() const noexcept { return scaleFolded_; }
+    void setScaleFold(bool);
+    bool highlightScale = true;
     // Z zooms to the selected notes, or to all of them; X goes back (manual 10.2).
     void zoomToNotes();
     void zoomBack();
@@ -232,7 +240,9 @@ class NoteEditor final : public juce::Component {
     // the previous and next note in time, left and right to those on the same key. Shift extends.
     bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
-    bool copying_ = false, folded_ = false, drawMode_ = false;
+    bool copying_ = false, folded_ = false, drawMode_ = false, scaleFolded_ = false;
+    // The key tracks shown, after either fold or none.
+    void refold();
     int drawKey_ = 0;
     LaneShape shape_ = LaneShape::Pointer;
     LaneHandle handle_ = LaneHandle::None;
@@ -371,6 +381,12 @@ class ClipViewPanel final : public juce::Component {
     bool focus() const noexcept { return focus_; }
     void setFocus(bool);
     juce::Rectangle<int> focusBox() const noexcept;
+    // The header's Scale switch (Fold to Scale, G) and Highlight switch (Highlight Scale, K); and
+    // the Main panel's Scale Mode switch, beside the Scale field's name: on, the clip holds its own scale.
+    juce::Rectangle<int> scaleFoldBox() const noexcept;
+    juce::Rectangle<int> highlightBox() const noexcept;
+    juce::Rectangle<int> scaleModeBox() const noexcept;
+    bool toggleScaleMode();
     // The clip in the frame's snapshot: its audio source and its track.
     const engine::ClipNode *node() const noexcept { return node_; }
     juce::Colour colour() const noexcept { return colour_; }

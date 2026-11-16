@@ -724,6 +724,25 @@ void velocityControls() {
     check(!rampVelocities(audio, {}, 1, 2).refusal.empty(), "an audio clip refuses");
 }
 
+void scaleMode() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    c.scale.root = 2;
+    c.scale.id = "minor";
+    c.scale.mask = 1453;
+    const auto on = setClipScaleMode(c, true);
+    check(on.ops.size() == 1 && on.ops[0].opType == "clip.setScale" &&
+              on.ops[0].payload == Payload({{"id", 7}, {"root", 2}, {"scale", "minor"}, {"mask", 1453}}) && on.ops[0].label == "Activate Scale",
+          "Scale Mode on: the clip takes the scale it shows as its own");
+    check(setClipScaleMode(c, false).ops.empty(), "off, when it holds none, writes nothing");
+    c.scale.local = true;
+    const auto off = setClipScaleMode(c, false);
+    check(off.ops.size() == 1 && off.ops[0].payload == Payload({{"id", 7}}) && off.ops[0].label == "Deactivate Scale",
+          "Scale Mode off: the clip holds no scale and follows the project's");
+    check(setClipScaleMode(c, true).ops.empty(), "on, when it already holds one, writes nothing");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -782,6 +801,7 @@ int main() {
     functions();
     splitsAtEdges();
     velocityControls();
+    scaleMode();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

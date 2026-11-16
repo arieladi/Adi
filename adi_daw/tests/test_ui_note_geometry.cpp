@@ -150,6 +150,16 @@ void lengths() {
 } // namespace
 
 int main() {
+    {
+        // Fold to Scale: the keys a rule keeps, highest first.
+        KeyTracks scale;
+        scale.foldWhere([](int key) { return key % 12 == 0 || key == 61; }, 200);
+        check(scale.isFolded() && scale.rowCount() == 12 && scale.rowOf(120) == 0 && scale.rowOf(61) == 5 && scale.rowOf(60) == 6 &&
+                  !scale.rowOf(62) && scale.keyOfRow(11) == 0,
+              "foldWhere keeps the keys its rule holds, highest first");
+        scale.foldWhere([](int) { return false; }, 200);
+        check(!scale.isFolded() && scale.rowCount() == kNoteKeys, "a rule that keeps none leaves every key track");
+    }
     names();
     keyTracks();
     fold();

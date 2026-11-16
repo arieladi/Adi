@@ -306,6 +306,59 @@ std::vector<std::int64_t> NoteEditor::drawnSteps() const {
         out.push_back(window.toSource(at));
     return out;
 }
+bool NoteEditor::scaleOn() const noexcept {
+    const auto *clip = panel.details();
+    return clip != nullptr && clip->scale.local;
+}
+void NoteEditor::setScaleFold(bool fold) {
+    scaleFolded_ = fold && scaleOn();
+    refold();
+}
+void NoteEditor::refold() {
+    if (folded_) {
+        setFold(true);
+        return;
+    }
+    const auto *clip = panel.details();
+    const int height = notesArea().getHeight();
+    const bool was = keys.isFolded();
+    if (scaleFolded_ && scaleOn()) {
+        // The scale's key tracks, and any that hold notes (manual 10.6).
+        bool used[kNoteKeys] = {};
+        for (const auto &n : clip->notes)
+            if (n.key < kNoteKeys)
+                used[n.key] = true;
+        for (const auto &layer : panel.others())
+            for (const auto &n : layer.details.notes)
+                if (n.key < kNoteKeys)
+                    used[n.key] = true;
+        const int tonic = static_cast<int>(clip->scale.root);
+        const auto mask = clip->scale.mask;
+        keys.foldWhere([&](int key) { return used[key] || inScale(key, tonic, mask); }, height);
+        if (!was) {
+            // It opens on the notes, or around middle C.
+            int low = kNoteKeys, high = -1;
+            for (int key = 0; key < kNoteKeys; ++key)
+                if (used[key]) {
+                    low = std::min(low, key);
+                    high = std::max(high, key);
+                }
+            if (high < 0)
+                low = nearestInScale(60, tonic, mask), high = nearestInScale(71, tonic, mask);
+            keys.show(low, high, height);
+        }
+    } else {
+        keys.unfold(height);
+        if (was) {
+            auto every = clip != nullptr ? clip->notes : std::vector<engine::ClipNote>{};
+            for (const auto &layer : panel.others())
+                every.insert(every.end(), layer.details.notes.begin(), layer.details.notes.end());
+            const auto range = keyRange(every);
+            keys.show(range ? range->low : 60, range ? range->high : 71, height);
+        }
+    }
+    repaint();
+}
 void NoteEditor::setFold(bool fold) {
     const auto *clip = panel.details();
     const int height = notesArea().getHeight();
@@ -318,6 +371,10 @@ void NoteEditor::setFold(bool fold) {
     } else {
         const bool was = folded_;
         folded_ = fold && clip != nullptr;
+        if (!folded_ && scaleFolded_ && scaleOn()) {
+            refold();
+            return;
+        }
         keys.unfold(height);
         // Unfolded, the notes come back into view.
         if (was && clip != nullptr)
@@ -989,8 +1046,10 @@ void NoteEditor::prune() {
         std::erase_if(entry.second, [of](std::uint64_t id) { return of == nullptr || note_edits_detail::find(*of, id) == nullptr; });
     }
     std::erase_if(otherSelected_, [](const auto &entry) { return entry.second.empty(); });
-    if (folded_)
-        setFold(true);
+    if (scaleFolded_ && !scaleOn())
+        scaleFolded_ = false;
+    if (folded_ || scaleFolded_ || keys.isFolded())
+        refold();
 }
 std::int64_t NoteEditor::gridTicks() const noexcept {
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
@@ -1514,6 +1573,18 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         setFold(!folded_);
         return true;
     }
+    if (!mods.isAnyModifierKeyDown() && (code == 'g' || code == 'G')) {
+        // Fold to Scale: only with a scale of the clip's own.
+        setScaleFold(!scaleFolded_);
+        panel.repaint();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'k' || code == 'K')) {
+        highlightScale = !highlightScale;
+        repaint();
+        panel.repaint();
+        return true;
+    }
     if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z')) {
         zoomToNotes();
         return true;
@@ -1714,6 +1785,11 @@ void NoteEditor::paint(juce::Graphics &g) {
             const int key = *keys.keyOfRow(row);
             g.setColour(blackKey(key) ? look::lane : look::laneAlt);
             g.fillRect(area.getX(), y, area.getWidth(), keys.keyHeight);
+            if (highlightScale && clip->scale.local && inScale(key, static_cast<int>(clip->scale.root), clip->scale.mask)) {
+                // Highlight Scale (manual 10.6): the scale's key tracks are tinted.
+                g.setColour(look::accent.withAlpha(0.13f));
+                g.fillRect(area.getX(), y, area.getWidth(), keys.keyHeight);
+            }
             if (key % 12 == 0 && !keys.isFolded()) {
                 g.setColour(look::lane.darker(0.25f));
                 g.fillRect(area.getX(), y + keys.keyHeight - 1, area.getWidth(), 1);
@@ -1833,6 +1909,13 @@ void NoteEditor::paint(juce::Graphics &g) {
                 // The lines between E and F, and between B and C, where two white keys meet.
                 g.setColour(juce::Colour(0xff9a9a9a));
                 g.fillRect(keyboard.getX(), y + keys.keyHeight - 1, keyboard.getWidth(), 1);
+            }
+            if (clip->scale.local && inScale(key, static_cast<int>(clip->scale.root), clip->scale.mask)) {
+                // Scale Mode (manual 8.2.4): the scale's keys are marked on the piano; with
+                // Highlight Scale, the root more strongly.
+                const bool tonic = (key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12 == 0;
+                g.setColour(look::accent.withAlpha(highlightScale && tonic ? 0.9f : 0.45f));
+                g.fillRect(keyboard.getX(), y + 1, highlightScale && tonic ? 6 : 4, std::max(1, keys.keyHeight - 2));
             }
             if ((key % 12 == 0 || keys.isFolded()) && keys.keyHeight >= 9) {
                 const juce::Rectangle<int> name(keyboard.getRight() - 26, y, 24, keys.keyHeight);
@@ -2130,6 +2213,27 @@ bool ClipViewPanel::activate(std::int64_t clip) {
 void ClipViewPanel::setFocus(bool on) {
     focus_ = on;
     repaint();
+}
+juce::Rectangle<int> ClipViewPanel::scaleFoldBox() const noexcept {
+    const auto trim = trimBox(), focus = focusBox();
+    return trim.isEmpty() ? trim : trim.withX((focus.isEmpty() ? trim : focus).getRight() + 4).withWidth(38);
+}
+juce::Rectangle<int> ClipViewPanel::highlightBox() const noexcept {
+    const auto fold = scaleFoldBox();
+    return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4).withWidth(54);
+}
+juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
+    if (!midi())
+        return {};
+    const auto box = fieldBox(Field::Scale);
+    return {box.getRight() - 24, box.getY() - 15 + 2, 24, 11};
+}
+bool ClipViewPanel::toggleScaleMode() {
+    if (!details_ || !midi())
+        return false;
+    const bool done = commit(setClipScaleMode(*details_, !details_->scale.local));
+    notes.prune();
+    return done;
 }
 juce::Rectangle<int> ClipViewPanel::focusBox() const noexcept {
     const auto trim = trimBox();
@@ -2784,6 +2888,21 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         setFocus(!focus_);
         return;
     }
+    if (scaleFoldBox().contains(at)) {
+        notes.setScaleFold(!notes.scaleFolded());
+        repaint();
+        return;
+    }
+    if (highlightBox().contains(at)) {
+        notes.highlightScale = !notes.highlightScale;
+        notes.repaint();
+        repaint();
+        return;
+    }
+    if (scaleModeBox().contains(at)) {
+        toggleScaleMode();
+        return;
+    }
     for (const auto tool : kTools)
         if (toolBox(tool).contains(at)) {
             runTool(tool);
@@ -2948,8 +3067,16 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
-    if (midi())
+    if (midi()) {
         field(Field::Scale, "Scale", r.scale);
+        // Scale Mode's switch (manual 8.2.4): lit while the clip holds a scale of its own.
+        const auto mode = scaleModeBox();
+        g.setColour(details_->scale.local ? look::accent : look::button);
+        g.fillRoundedRectangle(mode.toFloat(), 5.f);
+        g.setColour(look::outline);
+        g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), 5.f, 1.f);
+        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::text, 9.f);
+    }
 
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
@@ -3036,8 +3163,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
             text("Focus", focus, juce::Justification::centred, look::text, 10.f);
         }
+        // Fold to Scale and Highlight Scale; Fold to Scale is dimmed while the clip holds no scale of its own.
+        const auto scaleFold = scaleFoldBox(), highlight = highlightBox();
+        look::box(g, scaleFold.toFloat(), notes.scaleFolded() ? look::accent : look::button);
+        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), 10.f);
+        look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
+        text("Highlight", highlight, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? (others_.empty() ? 132 : 176) : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? highlightBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())
