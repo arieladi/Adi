@@ -944,7 +944,7 @@ juce::PopupMenu DevicePanelView::commands() {
                 if(!safe || safe->menuEpoch_!=epoch)return;
                 safe->endInteraction(Interaction::Menu);
                 if(safe && safe->validTarget() && safe->strip.validExpected(expected) && safe->strip.setKey)
-                    safe->strip.setKey(expected,choice.source,choice.tap);
+                    safe->strip.setKey(expected,choice);
             };
             if(choice.source){auto& entry=sources[*choice.source];entry.first=juce::String::fromUTF8(choice.name.c_str());entry.second.addItem(std::move(item));}
             else keys.addItem(std::move(item));

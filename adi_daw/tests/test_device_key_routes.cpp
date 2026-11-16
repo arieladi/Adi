@@ -111,6 +111,10 @@ void preparedAndDocument(){
     check(doc->setDeviceKey(target,2,"post_fx") && OpJournal(doc->store()).headSeq()==sameHead,"choosing current key is a no-op without an Undo entry");
     const auto after=instance->prepares;
     check(after>=before && doc->deviceKeyChoices(target).size()==10,"menu choices come from real channels and three taps");
+    const auto oldChoice=doc->deviceKeyChoices(target).back();
+    check(doc->ops().submit(op("track.rename",{{"id",2},{"name","A changed source"}})).ok,"another surface can change source identity while a menu is retained");
+    const auto menuHead=OpJournal(doc->store()).headSeq();
+    check(!doc->setDeviceKeyChoice(target,oldChoice) && OpJournal(doc->store()).headSeq()==menuHead,"retained source choices refuse a changed model without retargeting or Undo prefix");
     const auto start=OpJournal(doc->store()).headSeq();const auto count=instance->prepares;
     check(!doc->setDeviceKey(target,3,"post_mixer") && OpJournal(doc->store()).headSeq()==start && instance->prepares==count,"feedback refuses before any journal or SDK preparation");
     check(doc->setDeviceKey(target,3,"pre_fx"),"same-channel earlier Pre FX key remains legal");

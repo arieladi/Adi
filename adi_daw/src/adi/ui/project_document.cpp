@@ -371,7 +371,15 @@ std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanel
         for(const auto& tap:{"pre_fx","post_fx","post_mixer"})
             choices.push_back({track.id,tap,track.name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
     }
+    for(auto& choice:choices)choice.generation=view_.generation();
     return choices;
+}
+bool ProjectDocument::setDeviceKeyChoice(const DevicePanelData& target,const DeviceKeyChoice& choice) {
+    if(!synchronise())return false;
+    if(!choice.generation || choice.generation!=view_.generation()) {
+        error_="The project changed while choosing a sidechain. Open the menu again.";return false;
+    }
+    return setDeviceKey(target,choice.source,choice.tap);
 }
 bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<std::int64_t> source,const std::string& tap) {
     if(!deviceTargetCurrent(target.id,target.runtime,target.instance)) {error_="That device changed while choosing its sidechain.";return false;}

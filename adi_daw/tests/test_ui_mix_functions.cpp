@@ -538,7 +538,7 @@ void keyMenus(AppCommands& commands,const std::filesystem::path& directory){
     strip.targetCurrent=[&](std::int64_t id,const engine::DeviceRuntimeToken&,std::uint64_t stamp){return id==44 && publication->front().instance==stamp;};
     strip.keyChoices=[](const DevicePanelData&){return std::vector<DeviceKeyChoice>{{{},"post_mixer","None",false},{2,"pre_fx","Kick",true},{2,"post_fx","Kick",false},{2,"post_mixer","Kick",false}};};
     int actions=0;std::optional<std::int64_t> source;std::string tap;
-    strip.setKey=[&](const DevicePanelData& expected,std::optional<std::int64_t> from,const std::string& point){++actions;source=from;tap=point;return expected.id==44 && expected.instance==71;};
+    strip.setKey=[&](const DevicePanelData& expected,const DeviceKeyChoice& choice){++actions;source=choice.source;tap=choice.tap;return expected.id==44 && expected.instance==71;};
     strip.frame(2);
     const auto submenu=[](const juce::PopupMenu& menu,const char* name){
         for(juce::PopupMenu::MenuItemIterator it(menu);it.next();)if(it.getItem().text==name && it.getItem().subMenu)return *it.getItem().subMenu;

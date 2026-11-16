@@ -23,6 +23,7 @@ struct DeviceKeyChoice {
     std::optional<std::int64_t> source;
     std::string tap="post_mixer",name;
     bool current=false;
+    std::uint64_t generation=0; // owner snapshot when this menu choice was built
 };
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
