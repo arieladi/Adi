@@ -2,6 +2,7 @@
 #include "adi/engine/realize.hpp"
 #include "adi/history.hpp"
 #include "adi/device_key_routes.hpp"
+#include "adi/device_copy.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
@@ -88,6 +89,10 @@ void preparedAndDocument(){
     Fixture f;auto& store=*f.store;
     auto prepared=prepareDeviceKey(store,30,2,"post_fx");
     check(prepared.ok && prepared.requests.size()==1 && commitDeviceKey(store,prepared).ok,"prepared source and tap commit once");
+    const auto copy=readDeviceCopy(store,30);
+    auto clone=prepareDevicePaste(store,copy,31,3,{});
+    check(copy.ok && clone.ok && commitDevicePaste(store,clone).ok && rows::readModel(store).routing.size()==1 && rows::readModel(store).routing.front().dstId==30,"independent device clone neither restores an old identity nor duplicates its key routes");
+    check(History(store).undo().ok && adi::detail::captureRow(store.db(),"devices","id",30) && !adi::detail::captureRow(store.db(),"devices","id",31) && rows::readModel(store).routing.size()==1,"clone Undo removes only the new identity and leaves the original key intact");
     auto replace=prepareDeviceKey(store,30,3,"pre_fx");
     check(replace.ok && replace.requests.size()==2 && commitDeviceKey(store,replace).ok,"prepared replacement is one sealed transaction");
     check(rows::readModel(store).routing.front().srcId==3 && History(store).undo().ok && rows::readModel(store).routing.front().srcId==2,"one Undo restores the previous key source and tap");
