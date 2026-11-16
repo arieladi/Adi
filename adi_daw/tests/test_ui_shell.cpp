@@ -4473,6 +4473,55 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
               undoIs("Fit to Scale", 2),
           "Fit to Scale then fits the notes to D Minor Blues");
 
+    // ADI's additions from Cubase's Key Editor (ADR-0241 d2): chord editing and the length functions.
+    ed.select({});
+    check(submitter.submit(std::vector<OpRequest>{op("note.delete", {{"clip", 11}, {"note", 1}}, "Delete Note"),
+                                                  op("note.delete", {{"clip", 11}, {"note", 3}}, "Delete Note"),
+                                                  op("note.insert", {{"clip", 11}, {"note", 20}, {"start", 0}, {"dur", 3 * beat}, {"key", 60}, {"vel", 90}}, "Add Note")}).ok,
+          "the clip holds one C3, three beats long");
+    root.frame();
+    check(panel.chordMenu().getNumItems() == static_cast<int>(kChordTypes.size()) && !panel.chordBox().isEmpty() &&
+              std::string(panel.chordType().name) == "Major",
+          "the chord type's chooser lists the chord types, Major first");
+    check(panel.chooseChord(7) && std::string(panel.chordType().name) == "Major 7" && !panel.chooseChord(0) && !panel.chooseChord(99),
+          "a chord type is chosen from it");
+    ed.select({20});
+    click(panel.toolBox(Tool::Chord));
+    check(panel.details()->notes.size() == 4 && ed.selected().size() == 4 && undoIs("Insert Chord", 3),
+          "Add Chord builds C major 7 on the selected note: three notes added, all four selected, one undo step");
+    int low = 127, high = 0;
+    for (const auto &n : panel.details()->notes) {
+        low = std::min(low, static_cast<int>(n.key));
+        high = std::max(high, static_cast<int>(n.key));
+    }
+    check(low == 60 && high == 71, "from C3 up to B3");
+    click(panel.toolBox(Tool::InvertUp));
+    low = 127;
+    high = 0;
+    for (const auto &n : panel.details()->notes) {
+        low = std::min(low, static_cast<int>(n.key));
+        high = std::max(high, static_cast<int>(n.key));
+    }
+    check(low == 64 && high == 72 && undoIs("Invert Chord Up", 1), "Inversion Up moves the C up an octave: E3 to C4");
+    click(panel.toolBox(Tool::InvertDown));
+    check(note(20).key == 60 && undoIs("Invert Chord Down", 1), "Inversion Down brings it back");
+    click(panel.toolBox(Tool::Drop2));
+    low = 127;
+    for (const auto &n : panel.details()->notes)
+        low = std::min(low, static_cast<int>(n.key));
+    check(low == 55 && undoIs("Drop 2", 1), "Drop 2 takes the G down an octave");
+    click(panel.toolBox(Tool::FixedLength));
+    bool allStep = true;
+    for (const auto &n : panel.details()->notes)
+        allStep = allStep && n.durationTicks == ed.gridTicks();
+    check(allStep && undoIs("Fixed Lengths", 4), "Fixed Length makes the four notes a grid step long");
+    ed.select({});
+    check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", beat / 2}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
+          "a second C3 begins while the first still sounds");
+    root.frame();
+    click(panel.toolBox(Tool::OverlapsMono));
+    check(note(20).durationTicks == beat / 2 && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {

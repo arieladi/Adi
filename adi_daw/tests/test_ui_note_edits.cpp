@@ -339,6 +339,67 @@ void drawing() {
           "a drawn note is never shorter than the shortest, and there is no key past the top");
 }
 
+void chordEditing() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 80;
+        return n;
+    };
+    // A C major seventh chord at 0 (C3 E3 G3 B3), and a lone D3 a bar later.
+    c.notes = {note(1, 60, 0, beat), note(2, 64, 0, beat), note(3, 67, 0, beat), note(4, 71, 0, beat), note(5, 62, 4 * beat, 2 * beat)};
+    check(kChordTypes.size() == 14 && std::string(kChordTypes[0].name) == "Major" && kChordTypes[1].above[0] == 3,
+          "the chord types start with Major and Minor");
+    const auto minor = makeChords(c, {5}, kChordTypes[1]);
+    check(minor.ops.size() == 2 && minor.ops[0].opType == "note.insert" && minor.ops[0].label == "Insert Chord" &&
+              minor.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{6}}, {"start", 4 * beat}, {"dur", 2 * beat}, {"key", 65}, {"vel", 80}}) &&
+              minor.ops[1].payload.at("key") == 69 && minor.select == std::vector<std::uint64_t>({5, 6, 7}),
+          "a minor chord on D3 adds F3 and A3 with the root's start, length and velocity; all three selected");
+    const auto seventh = makeChords(c, {1}, kChordTypes[6]);
+    check(seventh.ops.empty() && seventh.refusal.empty(), "a chord whose notes are all there already adds nothing");
+    auto high = c;
+    high.notes = {note(1, 125, 0, beat)};
+    check(makeChords(high, {1}, kChordTypes[0]).ops.empty(), "notes past the top key are left out");
+
+    const auto up = invertChords(c, {1, 2, 3, 4, 5}, true);
+    check(up.ops.size() == 1 && up.ops[0].opType == "note.move" && up.ops[0].label == "Invert Chord Up" &&
+              up.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{1}}, {"start", 0}, {"key", 72}}),
+          "inversion up: the chord's lowest note goes up an octave; a lone note is not a chord");
+    const auto down = invertChords(c, {1, 2, 3, 4}, false);
+    check(down.ops.size() == 1 && down.ops[0].payload.at("note") == 4 && down.ops[0].payload.at("key") == 59 &&
+              down.ops[0].label == "Invert Chord Down",
+          "inversion down: its highest note goes down an octave");
+    const auto drop2 = dropVoicing(c, {1, 2, 3, 4}, {2}, "Drop 2");
+    check(drop2.ops.size() == 1 && drop2.ops[0].payload.at("note") == 3 && drop2.ops[0].payload.at("key") == 55 && drop2.ops[0].label == "Drop 2",
+          "Drop 2: the second note from the top goes down an octave");
+    const auto drop3 = dropVoicing(c, {1, 2, 3, 4}, {3}, "Drop 3");
+    check(drop3.ops.size() == 1 && drop3.ops[0].payload.at("note") == 2 && drop3.ops[0].payload.at("key") == 52, "Drop 3: the third");
+    const auto drop24 = dropVoicing(c, {1, 2, 3, 4}, {2, 4}, "Drop 2+4");
+    check(drop24.ops.size() == 2 && drop24.ops[1].payload.at("note") == 1 && drop24.ops[1].payload.at("key") == 48, "Drop 2+4: both");
+    check(dropVoicing(c, {1, 2}, {3}, "Drop 3").ops.empty(), "a chord with fewer notes than the place asked for is left as it is");
+
+    // Lengths: C3 for two beats at 0, C3 again at beat 1, E3 at beat 1 for four.
+    c.notes = {note(1, 60, 0, 2 * beat), note(2, 60, beat, beat), note(3, 64, beat, 4 * beat), note(4, 67, 3 * beat, beat)};
+    const auto fixed = fixedLengths(c, {1, 3}, beat);
+    check(fixed.ops.size() == 2 && fixed.ops[0].opType == "note.resize" && fixed.ops[0].payload.at("dur") == beat &&
+              fixed.ops[0].label == "Fixed Lengths" && fixed.select == std::vector<std::uint64_t>({1, 3}),
+          "Fixed Lengths makes the selected notes a grid step long");
+    const auto mono = deleteOverlaps(c, {}, false);
+    check(mono.ops.size() == 1 && mono.ops[0].payload.at("note") == 1 && mono.ops[0].payload.at("dur") == beat &&
+              mono.ops[0].label == "Delete Overlaps (Mono)",
+          "Delete Overlaps on one key: the first C3 ends where the second begins; other keys are left");
+    const auto poly = deleteOverlaps(c, {}, true);
+    check(poly.ops.size() == 2 && poly.ops[0].payload.at("note") == 1 && poly.ops[1].payload.at("note") == 3 &&
+              poly.ops[1].payload.at("dur") == 2 * beat && poly.ops[0].label == "Delete Overlaps (Poly)",
+          "on all keys: every note ends where the next later one begins; notes that start together are left");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -388,6 +449,7 @@ int main() {
     utilities();
     copies();
     drawing();
+    chordEditing();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

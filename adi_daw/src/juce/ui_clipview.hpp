@@ -150,7 +150,21 @@ class ClipViewPanel final : public juce::Component {
     // The Pitch and Time panel (manual 8.5), for a MIDI clip: the notes' range, Transpose, and the
     // utilities. Each acts on the selected notes, or on all of them when none is selected, and is
     // one undo step.
-    enum class Tool { FitToScale, Invert, Reverse, Double, Halve, Legato };
+    // After Live's, ADI's additions from Cubase's Key Editor (ADR-0241 d2): Fixed Lengths, Delete
+    // Overlaps on one key or on all, and chord editing: a chord of the chosen type on each selected
+    // note, inversions and drop voicings of the selected chords.
+    enum class Tool {
+        FitToScale, Invert, Reverse, Double, Halve, Legato,
+        FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3
+    };
+    static constexpr Tool kTools[] = {Tool::FitToScale, Tool::Invert,       Tool::Reverse,      Tool::Double,     Tool::Halve,
+                                      Tool::Legato,     Tool::FixedLength,  Tool::OverlapsMono, Tool::OverlapsPoly, Tool::Chord,
+                                      Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3};
+    // The chord type Insert Chord uses, chosen from its field's menu; items from 1.
+    juce::Rectangle<int> chordBox() const noexcept;
+    const ChordType &chordType() const noexcept { return kChordTypes[chord_]; }
+    juce::PopupMenu chordMenu() const;
+    bool chooseChord(int item);
     juce::Rectangle<int> toolsArea() const noexcept;
     juce::Rectangle<int> rangeBox() const noexcept;
     juce::Rectangle<int> toolBox(Tool) const noexcept;
@@ -237,6 +251,7 @@ class ClipViewPanel final : public juce::Component {
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
+    std::size_t chord_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;
 };
