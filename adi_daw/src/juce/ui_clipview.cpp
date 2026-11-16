@@ -1044,6 +1044,30 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::Legato:
         row = 4, column = 0;
         break;
+    case Tool::FixedLength:
+        row = 4;
+        break;
+    case Tool::OverlapsMono:
+        row = 5, column = 0;
+        break;
+    case Tool::OverlapsPoly:
+        row = 5;
+        break;
+    case Tool::Chord:
+        row = 6;
+        break;
+    case Tool::InvertUp:
+        row = 7, column = 0;
+        break;
+    case Tool::InvertDown:
+        row = 7;
+        break;
+    case Tool::Drop2:
+        row = 8, column = 0;
+        break;
+    case Tool::Drop3:
+        row = 8;
+        break;
     }
     return {inner.getX() + column * (half + 6), inner.getY() + row * 22, half, kFieldBox};
 }
@@ -1061,8 +1085,44 @@ const char *ClipViewPanel::toolName(Tool tool) noexcept {
         return "/2";
     case Tool::Legato:
         return "Legato";
+    case Tool::FixedLength:
+        return "Fixed Length";
+    case Tool::OverlapsMono:
+        return "Overlap Mono";
+    case Tool::OverlapsPoly:
+        return "Overlap Poly";
+    case Tool::Chord:
+        return "Add Chord";
+    case Tool::InvertUp:
+        return "Inversion Up";
+    case Tool::InvertDown:
+        return "Inversion Dn";
+    case Tool::Drop2:
+        return "Drop 2";
+    case Tool::Drop3:
+        return "Drop 3";
     }
     return "";
+}
+juce::Rectangle<int> ClipViewPanel::chordBox() const noexcept {
+    const auto add = toolBox(Tool::Chord);
+    return add.isEmpty() ? add : add.withX(toolsArea().getX() + 6);
+}
+juce::PopupMenu ClipViewPanel::chordMenu() const {
+    juce::PopupMenu menu;
+    int id = 1;
+    for (const auto &type : kChordTypes) {
+        menu.addItem(id, type.name, true, static_cast<std::size_t>(id - 1) == chord_);
+        ++id;
+    }
+    return menu;
+}
+bool ClipViewPanel::chooseChord(int item) {
+    if (item < 1 || item > static_cast<int>(kChordTypes.size()))
+        return false;
+    chord_ = static_cast<std::size_t>(item - 1);
+    repaint();
+    return true;
 }
 bool ClipViewPanel::runTool(Tool tool) {
     if (!details_ || !midi())
@@ -1082,6 +1142,22 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(stretchNotes(d, ids, 1, 2));
     case Tool::Legato:
         return notes.apply(legatoNotes(d, ids));
+    case Tool::FixedLength:
+        return notes.apply(fixedLengths(d, ids, notes.gridTicks()));
+    case Tool::OverlapsMono:
+        return notes.apply(deleteOverlaps(d, ids, false));
+    case Tool::OverlapsPoly:
+        return notes.apply(deleteOverlaps(d, ids, true));
+    case Tool::Chord:
+        return notes.apply(makeChords(d, ids, chordType()));
+    case Tool::InvertUp:
+        return notes.apply(invertChords(d, ids, true));
+    case Tool::InvertDown:
+        return notes.apply(invertChords(d, ids, false));
+    case Tool::Drop2:
+        return notes.apply(dropVoicing(d, ids, {2}, "Drop 2"));
+    case Tool::Drop3:
+        return notes.apply(dropVoicing(d, ids, {3}, "Drop 3"));
     }
     return false;
 }
@@ -1286,11 +1362,21 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         notes.setDrawMode(!notes.drawMode());
         return;
     }
-    for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato})
+    for (const auto tool : kTools)
         if (toolBox(tool).contains(at)) {
             runTool(tool);
             return;
         }
+    if (chordBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        chordMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(chordBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseChord(item);
+            });
+        return;
+    }
     // A field: a drag changes it, by bars, beats or sixteenths as the part of the field grabbed; a
     // click opens it for typing.
     pressed_ = fieldAt(at);
@@ -1444,11 +1530,15 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto semitones = fieldBox(Field::Transpose);
         look::box(g, semitones.toFloat(), look::chooser);
         text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
-        for (const auto tool : {Tool::FitToScale, Tool::Invert, Tool::Reverse, Tool::Double, Tool::Halve, Tool::Legato}) {
+        for (const auto tool : kTools) {
             const auto box = toolBox(tool);
             look::box(g, box.toFloat(), look::button);
-            text(toolName(tool), box, juce::Justification::centred, look::text, 10.5f);
+            text(toolName(tool), box.reduced(2, 0), juce::Justification::centred, look::text, 10.f);
         }
+        // The chord type's chooser, beside Add Chord.
+        const auto chord = chordBox();
+        look::box(g, chord.toFloat(), look::chooser);
+        text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
     }
 
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).

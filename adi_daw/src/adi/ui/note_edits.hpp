@@ -14,7 +14,9 @@
 #include "adi/ui/scales.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <initializer_list>
 #include <optional>
 #include <string>
 #include <utility>
@@ -429,6 +431,167 @@ inline NoteEdit legatoNotes(const engine::ClipDetails &clip, const std::vector<s
                 next = other->startTicks;
         if (next)
             place(edit, clip.id, *n, n->startTicks, n->key, *next - n->startTicks, "Legato");
+    }
+    return edit;
+}
+// ---- Chord editing and the length functions (ADR-0241 d2; Cubase Pro 15 manual, the Key Editor's
+// Chord Editing section and MIDI functions). ADI's additions to Live's editor: each is a composition
+// of the same note ops, one undo step, on the selected notes.
+
+// A chord built on a root: its name and the semitones above the root of its other notes.
+struct ChordType {
+    const char *id;
+    const char *name;
+    std::array<int, 3> above; // 0 where the chord has no further note
+};
+inline constexpr std::array<ChordType, 14> kChordTypes{{
+    {"major", "Major", {4, 7, 0}},
+    {"minor", "Minor", {3, 7, 0}},
+    {"diminished", "Diminished", {3, 6, 0}},
+    {"augmented", "Augmented", {4, 8, 0}},
+    {"sus2", "Sus 2", {2, 7, 0}},
+    {"sus4", "Sus 4", {5, 7, 0}},
+    {"major7", "Major 7", {4, 7, 11}},
+    {"dominant7", "7", {4, 7, 10}},
+    {"minor7", "Minor 7", {3, 7, 10}},
+    {"minor-major7", "Minor Major 7", {3, 7, 11}},
+    {"half-diminished", "Minor 7 b5", {3, 6, 10}},
+    {"diminished7", "Diminished 7", {3, 6, 9}},
+    {"major6", "6", {4, 7, 9}},
+    {"minor6", "Minor 6", {3, 7, 9}},
+}};
+
+namespace note_edits_detail {
+// The selected notes as chords: those that start together, each chord's notes from the highest down.
+inline std::vector<std::vector<const engine::ClipNote *>> chords(const engine::ClipDetails &clip,
+                                                                 const std::vector<std::uint64_t> &ids) {
+    auto notes = pick(clip, ids);
+    std::stable_sort(notes.begin(), notes.end(), [](const auto *a, const auto *b) {
+        return a->startTicks != b->startTicks ? a->startTicks < b->startTicks : a->key > b->key;
+    });
+    std::vector<std::vector<const engine::ClipNote *>> out;
+    for (const auto *n : notes) {
+        if (out.empty() || out.back().front()->startTicks != n->startTicks)
+            out.emplace_back();
+        out.back().push_back(n);
+    }
+    return out;
+}
+} // namespace note_edits_detail
+
+// A chord made on each selected note, taken as its root: the chord's other notes are added with the
+// root's start, length and velocity. A note that is already there, or would lie past the top key, is
+// left out. The roots and the new notes are selected.
+inline NoteEdit makeChords(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, const ChordType &type) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    auto id = freeNoteId(clip);
+    for (const auto *root : pick(clip, ids))
+        for (const int above : type.above) {
+            const int key = root->key + above;
+            if (above == 0 || key >= kNoteKeys)
+                continue;
+            const bool there = std::any_of(clip.notes.begin(), clip.notes.end(), [&](const engine::ClipNote &n) {
+                return n.key == key && n.startTicks == root->startTicks;
+            });
+            if (there)
+                continue;
+            edit.ops.push_back(op("note.insert",
+                                  {{"clip", clip.id},
+                                   {"note", id},
+                                   {"start", root->startTicks},
+                                   {"dur", root->durationTicks},
+                                   {"key", key},
+                                   {"vel", root->velocity}},
+                                  "Insert Chord"));
+            edit.select.push_back(id++);
+        }
+    return edit;
+}
+
+// Inversions: in each selected chord (the notes that start together) the lowest note goes up an
+// octave, or the highest down one. A chord that would leave the keys is left as it is.
+inline NoteEdit invertChords(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, bool up) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const char *label = up ? "Invert Chord Up" : "Invert Chord Down";
+    for (const auto &chord : chords(clip, ids)) {
+        if (chord.size() < 2)
+            continue;
+        const auto *n = up ? chord.back() : chord.front();
+        const int key = n->key + (up ? 12 : -12);
+        if (key < 0 || key >= kNoteKeys)
+            continue;
+        edit.ops.push_back(op("note.move", {{"clip", clip.id}, {"note", n->id}, {"start", n->startTicks}, {"key", key}}, label));
+    }
+    return edit;
+}
+
+// Drop voicings: in each selected chord the second-highest note (Drop 2), the third-highest (Drop 3),
+// or the second and the fourth (Drop 2+4) go down an octave. `which` lists the places from the top,
+// from 1.
+inline NoteEdit dropVoicing(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids,
+                            std::initializer_list<int> which, const char *label) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    for (const auto &chord : chords(clip, ids))
+        for (const int place : which) {
+            if (place < 1 || static_cast<std::size_t>(place) > chord.size())
+                continue;
+            const auto *n = chord[static_cast<std::size_t>(place - 1)];
+            if (n->key < 12)
+                continue;
+            edit.ops.push_back(
+                op("note.move", {{"clip", clip.id}, {"note", n->id}, {"start", n->startTicks}, {"key", n->key - 12}}, label));
+        }
+    return edit;
+}
+
+// Fixed Lengths: every selected note as long as `length` (the editing grid's step).
+inline NoteEdit fixedLengths(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t length) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto duration = std::max(kShortestNote, length);
+    for (const auto *n : targets(clip, ids))
+        place(edit, clip.id, *n, n->startTicks, n->key, duration, "Fixed Lengths");
+    return edit;
+}
+
+// Delete Overlaps: a note that still sounds when a later one begins is cut to end there. Mono: only
+// against later notes on the same key. Poly: against any later note, so no two notes sound together.
+// Notes that start together are left as they are (a chord is not an overlap).
+inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, bool poly) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    edit.select = ids;
+    const auto notes = targets(clip, ids);
+    const char *label = poly ? "Delete Overlaps (Poly)" : "Delete Overlaps (Mono)";
+    for (const auto *n : notes) {
+        std::optional<std::int64_t> next;
+        for (const auto *other : notes)
+            if (other->startTicks > n->startTicks && (poly || other->key == n->key) && (!next || other->startTicks < *next))
+                next = other->startTicks;
+        if (next && *next < n->startTicks + n->durationTicks)
+            place(edit, clip.id, *n, n->startTicks, n->key, std::max(kShortestNote, *next - n->startTicks), label);
     }
     return edit;
 }

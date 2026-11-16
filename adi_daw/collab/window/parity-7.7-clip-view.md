@@ -48,3 +48,15 @@ Status: **built**, **partial**, **open** (planned, not built), **waits** (a Need
 | 35 | Multi-clip editing and Focus Mode (N) | §10.8 | Later (P2) | later |
 | 36 | The audio clip: the Sample Editor's header (file, rate, depth, channels), the Audio Utilities panel (Warp, modes, BPM, Reverse, Edit, RAM, HiQ, Gain, Pitch) | §8.4, §8.10 | Drawn; the waveform and warping wait | waits (N5; 4.2) |
 | 37 | — (ADI addition) the Clip View can be torn out to its own window | Master Reference 4.1, ADR-0063 | Through the floating host, reparented | open |
+
+## ADI's additions beyond Live (ADR-0241)
+
+Each is gated against the DAW it comes from (ADR-0108), not against Live.
+
+| # | Addition | From | Status |
+|---|---|---|---|
+| A1 | Chord editing: a chord of a chosen type on each selected note; inversions up and down; Drop 2 and Drop 3 | Cubase Pro 15, the Key Editor's Chord Editing section | built: the Pitch and Time panel's chord chooser, Add Chord, Inversion Up and Dn, Drop 2, Drop 3, one undo step each; the list of chord types and Drop 2+4's button are to be read on Cubase |
+| A2 | Fixed Lengths; Delete Overlaps on one key (mono) and on all (poly) | Cubase Pro 15, MIDI functions | built: Fixed Length sets the editing grid's step; Overlap Mono and Overlap Poly; notes that start together are not an overlap (to be checked on Cubase) |
+| A3 | Line tools in the Velocity and controller lanes | Cubase Pro 15 | open |
+| A4 | The trim tool | Cubase Pro 15 | open |
+| A5 | Handles on a selection of velocity or controller events: tilt, compress, scale | Cubase Pro 15 | open |
