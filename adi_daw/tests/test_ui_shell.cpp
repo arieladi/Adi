@@ -3551,11 +3551,12 @@ void clipViewReference(ClipViewPanel &panel, const char *name, bool write) {
         panel.paintEntireComponent(g, true);
     }
     {
-        // Each platform's fonts differ: every place the panel draws text is blacked out.
+        // Each platform's fonts differ: every place the panel draws text is blacked out, with two
+        // pixels around it, since a glyph's edge can overhang the box it is drawn in.
         juce::Graphics g(image);
         g.setColour(juce::Colours::black);
         for (const auto &r : panel.textAreas())
-            g.fillRect(r);
+            g.fillRect(r.expanded(2));
     }
     const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
     if (write) {
