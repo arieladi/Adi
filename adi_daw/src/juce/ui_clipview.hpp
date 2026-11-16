@@ -94,6 +94,15 @@ class NoteEditor final : public juce::Component {
     // Moves the playhead: called on the window's frame.
     void frame();
     ArrangementPlayhead playhead;
+    // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
+    // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
+    std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }
+    // Cut, Copy and Paste of notes (manual 10.5.4; Ctrl/Cmd+X, C, V): the selected notes of every
+    // shown clip are copied with their places in the song; Paste puts them into the edited clip at
+    // the insert marker, the earliest on it, selected; one undo step.
+    bool copySelected();
+    bool cutSelected();
+    bool paste();
     // With several clips shown and Focus off, notes of the other clips can be selected too (a drag
     // from empty space, Ctrl/Cmd+A, Shift and a click), and a drag, the arrows, Delete, 0 and
     // Duplicate act on every selected note of every clip, as one undo step (manual 10.8).
@@ -160,6 +169,7 @@ class NoteEditor final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
     std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> otherSelected_;
+    std::optional<std::int64_t> insert_;
     Drag drag_ = Drag::None;
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
@@ -295,6 +305,9 @@ class ClipViewPanel final : public juce::Component {
     Readings readings() const;
     // Reads the clip again now: after an edit of this view's, before the next frame.
     void reread();
+    // The notes last cut or copied in this window's Clip View, each with its start counted from the
+    // first of them; they stay while other clips are opened.
+    std::vector<engine::ClipNote> noteClipboard;
     // Every place this panel and its editor draw text, in the panel's coordinates.
     std::vector<juce::Rectangle<int>> textAreas() const;
 

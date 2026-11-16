@@ -4697,6 +4697,39 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     panel.mouseUp(pressAt(panel, panel.drawBox().getCentre().toFloat()));
     check(!ed.drawMode(), "the header's switch turns it off");
 
+    // Cut, Copy and Paste of notes, and the insert marker (manual 10.5.2, 10.5.4).
+    ed.select({});
+    const auto clipCount = panel.details()->notes.size();
+    check(!ed.insertMarker() && ed.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) &&
+              panel.details()->notes.size() == clipCount,
+          "Paste with nothing copied is the editor's and does nothing");
+    ed.select({1, 2});
+    check(ed.keyPressed(juce::KeyPress('c', juce::ModifierKeys::commandModifier, 0)) && panel.noteClipboard.size() == 2 &&
+              panel.noteClipboard[0].startTicks == 0 && panel.noteClipboard[1].startTicks == note(2).startTicks - note(1).startTicks,
+          "Copy keeps the two selected notes, each counted from the first of them");
+    const juce::Point<float> marker(xAt(6 * beat) + 4.f, static_cast<float>(area.getY() + 3));
+    ed.mouseDown(pressAt(ed, marker));
+    ed.mouseUp(pressAt(ed, marker));
+    check(ed.insertMarker() == 6 * beat && ed.selected().empty(), "a click on empty space puts the insert marker there, on the grid");
+    check(ed.keyPressed(juce::KeyPress('v', juce::ModifierKeys::commandModifier, 0)) && panel.details()->notes.size() == clipCount + 2 &&
+              ed.selected().size() == 2 && undoIs("Paste Notes", 2),
+          "Paste puts them in, selected, one undo step");
+    bool landed = true;
+    std::int64_t firstPasted = 0;
+    for (const auto id : ed.selected())
+        firstPasted = firstPasted == 0 ? note(id).startTicks : std::min(firstPasted, note(id).startTicks);
+    for (const auto id : ed.selected())
+        landed = landed && (note(id).startTicks == 6 * beat || note(id).startTicks == 6 * beat + panel.noteClipboard[1].startTicks);
+    check(landed && firstPasted == 6 * beat, "the earliest pasted note is on the insert marker, the other as far after it as before");
+    const auto pasted = ed.selected();
+    check(ed.keyPressed(juce::KeyPress('x', juce::ModifierKeys::commandModifier, 0)) && panel.details()->notes.size() == clipCount &&
+              undoIs("Cut Notes", 2) && panel.noteClipboard.size() == 2 && ed.selected().empty(),
+          "Cut takes the selected notes out and keeps them for a paste, one undo step");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "the cut and the paste undone");
+    root.frame();
+    check(panel.details()->notes.size() == clipCount, "and the clip is as it was");
+    ed.select({});
+
     // The Velocity lane's line tools (ADR-0241 d2, from Cubase): with Line chosen, a stroke across the lane
     // gives every note under it the line's value there; shown while held, one undo step.
     check(ed.laneShape() == LaneShape::Pointer && ed.shapeMenu().getNumItems() == 7 && !ed.shapeBox().isEmpty(),
