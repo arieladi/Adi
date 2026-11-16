@@ -29,7 +29,7 @@ this bounded device. These will join as separately usable capabilities.
 
 Mono/stereo and float/double I/O use the same float-signal/double-envelope engine.
 A normalized-control cache avoids remapping unchanged settings on each segment.
-There is no per-device worker, timer, meter service or callback allocation. The
+There is no per-device worker, timer, meter service or callback allocation. A callback-scoped hardware denormal guard prevents very small decaying envelopes from entering slow floating-point paths on x86/SSE2 and GNU/Clang AArch64, and restores the caller's floating-point control state. It adds no per-sample branch or coefficient change. The
 ordinary input-copy pass turns non-finite/float-unrepresentable samples into zero
 before recursive state; finite signals keep their authored processing path.
 Overlapping output/partial input aliases refuse before admitting a logical core
@@ -64,3 +64,5 @@ research folder, outside public sources/tests. New CPU timing is deferred; no
 CPU parity percentage or live visual acceptance is inferred from allocation-free
 callbacks or software peers. Claude performs live playback, pointer/focus and
 application acceptance; win reviews/merges the slice.
+
+The long-quiet generated regression runs 180 seconds below threshold with caller FTZ/DAZ off on x86, checks restored FP flags and exact unity settling, then checks renewed compression. This is not a CPU benchmark. Native remove/Undo assertions check actual stored membership, position and complete authored state rather than a possibly retired runtime pointer.

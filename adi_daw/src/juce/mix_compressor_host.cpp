@@ -13,9 +13,28 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 namespace adi::device {
 namespace {
 namespace c = mix::compressor;
+// Keep decaying envelopes out of hardware slow paths, without changing the
+// caller's floating environment or adding per-sample work. No JUCE dependency.
+struct ScopedFlushDenormals {
+#if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+    std::uint64_t previous = 0;
+    ScopedFlushDenormals() noexcept {
+        asm volatile("mrs %0, fpcr" : "=r"(previous));
+        asm volatile("msr fpcr, %0" :: "r"(previous | (std::uint64_t{1} << 24)));
+    }
+    ~ScopedFlushDenormals() { asm volatile("msr fpcr, %0" :: "r"(previous)); }
+#elif defined(_M_X64) || defined(__SSE2__)
+    unsigned previous = _mm_getcsr();
+    ScopedFlushDenormals() noexcept { _mm_setcsr(previous | 0x8040U); }
+    ~ScopedFlushDenormals() { _mm_setcsr(previous); }
+#endif
+};
 constexpr std::size_t count = 8;
 using Values = std::array<float, count>;
 // Numeric stable IDs are the engine automation wire identity (ADR-0165).
@@ -111,6 +130,7 @@ class CompressorDevice final : public DeviceInstance {
     }
     std::int32_t latencySamples() const noexcept override { return 0; }
     void process(const engine::NodeIo &io) noexcept override {
+        [[maybe_unused]] const ScopedFlushDenormals denormals;
         const ReactivationGate::Pass pass(gate_);
         if (io.frames <= 0 || io.blockOffset < 0)
             return;

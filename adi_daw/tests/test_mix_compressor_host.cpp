@@ -3,6 +3,7 @@
 #include "adi/engine/param_automation.hpp"
 #include "adi/mix/compressor/Core.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/row_capture.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
@@ -16,6 +17,9 @@
 #include <limits>
 #include <new>
 #include <type_traits>
+#if defined(_M_X64) || defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 namespace {
 thread_local bool audio = false;
@@ -155,6 +159,44 @@ template <class T> void exactAudio(double rate) {
     check(exact, "native whole/split, live controls, same-format prepare and sanitized input equal "
                  "direct Clean samples");
     check(reduces, "loaded native compressor actually reduces programme level");
+}
+void quietEnvelope() {
+    auto device = make();
+    check(device != nullptr, "quiet-envelope fixture creates native Clean");
+    if (!device) return;
+    device->setParam("7", device::ParamValue::fromNormalized(0));
+    device->prepare(48000, 64);
+    Audio<float> data{};
+#if defined(_M_X64) || defined(__SSE2__)
+    const auto caller = _mm_getcsr();
+    // The adapter must protect a caller that has not enabled FTZ or DAZ.
+    const auto ordinary = caller & ~0x807fU;
+    _mm_setcsr(ordinary);
+#endif
+    data[0].fill(.95f); data[1].fill(.95f);
+    for (std::uint64_t block = 1; block <= 750; ++block) {
+        data[0].fill(.95f); data[1].fill(.95f);
+        process(*device, data, block, false);
+    }
+    bool finite = true;
+    for (std::uint64_t block = 751; block <= 135750; ++block) {
+        data[0].fill(.0001f); data[1].fill(.0001f);
+        process(*device, data, block, false);
+        finite = finite && std::isfinite(data[0][0]) && std::isfinite(data[1][0]);
+    }
+#if defined(_M_X64) || defined(__SSE2__)
+    // Sticky denormal-operand flags also expose the old subnormal recurrence,
+    // without a timing benchmark. Restoring all caller bits is part of the scope.
+    const auto after = _mm_getcsr();
+    _mm_setcsr(caller);
+    check(after == ordinary, "long quiet processing restores caller FP flags and avoids denormal operands");
+#endif
+    check(finite && data[0][0] == .0001f && data[1][0] == .0001f,
+          "180 seconds below threshold settles to exact finite unity output");
+    data[0].fill(.95f); data[1].fill(.95f);
+    process(*device, data, 135751, false);
+    check(std::isfinite(data[0][63]) && data[0][63] < .95f,
+          "compression resumes after the long quiet interval");
 }
 void stateAndDescriptors() {
     auto a = make(), b = make();
@@ -321,10 +363,17 @@ void documentPipeline() {
     doc->tick(3);
     check(!doc->addMixFunction(mix::Function::Compressor, 2),
           "one compressor per channel is enforced by shared insertion");
-    check(doc->deviceAction("device.remove", {{"id", id}}) && doc->ops().undo().ok &&
-              doc->synchronise(),
-          "remove and Undo restore the native function");
+    const auto priorRow = detail::captureRow(doc->store().db(), "devices", "id", id);
+    const auto priorState = doc->session().instanceFor(id)->saveState("state");
+    const bool removed = doc->deviceAction("device.remove", {{"id", id}});
+    check(removed && !detail::captureRow(doc->store().db(), "devices", "id", id),
+          "native removal deletes the authored device row, not just a live publication");
+    const bool restored = doc->ops().undo().ok && doc->synchronise();
     doc->tick(4);
+    check(restored && detail::captureRow(doc->store().db(), "devices", "id", id) == priorRow &&
+              doc->session().instanceFor(id) &&
+              doc->session().instanceFor(id)->saveState("state") == priorState,
+          "one Undo restores exact function membership, chain position and every authored setting");
     doc.reset();
     doc = ui::ProjectDocument::open(path, false, device::withBuiltinDevices(), error);
     instance = doc ? doc->session().instanceFor(id) : nullptr;
@@ -334,6 +383,7 @@ void documentPipeline() {
 } // namespace
 int main() {
     stateAndDescriptors();
+    quietEnvelope();
     for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         exactAudio<float>(rate);
         exactAudio<double>(rate);
