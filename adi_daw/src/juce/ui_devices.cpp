@@ -270,7 +270,7 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
         if (!validTarget()) return;
         if (nativeFunction()) cancelInteractions();
         if (!safe || !safe->validTarget() || !safe->data) return;
-        const bool requested = safe->nativeFunction() ? false : safe->enabled.getToggleState();
+        const bool requested = safe->nativeFunction() ? !safe->data->enabled : safe->enabled.getToggleState();
         if (!safe->strip.setEnabledExpected(*safe->data, requested) && safe && safe->data)
             safe->enabled.setToggleState(safe->data->enabled, juce::dontSendNotification);
     };
@@ -1450,7 +1450,10 @@ bool DeviceChainStrip::setEnabledExpected(const DevicePanelData &expected, bool 
     identity.instance = expected.instance;
     if (!validExpected(identity) || !safe)
         return false;
-    if (native)
+    // Compatibility: older projects, control clients and Bounce can leave a
+    // native function bypassed. Its first activation recovers it; deactivating
+    // an active native function still means remove plus Undo.
+    if (native && expected.enabled)
         return safe->action("device.remove", {{"id", id}});
     return safe->action("device.setEnabled", {{"id", id}, {"enabled", enabled}});
 }

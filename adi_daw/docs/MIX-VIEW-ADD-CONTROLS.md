@@ -15,7 +15,7 @@ No parameter demand is acquired merely to populate the add menu.
 
 Native activators in both expanded Device View and compact STACK now use one
 common meaning: remove the function, with its settings recoverable by Undo.
-Ordinary plug-in activators keep ordinary bypass. A refused removal restores the
+An already-disabled native function (older project, control-client edit or Bounce) activates through `device.setEnabled true` first; disabling an active native function still removes it. Ordinary plug-in activators keep ordinary bypass. A refused removal restores the
 widget's authored state. Retained identities are validated before mutation and
 callbacks may replace or destroy a presentation without editing its replacement.
 Held interactions are ended before native removal.

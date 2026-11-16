@@ -152,6 +152,16 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     strip.submit = submit;
     check(strip.setEnabledExpected(publication->back(), false) && op == "device.remove",
           "shared compact/native activation authority removes instead of bypassing");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->back().enabled = false;
+    strip.frame(2); native = strip.panels[1].get(); ordinary = strip.panels[0].get();
+    native->enabled.onClick();
+    check(op == "device.setEnabled" && payload.at("enabled").get<bool>() &&
+              payload.at("id").get<std::int64_t>() == 20,
+          "expanded activation recovers an already-disabled native function");
+    publication = std::make_shared<ParameterPublication>(*publication);
+    publication->back().enabled = true;
+    strip.frame(2); native = strip.panels[1].get(); ordinary = strip.panels[0].get();
     ordinary->enabled.onClick();
     check(op == "device.setEnabled" && payload.at("id").get<std::int64_t>() == 21,
           "ordinary plug-in activator keeps ordinary bypass semantics");
@@ -449,7 +459,12 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
         check(eq != after->end() && !menuItems(strip.functionMenu())[0].ticked && root.arrangement.geometry.selection.track == 2,
               "Mix View adds to its selected channel without selecting or altering the device-strip channel");
         const bool undo = doc->ops().undo().ok && doc->synchronise(); doc->tick(4);
-        check(undo && doc->session().instanceFor(found->id), "one Undo removes only the function added in Mix View");
+        const auto remaining = doc->parameterFeed().current();
+        const bool eqGone = eq != after->end() && std::none_of(remaining->begin(), remaining->end(),
+            [&](const auto &d) { return d.id == eq->id; });
+        const bool cleanKept = std::any_of(remaining->begin(), remaining->end(),
+            [&](const auto &d) { return d.id == found->id && d.uid == "org.adidaw.mix.compressor"; });
+        check(undo && eqGone && cleanKept, "one Undo removes only the function added in Mix View");
         root.frame(); stack.frameAt(root.reader(), 1);
         auto expired = menuItems(stack.functionMenu());
         const auto count = doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt();
@@ -464,6 +479,52 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
         check(doc->store().db().execAndGet("SELECT count(*) FROM devices").getInt() == count,
               "selection away and back cannot revive an old Mix View add menu");
     }
+    // Drive the actual folded-dot handler using generated component events,
+    // not desktop input. Its coordinates come from the presented model geometry.
+    strip.submit = [&](const std::string &op, Payload p) { return doc->deviceAction(op, std::move(p)); };
+    stack.setSize(320, 650);
+    stack.model().setAutoZoom(false, 10);
+    const auto refresh = [&] {
+        doc->tick(10); root.mark(DirtySet::All); root.frame();
+        stack.setSize(320, 650); stack.frameAt(root.reader(), 10000);
+    };
+    const auto clickDot = [&](std::int64_t id) {
+        std::optional<stack::ItemGeo> target;
+        stack.model().forEachVisibleRow([&](const auto &row) {
+            stack.model().forEachChainItem(row.shown, [&](const auto &item) {
+                if (item.ref.device == id && item.pill) target = item;
+            });
+        });
+        if (!target) return false;
+        const auto at = stack.listArea().getPosition().toFloat() +
+            juce::Point<float>{static_cast<float>(target->x + target->width / 2),
+                               static_cast<float>(target->top + 8)};
+        const auto now = juce::Time::getCurrentTime();
+        const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
+            juce::ModifierKeys::leftButtonModifier, 1.f, 0.f, 0.f, 0.f, 0.f,
+            &stack, &stack, now, at, now, 1, false};
+        stack.mouseDown(event); stack.mouseUp(event);
+        return true;
+    };
+    const auto enabledInStore = [&](std::int64_t id) -> std::optional<bool> {
+        SQLite::Statement query(doc->store().db(), "SELECT enabled FROM devices WHERE id=?");
+        query.bind(1, id);
+        if (!query.executeStep()) return {};
+        return query.getColumn(0).getInt() != 0;
+    };
+    const bool disabled = doc->deviceAction("device.setEnabled", {{"id", found->id}, {"enabled", false}});
+    refresh();
+    check(disabled && clickDot(found->id) && enabledInStore(found->id) == true,
+          "actual folded native dot recovers a bypassed function without removing it");
+    refresh();
+    const bool removed = clickDot(found->id);
+    check(removed && !enabledInStore(found->id), "actual active native dot removes its authored device row");
+    const bool restored = doc->ops().undo().ok && doc->synchronise(); refresh();
+    const auto restoredParams = doc->parameterFeed().current();
+    check(restored && enabledInStore(found->id) == true &&
+              std::any_of(restoredParams->begin(), restoredParams->end(), [&](const auto &d) {
+                  return d.id == found->id && d.uid == "org.adidaw.mix.compressor";
+              }), "one Undo recovers the active function removed by the actual folded dot");
     peer.removeChildComponent(&root);
     peer.removeFromDesktop();
 }
