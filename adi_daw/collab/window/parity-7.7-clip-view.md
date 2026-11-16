@@ -58,7 +58,7 @@ Status: **built**, **partial**, **open** (planned, not built), **waits** (a Need
 | L3 | The Status Bar shows the selected note's time, pitch, velocity and probability | §3.2 | open |
 | L4 | Live's own Draw Mode in the Velocity lane | §10.5.12.1 | open |
 | L5 | The MIDI clip's Bank, Sub-bank and Program choosers | §8.3.2 | open |
-| L6 | The overlap rule as measured: the newer note survives whole; an older one is cut at its start, or removed | §10.5.4 | open |
+| L6 | The overlap rule as measured: the newer note survives whole; an older one is cut at its start, or removed | §10.5.4 | built: every edit that places a note (add, draw, move, resize, copy, paste, the panel's tools) cuts or removes the older notes it lands on, on the same key, in the same undo step; showing the cut while a drag is held is open |
 
 ## ADI's additions beyond Live (ADR-0241)
 

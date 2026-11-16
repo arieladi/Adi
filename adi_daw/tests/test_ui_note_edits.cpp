@@ -474,6 +474,52 @@ void pasting() {
     check(!pasteNotes(audio, {a}, 0).refusal.empty(), "an audio clip takes no notes");
 }
 
+void overlaps() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 100;
+        return n;
+    };
+    // As measured on Live: an older note from 26 to 34, a new one placed from 28 to 32, leaves the older 26 to 28.
+    c.notes = {note(1, 60, 26 * beat, 8 * beat), note(2, 60, 40 * beat, beat), note(3, 62, 28 * beat, 4 * beat)};
+    const auto added = withOverlaps(c, addNote(c, 28 * beat, 4 * beat, 60));
+    check(added.ops.size() == 2 && added.ops[0].opType == "note.insert" && added.ops[1].opType == "note.resize" &&
+              added.ops[1].payload == Payload({{"clip", 7}, {"note", std::uint64_t{1}}, {"dur", 2 * beat}}) &&
+              added.ops[1].label == "Add Note",
+          "a note placed inside an older one on its key cuts the older to end where the new one begins; its tail is gone");
+    // An older note that begins inside the placed one is removed.
+    const auto moved = withOverlaps(c, moveNotes(c, {2}, -13 * beat, 0)); // to 27, one beat long: inside note 1? no: it begins inside note 1
+    check(moved.ops.size() == 2 && moved.ops[1].opType == "note.resize" && moved.ops[1].payload.at("note") == 1 &&
+              moved.ops[1].payload.at("dur") == beat,
+          "a note moved into an older one cuts it where the moved note begins");
+    const auto over = withOverlaps(c, moveNotes(c, {1}, 14 * beat, 0)); // 40 to 48 covers note 2 at 40
+    check(over.ops.size() == 2 && over.ops[1].opType == "note.delete" && over.ops[1].payload == Payload({{"clip", 7}, {"note", std::uint64_t{2}}}) &&
+              over.ops[1].label == "Move Note",
+          "an older note that begins inside the placed note is removed");
+    const auto other = withOverlaps(c, moveNotes(c, {3}, 0, 1)); // key 63: nothing there
+    check(other.ops.size() == 1, "notes on other keys are left alone");
+    const auto onto = withOverlaps(c, moveNotes(c, {3}, 0, -2)); // onto key 60 at 28: cuts note 1
+    check(onto.ops.size() == 2 && onto.ops[1].payload.at("note") == 1 && onto.ops[1].payload.at("dur") == 2 * beat,
+          "a note moved onto another key cuts what it lands on there");
+    const auto longer = withOverlaps(c, resizeNotes(c, {1}, 10 * beat)); // 26 to 44 covers note 2 at 40
+    check(longer.ops.size() == 2 && longer.ops[1].opType == "note.delete" && longer.ops[1].payload.at("note") == 2,
+          "a note made longer over a later one removes it");
+    const auto together = withOverlaps(c, moveNotes(c, {1, 2}, beat, 0));
+    check(together.ops.size() == 2, "notes moved together never cut each other");
+    const auto velocity = withOverlaps(c, changeVelocities(c, {1}, 5));
+    check(velocity.ops.size() == 1, "an edit that places nothing cuts nothing");
+    ClipDetails elsewhere = c;
+    elsewhere.id = 8;
+    check(withOverlaps(elsewhere, addNote(c, 28 * beat, 4 * beat, 60)).ops.size() == 1, "another clip's ops in the batch are not this clip's");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -527,6 +573,7 @@ int main() {
     laneShapes();
     handlesAndTrim();
     pasting();
+    overlaps();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
