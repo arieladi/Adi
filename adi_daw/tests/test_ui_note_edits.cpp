@@ -198,6 +198,11 @@ void clipFields() {
     check(setClipLoop(c, beat, 2 * bar).ops[0].label == "Set Loop Length" && setClipLoop(c, beat, bar).ops.empty(),
           "its Length; and the same window writes nothing");
     check(!setClipLoop(c, -1, bar).refusal.empty() && !setClipLoop(c, 0, 0).refusal.empty(), "a loop before the beginning, or with no length, is refused");
+    c.loopEnabled = false;
+    const auto setOn = setClipLoop(c, beat, bar, true);
+    check(setOn.ops.size() == 1 && setOn.ops[0].payload == Payload({{"id", 7}, {"on", true}, {"start", beat}, {"length", bar}}),
+          "Live's Set on the loop keeps the window and switches the loop on");
+    c.loopEnabled = true;
 
     const auto signature = setClipSignature(c, 3, 4);
     check(signature.ops.size() == 1 && signature.ops[0].opType == "clip.setTimeSignature" &&

@@ -308,8 +308,11 @@ std::vector<std::int64_t> NoteEditor::drawnSteps() const {
 void NoteEditor::setFold(bool fold) {
     const auto *clip = panel.details();
     const int height = notesArea().getHeight();
-    if (fold && clip != nullptr && !clip->notes.empty()) {
-        keys.fold(clip->notes, height);
+    auto every = clip != nullptr ? clip->notes : std::vector<engine::ClipNote>{};
+    for (const auto &layer : panel.others())
+        every.insert(every.end(), layer.details.notes.begin(), layer.details.notes.end());
+    if (fold && clip != nullptr && !every.empty()) {
+        keys.fold(every, height);
         folded_ = true;
     } else {
         const bool was = folded_;
@@ -317,7 +320,7 @@ void NoteEditor::setFold(bool fold) {
         keys.unfold(height);
         // Unfolded, the notes come back into view.
         if (was && clip != nullptr)
-            if (const auto range = keyRange(clip->notes))
+            if (const auto range = keyRange(every))
                 keys.show(range->low, range->high, height);
     }
     repaint();
@@ -356,16 +359,48 @@ bool NoteEditor::duplicate() {
     return commit(copyNotes(*clip, selected_, spanOf(*clip, selected_), 0,
                             selected_.size() == 1 ? "Duplicate Note" : "Duplicate Notes"));
 }
+int NoteEditor::barsHeight() const noexcept {
+    const auto count = panel.others().size();
+    return count == 0 ? 0 : static_cast<int>(count + 1) * kLoopBarHeight + 2;
+}
+juce::Rectangle<int> NoteEditor::loopBar(std::size_t index) const noexcept {
+    const auto *clip = index == 0 ? panel.details()
+                                  : index <= panel.others().size() ? &panel.others()[index - 1].details : nullptr;
+    if (clip == nullptr || barsHeight() == 0)
+        return {};
+    // Across the clip's place in the arrangement, as Live lays the bars out by time.
+    const auto window = ClipWindow::of(*clip);
+    const int from = kKeysWidth + static_cast<int>(std::clamp(time.x(window.pos), -1e6, 1e6));
+    const int to = kKeysWidth + static_cast<int>(std::clamp(time.x(window.end()), -1e6, 1e6));
+    return {from, static_cast<int>(index) * kLoopBarHeight + 1, std::max(2, to - from), kLoopBarHeight - 1};
+}
+std::int64_t NoteEditor::otherClipAt(juce::Point<int> at, std::uint64_t *note) const noexcept {
+    const auto &others = panel.others();
+    for (std::size_t i = 0; i < others.size(); ++i)
+        if (loopBar(i + 1).contains(at))
+            return others[i].details.id;
+    if (!notesArea().contains(at))
+        return 0;
+    for (auto layer = others.rbegin(); layer != others.rend(); ++layer)
+        for (auto n = layer->details.notes.rbegin(); n != layer->details.notes.rend(); ++n)
+            if (const auto box = boxOf(*n, layer->details); box && box->contains(at.x, at.y)) {
+                if (note != nullptr)
+                    *note = n->id;
+                return layer->details.id;
+            }
+    return 0;
+}
 juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
-    return {kKeysWidth, 0, std::max(0, getWidth() - kKeysWidth), kRulerHeight};
+    return {kKeysWidth, barsHeight(), std::max(0, getWidth() - kKeysWidth), kRulerHeight};
 }
 juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
-    const int h = getHeight() - kRulerHeight >= kVelocityHeight + 48 ? kVelocityHeight : 0;
+    const int h = getHeight() - kRulerHeight - barsHeight() >= kVelocityHeight + 48 ? kVelocityHeight : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
 }
 juce::Rectangle<int> NoteEditor::notesArea() const noexcept {
     const int bottom = getHeight() - velocityArea().getHeight();
-    return {kKeysWidth, kRulerHeight, std::max(0, getWidth() - kKeysWidth), std::max(0, bottom - kRulerHeight)};
+    const int top = barsHeight() + kRulerHeight;
+    return {kKeysWidth, top, std::max(0, getWidth() - kKeysWidth), std::max(0, bottom - top)};
 }
 juce::Rectangle<int> NoteEditor::keysArea() const noexcept {
     const auto n = notesArea();
@@ -373,10 +408,15 @@ juce::Rectangle<int> NoteEditor::keysArea() const noexcept {
 }
 std::optional<NoteBox> NoteEditor::boxOf(const engine::ClipNote &note) const noexcept {
     const auto *clip = panel.details();
-    const auto y = keys.y(note.key);
-    if (clip == nullptr || !y)
+    if (clip == nullptr)
         return std::nullopt;
-    const auto window = ClipWindow::of(*clip);
+    return boxOf(note, *clip);
+}
+std::optional<NoteBox> NoteEditor::boxOf(const engine::ClipNote &note, const engine::ClipDetails &of) const noexcept {
+    const auto y = keys.y(note.key);
+    if (!y)
+        return std::nullopt;
+    const auto window = ClipWindow::of(of);
     const auto area = notesArea();
     const double x = time.x(window.toArrangement(note.startTicks));
     const double end = time.x(window.toArrangement(note.startTicks + note.durationTicks));
@@ -488,6 +528,15 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (clip == nullptr || e.mods.isPopupMenu())
         return;
+    if (std::uint64_t picked = 0; noteAt(from_) == nullptr) {
+        if (const auto other = otherClipAt(from_, &picked); other != 0) {
+            // Another clip's loop bar or note: that clip becomes the one being edited (manual 10.8).
+            if (panel.activate(other) && picked != 0)
+                selected_ = {picked};
+            repaint();
+            return;
+        }
+    }
     if (shapeBox().contains(from_)) {
         juce::Component::SafePointer<NoteEditor> safe(this);
         shapeMenu().showMenuAsync(
@@ -708,6 +757,10 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         duplicate();
         return true;
     }
+    if (!mods.isAnyModifierKeyDown() && (code == 'n' || code == 'N') && !panel.others().empty()) {
+        panel.setFocus(!panel.focus());
+        return true;
+    }
     if (!mods.isAnyModifierKeyDown() && (code == 'b' || code == 'B')) {
         setDrawMode(!drawMode_);
         return true;
@@ -765,14 +818,23 @@ void NoteEditor::resized() {
     if (fitPending_ && area.getWidth() > 0 && area.getHeight() > 0) {
         if (const auto *clip = panel.details()) {
             fitPending_ = false;
+            // From the first shown clip's start to the last one's end (manual 10.8, the Arrangement).
             const auto window = ClipWindow::of(*clip);
-            const auto length = std::max<std::int64_t>(textproj::kPPQ, window.length);
-            time.fit(window.pos, window.pos + length + length / 24, area.getWidth(), false);
+            auto from = window.pos, to = window.end();
+            auto every = clip->notes;
+            for (const auto &layer : panel.others()) {
+                const auto other = ClipWindow::of(layer.details);
+                from = std::min(from, other.pos);
+                to = std::max(to, other.end());
+                every.insert(every.end(), layer.details.notes.begin(), layer.details.notes.end());
+            }
+            const auto length = std::max<std::int64_t>(textproj::kPPQ, to - from);
+            time.fit(from, from + length + length / 24, area.getWidth(), false);
             // Live opens on the notes; an empty clip opens around middle C.
             folded_ = false;
             keys.unfold(area.getHeight());
             keys.keyHeight = KeyTracks::kDefaultHeight;
-            const auto range = keyRange(clip->notes);
+            const auto range = keyRange(every);
             keys.show(range ? range->low : 60, range ? range->high : 71, area.getHeight());
         }
     }
@@ -797,8 +859,25 @@ void NoteEditor::paint(juce::Graphics &g) {
     g.fillAll(look::lane);
     const auto ruler = rulerArea(), area = notesArea(), keyboard = keysArea(), velocity = velocityArea();
     g.setColour(look::band);
-    g.fillRect(0, 0, kKeysWidth, kRulerHeight);
+    g.fillRect(0, 0, kKeysWidth, barsHeight() + kRulerHeight);
     const auto *clip = panel.details();
+    if (barsHeight() > 0) {
+        // The loop bars: each clip's in its colour, the edited clip's outlined; with Focus on the
+        // others are grey.
+        g.fillRect(kKeysWidth, 0, getWidth() - kKeysWidth, barsHeight());
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(kKeysWidth, 0, getWidth() - kKeysWidth, barsHeight());
+        for (std::size_t i = 0; i <= panel.others().size(); ++i) {
+            const auto bar = loopBar(i);
+            const auto own = i == 0 ? panel.colour() : panel.others()[i - 1].colour;
+            g.setColour(i != 0 && panel.focus() ? juce::Colour(0xff8a8a8a) : own);
+            g.fillRect(bar);
+            if (i == 0) {
+                g.setColour(juce::Colours::black);
+                g.drawRect(bar, 1);
+            }
+        }
+    }
     if (clip == nullptr || time.meters == nullptr) {
         g.fillRect(ruler);
         return;
@@ -837,6 +916,21 @@ void NoteEditor::paint(juce::Graphics &g) {
         shadeOutside(g, area, time, window);
         // The notes: the clip's colour, lighter as the velocity falls; a deactivated note is grey
         // (manual 10.5.7).
+        // The other shown clips' notes, under the edited clip's: each in its own clip's colour, or
+        // grey while Focus is on (manual 10.8).
+        for (const auto &layer : panel.others())
+            for (const auto &note : layer.details.notes) {
+                const auto box = boxOf(note, layer.details);
+                if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
+                    box->y >= area.getBottom() || box->y + box->height <= area.getY())
+                    continue;
+                const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
+                                               static_cast<float>(box->width), static_cast<float>(box->height));
+                g.setColour(panel.focus() || !note.active ? juce::Colour(0xffa4a4a4) : layer.colour);
+                g.fillRect(r);
+                g.setColour(look::outline.withAlpha(0.7f));
+                g.drawRect(r, 1.f);
+            }
         const auto base = panel.colour();
         std::vector<engine::ClipNote> drawn;
         for (const auto &stored : clip->notes) {
@@ -1123,6 +1217,7 @@ void ClipViewPanel::resized() {
 void ClipViewPanel::read(const SnapshotReader &reader) {
     details_.reset();
     problem_.clear();
+    others_.clear();
     if (clip_ == 0)
         return;
     auto result = engine::readClipDetails(root.editStore(), clip_);
@@ -1148,6 +1243,37 @@ void ClipViewPanel::read(const SnapshotReader &reader) {
         meter_.denominator = song.denominator;
     }
     clipMeters_.assign(1, meter_);
+    // The other selected MIDI clips (manual 10.8): up to eight clips in all; only beside a MIDI clip.
+    if (midi())
+        for (const auto id : shown_) {
+            if (id == clip_ || others_.size() + 1 >= kMaxClips)
+                continue;
+            auto other = engine::readClipDetails(root.editStore(), id);
+            if (other.clip && other.clip->kind == "midi" && other.clip->notesProblem.empty())
+                others_.push_back(ClipLayer{std::move(*other.clip), look::trackColour(0)});
+        }
+}
+bool ClipViewPanel::activate(std::int64_t clip) {
+    const bool shown = std::any_of(others_.begin(), others_.end(), [clip](const ClipLayer &l) { return l.details.id == clip; });
+    if (!shown)
+        return false;
+    // The view stays where it is; only the clip being edited changes.
+    clip_ = clip;
+    wanted_ = clip;
+    closeEditor();
+    notes.select({});
+    read(root.reader());
+    frame(root.reader());
+    repaint();
+    return true;
+}
+void ClipViewPanel::setFocus(bool on) {
+    focus_ = on;
+    repaint();
+}
+juce::Rectangle<int> ClipViewPanel::focusBox() const noexcept {
+    const auto trim = trimBox();
+    return trim.isEmpty() || others_.empty() ? juce::Rectangle<int>() : trim.withX(trim.getRight() + 4).withWidth(40);
 }
 void ClipViewPanel::reread() {
     read(root.reader());
@@ -1155,16 +1281,43 @@ void ClipViewPanel::reread() {
     repaint();
 }
 void ClipViewPanel::frame(const SnapshotReader &reader) {
-    // The selected clip; with none selected, the one already shown stays, as Live's does.
-    const auto selected = root.arrangement.geometry.selection.clip;
-    const auto wanted = selected != 0 ? selected : clip_;
+    // The selected clips; with none selected, what is already shown stays, as Live's does. The clip
+    // being edited stays the same while it is still among them; else it is the one clicked last.
+    // Read in place: a steady frame allocates nothing (UI-ARCHITECTURE 8).
+    const auto &sel = root.arrangement.geometry.selection;
+    const auto selected = sel.clip;
+    const bool none = selected == 0 && sel.pickedClips.empty();
+    const auto picked = [&](std::int64_t id) {
+        return id != 0 && (id == selected || std::find(sel.pickedClips.begin(), sel.pickedClips.end(), id) != sel.pickedClips.end());
+    };
+    // Whether the selected clips are the ones shown, in the order the arrangement gives them: the
+    // clicked clip first, then the others picked.
+    const auto sameAsShown = [&] {
+        std::size_t at = 0;
+        if (selected != 0 && (at >= shown_.size() || shown_[at++] != selected))
+            return false;
+        for (const auto id : sel.pickedClips)
+            if (id != selected && (at >= shown_.size() || shown_[at++] != id))
+                return false;
+        return at == shown_.size();
+    };
+    const bool keep = picked(clip_);
+    const auto wanted = keep ? clip_ : selected != 0 ? selected : !none ? sel.pickedClips.front() : clip_;
     const auto generation = root.generation();
     // Asked once for each clip and each generation: a selected clip that is gone is not read again
     // until the project moves (an Undo may bring it back).
-    const bool other = wanted != wanted_ || !read_;
+    const bool other = wanted != wanted_ || !read_ || (!none && !sameAsShown());
     if (other || generation != generation_) {
         wanted_ = wanted;
         clip_ = wanted;
+        if (!none) {
+            shown_.clear();
+            if (selected != 0)
+                shown_.push_back(selected);
+            for (const auto id : sel.pickedClips)
+                if (id != selected)
+                    shown_.push_back(id);
+        }
         generation_ = generation;
         read_ = true;
         read(reader);
@@ -1197,6 +1350,10 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
                 if (c->id == clip_)
                     node_ = c.get();
         }
+        for (auto &layer : others_)
+            if (const auto at = rows.find(layer.details.trackId); at < rows.size())
+                layer.colour = layer.details.color ? look::paletteColour(*layer.details.color)
+                                                   : root.arrangement.colourFor(rows[at].position);
     }
 }
 ClipViewPanel::Readings ClipViewPanel::readings() const {
@@ -1559,12 +1716,20 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     return setField(field, *tick);
 }
 bool ClipViewPanel::setFieldHere(Field field) {
-    // Live's Set buttons take the current position (manual 8.2.1): here, the arrangement's insert
-    // marker, in the clip's own time. For Length it is the distance from the loop's start.
+    // Live's Set buttons take the playhead while the song plays (manual 8.2.1); stopped, ADI takes
+    // the arrangement's insert marker. In the clip's own time. On the loop they also switch it on:
+    // Set Position moves the loop's start there; Set Length moves its end there, or, when the loop
+    // was off, keeps its length.
     if (!details_)
         return false;
-    const auto here = ClipWindow::of(*details_).toSource(root.arrangement.geometry.selection.insert);
-    return setField(field, field == Field::Length ? here - details_->loopStartTicks : here);
+    const auto &d = *details_;
+    const auto at = root.playing() ? root.timelineTick() : root.arrangement.geometry.selection.insert;
+    const auto here = ClipWindow::of(d).toSource(at);
+    if (field == Field::Position)
+        return commit(setClipLoop(d, here, loopLengthOf(d), true));
+    if (field == Field::Length)
+        return commit(setClipLoop(d, d.loopStartTicks, d.loopEnabled ? here - d.loopStartTicks : loopLengthOf(d), true));
+    return setField(field, here);
 }
 bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*details_)); }
 void ClipViewPanel::openEditor(Field field) {
@@ -1619,6 +1784,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     }
     if (trimBox().contains(at)) {
         notes.setTrimMode(!notes.trimMode());
+        return;
+    }
+    if (focusBox().contains(at)) {
+        setFocus(!focus_);
         return;
     }
     for (const auto tool : kTools)
@@ -1810,8 +1979,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto trim = trimBox();
         look::box(g, trim.toFloat(), notes.trimMode() ? look::accent : look::button);
         text("Trim", trim, juce::Justification::centred, look::text, 10.f);
+        if (const auto focus = focusBox(); !focus.isEmpty()) {
+            look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
+            text("Focus", focus, juce::Justification::centred, look::text, 10.f);
+        }
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? 132 : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? (others_.empty() ? 132 : 176) : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())

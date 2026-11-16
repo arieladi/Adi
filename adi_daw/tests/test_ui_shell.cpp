@@ -4306,6 +4306,14 @@ void clipViewFields(AppCommands &commands, const std::filesystem::path &dir) {
               undoIs("Set Clip Start"),
           "Start's Set puts the Start marker there");
 
+    // On the loop, Live's Set also switches it on: Set Position moves its start to the marker.
+    geo.selection.insert = bar + 3 * beat;
+    const auto loopHere = ClipWindow::of(details()).toSource(bar + 3 * beat);
+    check(!details().loopEnabled && panel.setFieldHere(Field::Position) && details().loopEnabled &&
+              details().loopStartTicks == loopHere && undoIs("Set Loop Position"),
+          "the loop's Set Position moves its start to the marker and switches the loop on, one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // The Signature: typed, dragged by its denominator, refused when it is not one.
     check(panel.typeField(Field::Signature, "3/4") && panel.readings().signature == "3 / 4" && details().signature.local &&
               details().signature.numerator == 3 && undoIs("Change Clip Time Signature"),
@@ -4806,6 +4814,130 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     mailbox.publish(driver);
     root.frame();
     check(!ed.playhead.isVisible(), "and it goes when the song stops");
+}
+// Multi-clip editing (Live 12 manual 10.8; ADR-0242 d5): several selected MIDI clips are shown in one
+// Note Editor, each clip's notes in its own colour, a loop bar for each above the ruler; a click on
+// another clip's note or bar makes it the clip being edited; Focus (N) greys the others.
+void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-multi.adi", err);
+    check(store != nullptr, "the multi-clip project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Multi')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = true;
+    for (const auto &[id, name] : {std::pair<std::int64_t, const char *>{1, "Keys"}, {2, "Bass"}, {3, "Drums"}})
+        made = submitter.submit(op("track.create", {{"id", id}, {"kind", id == 3 ? "audio" : "midi"}, {"name", name}, {"index", id - 1}}, "Create track")).ok && made;
+    // Keys: two bars from the start, a C3. Bass: two bars from bar 2, an E2 on its first beat. An audio clip.
+    made = submitter.submit(op("clip.create", {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"name", "Chords"}, {"pos", 0}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 12}, {"track", 2}, {"kind", "midi"}, {"name", "Line"}, {"pos", bar}, {"length", 2 * bar}}, "Create clip")).ok && made;
+    made = submitter.submit(op("clip.create", {{"id", 13}, {"track", 3}, {"kind", "audio"}, {"name", "Loop"}, {"pos", 0}, {"length", bar}}, "Create clip")).ok && made;
+    made = submitter.submit(std::vector<OpRequest>{
+               op("note.insert", {{"clip", 11}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 60}}, "Add Note"),
+               op("note.insert", {{"clip", 12}, {"note", 1}, {"start", 0}, {"dur", beat}, {"key", 52}}, "Add Note")}).ok && made;
+    check(made, "two MIDI tracks with a clip each, and an audio clip");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-multi");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    for (std::int64_t id = 1; id <= 3; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    canvas.mouseDoubleClick(pressAt(canvas, {static_cast<float>(geo.x(0)) + 20.f, static_cast<float>(laneTop(root, 1) + 30)}));
+    root.frame();
+    check(panel.clip() == 11 && panel.others().empty() && ed.barsHeight() == 0 && panel.focusBox().isEmpty() &&
+              ed.rulerArea().getY() == 0,
+          "one clip open: no loop bars, no Focus switch");
+    const auto oneScale = ed.time.scale;
+
+    // A second MIDI clip and an audio clip picked with it: both MIDI clips are shown, the audio clip is not.
+    geo.selection.pickedClips = {12, 13};
+    root.frame();
+    check(panel.clip() == 11 && panel.others().size() == 1 && panel.others()[0].details.id == 12 &&
+              panel.others()[0].colour != panel.colour(),
+          "with a second MIDI clip selected, both are shown, each in its own track's colour; the edited clip stays");
+    check(ed.barsHeight() == 2 * NoteEditor::kLoopBarHeight + 2 && ed.rulerArea().getY() == ed.barsHeight() &&
+              ed.notesArea().getY() == ed.barsHeight() + NoteEditor::kRulerHeight && !panel.focusBox().isEmpty(),
+          "a loop bar for each clip sits above the ruler, the editor moves down under them, and the Focus switch appears");
+    const auto own = ed.loopBar(0), other = ed.loopBar(1);
+    check(own.getX() == NoteEditor::kKeysWidth + static_cast<int>(ed.time.x(0)) &&
+              other.getX() == NoteEditor::kKeysWidth + static_cast<int>(ed.time.x(bar)) && other.getY() > own.getY() &&
+              std::abs(other.getWidth() - own.getWidth()) <= 1,
+          "each bar lies across its clip's place in the song");
+    check(ed.time.scale < oneScale && ed.time.x(0) == 0. && ed.time.x(3 * bar) <= ed.notesArea().getWidth(),
+          "the editor shows from the first clip's start to the last clip's end");
+    const auto &line = panel.others()[0].details;
+    const auto low = ed.boxOf(line.notes[0], line);
+    const auto high = ed.boxOf(panel.details()->notes[0]);
+    check(low && high && std::abs(low->x - (ed.notesArea().getX() + ed.time.x(bar))) < 0.01 && low->y > high->y,
+          "the other clip's note is drawn where its own clip puts it in the song");
+
+    // A click on the other clip's note makes that clip the one being edited, the note selected; edits go to it.
+    const auto before = submitter.nextUndo()->txnId;
+    const juce::Point<float> onLow(static_cast<float>(static_cast<int>(low->x + low->width / 2)), static_cast<float>(low->y + low->height / 2));
+    ed.mouseDown(pressAt(ed, onLow));
+    ed.mouseUp(pressAt(ed, onLow));
+    check(panel.clip() == 12 && panel.others().size() == 1 && panel.others()[0].details.id == 11 &&
+              ed.selected() == std::vector<std::uint64_t>{1} && submitter.nextUndo()->txnId == before &&
+              std::string(panel.details()->name) == "Line",
+          "a click on the other clip's note makes that clip the edited one, its note selected, nothing written");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && panel.details()->notes[0].key == 53 &&
+              panel.others()[0].details.notes[0].key == 60 && submitter.nextUndo()->label == "Move Note",
+          "Up then moves that clip's note and leaves the other clip's");
+    // Its loop bar does the same for the first clip.
+    const auto barOfFirst = ed.loopBar(1).getCentre().toFloat();
+    ed.mouseDown(pressAt(ed, barOfFirst));
+    ed.mouseUp(pressAt(ed, barOfFirst));
+    check(panel.clip() == 11 && panel.others()[0].details.id == 12, "a click on a clip's loop bar makes it the edited clip");
+
+    // Focus: N, or the header's switch.
+    check(!panel.focus() && ed.keyPressed(juce::KeyPress('n')) && panel.focus(), "N turns Focus on");
+    panel.mouseDown(pressAt(panel, panel.focusBox().getCentre().toFloat()));
+    panel.mouseUp(pressAt(panel, panel.focusBox().getCentre().toFloat()));
+    check(!panel.focus(), "and the header's Focus switch turns it off");
+
+    // Fold keeps the key tracks either clip uses.
+    ed.setFold(true);
+    check(ed.keys.rowCount() == 2 && ed.keys.rowOf(60) == 0 && ed.keys.rowOf(53) == 1, "Fold keeps the key tracks any shown clip uses");
+    ed.setFold(false);
+
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-view-multi.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+
+    // With only one clip selected again, the editor is as it was.
+    geo.selection.pickedClips.clear();
+    root.frame();
+    check(panel.clip() == 11 && panel.others().empty() && ed.barsHeight() == 0 && ed.rulerArea().getY() == 0,
+          "one clip selected again: one clip shown, no loop bars");
+    check(!ed.keyPressed(juce::KeyPress('n')), "and N is not the editor's with one clip");
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
@@ -11411,6 +11543,7 @@ int main(int argc, char **argv) {
     clipViewFields(commands, temp.path());
     clipViewTools(commands, temp.path());
     clipViewMore(commands, temp.path());
+    clipViewMulti(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
