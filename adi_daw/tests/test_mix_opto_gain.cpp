@@ -100,7 +100,7 @@ void environmentFirst() {
 }
 void partitionAndDomain() {
     const auto input = signal();
-    for (double rate : {44100., 48000., 96000., 50000.125})
+    for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000., 50000.125})
         for (const std::array<float, 3> controls :
              {std::array<float, 3>{-30, .341940462589264f, .277943134307861f},
               std::array<float, 3>{-60, 0, 1}, std::array<float, 3>{0, 1, 0}}) {
@@ -234,7 +234,7 @@ void preparationAndReset() {
         if (invalid == 0)
             p.sampleRate = 44099;
         if (invalid == 1)
-            p.sampleRate = 96001;
+            p.sampleRate = 768001;
         if (invalid == 2)
             p.sampleRate = std::numeric_limits<double>::quiet_NaN();
         if (invalid == 3)
