@@ -516,6 +516,9 @@ void Session::retireDepartedRows() {
 }
 
 void Session::syncFlags() {
+    std::set<std::int64_t> keyed;
+    for(const auto& route:model_.routing)
+        if(route.enabled && route.kind=="sidechain" && route.dstKind=="device")keyed.insert(route.dstId);
     for (Entry& e : entries_) {
         if (e.retired) continue;
         for (const rows::Device& d : model_.devices) {
@@ -528,7 +531,11 @@ void Session::syncFlags() {
             if (node.alwaysProcess() != d.alwaysProcess) node.setAlwaysProcess(d.alwaysProcess);
             if (const rows::DeviceChain* c = chainOf(d.chainId))
                 e.trackId = c->trackId.value_or(0);
-            if (!e.placeholder) syncRoute(e, node.instance());
+            if (!e.placeholder) {
+                syncRoute(e, node.instance());
+                if(!node.instance().configureSidechain(keyed.contains(e.deviceId)))
+                    sessionProblems_.push_back("devices#"+std::to_string(e.deviceId)+": key input is unavailable");
+            }
             break;
         }
     }

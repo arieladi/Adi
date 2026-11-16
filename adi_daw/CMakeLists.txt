@@ -1614,6 +1614,20 @@ if(ADI_WITH_JUCE)
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
 
+        juce_add_console_app(adi_vst3_key_tests PRODUCT_NAME "adi_vst3_key_tests")
+        target_sources(adi_vst3_key_tests PRIVATE tests/test_vst3_key.cpp
+            src/juce/vst3_host.cpp src/juce/vst3_events.cpp)
+        target_link_libraries(adi_vst3_key_tests PRIVATE adi_core juce::juce_audio_processors)
+        target_include_directories(adi_vst3_key_tests SYSTEM PRIVATE ${_adi_proc_incs})
+        target_compile_definitions(adi_vst3_key_tests PRIVATE
+            ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>" ADI_TEST_VST3="${_adi_fixture}"
+            ADI_TEST_VST3_MODULE="$<TARGET_FILE:adi_test_vst3>"
+            JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+            JUCE_DISABLE_JUCE_VERSION_PRINTING=1 JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0
+            JUCE_PLUGINHOST_AU=0 JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+        add_dependencies(adi_vst3_key_tests adi_plugin_scanner adi_test_vst3)
+        add_test(NAME adi_vst3_key_tests COMMAND adi_vst3_key_tests)
+
         add_executable(adi_vst3_scanner_tests tests/test_vst3_scanner.cpp)
         target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless)
         target_compile_definitions(adi_vst3_scanner_tests PRIVATE
@@ -1709,7 +1723,7 @@ if(ADI_WITH_JUCE)
     # our strict warning policy on our sources, as the scanner already does,
     # rather than applying it to those third-party module implementations.
     set(_adi_juce_owned_sources)
-    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests
+    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests adi_vst3_key_tests
                                     adi_play adi_play_render_tests adi_audio_probe)
         if(TARGET ${_adi_juce_target})
             get_target_property(_adi_juce_sources ${_adi_juce_target} SOURCES)

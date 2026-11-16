@@ -135,6 +135,14 @@ public:
     }
     /// Set up at `kSample64` now. Message thread, or while not processing.
     [[nodiscard]] bool processingDouble() const noexcept { return double_; }
+    [[nodiscard]] std::int32_t sidechainInputChannels() const noexcept override { return keyChannels_; }
+    bool configureSidechain(bool active) override {
+        if(active && keyChannels_<=0)return false;
+        keyRequested_=active;return true;
+    }
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
+        return keyRequested_?1u:0u;
+    }
 
     // --- the two declarations, mapped straight through ----------------------
 
@@ -321,6 +329,15 @@ private:
     juce::AudioBuffer<float> scratch_;
     /// The same at 64, when the plug-in is set up at `kSample64`.
     juce::AudioBuffer<double> scratch64_;
+    juce::AudioBuffer<float> inputScratch_;
+    juce::AudioBuffer<double> inputScratch64_;
+    struct PreparedBus { std::int32_t channels=0, offset=0; };
+    std::vector<PreparedBus> inputLayout_,outputLayout_;
+    std::vector<Steinberg::Vst::AudioBusBuffers> inputBuses_,outputBuses_;
+    std::int32_t mainInputBus_=0,keyInputBus_=-1,keyChannels_=0,mainOutputChannels_=0;
+    bool keyRequested_=false,preparedKey_=false,defaultKeyEnabled_=false;
+    void readInputBusRoles(); // constructor / deactivated owner only
+    void prepareAudioBuses();
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
