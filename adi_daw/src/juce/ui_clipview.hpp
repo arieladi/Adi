@@ -94,6 +94,13 @@ class NoteEditor final : public juce::Component {
     // Moves the playhead: called on the window's frame.
     void frame();
     ArrangementPlayhead playhead;
+    // Quantize (manual 10.5.11; Ctrl/Cmd+U): the selected notes' starts, or every note's, to the
+    // editor's grid. Split and Chop (10.5.8; Ctrl/Cmd+E): with no note selected, every note under
+    // the insert marker is cut there; with notes selected, each is cut at the grid lines crossing it.
+    // Join (Ctrl/Cmd+J): the selected notes of each key become one. One undo step each.
+    bool quantize();
+    bool splitOrChop();
+    bool join();
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }

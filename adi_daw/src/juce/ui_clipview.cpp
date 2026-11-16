@@ -352,6 +352,31 @@ void NoteEditor::zoomBack() {
     time.back();
     repaint();
 }
+bool NoteEditor::quantize() {
+    const auto grid = gridTicks();
+    return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        // The grid's lines stand in the song; in the clip's own time one of them is the song's start.
+        return quantizeNotes(of, ids, grid, ClipWindow::of(of).toSource(0));
+    }));
+}
+bool NoteEditor::splitOrChop() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto grid = gridTicks();
+    if (anySelected())
+        return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+            return chopNotes(of, ids, grid, ClipWindow::of(of).toSource(0));
+        }));
+    if (!insert_)
+        return false;
+    return commit(splitNotesAt(*clip, ClipWindow::of(*clip).toSource(*insert_)));
+}
+bool NoteEditor::join() {
+    if (!anySelected())
+        return false;
+    return commit(across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return joinNotes(of, ids); }));
+}
 bool NoteEditor::copySelected() {
     const auto *clip = panel.details();
     if (clip == nullptr || !anySelected())
@@ -913,6 +938,19 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
         if (anySelected())
             commit(across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return deleteNotes(of, ids); }));
+        return true;
+    }
+    // Quantize, Split or Chop, and Join are the editor's while it has the keyboard.
+    if (k == juce::KeyPress('u', juce::ModifierKeys::commandModifier, 0)) {
+        quantize();
+        return true;
+    }
+    if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) {
+        splitOrChop();
+        return true;
+    }
+    if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)) {
+        join();
         return true;
     }
     // Cut, Copy and Paste are the editor's while it has the keyboard (manual 10.5.4).
