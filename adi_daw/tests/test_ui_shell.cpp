@@ -5609,6 +5609,72 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.select({});
     }
 
+    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab.
+    {
+        using Field = ClipViewPanel::Field;
+        using Tool = ClipViewPanel::Tool;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        panel.setToolsTab(0);
+        check(ed.keyPressed(key('u', command | shift)) && panel.toolsTab() == 1, "Ctrl+Shift+U shows the Quantize settings: the Functions tab");
+        {
+            const std::vector<juce::Rectangle<int>> boxes = {panel.toolBox(Tool::RestrictPolyphony), panel.toolBox(Tool::Quantize),
+                                                             panel.quantizeChooserBox(),             panel.quantizeStartBox(),
+                                                             panel.quantizeEndBox(),                 panel.fieldBox(Field::QuantizeAmount),
+                                                             panel.fieldBox(Field::QuantizeSwing)};
+            bool apart = true;
+            for (std::size_t i = 0; i < boxes.size(); ++i)
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                    apart = apart && !boxes[i].isEmpty() && !boxes[i].intersects(boxes[j]) && panel.toolsArea().contains(boxes[j]);
+            check(apart, "the Quantize button, its value chooser, Start, End, the amount and swing each have their own place under the note functions");
+        }
+        check(panel.quantizeValue() == 0 && panel.quantizeAmount == 100 && panel.quantizeSwing == 0 && panel.quantizeStarts && !panel.quantizeEnds &&
+                  panel.quantizeGrid() == ed.gridTicks() && panel.quantizeMenu().getNumItems() == 8,
+              "as Live's defaults: to the editing grid, starts, in full");
+        // A note an eighth of a beat late.
+        check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 80}, {"start", 6 * beat + beat / 8}, {"dur", beat}, {"key", 72}}, "Add Note")).ok,
+              "a C4 an eighth of a beat after beat 6 of the clip");
+        root.frame();
+        check(panel.chooseQuantize(2) && panel.quantizeGrid() == beat, "the value chosen as 1/4");
+        ed.select({80});
+        click(panel.toolBox(Tool::Quantize));
+        check(note(80).startTicks == 6 * beat && note(80).durationTicks == beat && undoIs("Quantize Notes", 1),
+              "the Quantize button moves the note's start to the beat, its length kept: one undo step");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(panel.typeField(Field::QuantizeAmount, "50") && panel.quantizeAmount == 50 && ed.keyPressed(key('u', command)) &&
+                  note(80).startTicks == 6 * beat + beat / 16,
+              "with the amount at 50 per cent, Ctrl+U moves it half the way");
+        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeAmount, "100"), "undo; in full again");
+        root.frame();
+        click(panel.quantizeEndBox());
+        click(panel.quantizeStartBox());
+        check(panel.quantizeEnds && !panel.quantizeStarts && ed.keyPressed(key('u', command)) && note(80).startTicks == 6 * beat + beat / 8 &&
+                  note(80).startTicks + note(80).durationTicks == 7 * beat,
+              "End alone: the note's end goes to the beat and its start stays");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        click(panel.quantizeEndBox());
+        click(panel.quantizeStartBox());
+        check(panel.quantizeStarts && !panel.quantizeEnds, "starts alone again");
+        // Swing (ADI's addition): every other division is delayed.
+        check(panel.typeField(Field::QuantizeSwing, "50") && panel.quantizeSwing == 50, "swing at 50 per cent");
+        ed.select({2, 3});
+        check(ed.keyPressed(key('u', command)) && note(2).startTicks > beat && note(2).startTicks <= beat + beat / 2 && note(3).startTicks == 2 * beat &&
+                  undoIs("Quantize Notes", 1),
+              "a note on the second beat is delayed, by no more than half a beat; one on the third stays");
+        check(root.command(AppCommands::Undo) && panel.typeField(Field::QuantizeSwing, "0") && panel.chooseQuantize(1), "undo; no swing; the editing grid again");
+        root.frame();
+        check(note(2).startTicks == beat, "and the note is back on its beat");
+        ed.select({});
+        panel.setToolsTab(0);
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

@@ -19,6 +19,7 @@
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <array>
 #include <optional>
 #include <random>
 #include <string>
@@ -307,13 +308,39 @@ class ClipViewPanel final : public juce::Component {
     enum class Tool {
         FitToScale, Invert, Reverse, Double, Halve, Legato,
         FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3,
-        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony
+        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony, Quantize
     };
     static constexpr Tool kTools[] = {Tool::FitToScale, Tool::Invert,       Tool::Reverse,      Tool::Double,     Tool::Halve,
                                       Tool::Legato,     Tool::FixedLength,  Tool::OverlapsMono, Tool::OverlapsPoly, Tool::Chord,
                                       Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3,
                                       Tool::VelocityAdd, Tool::VelocityScale, Tool::VelocityLimit, Tool::DeleteDoubles,
-                                      Tool::RestrictPolyphony};
+                                      Tool::RestrictPolyphony, Tool::Quantize};
+    // The Quantize settings (manual 10.5.11), at the foot of the Functions tab; Ctrl/Cmd+U and the
+    // Quantize button use them, Ctrl/Cmd+Shift+U shows them. The value is the editing grid or a
+    // fixed one; Start and End say which ends move; the amount is how far towards the grid. Swing
+    // is ADI's addition (ADR-0242 d1, from Cubase's quantize panel; the engine's op carries it).
+    struct QuantizeValue {
+        const char *name;
+        std::int64_t ticks; // 0: the editing grid
+    };
+    static constexpr std::array<QuantizeValue, 8> kQuantizeValues = {{{"Grid", 0},
+                                                                     {"1/4", textproj::kPPQ},
+                                                                     {"1/8", textproj::kPPQ / 2},
+                                                                     {"1/8T", textproj::kPPQ / 3},
+                                                                     {"1/16", textproj::kPPQ / 4},
+                                                                     {"1/16T", textproj::kPPQ / 6},
+                                                                     {"1/32", textproj::kPPQ / 8},
+                                                                     {"1/32T", textproj::kPPQ / 12}}};
+    std::size_t quantizeValue() const noexcept { return quantizeValue_; }
+    juce::PopupMenu quantizeMenu() const;
+    bool chooseQuantize(int item);
+    std::int64_t quantizeGrid() const noexcept;
+    QuantizeSettings quantizeSettings() const noexcept;
+    juce::Rectangle<int> quantizeChooserBox() const noexcept;
+    juce::Rectangle<int> quantizeStartBox() const noexcept;
+    juce::Rectangle<int> quantizeEndBox() const noexcept;
+    int quantizeAmount = 100, quantizeSwing = 0;
+    bool quantizeStarts = true, quantizeEnds = false;
     // The tools panel has two tabs: Live's Pitch and Time, with the chord tools, and Functions, ADI's
     // additions from Cubase's MIDI functions (ADR-0242 d1): velocities added to, compressed or
     // expanded, and limited; Delete Doubles; Restrict Polyphony. Their amounts are fields on the tab.
@@ -344,7 +371,7 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing
     };
     // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
     // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
@@ -491,7 +518,7 @@ class ClipViewPanel final : public juce::Component {
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
-    std::size_t chord_ = 0;
+    std::size_t chord_ = 0, quantizeValue_ = 0;
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;

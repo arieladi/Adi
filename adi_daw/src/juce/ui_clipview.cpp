@@ -416,10 +416,10 @@ void NoteEditor::zoomBack() {
     repaint();
 }
 bool NoteEditor::quantize() {
-    const auto grid = gridTicks();
+    const auto grid = panel.quantizeGrid();
     return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
         // The grid's lines stand in the song; in the clip's own time one of them is the song's start.
-        return quantizeNotes(of, ids, grid, ClipWindow::of(of).toSource(0));
+        return quantizeNotes(of, ids, grid, ClipWindow::of(of).toSource(0), panel.quantizeSettings());
     }));
 }
 bool NoteEditor::splitOrChop() {
@@ -1595,6 +1595,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         quantize();
         return true;
     }
+    if (k == juce::KeyPress('u', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
+        // Quantize Settings: shown on the tools panel's Functions tab.
+        panel.setToolsTab(1);
+        return true;
+    }
     if (k == juce::KeyPress('e', juce::ModifierKeys::commandModifier, 0)) {
         splitOrChop();
         return true;
@@ -2333,6 +2338,46 @@ bool ClipViewPanel::applyFilter() {
     repaint();
     return true;
 }
+// ---- The Quantize settings (manual 10.5.11) ----------------------------------------------------
+juce::Rectangle<int> ClipViewPanel::quantizeChooserBox() const noexcept {
+    const auto button = toolBox(Tool::Quantize);
+    if (button.isEmpty())
+        return {};
+    return button.withX(button.getRight() + 6);
+}
+juce::Rectangle<int> ClipViewPanel::quantizeStartBox() const noexcept {
+    const auto button = toolBox(Tool::Quantize);
+    return button.isEmpty() ? button : button.withY(button.getY() + 22);
+}
+juce::Rectangle<int> ClipViewPanel::quantizeEndBox() const noexcept {
+    const auto start = quantizeStartBox();
+    return start.isEmpty() ? start : start.withX(start.getRight() + 6);
+}
+juce::PopupMenu ClipViewPanel::quantizeMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kQuantizeValues.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, kQuantizeValues[i].name, true, i == quantizeValue_);
+    return menu;
+}
+bool ClipViewPanel::chooseQuantize(int item) {
+    if (item < 1 || item > static_cast<int>(kQuantizeValues.size()))
+        return false;
+    quantizeValue_ = static_cast<std::size_t>(item - 1);
+    repaint();
+    return true;
+}
+std::int64_t ClipViewPanel::quantizeGrid() const noexcept {
+    const auto fixed = kQuantizeValues[quantizeValue_].ticks;
+    return fixed > 0 ? fixed : notes.gridTicks();
+}
+QuantizeSettings ClipViewPanel::quantizeSettings() const noexcept {
+    QuantizeSettings s;
+    s.strength = std::clamp(quantizeAmount, 0, 100) * 100;
+    s.swing = std::clamp(quantizeSwing, 0, 100) * 100;
+    s.starts = quantizeStarts;
+    s.ends = quantizeEnds;
+    return s;
+}
 juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
     const auto area = editorArea();
     return midi() && area.getHeight() >= 140 ? area.withTop(area.getBottom() - kStripHeight) : juce::Rectangle<int>();
@@ -2609,6 +2654,11 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
             return {};
         return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
     }
+    if (field == Field::QuantizeAmount || field == Field::QuantizeSwing) {
+        // Under Start and End, at the foot of the Functions tab.
+        const auto above = field == Field::QuantizeAmount ? quantizeStartBox() : quantizeEndBox();
+        return above.isEmpty() ? above : above.withY(above.getY() + 22);
+    }
     if (field == Field::RandomAmount || field == Field::RampStart || field == Field::RampEnd) {
         // In the strip under the lanes: the amount beside Randomize, then the Ramp's two values.
         const auto button = randomizeBox();
@@ -2662,6 +2712,9 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::RestrictPolyphony:
         row = 7;
         break;
+    case Tool::Quantize:
+        row = 8, column = 0;
+        break;
     case Tool::FitToScale:
         break;
     case Tool::Invert:
@@ -2708,7 +2761,7 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
 }
 int ClipViewPanel::tabOf(Tool tool) noexcept {
     return tool == Tool::VelocityAdd || tool == Tool::VelocityScale || tool == Tool::VelocityLimit ||
-                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony
+                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony || tool == Tool::Quantize
                ? 1
                : 0;
 }
@@ -2770,6 +2823,12 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::QuantizeAmount:
+        range(0, 100);
+        return &quantizeAmount;
+    case Field::QuantizeSwing:
+        range(0, 100);
+        return &quantizeSwing;
     case Field::RandomAmount:
         range(0, 127);
         return &randomAmount;
@@ -2795,6 +2854,8 @@ const char *ClipViewPanel::toolName(Tool tool) noexcept {
         return "Del. Doubles";
     case Tool::RestrictPolyphony:
         return "Restrict Poly";
+    case Tool::Quantize:
+        return "Quantize";
     case Tool::FitToScale:
         return "Fit to Scale";
     case Tool::Invert:
@@ -2890,6 +2951,8 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(deleteDoubles(d, ids));
     case Tool::RestrictPolyphony:
         return notes.apply(restrictPolyphony(d, ids, voices));
+    case Tool::Quantize:
+        return notes.quantize();
     }
     return false;
 }
@@ -2962,7 +3025,7 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
-                             Field::FilterA, Field::FilterB, Field::FilterC})
+                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -3122,6 +3185,26 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     }
     if (findBox().contains(at)) {
         showFilters(!filtersShown_);
+        return;
+    }
+    if (quantizeChooserBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        quantizeMenu().showMenuAsync(
+            juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(quantizeChooserBox())),
+            [safe](int item) {
+                if (safe != nullptr && item > 0)
+                    safe->chooseQuantize(item);
+            });
+        return;
+    }
+    if (quantizeStartBox().contains(at)) {
+        quantizeStarts = !quantizeStarts;
+        repaint();
+        return;
+    }
+    if (quantizeEndBox().contains(at)) {
+        quantizeEnds = !quantizeEnds;
+        repaint();
         return;
     }
     if (filterChooserBox().contains(at)) {
@@ -3381,6 +3464,25 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             number(Field::VelocityLow, "");
             number(Field::VelocityHigh, "");
             number(Field::Voices, "");
+            // The Quantize settings: the value, which ends move, how far, and swing.
+            const auto value = quantizeChooserBox();
+            look::box(g, value.toFloat(), look::chooser);
+            text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+            const auto starts = quantizeStartBox(), ends = quantizeEndBox();
+            look::box(g, starts.toFloat(), quantizeStarts ? look::accent : look::button);
+            text("Start", starts, juce::Justification::centred, look::text, 10.f);
+            look::box(g, ends.toFloat(), quantizeEnds ? look::accent : look::button);
+            text("End", ends, juce::Justification::centred, look::text, 10.f);
+            const auto named = [&](Field which, const char *name) {
+                const auto box = fieldBox(which);
+                int low = 0, high = 0;
+                const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+                look::box(g, box.toFloat(), look::chooser);
+                text(name, box.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
+                text(juce::String(shown) + "%", box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+            };
+            named(Field::QuantizeAmount, "Amt");
+            named(Field::QuantizeSwing, "Swing");
         }
         if (toolsTab_ == 0) {
             const auto range = rangeBox();

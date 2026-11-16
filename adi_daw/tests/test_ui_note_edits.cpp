@@ -543,6 +543,32 @@ void quantizeSplitJoin() {
     check(quantizeNotes(c, {2, 3}, beat, 0).ops.empty(), "notes already on the grid write nothing");
     check(quantizeNotes(c, {}, beat, 0).ops[0].payload.at("note_ids").size() == 3, "with none selected, every note");
     check(quantizeNotes(c, {2}, beat, beat / 2).ops.size() == 1, "the grid's origin decides what is on it");
+    {
+        // The settings (manual 10.5.11): the amount, the ends, and swing.
+        QuantizeSettings half;
+        half.strength = 5000;
+        const auto partly = quantizeNotes(c, {1}, beat, 0, half);
+        check(partly.ops.size() == 1 && partly.ops[0].payload.at("strength") == 5000 && partly.ops[0].payload.at("starts") == true &&
+                  partly.ops[0].payload.at("ends") == false && partly.ops[0].payload.at("swing") == 0,
+              "an amount of 50 per cent goes into the op as 5000");
+        QuantizeSettings ends;
+        ends.starts = false;
+        ends.ends = true;
+        check(quantizeNotes(c, {2, 3}, beat, 0, ends).ops.empty(), "ends alone: notes whose ends are on the grid write nothing");
+        const auto endOnly = quantizeNotes(c, {1}, beat, 0, ends);
+        check(endOnly.ops.size() == 1 && endOnly.ops[0].payload.at("starts") == false && endOnly.ops[0].payload.at("ends") == true,
+              "a note whose end is off the grid is quantized by its end alone");
+        QuantizeSettings neither;
+        neither.starts = false;
+        check(quantizeNotes(c, {1}, beat, 0, neither).ops.empty(), "with neither starts nor ends, nothing");
+        QuantizeSettings none;
+        none.strength = 0;
+        check(quantizeNotes(c, {1}, beat, 0, none).ops.empty(), "an amount of 0 moves nothing");
+        QuantizeSettings swung;
+        swung.swing = 2500;
+        const auto swing = quantizeNotes(c, {2, 3}, beat, 0, swung);
+        check(swing.ops.size() == 1 && swing.ops[0].payload.at("swing") == 2500, "with swing, notes on the grid are sent too: the grid's own lines move");
+    }
 
     const auto split = splitNotesAt(c, 2 * beat + beat / 2);
     check(split.ops.size() == 4 && split.ops[0].opType == "note.resize" && split.ops[0].payload.at("note") == 2 &&
