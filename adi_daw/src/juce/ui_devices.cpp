@@ -949,7 +949,7 @@ juce::PopupMenu DevicePanelView::commands() {
             if(choice.source){auto& entry=sources[*choice.source];entry.first=juce::String::fromUTF8(choice.name.c_str());entry.second.addItem(std::move(item));}
             else keys.addItem(std::move(item));
         }
-        for(auto& [id,entry]:sources){(void)id;keys.addSubMenu(entry.first,entry.second);}
+        for(auto& [sourceId,entry]:sources){(void)sourceId;keys.addSubMenu(entry.first,entry.second);}
         m.addSeparator();m.addSubMenu("Sidechain Input",keys);
     }
     if (!eqPresentation()) {
