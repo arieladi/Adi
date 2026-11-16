@@ -5632,7 +5632,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     root.frame();
     check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
               panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
-              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
+              panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("+ Function"),
           "STACK starts with tool channels and explains how to add the first tool");
     {
         const auto selectionBefore = root.arrangement.geometry.selection;

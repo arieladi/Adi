@@ -73,6 +73,8 @@ struct StackTab::State : juce::ScrollBar::Listener {
     bool syncing = false, ending = false, destroying = false, began = false, parametersSuspended = false;
     std::uint64_t frame = 0, layout = 0, addMenuEpoch = 0;
     std::int64_t addTrack = 0;
+    std::string addName;
+    bool addAvailable = false, addTooltipReady = false;
     std::optional<stack::CaptureRef> interaction;
     const DevicePanelData *editData = nullptr;
     std::string parameter;
@@ -472,14 +474,23 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
     if (!current())
         return;
     const auto track = root.arrangement.geometry.selection.track;
-    if (state_->addTrack != track) {
+    const bool trackChanged = state_->addTrack != track;
+    if (trackChanged) {
         ++state_->addMenuEpoch;
         state_->addTrack = track;
     }
     const auto *selected = reader.findTrack(track);
-    addFunction.setEnabled(selected != nullptr);
-    addFunction.setTooltip(selected ? "Add a Mix View function to " + juce::String(selected->name)
-                                    : "Select a channel to add a Mix View function.");
+    const bool available = selected != nullptr;
+    const std::string_view name = selected ? std::string_view(selected->name) : std::string_view{};
+    if (!state_->addTooltipReady || trackChanged || state_->addAvailable != available ||
+        state_->addName != name) {
+        addFunction.setEnabled(available);
+        addFunction.setTooltip(selected ? "Add a Mix View function to " + juce::String(selected->name)
+                                        : "Select a channel to add a Mix View function.");
+        state_->addName = name;
+        state_->addAvailable = available;
+        state_->addTooltipReady = true;
+    }
     effects(model().setSelection(root.arrangement.geometry.selection.track, time), false);
     if (!current())
         return;
