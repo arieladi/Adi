@@ -73,6 +73,17 @@ class NoteEditor final : public juce::Component {
     bool chooseShape(int item);
     // The velocities the stroke held now would write, by note.
     const std::vector<std::pair<std::uint64_t, int>> &shapedVelocities() const noexcept { return shapePreview_; }
+    // The Velocity lane as Live's (manual 10.5.12). A marker dragged takes the selected markers with
+    // it; one that reaches the top or the bottom stays there while the others catch up, so a drag to
+    // an end and back gives them all one value. Shift and a click adds a marker to the selection or
+    // takes it out. Alt (Cmd on the Mac) and a vertical drag on a selected note changes velocity
+    // from the notes. Digits typed with notes selected, then Enter, set their velocity. Ctrl/Cmd+up
+    // and down change it by 10, with Shift by 1. The lane's header reads the selected notes' value,
+    // or their range, or what is being typed. With Draw Mode on, a stroke in the lane gives the
+    // notes of each grid step it crosses the value under the pointer: the selected ones only when
+    // some are selected; with snapping bypassed, the one marker under the pointer.
+    juce::String velocityReadout() const;
+    juce::Rectangle<int> readoutBox() const noexcept;
     // Draw Mode (manual 10.4.1; B, and the header's switch): a drag across empty space draws a
     // note at each grid step on the key it began on, one undo step for the stroke; a click on a
     // note deletes it.
@@ -104,6 +115,28 @@ class NoteEditor final : public juce::Component {
     // The insert marker (manual 10.5.2): a click on empty space puts it there, on the grid; Paste
     // lands on it. In the song's time; none until a click, and then Paste lands at the clip's start.
     std::optional<std::int64_t> insertMarker() const noexcept { return insert_; }
+    // The ruler's handles (manual 8.8, 8.9). The loop brace along its top: an end dragged changes
+    // the loop's start or length, the bar dragged moves it. The clip's Start and End markers along
+    // its foot, dragged. On the grid, shown while held, one undo step at the release. A press
+    // selects the brace or the marker, and the arrows are then its own: for the brace, left and
+    // right nudge it by the grid, up and down move it by its length, and with Ctrl/Cmd left and
+    // right shorten or lengthen it and up and down double or halve it, as the Arrangement's brace;
+    // for a marker, left and right move it by the grid, and with Alt/Option both markers together.
+    enum class RulerPart { None, LoopStart, LoopEnd, Loop, StartMarker, EndMarker };
+    RulerPart rulerPartAt(juce::Point<int>) const noexcept;
+    RulerPart rulerSelection() const noexcept { return picked_; }
+    // Where a marker stands in the ruler, as shown: the Start marker, or the End marker.
+    int markerX(bool end) const noexcept;
+    // The time selection (manual 10.5.2): from the insert marker to where a drag across empty space,
+    // or Shift and the arrows, took its other end. In the song's time, the earlier end first; none
+    // while it is a point. Enter swaps between it and the notes that begin inside it; Esc, a click
+    // outside, or an arrow collapses it. Split cuts at its two edges; Paste lands on its start; Z
+    // zooms to it.
+    std::optional<std::pair<std::int64_t, std::int64_t>> timeSelection() const noexcept;
+    void selectTime(std::int64_t from, std::int64_t to);
+    bool toggleTimeAndNotes();
+    // Every note that was not selected, and none that was (Ctrl/Cmd+Shift+A).
+    void invertSelection();
     // Cut, Copy and Paste of notes (manual 10.5.4; Ctrl/Cmd+X, C, V): the selected notes of every
     // shown clip are copied with their places in the song; Paste puts them into the edited clip at
     // the insert marker, the earliest on it, selected; one undo step.
@@ -160,7 +193,21 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw };
+    // A velocity drag: the value the pointer last stood for, and whether it began on a note.
+    int velocityLast_ = 0;
+    juce::Point<int> laneLast_;
+    bool velocityByNote_ = false;
+    juce::String typedVelocity_;
+    void beginVelocityDrag(bool byNote);
+    void velocityDrag();
+    void laneDrawStroke(const juce::ModifierKeys &);
+    RulerPart picked_ = RulerPart::None, rulerDrag_ = RulerPart::None;
+    // While a ruler handle is held: the loop's start and length, or the marker, in the clip's ticks.
+    std::optional<std::pair<std::int64_t, std::int64_t>> loopPreview_;
+    std::optional<std::int64_t> markerPreview_;
+    void rulerDrag(const juce::ModifierKeys &);
+    bool rulerKey(const juce::KeyPress &);
     void shapeStroke();
     void trimStroke();
     void handleDrag();
@@ -176,7 +223,13 @@ class NoteEditor final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
     std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> otherSelected_;
-    std::optional<std::int64_t> insert_;
+    std::optional<std::int64_t> insert_, head_;
+    // The insert marker, or with `extend` the time selection's moving end, put at `at` and kept in view.
+    void placeMarker(std::int64_t at, bool extend);
+    // Alt and an arrow (manual 10.5.2, 41.12): with no note selected, left and right take the marker
+    // to the next note edge and up and down select the note nearest it; with one, up and down go to
+    // the previous and next note in time, left and right to those on the same key. Shift extends.
+    bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
     bool copying_ = false, folded_ = false, drawMode_ = false;
     int drawKey_ = 0;
@@ -187,7 +240,7 @@ class NoteEditor final : public juce::Component {
     std::vector<std::pair<std::uint64_t, int>> shapePreview_;
     juce::Point<int> from_, to_;
     std::int64_t dragTicks_ = 0;
-    int dragKeys_ = 0, dragVelocity_ = 0;
+    int dragKeys_ = 0;
     std::uint64_t anchor_ = 0;
 };
 
@@ -338,6 +391,7 @@ class ClipViewPanel final : public juce::Component {
 
   private:
     void read(const SnapshotReader &);
+    friend class NoteEditor;
     bool commit(TrackEdit);
     std::int64_t fieldTicks(Field) const noexcept;
     std::int64_t draggedTicks() const noexcept;

@@ -736,6 +736,32 @@ inline NoteEdit splitNotesAt(const engine::ClipDetails &clip, std::int64_t at) {
     return edit;
 }
 
+// Split at a time selection's edges (manual 10.5.8.1): every note is cut at each of `cuts` that
+// falls inside it, in one batch; a note crossing two of them becomes three.
+inline NoteEdit splitNotesAtEach(const engine::ClipDetails &clip, std::vector<std::int64_t> cuts) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    std::sort(cuts.begin(), cuts.end());
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    auto id = freeNoteId(clip);
+    for (const auto &n : clip.notes) {
+        const auto end = n.startTicks + n.durationTicks;
+        std::vector<std::int64_t> inside;
+        for (const auto at : cuts)
+            if (at > n.startTicks && at < end)
+                inside.push_back(at);
+        if (inside.empty())
+            continue;
+        edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", n.id}, {"dur", inside.front() - n.startTicks}}, "Split Notes"));
+        for (std::size_t i = 0; i < inside.size(); ++i)
+            piece(edit, clip.id, n, id++, inside[i], (i + 1 < inside.size() ? inside[i + 1] : end) - inside[i], "Split Notes");
+    }
+    return edit;
+}
+
 // Chop (manual 10.5.8.2; Ctrl/Cmd+E with notes selected): each selected note is cut at every grid
 // line that crosses it. `grid` is the step and `origin` a grid line, in the clip's own ticks.
 inline NoteEdit chopNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t grid,

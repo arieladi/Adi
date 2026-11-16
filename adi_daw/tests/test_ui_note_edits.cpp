@@ -649,6 +649,36 @@ void functions() {
           "an audio clip refuses them");
 }
 
+void splitsAtEdges() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = 90;
+        return n;
+    };
+    c.notes = {note(1, 60, 0, 8 * beat), note(2, 62, 0, 2 * beat), note(3, 64, 3 * beat, beat), note(4, 65, 5 * beat, 2 * beat)};
+    const auto cut = splitNotesAtEach(c, {6 * beat, 2 * beat});
+    // Note 1 crosses both edges and becomes three; note 2 ends on the first edge; note 3 lies between; note 4 crosses the second.
+    check(cut.ops.size() == 5 && cut.ops[0].opType == "note.resize" &&
+              cut.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{1}}, {"dur", 2 * beat}}) &&
+              cut.ops[1].opType == "note.insert" && cut.ops[1].payload.at("start") == 2 * beat && cut.ops[1].payload.at("dur") == 4 * beat &&
+              cut.ops[2].opType == "note.insert" && cut.ops[2].payload.at("start") == 6 * beat && cut.ops[2].payload.at("dur") == 2 * beat &&
+              cut.ops[3].payload == Payload({{"clip", 7}, {"note", std::uint64_t{4}}, {"dur", beat}}) &&
+              cut.ops[4].payload.at("start") == 6 * beat && cut.ops[4].payload.at("dur") == beat && cut.ops[0].label == "Split Notes",
+          "a split at a time selection's two edges: a note crossing both becomes three, in one batch");
+    check(cut.ops[1].payload.at("note") != cut.ops[2].payload.at("note") && cut.ops[2].payload.at("note") != cut.ops[4].payload.at("note"),
+          "each new part has its own id");
+    check(splitNotesAtEach(c, {3 * beat, 4 * beat}).ops.size() == 3, "an edge on a note's own start or end cuts nothing of it: only the long note is cut");
+    check(splitNotesAtEach(c, {beat, beat}).ops.size() == 4, "the same place twice is one cut");
+    check(splitNotesAtEach(c, {}).ops.empty(), "no edges, no cuts");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -705,6 +735,7 @@ int main() {
     overlaps();
     quantizeSplitJoin();
     functions();
+    splitsAtEdges();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
