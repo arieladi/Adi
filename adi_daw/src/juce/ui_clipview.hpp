@@ -55,6 +55,13 @@ class NoteEditor final : public juce::Component {
     // deactivate (manual 10.5).
     bool keyPressed(const juce::KeyPress &) override;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
+    // The lane's height (manual 10.1: the divider between the key tracks and the lanes drags to
+    // resize them): never lower than its header needs, and it leaves the key tracks four rows.
+    static constexpr int kLaneFloor = 50, kKeysFloor = 48;
+    int laneHeight() const noexcept { return laneHeight_; }
+    void setLaneHeight(int height);
+    // The divider's grip: a few pixels about the line above the lane.
+    juce::Rectangle<int> laneDivider() const noexcept;
     // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
     bool apply(NoteEdit edit) { return commit(std::move(edit)); }
     // The trim tool (ADR-0241 d2, from Cubase's Trim tool; the header's switch): a stroke down
@@ -96,6 +103,13 @@ class NoteEditor final : public juce::Component {
         kSplit, kJoin, kCrop, kDuplicateTime, kDeleteTime, kInsertTime, kDuplicateLoop, kFoldToNotes, kFoldToScale, kHighlightScale,
         kGridItems = 1000
     };
+    // Note spelling (manual 10.6): chosen from the piano ruler's own menu, a right-click on the
+    // piano; the piano's names, the Pitch and Time range and the Status Bar follow it. Items 1 to 5:
+    // Sharps, Flats, Sharps and Flats, Auto, MIDI Note Numbers.
+    NoteSpelling spelling = NoteSpelling::Sharps;
+    std::string named(int key) const;
+    juce::PopupMenu spellingMenu() const;
+    bool chooseSpelling(int item);
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
     // What a right-click does before its menu opens: a note under it that is not selected is selected.
@@ -269,7 +283,8 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw, Shape, Trim, Handle, Ruler, LaneDraw, Zoom, Keys, Stretch, LaneSize };
+    int laneHeight_ = kVelocityHeight, laneFrom_ = 0;
     // A stretch held: which marker, the pair as it was and the place grabbed, where the marker is
     // now (all in the song's ticks), and the notes it carries.
     StretchPart stretchPart_ = StretchPart::None;

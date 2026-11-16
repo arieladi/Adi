@@ -585,8 +585,21 @@ juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
     return {kKeysWidth, barsHeight(), std::max(0, getWidth() - kKeysWidth), kRulerHeight};
 }
 juce::Rectangle<int> NoteEditor::velocityArea() const noexcept {
-    const int h = getHeight() - kRulerHeight - barsHeight() >= kVelocityHeight + 48 ? kVelocityHeight : 0;
+    // As high as its divider left it, while the key tracks keep their floor; with no room for both, no lane.
+    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    const int h = room >= kLaneFloor ? std::clamp(laneHeight_, kLaneFloor, room) : 0;
     return {kKeysWidth, getHeight() - h, std::max(0, getWidth() - kKeysWidth), h};
+}
+void NoteEditor::setLaneHeight(int height) {
+    // Held to the room there is once the editor has a size; before that, kept as given.
+    const int room = getHeight() - kRulerHeight - barsHeight() - kStretchHeight - kKeysFloor;
+    laneHeight_ = getHeight() > 0 ? std::clamp(height, kLaneFloor, std::max(kLaneFloor, room)) : std::max(kLaneFloor, height);
+    keys.clampScroll(notesArea().getHeight());
+    repaint();
+}
+juce::Rectangle<int> NoteEditor::laneDivider() const noexcept {
+    const auto lane = velocityArea();
+    return lane.isEmpty() ? lane : juce::Rectangle<int>(0, lane.getY() - 3, getWidth(), 6);
 }
 juce::Rectangle<int> NoteEditor::stretchArea() const noexcept {
     return {kKeysWidth, barsHeight() + kRulerHeight, std::max(0, getWidth() - kKeysWidth), kStretchHeight};
@@ -1138,8 +1151,8 @@ juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) 
         return {};
     }
     const auto percent = [](int basisPoints) { return juce::String((basisPoints + 50) / 100) + "%"; };
-    const auto pitch = lowKey == highKey ? juce::String(noteName(lowKey)) + " (" + juce::String(lowKey) + ")"
-                                         : juce::String(noteName(lowKey)) + " - " + juce::String(noteName(highKey));
+    const auto pitch = lowKey == highKey ? juce::String(named(lowKey)) + " (" + juce::String(lowKey) + ")"
+                                         : juce::String(named(lowKey)) + " - " + juce::String(named(highKey));
     return "Note Selection   Time: " + where(from) + " - " + where(to) + " (" + length(from, to) + ")   Pitch: " + pitch +
            "   Velocity: " + (lowVelocity == highVelocity ? juce::String(lowVelocity) : juce::String(lowVelocity) + " - " + juce::String(highVelocity)) +
            "   Probability: " + (lowChance == highChance ? percent(lowChance) : percent(lowChance) + " - " + percent(highChance));
@@ -1385,6 +1398,30 @@ std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
     return songTick;
 }
 // ---- The editor's context menu -----------------------------------------------------------------
+std::string NoteEditor::named(int key) const {
+    const auto *clip = panel.details();
+    return noteName(key, spelling, clip != nullptr ? static_cast<int>(clip->scale.root) : 0);
+}
+juce::PopupMenu NoteEditor::spellingMenu() const {
+    juce::PopupMenu menu;
+    static constexpr const char *kNames[] = {"Sharps (C#)", "Flats (Db)", "Sharps and Flats (C#/Db)", "Auto", "MIDI Note Numbers"};
+    for (int i = 0; i < 5; ++i) {
+        if (i == 4)
+            menu.addSeparator();
+        menu.addItem(i + 1, kNames[i], true, static_cast<int>(spelling) == i);
+    }
+    return menu;
+}
+bool NoteEditor::chooseSpelling(int item) {
+    if (item < 1 || item > 5)
+        return false;
+    spelling = static_cast<NoteSpelling>(item - 1);
+    repaint();
+    panel.repaint();
+    panel.keepSettings();
+    panel.root.mark(DirtySet::Status);
+    return true;
+}
 void NoteEditor::contextClick(juce::Point<int> at) {
     if (const auto *n = noteAt(at); n != nullptr && !isSelected(n->id)) {
         selected_ = {n->id};
@@ -1625,6 +1662,15 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     from_ = to_ = e.getPosition();
     const auto *clip = panel.details();
     if (clip != nullptr && e.mods.isPopupMenu()) {
+        if (keysArea().contains(from_)) {
+            // The piano ruler's own menu: how the notes are spelled.
+            juce::Component::SafePointer<NoteEditor> piano(this);
+            spellingMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [piano](int item) {
+                if (piano != nullptr && item > 0)
+                    piano->chooseSpelling(item);
+            });
+            return;
+        }
         // A right-click: a note under it that is not selected is selected first; then the menu.
         contextClick(from_);
         juce::Component::SafePointer<NoteEditor> safe(this);
@@ -1710,6 +1756,11 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
                 if (safe != nullptr && item > 0)
                     safe->chooseShape(item);
             });
+        return;
+    }
+    if (laneDivider().contains(from_)) {
+        laneFrom_ = velocityArea().getHeight();
+        drag_ = Drag::LaneSize;
         return;
     }
     if (const auto lane = velocityArea(); lane.contains(from_)) {
@@ -1876,6 +1927,8 @@ void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
         velocityDrag();
     } else if (drag_ == Drag::LaneDraw) {
         laneDrawStroke(e.mods);
+    } else if (drag_ == Drag::LaneSize) {
+        setLaneHeight(laneFrom_ + (from_.y - to_.y));
     } else if (drag_ == Drag::Stretch) {
         // The marker follows the pointer, on the nearest grid line unless snapping is bypassed; the
         // marker of a drag begun between the two stays between them.
@@ -1983,6 +2036,8 @@ void NoteEditor::mouseUp(const juce::MouseEvent &) {
         const auto keep = selected_;
         if (commit(trimNotesTo(*clip, lengths)) && !lengths.empty())
             select(keep);
+    } else if (kind == Drag::LaneSize) {
+        panel.keepSettings();
     } else if (kind == Drag::Stretch) {
         const auto window = ClipWindow::of(*clip);
         const auto ids = std::exchange(stretchIds_, {});
@@ -2563,7 +2618,7 @@ void NoteEditor::paint(juce::Graphics &g) {
                 const juce::Rectangle<int> name(keyboard.getRight() - 26, y, 24, keys.keyHeight);
                 labels_.push_back(name);
                 g.setColour(blackKey(key) ? juce::Colours::white : look::text);
-                g.drawText(noteName(key), name, juce::Justification::centredRight);
+                g.drawText(named(key), name, juce::Justification::centredRight);
             }
         }
         g.setColour(look::outline);
@@ -2797,6 +2852,8 @@ std::pair<std::int64_t, std::int64_t> ClipViewPanel::shownSpan() const noexcept 
 void ClipViewPanel::applyState(const WindowState &state) {
     notes.time.grid = {state.noteGridSnap, state.noteGridFixed, state.noteGridTriplet, state.noteGridNarrow, state.noteGridFixedQuarters};
     notes.highlightScale = state.highlightScale;
+    notes.setLaneHeight(state.noteLaneHeight);
+    notes.spelling = static_cast<NoteSpelling>(std::clamp(state.noteSpelling, 0, 4));
     notes.noteColours = static_cast<NoteEditor::NoteColours>(std::clamp(state.noteColours, 0, 4));
     quantizeValue_ = static_cast<std::size_t>(std::clamp(state.quantizeValue, 0, static_cast<int>(kQuantizeValues.size()) - 1));
     quantizeAmount = state.quantizeAmount;
@@ -2813,6 +2870,8 @@ void ClipViewPanel::keepSettings() {
     state.noteGridNarrow = grid.narrow;
     state.noteGridFixedQuarters = grid.fixedQuarters;
     state.highlightScale = notes.highlightScale;
+    state.noteLaneHeight = notes.laneHeight();
+    state.noteSpelling = static_cast<int>(notes.spelling);
     state.noteColours = static_cast<int>(notes.noteColours);
     state.quantizeValue = static_cast<int>(quantizeValue_);
     state.quantizeAmount = quantizeAmount;
@@ -3321,7 +3380,7 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
             if (notes.selected().empty() || notes.isSelected(n.id))
                 acted.push_back(n);
         if (const auto keys = keyRange(acted))
-            out.range = juce::String(noteName(keys->low)) + " - " + juce::String(noteName(keys->high));
+            out.range = juce::String(notes.named(keys->low)) + " - " + juce::String(notes.named(keys->high));
     }
     // While a field is dragged it reads where the drag would put it.
     if (dragged_ && pressed_ != Field::None) {

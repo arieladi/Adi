@@ -151,6 +151,16 @@ void lengths() {
 
 int main() {
     {
+        // Note spelling (manual 10.6).
+        check(noteName(61, NoteSpelling::Sharps) == "C#3" && noteName(61, NoteSpelling::Flats) == "Db3" && noteName(61, NoteSpelling::Both) == "C#/Db3" &&
+                  noteName(61, NoteSpelling::Numbers) == "61" && noteName(60, NoteSpelling::Flats) == "C3" && noteName(60, NoteSpelling::Both) == "C3",
+              "a note between two letters is spelled with a sharp, a flat or both, or by its number; a natural is always its letter");
+        check(noteName(70, NoteSpelling::Auto, 5) == "Bb3" && noteName(70, NoteSpelling::Auto, 7) == "A#3" && noteName(70, NoteSpelling::Auto, 0) == "A#3" &&
+                  noteName(66, NoteSpelling::Auto, 1) == "Gb3" && flatSide(10) && flatSide(3) && !flatSide(2) && !flatSide(11),
+              "Auto: flats for a root on the flat side of the circle of fifths, sharps for the others");
+        check(noteName(-3, NoteSpelling::Numbers) == "0" && noteName(900, NoteSpelling::Flats) == "G8", "a key outside the range reads as the nearest end");
+    }
+    {
         // Fold to Scale: the keys a rule keeps, highest first.
         KeyTracks scale;
         scale.foldWhere([](int key) { return key % 12 == 0 || key == 61; }, 200);

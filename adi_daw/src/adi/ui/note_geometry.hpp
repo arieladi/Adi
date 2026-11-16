@@ -34,6 +34,34 @@ inline std::string noteName(int key) {
     const int k = std::clamp(key, 0, kNoteKeys - 1);
     return std::string(pitchClassName(k)) + std::to_string(k / 12 - 2);
 }
+// How a note between two letters is spelled (manual 10.6, the piano ruler's menu): with a sharp,
+// with a flat, with both, or by the scale's root (Auto: flats for the roots that sit on the flat
+// side of the circle of fifths, F, Bb, Eb, Ab, Db and Gb; sharps for the others); or every note
+// by its MIDI number.
+enum class NoteSpelling { Sharps, Flats, Both, Auto, Numbers };
+inline constexpr bool flatSide(int root) noexcept {
+    const int r = ((root % 12) + 12) % 12;
+    return r == 5 || r == 10 || r == 3 || r == 8 || r == 1 || r == 6;
+}
+inline std::string noteName(int key, NoteSpelling spelling, int root = 0) {
+    const int k = std::clamp(key, 0, kNoteKeys - 1);
+    if (spelling == NoteSpelling::Numbers)
+        return std::to_string(k);
+    static const char *const flats[12] = {"C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"};
+    const std::string sharp = pitchClassName(k), flat = flats[k % 12], octave = std::to_string(k / 12 - 2);
+    if (sharp == flat)
+        return sharp + octave;
+    switch (spelling) {
+    case NoteSpelling::Flats:
+        return flat + octave;
+    case NoteSpelling::Both:
+        return sharp + "/" + flat + octave;
+    case NoteSpelling::Auto:
+        return (flatSide(root) ? flat : sharp) + octave;
+    default:
+        return sharp + octave;
+    }
+}
 inline constexpr bool blackKey(int key) noexcept {
     const int pc = ((key % 12) + 12) % 12;
     return pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
