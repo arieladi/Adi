@@ -634,6 +634,11 @@ bool NoteEditor::commit(NoteEdit edit) {
     }
     if (edit.ops.empty())
         return true;
+    // Live's overlap rule: a note placed over another on its key survives; the older is cut or removed.
+    if (const auto *clip = panel.details())
+        edit = withOverlaps(*clip, std::move(edit));
+    for (const auto &layer : panel.others())
+        edit = withOverlaps(layer.details, std::move(edit));
     // One batch, one undo step; the clip is read again at once, so the next event sees it.
     if (!panel.root.submitEdits(std::move(edit.ops)))
         return false;

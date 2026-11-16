@@ -4697,6 +4697,28 @@ void clipViewMore(AppCommands &commands, const std::filesystem::path &dir) {
     panel.mouseUp(pressAt(panel, panel.drawBox().getCentre().toFloat()));
     check(!ed.drawMode(), "the header's switch turns it off");
 
+    // Live's overlap rule, as measured: a note placed over another on its key survives whole; the older is cut or removed.
+    ed.select({});
+    check(submitter.submit(std::vector<OpRequest>{op("note.insert", {{"clip", 11}, {"note", 40}, {"start", 0}, {"dur", 4 * beat}, {"key", 72}}, "Add Note"),
+                                                  op("note.insert", {{"clip", 11}, {"note", 41}, {"start", 5 * beat}, {"dur", beat}, {"key", 72}}, "Add Note")}).ok,
+          "a long C4 from the start, and a short one later");
+    root.frame();
+    ed.select({41});
+    for (int i = 0; i < 3; ++i)
+        check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "Left");
+    check(note(41).startTicks == 2 * beat && note(40).durationTicks == 2 * beat && submitter.nextUndo()->opCount == 2 &&
+              submitter.nextUndo()->label == "Move Note",
+          "moved into the long note, the short one survives whole and the long one now ends where it begins: one undo step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(note(40).durationTicks == 3 * beat && note(41).startTicks == 3 * beat,
+          "and Undo takes back the last step: the short note a beat later, the long one a beat longer");
+    check(submitter.submit(std::vector<OpRequest>{op("note.delete", {{"clip", 11}, {"note", 40}}, "Delete Note"),
+                                                  op("note.delete", {{"clip", 11}, {"note", 41}}, "Delete Note")}).ok,
+          "both removed again");
+    root.frame();
+    ed.select({});
+
     // Cut, Copy and Paste of notes, and the insert marker (manual 10.5.2, 10.5.4).
     ed.select({});
     const auto clipCount = panel.details()->notes.size();

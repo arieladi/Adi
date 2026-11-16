@@ -665,4 +665,76 @@ inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vecto
     }
     return edit;
 }
+// Live's overlap rule, as measured on Live 12.4 (manual 10.5.4): where an edit puts a note over
+// another on the same key, the note just placed survives whole. An older note that begins inside it
+// is removed; an older note that began before it is cut to end where it begins, and what the older
+// note had after it is gone. The edit's batch gains those ops, so the whole is still one undo step.
+// Only this clip's ops in the batch are read; notes the edit itself placed never cut each other.
+inline NoteEdit withOverlaps(const engine::ClipDetails &clip, NoteEdit edit) {
+    using namespace note_edits_detail;
+    if (!edit.refusal.empty() || edit.ops.empty())
+        return edit;
+    struct Placed {
+        std::uint64_t id;
+        std::int64_t start, duration;
+        int key;
+        bool touched, gone;
+    };
+    std::vector<Placed> notes;
+    for (const auto &n : clip.notes)
+        notes.push_back({n.id, n.startTicks, n.durationTicks, n.key, false, false});
+    const auto find = [&](std::uint64_t id) -> Placed * {
+        for (auto &n : notes)
+            if (n.id == id)
+                return &n;
+        return nullptr;
+    };
+    for (const auto &o : edit.ops) {
+        if (!o.payload.contains("clip") || o.payload.at("clip") != clip.id || !o.payload.contains("note"))
+            continue;
+        const auto id = o.payload.at("note").get<std::uint64_t>();
+        if (o.opType == "note.insert") {
+            notes.push_back({id, o.payload.at("start").get<std::int64_t>(), o.payload.at("dur").get<std::int64_t>(),
+                             o.payload.at("key").get<int>(), true, false});
+        } else if (auto *n = find(id); n != nullptr) {
+            if (o.opType == "note.move") {
+                n->start = o.payload.at("start").get<std::int64_t>();
+                n->key = o.payload.at("key").get<int>();
+                n->touched = true;
+            } else if (o.opType == "note.resize") {
+                n->duration = o.payload.at("dur").get<std::int64_t>();
+                n->touched = true;
+            } else if (o.opType == "note.delete") {
+                n->gone = true;
+            }
+        }
+    }
+    const char *label = edit.ops.front().label.c_str();
+    std::vector<OpRequest> extra;
+    for (auto &old : notes) {
+        if (old.touched || old.gone)
+            continue;
+        for (const auto &placed : notes) {
+            if (!placed.touched || placed.gone || placed.key != old.key)
+                continue;
+            const auto placedEnd = placed.start + placed.duration, oldEnd = old.start + old.duration;
+            if (old.start >= placed.start && old.start < placedEnd) {
+                old.gone = true;
+                break;
+            }
+            if (old.start < placed.start && oldEnd > placed.start)
+                old.duration = placed.start - old.start;
+        }
+        const auto *was = note_edits_detail::find(clip, old.id);
+        if (was == nullptr)
+            continue;
+        if (old.gone)
+            extra.push_back(op("note.delete", {{"clip", clip.id}, {"note", old.id}}, label));
+        else if (old.duration != was->durationTicks)
+            extra.push_back(op("note.resize", {{"clip", clip.id}, {"note", old.id}, {"dur", std::max<std::int64_t>(1, old.duration)}}, label));
+    }
+    for (auto &o : extra)
+        edit.ops.push_back(std::move(o));
+    return edit;
+}
 } // namespace adi::ui
