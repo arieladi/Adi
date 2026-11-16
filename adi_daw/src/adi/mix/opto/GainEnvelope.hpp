@@ -43,7 +43,7 @@ class GainEnvelope final {
     GainEnvelope &operator=(const GainEnvelope &) = delete;
     GainEnvelope(GainEnvelope &&) = delete;
     GainEnvelope &operator=(GainEnvelope &&) = delete;
-    // Rates44.1..96kHz use the float-rounded processing rate; maximumFrames1..4096.
+    // Rates44.1..768kHz use the float-rounded processing rate; maximumFrames1..4096.
     // Normalized A/R must be finite in[0,1], threshold finite in[-60,0]dB.
     // Nearest rounding is required before shared-table initialization and must
     // remain stable during processing. The caller retains its FTZ/DAZ policy.

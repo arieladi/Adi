@@ -11,7 +11,7 @@ millisecond time: the time law couples Attack and Release. The two double
 envelope histories, attack table, nonlinear release branch and float detector/
 gain boundaries are preserved. Controls do not change while running.
 
-Preparation accepts44.1..96kHz and1..4096 maximum samples per span. The internal
+Preparation accepts44.1..768kHz and1..4096 maximum samples per span. The internal
 rate rounds to float. Selected verification rates do not establish every rate
 and control combination. Nearest rounding is required during setup and must
 remain stable while processing; the caller retains its FTZ/DAZ policy.
@@ -45,3 +45,6 @@ Native sampled stereo comparisons do not imply every caller's channel/routing
 composition is equivalent. Generated safety/lifecycle checks and private sound
 comparisons remain distinct. Reference observations and fixtures stay outside
 public sources and tests.
+
+Rates above 96 kHz have generated processing coverage. This does not establish
+full native-reference equality at every newly admitted host rate.
