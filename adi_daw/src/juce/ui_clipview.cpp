@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 namespace adi::ui {
 namespace {
 // Live's position fields read bar. beat. sixteenth from 1 (manual 8.2).
@@ -110,6 +111,7 @@ bool timeWheel(ArrangementGeometry &time, const juce::MouseEvent &e, const juce:
 NoteEditor::NoteEditor(ClipViewPanel &p) : panel(p) {
     setTitle("MIDI Note Editor");
     setOpaque(true);
+    setWantsKeyboardFocus(true);
 }
 juce::Rectangle<int> NoteEditor::rulerArea() const noexcept {
     return {kKeysWidth, 0, std::max(0, getWidth() - kKeysWidth), kRulerHeight};
@@ -136,6 +138,248 @@ std::optional<NoteBox> NoteEditor::boxOf(const engine::ClipNote &note) const noe
     const double x = time.x(window.toArrangement(note.startTicks));
     const double end = time.x(window.toArrangement(note.startTicks + note.durationTicks));
     return NoteBox{static_cast<double>(area.getX()) + x, std::max(1., end - x), area.getY() + *y, keys.keyHeight};
+}
+bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
+    return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
+}
+void NoteEditor::select(std::vector<std::uint64_t> ids) {
+    selected_ = std::move(ids);
+    repaint();
+}
+void NoteEditor::prune() {
+    const auto *clip = panel.details();
+    std::erase_if(selected_, [clip](std::uint64_t id) {
+        return clip == nullptr || note_edits_detail::find(*clip, id) == nullptr;
+    });
+}
+std::int64_t NoteEditor::gridTicks() const noexcept {
+    return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
+}
+bool NoteEditor::snapping(const juce::ModifierKeys &mods) const noexcept {
+    // Alt (Cmd on the Mac) bypasses snapping; with the grid off, it snaps while held (manual 10.2.1).
+#if JUCE_MAC
+    const bool bypass = mods.isCommandDown();
+#else
+    const bool bypass = mods.isAltDown();
+#endif
+    return time.grid.snap != bypass;
+}
+const engine::ClipNote *NoteEditor::noteAt(juce::Point<int> at, NotePart *part) const noexcept {
+    const auto *clip = panel.details();
+    if (clip == nullptr || !notesArea().contains(at))
+        return nullptr;
+    for (auto it = clip->notes.rbegin(); it != clip->notes.rend(); ++it)
+        if (const auto box = boxOf(*it))
+            if (const auto p = notePart(*box, at.x, at.y); p != NotePart::None) {
+                if (part != nullptr)
+                    *part = p;
+                return &*it;
+            }
+    return nullptr;
+}
+engine::ClipNote NoteEditor::shown(const engine::ClipNote &note) const noexcept {
+    auto out = note;
+    if (drag_ == Drag::None || drag_ == Drag::Band || !isSelected(note.id))
+        return out;
+    if (drag_ == Drag::Move) {
+        out.startTicks += dragTicks_;
+        out.key = static_cast<std::uint8_t>(std::clamp(static_cast<int>(note.key) + dragKeys_, 0, kNoteKeys - 1));
+    } else if (drag_ == Drag::Start) {
+        const auto by = std::min(dragTicks_, std::max<std::int64_t>(0, note.durationTicks - kShortestNote));
+        out.startTicks += by;
+        out.durationTicks -= by;
+    } else if (drag_ == Drag::End) {
+        out.durationTicks = std::max(kShortestNote, note.durationTicks + dragTicks_);
+    } else if (drag_ == Drag::Velocity) {
+        out.velocity = static_cast<std::uint8_t>(std::clamp(static_cast<int>(note.velocity) + dragVelocity_, 1, 127));
+    }
+    return out;
+}
+bool NoteEditor::commit(NoteEdit edit) {
+    repaint();
+    if (!edit.refusal.empty()) {
+        panel.root.say(std::move(edit.refusal));
+        return false;
+    }
+    if (edit.ops.empty())
+        return true;
+    // One batch, one undo step; the clip is read again at once, so the next event sees it.
+    if (!panel.root.submitEdits(std::move(edit.ops)))
+        return false;
+    selected_ = std::move(edit.select);
+    panel.reread();
+    return true;
+}
+void NoteEditor::mouseDown(const juce::MouseEvent &e) {
+    grabKeyboardFocus();
+    drag_ = Drag::None;
+    dragTicks_ = 0;
+    dragKeys_ = dragVelocity_ = 0;
+    from_ = to_ = e.getPosition();
+    const auto *clip = panel.details();
+    if (clip == nullptr || e.mods.isPopupMenu())
+        return;
+    if (const auto lane = velocityArea(); lane.contains(from_)) {
+        // The marker nearest the pointer, within a few pixels.
+        const auto window = ClipWindow::of(*clip);
+        const engine::ClipNote *best = nullptr;
+        double nearest = 6;
+        for (const auto &n : clip->notes) {
+            const double d = std::abs(lane.getX() + time.x(window.toArrangement(n.startTicks)) - from_.x);
+            if (d < nearest) {
+                nearest = d;
+                best = &n;
+            }
+        }
+        if (best != nullptr) {
+            if (!isSelected(best->id))
+                selected_ = {best->id};
+            anchor_ = best->id;
+            drag_ = Drag::Velocity;
+        }
+        repaint();
+        return;
+    }
+    NotePart part = NotePart::None;
+    if (const auto *n = noteAt(from_, &part)) {
+        // A click selects the note; Shift adds it to the selection or takes it out (manual 10.5.2).
+        if (e.mods.isShiftDown()) {
+            if (isSelected(n->id))
+                std::erase(selected_, n->id);
+            else
+                selected_.push_back(n->id);
+        } else if (!isSelected(n->id)) {
+            selected_ = {n->id};
+        }
+        if (isSelected(n->id)) {
+            anchor_ = n->id;
+            drag_ = part == NotePart::Start ? Drag::Start : part == NotePart::End ? Drag::End : Drag::Move;
+        }
+    } else if (notesArea().contains(from_)) {
+        if (!e.mods.isShiftDown())
+            selected_.clear();
+        bandBase_ = selected_;
+        drag_ = Drag::Band;
+    }
+    repaint();
+}
+void NoteEditor::mouseDrag(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (clip == nullptr || drag_ == Drag::None)
+        return;
+    to_ = e.getPosition();
+    const auto area = notesArea();
+    if (drag_ == Drag::Move || drag_ == Drag::Start || drag_ == Drag::End) {
+        // Notes keep their offset from the grid: the drag moves by whole grid steps (manual 10.2.1).
+        const double raw = static_cast<double>(to_.x - from_.x) / time.scale * static_cast<double>(textproj::kPPQ);
+        const auto step = static_cast<double>(gridTicks());
+        dragTicks_ = snapping(e.mods) ? static_cast<std::int64_t>(std::llround(raw / step) * static_cast<long long>(step))
+                                      : static_cast<std::int64_t>(std::llround(raw));
+    }
+    if (drag_ == Drag::Move) {
+        const auto a = keys.keyAt(from_.y - area.getY());
+        const auto b = keys.keyAt(std::clamp(to_.y - area.getY(), 0, std::max(0, area.getHeight() - 1)));
+        int low = kNoteKeys - 1, high = 0;
+        for (const auto &n : clip->notes)
+            if (isSelected(n.id)) {
+                low = std::min(low, static_cast<int>(n.key));
+                high = std::max(high, static_cast<int>(n.key));
+            }
+        dragKeys_ = a && b && low <= high ? std::clamp(*b - *a, -low, kNoteKeys - 1 - high) : 0;
+    } else if (drag_ == Drag::Velocity) {
+        const auto lane = velocityArea().withTrimmedTop(1);
+        if (const auto *n = note_edits_detail::find(*clip, anchor_))
+            dragVelocity_ = velocityAt(to_.y, lane.getY() + 5, lane.getHeight() - 10) - static_cast<int>(n->velocity);
+    } else if (drag_ == Drag::Band) {
+        // The notes the rectangle touches, added to what Shift kept.
+        const juce::Rectangle<int> band(from_, to_);
+        selected_ = bandBase_;
+        for (const auto &n : clip->notes)
+            if (const auto box = boxOf(n); box && !isSelected(n.id) &&
+                                             band.toDouble().intersects(juce::Rectangle<double>(
+                                                 box->x, static_cast<double>(box->y), box->width,
+                                                 static_cast<double>(box->height))))
+                selected_.push_back(n.id);
+    }
+    repaint();
+}
+void NoteEditor::mouseUp(const juce::MouseEvent &) {
+    const auto kind = std::exchange(drag_, Drag::None);
+    const auto ticks = std::exchange(dragTicks_, 0);
+    const int keysBy = std::exchange(dragKeys_, 0), velocity = std::exchange(dragVelocity_, 0);
+    const auto *clip = panel.details();
+    repaint();
+    if (clip == nullptr)
+        return;
+    if (kind == Drag::Move)
+        commit(moveNotes(*clip, selected_, ticks, keysBy));
+    else if (kind == Drag::Start)
+        commit(trimNotes(*clip, selected_, ticks));
+    else if (kind == Drag::End)
+        commit(resizeNotes(*clip, selected_, ticks));
+    else if (kind == Drag::Velocity)
+        commit(changeVelocities(*clip, selected_, velocity));
+}
+void NoteEditor::mouseDoubleClick(const juce::MouseEvent &e) {
+    const auto *clip = panel.details();
+    if (clip == nullptr || e.mods.isPopupMenu())
+        return;
+    drag_ = Drag::None;
+    const auto at = e.getPosition();
+    const auto area = notesArea();
+    // On a note, it deletes it; on empty space, it adds one a grid step long (manual 10.4).
+    if (const auto *n = noteAt(at)) {
+        commit(deleteNotes(*clip, {n->id}));
+        return;
+    }
+    if (!area.contains(at))
+        return;
+    const auto key = keys.keyAt(at.y - area.getY());
+    if (!key)
+        return;
+    const auto tick = time.tick(static_cast<double>(at.x - area.getX()));
+    const auto start = snapping(e.mods) ? time.snap(tick, false) : tick;
+    commit(addNote(*clip, ClipWindow::of(*clip).toSource(start), gridTicks(), *key));
+}
+bool NoteEditor::keyPressed(const juce::KeyPress &k) {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto code = k.getKeyCode();
+    const auto mods = k.getModifiers();
+    // Delete is the editor's while it has the keyboard: with no note selected it does nothing,
+    // and never reaches the arrangement's selection.
+    if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) {
+        if (!selected_.empty())
+            commit(deleteNotes(*clip, selected_));
+        return true;
+    }
+    if (k == juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) {
+        selected_.clear();
+        for (const auto &n : clip->notes)
+            selected_.push_back(n.id);
+        repaint();
+        return true;
+    }
+    if (code == juce::KeyPress::escapeKey && !selected_.empty()) {
+        select({});
+        return true;
+    }
+    if (mods.isCommandDown() || mods.isAltDown() || selected_.empty())
+        return false;
+    // The arrows move the selected notes by the grid and by a key; with Shift, up and down move an
+    // octave and left and right change the length (manual 10.5.4, 10.5.5).
+    if (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) {
+        const auto by = code == juce::KeyPress::rightKey ? gridTicks() : -gridTicks();
+        commit(mods.isShiftDown() ? resizeNotes(*clip, selected_, by) : moveNotes(*clip, selected_, by, 0));
+        return true;
+    }
+    if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
+        const int by = (code == juce::KeyPress::upKey ? 1 : -1) * (mods.isShiftDown() ? 12 : 1);
+        commit(moveNotes(*clip, selected_, 0, by));
+        return true;
+    }
+    return false;
 }
 void NoteEditor::showClip() {
     fitPending_ = true;
@@ -209,7 +453,8 @@ void NoteEditor::paint(juce::Graphics &g) {
         // The notes: the clip's colour, lighter as the velocity falls; a deactivated note is grey
         // (manual 10.5.7).
         const auto base = panel.colour();
-        for (const auto &note : clip->notes) {
+        for (const auto &stored : clip->notes) {
+            const auto note = shown(stored);
             const auto box = boxOf(note);
             if (!box || box->x > static_cast<double>(area.getRight()) || box->x + box->width < area.getX() ||
                 box->y >= area.getBottom() || box->y + box->height <= area.getY())
@@ -223,6 +468,18 @@ void NoteEditor::paint(juce::Graphics &g) {
             g.fillRect(r);
             g.setColour(look::outline);
             g.drawRect(r, 1.f);
+            // A selected note: a light line inside its edge.
+            if (isSelected(note.id) && r.getWidth() > 4.f && r.getHeight() > 4.f) {
+                g.setColour(juce::Colours::white);
+                g.drawRect(r.reduced(1.f), 1.f);
+            }
+        }
+        if (drag_ == Drag::Band) {
+            const juce::Rectangle<int> band(from_, to_);
+            g.setColour(juce::Colours::white.withAlpha(0.18f));
+            g.fillRect(band);
+            g.setColour(juce::Colours::white.withAlpha(0.7f));
+            g.drawRect(band, 1);
         }
     }
     {
@@ -268,7 +525,8 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.fillRect(lane);
         paintGrid(g, lane, time, meters);
         const double top = lane.getY() + 5, height = lane.getHeight() - 10;
-        for (const auto &note : clip->notes) {
+        for (const auto &stored : clip->notes) {
+            const auto note = shown(stored);
             const float x = static_cast<float>(lane.getX() + time.x(window.toArrangement(note.startTicks)));
             if (x < static_cast<float>(lane.getX()) - 4.f || x > static_cast<float>(lane.getRight()) + 4.f)
                 continue;
@@ -277,7 +535,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             g.fillRect(x, y, 1.f, static_cast<float>(lane.getBottom()) - y);
             g.setColour(note.active ? panel.colour() : juce::Colour(0xff9a9a9a));
             g.fillEllipse(x - 2.5f, y - 2.5f, 6.f, 6.f);
-            g.setColour(look::outline);
+            g.setColour(isSelected(note.id) ? juce::Colours::white : look::outline);
             g.drawEllipse(x - 2.5f, y - 2.5f, 6.f, 6.f, 1.f);
         }
     }
@@ -419,6 +677,11 @@ void ClipViewPanel::read(const SnapshotReader &reader) {
     }
     clipMeters_.assign(1, meter_);
 }
+void ClipViewPanel::reread() {
+    read(root.reader());
+    notes.prune();
+    repaint();
+}
 void ClipViewPanel::frame(const SnapshotReader &reader) {
     // The selected clip; with none selected, the one already shown stays, as Live's does.
     const auto selected = root.arrangement.geometry.selection.clip;
@@ -435,7 +698,9 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
         read(reader);
         notes.setVisible(midi());
         sample.setVisible(audio());
+        notes.prune();
         if (other) {
+            notes.select({});
             notes.showClip();
             sample.showClip();
         }

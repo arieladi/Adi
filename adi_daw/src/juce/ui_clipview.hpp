@@ -9,6 +9,7 @@
 #pragma once
 #include "adi/engine/clip_details.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/note_edits.hpp"
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -27,7 +28,28 @@ class NoteEditor final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+    // Editing (manual 10.4 to 10.6): a double-click adds a note or deletes the one under it; a
+    // drag moves the selected notes, or their start or end edges; a drag in the Velocity lane
+    // changes their velocities; a drag from empty space selects. Each gesture is one undo step.
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
+    // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A and Esc (manual 10.5).
+    bool keyPressed(const juce::KeyPress &) override;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
+    // The selected notes, by id: this view's own, kept while the notes exist.
+    const std::vector<std::uint64_t> &selected() const noexcept { return selected_; }
+    bool isSelected(std::uint64_t id) const noexcept;
+    void select(std::vector<std::uint64_t> ids);
+    // Drops the selected notes the clip no longer holds: called when the clip is read again.
+    void prune();
+    // The note under a point, the one drawn last on top, and the part of it there.
+    const engine::ClipNote *noteAt(juce::Point<int>, NotePart *part = nullptr) const noexcept;
+    // A note as it is drawn: while a drag is held, where the drag would put it.
+    engine::ClipNote shown(const engine::ClipNote &) const noexcept;
+    // The editing grid's step, in ticks.
+    std::int64_t gridTicks() const noexcept;
     // Time on the arrangement's own axis, with the editor's own zoom, scroll and grid.
     ArrangementGeometry time;
     KeyTracks keys;
@@ -44,9 +66,18 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
+    enum class Drag { None, Move, Start, End, Velocity, Band };
+    bool commit(NoteEdit);
+    bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
     bool fitPending_ = false;
     mutable std::vector<juce::Rectangle<int>> labels_;
+    std::vector<std::uint64_t> selected_, bandBase_;
+    Drag drag_ = Drag::None;
+    juce::Point<int> from_, to_;
+    std::int64_t dragTicks_ = 0;
+    int dragKeys_ = 0, dragVelocity_ = 0;
+    std::uint64_t anchor_ = 0;
 };
 
 // Live's Sample Editor (manual 8.1.3): the clip's audio on the time ruler.
@@ -100,6 +131,8 @@ class ClipViewPanel final : public juce::Component {
         bool loop = false;
     };
     Readings readings() const;
+    // Reads the clip again now: after an edit of this view's, before the next frame.
+    void reread();
     // Every place this panel and its editor draw text, in the panel's coordinates.
     std::vector<juce::Rectangle<int>> textAreas() const;
 

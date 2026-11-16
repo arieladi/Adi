@@ -3777,6 +3777,236 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     check(root.state().clipView && ViewStateStore(*store).load("clip-view").clipView, "the Clip View Selector opens it, and that is kept");
     check(root.command(AppCommands::ToggleClipView) && !root.state().clipView, "and the command hides it");
 }
+// The Clip View's editing (STEP-7-PLAN 7.7 step 3): a MIDI clip is made from the window (a double-click
+// on an empty MIDI lane, Insert Empty MIDI Clip(s) on a time selection), and its notes are added,
+// moved, resized, given velocities and deleted with the mouse and the keys, each gesture one undo
+// step, a drag previewed while it is held, and a refused op leaving the notes as they were.
+void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-view-notes.adi", err);
+    check(store != nullptr, "the note editing project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip View Notes')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole, beat = textproj::kPPQ;
+    auto op = [](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = submitter.submit(op("track.create", {{"id", 1}, {"kind", "midi"}, {"name", "Keys"}, {"index", 0}}, "Create track")).ok;
+    made = submitter.submit(op("track.create", {{"id", 2}, {"kind", "audio"}, {"name", "Audio"}, {"index", 1}}, "Create track")).ok && made;
+    check(made, "a MIDI track and an audio track, no clips");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-view-notes");
+    commands.activate(root);
+    root.setSize(1400, 900);
+    for (std::int64_t id = 1; id <= 2; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    auto &panel = root.clipView;
+    auto &ed = panel.notes;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+
+    // A double-click on an empty MIDI lane makes a clip of the bar under the pointer and opens it.
+    canvas.mouseDoubleClick(pressAt(canvas, {x(2 * bar) + 30, lane(1)}));
+    root.frame();
+    const auto *made1 = panel.details();
+    check(root.state().clipView && made1 != nullptr && panel.midi() && made1->posTicks == 2 * bar &&
+              made1->lengthTicks == bar && made1->notes.empty() && geo.selection.clip == made1->id &&
+              submitter.nextUndo()->label == "Insert MIDI Clip" && submitter.nextUndo()->opCount == 1,
+          "a double-click on an empty MIDI lane makes a one-bar clip there, selects and opens it, one undo step");
+    if (made1 == nullptr)
+        return;
+    const auto clipId = made1->id;
+    const auto before = submitter.nextUndo()->txnId;
+    canvas.mouseDoubleClick(pressAt(canvas, {x(2 * bar) + 30, lane(2)}));
+    root.frame();
+    check(submitter.nextUndo()->txnId == before, "on an audio track's empty lane it makes nothing");
+
+    // Insert Empty MIDI Clip(s): across the time selection on the selected MIDI track; refused over a clip.
+    geo.selection = {};
+    geo.selection.track = 1;
+    geo.selection.start = 4 * bar;
+    geo.selection.end = 6 * bar;
+    check(root.command(AppCommands::InsertMidiClip), "Insert Empty MIDI Clip(s) on a two-bar selection");
+    root.frame();
+    check(panel.details() != nullptr && panel.details()->id != clipId && panel.details()->posTicks == 4 * bar &&
+              panel.details()->lengthTicks == 2 * bar && geo.selection.clip == panel.details()->id,
+          "makes a two-bar clip there, selected and shown");
+    geo.selection.clip = 0;
+    geo.selection.start = 5 * bar;
+    geo.selection.end = 7 * bar;
+    const auto beforeRefusal = submitter.nextUndo()->txnId;
+    check(!root.command(AppCommands::InsertMidiClip) && submitter.nextUndo()->txnId == beforeRefusal && !root.error().empty(),
+          "over a clip it is refused, with the reason in the Status Bar");
+    geo.selection.start = geo.selection.end = 9 * bar;
+    check(!root.command(AppCommands::InsertMidiClip), "and it needs a time selection");
+
+    // Back on the first clip: its bar across the editor, a quarter-note grid, opened around middle C.
+    canvas.mouseDoubleClick(pressAt(canvas, {x(2 * bar) + 30, lane(1)}));
+    root.frame();
+    check(panel.clip() == clipId && ed.gridTicks() == beat, "the first clip again, on a quarter-note grid");
+    const auto area = ed.notesArea();
+    const int kh = ed.keys.keyHeight;
+    const int step = static_cast<int>(std::lround(ed.time.scale)); // a quarter note, in pixels
+    const auto xAt = [&](std::int64_t tick) { return static_cast<float>(area.getX() + static_cast<int>(ed.time.x(tick))); };
+    const auto yOf = [&](int key) { return static_cast<float>(area.getY() + *ed.keys.y(key) + kh / 2); };
+    const auto note = [&](std::size_t i) { return panel.details()->notes.at(i); };
+    const auto centre = [&](std::size_t i) {
+        const auto box = *ed.boxOf(note(i));
+        return juce::Point<float>(static_cast<float>(static_cast<int>(box.x + box.width / 2)),
+                                  static_cast<float>(box.y + box.height / 2));
+    };
+    const auto undoIs = [&](const char *label, int ops) {
+        return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+    };
+
+    // A double-click on empty space adds a note a grid step long, snapped to the grid, selected.
+    ed.mouseDoubleClick(pressAt(ed, {xAt(2 * bar + beat) + 10.f, yOf(64)}));
+    root.frame();
+    check(panel.details()->notes.size() == 1 && note(0).startTicks == beat && note(0).durationTicks == beat &&
+              note(0).key == 64 && note(0).velocity == 100 && ed.selected() == std::vector<std::uint64_t>{note(0).id} &&
+              undoIs("Add Note", 1),
+          "a double-click adds E3 on the second beat, a beat long, velocity 100, selected, one undo step");
+
+    // Dragged by its body: a grid step later and two keys up, previewed while held, one step on release.
+    auto from = centre(0);
+    ed.mouseDown(pressAt(ed, from));
+    ed.mouseDrag(dragAt(ed, from, {from.x + static_cast<float>(step), from.y - static_cast<float>(2 * kh)}));
+    check(ed.shown(note(0)).startTicks == 2 * beat && ed.shown(note(0)).key == 66 && note(0).startTicks == beat &&
+              undoIs("Add Note", 1),
+          "while the drag is held the note is drawn where it would land, and nothing is written");
+    ed.mouseUp(pressAt(ed, {from.x + static_cast<float>(step), from.y - static_cast<float>(2 * kh)}));
+    root.frame();
+    check(note(0).startTicks == 2 * beat && note(0).key == 66 && undoIs("Move Note", 1),
+          "released, it has moved a beat later and two keys up, one undo step");
+
+    // Its end edge dragged a step right: twice as long.
+    auto box = *ed.boxOf(note(0));
+    from = {static_cast<float>(static_cast<int>(box.x + box.width) - 2), static_cast<float>(box.y + box.height / 2)};
+    ed.mouseDown(pressAt(ed, from));
+    ed.mouseDrag(dragAt(ed, from, {from.x + static_cast<float>(step), from.y}));
+    ed.mouseUp(pressAt(ed, {from.x + static_cast<float>(step), from.y}));
+    root.frame();
+    check(note(0).startTicks == 2 * beat && note(0).durationTicks == 2 * beat && undoIs("Resize Note", 1),
+          "its end edge dragged a step right makes it two beats long");
+
+    // Its start edge dragged a step right: it starts later and still ends where it did; one Undo
+    // takes both back.
+    box = *ed.boxOf(note(0));
+    from = {static_cast<float>(static_cast<int>(box.x) + 1), static_cast<float>(box.y + box.height / 2)};
+    ed.mouseDown(pressAt(ed, from));
+    ed.mouseDrag(dragAt(ed, from, {from.x + static_cast<float>(step), from.y}));
+    ed.mouseUp(pressAt(ed, {from.x + static_cast<float>(step), from.y}));
+    root.frame();
+    check(note(0).startTicks == 3 * beat && note(0).durationTicks == beat && undoIs("Resize Note", 2),
+          "its start edge dragged a step right: it starts a beat later and ends where it did");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(note(0).startTicks == 2 * beat && note(0).durationTicks == 2 * beat, "and one Undo puts both back");
+
+    // The Velocity lane: the note's marker dragged down.
+    const auto vel = ed.velocityArea().withTrimmedTop(1);
+    const double vTop = vel.getY() + 5, vHeight = vel.getHeight() - 10;
+    const float markerX = static_cast<float>(vel.getX() + static_cast<int>(ed.time.x(2 * bar + note(0).startTicks)));
+    const int downTo = static_cast<int>(velocityY(50, vTop, vHeight));
+    const juce::Point<float> marker(markerX, static_cast<float>(static_cast<int>(velocityY(100, vTop, vHeight))));
+    ed.mouseDown(pressAt(ed, marker));
+    ed.mouseDrag(dragAt(ed, marker, {markerX, static_cast<float>(downTo)}));
+    ed.mouseUp(pressAt(ed, {markerX, static_cast<float>(downTo)}));
+    root.frame();
+    check(note(0).velocity == velocityAt(downTo, vTop, vHeight) && note(0).velocity < 60 && note(0).velocity > 40 &&
+              undoIs("Change Velocity", 1),
+          "its velocity marker dragged down to about 50 sets its velocity, one undo step");
+
+    // A second note; Ctrl/Cmd+A selects both; the arrows move them together, one step for both.
+    ed.mouseDoubleClick(pressAt(ed, {xAt(2 * bar) + 10.f, yOf(60)}));
+    root.frame();
+    check(panel.details()->notes.size() == 2, "a second note, C3 on the first beat");
+    check(ed.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) && ed.selected().size() == 2,
+          "Ctrl/Cmd+A selects both");
+    const auto keysBefore = std::pair<int, int>(note(0).key, note(1).key);
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey)), "Up");
+    root.frame();
+    check(note(0).key == keysBefore.first + 1 && note(1).key == keysBefore.second + 1 && undoIs("Move Notes", 2),
+          "Up moves both a key up, one undo step");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::downKey)), "Down");
+    root.frame();
+    check(note(0).key == keysBefore.first && note(1).key == keysBefore.second, "Down moves both back");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Up");
+    root.frame();
+    check(note(0).key == keysBefore.first + 12 && note(1).key == keysBefore.second + 12, "Shift+Up moves both an octave up");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Down");
+    root.frame();
+    check(note(0).key == keysBefore.first && note(1).key == keysBefore.second, "Shift+Down moves both an octave down again");
+    const auto startsBefore = std::pair<std::int64_t, std::int64_t>(note(0).startTicks, note(1).startTicks);
+    const auto lengthsBefore = std::pair<std::int64_t, std::int64_t>(note(0).durationTicks, note(1).durationTicks);
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "Right");
+    root.frame();
+    check(note(0).startTicks == startsBefore.first + beat && note(1).startTicks == startsBefore.second + beat,
+          "Right moves both a grid step later");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "Left");
+    root.frame();
+    check(note(0).startTicks == startsBefore.first && note(1).startTicks == startsBefore.second, "Left moves both back");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Right");
+    root.frame();
+    check(note(0).durationTicks == lengthsBefore.first + beat && note(1).durationTicks == lengthsBefore.second + beat &&
+              undoIs("Resize Notes", 2),
+          "Shift+Right makes both a grid step longer, one undo step");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier, 0)), "Shift+Left");
+    root.frame();
+    check(note(0).durationTicks == lengthsBefore.first && note(1).durationTicks == lengthsBefore.second,
+          "Shift+Left makes both a grid step shorter");
+
+    // A click on empty space selects nothing; a drag from empty space selects what it touches.
+    const juce::Point<float> empty(xAt(2 * bar) + 4.f, static_cast<float>(area.getY() + 2));
+    ed.mouseDown(pressAt(ed, empty));
+    ed.mouseUp(pressAt(ed, empty));
+    check(ed.selected().empty(), "a click on empty space selects nothing");
+    ed.mouseDown(pressAt(ed, empty));
+    ed.mouseDrag(dragAt(ed, empty, {static_cast<float>(area.getRight() - 2), static_cast<float>(area.getBottom() - 2)}));
+    ed.mouseUp(pressAt(ed, {static_cast<float>(area.getRight() - 2), static_cast<float>(area.getBottom() - 2)}));
+    check(ed.selected().size() == 2, "a drag across the editor selects both notes");
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && ed.selected().empty(), "Esc deselects");
+
+    // A double-click on a note deletes it.
+    const auto kept = note(1).id;
+    ed.mouseDoubleClick(pressAt(ed, centre(0)));
+    root.frame();
+    check(panel.details()->notes.size() == 1 && note(0).id == kept && undoIs("Delete Note", 1),
+          "a double-click on a note deletes it, one undo step");
+
+    // Delete with nothing selected does nothing and stays in the editor; with the note selected it
+    // deletes it. A note already gone (deleted elsewhere before this view's next frame) is refused by
+    // the engine: nothing is written, and the Status Bar says why.
+    const auto beforeDelete = submitter.nextUndo()->txnId;
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && submitter.nextUndo()->txnId == beforeDelete,
+          "Delete with no note selected is the editor's and does nothing");
+    ed.select({kept});
+    check(submitter.submit(op("note.delete", {{"clip", clipId}, {"note", kept}}, "Delete Note")).ok,
+          "the note is deleted behind the view's back");
+    const auto behind = submitter.nextUndo()->txnId;
+    check(ed.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && submitter.nextUndo()->txnId == behind &&
+              !root.error().empty(),
+          "deleting it again is refused: no step is written and the Status Bar says why");
+    root.frame();
+    check(panel.details()->notes.empty() && ed.selected().empty(), "the view then shows the clip as it is, nothing selected");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(panel.details()->notes.size() == 1, "and Undo brings the note back into the view");
+}
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
@@ -7945,13 +8175,19 @@ int main(int argc, char **argv) {
                       exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
-                      C::ToggleClipView == C::Split + 1 && C::LastId == C::ToggleClipView,
+                      C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
+                      C::LastId == C::InsertMidiClip,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
-                  "Show/Hide Plug-In Windows, Split, then Clip View (the last id), each named");
+                  "Show/Hide Plug-In Windows, Split, Clip View, then Insert Empty MIDI Clip(s) (the last id), each named");
             juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
             commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
-            check(clipViewInfo.shortName == "Clip View", "the last id is named Clip View");
+            juce::ApplicationCommandInfo midiClipInfo(C::InsertMidiClip);
+            commands.getCommandInfo(C::InsertMidiClip, midiClipInfo);
+            check(clipViewInfo.shortName == "Clip View" && midiClipInfo.shortName == "Insert Empty MIDI Clip(s)" &&
+                      midiClipInfo.defaultKeypresses.contains(juce::KeyPress(
+                          'm', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)),
+                  "the last two ids are named Clip View and Insert Empty MIDI Clip(s), the second on Ctrl/Cmd+Shift+M");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -7999,9 +8235,10 @@ int main(int argc, char **argv) {
                   "and undo brings the track back");
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
-                                                  C::InsertTimeSignatureChange, 0, C::AddLocator, C::DeleteLocator},
-              "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5), then Add "
-              "and Delete Locator (§6.4)");
+                                                  C::InsertMidiClip, 0, C::InsertTimeSignatureChange, 0, C::AddLocator,
+                                                  C::DeleteLocator},
+              "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, then a time signature "
+              "change (§6.5), then Add and Delete Locator (§6.4)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
@@ -10114,6 +10351,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     clipView(commands, temp.path(), write);
+    clipViewNotes(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
