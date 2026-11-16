@@ -19,6 +19,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -324,8 +325,22 @@ class ClipViewPanel final : public juce::Component {
     // one of the clip's own ops (N33), one undo step.
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
-        VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices
+        VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
+        RandomAmount, RampStart, RampEnd
     };
+    // Live's Velocity Controls (manual 10.5.12), in a strip under the editor's lanes: Randomize
+    // with its amount, and the Ramp's start and end values. Randomize raises or lowers each
+    // selected note's velocity (every note's when none is selected) by up to the amount; typing
+    // the amount and Enter randomizes too. A Ramp value set, typed or dragged, spreads the notes'
+    // velocities evenly from the start value at the first note to the end value at the last.
+    static constexpr int kStripHeight = 18;
+    juce::Rectangle<int> velocityStripArea() const noexcept;
+    juce::Rectangle<int> randomizeBox() const noexcept;
+    bool randomize();
+    bool ramp();
+    int randomAmount = 20, rampStart = 100, rampEnd = 100;
+    // One random value from -amount to +amount; a test puts its own in.
+    std::function<int(int)> randomOffset;
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
@@ -401,6 +416,9 @@ class ClipViewPanel final : public juce::Component {
     void showScaleMenu(bool roots);
     // A field of the Functions tab: the number it holds and its range; null for any other field.
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
+    // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
+    void numberChanged(Field, bool typed);
+    std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
     std::vector<std::int64_t> shown_;
     std::vector<ClipLayer> others_;

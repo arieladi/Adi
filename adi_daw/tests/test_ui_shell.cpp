@@ -5370,6 +5370,73 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.setDrawMode(false);
     }
 
+    // Live's Velocity Controls under the lanes (manual 10.5.12): Randomize with its amount, and the Ramp.
+    {
+        using Field = ClipViewPanel::Field;
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto strip = panel.velocityStripArea();
+        check(!strip.isEmpty() && strip.getBottom() == panel.getHeight() && ed.getBottom() == strip.getY() &&
+                  strip.contains(panel.randomizeBox()) && strip.contains(panel.fieldBox(Field::RandomAmount)) &&
+                  strip.contains(panel.fieldBox(Field::RampStart)) && strip.contains(panel.fieldBox(Field::RampEnd)) &&
+                  !panel.fieldBox(Field::RampStart).intersects(panel.fieldBox(Field::RampEnd)) &&
+                  !panel.randomizeBox().intersects(panel.fieldBox(Field::RandomAmount)),
+              "the velocity controls are a strip under the editor's lanes: Randomize, its amount, and the Ramp's two values");
+        check(submitter.submit(std::vector<OpRequest>{op("note.setVelocity", {{"clip", 11}, {"note", 1}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 2}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 3}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 4}, {"vel", 100}}, "Change Velocity")}).ok,
+              "every note back at 100");
+        root.frame();
+        // Randomize, with the randomness a test's own: up by the amount, then down, in turn.
+        int turn = 0;
+        panel.randomOffset = [&turn](int amount) { return ++turn % 2 == 1 ? amount : -amount; };
+        ed.select({1, 2});
+        click(panel.randomizeBox());
+        check(note(1).velocity == 120 && note(2).velocity == 80 && note(3).velocity == 100 && undoIs("Randomize Velocities", 2) &&
+                  ed.selected() == Ids({1, 2}),
+              "Randomize moves each selected note's velocity by up to the amount, 20: one undo step");
+        check(panel.typeField(Field::RandomAmount, "5") && panel.randomAmount == 5 && note(1).velocity == 125 && note(2).velocity == 75 &&
+                  undoIs("Randomize Velocities", 2),
+              "the amount typed, with Enter, randomizes again by the new amount");
+        panel.randomOffset = nullptr;
+        ed.select({});
+        const auto beforeRandom = submitter.nextUndo()->txnId;
+        click(panel.randomizeBox());
+        bool within = true;
+        const int was[] = {125, 75, 100, 100};
+        for (std::uint64_t id = 1; id <= 4; ++id)
+            within = within && std::abs(static_cast<int>(note(id).velocity) - was[id - 1]) <= 5;
+        check(within, "with none selected every note is randomized, each within the amount");
+        if (submitter.nextUndo()->txnId != beforeRandom)
+            check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        // The Ramp.
+        check(panel.typeField(Field::RampStart, "40") && panel.rampStart == 40 && note(1).velocity == 40 && note(2).velocity == 60 &&
+                  note(3).velocity == 80 && note(4).velocity == 100 && undoIs("Ramp Velocities", 3),
+              "the Ramp's start typed as 40: the notes rise evenly from 40 at the first to 100 at the last, in the order they begin");
+        {
+            const auto box = panel.fieldBox(Field::RampEnd).getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, box));
+            panel.mouseDrag(dragAt(panel, box, box.translated(0.f, 160.f)));
+            panel.mouseUp(dragAt(panel, box, box.translated(0.f, 160.f)));
+        }
+        check(panel.rampEnd == 60 && note(1).velocity == 40 && note(4).velocity == 60 && note(2).velocity == 47 && note(3).velocity == 53 &&
+                  undoIs("Ramp Velocities", 3),
+              "the Ramp's end dragged down to 60 ramps again: one undo step");
+        ed.select({2, 3});
+        check(panel.typeField(Field::RampStart, "10") && note(2).velocity == 10 && note(3).velocity == 60 && note(1).velocity == 40 &&
+                  ed.selected() == Ids({2, 3}),
+              "with notes selected the ramp runs over them alone");
+        check(!panel.typeField(Field::RampEnd, "loud") && panel.rampEnd == 60 && !root.error().empty(), "a word is refused");
+        ed.select({});
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

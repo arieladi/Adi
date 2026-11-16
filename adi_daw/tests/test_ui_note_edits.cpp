@@ -679,6 +679,51 @@ void splitsAtEdges() {
     check(splitNotesAtEach(c, {}).ops.empty(), "no edges, no cuts");
 }
 
+void velocityControls() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, int velocity) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = beat;
+        n.velocity = static_cast<std::uint8_t>(velocity);
+        return n;
+    };
+    // Out of time order in the clip, to show the ramp goes by time.
+    c.notes = {note(1, 60, 2 * beat, 100), note(2, 64, 0, 100), note(3, 67, 4 * beat, 100), note(4, 60, beat, 100), note(5, 72, 4 * beat, 120)};
+    const auto velocityOf = [](const NoteEdit &e, std::uint64_t id) {
+        for (const auto &o : e.ops)
+            if (o.payload.at("note") == id)
+                return o.payload.at("vel").get<int>();
+        return -1;
+    };
+    // Randomize.
+    int calls = 0;
+    const auto up = randomizeVelocities(c, {1, 2}, 20, [&](int amount) { return ++calls == 1 ? amount : -amount; });
+    check(up.ops.size() == 2 && velocityOf(up, 1) == 120 && velocityOf(up, 2) == 80 && up.ops[0].label == "Randomize Velocities" &&
+              up.select == std::vector<std::uint64_t>({1, 2}) && calls == 2,
+          "Randomize: each selected note's velocity moves by its own value, up to the amount either way");
+    check(randomizeVelocities(c, {}, 20, [](int) { return 5; }).ops.size() == 5, "with none selected, every note");
+    check(velocityOf(randomizeVelocities(c, {5}, 20, [](int) { return 900; }), 5) == 127 &&
+              velocityOf(randomizeVelocities(c, {5}, 20, [](int) { return -900; }), 5) == 100,
+          "a value past the amount is held to it, and the velocity to 127");
+    check(randomizeVelocities(c, {}, 0, [](int amount) { return amount; }).ops.empty(), "an amount of 0 changes nothing");
+    // Ramp.
+    const auto rise = rampVelocities(c, {}, 20, 100);
+    check(rise.ops.size() == 5 && velocityOf(rise, 2) == 20 && velocityOf(rise, 4) == 40 && velocityOf(rise, 1) == 60 && velocityOf(rise, 3) == 80 &&
+              velocityOf(rise, 5) == 100 && rise.ops[0].label == "Ramp Velocities",
+          "Ramp: from the start value at the first note in time to the end value at the last, evenly; of two that begin together the higher is last");
+    const auto fall = rampVelocities(c, {2, 4, 1}, 100, 1);
+    check(velocityOf(fall, 2) == -1 && velocityOf(fall, 4) == 50 && velocityOf(fall, 1) == 1, "a falling ramp over the selected notes; the first already has the start value");
+    check(velocityOf(rampVelocities(c, {3}, 30, 90), 3) == 30, "one note takes the start value");
+    ClipDetails audio = c;
+    audio.kind = "audio";
+    check(!rampVelocities(audio, {}, 1, 2).refusal.empty(), "an audio clip refuses");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -736,6 +781,7 @@ int main() {
     quantizeSplitJoin();
     functions();
     splitsAtEdges();
+    velocityControls();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

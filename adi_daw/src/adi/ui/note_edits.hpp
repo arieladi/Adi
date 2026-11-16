@@ -824,6 +824,40 @@ inline NoteEdit joinNotes(const engine::ClipDetails &clip, const std::vector<std
     return edit;
 }
 
+// ---- Live's Velocity Controls (manual 10.5.12) --------------------------------------------------
+// Randomize: each velocity raised or lowered by a value between zero and `amount`. `offset(amount)`
+// gives one such value, from -amount to +amount; the caller owns the randomness.
+template <class Offset>
+NoteEdit randomizeVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int amount, Offset &&offset) {
+    using namespace note_edits_detail;
+    const int range = std::clamp(amount, 0, 127);
+    std::vector<std::pair<std::uint64_t, int>> values;
+    for (const auto *n : targets(clip, ids))
+        values.emplace_back(n->id, static_cast<int>(n->velocity) + std::clamp(static_cast<int>(offset(range)), -range, range));
+    auto edit = drawVelocities(clip, values, "Randomize Velocities");
+    edit.select = ids;
+    return edit;
+}
+// The Ramp: the first note in time takes `start`, the last takes `end`, and those between are
+// spread evenly, in the order they begin (of notes that begin together, the lower first).
+inline NoteEdit rampVelocities(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int start, int end) {
+    using namespace note_edits_detail;
+    auto notes = targets(clip, ids);
+    std::stable_sort(notes.begin(), notes.end(), [](const auto *a, const auto *b) {
+        return a->startTicks != b->startTicks ? a->startTicks < b->startTicks : a->key < b->key;
+    });
+    std::vector<std::pair<std::uint64_t, int>> values;
+    const auto last = static_cast<std::int64_t>(notes.size()) - 1;
+    for (std::int64_t i = 0; i <= last; ++i) {
+        const auto span = static_cast<std::int64_t>(end) - start;
+        const auto value = last == 0 ? start : start + (span * i * 2 + (span >= 0 ? last : -last)) / (2 * last);
+        values.emplace_back(notes[static_cast<std::size_t>(i)]->id, static_cast<int>(value));
+    }
+    auto edit = drawVelocities(clip, values, "Ramp Velocities");
+    edit.select = ids;
+    return edit;
+}
+
 // ---- Velocity and note functions (ADR-0242 d1: N4, N5; Cubase Pro 15 manual, MIDI functions) ------
 // ADI's additions. Each acts on the selected notes, or on every note when none is selected.
 

@@ -2041,8 +2041,37 @@ juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
 }
+juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
+    const auto area = editorArea();
+    return midi() && area.getHeight() >= 140 ? area.withTop(area.getBottom() - kStripHeight) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::randomizeBox() const noexcept {
+    const auto strip = velocityStripArea();
+    return strip.isEmpty() ? strip : juce::Rectangle<int>(strip.getX() + 6, strip.getY() + 3, 62, 13);
+}
+bool ClipViewPanel::randomize() {
+    if (!details_ || !midi())
+        return false;
+    const auto offset = [this](int amount) {
+        if (randomOffset)
+            return randomOffset(amount);
+        return std::uniform_int_distribution<int>(-amount, amount)(random_);
+    };
+    return notes.apply(randomizeVelocities(*details_, notes.selected(), randomAmount, offset));
+}
+bool ClipViewPanel::ramp() {
+    if (!details_ || !midi())
+        return false;
+    return notes.apply(rampVelocities(*details_, notes.selected(), rampStart, rampEnd));
+}
+void ClipViewPanel::numberChanged(Field field, bool typed) {
+    if (field == Field::RampStart || field == Field::RampEnd)
+        ramp();
+    else if (field == Field::RandomAmount && typed)
+        randomize();
+}
 void ClipViewPanel::resized() {
-    notes.setBounds(editorArea());
+    notes.setBounds(editorArea().withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
 void ClipViewPanel::read(const SnapshotReader &reader) {
@@ -2252,6 +2281,14 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::RandomAmount || field == Field::RampStart || field == Field::RampEnd) {
+        // In the strip under the lanes: the amount beside Randomize, then the Ramp's two values.
+        const auto button = randomizeBox();
+        if (button.isEmpty())
+            return {};
+        const int x = field == Field::RandomAmount ? button.getRight() + 4 : field == Field::RampStart ? button.getRight() + 96 : button.getRight() + 136;
+        return {x, button.getY(), 36, button.getHeight()};
+    }
     if (field == Field::VelocityAmount || field == Field::VelocityPercent || field == Field::VelocityLow ||
         field == Field::VelocityHigh || field == Field::Voices) {
         // Each sits in the first column beside its button; Limit's two share a row above it.
@@ -2381,6 +2418,15 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::RandomAmount:
+        range(0, 127);
+        return &randomAmount;
+    case Field::RampStart:
+        range(1, 127);
+        return &rampStart;
+    case Field::RampEnd:
+        range(1, 127);
+        return &rampEnd;
     default:
         return nullptr;
     }
@@ -2563,7 +2609,7 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
-                             Field::VelocityHigh, Field::Voices})
+                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -2613,6 +2659,7 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             }
             *value = std::clamp(trimmed.getIntValue(), low, high);
             repaint();
+            numberChanged(field, true);
             return true;
         }
     }
@@ -2716,6 +2763,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
             setToolsTab(tab);
             return;
         }
+    if (randomizeBox().contains(at)) {
+        randomize();
+        return;
+    }
     if (foldBox().contains(at)) {
         notes.setFold(!notes.folded());
         repaint();
@@ -2807,6 +2858,7 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
             auto *value = plainField(field);
             *value = std::clamp(*value + steps, low, high);
             repaint();
+            numberChanged(field, false);
         } else {
             openEditor(field);
         }
@@ -2948,6 +3000,28 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         }
     }
 
+    if (const auto strip = velocityStripArea(); !strip.isEmpty()) {
+        // Live's Velocity Controls, under the lanes.
+        g.setColour(look::field);
+        g.fillRect(strip);
+        g.setColour(look::band);
+        g.fillRect(strip.withHeight(1));
+        const auto button = randomizeBox();
+        look::box(g, button.toFloat(), look::button);
+        text("Randomize", button, juce::Justification::centred, look::text, 10.f);
+        const auto number = [&](Field which) {
+            const auto box = fieldBox(which);
+            int low = 0, high = 0;
+            const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+            look::box(g, box.toFloat(), look::chooser);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+        };
+        number(Field::RandomAmount);
+        const auto start = fieldBox(Field::RampStart);
+        text("Ramp", {start.getX() - 34, start.getY(), 30, start.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+        number(Field::RampStart);
+        number(Field::RampEnd);
+    }
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     if (const auto fold = foldBox(); !fold.isEmpty()) {
         look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
