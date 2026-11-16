@@ -52,12 +52,16 @@ measure, write harnesses. How you do the work is yours.
    (#416), Capture (#430 to #432), the export dialog's NI Stems and normalization (#407, #418). For
    each: the parity rows first, then the build, one PR each.
 
-## Two pictures the director has to see
+## The Clip View, and one picture the director has to see
 
-- **The Clip View (G1 to G3).** Its picture has waited for him since 28 October. Win put it in
-  front of him again today. If he approves, G1 goes to the head of this list, before item 2; win
-  will tell you in a note on `window/log`'s PR. Before you start it, bring `window/clip-view` up to
-  main: N32, N33 and N34 are merged, so most of its "waits" rows can now be built.
+- **The Clip View (G1 to G3): approved on 16 November, and win builds it, not you.** The director
+  said yes to the picture of 28 October and gave the build to win so that your list above is not
+  held up. Win's files are new: `src/juce/ui_clipview.*`, `src/adi/ui/note_geometry.hpp`,
+  `src/adi/ui/note_edits.hpp`, `src/adi/ui/clip_edits.hpp` and their tests, on branches
+  `window/clip-view-*`. Win will also touch three of yours lightly: the command ids and the detail
+  row in `src/juce/ui_shell.*`, a clip's double-click in `src/juce/ui_arrangement.cpp`, and
+  `ProjectDocument`. New command ids go before `LastId` on both sides; expect a small rebase when
+  either of us merges. Leave a clip's double-click and Ctrl/Cmd+Alt+3 to win.
 - **C5, remark pips and the Info View's split.** You offered to draw it. Please do: the pips on a
   track, a clip, a device and a parameter, and the split Info View, as one picture with a few lines
   on each choice. It goes to him as a picture; nothing of C5 is built before he answers.
