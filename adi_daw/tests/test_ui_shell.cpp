@@ -5370,6 +5370,145 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.setDrawMode(false);
     }
 
+    // Live's Velocity Controls under the lanes (manual 10.5.12): Randomize with its amount, and the Ramp.
+    {
+        using Field = ClipViewPanel::Field;
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto strip = panel.velocityStripArea();
+        check(!strip.isEmpty() && strip.getBottom() == panel.getHeight() && ed.getBottom() == strip.getY() &&
+                  strip.contains(panel.randomizeBox()) && strip.contains(panel.fieldBox(Field::RandomAmount)) &&
+                  strip.contains(panel.fieldBox(Field::RampStart)) && strip.contains(panel.fieldBox(Field::RampEnd)) &&
+                  !panel.fieldBox(Field::RampStart).intersects(panel.fieldBox(Field::RampEnd)) &&
+                  !panel.randomizeBox().intersects(panel.fieldBox(Field::RandomAmount)),
+              "the velocity controls are a strip under the editor's lanes: Randomize, its amount, and the Ramp's two values");
+        check(submitter.submit(std::vector<OpRequest>{op("note.setVelocity", {{"clip", 11}, {"note", 1}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 2}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 3}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 4}, {"vel", 100}}, "Change Velocity")}).ok,
+              "every note back at 100");
+        root.frame();
+        // Randomize, with the randomness a test's own: up by the amount, then down, in turn.
+        int turn = 0;
+        panel.randomOffset = [&turn](int amount) { return ++turn % 2 == 1 ? amount : -amount; };
+        ed.select({1, 2});
+        click(panel.randomizeBox());
+        check(note(1).velocity == 120 && note(2).velocity == 80 && note(3).velocity == 100 && undoIs("Randomize Velocities", 2) &&
+                  ed.selected() == Ids({1, 2}),
+              "Randomize moves each selected note's velocity by up to the amount, 20: one undo step");
+        check(panel.typeField(Field::RandomAmount, "5") && panel.randomAmount == 5 && note(1).velocity == 125 && note(2).velocity == 75 &&
+                  undoIs("Randomize Velocities", 2),
+              "the amount typed, with Enter, randomizes again by the new amount");
+        panel.randomOffset = nullptr;
+        ed.select({});
+        const auto beforeRandom = submitter.nextUndo()->txnId;
+        click(panel.randomizeBox());
+        bool within = true;
+        const int was[] = {125, 75, 100, 100};
+        for (std::uint64_t id = 1; id <= 4; ++id)
+            within = within && std::abs(static_cast<int>(note(id).velocity) - was[id - 1]) <= 5;
+        check(within, "with none selected every note is randomized, each within the amount");
+        if (submitter.nextUndo()->txnId != beforeRandom)
+            check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        // The Ramp.
+        check(panel.typeField(Field::RampStart, "40") && panel.rampStart == 40 && note(1).velocity == 40 && note(2).velocity == 60 &&
+                  note(3).velocity == 80 && note(4).velocity == 100 && undoIs("Ramp Velocities", 3),
+              "the Ramp's start typed as 40: the notes rise evenly from 40 at the first to 100 at the last, in the order they begin");
+        {
+            const auto box = panel.fieldBox(Field::RampEnd).getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, box));
+            panel.mouseDrag(dragAt(panel, box, box.translated(0.f, 160.f)));
+            panel.mouseUp(dragAt(panel, box, box.translated(0.f, 160.f)));
+        }
+        check(panel.rampEnd == 60 && note(1).velocity == 40 && note(4).velocity == 60 && note(2).velocity == 47 && note(3).velocity == 53 &&
+                  undoIs("Ramp Velocities", 3),
+              "the Ramp's end dragged down to 60 ramps again: one undo step");
+        ed.select({2, 3});
+        check(panel.typeField(Field::RampStart, "10") && note(2).velocity == 10 && note(3).velocity == 60 && note(1).velocity == 40 &&
+                  ed.selected() == Ids({2, 3}),
+              "with notes selected the ramp runs over them alone");
+        check(!panel.typeField(Field::RampEnd, "loud") && panel.rampEnd == 60 && !root.error().empty(), "a word is refused");
+        ed.select({});
+    }
+
+    // Scale Mode in the editor (manual 8.2.4, 10.6): its switch, Fold to Scale (G) and Highlight Scale (K).
+    {
+        const auto details = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto undoIs = [&](const char *label, int ops) {
+            return submitter.nextUndo()->label == label && submitter.nextUndo()->opCount == ops;
+        };
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        ed.select({});
+        check(!details().scale.local && !ed.scaleOn() && !panel.scaleModeBox().isEmpty() && !panel.scaleFoldBox().isEmpty() &&
+                  !panel.highlightBox().isEmpty() && !panel.scaleFoldBox().intersects(panel.trimBox()) &&
+                  !panel.scaleFoldBox().intersects(panel.highlightBox()) && panel.headerArea().contains(panel.highlightBox()),
+              "the clip holds no scale of its own; the header has a Scale and a Highlight switch, the Main panel a Scale Mode switch");
+        check(ed.keyPressed(key('g')) && !ed.scaleFolded() && !ed.keys.isFolded(), "G with no scale of the clip's own folds nothing");
+        click(panel.scaleModeBox());
+        check(details().scale.local && ed.scaleOn() && details().scale.root == 0 && undoIs("Activate Scale", 1),
+              "the Scale Mode switch gives the clip the scale it shows, C Major, as its own: one undo step");
+        check(ed.keyPressed(key('g')) && ed.scaleFolded() && ed.keys.isFolded() && ed.keys.rowCount() == 75 && ed.keys.rowOf(60) && ed.keys.rowOf(62) &&
+                  !ed.keys.rowOf(61) && ed.keys.y(60).value_or(-1) >= 0 && ed.keys.y(67).value_or(-1) >= 0,
+              "G folds the editor to the scale's 75 key tracks: no C#3; the notes stay in view");
+        check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 70}, {"start", 5 * beat}, {"dur", beat}, {"key", 61}}, "Add Note")).ok,
+              "a C#3, outside the scale");
+        root.frame();
+        check(ed.keys.rowCount() == 76 && ed.keys.rowOf(61), "a key track outside the scale that holds a note is shown too");
+        check(ed.keyPressed(key('f')) && ed.folded() && ed.keys.rowCount() == 4 && ed.keyPressed(key('f')) && !ed.folded() && ed.keys.rowCount() == 76,
+              "Fold to Notes over it shows the four keys in use; switched off, the scale's fold is back");
+        click(panel.scaleFoldBox());
+        check(!ed.scaleFolded() && !ed.keys.isFolded() && ed.keys.y(60).value_or(-1) >= 0, "the header's Scale switch unfolds; the notes are in view");
+        check(ed.highlightScale && ed.keyPressed(key('k')) && !ed.highlightScale, "K switches Highlight Scale off");
+        click(panel.highlightBox());
+        check(ed.highlightScale, "and the header's Highlight switch, on again");
+        click(panel.scaleFoldBox());
+        check(ed.scaleFolded(), "folded to the scale again");
+        click(panel.scaleModeBox());
+        check(!details().scale.local && !ed.scaleOn() && !ed.scaleFolded() && !ed.keys.isFolded() && undoIs("Deactivate Scale", 1),
+              "Scale Mode switched off: the clip holds no scale, and the fold to it is gone");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(details().scale.local && ed.scaleOn(), "Undo gives the clip its scale back");
+    }
+
+    // The Status Bar reads the selected notes (manual 3.2; the text as measured on Live).
+    {
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        root.frame();
+        const auto before = root.selectionText();
+        check(!before.startsWith("Note Selection") && ed.statusText(root.reader().meters()).isEmpty(),
+              "with no note and no time selected in the editor, the Status Bar reads the arrangement's selection");
+        check(submitter.submit(std::vector<OpRequest>{op("note.setVelocity", {{"clip", 11}, {"note", 1}, {"vel", 100}}, "Change Velocity"),
+                                                      op("note.setVelocity", {{"clip", 11}, {"note", 4}, {"vel", 64}}, "Change Velocity")}).ok,
+              "C3 at 100, G3 at 64");
+        root.frame();
+        ed.select({1});
+        root.frame();
+        check(root.selectionText() == "Note Selection   Time: 2.1.1 - 2.2.1 (0.1.0)   Pitch: C3 (60)   Velocity: 100   Probability: 100%",
+              "one note selected: its time in the song with its length, its pitch with its number, its velocity and probability");
+        ed.select({1, 4});
+        root.frame();
+        check(root.selectionText() == "Note Selection   Time: 2.1.1 - 2.4.1 (0.3.0)   Pitch: C3 - G3   Velocity: 64 - 100   Probability: 100%",
+              "two notes: from the first one's start to the last one's end, and their pitch and velocity as ranges");
+        ed.select({});
+        ed.selectTime(5 * beat, 7 * beat);
+        root.frame();
+        check(root.selectionText() == "Time Selection   Start: 2.2.1   End: 2.4.1   Length: 0.2.0", "time selected in the editor: its start, end and length");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        root.frame();
+        check(root.selectionText() == before, "and with neither, the arrangement's again");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         ed.select({});
         ed.selectTime(5 * beat, 7 * beat);

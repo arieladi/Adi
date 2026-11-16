@@ -149,6 +149,21 @@ inline TrackEdit setClipScale(const engine::ClipDetails &clip, std::int64_t root
     return edit;
 }
 
+// Scale Mode (manual 8.2.4): on, the clip holds the scale it shows as its own; off, it holds none
+// and follows the project's again.
+inline TrackEdit setClipScaleMode(const engine::ClipDetails &clip, bool on) {
+    using track_edits_detail::op;
+    TrackEdit edit;
+    if (on == clip.scale.local)
+        return edit;
+    if (on)
+        edit.ops.push_back(op("clip.setScale", {{"id", clip.id}, {"root", clip.scale.root}, {"scale", clip.scale.id}, {"mask", clip.scale.mask}},
+                              "Activate Scale"));
+    else
+        edit.ops.push_back(op("clip.setScale", {{"id", clip.id}}, "Deactivate Scale"));
+    return edit;
+}
+
 namespace clip_edits_detail {
 inline bool digit(char c) noexcept { return std::isdigit(static_cast<unsigned char>(c)) != 0; }
 inline bool gap(char c) noexcept {

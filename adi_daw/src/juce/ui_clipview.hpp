@@ -19,6 +19,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 namespace adi::ui {
@@ -83,6 +84,13 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // What the Status Bar reads while notes are selected (manual 3.2; as measured on Live): their
+    // time in the song from the first one's start to the last one's end with its length, their
+    // pitch, velocity and probability, each as a value or a range; or the editor's time selection.
+    // Empty with neither. `statusStamp` changes whenever that text would: read each frame, it
+    // allocates nothing.
+    juce::String statusText(const std::vector<textproj::Meter> &meters) const;
+    std::uint64_t statusStamp() const noexcept;
     juce::Rectangle<int> readoutBox() const noexcept;
     // Draw Mode (manual 10.4.1; B, and the header's switch): a drag across empty space draws a
     // note at each grid step on the key it began on, one undo step for the stroke; a click on a
@@ -95,6 +103,14 @@ class NoteEditor final : public juce::Component {
     // they change, and unfolds for a clip with none.
     bool folded() const noexcept { return folded_; }
     void setFold(bool);
+    // Scale Mode in the editor (manual 10.6), while the clip holds a scale of its own: the scale's
+    // keys are tinted on the piano. Highlight Scale (K; applied to every clip) tints their key
+    // tracks too and marks the root. Fold to Scale (G) shows only the scale's key tracks and those
+    // that hold notes; Fold to Notes, when on, has the say.
+    bool scaleOn() const noexcept;
+    bool scaleFolded() const noexcept { return scaleFolded_; }
+    void setScaleFold(bool);
+    bool highlightScale = true;
     // Z zooms to the selected notes, or to all of them; X goes back (manual 10.2).
     void zoomToNotes();
     void zoomBack();
@@ -231,7 +247,9 @@ class NoteEditor final : public juce::Component {
     // the previous and next note in time, left and right to those on the same key. Shift extends.
     bool walk(bool sideways, bool forward, bool extend);
     Drag drag_ = Drag::None;
-    bool copying_ = false, folded_ = false, drawMode_ = false;
+    bool copying_ = false, folded_ = false, drawMode_ = false, scaleFolded_ = false;
+    // The key tracks shown, after either fold or none.
+    void refold();
     int drawKey_ = 0;
     LaneShape shape_ = LaneShape::Pointer;
     LaneHandle handle_ = LaneHandle::None;
@@ -324,8 +342,22 @@ class ClipViewPanel final : public juce::Component {
     // one of the clip's own ops (N33), one undo step.
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
-        VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices
+        VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
+        RandomAmount, RampStart, RampEnd
     };
+    // Live's Velocity Controls (manual 10.5.12), in a strip under the editor's lanes: Randomize
+    // with its amount, and the Ramp's start and end values. Randomize raises or lowers each
+    // selected note's velocity (every note's when none is selected) by up to the amount; typing
+    // the amount and Enter randomizes too. A Ramp value set, typed or dragged, spreads the notes'
+    // velocities evenly from the start value at the first note to the end value at the last.
+    static constexpr int kStripHeight = 18;
+    juce::Rectangle<int> velocityStripArea() const noexcept;
+    juce::Rectangle<int> randomizeBox() const noexcept;
+    bool randomize();
+    bool ramp();
+    int randomAmount = 20, rampStart = 100, rampEnd = 100;
+    // One random value from -amount to +amount; a test puts its own in.
+    std::function<int(int)> randomOffset;
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
@@ -356,6 +388,12 @@ class ClipViewPanel final : public juce::Component {
     bool focus() const noexcept { return focus_; }
     void setFocus(bool);
     juce::Rectangle<int> focusBox() const noexcept;
+    // The header's Scale switch (Fold to Scale, G) and Highlight switch (Highlight Scale, K); and
+    // the Main panel's Scale Mode switch, beside the Scale field's name: on, the clip holds its own scale.
+    juce::Rectangle<int> scaleFoldBox() const noexcept;
+    juce::Rectangle<int> highlightBox() const noexcept;
+    juce::Rectangle<int> scaleModeBox() const noexcept;
+    bool toggleScaleMode();
     // The clip in the frame's snapshot: its audio source and its track.
     const engine::ClipNode *node() const noexcept { return node_; }
     juce::Colour colour() const noexcept { return colour_; }
@@ -401,11 +439,14 @@ class ClipViewPanel final : public juce::Component {
     void showScaleMenu(bool roots);
     // A field of the Functions tab: the number it holds and its range; null for any other field.
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
+    // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
+    void numberChanged(Field, bool typed);
+    std::mt19937 random_{std::random_device{}()};
     std::int64_t clip_ = 0, wanted_ = 0;
     std::vector<std::int64_t> shown_;
     std::vector<ClipLayer> others_;
     bool focus_ = false;
-    std::uint64_t generation_ = 0;
+    std::uint64_t generation_ = 0, statusStamp_ = 0;
     bool read_ = false;
     std::optional<engine::ClipDetails> details_;
     std::string problem_;

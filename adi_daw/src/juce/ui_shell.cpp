@@ -2025,6 +2025,10 @@ juce::String AdiRootComponent::selectionText() const {
     // Positions and lengths in the project's meters (#299).
     const auto &s = arrangement.geometry.selection;
     const auto &meters = reader_->meters();
+    // With notes, or time, selected in the Note Editor, the Status Bar reads them (manual 3.2).
+    if (state_.clipView && clipView.midi())
+        if (const auto text = clipView.notes.statusText(meters); text.isNotEmpty())
+            return text;
     auto where = [&meters](std::int64_t tick) {
         const auto at = barPosition(tick, meters);
         return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);

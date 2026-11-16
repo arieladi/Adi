@@ -306,6 +306,59 @@ std::vector<std::int64_t> NoteEditor::drawnSteps() const {
         out.push_back(window.toSource(at));
     return out;
 }
+bool NoteEditor::scaleOn() const noexcept {
+    const auto *clip = panel.details();
+    return clip != nullptr && clip->scale.local;
+}
+void NoteEditor::setScaleFold(bool fold) {
+    scaleFolded_ = fold && scaleOn();
+    refold();
+}
+void NoteEditor::refold() {
+    if (folded_) {
+        setFold(true);
+        return;
+    }
+    const auto *clip = panel.details();
+    const int height = notesArea().getHeight();
+    const bool was = keys.isFolded();
+    if (scaleFolded_ && scaleOn()) {
+        // The scale's key tracks, and any that hold notes (manual 10.6).
+        bool used[kNoteKeys] = {};
+        for (const auto &n : clip->notes)
+            if (n.key < kNoteKeys)
+                used[n.key] = true;
+        for (const auto &layer : panel.others())
+            for (const auto &n : layer.details.notes)
+                if (n.key < kNoteKeys)
+                    used[n.key] = true;
+        const int tonic = static_cast<int>(clip->scale.root);
+        const auto mask = clip->scale.mask;
+        keys.foldWhere([&](int key) { return used[key] || inScale(key, tonic, mask); }, height);
+        if (!was) {
+            // It opens on the notes, or around middle C.
+            int low = kNoteKeys, high = -1;
+            for (int key = 0; key < kNoteKeys; ++key)
+                if (used[key]) {
+                    low = std::min(low, key);
+                    high = std::max(high, key);
+                }
+            if (high < 0)
+                low = nearestInScale(60, tonic, mask), high = nearestInScale(71, tonic, mask);
+            keys.show(low, high, height);
+        }
+    } else {
+        keys.unfold(height);
+        if (was) {
+            auto every = clip != nullptr ? clip->notes : std::vector<engine::ClipNote>{};
+            for (const auto &layer : panel.others())
+                every.insert(every.end(), layer.details.notes.begin(), layer.details.notes.end());
+            const auto range = keyRange(every);
+            keys.show(range ? range->low : 60, range ? range->high : 71, height);
+        }
+    }
+    repaint();
+}
 void NoteEditor::setFold(bool fold) {
     const auto *clip = panel.details();
     const int height = notesArea().getHeight();
@@ -318,6 +371,10 @@ void NoteEditor::setFold(bool fold) {
     } else {
         const bool was = folded_;
         folded_ = fold && clip != nullptr;
+        if (!folded_ && scaleFolded_ && scaleOn()) {
+            refold();
+            return;
+        }
         keys.unfold(height);
         // Unfolded, the notes come back into view.
         if (was && clip != nullptr)
@@ -965,6 +1022,64 @@ void NoteEditor::laneDrawStroke(const juce::ModifierKeys &mods) {
         if (const double x = lane.getX() + time.x(window.toArrangement(n.startTicks)); mine(n) && x >= left - 5 && x <= right + 5)
             set(n.id, valueAt(x));
 }
+std::uint64_t NoteEditor::statusStamp() const noexcept {
+    // The selection, the time selection and whatever a held drag is previewing.
+    std::uint64_t stamp = 1469598103934665603ull;
+    const auto mix = [&stamp](std::uint64_t value) { stamp = (stamp ^ value) * 1099511628211ull; };
+    for (const auto id : selected_)
+        mix(id);
+    mix(selected_.size());
+    mix(static_cast<std::uint64_t>(insert_.value_or(-1)));
+    mix(static_cast<std::uint64_t>(head_.value_or(-1)));
+    mix(static_cast<std::uint64_t>(drag_));
+    mix(static_cast<std::uint64_t>(dragTicks_));
+    mix(static_cast<std::uint64_t>(dragKeys_));
+    for (const auto &entry : shapePreview_)
+        mix(entry.first * 131 + static_cast<std::uint64_t>(entry.second));
+    return stamp;
+}
+juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) const {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return {};
+    const auto where = [&meters](std::int64_t tick) {
+        const auto at = barPosition(tick, meters);
+        return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
+    };
+    const auto length = [&meters](std::int64_t from, std::int64_t to) {
+        const auto span = barSpan(from, to - from, meters);
+        return juce::String(span.bar) + "." + juce::String(span.beat) + "." + juce::String(span.sixteenth);
+    };
+    const auto window = ClipWindow::of(*clip);
+    std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
+    int lowKey = 128, highKey = -1, lowVelocity = 128, highVelocity = -1, lowChance = 100000, highChance = -1, count = 0;
+    for (const auto &stored : clip->notes) {
+        if (!isSelected(stored.id))
+            continue;
+        const auto n = shown(stored);
+        ++count;
+        from = std::min(from, window.toArrangement(n.startTicks));
+        to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+        lowKey = std::min<int>(lowKey, n.key);
+        highKey = std::max<int>(highKey, n.key);
+        lowVelocity = std::min<int>(lowVelocity, n.velocity);
+        highVelocity = std::max<int>(highVelocity, n.velocity);
+        lowChance = std::min<int>(lowChance, n.probability);
+        highChance = std::max<int>(highChance, n.probability);
+    }
+    if (count == 0) {
+        if (const auto span = timeSelection())
+            return "Time Selection   Start: " + where(span->first) + "   End: " + where(span->second) + "   Length: " +
+                   length(span->first, span->second);
+        return {};
+    }
+    const auto percent = [](int basisPoints) { return juce::String((basisPoints + 50) / 100) + "%"; };
+    const auto pitch = lowKey == highKey ? juce::String(noteName(lowKey)) + " (" + juce::String(lowKey) + ")"
+                                         : juce::String(noteName(lowKey)) + " - " + juce::String(noteName(highKey));
+    return "Note Selection   Time: " + where(from) + " - " + where(to) + " (" + length(from, to) + ")   Pitch: " + pitch +
+           "   Velocity: " + (lowVelocity == highVelocity ? juce::String(lowVelocity) : juce::String(lowVelocity) + " - " + juce::String(highVelocity)) +
+           "   Probability: " + (lowChance == highChance ? percent(lowChance) : percent(lowChance) + " - " + percent(highChance));
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -989,8 +1104,10 @@ void NoteEditor::prune() {
         std::erase_if(entry.second, [of](std::uint64_t id) { return of == nullptr || note_edits_detail::find(*of, id) == nullptr; });
     }
     std::erase_if(otherSelected_, [](const auto &entry) { return entry.second.empty(); });
-    if (folded_)
-        setFold(true);
+    if (scaleFolded_ && !scaleOn())
+        scaleFolded_ = false;
+    if (folded_ || scaleFolded_ || keys.isFolded())
+        refold();
 }
 std::int64_t NoteEditor::gridTicks() const noexcept {
     return std::max<std::int64_t>(1, static_cast<std::int64_t>(time.gridQuarters() * static_cast<double>(textproj::kPPQ)));
@@ -1514,6 +1631,18 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         setFold(!folded_);
         return true;
     }
+    if (!mods.isAnyModifierKeyDown() && (code == 'g' || code == 'G')) {
+        // Fold to Scale: only with a scale of the clip's own.
+        setScaleFold(!scaleFolded_);
+        panel.repaint();
+        return true;
+    }
+    if (!mods.isAnyModifierKeyDown() && (code == 'k' || code == 'K')) {
+        highlightScale = !highlightScale;
+        repaint();
+        panel.repaint();
+        return true;
+    }
     if (!mods.isAnyModifierKeyDown() && (code == 'z' || code == 'Z')) {
         zoomToNotes();
         return true;
@@ -1714,6 +1843,11 @@ void NoteEditor::paint(juce::Graphics &g) {
             const int key = *keys.keyOfRow(row);
             g.setColour(blackKey(key) ? look::lane : look::laneAlt);
             g.fillRect(area.getX(), y, area.getWidth(), keys.keyHeight);
+            if (highlightScale && clip->scale.local && inScale(key, static_cast<int>(clip->scale.root), clip->scale.mask)) {
+                // Highlight Scale (manual 10.6): the scale's key tracks are tinted.
+                g.setColour(look::accent.withAlpha(0.13f));
+                g.fillRect(area.getX(), y, area.getWidth(), keys.keyHeight);
+            }
             if (key % 12 == 0 && !keys.isFolded()) {
                 g.setColour(look::lane.darker(0.25f));
                 g.fillRect(area.getX(), y + keys.keyHeight - 1, area.getWidth(), 1);
@@ -1833,6 +1967,13 @@ void NoteEditor::paint(juce::Graphics &g) {
                 // The lines between E and F, and between B and C, where two white keys meet.
                 g.setColour(juce::Colour(0xff9a9a9a));
                 g.fillRect(keyboard.getX(), y + keys.keyHeight - 1, keyboard.getWidth(), 1);
+            }
+            if (clip->scale.local && inScale(key, static_cast<int>(clip->scale.root), clip->scale.mask)) {
+                // Scale Mode (manual 8.2.4): the scale's keys are marked on the piano; with
+                // Highlight Scale, the root more strongly.
+                const bool tonic = (key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12 == 0;
+                g.setColour(look::accent.withAlpha(highlightScale && tonic ? 0.9f : 0.45f));
+                g.fillRect(keyboard.getX(), y + 1, highlightScale && tonic ? 6 : 4, std::max(1, keys.keyHeight - 2));
             }
             if ((key % 12 == 0 || keys.isFolded()) && keys.keyHeight >= 9) {
                 const juce::Rectangle<int> name(keyboard.getRight() - 26, y, 24, keys.keyHeight);
@@ -2041,8 +2182,37 @@ juce::Rectangle<int> ClipViewPanel::editorArea() const noexcept {
     return {panelWidth() + 1, kHeaderHeight, std::max(0, getWidth() - panelWidth() - 1),
             std::max(0, getHeight() - kHeaderHeight)};
 }
+juce::Rectangle<int> ClipViewPanel::velocityStripArea() const noexcept {
+    const auto area = editorArea();
+    return midi() && area.getHeight() >= 140 ? area.withTop(area.getBottom() - kStripHeight) : juce::Rectangle<int>();
+}
+juce::Rectangle<int> ClipViewPanel::randomizeBox() const noexcept {
+    const auto strip = velocityStripArea();
+    return strip.isEmpty() ? strip : juce::Rectangle<int>(strip.getX() + 6, strip.getY() + 3, 62, 13);
+}
+bool ClipViewPanel::randomize() {
+    if (!details_ || !midi())
+        return false;
+    const auto offset = [this](int amount) {
+        if (randomOffset)
+            return randomOffset(amount);
+        return std::uniform_int_distribution<int>(-amount, amount)(random_);
+    };
+    return notes.apply(randomizeVelocities(*details_, notes.selected(), randomAmount, offset));
+}
+bool ClipViewPanel::ramp() {
+    if (!details_ || !midi())
+        return false;
+    return notes.apply(rampVelocities(*details_, notes.selected(), rampStart, rampEnd));
+}
+void ClipViewPanel::numberChanged(Field field, bool typed) {
+    if (field == Field::RampStart || field == Field::RampEnd)
+        ramp();
+    else if (field == Field::RandomAmount && typed)
+        randomize();
+}
 void ClipViewPanel::resized() {
-    notes.setBounds(editorArea());
+    notes.setBounds(editorArea().withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
 void ClipViewPanel::read(const SnapshotReader &reader) {
@@ -2101,6 +2271,27 @@ bool ClipViewPanel::activate(std::int64_t clip) {
 void ClipViewPanel::setFocus(bool on) {
     focus_ = on;
     repaint();
+}
+juce::Rectangle<int> ClipViewPanel::scaleFoldBox() const noexcept {
+    const auto trim = trimBox(), focus = focusBox();
+    return trim.isEmpty() ? trim : trim.withX((focus.isEmpty() ? trim : focus).getRight() + 4).withWidth(38);
+}
+juce::Rectangle<int> ClipViewPanel::highlightBox() const noexcept {
+    const auto fold = scaleFoldBox();
+    return fold.isEmpty() ? fold : fold.withX(fold.getRight() + 4).withWidth(54);
+}
+juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
+    if (!midi())
+        return {};
+    const auto box = fieldBox(Field::Scale);
+    return {box.getRight() - 24, box.getY() - 15 + 2, 24, 11};
+}
+bool ClipViewPanel::toggleScaleMode() {
+    if (!details_ || !midi())
+        return false;
+    const bool done = commit(setClipScaleMode(*details_, !details_->scale.local));
+    notes.prune();
+    return done;
 }
 juce::Rectangle<int> ClipViewPanel::focusBox() const noexcept {
     const auto trim = trimBox();
@@ -2166,6 +2357,11 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     }
     notes.frame();
     sample.frame();
+    // The Status Bar reads the selected notes: it is drawn again when what it would read changes.
+    if (const auto stamp = midi() ? notes.statusStamp() : 0; stamp != statusStamp_) {
+        statusStamp_ = stamp;
+        root.mark(DirtySet::Status);
+    }
     // The frame's own snapshot: the clip's node and its track's colour, and the song's meters for
     // the rulers. They live until the next frame.
     notes.time.meters = &reader.meters();
@@ -2251,6 +2447,14 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
     if (field == Field::Transpose) {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
+    }
+    if (field == Field::RandomAmount || field == Field::RampStart || field == Field::RampEnd) {
+        // In the strip under the lanes: the amount beside Randomize, then the Ramp's two values.
+        const auto button = randomizeBox();
+        if (button.isEmpty())
+            return {};
+        const int x = field == Field::RandomAmount ? button.getRight() + 4 : field == Field::RampStart ? button.getRight() + 96 : button.getRight() + 136;
+        return {x, button.getY(), 36, button.getHeight()};
     }
     if (field == Field::VelocityAmount || field == Field::VelocityPercent || field == Field::VelocityLow ||
         field == Field::VelocityHigh || field == Field::Voices) {
@@ -2381,6 +2585,15 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::RandomAmount:
+        range(0, 127);
+        return &randomAmount;
+    case Field::RampStart:
+        range(1, 127);
+        return &rampStart;
+    case Field::RampEnd:
+        range(1, 127);
+        return &rampEnd;
     default:
         return nullptr;
     }
@@ -2563,7 +2776,7 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
-                             Field::VelocityHigh, Field::Voices})
+                             Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -2613,6 +2826,7 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             }
             *value = std::clamp(trimmed.getIntValue(), low, high);
             repaint();
+            numberChanged(field, true);
             return true;
         }
     }
@@ -2716,6 +2930,10 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
             setToolsTab(tab);
             return;
         }
+    if (randomizeBox().contains(at)) {
+        randomize();
+        return;
+    }
     if (foldBox().contains(at)) {
         notes.setFold(!notes.folded());
         repaint();
@@ -2731,6 +2949,21 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     }
     if (focusBox().contains(at)) {
         setFocus(!focus_);
+        return;
+    }
+    if (scaleFoldBox().contains(at)) {
+        notes.setScaleFold(!notes.scaleFolded());
+        repaint();
+        return;
+    }
+    if (highlightBox().contains(at)) {
+        notes.highlightScale = !notes.highlightScale;
+        notes.repaint();
+        repaint();
+        return;
+    }
+    if (scaleModeBox().contains(at)) {
+        toggleScaleMode();
         return;
     }
     for (const auto tool : kTools)
@@ -2807,6 +3040,7 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
             auto *value = plainField(field);
             *value = std::clamp(*value + steps, low, high);
             repaint();
+            numberChanged(field, false);
         } else {
             openEditor(field);
         }
@@ -2896,8 +3130,16 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
-    if (midi())
+    if (midi()) {
         field(Field::Scale, "Scale", r.scale);
+        // Scale Mode's switch (manual 8.2.4): lit while the clip holds a scale of its own.
+        const auto mode = scaleModeBox();
+        g.setColour(details_->scale.local ? look::accent : look::button);
+        g.fillRoundedRectangle(mode.toFloat(), 5.f);
+        g.setColour(look::outline);
+        g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), 5.f, 1.f);
+        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::text, 9.f);
+    }
 
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
@@ -2948,6 +3190,28 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         }
     }
 
+    if (const auto strip = velocityStripArea(); !strip.isEmpty()) {
+        // Live's Velocity Controls, under the lanes.
+        g.setColour(look::field);
+        g.fillRect(strip);
+        g.setColour(look::band);
+        g.fillRect(strip.withHeight(1));
+        const auto button = randomizeBox();
+        look::box(g, button.toFloat(), look::button);
+        text("Randomize", button, juce::Justification::centred, look::text, 10.f);
+        const auto number = [&](Field which) {
+            const auto box = fieldBox(which);
+            int low = 0, high = 0;
+            const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+            look::box(g, box.toFloat(), look::chooser);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+        };
+        number(Field::RandomAmount);
+        const auto start = fieldBox(Field::RampStart);
+        text("Ramp", {start.getX() - 34, start.getY(), 30, start.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+        number(Field::RampStart);
+        number(Field::RampEnd);
+    }
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     if (const auto fold = foldBox(); !fold.isEmpty()) {
         look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
@@ -2962,8 +3226,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
             text("Focus", focus, juce::Justification::centred, look::text, 10.f);
         }
+        // Fold to Scale and Highlight Scale; Fold to Scale is dimmed while the clip holds no scale of its own.
+        const auto scaleFold = scaleFoldBox(), highlight = highlightBox();
+        look::box(g, scaleFold.toFloat(), notes.scaleFolded() ? look::accent : look::button);
+        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), 10.f);
+        look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
+        text("Highlight", highlight, juce::Justification::centred, look::text, 10.f);
     }
-    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? (others_.empty() ? 132 : 176) : 8).withWidth(60),
+    text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? highlightBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, 11.5f, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
     if (!problem_.empty())
