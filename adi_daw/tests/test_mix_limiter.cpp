@@ -2,6 +2,7 @@
 #include "adi/mix/limiter/DspEngine.h"
 #include "adi/mix/limiter/BackgroundOwner.h"
 #include "adi/mix/limiter/ControlMapping.h"
+#include "adi/mix/limiter/LoudnessMeter.h"
 #include "adi/mix/limiter/Dsp/ChannelGroups.h"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
@@ -65,6 +66,68 @@ void exactAdapter() {
         check(exact,"segmented adapter is bit-identical to shared core");
         adapter->release();
     }
+}
+void loudnessDemand() {
+    constexpr int frames = 256;
+    l::EngineSettings settings;
+    settings.styleIndex = 0;
+    settings.inputGainDb = 6;
+    l::DspEngine gated, always;
+    for (auto *engine : {&gated, &always}) {
+        engine->prepare(48000, frames, l::ChannelLayout::stereo(), settings);
+        engine->setBackgroundActive(false);
+        engine->setMeteringOptions(false, false);
+        engine->enableDisplayHistory(false);
+    }
+    l::LoudnessMeter expected;
+    expected.prepare(48000, 2);
+    bool exactAudio = true, exactMeter = true, retained = true, peaksLive = true;
+    l::MeterSnapshot held;
+    std::array<std::array<float, frames>, 2> a{}, b{};
+    for (int block = 0; block < 760; ++block) {
+        const bool recording = block < 96 || block >= 496;
+        gated.setLoudnessRecording(recording);
+        for (int channel = 0; channel < 2; ++channel)
+            for (int i = 0; i < frames; ++i) {
+                const double t = (block * frames + i) / 48000.;
+                a[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)] =
+                    static_cast<float>((recording ? .2 : .8) *
+                        std::sin(t * (channel == 0 ? 711 : 1337) * 6.283185307179586));
+            }
+        b = a;
+        std::array<float*, 2> pa{a[0].data(), a[1].data()}, pb{b[0].data(), b[1].data()};
+        gated.process(pa.data(), nullptr, frames, settings);
+        always.process(pb.data(), nullptr, frames, settings);
+        exactAudio = exactAudio && a == b;
+        const auto actual = gated.getMeterSnapshot();
+        if (recording) {
+            const std::array<const float*, 2> output{a[0].data(), a[1].data()};
+            expected.process(output.data(), frames);
+            const auto ref = expected.snapshot();
+            const auto finite = [](float x) { return std::isfinite(x) ? x : -160.f; };
+            exactMeter = exactMeter && actual.momentaryLUFS == finite(ref.momentary) &&
+                actual.shortTermLUFS == finite(ref.shortTerm) &&
+                actual.integratedLUFS == finite(ref.integrated) && actual.loudnessRange == ref.range;
+            held = actual;
+        } else {
+            retained = retained && actual.momentaryLUFS == held.momentaryLUFS &&
+                actual.shortTermLUFS == held.shortTermLUFS &&
+                actual.integratedLUFS == held.integratedLUFS && actual.loudnessRange == held.loudnessRange;
+            peaksLive = peaksLive && std::isfinite(actual.rms[0]) && actual.rms[0] > -160;
+        }
+    }
+    check(exactAudio, "disabled loudness demand leaves every processed sample unchanged");
+    check(exactMeter, "reenabled loudness excludes off-interval filters, windows and histogram work");
+    check(retained, "disabled loudness retains the prior published recording");
+    check(peaksLive, "ordinary RMS stays live without loudness demand");
+    gated.setLoudnessRecording(false);
+    gated.resetLoudness();
+    std::array<float*, 2> output{a[0].data(), a[1].data()};
+    gated.process(output.data(), nullptr, frames, settings);
+    const auto reset = gated.getMeterSnapshot();
+    check(reset.momentaryLUFS == -160 && reset.shortTermLUFS == -160 &&
+        reset.integratedLUFS == -160 && reset.loudnessRange == 0,
+        "explicit loudness reset is serviced even while demand is off");
 }
 void parametersAndState() {
     auto d=make();check(d&&d->paramCount()==21,"limiter tier plus enable and export policy");if(!d)return;
@@ -384,6 +447,6 @@ void disableAtLatencyOffer() {
 }
 }
 int main() {
-    exactAdapter();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
+    exactAdapter();loudnessDemand();parametersAndState();capabilitiesAndPolicy();layouts();exportConfigurationAutomation();latencyHandoff();disableAtLatencyOffer();
     std::printf("mix limiter: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
