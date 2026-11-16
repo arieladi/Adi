@@ -3,6 +3,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/device_key_routes.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -356,6 +357,36 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
+std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {
+    std::vector<DeviceKeyChoice> choices;
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance))return choices;
+    auto* instance=session_.instanceFor(target.id);
+    if(!instance || instance->sidechainInputChannels()<=0)return choices;
+    const auto& model=session_.model();
+    const rows::Routing* current=nullptr;std::size_t count=0;
+    for(const auto& route:model.routing)if(route.kind=="sidechain" && route.dstKind=="device" && route.dstId==target.id){current=&route;++count;}
+    choices.push_back({{},"post_mixer","None",count==0});
+    for(const auto& track:model.tracks){
+        if(track.kind=="vca")continue;
+        for(const auto& tap:{"pre_fx","post_fx","post_mixer"})
+            choices.push_back({track.id,tap,track.name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
+    }
+    return choices;
+}
+bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<std::int64_t> source,const std::string& tap) {
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance)) {error_="That device changed while choosing its sidechain.";return false;}
+    if(!synchronise())return false;
+    auto* instance=session_.instanceFor(target.id);
+    if(source && (!instance || instance->sidechainInputChannels()<=0)) {error_="That device has no declared auxiliary input.";return false;}
+    for(const auto& held:parameterOps_.pendingGestures())if(held.deviceId==target.id){error_="Finish the device edit before changing its sidechain.";return false;}
+    auto prepared=prepareDeviceKey(*store_,target.id,source,tap);
+    if(!prepared.ok){error_=prepared.error;return false;}
+    if(!prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_))return false;
+    const auto result=ops_.commitPrepared(std::move(prepared),[](Store& store,PreparedDeviceKey& p,Actor actor){return commitDeviceKey(store,p,actor);});
+    error_=result.error;if(!result.ok || !synchronise())return false;
+    feed_.publish(session_,realisedGeneration_);return true;
+}
+
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }

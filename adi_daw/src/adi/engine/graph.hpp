@@ -878,6 +878,9 @@ public:
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
     NodeId addNode(Node& node);
+    // Owner preflight on a newly constructed graph. No node prepare, SDK calls,
+    // buffers or publication; reuse the same topology authority as prepare.
+    [[nodiscard]] bool validateTopology() { error_.clear(); return topoSort(); }
     /// Construction only. An explicit null binding suppresses a node's legacy
     /// source. Owners are retired with the graph, never on the callback.
     bool setEventSource(NodeId, EventSourceBinding);

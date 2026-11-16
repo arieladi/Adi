@@ -141,6 +141,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     bool addMixFunction(mix::Function, std::int64_t track);
+    std::vector<DeviceKeyChoice> deviceKeyChoices(const DevicePanelData&);
+    bool setDeviceKey(const DevicePanelData&,std::optional<std::int64_t> source,const std::string& tap);
     bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
                          std::optional<std::int64_t> before);
     // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its

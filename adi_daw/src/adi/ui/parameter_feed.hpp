@@ -19,6 +19,11 @@ struct ParameterMetadata {
     std::map<std::string, double> defaults;
     std::map<std::string, ParameterGroupMetadata> groups;
 };
+struct DeviceKeyChoice {
+    std::optional<std::int64_t> source;
+    std::string tap="post_mixer",name;
+    bool current=false;
+};
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
     // The track's device chain holding it (`device_chains.id`): where a paste in front of it goes.
@@ -29,6 +34,7 @@ struct DevicePanelData {
     engine::DeviceRuntimeToken runtime;
     bool available = false;
     std::int32_t latency = 0;
+    std::int32_t sidechainChannels = 0;
     std::string name;
     bool enabled = true;
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).

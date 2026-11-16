@@ -269,6 +269,8 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
                        const engine::DeviceRuntimeToken &, std::uint64_t)> guardedGesture;
     std::function<bool(std::int64_t, const engine::DeviceRuntimeToken &, std::uint64_t)> targetCurrent;
     std::function<bool(const std::string &, Payload)> submit;
+    std::function<std::vector<DeviceKeyChoice>(const DevicePanelData&)> keyChoices;
+    std::function<bool(const DevicePanelData&,std::optional<std::int64_t>,const std::string&)> setKey;
     std::function<mix::Availability(mix::Function)> functionAvailability;
     std::function<bool(mix::Function, std::int64_t track)> addFunction;
     std::function<bool(const DevicePanelData &, std::int64_t track,

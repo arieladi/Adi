@@ -441,7 +441,7 @@ add_library(adi_core STATIC
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
 )
-target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp src/adi/device_key_routes.cpp)
+target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp src/adi/device_key_routes.cpp src/adi/device_key_edit.cpp)
 include(cmake/mix_cores.cmake)
 add_executable(adi_device_key_routes_tests tests/test_device_key_routes.cpp)
 target_link_libraries(adi_device_key_routes_tests PRIVATE adi_core adi_warnings)

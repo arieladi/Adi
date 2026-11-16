@@ -350,6 +350,11 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
+        root->devices.setKey=[this](const DevicePanelData& target,std::optional<std::int64_t> source,const std::string& tap){
+            const bool ok=document_->setDeviceKey(target,source,tap);
+            if(!ok && root_)root_->say(document_->error());return ok;
+        };
         // A device's sample slot (D5): a file assigned, or the slot cleared; one undo step each.
         root->devices.assignSample = [this](std::int64_t device, std::int32_t slot, const std::string &path) {
             const auto now = std::chrono::duration_cast<std::chrono::microseconds>(

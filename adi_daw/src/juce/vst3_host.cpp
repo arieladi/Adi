@@ -544,7 +544,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // now hands this device the other width is a reactivation too.
     const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedKey_==keyRequested_) {
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedKey_==keyRequested_ && preparedShape_==preparationShapeEpoch()) {
         return;
     }
     // From here JUCE stops and reactivates the component and the buffers are
@@ -652,7 +652,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     injectedUsed_ = 0;
     readInputBusRoles();
     prepareAudioBuses();
-    preparedKey_=keyRequested_;
+    preparedKey_=keyRequested_;preparedShape_=preparationShapeEpoch();
     midi_.ensureSize(4096);
 
     // HERE, and it was not. Since ADR-0073 this line sat after the `return`

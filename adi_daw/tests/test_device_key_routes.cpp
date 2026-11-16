@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/realize.hpp"
 #include "adi/history.hpp"
+#include "adi/device_key_routes.hpp"
+#include "adi/ui/project_document.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
@@ -72,6 +74,49 @@ struct Fixture {
                                       {"keyTap", tap}});
     }
 };
+struct KeyInstance final:device::DeviceInstance {
+    device::DeviceIdentity identity_;
+    unsigned prepares=0;
+    KeyInstance(){identity_.format="internal";identity_.uid="owned-key-fixture";identity_.name="Key fixture";}
+    const device::DeviceIdentity& identity()const noexcept override{return identity_;}
+    bool loaded()const noexcept override{return true;}
+    std::int32_t sidechainInputChannels()const noexcept override{return 2;}
+    void prepare(double,std::int32_t)override{++prepares;}
+    void process(const NodeIo&)noexcept override{}
+};
+void preparedAndDocument(){
+    Fixture f;auto& store=*f.store;
+    auto prepared=prepareDeviceKey(store,30,2,"post_fx");
+    check(prepared.ok && prepared.requests.size()==1 && commitDeviceKey(store,prepared).ok,"prepared source and tap commit once");
+    auto replace=prepareDeviceKey(store,30,3,"pre_fx");
+    check(replace.ok && replace.requests.size()==2 && commitDeviceKey(store,replace).ok,"prepared replacement is one sealed transaction");
+    check(rows::readModel(store).routing.front().srcId==3 && History(store).undo().ok && rows::readModel(store).routing.front().srcId==2,"one Undo restores the previous key source and tap");
+    auto stale=prepareDeviceKey(store,30,3,"pre_fx");
+    store.db().exec("UPDATE tracks SET name='Changed outside journal' WHERE id=2");
+    const auto head=OpJournal(store).headSeq();
+    check(!commitDeviceKey(store,stale).ok && OpJournal(store).headSeq()==head,"same-head material change refuses a stale prepared key batch");
+    auto none=prepareDeviceKey(store,30,{},"post_mixer");check(none.ok && commitDeviceKey(store,none).ok && rows::readModel(store).routing.empty(),"None removes only this device key");
+    store.db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(77,'internal','owned-key-fixture','Key fixture')");
+    store.db().exec("UPDATE devices SET plugin_ref_id=77 WHERE id=30");
+    const auto file=f.temp.path()/"keys.adi";f.store.reset();std::string error;
+    auto doc=ui::ProjectDocument::open(file,false,[](const DeviceRequest&,std::string&){return std::make_unique<KeyInstance>();},error);
+    check(doc!=nullptr,"document resolves owned fixture without an editor or audio device");if(!doc)return;
+    doc->tick(0);const auto publication=doc->parameterFeed().current();
+    if(!publication || publication->empty()){check(false,"device feed exists");return;}
+    const auto target=publication->front();auto* instance=static_cast<KeyInstance*>(doc->session().instanceFor(30));
+    check(target.sidechainChannels==2,"declared auxiliary capability is published to both surfaces");
+    const auto before=instance->prepares;
+    check(doc->setDeviceKey(target,2,"post_fx"),"document source and tap use actual prepared graph authority");
+    const auto after=instance->prepares;
+    check(after>=before && doc->deviceKeyChoices(target).size()==10,"menu choices come from real channels and three taps");
+    const auto start=OpJournal(doc->store()).headSeq();const auto count=instance->prepares;
+    check(!doc->setDeviceKey(target,3,"post_mixer") && OpJournal(doc->store()).headSeq()==start && instance->prepares==count,"feedback refuses before any journal or SDK preparation");
+    check(doc->setDeviceKey(target,3,"pre_fx"),"same-channel earlier Pre FX key remains legal");
+    check(doc->ops().undo().ok && doc->synchronise() && doc->session().model().routing.front().srcId==2,"document one Undo restores prior source");
+    auto staleTarget=target;staleTarget.instance++;
+    check(!doc->setDeviceKey(staleTarget,2,"post_fx"),"stale runtime presentation cannot redirect routing");
+    check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.empty(),"None disconnects through common document authority");
+}
 void persistence() {
     Fixture f;
     auto &s = *f.store;
@@ -273,6 +318,7 @@ void graph(Precision precision, int channels, const char *tap) {
 int main() {
     try {
         persistence();
+        preparedAndDocument();
         for (const auto p : {Precision::Float32, Precision::Float64})
             for (int c : {1, 2})
                 for (const auto *tap : {"pre_fx", "post_fx", "post_mixer"})

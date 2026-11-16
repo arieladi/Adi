@@ -635,6 +635,28 @@ void Session::attach(std::shared_ptr<const GraphTransportState> timing) {
     devices_.attachHost(graph_, std::move(rs));
 }
 
+bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error) {
+    RealizeOptions options;options.channels=spec_.channels;
+    options.devicesFor=[this](std::int64_t track){return trackChain(track);};
+    options.keyTapFor=[this](std::int64_t track,Tap tap)->std::optional<Node*> {
+        if(tap==Tap::PreFx && frozenSources_.contains(track))return std::nullopt;
+        return tapFor(track,tap);
+    };
+    options.keyDeviceFor=[this](std::int64_t device)->Node* {
+        const auto* e=entryFor(device);auto* i=instanceFor(device);
+        return e && !e->retired && !e->parked && !e->placeholder && i && i->loaded() && i->sidechainInputChannels()>0?nodeFor(device):nullptr;
+    };
+    options.tapFor=[this](std::int64_t track,Tap tap){return tapFor(track,tap==Tap::PostFader?Tap::PostFx:tap);};
+    options.sendFor=[this](std::int64_t id)->Node*{return strips_.sendFor(id);};
+    options.sendTailFor=[this](std::int64_t id){return summing_.sendTailFor(id);};
+    options.feedbackFor=[this](std::int64_t id){auto* loop=strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
+    auto draft=realize(planGraph(candidate),options);
+    if(!draft->ok()){error=draft->error();return false;}
+    if(!draft->problems().empty()){error=draft->problems().front();return false;}
+    if(!draft->graph().validateTopology()){error=draft->graph().error();return false;}
+    return true;
+}
+
 std::vector<Node*> Session::trackChain(std::int64_t trackId) {
     std::vector<Node*> nodes;
     // ADR-0174: a summing group's buss half is first, right after its sum.

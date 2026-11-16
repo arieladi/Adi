@@ -343,6 +343,7 @@ public:
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
     [[nodiscard]] const rows::Model& model() const noexcept { return model_; }
+    bool validateDeviceKey(const rows::Model& candidate,std::string& error); // owner, no SDK prepare
     /// Owner-side runtime notifications for this loaded Store connection.
     /// No Store/SQLite pointer survives in the revocable source token.
     [[nodiscard]] const AppliedSource& appliedNotifications() const noexcept { return appliedSource_; }

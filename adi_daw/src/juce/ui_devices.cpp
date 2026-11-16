@@ -933,6 +933,25 @@ juce::PopupMenu DevicePanelView::commands() {
         if (safe && safe->validTarget())
             safe->strip.fold(safe->id);
     });
+    if (data && data->sidechainChannels>0 && strip.keyChoices && strip.setKey) {
+        const auto expected=*data;juce::PopupMenu keys;
+        const auto choices=strip.keyChoices(expected);
+        std::map<std::int64_t,std::pair<juce::String,juce::PopupMenu>> sources;
+        for(const auto& choice:choices){
+            juce::PopupMenu::Item item(choice.source?(choice.tap=="pre_fx"?"Pre FX":choice.tap=="post_fx"?"Post FX":"Post Mixer"):"None");
+            item.isTicked=choice.current;
+            item.action=[safe,epoch,expected,choice]{
+                if(!safe || safe->menuEpoch_!=epoch)return;
+                safe->endInteraction(Interaction::Menu);
+                if(safe && safe->validTarget() && safe->strip.validExpected(expected) && safe->strip.setKey)
+                    safe->strip.setKey(expected,choice.source,choice.tap);
+            };
+            if(choice.source){auto& entry=sources[*choice.source];entry.first=juce::String::fromUTF8(choice.name.c_str());entry.second.addItem(std::move(item));}
+            else keys.addItem(std::move(item));
+        }
+        for(auto& [id,entry]:sources){(void)id;keys.addSubMenu(entry.first,entry.second);}
+        m.addSeparator();m.addSubMenu("Sidechain Input",keys);
+    }
     if (!eqPresentation()) {
         m.addSeparator();
         m.addItem("Configure", [safe, epoch] {
