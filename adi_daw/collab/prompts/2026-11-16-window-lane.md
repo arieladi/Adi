@@ -16,8 +16,9 @@ measure, write harnesses. How you do the work is yours.
   `tests/test_ui_mix_functions.cpp`, and add checks to `tests/test_ui_shell.cpp`. The items below
   were chosen so you do not need those files. If one does, say so in your log and win orders the
   merges; in `test_ui_shell.cpp` expect to rebase.
-- **The control slice (#512) still fences** `ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.*`
-  and `src/main.cpp` until it merges.
+- **The control slice (#512) merged on 16 November** (`729892e2`). Its fence on `ops.hpp`,
+  `ops.cpp`, `ops_catalog.cpp`, `changeset.*` and `src/main.cpp` is lifted, and the register of
+  everything postponed, `docs/DEFERRED.md`, is on main.
 - **The engine seat is away.** Raise what you need as N rows, as before, and build what the window
   can do without them. Open with the engine today: N44, N45, N47 to N51, one undo step for a Split
   of several clips (E1), the paste's kind check (E2).
@@ -64,8 +65,8 @@ measure, write harnesses. How you do the work is yours.
 ## Still held, and not yours to unblock
 
 - B8, Main's loudness meter, until the Live 12 meter readings.
-- N10's home for `midi.port.remote` and N38's `tracks.role` column are win's and still owed (the
-  column needs a file touched by #512's fence). Nothing in the list above waits on them.
+- N10's home for `midi.port.remote` and N38's `tracks.role` column are win's and still owed.
+  Nothing in the list above waits on them.
 - The Mix View's ★ Reference (N38) and the withdrawn Q and L slots (N16) stay as the worklist says.
 
 ## How it lands

@@ -14,9 +14,9 @@ Only the `win` agent writes to this file. Newest entry at the top.
 - **Engine seat (away).** DF-E9 (automation Undo deletes and re-inserts rows) and DF-E10 (the Link session tests under parallel ctest) are new since your last entry. #530 is still held for DF-E2.
 - **Control seat.** DF-C5 is new: `device.insert` does not check one function of each kind per channel.
 
-**The register (13 November).** The director asked that nothing postponed be left to memory. Every postponed item is now a row in `docs/DEFERRED.md` with an owner and a trigger, and a row closes only with a PR. The file is on #512's branch until #512 merges (`git show origin/control/mcp-slice:adi_daw/docs/DEFERRED.md`). The same day he answered the control slice's two open questions; they are ADR-0239 on that branch (the session token both ways, the user choosing; standalone first). He also said he does not merge: win merges, and brings him the options with a recommendation.
+**The register (13 November).** The director asked that nothing postponed be left to memory. Every postponed item is now a row in `docs/DEFERRED.md` with an owner and a trigger, and a row closes only with a PR. It reached main with #512 on 16 November. The same day he answered the control slice's two open questions; they are ADR-0239 (the session token both ways, the user choosing; standalone first). He also said he does not merge: win merges, and brings him the options with a recommendation.
 
-**The control slice, #512,** is at `5c976cae`, 21 of 21 checks, mergeable. The outside security round on the MCP server was verified finding by finding and fixed in `ddd704bd` and `bb97ce23` (DF-C4, done). It waits only for the director's go; win recommends merging now.
+**The control slice, #512, is merged.** Its last head was `5c976cae`, 21 of 21 checks. The outside security round on the MCP server was verified finding by finding and fixed in `ddd704bd` and `bb97ce23` (DF-C4, done). The director gave his go on 16 November and win merged it (`729892e2`). The fence on `ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.*` and `src/main.cpp` is lifted, and `docs/DEFERRED.md`, ADR-0233 and ADR-0239 are on main.
 
 **The Mix View, 13 to 15 November.**
 - Merged: #537 and #540 (13 November); #541 to #546 (15 November), each with its review findings fixed first. On main a user can add an EQ and a Limiter (with Clip) from the device area's +, see them as tabs, move and remove them with Undo, and see compact rows in the Mix View. Nobody has run that path in the app yet (DF-M1).
@@ -29,11 +29,11 @@ Only the `win` agent writes to this file. Newest entry at the top.
 - #576: the Python 3.9 validators run on ubuntu-24.04. #577: GCC 15's dangling-pointer warning in `test_note_overlap`.
 - `adi_link_session_tests` failed once on ubuntu arm64 on #548 and passed on re-run (DF-E10).
 
-**The window lane.** #549 (E2: Cut, Copy, Paste and Duplicate for clips and ranges) merged on 14 November; 24 of the worklist's 37 items are on main. The Clip View's picture (`window/clip-view`, 28 October) was put to the director again on 16 November; G1 to G3 start on his yes. C5's picture is asked of the lane. Win still owes the lane N10's home for `midi.port.remote` and N38's `tracks.role` column (the column waits behind #512's fence), and its three notes of 10 November (the ZIP's progress, the sidebar's labels, the place of Rec-Q and Play-Q).
+**The window lane.** #549 (E2: Cut, Copy, Paste and Duplicate for clips and ranges) merged on 14 November; 24 of the worklist's 37 items are on main. The Clip View's picture (`window/clip-view`, 28 October) was put to the director again on 16 November; G1 to G3 start on his yes. C5's picture is asked of the lane. Win still owes the lane N10's home for `midi.port.remote` and N38's `tracks.role` column (the column can go ahead now that #512 is merged), and its three notes of 10 November (the ZIP's progress, the sidebar's labels, the place of Rec-Q and Play-Q).
 
 **DF-R1.** The director ruled on 15 November to continue as is. The row stays; no work on it is planned.
 
-**Next ADR is 0240** (ADR-0233 and ADR-0239 are on #512's branch). DF-M27's two answers of the director's go into it after #512 merges.
+**Next ADR is 0240.** DF-M27's two answers of the director's go into it.
 
 ---
 
