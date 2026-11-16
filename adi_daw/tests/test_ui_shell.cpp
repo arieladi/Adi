@@ -6315,7 +6315,6 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
 
     // The window's Edit menu reaches the editor while it has the keyboard (manual 10.5).
     {
-        using Ids = std::vector<std::uint64_t>;
         const auto arrangementSelection = geo.selection.clip;
         ed.select({2});
         check(!ed.hasContext() && !root.noteEditorHasContext(), "a headless editor holds no keyboard: the Edit menu is the arrangement's");
