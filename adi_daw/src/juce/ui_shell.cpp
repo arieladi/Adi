@@ -755,6 +755,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     arrangement.geometry.largeTracks = state_.largeTracks;
     arrangement.geometry.grid = {state_.gridSnap, state_.gridFixed, state_.gridTriplet, state_.gridNarrow,
                                  state_.gridFixedQuarters};
+    clipView.applyState(state_);
     aiTab.setColour(juce::TextButton::buttonColourId, look::columnHead);
     aiTab.setTitle("AI");
     aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");

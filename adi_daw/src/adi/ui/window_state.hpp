@@ -38,6 +38,16 @@ struct WindowState {
     // until a clip is opened; and its height, which its top edge drags.
     bool clipView = false;
     int clipViewHeight = 286; // room for an octave of key tracks under the stretch markers' strip, above the Velocity lane and its controls
+    // The Note Editor's own settings, kept with the window: its editing grid (manual 10.2.1),
+    // Highlight Scale (10.6), what its notes are coloured by (ADR-0242 d1), and the Quantize
+    // settings (10.5.11) with ADI's swing.
+    bool noteGridSnap = true, noteGridFixed = false, noteGridTriplet = false;
+    int noteGridNarrow = 0;
+    double noteGridFixedQuarters = .25;
+    bool highlightScale = true;
+    int noteColours = 0;
+    int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
+    bool quantizeStarts = true, quantizeEnds = false;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
     double timelineLeft = 0, pixelsPerQuarter = 48;

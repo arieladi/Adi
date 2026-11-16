@@ -75,7 +75,20 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixViewDetached = j.value("mixViewDetached", false);
         state.mixAnalyzerDock = j.value("mixAnalyzerDock", false);
         state.clipView = j.value("clipView", false);
-        state.clipViewHeight = std::clamp(j.value("clipViewHeight", 260), 0, 4000);
+        state.clipViewHeight = std::clamp(j.value("clipViewHeight", 286), 0, 4000);
+        state.noteGridSnap = j.value("noteGridSnap", true);
+        state.noteGridFixed = j.value("noteGridFixed", false);
+        state.noteGridTriplet = j.value("noteGridTriplet", false);
+        state.noteGridNarrow = std::clamp(j.value("noteGridNarrow", 0), -2, 2);
+        if (const double quarters = j.value("noteGridFixedQuarters", .25); std::isfinite(quarters))
+            state.noteGridFixedQuarters = std::clamp(quarters, 1. / 8, 32.);
+        state.highlightScale = j.value("highlightScale", true);
+        state.noteColours = std::clamp(j.value("noteColours", 0), 0, 4);
+        state.quantizeValue = std::clamp(j.value("quantizeValue", 0), 0, 7);
+        state.quantizeAmount = std::clamp(j.value("quantizeAmount", 100), 0, 100);
+        state.quantizeSwing = std::clamp(j.value("quantizeSwing", 0), 0, 100);
+        state.quantizeStarts = j.value("quantizeStarts", true);
+        state.quantizeEnds = j.value("quantizeEnds", false);
         state.mixAnalyzerWidth = std::clamp(j.value("mixAnalyzerWidth", 300), 240, 420);
         state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
         state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
@@ -169,6 +182,18 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
                             {"clipView", state.clipView},
                             {"clipViewHeight", state.clipViewHeight},
+                            {"noteGridSnap", state.noteGridSnap},
+                            {"noteGridFixed", state.noteGridFixed},
+                            {"noteGridTriplet", state.noteGridTriplet},
+                            {"noteGridNarrow", state.noteGridNarrow},
+                            {"noteGridFixedQuarters", state.noteGridFixedQuarters},
+                            {"highlightScale", state.highlightScale},
+                            {"noteColours", state.noteColours},
+                            {"quantizeValue", state.quantizeValue},
+                            {"quantizeAmount", state.quantizeAmount},
+                            {"quantizeSwing", state.quantizeSwing},
+                            {"quantizeStarts", state.quantizeStarts},
+                            {"quantizeEnds", state.quantizeEnds},
                             {"mixAnalyzerWidth", state.mixAnalyzerWidth},
                             {"mixAnalyzerSource", state.mixAnalyzerSource},
                             {"mixAnalyzerPoint", state.mixAnalyzerPoint},

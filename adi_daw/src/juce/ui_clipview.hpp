@@ -16,6 +16,7 @@
 #include "adi/ui/note_geometry.hpp"
 #include "adi/ui/scales.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -461,6 +462,11 @@ class ClipViewPanel final : public juce::Component {
     // what every applied filter finds; an applied filter has a dot in the chooser; a plain click in
     // the editor lets all of them go. The number fields are the chosen filter's: Time counts whole
     // beats from the clip's Start (start, length, repeat), Duration counts sixteenths.
+    // The editor's settings that are kept with the window (the grid, Highlight Scale, the notes'
+    // colours, the Quantize settings): taken from the window's state as it opens, and written back
+    // whenever one of them changes.
+    void applyState(const WindowState &);
+    void keepSettings();
     bool filtersShown() const noexcept { return filtersShown_; }
     void showFilters(bool);
     void clearFilters();
