@@ -6265,6 +6265,27 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.keepSettings();
         check(ed.velocityArea().getHeight() == 56 && ed.notesArea().getHeight() == keysBefore, "and back at 56");
     }
+
+    // Note spelling, from the piano ruler's menu (manual 10.6).
+    {
+        const auto kept = [&] { return ViewStateStore(*store).load("clip-view-clip-time").noteSpelling; };
+        ed.select({});
+        check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 90}, {"start", 6 * beat}, {"dur", beat}, {"key", 70}}, "Add Note")).ok, "an A#3");
+        root.frame();
+        ed.select({90});
+        root.frame();
+        check(ed.spelling == NoteSpelling::Sharps && ed.spellingMenu().getNumItems() == 5 && root.selectionText().contains("Pitch: A#3 (70)") &&
+                  panel.readings().range == "A#3 - A#3",
+              "by default a black key is spelled with a sharp: in the Status Bar and in the Pitch and Time range");
+        check(ed.chooseSpelling(2) && ed.named(70) == "Bb3" && root.selectionText().contains("Pitch: Bb3 (70)") && panel.readings().range == "Bb3 - Bb3" &&
+                  kept() == 1,
+              "Flats chosen from the piano's menu: the same note reads Bb3 everywhere, and the choice is kept with the window");
+        check(ed.chooseSpelling(3) && ed.named(70) == "A#/Bb3" && ed.chooseSpelling(5) && ed.named(70) == "70" && ed.named(60) == "60" &&
+                  ed.chooseSpelling(4) && ed.named(70) == "A#3" && !ed.chooseSpelling(0) && !ed.chooseSpelling(6),
+              "both, MIDI note numbers, and Auto, which follows the clip's root: C, so sharps");
+        check(ed.chooseSpelling(1) && kept() == 0 && undo() && details().notes.size() == 5, "sharps again; the test note taken back");
+        ed.select({});
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {

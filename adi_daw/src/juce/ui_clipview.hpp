@@ -103,6 +103,13 @@ class NoteEditor final : public juce::Component {
         kSplit, kJoin, kCrop, kDuplicateTime, kDeleteTime, kInsertTime, kDuplicateLoop, kFoldToNotes, kFoldToScale, kHighlightScale,
         kGridItems = 1000
     };
+    // Note spelling (manual 10.6): chosen from the piano ruler's own menu, a right-click on the
+    // piano; the piano's names, the Pitch and Time range and the Status Bar follow it. Items 1 to 5:
+    // Sharps, Flats, Sharps and Flats, Auto, MIDI Note Numbers.
+    NoteSpelling spelling = NoteSpelling::Sharps;
+    std::string named(int key) const;
+    juce::PopupMenu spellingMenu() const;
+    bool chooseSpelling(int item);
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
     // What a right-click does before its menu opens: a note under it that is not selected is selected.
