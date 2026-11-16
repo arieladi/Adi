@@ -44,6 +44,13 @@ class NoteEditor final : public juce::Component {
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // A batch from outside the editor's own gestures (the Pitch and Time panel): one undo step.
     bool apply(NoteEdit edit) { return commit(std::move(edit)); }
+    // Draw Mode (manual 10.4.1; B, and the header's switch): a drag across empty space draws a
+    // note at each grid step on the key it began on, one undo step for the stroke; a click on a
+    // note deletes it.
+    bool drawMode() const noexcept { return drawMode_; }
+    void setDrawMode(bool);
+    // The grid steps the stroke held now would draw, as source ticks, and its key.
+    std::vector<std::int64_t> drawnSteps() const;
     // Fold to Notes (manual 10.2; F): only the key tracks that hold notes. It follows the notes as
     // they change, and unfolds for a clip with none.
     bool folded() const noexcept { return folded_; }
@@ -89,7 +96,7 @@ class NoteEditor final : public juce::Component {
     std::vector<juce::Rectangle<int>> textAreas() const;
 
   private:
-    enum class Drag { None, Move, Start, End, Velocity, Band };
+    enum class Drag { None, Move, Start, End, Velocity, Band, Draw };
     bool commit(NoteEdit);
     bool snapping(const juce::ModifierKeys &) const noexcept;
     ClipViewPanel &panel;
@@ -97,7 +104,8 @@ class NoteEditor final : public juce::Component {
     mutable std::vector<juce::Rectangle<int>> labels_;
     std::vector<std::uint64_t> selected_, bandBase_;
     Drag drag_ = Drag::None;
-    bool copying_ = false, folded_ = false;
+    bool copying_ = false, folded_ = false, drawMode_ = false;
+    int drawKey_ = 0;
     juce::Point<int> from_, to_;
     std::int64_t dragTicks_ = 0;
     int dragKeys_ = 0, dragVelocity_ = 0;
@@ -189,6 +197,8 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> headerArea() const noexcept;
     // The Note Editor's Fold switch, in the header (manual 10.2).
     juce::Rectangle<int> foldBox() const noexcept;
+    // Its Draw Mode switch beside it (manual 10.4.1).
+    juce::Rectangle<int> drawBox() const noexcept;
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {

@@ -94,6 +94,37 @@ inline NoteEdit addNote(const engine::ClipDetails &clip, std::int64_t start, std
     return edit;
 }
 
+// Notes drawn in Draw Mode (manual 10.4.1): one a grid step long at each of `starts`, on `key`,
+// skipping a step where a note on that key already sounds. One batch, however long the stroke.
+inline NoteEdit drawNotes(const engine::ClipDetails &clip, const std::vector<std::int64_t> &starts, std::int64_t step,
+                          int key, int velocity = 100) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    if (key < 0 || key >= kNoteKeys) {
+        edit.refusal = "There is no key there.";
+        return edit;
+    }
+    const auto length = std::max(kShortestNote, step);
+    auto id = freeNoteId(clip);
+    const char *label = starts.size() == 1 ? "Draw Note" : "Draw Notes";
+    for (const auto start : starts) {
+        const bool taken = std::any_of(clip.notes.begin(), clip.notes.end(), [&](const engine::ClipNote &n) {
+            return n.key == key && n.startTicks < start + length && n.startTicks + n.durationTicks > start;
+        });
+        if (taken)
+            continue;
+        edit.ops.push_back(op("note.insert",
+                              {{"clip", clip.id}, {"note", id}, {"start", start}, {"dur", length}, {"key", key},
+                               {"vel", std::clamp(velocity, 1, 127)}},
+                              label));
+        edit.select.push_back(id++);
+    }
+    return edit;
+}
+
 // The notes deleted (manual 10.4, 10.5): a double-click on one, or Delete on the selection.
 inline NoteEdit deleteNotes(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
     using namespace note_edits_detail;
