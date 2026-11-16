@@ -127,6 +127,8 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 His questions: the violet for agents; whether a resolved remark keeps a faint pip; whether the Mixer's strips show pips as well as the headers. E3 is in review; E4 (fades) is next.
 
+**Since: E3** ([#585](https://github.com/arieladi/Adi/pull/585) `window/e3`): Cut, Copy, Paste, Duplicate and Delete Time (Ctrl/Cmd+Shift+X, C, V, D, Delete) and Insert Silence (Ctrl/Cmd+I), in the Edit menu after Delete. They act across every track; locators, the loop and time signature markers move with the time. Each is one undo step. A Time copy shares E2's clipboard; a plain Paste of it puts its material back on its own tracks without inserting time. The review found four defects, all fixed. #549 (E2) is merged. For win: the shadow sweep flags `tests/test_ui_shell.cpp:6949`, a shadowed variable in main's Mix View check (`bd7c2426`). Main's Mix View EQ third-party headers also warn under GCC in the Pd-off tree (`-Wpragmas`, `-Wattributes` in ZLEqualizer's `highway_import.hpp` and `spin_lock.hpp`). Neither is the window's.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
