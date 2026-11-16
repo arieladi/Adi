@@ -46,7 +46,8 @@ class Designer final {
 
 // One channel/section. Coefficient publication preserves double Direct Form I
 // histories. Every section publishes float; callers must preserve that boundary
-// when composing a cascade. The serialized caller supplies finite samples.
+// when composing a cascade. The external-input entry points sanitize non-finite
+// values; finite-input entry points require prior sanitization by their owner.
 class DfiSection final {
   public:
     bool setCoefficients(const Coefficients &) noexcept;
@@ -56,6 +57,11 @@ class DfiSection final {
     // independently of the caller's contraction/fast-math flags.
     float process(float input) noexcept;
     void processInPlace(std::span<float> samples) noexcept;
+    // For an owning cascade that has already sanitized its external input.
+    // Preserve intermediate overflow/fault semantics and avoid rescanning each
+    // section of an ordinary finite-input cascade.
+    float processFinite(float input) noexcept;
+    void processFiniteInPlace(std::span<float> samples) noexcept;
 
   private:
     Coefficients coefficients_{};

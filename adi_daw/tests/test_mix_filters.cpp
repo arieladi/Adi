@@ -178,6 +178,15 @@ void runtime() {
 }
 } // namespace
 int main() {
+    {
+        f::DfiSection dirty,zeroed;
+        bool exact=true;
+        for(int i=0;i<1024;++i) {
+            const float sample=i==17?std::numeric_limits<float>::quiet_NaN():i==31?std::numeric_limits<float>::infinity():.2f;
+            exact=dirty.process(sample)==zeroed.process(std::isfinite(sample)?sample:0.f)&&exact;
+        }
+        check(exact,"scalar nonfinite input equals explicit silence without poisoning later history");
+    }
     preparation();
     runtime();
     std::printf("Mix filters: %d checks, %d failures; process allocations %zu/%zu\n", checks, failures,

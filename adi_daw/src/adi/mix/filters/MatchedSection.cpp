@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "MatchedSection.hpp"
+#include "FiniteInput.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -134,6 +135,9 @@ bool DfiSection::setCoefficients(const Coefficients &coefficients) noexcept {
 }
 
 float DfiSection::process(float input) noexcept {
+    return processFinite(finiteInput(input));
+}
+float DfiSection::processFinite(float input) noexcept {
     const double x = static_cast<double>(input);
     const double y = (((x * coefficients_.b0 + x1_ * coefficients_.b1) + x2_ * coefficients_.b2) -
                       y1_ * coefficients_.a1) -
@@ -146,8 +150,12 @@ float DfiSection::process(float input) noexcept {
 }
 
 void DfiSection::processInPlace(std::span<float> samples) noexcept {
+    for (auto &sample : samples) sample = finiteInput(sample);
+    processFiniteInPlace(samples);
+}
+void DfiSection::processFiniteInPlace(std::span<float> samples) noexcept {
     for (auto &sample : samples)
-        sample = process(sample);
+        sample = processFinite(sample);
 }
 
 } // namespace adi::mix::filters
