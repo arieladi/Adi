@@ -128,7 +128,7 @@ void persistence() {
     auto &s = *f.store;
     check(OpJournal(s).commit(f.connect("post_fx")).ok,
           "connect and explicit tap are one journal batch");
-    const auto route = detail::captureRow(s.db(), "routing", "id", 9);
+    const auto route = adi::detail::captureRow(s.db(), "routing", "id", 9);
     check(rows::readModel(s).routing.front().keyTap == "post_fx",
           "model reads the persisted key tap");
     check(OpJournal(s).commit(op("routing.setKeyTap", {{"id", 9}, {"tap", "pre_fx"}})).ok &&
@@ -139,13 +139,13 @@ void persistence() {
     check(OpJournal(s).commit(op("routing.disconnect", {{"id", 9}})).ok &&
               s.db().execAndGet("SELECT count(*) FROM routing_key_taps").getInt() == 0,
           "disconnect cascades its owned tap");
-    check(History(s).undo().ok && detail::captureRow(s.db(), "routing", "id", 9) == route &&
+    check(History(s).undo().ok && adi::detail::captureRow(s.db(), "routing", "id", 9) == route &&
               rows::readModel(s).routing.front().keyTap == "post_fx",
           "one Undo restores the full route and tap");
     check(OpJournal(s).commit(op("device.remove", {{"id", 30}})).ok &&
               s.db().execAndGet("SELECT count(*) FROM routing").getInt() == 0,
           "device removal removes its polymorphic key connection");
-    check(History(s).undo().ok && detail::captureRow(s.db(), "routing", "id", 9) == route &&
+    check(History(s).undo().ok && adi::detail::captureRow(s.db(), "routing", "id", 9) == route &&
               rows::readModel(s).routing.front().keyTap == "post_fx",
           "one device Undo restores key and owned tap");
     check(OpJournal(s).commit(op("track.delete", {{"id", 2}})).ok &&
@@ -160,7 +160,7 @@ void persistence() {
     auto wrong = f.connect();
     wrong.payload["id"] = 10;
     wrong.payload["src"] = 999;
-    check(!OpJournal(s).commit(wrong).ok && !detail::captureRow(s.db(), "routing", "id", 10),
+    check(!OpJournal(s).commit(wrong).ok && !adi::detail::captureRow(s.db(), "routing", "id", 10),
           "missing endpoint refuses atomic connection");
     check(OpJournal(s).commit(op("routing.setKeyTap", {{"id", 9}, {"tap", nullptr}})).ok &&
               rows::readModel(s).routing.front().keyTap == "post_mixer",
