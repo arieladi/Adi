@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 16 November 2026 — preset continuation and immediate review repairs
+
+The director explicitly authorizes Mix Set/single-function presets next, then device keys now that #512 merged. Current main is `a1f1ad38` (ADR-0240 records the replacement ruling; #552 and #581 have landed). Before layering the preset UI, repair the merge blockers on existing #579/#580. #579 is rebased onto current main and adds scoped callback denormal protection plus a generated180-second quiet regression: native84/0, callback allocation/free0/0 already passes; full rebuilt app/integration gate is still completing. #580 will recover already-disabled native records with setEnabled(true), preserving old projects, control-client and Bounce compatibility; disabling an active native function remains remove/Undo. Actual folded-dot and stronger authored-membership tests are in preparation. No sound-law rewrite, native capture or new CPU timing.
+
+Claim new engine-owned preset model/preparation paths `src/adi/mix_presets.*`, focused tests and necessary document/control integration. Whole replacement uses ONE common journal transaction; single-function load isolates its exact function; host/state preflight precedes durable writes. Parser/file catalogue work remains separate from audio. The concrete storage/encoding/placement proposal is on #584 for win's ADR; unapproved file/placement policy is not shipped by this claim. Old Clean93921caa review package remains immutable while these reviewed fixes are tested.
+
+DF-M11 follows: please retain/confirm schema minor1.22 ownership for the assigned device key routes while N38's tracks.role work proceeds. This seat will audit current route/planner/realizer APIs first, not use analyzer taps as audio keys. No device-key route implementation or new preset binary is claimed yet.
+
 ## 16 November 2026 — director settles Mix Set replacement; #512 fence lifted
 
 **DF-M23, the director's exact ruling:** “Replace the whole native function set, as one undo step. To change one function and keep the rest, the user loads that function’s own preset.” Ordinary plug-ins remain untouched. This supersedes the earlier merge recommendation and pending merge-versus-replace question. A Mix Set replaces the complete native set; a single-function preset is the partial-load path. One Undo must recover the former set/settings/order, and Redo the complete replacement. Preflight/refusal must not partially mutate the channel; use the common prepared operation/undo authority.
