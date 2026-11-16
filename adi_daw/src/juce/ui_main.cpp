@@ -407,16 +407,16 @@ class AdiApplication final : public juce::JUCEApplication,
                 import_.join(); // the last one has finished
             importing_ = std::make_shared<std::atomic<bool>>(true);
             const auto *document = document_.get();
-            import_ = std::thread([this, job, done = std::move(done), document, running = importing_] {
+            import_ = std::thread([this, job, finished = std::move(done), document, running = importing_] {
                 auto prepared = std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterial(job));
                 running->store(false);
-                juce::MessageManager::callAsync([this, job, done, document, prepared] {
+                juce::MessageManager::callAsync([this, job, finished, document, prepared] {
                     if (juce::JUCEApplicationBase::getInstance() != this || !root_ || document_.get() != document)
                         return;
                     const auto clip = document_->commitMaterial(*prepared, job);
                     if (clip != 0 && !document_->synchronise())
                         report(document_->error());
-                    done(clip, clip != 0 ? std::string{} : document_->error());
+                    finished(clip, clip != 0 ? std::string{} : document_->error());
                 });
             });
             return true;
