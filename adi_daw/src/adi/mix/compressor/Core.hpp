@@ -19,7 +19,7 @@ enum class Status {
 };
 
 struct PrepareSpec {
-    // Accepted range 8..384 kHz; processing coefficients use float(sampleRate).
+    // Accepted range 8..768 kHz; processing coefficients use float(sampleRate).
     double sampleRate = 48000.0;
     std::int32_t maximumFrames = 512;
     std::int32_t mainChannels = 2;

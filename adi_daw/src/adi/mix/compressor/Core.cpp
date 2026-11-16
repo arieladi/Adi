@@ -421,7 +421,7 @@ struct Core::Impl {
 Core::Core() noexcept = default;
 Core::~Core() = default;
 Status Core::prepare(const PrepareSpec &p, const Settings &s) noexcept {
-    if (!std::isfinite(p.sampleRate) || p.sampleRate < 8000 || p.sampleRate > 384000 ||
+    if (!std::isfinite(p.sampleRate) || p.sampleRate < 8000 || p.sampleRate > 768000 ||
         p.maximumFrames <= 0 || p.maximumFrames > 1048576)
         return Status::InvalidSpec;
     if (p.mainChannels != 1 && p.mainChannels != 2)

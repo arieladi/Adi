@@ -128,7 +128,7 @@ void controlsAndLifecycle() {
               core.process({}, 0, 1, pointers, nullptr, 0, s) == c::Status::NotPrepared,
           "unprepared processing rejected");
     for (const c::PrepareSpec &p :
-         std::array<c::PrepareSpec, 4>{{{0, 256, 2}, {48000, 0, 2}, {48000, 256, 3}, {384001, 256, 2}}})
+         std::array<c::PrepareSpec, 4>{{{0, 256, 2}, {48000, 0, 2}, {48000, 256, 3}, {768001, 256, 2}}})
         check(core.prepare(p, s) != c::Status::Ok && !core.isPrepared(), "invalid prepare is inert");
     check(core.prepare({48000, 256, 2}, s) == c::Status::Ok && core.latencySamples() == 0,
           "valid zero latency prepare");
@@ -335,7 +335,7 @@ void keyAndLink() {
 }
 
 void precisionAndStaticLaws() {
-    for (const double rate : {44100., 48000., 96000., 192000.}) {
+    for (const double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         auto s = compress();
         s.autoGain = true;
         s.kneeDb = 24;
