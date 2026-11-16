@@ -24,6 +24,7 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -87,6 +88,18 @@ class NoteEditor final : public juce::Component {
     // notes of each grid step it crosses the value under the pointer: the selected ones only when
     // some are selected; with snapping bypassed, the one marker under the pointer.
     juce::String velocityReadout() const;
+    // The editor's context menu (manual 10.5.2 and on: Live names these commands in the Edit menu
+    // and the editor's own menu). A right-click on a note that is not selected selects it first.
+    // Every entry is a command the editor already has; one that cannot act now is greyed.
+    enum ContextItem {
+        kCut = 1, kCopy, kPaste, kDuplicate, kDelete, kDeactivate, kSelectAll, kInvertSelection, kQuantize, kQuantizeSettings,
+        kSplit, kJoin, kCrop, kDuplicateTime, kDeleteTime, kInsertTime, kDuplicateLoop, kFoldToNotes, kFoldToScale, kHighlightScale,
+        kGridItems = 1000
+    };
+    juce::PopupMenu contextMenu() const;
+    bool chooseContextItem(int item);
+    // What a right-click does before its menu opens: a note under it that is not selected is selected.
+    void contextClick(juce::Point<int> at);
     // MIDI Note Stretch (manual 10.5.6). With two or more notes selected, or time selected over
     // notes, a pair of markers hangs under the ruler at the selection's start and end. One dragged
     // stretches the notes in proportion, the other staying; dragged past the other it mirrors them.
@@ -454,8 +467,16 @@ class ClipViewPanel final : public juce::Component {
     enum class Field {
         None, Start, End, Position, Length, Signature, Scale, Transpose,
         VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices,
-        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch
+        RandomAmount, RampStart, RampEnd, FilterA, FilterB, FilterC, QuantizeAmount, QuantizeSwing, Interval, Stretch, Name
     };
+    // The title bar's context menu (manual 8.1.1): Rename, which opens the name for typing, and the
+    // colour, one of the palette's fourteen. With several clips shown both act on all of them
+    // (manual 10.8); one undo step. Item 1 is Rename; items 100 on are the colours.
+    static constexpr int kTitleColours = 14;
+    juce::PopupMenu titleMenu() const;
+    bool chooseTitleItem(int item);
+    bool rename(const juce::String &name);
+    bool recolour(int colour);
     // Find and Select Notes (manual 10.5.3). The header's Find switch (Ctrl/Cmd+Shift+F in the
     // editor) shows a bar of note filters under the header: a chooser of the eight filters, the
     // chosen filter's controls, Invert and Select. A control changed applies the filter and selects
@@ -466,6 +487,11 @@ class ClipViewPanel final : public juce::Component {
     // colours, the Quantize settings): taken from the window's state as it opens, and written back
     // whenever one of them changes.
     void applyState(const WindowState &);
+    // The Status Bar's Clip View Selector (manual 8.7): a drag in it scrolls the shown editor by
+    // that share of the clip's length, and zooms it by the pixels moved up or down; and the time
+    // the editor shows, in the song's ticks, for the selector's frame.
+    void selectorDrag(double clipShare, int downBy);
+    std::pair<std::int64_t, std::int64_t> shownSpan() const noexcept;
     void keepSettings();
     bool filtersShown() const noexcept { return filtersShown_; }
     void showFilters(bool);
@@ -487,7 +513,7 @@ class ClipViewPanel final : public juce::Component {
     // widths, the fixed ones, triplets and snapping. Items 1 to 5 are the adaptive widths, widest
     // first; 10 on, the fixed ones from 8 Bars to 1/32; 30 Triplet Grid; 31 Snap to Grid.
     juce::Rectangle<int> gridBox() const noexcept;
-    juce::PopupMenu gridMenu() const;
+    juce::PopupMenu gridMenu(int idOffset = 0) const;
     bool chooseGrid(int item);
     juce::PopupMenu coloursMenu() const;
     bool chooseColours(int item);
@@ -563,8 +589,10 @@ class ClipViewPanel final : public juce::Component {
     juce::Rectangle<int> editorArea() const noexcept;
     // The Main panel's readings, as drawn (manual 8.2): Start, End, Position, Length, Signature.
     struct Readings {
-        juce::String start, end, position, length, signature, scale, grid, transpose, range;
+        juce::String start, end, position, length, signature, scale, grid, transpose, range, title;
         bool loop = false;
+        // With several clips shown (manual 10.8): some loop and some do not.
+        bool loopMixed = false;
     };
     Readings readings() const;
     // Reads the clip again now: after an edit of this view's, before the next frame.
@@ -572,6 +600,13 @@ class ClipViewPanel final : public juce::Component {
     // The notes last cut or copied in this window's Clip View, each with its start counted from the
     // first of them; they stay while other clips are opened.
     std::vector<engine::ClipNote> noteClipboard;
+    // Where each of them came from, and which clips were shown, and which was being edited, when
+    // they were copied: while that is unchanged, Paste puts each note back into its own clip
+    // (manual 10.8); after another clip is chosen, all go into the edited one.
+    std::vector<std::int64_t> noteClipboardClips, noteClipboardShown;
+    std::int64_t noteClipboardEdited = 0;
+    // The shown clips' ids, the edited one first.
+    std::vector<std::int64_t> shownClips() const;
     // Every place this panel and its editor draw text, in the panel's coordinates.
     std::vector<juce::Rectangle<int>> textAreas() const;
 
@@ -593,6 +628,10 @@ class ClipViewPanel final : public juce::Component {
     int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
+    // An edit of the Main panel's that belongs to every shown clip (manual 10.8: loop, signature and
+    // scale apply to all the selected clips): `build` makes it for one clip; one batch, one undo
+    // step. The edited clip's refusal refuses it; another clip that cannot take it is passed over.
+    bool commitForAll(const std::function<TrackEdit(const engine::ClipDetails &)> &build);
     bool filtersShown_ = false;
     NoteFilter filter_ = NoteFilter::Pitch;
     // How many number fields the chosen filter has, and their names.
@@ -609,6 +648,8 @@ class ClipViewPanel final : public juce::Component {
     std::optional<engine::ClipDetails> details_;
     std::string problem_;
     const engine::ClipNode *node_ = nullptr;
+    // The edited clip's track's name, from this frame's snapshot: what an unnamed clip's title reads.
+    std::string_view trackName_;
     juce::Colour colour_;
     textproj::Meter meter_;
     std::vector<textproj::Meter> clipMeters_;

@@ -242,12 +242,21 @@ class StatusBar final : public juce::Component {
     // Live 12's Clip View Selector, in the second field: the shown clip in miniature; a click shows
     // or hides the Clip View (manual 8).
     juce::TextButton clipToggle{""};
+    // A drag in the selector scrolls the Clip View's editor sideways, the whole field standing for
+    // the whole clip, and zooms it up and down (manual 8.7); a press let go where it began is the
+    // click that shows or hides the view. The part of the clip the editor shows is framed in it.
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void clipClicked();
+    juce::Rectangle<float> clipViewFrame() const;
     juce::Rectangle<int> secondField() const noexcept { return {getWidth() - 376, 8, 206, 22}; }
     // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
     juce::TextButton mixerOptions{""};
 
   private:
     AdiRootComponent &root_;
+    juce::Point<int> selectorLast_;
+    bool selectorDragged_ = false;
 };
 // The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
 class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {

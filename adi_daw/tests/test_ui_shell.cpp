@@ -6150,6 +6150,97 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         panel.keepSettings();
         panel.setToolsTab(0);
     }
+
+    // The Clip View Selector in the Status Bar (manual 8.7): a drag scrolls and zooms the editor; its view is framed.
+    {
+        auto &statusBar = root.status;
+        auto &toggle = statusBar.clipToggle;
+        ed.fitWidth();
+        root.frame();
+        const auto whole = statusBar.clipViewFrame();
+        const auto inner = statusBar.secondField().reduced(5, 4).toFloat();
+        check(root.state().clipView && !whole.isEmpty() && std::abs(whole.getX() - inner.getX()) < 1.5f && whole.getWidth() > inner.getWidth() * 0.9f,
+              "with the whole clip in the editor, the selector's frame spans the whole field");
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        ed.keyPressed(key('+'));
+        root.frame();
+        const auto zoomed = statusBar.clipViewFrame();
+        check(zoomed.getWidth() < whole.getWidth() * 0.7f, "zoomed in, the frame is as much narrower as the editor shows less");
+        const juce::Point<float> start(40.f, 8.f);
+        const double left0 = ed.time.left, scale0 = ed.time.scale;
+        statusBar.mouseDown(pressAt(toggle, start));
+        statusBar.mouseDrag(dragAt(toggle, start, {start.x + 20.f, start.y}));
+        check(ed.time.left > left0 && std::abs(ed.time.scale - scale0) < 1e-9 && root.arrangement.followPaused,
+              "a drag to the right in the selector scrolls the editor on, by that share of the clip; it pauses Follow");
+        const double moved = (ed.time.left - left0) * static_cast<double>(beat);
+        check(std::abs(moved - 20. / static_cast<double>(inner.getWidth()) * static_cast<double>(2 * bar)) < static_cast<double>(beat) / 16,
+              "twenty pixels of the field are that share of the clip's two bars");
+        statusBar.mouseDrag(dragAt(toggle, start, {start.x + 20.f, start.y + 15.f}));
+        check(ed.time.scale > scale0, "dragged down, it zooms in");
+        statusBar.clipClicked();
+        check(root.state().clipView, "letting go after a drag is not the click that hides the view");
+        statusBar.mouseDown(pressAt(toggle, start));
+        statusBar.clipClicked();
+        check(!root.state().clipView, "a press let go where it began still hides the Clip View");
+        statusBar.clipClicked();
+        root.frame();
+        check(root.state().clipView && panel.details() != nullptr, "and shows it again");
+        ed.fitWidth();
+    }
+
+    // The editor's context menu: its commands under a right-click.
+    {
+        using Ids = std::vector<std::uint64_t>;
+        const auto enabled = [&](int id) {
+            const auto menu = ed.contextMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().itemID == id)
+                    return it.getItem().isEnabled;
+            return false;
+        };
+        const auto named = [&](int id) {
+            const auto menu = ed.contextMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (it.getItem().itemID == id)
+                    return it.getItem().text;
+            return juce::String();
+        };
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        check(!enabled(NoteEditor::kCut) && !enabled(NoteEditor::kDelete) && !enabled(NoteEditor::kJoin) && !enabled(NoteEditor::kDuplicateTime) &&
+                  enabled(NoteEditor::kSelectAll) && enabled(NoteEditor::kQuantize) && enabled(NoteEditor::kCrop) &&
+                  named(NoteEditor::kCrop) == "Crop Clip" && !enabled(NoteEditor::kFoldToScale),
+              "with nothing selected the menu greys what needs notes or time, and Fold to Scale without a scale of the clip's own");
+        // A right-click on a note that is not selected selects it.
+        if (const auto box = ed.boxOf(note(2))) {
+            // The step before the menu opens; the test opens no menu window.
+            ed.contextClick(juce::Point<double>(box->x + box->width / 2, box->y + box->height / 2).roundToInt());
+        }
+        check(ed.selected() == Ids({2}) && enabled(NoteEditor::kCut) && enabled(NoteEditor::kDeactivate) && named(NoteEditor::kDeactivate) == "Deactivate Note(s)" &&
+                  named(NoteEditor::kSplit) == "Chop Notes on Grid",
+              "a right-click on a note selects it; the menu's note commands are live");
+        check(ed.chooseContextItem(NoteEditor::kDeactivate) && !note(2).active && named(NoteEditor::kDeactivate) == "Activate Note(s)" &&
+                  ed.chooseContextItem(NoteEditor::kDeactivate) && note(2).active,
+              "Deactivate Note(s) from the menu, and Activate again");
+        check(ed.chooseContextItem(NoteEditor::kCopy) && panel.noteClipboard.size() == 1 && ed.chooseContextItem(NoteEditor::kSelectAll) &&
+                  ed.selected().size() == details().notes.size() && ed.chooseContextItem(NoteEditor::kInvertSelection) && ed.selected().empty(),
+              "Copy, Select All and Invert Selection");
+        ed.selectTime(song(0), song(2 * beat));
+        check(enabled(NoteEditor::kDuplicateTime) && named(NoteEditor::kCrop) == "Crop Clip to Time Selection" &&
+                  named(NoteEditor::kSplit) == "Split Notes at Time Selection" && ed.chooseContextItem(NoteEditor::kInsertTime) && undoIs("Insert Time") && undo(),
+              "with time selected the time commands are live, and Crop and Split name the time selection");
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        const auto narrow = ed.time.grid.narrow;
+        check(ed.chooseContextItem(NoteEditor::kGridItems + 31) && !ed.time.grid.snap && ed.chooseContextItem(NoteEditor::kGridItems + 31) && ed.time.grid.snap &&
+                  ed.time.grid.narrow == narrow && ed.chooseContextItem(NoteEditor::kFoldToNotes) && ed.folded() &&
+                  ed.chooseContextItem(NoteEditor::kFoldToNotes) && !ed.folded() && ed.chooseContextItem(NoteEditor::kHighlightScale) &&
+                  ed.chooseContextItem(NoteEditor::kHighlightScale) && ed.chooseContextItem(NoteEditor::kQuantizeSettings) && panel.toolsTab() == 1 &&
+                  !ed.chooseContextItem(999),
+              "the grid's submenu, the folds, Highlight Scales and Quantize Settings from the menu");
+        panel.setToolsTab(0);
+        ed.select({});
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
@@ -6317,6 +6408,84 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(ed.keys.rowCount() == 2 && ed.keys.rowOf(60) == 0 && ed.keys.rowOf(53) == 1, "Fold keeps the key tracks any shown clip uses");
     ed.setFold(false);
 
+    // The panels act on every shown clip; the title counts them; notes copied from several go back each into its own (manual 10.8).
+    {
+        using Field = ClipViewPanel::Field;
+        const auto edited = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto another = [&]() -> const engine::ClipDetails & { return panel.others()[0].details; };
+        const auto command = juce::ModifierKeys::commandModifier;
+        ed.select({});
+        check(panel.others().size() == 1 && panel.readings().title == "2 MIDI Clips" && !panel.readings().loopMixed && panel.readings().scale != "*",
+              "with two clips shown the title reads their number; they agree on looping and on the scale");
+        const bool looped = edited().loopEnabled;
+        check(panel.toggleLoop() && edited().loopEnabled == !looped && another().loopEnabled == !looped && submitter.nextUndo()->opCount == 2,
+              "the Loop switch switches both clips: one undo step");
+        check(submitter.submit(op("clip.setLoop", {{"id", another().id}, {"on", false}}, "Deactivate Loop")).ok, "the other clip's loop switched off alone");
+        root.frame();
+        if (edited().loopEnabled) {
+            check(panel.readings().loopMixed, "one looped and one not: the Loop button is half lit");
+            check(panel.toggleLoop() && !edited().loopEnabled && !another().loopEnabled && !panel.readings().loopMixed && submitter.nextUndo()->opCount == 1,
+                  "switched off, only the clip that still looped is written");
+        }
+        check(panel.typeField(Field::Signature, "3/4") && edited().signature.numerator == 3 && another().signature.numerator == 3 &&
+                  another().signature.local && submitter.nextUndo()->opCount == 2,
+              "a time signature typed is both clips'");
+        check(panel.chooseScale(true, 3) && edited().scale.root == 2 && another().scale.root == 2 && another().scale.local && edited().scale.local,
+              "a root chosen is both clips'");
+        check(submitter.submit(op("clip.setScale", {{"id", another().id}, {"root", 7}, {"scale", "major"}, {"mask", 2741}}, "Change Clip Scale")).ok,
+              "the other clip given a scale of its own");
+        root.frame();
+        check(panel.readings().scale == "*", "the clips disagree on the scale: an asterisk");
+        check(panel.chooseScale(false, 1) && another().scale.root == edited().scale.root && another().scale.id == edited().scale.id &&
+                  panel.readings().scale != "*",
+              "a scale chosen brings them together again");
+        panel.mouseDown(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
+        panel.mouseUp(pressAt(panel, panel.scaleModeBox().getCentre().toFloat()));
+        check(!edited().scale.local && !another().scale.local && submitter.nextUndo()->label == "Deactivate Scale" && submitter.nextUndo()->opCount == 2,
+              "Scale Mode switched off is switched off in both");
+
+        // Copy from both clips; paste goes back into both.
+        check(ed.keyPressed(juce::KeyPress('a', command, 0)) && ed.anySelected() && ed.keyPressed(juce::KeyPress('c', command, 0)) &&
+                  panel.noteClipboard.size() == edited().notes.size() + another().notes.size() &&
+                  panel.noteClipboardClips.size() == panel.noteClipboard.size() && panel.noteClipboardShown == panel.shownClips(),
+              "every note of both clips copied, each remembered with its clip");
+        const auto ownCount = edited().notes.size(), otherCount = another().notes.size();
+        const auto firstClip = edited().id, secondClip = another().id;
+        ed.selectTime(2 * bar + beat, 2 * bar + beat);
+        check(ed.keyPressed(juce::KeyPress('v', command, 0)) && edited().notes.size() == 2 * ownCount && another().notes.size() == 2 * otherCount &&
+                  submitter.nextUndo()->label == "Paste Notes" && ed.selected().size() == ownCount,
+              "Paste puts each note back into its own clip, at the insert marker: one undo step, the pasted notes selected");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(edited().notes.size() == ownCount && another().notes.size() == otherCount, "one Undo takes both clips' pasted notes back");
+        // After another clip is chosen, the paste goes into that one.
+        check(panel.activate(secondClip) && edited().id == secondClip, "the other clip chosen as the one being edited");
+        ed.selectTime(2 * bar + beat, 2 * bar + beat);
+        check(ed.keyPressed(juce::KeyPress('v', command, 0)) && edited().notes.size() == otherCount + ownCount + otherCount && another().notes.size() == ownCount,
+              "now Paste puts every copied note into the clip being edited");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(panel.activate(firstClip) && edited().id == firstClip, "the first clip is the edited one again");
+        ed.select({});
+    }
+
+    // The title bar's context menu (manual 8.1.1, 10.8): Rename and the colour, for every shown clip.
+    {
+        const auto edited = [&]() -> const engine::ClipDetails & { return *panel.details(); };
+        const auto another = [&]() -> const engine::ClipDetails & { return panel.others()[0].details; };
+        check(panel.titleMenu().getNumItems() == 2 && panel.chooseTitleItem(1), "the title's menu: Rename, and Color; Rename opens the name for typing");
+        check(panel.typeField(ClipViewPanel::Field::Name, "  Verse A ") && edited().name == "Verse A" && another().name == "Verse A" &&
+                  submitter.nextUndo()->label == "Rename Clip" && submitter.nextUndo()->opCount == 2 && panel.readings().title == "2 MIDI Clips",
+              "a name typed names both shown clips, without the spaces at its ends: one undo step");
+        const auto renamed = submitter.nextUndo()->txnId;
+        check(panel.rename("Verse A") && submitter.nextUndo()->txnId == renamed, "the same name again writes nothing");
+        check(panel.chooseTitleItem(105) && edited().color == 5 && another().color == 5 && submitter.nextUndo()->label == "Change Clip Color" &&
+                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(2),
+              "a colour chosen colours both: one undo step");
+        root.frame();
+        check(panel.colour() == look::paletteColour(5) && panel.others()[0].colour == look::paletteColour(5), "and the editor draws both clips in it");
+    }
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -6336,6 +6505,8 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     check(panel.clip() == 11 && panel.others().empty() && ed.barsHeight() == 0 && ed.rulerArea().getY() == 0,
           "one clip selected again: one clip shown, no loop bars");
     check(!ed.keyPressed(juce::KeyPress('n')), "and N is not the editor's with one clip");
+    check(panel.readings().title == "Verse A" && panel.rename("") && panel.details()->name.empty() && panel.readings().title == "Keys",
+          "one clip shown: the title is its name; a clip with no name reads its track's");
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on

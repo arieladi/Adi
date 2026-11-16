@@ -149,6 +149,24 @@ inline TrackEdit setClipScale(const engine::ClipDetails &clip, std::int64_t root
     return edit;
 }
 
+// The clip's name and colour (manual 8.1.1), from the Clip View's title bar.
+inline TrackEdit renameClip(const engine::ClipDetails &clip, const std::string &name) {
+    using track_edits_detail::op;
+    TrackEdit edit;
+    if (name != clip.name)
+        edit.ops.push_back(op("clip.setName", {{"id", clip.id}, {"name", name}}, "Rename Clip"));
+    return edit;
+}
+inline TrackEdit recolourClip(const engine::ClipDetails &clip, std::int64_t colour) {
+    using track_edits_detail::op;
+    TrackEdit edit;
+    if (colour < 0)
+        edit.refusal = "A colour is one of the palette's.";
+    else if (!clip.color || *clip.color != colour)
+        edit.ops.push_back(op("clip.setColor", {{"id", clip.id}, {"color", colour}}, "Change Clip Color"));
+    return edit;
+}
+
 // Scale Mode (manual 8.2.4): on, the clip holds the scale it shows as its own; off, it holds none
 // and follows the project's again.
 inline TrackEdit setClipScaleMode(const engine::ClipDetails &clip, bool on) {

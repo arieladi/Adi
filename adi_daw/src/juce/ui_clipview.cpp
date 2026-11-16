@@ -459,12 +459,14 @@ bool NoteEditor::copySelected() {
     // Each note with its place in the song, so notes of several clips keep their places to each
     // other; then counted from the earliest.
     std::vector<engine::ClipNote> copied;
+    std::vector<std::int64_t> from;
     const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
         const auto window = ClipWindow::of(of);
         for (const auto &n : of.notes)
             if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
                 copied.push_back(n);
                 copied.back().startTicks = window.toArrangement(n.startTicks);
+                from.push_back(of.id);
             }
     };
     take(*clip, selected_);
@@ -479,6 +481,9 @@ bool NoteEditor::copySelected() {
     for (auto &n : copied)
         n.startTicks -= first;
     panel.noteClipboard = std::move(copied);
+    panel.noteClipboardClips = std::move(from);
+    panel.noteClipboardShown = panel.shownClips();
+    panel.noteClipboardEdited = clip->id;
     return true;
 }
 bool NoteEditor::cutSelected() {
@@ -496,7 +501,47 @@ bool NoteEditor::paste() {
     // At the insert marker or the time selection's start, else at the clip's start; into the clip being edited.
     const auto window = ClipWindow::of(*clip);
     const auto span = timeSelection();
-    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(span ? span->first : insert_.value_or(window.pos))));
+    const auto marker = span ? span->first : insert_.value_or(window.pos);
+    // Notes cut or copied from several clips go back each into its own, while the same clips are
+    // shown and the same one is being edited (manual 10.8); else all into the edited clip.
+    const bool several = std::any_of(panel.noteClipboardClips.begin(), panel.noteClipboardClips.end(),
+                                     [&](std::int64_t id) { return id != clip->id; });
+    if (several && !panel.focus() && panel.noteClipboardClips.size() == panel.noteClipboard.size() &&
+        panel.noteClipboardShown == panel.shownClips() && panel.noteClipboardEdited == clip->id) {
+        const auto own = [&](std::int64_t id) {
+            std::vector<engine::ClipNote> notes;
+            for (std::size_t i = 0; i < panel.noteClipboard.size(); ++i)
+                if (panel.noteClipboardClips[i] == id)
+                    notes.push_back(panel.noteClipboard[i]);
+            return notes;
+        };
+        auto all = pasteNotes(*clip, own(clip->id), window.toSource(marker));
+        std::vector<std::pair<std::int64_t, std::vector<std::uint64_t>>> pasted;
+        for (const auto &layer : panel.others()) {
+            const auto notes = own(layer.details.id);
+            if (notes.empty() || !all.refusal.empty())
+                continue;
+            auto part = pasteNotes(layer.details, notes, ClipWindow::of(layer.details).toSource(marker));
+            if (!part.refusal.empty()) {
+                all.refusal = std::move(part.refusal);
+                break;
+            }
+            for (auto &o : part.ops)
+                all.ops.push_back(std::move(o));
+            pasted.emplace_back(layer.details.id, std::move(part.select));
+        }
+        for (auto &o : all.ops)
+            o.label = "Paste Notes";
+        if (!commit(std::move(all)))
+            return false;
+        // The pasted notes are the selection, in each clip.
+        otherSelected_.clear();
+        for (auto &entry : pasted)
+            otherIds(entry.first) = std::move(entry.second);
+        repaint();
+        return true;
+    }
+    return commit(pasteNotes(*clip, panel.noteClipboard, window.toSource(marker)));
 }
 bool NoteEditor::duplicate() {
     const auto *clip = panel.details();
@@ -1050,6 +1095,9 @@ std::uint64_t NoteEditor::statusStamp() const noexcept {
     mix(static_cast<std::uint64_t>(drag_));
     mix(static_cast<std::uint64_t>(dragTicks_));
     mix(static_cast<std::uint64_t>(dragKeys_));
+    // The Clip View Selector frames what the editor shows.
+    mix(static_cast<std::uint64_t>(time.tick(0.)));
+    mix(static_cast<std::uint64_t>(std::llround(time.scale * 1024.)));
     for (const auto &entry : shapePreview_)
         mix(entry.first * 131 + static_cast<std::uint64_t>(entry.second));
     return stamp;
@@ -1336,6 +1384,111 @@ std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
     }
     return songTick;
 }
+// ---- The editor's context menu -----------------------------------------------------------------
+void NoteEditor::contextClick(juce::Point<int> at) {
+    if (const auto *n = noteAt(at); n != nullptr && !isSelected(n->id)) {
+        selected_ = {n->id};
+        otherSelected_.clear();
+        head_.reset();
+    }
+    repaint();
+}
+juce::PopupMenu NoteEditor::contextMenu() const {
+    juce::PopupMenu menu;
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return menu;
+    const bool notes = anySelected(), timed = timeSelection().has_value();
+    bool allOff = notes;
+    for (const auto &n : clip->notes)
+        if (isSelected(n.id) && n.active)
+            allOff = false;
+    menu.addItem(kCut, "Cut", notes);
+    menu.addItem(kCopy, "Copy", notes);
+    menu.addItem(kPaste, "Paste", !panel.noteClipboard.empty());
+    menu.addItem(kDuplicate, "Duplicate", !selected_.empty());
+    menu.addItem(kDelete, "Delete", notes);
+    menu.addSeparator();
+    menu.addItem(kDeactivate, allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes);
+    menu.addSeparator();
+    menu.addItem(kSelectAll, "Select All");
+    menu.addItem(kInvertSelection, "Invert Selection", !clip->notes.empty());
+    menu.addSeparator();
+    menu.addItem(kQuantize, "Quantize", !clip->notes.empty());
+    menu.addItem(kQuantizeSettings, "Quantize Settings...");
+    menu.addItem(kSplit, notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
+                 notes || timed || insert_.has_value());
+    menu.addItem(kJoin, "Join Notes", notes);
+    menu.addSeparator();
+    menu.addItem(kCrop, timed ? "Crop Clip to Time Selection" : "Crop Clip");
+    menu.addItem(kDuplicateTime, "Duplicate Time", timed);
+    menu.addItem(kDeleteTime, "Delete Time", timed);
+    menu.addItem(kInsertTime, "Insert Time", timed);
+    menu.addItem(kDuplicateLoop, "Duplicate Loop", loopLengthOf(*clip) > 0);
+    menu.addSeparator();
+    menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
+    menu.addItem(kFoldToNotes, "Fold to Notes", true, folded_);
+    menu.addItem(kFoldToScale, "Fold to Scale", scaleOn(), scaleFolded_);
+    menu.addItem(kHighlightScale, "Highlight Scales", true, highlightScale);
+    return menu;
+}
+bool NoteEditor::chooseContextItem(int item) {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    const auto key = [this](int code, int mods = 0) { return keyPressed(juce::KeyPress(code, juce::ModifierKeys(mods), 0)); };
+    const int command = juce::ModifierKeys::commandModifier;
+    switch (item) {
+    case kCut:
+        return cutSelected();
+    case kCopy:
+        return copySelected();
+    case kPaste:
+        return paste();
+    case kDuplicate:
+        return duplicate();
+    case kDelete:
+        return anySelected() && key(juce::KeyPress::deleteKey);
+    case kDeactivate:
+        return anySelected() && key('0');
+    case kSelectAll:
+        return key('a', command);
+    case kInvertSelection:
+        invertSelection();
+        return true;
+    case kQuantize:
+        return quantize();
+    case kQuantizeSettings:
+        panel.setToolsTab(1);
+        return true;
+    case kSplit:
+        return splitOrChop();
+    case kJoin:
+        return join();
+    case kCrop:
+        return crop();
+    case kDuplicateTime:
+        return timeCommand(TimeCommand::Duplicate);
+    case kDeleteTime:
+        return timeCommand(TimeCommand::Delete);
+    case kInsertTime:
+        return timeCommand(TimeCommand::Insert);
+    case kDuplicateLoop:
+        return duplicateLoop();
+    case kFoldToNotes:
+        setFold(!folded_);
+        panel.repaint();
+        return true;
+    case kFoldToScale:
+        setScaleFold(!scaleFolded_);
+        panel.repaint();
+        return true;
+    case kHighlightScale:
+        return key('k');
+    default:
+        return item >= kGridItems && panel.chooseGrid(item - kGridItems);
+    }
+}
 bool NoteEditor::isSelected(std::uint64_t id) const noexcept {
     return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
 }
@@ -1471,7 +1624,17 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     typedVelocity_.clear();
     from_ = to_ = e.getPosition();
     const auto *clip = panel.details();
-    if (clip == nullptr || e.mods.isPopupMenu())
+    if (clip != nullptr && e.mods.isPopupMenu()) {
+        // A right-click: a note under it that is not selected is selected first; then the menu.
+        contextClick(from_);
+        juce::Component::SafePointer<NoteEditor> safe(this);
+        contextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [safe](int item) {
+            if (safe != nullptr && item > 0)
+                safe->chooseContextItem(item);
+        });
+        return;
+    }
+    if (clip == nullptr)
         return;
     if (std::uint64_t picked = 0; noteAt(from_) == nullptr) {
         if (const auto other = otherClipAt(from_, &picked); other != 0 && picked != 0 && e.mods.isShiftDown() && !panel.focus()) {
@@ -2612,6 +2775,25 @@ juce::Rectangle<int> ClipViewPanel::findBox() const noexcept {
     const auto highlight = highlightBox();
     return highlight.isEmpty() ? highlight : highlight.withX(highlight.getRight() + 4).withWidth(34);
 }
+void ClipViewPanel::selectorDrag(double clipShare, int downBy) {
+    if (!details_)
+        return;
+    auto &time = midi() ? notes.time : sample.time;
+    const int width = midi() ? notes.notesArea().getWidth() : sample.getWidth();
+    time.left = std::max(0., time.left + clipShare * static_cast<double>(details_->lengthTicks.value_or(0)) / textproj::kPPQ);
+    if (downBy != 0)
+        time.zoom(std::pow(1.012, static_cast<double>(downBy)), width / 2.);
+    // A scroll of the user's pauses Follow, as in the editor itself.
+    root.arrangement.followPaused = true;
+    notes.repaint();
+    sample.repaint();
+    repaint();
+}
+std::pair<std::int64_t, std::int64_t> ClipViewPanel::shownSpan() const noexcept {
+    const auto &time = midi() ? notes.time : sample.time;
+    const int width = midi() ? notes.notesArea().getWidth() : sample.getWidth();
+    return {time.tick(0.), time.tick(static_cast<double>(std::max(0, width)))};
+}
 void ClipViewPanel::applyState(const WindowState &state) {
     notes.time.grid = {state.noteGridSnap, state.noteGridFixed, state.noteGridTriplet, state.noteGridNarrow, state.noteGridFixedQuarters};
     notes.highlightScale = state.highlightScale;
@@ -2642,20 +2824,20 @@ void ClipViewPanel::keepSettings() {
 juce::Rectangle<int> ClipViewPanel::gridBox() const noexcept {
     return midi() ? headerArea().withTrimmedRight(8).removeFromRight(70) : juce::Rectangle<int>();
 }
-juce::PopupMenu ClipViewPanel::gridMenu() const {
+juce::PopupMenu ClipViewPanel::gridMenu(int idOffset) const {
     using Geometry = ArrangementGeometry;
     const auto &grid = notes.time.grid;
     juce::PopupMenu menu, adaptive, fixed;
     for (std::size_t i = 0; i < Geometry::kAdaptiveNames.size(); ++i)
-        adaptive.addItem(static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
+        adaptive.addItem(idOffset + static_cast<int>(i) + 1, Geometry::kAdaptiveNames[i], true,
                          !grid.fixed && grid.narrow == static_cast<int>(i) - Geometry::kGridNarrowest);
-    int id = 10;
+    int id = idOffset + 10;
     for (double quarters = Geometry::kWidestGrid; quarters >= Geometry::kFinestGrid; quarters /= 2)
         fixed.addItem(id++, gridLabel(quarters, false), true, grid.fixed && grid.fixedQuarters == quarters);
     menu.addSubMenu("Adaptive Grid", adaptive);
     menu.addSubMenu("Fixed Grid", fixed);
-    menu.addItem(30, "Triplet Grid", true, grid.triplet);
-    menu.addItem(31, "Snap to Grid", true, grid.snap);
+    menu.addItem(idOffset + 30, "Triplet Grid", true, grid.triplet);
+    menu.addItem(idOffset + 31, "Snap to Grid", true, grid.snap);
     return menu;
 }
 bool ClipViewPanel::chooseGrid(int item) {
@@ -2990,7 +3172,19 @@ juce::Rectangle<int> ClipViewPanel::scaleModeBox() const noexcept {
 bool ClipViewPanel::toggleScaleMode() {
     if (!details_ || !midi())
         return false;
-    const bool done = commit(setClipScaleMode(*details_, !details_->scale.local));
+    // On, every shown clip takes the edited clip's scale as its own; off, each holds none.
+    const bool on = !details_->scale.local;
+    const auto tonic = details_->scale.root;
+    const auto id = details_->scale.id;
+    const auto mask = details_->scale.mask;
+    const bool done = commitForAll([=](const engine::ClipDetails &clip) {
+        if (!on)
+            return setClipScaleMode(clip, false);
+        auto taken = setClipScale(clip, tonic, id, mask);
+        for (auto &o : taken.ops)
+            o.label = "Activate Scale";
+        return taken;
+    });
     notes.prune();
     return done;
 }
@@ -3068,10 +3262,12 @@ void ClipViewPanel::frame(const SnapshotReader &reader) {
     notes.time.meters = &reader.meters();
     sample.time.meters = &reader.meters();
     node_ = nullptr;
+    trackName_ = {};
     colour_ = look::trackColour(0);
     if (details_) {
         const auto rows = root.arrangement.geometry.rows(reader);
         if (const auto at = rows.find(details_->trackId); at < rows.size()) {
+            trackName_ = rows[at].track->name;
             colour_ = details_->color ? look::paletteColour(*details_->color)
                                       : root.arrangement.colourFor(rows[at].position);
             for (const auto &c : rows[at].track->clips)
@@ -3092,6 +3288,17 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.start = positionText(d.startMarkerTicks, clipMeters_);
     out.end = positionText(endMarkerOf(d), clipMeters_);
     out.loop = d.loopEnabled;
+    bool sameScale = true;
+    for (const auto &layer : others_) {
+        out.loopMixed = out.loopMixed || layer.details.loopEnabled != d.loopEnabled;
+        sameScale = sameScale && layer.details.scale.root == d.scale.root && layer.details.scale.id == d.scale.id &&
+                    layer.details.scale.local == d.scale.local;
+    }
+    // The title: the clip's name; with several clips shown, how many (manual 10.8).
+    // A clip with no name reads its track's (manual 10.8).
+    out.title = !others_.empty() ? juce::String(static_cast<int>(others_.size()) + 1) + " MIDI Clips"
+                : !d.name.empty() ? juce::String(d.name)
+                                  : juce::String(juce::CharPointer_UTF8(trackName_.data()), juce::CharPointer_UTF8(trackName_.data() + trackName_.size()));
     out.position = positionText(d.loopStartTicks, clipMeters_);
     out.length = lengthText(loopLengthOf(d), meter_);
     out.signature = juce::String(meter_.numerator) + " / " + juce::String(meter_.denominator);
@@ -3102,6 +3309,9 @@ ClipViewPanel::Readings ClipViewPanel::readings() const {
     out.scale = juce::String(pitchClassName(static_cast<int>(d.scale.root))) + " " +
                 (known != nullptr ? juce::String(known->name)
                                   : scaleName.substring(0, 1).toUpperCase() + scaleName.substring(1));
+    // Root and scale are shown only when every shown clip agrees; else an asterisk (manual 10.8).
+    if (!sameScale)
+        out.scale = "*";
     // The Pitch and Time panel: the lowest and highest key of the notes it would act on, and the
     // transposition, which is nothing until its field is dragged or typed into.
     out.transpose = "0 st";
@@ -3166,6 +3376,8 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
             return {};
         return {chooser.getRight() + 8 + slot * 92 + 46, chooser.getY(), 40, chooser.getHeight()};
     }
+    if (field == Field::Name)
+        return titleArea().withTrimmedLeft(20).reduced(0, 1);
     if (field == Field::QuantizeAmount || field == Field::QuantizeSwing) {
         // Under Start and End, at the foot of the Functions tab.
         const auto above = field == Field::QuantizeAmount ? quantizeStartBox() : quantizeEndBox();
@@ -3555,12 +3767,22 @@ bool ClipViewPanel::chooseScale(bool roots, int item) {
     if (!details_ || item < 1)
         return false;
     const auto &d = *details_;
-    if (roots)
-        return item <= 12 && commit(setClipScale(d, item - 1, d.scale.id, d.scale.mask));
+    // Every shown clip takes the edited clip's scale as it now is (manual 10.8).
+    if (roots) {
+        if (item > 12)
+            return false;
+        const auto tonic = static_cast<std::int64_t>(item - 1);
+        const auto id = d.scale.id;
+        const auto mask = d.scale.mask;
+        return commitForAll([=](const engine::ClipDetails &clip) { return setClipScale(clip, tonic, id, mask); });
+    }
     if (item > static_cast<int>(kScales.size()))
         return false;
     const auto &scale = kScales[static_cast<std::size_t>(item - 1)];
-    return commit(setClipScale(d, d.scale.root, scale.id, scale.mask));
+    const auto tonic = d.scale.root;
+    const std::string id = scale.id;
+    const auto mask = scale.mask;
+    return commitForAll([=](const engine::ClipDetails &clip) { return setClipScale(clip, tonic, id, mask); });
 }
 void ClipViewPanel::showScaleMenu(bool roots) {
     juce::Component::SafePointer<ClipViewPanel> safe(this);
@@ -3641,6 +3863,8 @@ bool ClipViewPanel::setField(Field field, std::int64_t ticks) {
 bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (!details_)
         return false;
+    if (field == Field::Name)
+        return rename(typed);
     const auto text = typed.toStdString();
     {
         int low = 0, high = 0;
@@ -3682,7 +3906,7 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             root.say("Type a time signature as 3/4.");
             return false;
         }
-        return commit(setClipSignature(*details_, signature->first, signature->second));
+        return commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature->first, signature->second); });
     }
     if (field == Field::Length) {
         const auto length = parseBarsBeats(text);
@@ -3717,7 +3941,69 @@ bool ClipViewPanel::setFieldHere(Field field) {
         return commit(setClipLoop(d, d.loopStartTicks, d.loopEnabled ? here - d.loopStartTicks : loopLengthOf(d), true));
     return setField(field, here);
 }
-bool ClipViewPanel::toggleLoop() { return details_ && commit(toggleClipLoop(*details_)); }
+std::vector<std::int64_t> ClipViewPanel::shownClips() const {
+    std::vector<std::int64_t> ids;
+    if (details_)
+        ids.push_back(details_->id);
+    for (const auto &layer : others_)
+        ids.push_back(layer.details.id);
+    return ids;
+}
+bool ClipViewPanel::commitForAll(const std::function<TrackEdit(const engine::ClipDetails &)> &build) {
+    if (!details_)
+        return false;
+    auto all = build(*details_);
+    if (all.refusal.empty())
+        for (const auto &layer : others_) {
+            auto part = build(layer.details);
+            if (!part.refusal.empty())
+                continue;
+            for (auto &o : part.ops) {
+                // The step is named for the edit, whichever clip's op comes first.
+                all.ops.push_back(std::move(o));
+            }
+        }
+    return commit(std::move(all));
+}
+juce::PopupMenu ClipViewPanel::titleMenu() const {
+    juce::PopupMenu menu, colours;
+    menu.addItem(1, "Rename");
+    for (int i = 0; i < kTitleColours; ++i) {
+        juce::PopupMenu::Item item("Color " + juce::String(i + 1));
+        item.itemID = 100 + i;
+        item.isTicked = details_ && details_->color && *details_->color == i;
+        auto swatch = std::make_unique<juce::DrawableRectangle>();
+        swatch->setRectangle(juce::Parallelogram<float>(juce::Rectangle<float>(0.f, 0.f, 14.f, 14.f)));
+        swatch->setFill(look::paletteColour(i));
+        item.image = std::move(swatch);
+        colours.addItem(std::move(item));
+    }
+    menu.addSubMenu("Color", colours);
+    return menu;
+}
+bool ClipViewPanel::chooseTitleItem(int item) {
+    if (!details_)
+        return false;
+    if (item == 1) {
+        openEditor(Field::Name);
+        return true;
+    }
+    return item >= 100 && item < 100 + kTitleColours && recolour(item - 100);
+}
+bool ClipViewPanel::rename(const juce::String &name) {
+    const auto text = name.trim().toStdString();
+    return commitForAll([&](const engine::ClipDetails &clip) { return renameClip(clip, text); });
+}
+bool ClipViewPanel::recolour(int colour) {
+    return commitForAll([colour](const engine::ClipDetails &clip) { return recolourClip(clip, colour); });
+}
+bool ClipViewPanel::toggleLoop() {
+    if (!details_)
+        return false;
+    // Every shown clip takes the state the edited clip is switched to.
+    const bool on = !details_->loopEnabled;
+    return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
+}
 void ClipViewPanel::openEditor(Field field) {
     editing_ = field;
     const auto r = readings();
@@ -3730,7 +4016,9 @@ void ClipViewPanel::openEditor(Field field) {
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
-    editor_.setText(value.removeCharacters(" "), false);
+    editor_.setJustification(field == Field::Name ? juce::Justification::centredLeft : juce::Justification::centredRight);
+    // A name keeps its spaces; the other fields are read without them.
+    editor_.setText(field == Field::Name ? juce::String(details_->name) : value.removeCharacters(" "), false);
     editor_.setVisible(true);
     editor_.selectAll();
     editor_.grabKeyboardFocus();
@@ -3743,6 +4031,14 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     pressed_ = Field::None;
     dragged_ = false;
     dragSteps_ = 0;
+    if (details_ && e.mods.isPopupMenu() && titleArea().contains(e.getPosition())) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        titleMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [safe](int item) {
+            if (safe != nullptr && item > 0)
+                safe->chooseTitleItem(item);
+        });
+        return;
+    }
     if (!details_ || e.mods.isPopupMenu())
         return;
     const auto at = e.getPosition();
@@ -3970,7 +4266,7 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
     else if (field == Field::Stretch)
         stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
-        commit(setClipSignature(*details_, signature.first, signature.second));
+        commitForAll([&](const engine::ClipDetails &clip) { return setClipSignature(clip, signature.first, signature.second); });
     else
         setField(field, ticks);
 }
@@ -4017,11 +4313,18 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.fillEllipse(dot);
     g.setColour(look::text);
     g.drawEllipse(dot.reduced(0.5f), 1.f);
-    text(juce::String(d.name), title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft,
-         look::text, 12.f, true);
-
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
     const auto r = readings();
+    if (!others_.empty()) {
+        // Several clips shown: a striped title (manual 10.8).
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(title.withTrimmedLeft(20));
+        g.setColour(juce::Colours::white.withAlpha(0.22f));
+        for (int x = title.getX() - title.getHeight(); x < title.getRight(); x += 8)
+            g.drawLine(static_cast<float>(x), static_cast<float>(title.getBottom()), static_cast<float>(x + title.getHeight()),
+                       static_cast<float>(title.getY()), 2.f);
+    }
+    text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
     auto field = [&](Field which, const juce::String &name, const juce::String &value) {
         const auto box = fieldBox(which);
         const auto set = setBox(which);
@@ -4041,7 +4344,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     field(Field::Start, "Start", r.start);
     field(Field::End, "End", r.end);
     const auto loop = loopBox();
-    look::box(g, loop.toFloat(), r.loop ? look::accent : look::button);
+    look::box(g, loop.toFloat(), r.loop && !r.loopMixed ? look::accent : look::button);
+    if (r.loopMixed) {
+        // Looped and unlooped clips together: the button is half lit (manual 10.8).
+        g.setColour(look::accent);
+        g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
+    }
     text("Loop", loop, juce::Justification::centred, look::text, 11.f);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
