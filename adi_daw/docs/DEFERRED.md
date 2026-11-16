@@ -23,7 +23,7 @@ cut out of something that already shipped or was ruled.
 | DF-C1 | The session token, **both ways, the user chooses** (ADR-0239 d1): shown in ADI to paste into each AI tool, or an owner-only file in the user's profile that AI tools find on their own (only while the listener is on) | control seat | with the app listener (CTL-04, CTL-05) |
 | DF-C2 | AGT-03, the in-app consent before `project_read` answers a non-local destination; closes ADR-0039's open consent item | control seat + window | before DF-C3 ships |
 | DF-C3 | `adi-mcp --connect` to a running ADI, the app's loopback listener (CTL-04) and the in-app host (CTL-09) | control seat | after DF-C1 and DF-C2 |
-| DF-C5 | One of each function per channel (ADR-0237 d1) is checked only in the window's edit path (`mix_function_edit.cpp`); the `device.insert` operation does not check it, so a control client could add a second EQ or limiter to a channel. Refuse it in the operation | control seat | after #512 merges (the fenced files) |
+| DF-C5 | One of each function per channel (ADR-0237 d1) is checked only in the window's edit path (`mix_function_edit.cpp`); the `device.insert` operation does not check it, so a control client could add a second EQ or limiter to a channel. Refuse it in the operation | control seat | now: #512 merged on 16 November |
 
 ### Mix View (ADR-0236, ADR-0237, PRs #537 onward)
 
@@ -46,15 +46,26 @@ cut out of something that already shipped or was ruled.
 | DF-M20 | The native limiter runs its loudness measurement on every block although nothing reads it (the host switches recording off): about 0.12 % of a core per instance at 48 kHz, 0.22 % at 96 kHz, measured 15 November. Skip the measurement while recording is off (ADR-0237 d6) | Mix View seat | with DF-M3 |
 | DF-M21 | One meaning for a native function's switch: a Mix View row's dot bypasses it (`device.setEnabled`), the device area's activator removes it (`device.remove`), so a function bypassed in the Mix View shows off in the device area where the only click removes it. ADR-0237 d3 says disabling removes, as deleting a Live device does | Mix View seat, the director if the two readings need a ruling | before the Mix View is called done |
 | DF-M22 | Adding a function from the Mix View (ADR-0237 d3): today only the device area's + adds one; the Mix View's empty text sends the user there | Mix View seat | before the Mix View is called done |
-| DF-M23 | Presets at both levels (ADR-0237 d4): each function, and a channel's whole set. Nothing a user can reach exists; only the state save/load underneath. Where preset files live needs an ADR from win | Mix View seat + win | after the first complete compressor |
+| DF-M23 | Presets at both levels (ADR-0237 d4): each function, and a channel's whole set. Loading a set replaces the channel's native functions in one undo step (ADR-0240 d3). Nothing a user can reach exists yet; only the state save/load underneath. Win still owes the ADR for where preset files live, their format, and where a set's functions sit among ordinary plug-ins, from the seat's proposal | Mix View seat + win | after the first complete compressor |
 | DF-M24 | The compare view of the analyser tab (ADR-0237 d5): the comparison, one-second average and triggered-scope parts are merged as tested libraries with nothing on screen using them | Mix View seat | before the Mix View is called done |
 | DF-M25 | The analyser window (ADR-0237 d9) shows one mode at a time and its button back to the Mix View lands on the analysis tab, not on the channel's row | Mix View seat | before the Mix View is called done |
 | DF-M26 | The withdrawn slots (ADR-0212) are still in the row model (`stack_model.cpp` default kinds, the Ducking kind included) and described in `mix_view_provider.hpp`; nothing draws them. Remove them | Mix View seat | follow-up |
-| DF-M27 | Two of the director's answers to the seat are recorded only in the seat's log: rows default to channels that have Mix View tools, and the optional analyser dock beside the rows. Win writes them into an ADR | win | next ADR batch |
 | DF-M28 | The compressor, gate and de-esser are merged or open as cores no user can load. First a complete compressor a user can add (internal key only, no device keys needed), then DF-M23, then DF-M11, then the other styles and the gate and de-esser | Mix View seat, on the director's go | the seat's next run |
 | DF-M29 | #548: the native EQ passes dry audio after a processing-precision switch (float to double inside a prepared stream is rejected, the same-format rebuild skips the prepare and the refusal is discarded); reproduced, a regression against main. Force a backend prepare on a width change, with a test | Mix View seat | before #548 lands |
 | DF-M30 | #548: a latency-neutral EQ plan edit now reaches audio 2 to 32 blocks later depending on the scheduler (always 1 block before), and offline render does not wait for it, so two exports of an automated Structure change can differ. Offline render waits for the plan it asked for | Mix View seat | before #548 lands |
 | DF-M31 | #548: the parked-failure text says "Reload the device to retry" but no reload command exists and reverting the edit does not clear the failure. Give the failure a way to clear, or say what does | Mix View seat | follow-up to #548 |
+
+### Window (ADR-0208, ADR-0240; the lane's own needs table is in `collab/window.md`)
+
+| Id | What | Owner | Trigger / before |
+|---|---|---|---|
+| DF-W1 | The Clip View and the MIDI Note Editor (STEP-7-PLAN 7.7, worklist G1 to G3): the frame, the note geometry, drawing and editing notes; the Main panel's fields, the loop brace and Fit to Scale; 0 deactivates notes. Approved 16 November (ADR-0240 d1) | win | now |
+| DF-W2 | The Clip View's later parts, as STEP-7-PLAN 7.7 step 5 places them: the Pitch and Time utilities beyond Fit to Scale, note preview through the track, the Envelopes and MPE tabs, the Chance lane, multi-clip editing, and the Sample Editor's warp controls | win, then the window lane | after DF-W1 |
+| DF-W3 | C5, remark pips and the Info View's split: ADI's own addition, so its picture goes to the director before any of it is built. The lane was asked on 16 November to draw it | window lane → director | the picture |
+| DF-W4 | B8, Main's loudness meter in the mixer, held for the Live 12 meter readings | window lane | the readings |
+| DF-W5 | A home for `midi.port.remote` (every `midi.port.*` row is Device scope, which the app settings refuse), so the window can take MIDI in for MIDI Learn and MIDI Map Mode (N10) | win | before the window's MIDI Map Mode |
+| DF-W6 | The nullable `tracks.role` column with its four values in the schema and SPEC, a schema minor and its migration (N38); until then `track.setRole` refuses and every role reads null, so the ★ Reference cannot be chosen | win | before the Mix View's Reference; the minor after the sidechain keys' 1.22 |
+| DF-W7 | The lane's three notes for win of 10 November: the ZIP export's progress, which Live shows and `collectExport` does not report; the browser sidebar's labels beyond Samples and Places; the place of Rec-Q and Play-Q, which is ADI's own and Live has no header boxes for | win, the director for the third | next window review |
 
 ### Engine (win's log of 12 November)
 
@@ -80,6 +91,7 @@ cut out of something that already shipped or was ruled.
 
 | Id | What | Closed by |
 |---|---|---|
+| DF-M27 | The director's answers that were only in the Mix View seat's log (rows default to channels with Mix View tools; the optional analyser dock; and seven more the seat listed) | ADR-0240 d4 (16 Nov) |
 | DF-M5 | Seek: mark the analysis epoch where the audio thread applies Locate, so no pre-seek window publishes as post-seek | #541 (7368447e): each capture span carries the transport revision the audio thread applied |
 | DF-M6 | #537: a STACK parameter gesture stays open when Begin is taken but the older gesture's commit is refused; tests for the stale-tile Delete/Backspace guards | #541 (7368447e): the refused Begin's owner is cancelled; keysLeaveRows tests the stale-tile keys |
 | DF-M7 | #540: tap storage piles up while the engine is stopped | #541 (7368447e): one deferred plan kept while audio has not adopted the last |
