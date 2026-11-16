@@ -192,4 +192,22 @@ inline NoteEdit changeVelocities(const engine::ClipDetails &clip, const std::vec
     }
     return edit;
 }
+// The notes deactivated, or activated when every one of them already is off (manual 10.5.7): the
+// 0 key. A deactivated note stays in the clip, grey and silent.
+inline NoteEdit toggleNotesActive(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty())
+        return edit;
+    const auto notes = pick(clip, ids);
+    edit.select = ids;
+    const bool allOff = !notes.empty() && std::none_of(notes.begin(), notes.end(), [](const auto *n) { return n->active; });
+    const bool plural = notes.size() != 1;
+    const char *label = allOff ? (plural ? "Activate Notes" : "Activate Note") : (plural ? "Deactivate Notes" : "Deactivate Note");
+    for (const auto *n : notes)
+        if (n->active == !allOff)
+            edit.ops.push_back(op("note.setMute", {{"clip", clip.id}, {"note", n->id}, {"muted", !allOff}}, label));
+    return edit;
+}
 } // namespace adi::ui

@@ -3971,6 +3971,14 @@ void clipViewNotes(AppCommands &commands, const std::filesystem::path &dir) {
     check(note(0).durationTicks == lengthsBefore.first && note(1).durationTicks == lengthsBefore.second,
           "Shift+Left makes both a grid step shorter");
 
+    // 0 deactivates the selected notes, one undo step; again, it activates them (manual 10.5.7).
+    check(ed.keyPressed(juce::KeyPress('0')), "0");
+    root.frame();
+    check(!note(0).active && !note(1).active && undoIs("Deactivate Notes", 2), "0 deactivates both notes, one undo step");
+    check(ed.keyPressed(juce::KeyPress('0')), "0 again");
+    root.frame();
+    check(note(0).active && note(1).active && undoIs("Activate Notes", 2), "and 0 again activates them");
+
     // A click on empty space selects nothing; a drag from empty space selects what it touches.
     const juce::Point<float> empty(xAt(2 * bar) + 4.f, static_cast<float>(area.getY() + 2));
     ed.mouseDown(pressAt(ed, empty));

@@ -35,7 +35,7 @@ Status: **built**, **partial**, **open** (planned, not built), **waits** (a Need
 | 22 | Dragging a note moves it; its edges change its length; Ctrl/Option+drag copies, even after the drag began | §10.5.4, §10.5.5 | `note.move`, `note.resize`, `note.insert` | partial: dragging moves the selected notes together, an edge changes their length, previewed while held, one undo step; Ctrl/Option+drag to copy is open |
 | 23 | A new note over an old one: it overwrites the old note's start or shortens its end | §10.5.4 | The same, in the gesture's undo step | waits (N32) |
 | 24 | Note Stretch markers below the scrub area for a selection | §10.5.6 | Moves and resizes in one step | waits (N32) |
-| 25 | 0 deactivates a note: grey, silent | §10.5.7 | An op for the note's active flag | waits (N34) |
+| 25 | 0 deactivates a note: grey, silent | §10.5.7 | An op for the note's active flag | built: 0 on the selected notes, through `note.setMute` (N34), one undo step; they are drawn grey |
 | 26 | Split (E, Ctrl/Cmd+E), Chop on the grid (Ctrl/Cmd+E), Join (Ctrl/Cmd+J) | §10.5.8 | Once a note's identity is known | waits (N32) |
 | 27 | Pitch and Time: Transpose, Fit to Scale, Invert, Interval and Add Interval, Stretch with x2 and /2, Duration with Set Length, Humanize, Reverse, Legato; with nothing selected they act on the whole clip | §8.5, §10.5.9 | Built from the five note ops; Fit to Scale needs a clip's scale | waits (N32; N33 for Fit to Scale) |
 | 28 | Quantize: Ctrl/Cmd+U with the Quantize tool's settings (Ctrl/Cmd+Shift+U) | §10.5.11 | `note.move` | waits (N32) |

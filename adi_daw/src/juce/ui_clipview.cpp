@@ -365,6 +365,11 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
         select({});
         return true;
     }
+    // 0 deactivates the selected notes, or activates them when all are off (manual 10.5.7).
+    if (code == '0' && !mods.isAnyModifierKeyDown() && !selected_.empty()) {
+        commit(toggleNotesActive(*clip, selected_));
+        return true;
+    }
     if (mods.isCommandDown() || mods.isAltDown() || selected_.empty())
         return false;
     // The arrows move the selected notes by the grid and by a key; with Shift, up and down move an

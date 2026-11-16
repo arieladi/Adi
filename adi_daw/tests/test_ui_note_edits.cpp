@@ -123,6 +123,25 @@ void velocities() {
     check(changeVelocities(c, {3}, 0).ops.empty(), "no change writes nothing");
 }
 
+void activating() {
+    auto c = clip();
+    const auto off = toggleNotesActive(c, {3, 9});
+    check(off.ops.size() == 2 && off.ops[0].opType == "note.setMute" && off.ops[0].label == "Deactivate Notes" &&
+              off.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{3}}, {"muted", true}}) &&
+              off.select == std::vector<std::uint64_t>({3, 9}),
+          "0 on two active notes deactivates both, still selected");
+    c.notes[0].active = false;
+    const auto mixed = toggleNotesActive(c, {3, 9});
+    check(mixed.ops.size() == 1 && mixed.ops[0].payload.at("note") == 9 && mixed.ops[0].payload.at("muted") == true,
+          "with one already off, only the other is deactivated");
+    c.notes[1].active = false;
+    const auto on = toggleNotesActive(c, {3, 9});
+    check(on.ops.size() == 2 && on.ops[0].payload.at("muted") == false && on.ops[0].label == "Activate Notes",
+          "with all of them off, 0 activates them");
+    check(toggleNotesActive(c, {4}).ops[0].label == "Deactivate Note" && toggleNotesActive(c, {}).ops.empty(),
+          "one note is named in the singular; none selected does nothing");
+}
+
 void refusals() {
     auto audio = clip();
     audio.kind = "audio";
@@ -132,7 +151,7 @@ void refusals() {
         check(!addNote(c, 0, beat, 60).refusal.empty() && addNote(c, 0, beat, 60).ops.empty() &&
                   !deleteNotes(c, {3}).refusal.empty() && !moveNotes(c, {3}, beat, 0).refusal.empty() &&
                   !resizeNotes(c, {3}, beat).refusal.empty() && !trimNotes(c, {3}, 1).refusal.empty() &&
-                  !changeVelocities(c, {3}, 1).refusal.empty(),
+                  !changeVelocities(c, {3}, 1).refusal.empty() && !toggleNotesActive(c, {3}).refusal.empty(),
               c.kind == "audio" ? "an audio clip has no notes to edit" : "a clip whose notes could not be read refuses every edit");
     }
     check(deleteNotes(broken, {3}).refusal.find("duplicate note ids") != std::string::npos, "and says what is wrong with them");
@@ -180,6 +199,7 @@ int main() {
     moving();
     resizing();
     velocities();
+    activating();
     refusals();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);

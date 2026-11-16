@@ -35,7 +35,8 @@ class NoteEditor final : public juce::Component {
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
-    // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A and Esc (manual 10.5).
+    // Delete, the arrows (with Shift: an octave, or the length), Ctrl/Cmd+A, Esc, and 0 to
+    // deactivate (manual 10.5).
     bool keyPressed(const juce::KeyPress &) override;
     static constexpr int kKeysWidth = 44, kRulerHeight = 18, kVelocityHeight = 56;
     // The selected notes, by id: this view's own, kept while the notes exist.
