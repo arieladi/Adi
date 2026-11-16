@@ -6214,8 +6214,8 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "with nothing selected the menu greys what needs notes or time, and Fold to Scale without a scale of the clip's own");
         // A right-click on a note that is not selected selects it.
         if (const auto box = ed.boxOf(note(2))) {
-            const juce::Point<float> on(static_cast<float>(box->x + box->width / 2), static_cast<float>(box->y + box->height / 2));
-            ed.mouseDown(pressAt(ed, on, juce::ModifierKeys(juce::ModifierKeys::popupMenuClickModifier)));
+            // The step before the menu opens; the test opens no menu window.
+            ed.contextClick(juce::Point<double>(box->x + box->width / 2, box->y + box->height / 2).roundToInt());
         }
         check(ed.selected() == Ids({2}) && enabled(NoteEditor::kCut) && enabled(NoteEditor::kDeactivate) && named(NoteEditor::kDeactivate) == "Deactivate Note(s)" &&
                   named(NoteEditor::kSplit) == "Chop Notes on Grid",

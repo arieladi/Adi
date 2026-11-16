@@ -98,6 +98,8 @@ class NoteEditor final : public juce::Component {
     };
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
+    // What a right-click does before its menu opens: a note under it that is not selected is selected.
+    void contextClick(juce::Point<int> at);
     // MIDI Note Stretch (manual 10.5.6). With two or more notes selected, or time selected over
     // notes, a pair of markers hangs under the ruler at the selection's start and end. One dragged
     // stretches the notes in proportion, the other staying; dragged past the other it mirrors them.

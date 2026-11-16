@@ -1385,6 +1385,14 @@ std::int64_t NoteEditor::stretchMap(std::int64_t songTick) const noexcept {
     return songTick;
 }
 // ---- The editor's context menu -----------------------------------------------------------------
+void NoteEditor::contextClick(juce::Point<int> at) {
+    if (const auto *n = noteAt(at); n != nullptr && !isSelected(n->id)) {
+        selected_ = {n->id};
+        otherSelected_.clear();
+        head_.reset();
+    }
+    repaint();
+}
 juce::PopupMenu NoteEditor::contextMenu() const {
     juce::PopupMenu menu;
     const auto *clip = panel.details();
@@ -1618,12 +1626,7 @@ void NoteEditor::mouseDown(const juce::MouseEvent &e) {
     const auto *clip = panel.details();
     if (clip != nullptr && e.mods.isPopupMenu()) {
         // A right-click: a note under it that is not selected is selected first; then the menu.
-        if (const auto *n = noteAt(from_); n != nullptr && !isSelected(n->id)) {
-            selected_ = {n->id};
-            otherSelected_.clear();
-            head_.reset();
-        }
-        repaint();
+        contextClick(from_);
         juce::Component::SafePointer<NoteEditor> safe(this);
         contextMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition(), [safe](int item) {
             if (safe != nullptr && item > 0)
