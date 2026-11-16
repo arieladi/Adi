@@ -12,6 +12,7 @@ struct ManualTimes {
 // Invalid/nonfinite unit controls return no value. These helpers do not clamp an
 // invalid setting into a different accepted setting, and perform no allocation.
 [[nodiscard]] std::optional<float> ratioFromNormalized(float) noexcept;
+[[nodiscard]] std::optional<float> holdMsFromNormalized(float) noexcept;
 [[nodiscard]] std::optional<ManualTimes> manualTimes(float attack, float release) noexcept;
 
 } // namespace adi::mix::compressor
