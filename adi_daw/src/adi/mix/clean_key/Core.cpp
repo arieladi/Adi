@@ -107,7 +107,7 @@ struct Core::Impl {
 Core::Core() noexcept = default;
 Core::~Core() = default;
 Status Core::prepare(const Preparation &p, const Settings &s) noexcept {
-    if (!std::isfinite(p.sampleRate) || p.sampleRate < 44100 || p.sampleRate > 96000 ||
+    if (!std::isfinite(p.sampleRate) || p.sampleRate < 44100 || p.sampleRate > 768000 ||
         p.maximumFrames <= 0 || p.maximumFrames > 4096)
         return Status::InvalidSpec;
     if (const auto result = validate(s); result != Status::Ok)

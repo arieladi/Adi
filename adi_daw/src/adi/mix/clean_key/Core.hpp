@@ -39,7 +39,7 @@ class Core final {
     Core &operator=(const Core &) = delete;
     Core(Core &&) = delete;
     Core &operator=(Core &&) = delete;
-    // Rates 44.1..96 kHz, maximumFrames 1..4096. Both children and scratch are
+    // Rates 44.1..768 kHz, maximumFrames 1..4096. Both children and scratch are
     // staged as one replacement; any preparation failure retains the old stream.
     [[nodiscard]] Status prepare(const Preparation &, const Settings & = {}) noexcept;
     // Stopped only: retain the admitted EQ target, complete its pending ramp,

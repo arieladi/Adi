@@ -143,7 +143,7 @@ bool children(Audio &x, const f::Settings &s, double rate) {
     return true;
 }
 void composition() {
-    for (double rate : {44100., 48000., 96000.})
+    for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.})
         for (auto lane : {k::MovingLane::None, k::MovingLane::FrequencyLog2, k::MovingLane::GainDb,
                           k::MovingLane::Q})
             for (int segment : {1, 17, 128, 256}) {
@@ -420,7 +420,7 @@ void preparation() {
         if (kind == 0)
             p.sampleRate = 44099;
         if (kind == 1)
-            p.sampleRate = 96001;
+            p.sampleRate = 768001;
         if (kind == 2)
             p.maximumFrames = 4097;
         if (kind == 3)
