@@ -40,7 +40,8 @@ void contract() {
     auto first = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyFirst"));
     auto last = reinterpret_cast<double (*)()>(module.getFunction("adiFixtureKeyLast"));
     auto channels = reinterpret_cast<int (*)()>(module.getFunction("adiFixtureKeyChannels"));
-    if (!first || !last || !channels)
+    auto inPlace=reinterpret_cast<int(*)()>(module.getFunction("adiFixtureMainInPlace"));
+    if (!first || !last || !channels || !inPlace)
         throw std::runtime_error("owned fixture observations unavailable");
     for (const auto &desc : list.getTypes())
         for (bool wide : {false, true}) {
@@ -97,6 +98,7 @@ void contract() {
             check(channels() == (mono ? 1 : 2) && first() == 7. / 32 &&
                       last() == (mono ? 17. / 32 : .5),
                   "exact mono/stereo key segment reaches the aux bus at native/narrowed precision");
+            check(inPlace()==1,"aux delivery retains the main in-place SDK fast path");
             const auto programmeExact = [&] {
                 for (std::size_t i = 0; i < 32; ++i) {
                     const bool inside = i >= 7 && i < 18;
@@ -135,6 +137,7 @@ void contract() {
             check(d.configureSidechain(false), "owner can disable a formerly requested key");
             d.prepare(48000, 32);
             d.process(io);
+            check(inPlace()==1 && programmeExact(),"removing the key retains in-place processing and exact full programme arrays");
             check(channels() == 0, "default-inactive aux is deactivated after route removal");
         }
 }

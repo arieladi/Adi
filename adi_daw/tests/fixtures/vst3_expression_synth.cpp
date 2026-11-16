@@ -125,7 +125,7 @@ std::atomic<int> g_overlaps{0};
 std::atomic<int> g_inProcess{0};
 // Owned headless auxiliary-bus observations; never contribute to the output.
 std::atomic<double> g_keyFirst{0}, g_keyLast{0};
-std::atomic<int> g_keyChannels{0};
+std::atomic<int> g_keyChannels{0},g_mainInPlace{0};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -310,6 +310,12 @@ public:
             std::this_thread::sleep_for(kSlowBlockFor);
         }
         applyEvents(data.inputEvents);
+        bool inPlace=data.numInputs>0 && data.numOutputs>0 && data.inputs[0].numChannels==data.outputs[0].numChannels;
+        if(inPlace)for(int32 c=0;c<data.inputs[0].numChannels;++c) {
+            if(data.symbolicSampleSize==kSample64)inPlace=inPlace && data.inputs[0].channelBuffers64[c]==data.outputs[0].channelBuffers64[c];
+            else inPlace=inPlace && data.inputs[0].channelBuffers32[c]==data.outputs[0].channelBuffers32[c];
+        }
+        g_mainInPlace=inPlace?1:0;
         g_keyChannels = data.numInputs > 1 ? data.inputs[1].numChannels : 0;
         g_keyFirst = 0; g_keyLast = 0;
         if (data.numInputs > 1 && data.inputs[1].numChannels > 0 && data.numSamples > 0) {
@@ -765,3 +771,5 @@ extern "C" SMTG_EXPORT_SYMBOL bool ModuleExit() { return true; }
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyFirst() { return g_keyFirst.load(); }
 extern "C" SMTG_EXPORT_SYMBOL double adiFixtureKeyLast() { return g_keyLast.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureKeyChannels() { return g_keyChannels.load(); }
+
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureMainInPlace() { return g_mainInPlace.load(); }

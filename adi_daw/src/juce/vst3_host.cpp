@@ -340,6 +340,17 @@ void Vst3Device::prepareAudioBuses() {
         rawOut_[static_cast<std::size_t>(c)]=scratch_.getWritePointer(c);
         if(double_)rawOut64_[static_cast<std::size_t>(c)]=scratch64_.getWritePointer(c);
     }
+    // Preserve the existing main in-place SDK fast path. Auxiliary inputs
+    // need independent storage, but matching primary buses can still share
+    // pointers so plug-ins need not introduce an extra internal audio copy.
+    if(mainInputBus_>=0 && !outputLayout_.empty()) {
+        const auto& main=inputLayout_[static_cast<std::size_t>(mainInputBus_)];
+        const auto& output=outputLayout_.front();
+        if(main.channels==output.channels)for(int c=0;c<main.channels;++c) {
+            rawIn_[static_cast<std::size_t>(main.offset+c)]=rawOut_[static_cast<std::size_t>(output.offset+c)];
+            if(double_)rawIn64_[static_cast<std::size_t>(main.offset+c)]=rawOut64_[static_cast<std::size_t>(output.offset+c)];
+        }
+    }
     const auto bind=[&](const auto& layouts,auto& buses,auto& narrow,auto& wide) {
         buses.assign(layouts.size(),Steinberg::Vst::AudioBusBuffers{});
         for(std::size_t i=0;i<layouts.size();++i) {
@@ -841,12 +852,12 @@ void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t /
             const auto* src32=c<io.channels && source32?source32[c]:nullptr;
             const auto* src64=c<io.channels && source64?source64[c]:nullptr;
             if(double_) {
-                auto* dst=wide.getWritePointer(bus.offset+c);
+                auto* dst=processor_?rawIn64_[static_cast<std::size_t>(bus.offset+c)]:wide.getWritePointer(bus.offset+c);
                 if(io.wide() && src64)std::copy_n(src64+off,n,dst);
                 else if(!io.wide() && src32)for(int i=0;i<n;++i)dst[i]=src32[off+i];
                 else std::fill_n(dst,n,0.);
             } else {
-                auto* dst=narrow.getWritePointer(bus.offset+c);
+                auto* dst=processor_?rawIn_[static_cast<std::size_t>(bus.offset+c)]:narrow.getWritePointer(bus.offset+c);
                 if(!io.wide() && src32)std::copy_n(src32+off,n,dst);
                 else if(io.wide() && src64)for(int i=0;i<n;++i)dst[i]=static_cast<float>(src64[off+i]);
                 else std::fill_n(dst,n,0.f);
