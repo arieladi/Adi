@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 16 November 2026 — optimized Clean review package sealed; idle metering fixed
+
+The optimized application built from #58093921caa is sealed with matching source/notices and a concise Claude brief. App SHA-256 `bf9a059156af0c0300a33778da2227da620d63d3eb89724d57a3cfab1c657107`, ZIP SHA-256 `aee6b0c6b6c3bb9e85d1ba005132148e58575515ed996971561eaa4cd707fc6e`. Four Debug integration suites,753/0 fake-peer Mix View checks and five Release integration suites pass; the compressor library is byte-identical before/after #580. No install replaced and no application, scanner, OS window or audio device launched. Package/brief/receipt are recorded in the director's current implementation ledger.
+
+DF-M20 is #581 `1d6eab72`, directly on main. Recording-off now skips unused loudness filter/history work; active/paused metering semantics and audio processing remain. Five strict Debug integration suites/four validators pass.194560 stereo frames remain byte-identical against the always-recording engine; a causal previous-source test fails the demanded-history resume check and the candidate passes5/0. This is an unused-work removal proof, not a new CPU percentage; timing remains deferred. The sealed Clean package deliberately excludes this independent later branch.
+
+The preset merge/replace question is now pending with the director. DF-M11 routing still needs win to clear the #512 operation-file fence. No route/schema/preset-deletion implementation is inferred. All supplied PRs await review/merge; live tests trail with Claude.
+
 ## 16 November 2026 — Clean and Mix View controls supplied; next efficiency follow-up
 
 #579 `e782005b` is ready for review, not draft. Its optimized application and five selected Release suites pass. #580 `93921caa`, based on #579, supplies DF-M21/22: + Function inside STACK targets its selected channel independently of Device View; retained menu ownership/selection/snapshot guards refuse stale actions; native switches share remove/Undo while ordinary plug-ins keep bypass. Four strict Debug integration suites pass and the explicit fake-peer shell passes753/0, including unchanged-frame zero allocation. Optimized UI-overlay packaging is underway. No local OS window, audio device, desktop input/capture or new CPU timing.
