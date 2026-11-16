@@ -77,7 +77,7 @@ these; it never contradicts them on purpose.
 
 ## 3. Toolchain and build
 
-- **Windows first.** VS 2022 (MSVC 19.44), CMake 3.31, Ninja; JUCE 9.0.2 (`third_party/JUCE`,
+- **Windows first.** VS 2022 (MSVC 19.44), CMake 3.31, Ninja; JUCE 9.0.5 (ADR-0238; `third_party/JUCE`,
   AGPL); libpd; the VST3 and CLAP SDKs; the pinned externals of `docs/EXTERNAL-CODE.md`, fetched by
   `tools/fetch_external.sh`. Build: `adi_daw\tools\build.bat werror` (run with
   `NoDefaultCurrentDirectoryInExePath` unset); test: `bash adi_daw/tools/test_all.sh`. Keep paths

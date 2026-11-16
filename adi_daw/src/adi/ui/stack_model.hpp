@@ -44,6 +44,7 @@ using TimeMs = std::int64_t;   // one monotonic 64-bit millisecond count, the sa
 inline constexpr std::size_t kMaxModules = 8;   // a capacity: modules one channel processor can show
 inline constexpr std::size_t kMaxEntries = 32;  // a capacity: rows away from their rest height at once
 inline constexpr std::size_t kMaxLaneAnims = 8; // a capacity: chain lanes scrolling at once
+inline constexpr std::size_t kMaxItemAnims = 8; // bounded item emphasis transitions, independent of row fisheye
 inline constexpr TimeMs kNever = std::numeric_limits<TimeMs>::max();
 
 enum class ModuleState : std::uint8_t {
@@ -217,6 +218,9 @@ struct TrackInput {
     std::uint8_t roles = 0;   // role:: bits
     std::string_view name;    // copied
     std::uint32_t itemBegin = 0, itemCount = 0; // its chain in RowsInput::items
+    // Presentation membership supplied by the owner, independent of bypass or
+    // runtime availability. The full track remains for ancestry and key roles.
+    bool hasMixFunction = false;
 };
 // What setRows reads. `modules` holds tracks.size() x kinds.size() entries, track by track.
 // Call setRows when `generation` (ProjectView::generation) or the provider's revision moves: the
@@ -364,9 +368,9 @@ struct ItemGeo {
     ItemRef ref;
     ItemClass cls = ItemClass::View;
     std::uint32_t index = 0; // in the chain
-    double x = 0, width = 0; // view space; the row's top and height are the item's
+    double x = 0, width = 0, top = 0, height = 0, targetHeight = 0; // view space
     Tier tier = Tier::T3;
-    bool pill = false, clipped = false, focused = false;
+    bool pill = false, clipped = false, focused = false, emphasized = false;
     bool available = true, enabled = true;
     bool operator==(const ItemGeo &) const = default;
 };
@@ -447,6 +451,7 @@ struct CaptureResult {
 // --- view state (ui_view) -------------------------------------------------------------------------
 
 enum class SearchMode : std::uint8_t { Filter, Jump };
+enum class ChannelScope : std::uint8_t { WithTools, AllChannels };
 enum class RowSpectrum : std::uint8_t { ProcessorInput, Off, TrackInput }; // carried for W5
 enum class CollisionRule : std::uint8_t { RolePartner, OpenedFrom, Focused };
 enum class Look : std::uint8_t { Live, Dark };                              // carried for W2
@@ -476,7 +481,7 @@ struct RangeEntry {
 // Per window, beside WindowState's Mix View fields. Keys in ui_view, under mixview.stack., each
 // named as its field: baseHeight, autoZoom, navigator, navigatorCollapsed, filterPinned, search,
 // searchMode, layout, moduleLayout, showChain, showDormant, rowSpectrum, collisionRule, overlay,
-// look, scroll, moduleRange, folded. W2's store writes these names, no translation between.
+// look, scroll, moduleRange, folded, channelScope. W2's store writes these names, no translation between.
 struct WindowViewState {
     int baseHeight = 100;
     bool autoZoom = true, navigator = true, navigatorCollapsed = false, filterPinned = false;
@@ -492,6 +497,7 @@ struct WindowViewState {
     ScrollAnchor scroll;
     std::vector<RangeEntry> moduleRange; // sorted by (track, module, device)
     std::vector<TrackId> folded;         // STACK's own group folds, sorted
+    ChannelScope channelScope = ChannelScope::WithTools;
     bool operator==(const WindowViewState &) const = default;
 };
 // Project scope, shared by the project's windows: pins, pinSets, mixview.comparePair.
@@ -580,6 +586,7 @@ struct ChainDeviceInput {
     ItemClass cls = ItemClass::Plugin;
     std::string_view name;
     bool available = true, enabled = true;
+    bool mixFunction = false; // stable native identity, never inferred from name
 };
 // The actual-chain surface (ADR-0236/0237): every real device, no reserved module columns. Track
 // order/scope/roles still come from the one snapshot. Unknown owners and invalid identities are
@@ -623,6 +630,8 @@ class StackModel {
     // --- events ---
     stack::Effects pointerMove(double x, double y, bool buttonDown, stack::TimeMs now);
     stack::Effects pointerDown(double x, double y, stack::Button, stack::Mods, int clicks, stack::TimeMs now);
+    stack::Effects pointerDownPresented(double x, double y, stack::Button, stack::Mods, int clicks,
+                                        const stack::Hit &, stack::TimeMs now);
     stack::Effects pointerUp(double x, double y, stack::TimeMs now);
     stack::Effects pointerExit(stack::TimeMs now); // left STACK's list area
     stack::Effects wheel(double x, double y, const stack::WheelDelta &, stack::Mods, stack::TimeMs now);
@@ -651,6 +660,7 @@ class StackModel {
     stack::Effects setShowDormant(bool, stack::TimeMs now);
     stack::Effects setNavigator(bool shown, bool collapsed, stack::TimeMs now);
     stack::Effects setFilterPinned(bool, stack::TimeMs now);
+    stack::Effects setChannelScope(stack::ChannelScope, stack::TimeMs now);
     stack::Effects setSearch(std::string_view, stack::TimeMs now); // allocates only past the reserved bound
     stack::Effects setSearchMode(stack::SearchMode, stack::TimeMs now);
     stack::Effects searchKey(stack::Key, stack::TimeMs now); // Up, Down, Enter, Escape while the field has focus
@@ -683,6 +693,10 @@ class StackModel {
 
     // --- the capture ---
     stack::CaptureResult beginCapture(stack::CaptureKind, const stack::ItemRef &target, stack::TimeMs now);
+    // A child can gain focus between frames. Retain its last actually presented
+    // pose rather than advancing an invisible animation underneath the editor.
+    stack::CaptureResult beginCapturePresented(stack::CaptureKind, const stack::ItemRef &,
+        const stack::RowGeo &, const stack::LaneGeo &, std::span<const stack::ItemGeo>, stack::TimeMs now);
     stack::CaptureStatus captureStatus(const stack::CaptureRef &) const noexcept;
     // The one to ask before every edit: Behind while the project has moved on since the last setRows.
     stack::CaptureStatus captureStatus(const stack::CaptureRef &, std::uint64_t currentGeneration) const noexcept;
@@ -694,6 +708,9 @@ class StackModel {
     bool live(const stack::ItemRef &) const noexcept; // compares generations, never the device
     std::optional<stack::Resolved> resolve(const stack::ItemRef &) const noexcept;
     stack::RowRef rowRef(stack::TrackId) const noexcept;
+    // An explicit channel shortcut may visibly switch to All channels to reach
+    // an empty/ordinary chain. Search, pins, folds and project scope still apply.
+    bool hiddenOnlyByToolScope(stack::TrackId) const noexcept;
     stack::ItemRef chainRef(stack::TrackId, stack::DeviceId) const noexcept;
     stack::ItemRef moduleRef(stack::TrackId, std::uint32_t kindKey) const noexcept;
 
@@ -748,6 +765,7 @@ class StackModel {
     const stack::Stats &stats() const noexcept { return stats_; }
     void resetStats() noexcept { stats_ = {}; }
     stack::RowRef enlarged() const noexcept;  // the row the heights enlarge (not the captured one)
+    stack::ItemRef emphasizedItem() const noexcept { return emphasizedItem_; }
     stack::TimeMs enlargedSince() const noexcept { return enlargedSince_; }
     stack::RowRef pointerRow() const noexcept; // the row under the pointer now, not dwell-promoted
     stack::Focus focus() const noexcept;
@@ -791,8 +809,11 @@ class StackModel {
         std::uint8_t roles = 0;
         bool valid = false, dup = false, group = false, main = false, ret = false, inView = false, reference = false;
         bool match = true, underFold = false; // the search, STACK's folds
+        bool hasMixFunction = false;
         std::uint32_t laneFirst = 0;
         stack::DeviceId laneFirstDevice = 0; // the lane's first item follows its device
+        double lanePixelOffset = 0; // residual from pointer anchoring; explicit lane navigation clears it
+        bool laneRetainedPose = false; // a displayed capture may legitimately include end-of-lane slack
         std::string name, nameFold, haystack;
         std::vector<ItemRec> items;
         std::array<ModuleRec, stack::kMaxModules> modules{};
@@ -825,6 +846,14 @@ class StackModel {
         stack::TrackId row = 0;
         double from = 0, to = 0; // positions in items
         stack::TimeMs start = 0;
+    };
+    struct ItemAnim {
+        stack::ItemRef ref;
+        double from = 0, to = 0;
+    };
+    struct ItemAnchor {
+        stack::ItemRef ref;
+        double x = 0, fraction = 0;
     };
     struct NavPress {
         bool active = false, dragging = false, inFrame = false, shift = false, onLine = false;
@@ -872,6 +901,7 @@ class StackModel {
     bool member(std::uint32_t rec) const noexcept;
     bool computeMatch(std::uint32_t rec) const noexcept;
     bool computeUnderFold(std::uint32_t rec) const noexcept;
+    bool computeUnderFold(std::uint32_t rec, stack::ChannelScope) const noexcept;
     std::optional<std::size_t> shownOfRec(std::uint32_t rec) const noexcept;
     void rebuildShown();
     void editShown(std::uint32_t rec, bool memberNow);
@@ -924,6 +954,8 @@ class StackModel {
     bool landingActive() const noexcept;
     stack::TimeMs promotionDeadline() const noexcept;
     stack::TimeMs laneDeadline() const noexcept;
+    stack::TimeMs itemPromotionDeadline() const noexcept;
+    stack::TimeMs itemAnimationEnd() const noexcept;
     stack::TimeMs internalDeadline() const noexcept;
     stack::TimeMs advanceTo(stack::TimeMs); // runs what is due and answers the normalised time: every stamp uses it
     void processAt(stack::TimeMs);
@@ -936,6 +968,13 @@ class StackModel {
     // interaction
     std::optional<std::size_t> pointerRowIndex() const noexcept;
     void rehit(stack::TimeMs now);
+    void rehitItem(stack::TimeMs now);
+    void validateItemFocus(stack::TimeMs now);
+    void setEmphasizedItem(stack::ItemRef, stack::TimeMs now, bool pointerAnchor = false);
+    void settleItemAnchor();
+    double itemWeight(const stack::ItemRef &, bool target = false) const noexcept;
+    double itemHeight(const Rec &, std::size_t index, double rowHeight, bool target = false) const noexcept;
+    double itemWidth(const Rec &, std::size_t index, double rowHeight, bool target = false) const noexcept;
     void buttonPressed(stack::TimeMs now);  // rule 3: a moving reveal or jump stops where it is
     void buttonReleased(stack::TimeMs now); // the dwell starts again; a reveal held back runs
     stack::ItemRef chipRef(stack::TrackId) const noexcept;
@@ -948,6 +987,8 @@ class StackModel {
     void doMaximise(std::size_t shown, stack::TimeMs now);
     void doRestore(stack::TimeMs now);
     void pressRow(const stack::Hit &, stack::Button, stack::Mods, int clicks, stack::TimeMs now, stack::Effects &);
+    stack::Effects pointerDownAt(double x, double y, stack::Button, stack::Mods, int clicks,
+                                  stack::TimeMs now, const stack::Hit *presented);
     static stack::Effects mergeFlags(stack::Effects into, const stack::Effects &from) noexcept;
     void navDrag(double x, double y, stack::TimeMs now);
     void navClick(std::size_t line, bool shift, stack::TimeMs now, stack::Effects &);
@@ -965,8 +1006,8 @@ class StackModel {
     stack::Effects collisionNow(const stack::RowRef &);
     stack::Effects toggleFoldNow(const stack::RowRef &, stack::TimeMs now);
     void freezeCapturedRow(std::size_t shown, double top, double height);
-    void finishCapture(stack::TimeMs now, stack::CaptureStatus);
-    void checkCapture(stack::TimeMs now, stack::Effects &);
+    void finishCapture(stack::TimeMs now, stack::CaptureStatus, stack::TrackId matchCursor);
+    void checkCapture(stack::TimeMs now, stack::Effects &, stack::TrackId matchCursor);
     void updateNavScroll() noexcept;
     std::uint64_t beginEvent() const noexcept;
     void endEvent(stack::Effects &, std::uint64_t epochBefore);
@@ -1029,6 +1070,12 @@ class StackModel {
     AnchorHold anchor_;
     Jump jump_;
     std::array<LaneAnim, stack::kMaxLaneAnims> laneAnims_{};
+    std::array<ItemAnim, stack::kMaxItemAnims> itemAnims_{};
+    std::size_t itemAnimCount_ = 0;
+    stack::TimeMs itemAnimStart_ = 0, itemEnteredAt_ = 0;
+    bool itemAnimActive_ = false;
+    stack::ItemRef emphasizedItem_, itemCandidate_;
+    ItemAnchor itemAnchor_;
     double navScroll_ = 0;
     // interaction
     double px_ = 0, py_ = 0;

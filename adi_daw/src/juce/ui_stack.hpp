@@ -43,6 +43,7 @@ class StackTab final : public juce::Component {
   public:
     explicit StackTab(AdiRootComponent &);
     ~StackTab() override;
+    void suspendParameters(bool);
     void frame(const SnapshotReader &);
     // Deterministic component-test entry; normal frames use the window's monotonic clock.
     void frameAt(const SnapshotReader &, stack::TimeMs);
@@ -73,11 +74,14 @@ class StackTab final : public juce::Component {
     StackModel &model() noexcept;
     const StackModel &model() const noexcept;
     bool hasDeviceContext() const;
+    bool hasToolbarFocus() const;
     bool deviceCommand(int command);
     // Ends a held edit exactly once before hiding/rebinding/removing its component.
     void cancelInteractions();
     AdiRootComponent &root;
     juce::TextEditor search;
+    juce::ComboBox channelScope;
+    juce::String emptyMessage() const;
     juce::Slider rowSize;
     juce::ToggleButton autoZoom{"Auto Zoom"}, pinsOnly{"Pinned"}, navigator{"Navigator"};
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;
@@ -89,9 +93,12 @@ class StackTab final : public juce::Component {
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
     void layoutRows();
+    void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();
+    int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
+    stack::Hit presentedHit(double x, double y) const;
     void beginRename(stack::RowRef);
     void endRename(bool commit);
     bool beginInteraction(const stack::ItemRef &, stack::CaptureKind);

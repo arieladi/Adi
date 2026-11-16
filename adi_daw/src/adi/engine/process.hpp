@@ -63,6 +63,8 @@ struct AudioIo {
     /// Direct Graph callers may supply a stable nonzero ID across their own segments;
     /// zero asks Graph for a unique direct-call ID (separate high-bit namespace).
     std::uint64_t renderBlock = 0;
+    /// Explicit export quality intent. Offline analysis does not imply this.
+    bool exporting = false;
 };
 
 /// What an audio device drives. The graph implements it.

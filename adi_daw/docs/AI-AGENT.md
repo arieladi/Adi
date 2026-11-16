@@ -202,8 +202,8 @@ commit. It carries the head the agent built on, the queued ops, the model
   since it was built. It is reported as **stale** and never rebased silently.
 - **Guardrails are checked at preview and again at apply:**
   - the per-request op cap (`agent.maxOpsPerRequest`, default 6,000, ADR-0203
-    d20; §6.6). The code's `Limits::maxOps` still says 256 until AGT-01 reads
-    the row;
+    d20; §6.6). `Limits::maxOps` defaults to 6,000, and `adi-mcp` reads the
+    row (AGT-01; ADR-0233);
   - only project edits, so transport and hardware ops are refused;
   - of the media ops, only `media.unlink` and `media.relink`, which change a
     reference and never a file (§6.4).

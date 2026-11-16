@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window_state.hpp"
+#include "analysis_palettes.hpp"
+#include "spectrum_slope.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -69,8 +71,19 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         state.mixView = j.value("mixView", false);
-        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 5);
         state.mixViewDetached = j.value("mixViewDetached", false);
+        state.mixAnalyzerDock = j.value("mixAnalyzerDock", false);
+        state.mixAnalyzerWidth = std::clamp(j.value("mixAnalyzerWidth", 300), 240, 420);
+        state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
+        state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
+        state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        const auto palette = j.value("analysisPalette", std::string("adi"));
+        const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
+        state.analysisPalette = knownPalette ? palette : "adi";
+        state.analysisPaletteReverse = knownPalette && j.value("analysisPaletteReverse", false);
+        const auto slope = j.value("analysisSpectrumSlope", std::string("flat"));
+        state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
         state.follow = j.value("follow", false);
@@ -123,7 +136,13 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
             state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512 ||
             !std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
-            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000) {
+            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000 ||
+            state.mixAnalyzerWidth < 240 || state.mixAnalyzerWidth > 420 ||
+            state.mixAnalyzerSource < 0 || state.mixAnalyzerSource > 1 ||
+            state.mixAnalyzerPoint < 0 || state.mixAnalyzerPoint > 2 ||
+            state.mixAnalyzerChannel < 0 || state.mixAnalyzerChannel > 4 ||
+            palettes::id(palettes::find(state.analysisPalette)) != state.analysisPalette ||
+            !validSpectrumSlopeId(state.analysisSpectrumSlope)) {
             error = "Invalid view geometry";
             return false;
         }
@@ -145,6 +164,14 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixView", state.mixView},
                             {"mixViewTab", state.mixViewTab},
                             {"mixViewDetached", state.mixViewDetached},
+                            {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"mixAnalyzerWidth", state.mixAnalyzerWidth},
+                            {"mixAnalyzerSource", state.mixAnalyzerSource},
+                            {"mixAnalyzerPoint", state.mixAnalyzerPoint},
+                            {"mixAnalyzerChannel", state.mixAnalyzerChannel},
+                            {"analysisPalette", state.analysisPalette},
+                            {"analysisPaletteReverse", state.analysisPaletteReverse},
+                            {"analysisSpectrumSlope", state.analysisSpectrumSlope},
                             {"showReference", state.showReference},
                             {"hideReturns", state.hideReturns},
                             {"follow", state.follow},

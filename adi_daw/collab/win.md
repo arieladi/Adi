@@ -6,6 +6,37 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-13 to 16 — the register; the Mix View's first functions and its analyser stack land; the seat turned toward what a user can reach; the window lane's next list
+
+**For the seats — read first.**
+- **Mix View seat.** #548 stays open for DF-M29 (the EQ goes dry after a processing-precision switch) and DF-M30 (a latency-neutral plan edit lands 2 to 32 blocks late and offline render does not wait). The compressor, gate and de-esser cores (#552 to #573) stay open for DF-M16, DF-M17 and DF-M18. #579 and #580 are in CI; win reviews them next.
+- **Window lane.** The next list is `collab/prompts/2026-11-16-window-lane.md`: group E's rest, recording from the window, C7, B6 and B7, the Delay Compensation item, F3, then the surfaces that landed with the engine's stack. The Mix View seat is working in `ui_devices.*`, `ui_stack.*` and the `mix_*` files.
+- **Engine seat (away).** DF-E9 (automation Undo deletes and re-inserts rows) and DF-E10 (the Link session tests under parallel ctest) are new since your last entry. #530 is still held for DF-E2.
+- **Control seat.** DF-C5 is new: `device.insert` does not check one function of each kind per channel.
+
+**The register (13 November).** The director asked that nothing postponed be left to memory. Every postponed item is now a row in `docs/DEFERRED.md` with an owner and a trigger, and a row closes only with a PR. It reached main with #512 on 16 November. The same day he answered the control slice's two open questions; they are ADR-0239 (the session token both ways, the user choosing; standalone first). He also said he does not merge: win merges, and brings him the options with a recommendation.
+
+**The control slice, #512, is merged.** Its last head was `5c976cae`, 21 of 21 checks. The outside security round on the MCP server was verified finding by finding and fixed in `ddd704bd` and `bb97ce23` (DF-C4, done). The director gave his go on 16 November and win merged it (`729892e2`). The fence on `ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.*` and `src/main.cpp` is lifted, and `docs/DEFERRED.md`, ADR-0233 and ADR-0239 are on main.
+
+**The Mix View, 13 to 15 November.**
+- Merged: #537 and #540 (13 November); #541 to #546 (15 November), each with its review findings fixed first. On main a user can add an EQ and a Limiter (with Clip) from the device area's +, see them as tabs, move and remove them with Undo, and see compact rows in the Mix View. Nobody has run that path in the app yet (DF-M1).
+- **The analyser stack landed as one merge, #578 (`ac5050bd`).** Twelve stacked PRs (#551, #553, #554, #556, #557, #559, #563, #565, #568, #569, #571, #574) had been checked against old bases. Win merged their two tips onto current main in one branch, ran the 21 checks once on the real result, merged it, and closed the twelve as landed. Changing a PR's base does not re-run its checks; a branch that merges the tips does.
+- **A decision-by-decision check of ADR-0236 and ADR-0237 against the code (15 November).** The foundation is on track. The drift: of 25 open PRs, twelve were compressor, gate and de-esser parts no user can load, and five were analyser parts nothing on screen uses. The seat's log said those functions wait for device sidechain keys; the Clean compressor does not need them. The findings are rows DF-M20 to DF-M28. The seat was asked to put a complete compressor a user can add first, then presets, adding from the Mix View and one meaning for a function's switch, then the keys. It resumed on 16 November with #579 (a usable Clean compressor) and #580 (adding from the Mix View; the remove switches unified).
+- **#548 reviewed and held.** Two regressions against main, both reproduced: DF-M29 and DF-M30. DF-M31 (a failure text naming a reload that does not exist) may follow.
+
+**CI and outside reviews.**
+- #575: `fetch_external.sh` stops on a failed or mismatched submodule (from the round on #518, #528 and #516; #518 was clean, #516 became DF-E9).
+- #576: the Python 3.9 validators run on ubuntu-24.04. #577: GCC 15's dangling-pointer warning in `test_note_overlap`.
+- `adi_link_session_tests` failed once on ubuntu arm64 on #548 and passed on re-run (DF-E10).
+
+**The window lane.** #549 (E2: Cut, Copy, Paste and Duplicate for clips and ranges) merged on 14 November; 24 of the worklist's 37 items are on main. The Clip View's picture (`window/clip-view`, 28 October) was put to the director again on 16 November; G1 to G3 start on his yes. C5's picture is asked of the lane. Win still owes the lane N10's home for `midi.port.remote` and N38's `tracks.role` column (the column can go ahead now that #512 is merged), and its three notes of 10 November (the ZIP's progress, the sidebar's labels, the place of Rec-Q and Play-Q).
+
+**DF-R1.** The director ruled on 15 November to continue as is. The row stays; no work on it is planned.
+
+**Next ADR is 0240.** DF-M27's two answers of the director's go into it.
+
+---
+
 ## 2026-11-12 (afternoon) — #530 held for the engine seat; the Mix View foundation reviewed
 
 **For the engine seat — read first (#530, `engine/clip-trim`, now at `da1de8db`; fetch first).**
