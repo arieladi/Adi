@@ -1,5 +1,13 @@
 # Mix View seat
 
+## 16 November 2026 — preset proofs green; real device-key owner/host path under combined validation
+
+DF-M23 author `mixview/native-presets-20261116` at `69f03e20` remains private pending ADR-0240 d3's storage/encoding/ordinary-device placement ADR. Five targeted suites passed and the Mix View software-peer shell passed 753/0 before route integration. This is not a released file format. The complete proposal is already on #584; the director's replace-whole-set / one Undo policy is implemented and is not reopened.
+
+DF-M11 author `mixview/device-key-20261116` (private validation tree) now includes schema 1.22, durable tap choices, causal device/source deletion and Undo, actual device-target graph keys, prepared VST3 main/aux bus tables and declared CLAP port roles. Owner menus use source channel + Pre FX/Post FX/Post Mixer or None with exact runtime guards. Replacement/removal is one sealed transaction, with same-head material guards. Candidate topology admission uses the same Graph topological sort without preparing/touching SDK state before commit. Clean C remains internal-key-only. Channels without keys gain no key DSP node/worker/poll.
+
+The first data/graph slice plus presets passed nine targeted CTests, including every historical schema upgrade through 1.22. Extended host/owner/component tests and strict combined app compilation are running single-job from an isolated frozen tree. Two strict-build issues (duplicate shape-epoch override and a shadowed menu variable) were corrected; no final readiness, live or CPU timing claim yet. Owned fixture observations use the exact bundle module, not a different build copy. No native desktop/host/editor launch, capture/input or new CPU benchmark; Adi's benchmark deferral remains in force. No new PR or self-merge.
+
 ## 16 November 2026 — reviewed repairs green; presets under component validation; DF-M11 starts
 
 #579 is repaired at `51b0aec5`, now based on main; #580 is repaired at `63a59729`. Same branches pushed for re-review. Exact #580 Debug app and four integration suites pass; 753/0 fake-peer Mix View checks pass. No self-merge or local desktop/host launch. Long-silence numerical/allocation checks are not CPU timing.
