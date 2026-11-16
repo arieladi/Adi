@@ -31,7 +31,10 @@ external call for every sample.
 
 Preparation, coefficient publication, reset and processing allocate no storage.
 There are no workers, locks, atomics, subscription work or per-sample coefficient
-redesign. Finite sample input and serialized ownership belong to the caller.
+redesign. The external-input entry points replace non-finite input with zero.
+Already-sanitized owning cascades use the finite-input entry points, preserving
+intermediate arithmetic-fault semantics without rescanning every section.
+Serialized ownership belongs to the caller.
 This is a structural resource contract, not a CPU benchmark or whole-product
 performance claim.
 
