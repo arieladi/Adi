@@ -4530,6 +4530,84 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     click(panel.toolBox(Tool::OverlapsMono));
     check(note(20).durationTicks == beat / 2 && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
 
+    // ADI's Functions tab (ADR-0242 d1): the velocity functions, Delete Doubles and Restrict Polyphony.
+    check(panel.toolsTab() == 0 && panel.toolBox(Tool::VelocityAdd).isEmpty() && !panel.toolBox(Tool::Invert).isEmpty(),
+          "the tools panel opens on Pitch and Time");
+    click(panel.tabBox(1));
+    check(panel.toolsTab() == 1 && panel.toolBox(Tool::Invert).isEmpty() && panel.rangeBox().isEmpty() &&
+              panel.fieldBox(Field::Transpose).isEmpty() && !panel.toolBox(Tool::VelocityAdd).isEmpty() &&
+              !panel.fieldBox(Field::VelocityAmount).isEmpty(),
+          "a click on Functions shows its tools and fields, and hides Pitch and Time's");
+    {
+        std::vector<juce::Rectangle<int>> boxes;
+        for (const auto tool : {Tool::VelocityAdd, Tool::VelocityScale, Tool::VelocityLimit, Tool::DeleteDoubles, Tool::RestrictPolyphony})
+            boxes.push_back(panel.toolBox(tool));
+        for (const auto field : {Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow, Field::VelocityHigh, Field::Voices})
+            boxes.push_back(panel.fieldBox(field));
+        bool apart = true;
+        for (std::size_t i = 0; i < boxes.size(); ++i)
+            for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                apart = apart && !boxes[i].isEmpty() && !boxes[i].intersects(boxes[j]) && panel.toolsArea().contains(boxes[j]);
+        check(apart, "its five buttons and five fields each have their own place in the panel");
+    }
+    for (const auto &n : std::vector<engine::ClipNote>(panel.details()->notes))
+        check(submitter.submit(op("note.delete", {{"clip", 11}, {"note", n.id}}, "Delete Note")).ok, "the clip is cleared");
+    check(submitter.submit(std::vector<OpRequest>{
+              op("note.insert", {{"clip", 11}, {"note", 50}, {"start", 0}, {"dur", 4 * beat}, {"key", 60}, {"vel", 100}}, "Add Note"),
+              op("note.insert", {{"clip", 11}, {"note", 51}, {"start", beat}, {"dur", 4 * beat}, {"key", 62}, {"vel", 40}}, "Add Note"),
+              op("note.insert", {{"clip", 11}, {"note", 52}, {"start", 2 * beat}, {"dur", beat}, {"key", 64}, {"vel", 120}}, "Add Note")}).ok,
+          "three notes that pile up: C3 at 100, D3 at 40, E3 at 120");
+    root.frame();
+    ed.select({});
+    click(panel.toolBox(Tool::VelocityAdd));
+    check(note(50).velocity == 110 && note(51).velocity == 50 && note(52).velocity == 127 && undoIs("Add Velocity", 3),
+          "Add, with none selected, raises every velocity by the amount in its field, 10: one undo step");
+    check(panel.typeField(Field::VelocityAmount, "-20") && panel.velocityAmount == -20, "the amount typed as -20");
+    ed.select({50});
+    click(panel.toolBox(Tool::VelocityAdd));
+    check(note(50).velocity == 90 && note(51).velocity == 50 && undoIs("Subtract Velocity", 1), "and only the selected note drops by 20");
+    const auto beforeTyping = submitter.nextUndo()->txnId;
+    check(!panel.typeField(Field::VelocityAmount, "loud") && panel.velocityAmount == -20 && !root.error().empty() &&
+              panel.typeField(Field::VelocityAmount, "900") && panel.velocityAmount == 127 && submitter.nextUndo()->txnId == beforeTyping,
+          "a word is refused; a number out of range is brought inside it; typing an amount is no undo step");
+    ed.select({});
+    click(panel.toolBox(Tool::VelocityScale));
+    check(note(50).velocity == 45 && note(51).velocity == 25 && note(52).velocity == 64 && undoIs("Compress Velocities", 3),
+          "Scale at 50 per cent halves them");
+    // A field dragged: four pixels a step.
+    {
+        const auto box = panel.fieldBox(Field::VelocityLow).getCentre().toFloat();
+        panel.mouseDown(pressAt(panel, box));
+        panel.mouseDrag(pressAt(panel, box.translated(0.f, -120.f)));
+        panel.mouseUp(pressAt(panel, box.translated(0.f, -120.f)));
+    }
+    check(panel.velocityLow == 31 && submitter.nextUndo()->label == "Compress Velocities", "the low limit dragged up by thirty steps: 31");
+    check(panel.typeField(Field::VelocityHigh, "60") && panel.velocityHigh == 60, "the high limit typed");
+    click(panel.toolBox(Tool::VelocityLimit));
+    check(note(50).velocity == 45 && note(51).velocity == 31 && note(52).velocity == 60 && undoIs("Limit Velocities", 2),
+          "Limit brings the two outside 31 to 60 to its ends");
+    check(panel.typeField(Field::Voices, "2") && panel.voices == 2, "two voices");
+    click(panel.toolBox(Tool::RestrictPolyphony));
+    check(note(50).durationTicks == 2 * beat && note(51).durationTicks == 4 * beat && undoIs("Restrict Polyphony", 1),
+          "Restrict Polyphony: where the third note begins, the first is cut to end there");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(note(50).durationTicks == 4 * beat, "and Undo gives it back");
+    const bool doubled = submitter.submit(op("note.insert", {{"clip", 11}, {"note", 53}, {"start", 0}, {"dur", beat}, {"key", 60}, {"vel", 90}}, "Add Note")).ok;
+    root.frame();
+    if (doubled) {
+        click(panel.toolBox(Tool::DeleteDoubles));
+        check(panel.details()->notes.size() == 3 && note(50).id == 50 && note(53).id == 0 && undoIs("Delete Doubles", 1),
+              "Delete Doubles removes the second C3 that begins with the first");
+    }
+    const auto beforeNone = submitter.nextUndo()->txnId;
+    click(panel.toolBox(Tool::DeleteDoubles));
+    check(submitter.nextUndo()->txnId == beforeNone, "with no doubles, it writes nothing");
+    click(panel.tabBox(0));
+    check(panel.toolsTab() == 0 && !panel.toolBox(Tool::Invert).isEmpty() && panel.toolBox(Tool::VelocityAdd).isEmpty(),
+          "and a click on Pitch and Time brings its tools back");
+    click(panel.tabBox(1));
+
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {

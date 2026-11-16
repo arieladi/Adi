@@ -234,11 +234,22 @@ class ClipViewPanel final : public juce::Component {
     // note, inversions and drop voicings of the selected chords.
     enum class Tool {
         FitToScale, Invert, Reverse, Double, Halve, Legato,
-        FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3
+        FixedLength, OverlapsMono, OverlapsPoly, Chord, InvertUp, InvertDown, Drop2, Drop3,
+        VelocityAdd, VelocityScale, VelocityLimit, DeleteDoubles, RestrictPolyphony
     };
     static constexpr Tool kTools[] = {Tool::FitToScale, Tool::Invert,       Tool::Reverse,      Tool::Double,     Tool::Halve,
                                       Tool::Legato,     Tool::FixedLength,  Tool::OverlapsMono, Tool::OverlapsPoly, Tool::Chord,
-                                      Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3};
+                                      Tool::InvertUp,   Tool::InvertDown,   Tool::Drop2,        Tool::Drop3,
+                                      Tool::VelocityAdd, Tool::VelocityScale, Tool::VelocityLimit, Tool::DeleteDoubles,
+                                      Tool::RestrictPolyphony};
+    // The tools panel has two tabs: Live's Pitch and Time, with the chord tools, and Functions, ADI's
+    // additions from Cubase's MIDI functions (ADR-0242 d1): velocities added to, compressed or
+    // expanded, and limited; Delete Doubles; Restrict Polyphony. Their amounts are fields on the tab.
+    int toolsTab() const noexcept { return toolsTab_; }
+    void setToolsTab(int tab);
+    juce::Rectangle<int> tabBox(int tab) const noexcept;
+    static int tabOf(Tool) noexcept;
+    int velocityAmount = 10, velocityPercent = 50, velocityLow = 1, velocityHigh = 127, voices = 4;
     // The chord type Insert Chord uses, chosen from its field's menu; items from 1.
     juce::Rectangle<int> chordBox() const noexcept;
     const ChordType &chordType() const noexcept { return kChordTypes[chord_]; }
@@ -258,7 +269,10 @@ class ClipViewPanel final : public juce::Component {
     // as the part of the field grabbed; a click opens it for typing; Start, End, Position and
     // Length have Live's Set button, which takes the arrangement's insert marker. Each change is
     // one of the clip's own ops (N33), one undo step.
-    enum class Field { None, Start, End, Position, Length, Signature, Scale, Transpose };
+    enum class Field {
+        None, Start, End, Position, Length, Signature, Scale, Transpose,
+        VelocityAmount, VelocityPercent, VelocityLow, VelocityHigh, Voices
+    };
     juce::Rectangle<int> fieldBox(Field) const noexcept;
     juce::Rectangle<int> setBox(Field) const noexcept;
     juce::Rectangle<int> loopBox() const noexcept;
@@ -331,6 +345,8 @@ class ClipViewPanel final : public juce::Component {
     void openEditor(Field);
     void closeEditor();
     void showScaleMenu(bool roots);
+    // A field of the Functions tab: the number it holds and its range; null for any other field.
+    int *plainField(Field, int *low = nullptr, int *high = nullptr) noexcept;
     std::int64_t clip_ = 0, wanted_ = 0;
     std::vector<std::int64_t> shown_;
     std::vector<ClipLayer> others_;
@@ -348,6 +364,7 @@ class ClipViewPanel final : public juce::Component {
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
     std::size_t chord_ = 0;
+    int toolsTab_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;
 };

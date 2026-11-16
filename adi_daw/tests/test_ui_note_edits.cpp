@@ -573,6 +573,82 @@ void quantizeSplitJoin() {
     check(joinNotes(c, {3}).ops.empty(), "one note has nothing to join");
 }
 
+void functions() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start, std::int64_t duration, int velocity) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = duration;
+        n.velocity = static_cast<std::uint8_t>(velocity);
+        return n;
+    };
+    c.notes = {note(1, 60, 0, 4 * beat, 100), note(2, 60, 0, beat, 40), note(3, 62, beat, 4 * beat, 120),
+               note(4, 64, 2 * beat, beat, 5), note(5, 65, 3 * beat, beat, 64)};
+    const auto velocityOf = [](const NoteEdit &e, std::uint64_t id) {
+        for (const auto &o : e.ops)
+            if (o.payload.at("note") == id)
+                return o.payload.at("vel").get<int>();
+        return -1;
+    };
+    // Add and Subtract.
+    const auto added = addToVelocities(c, {1, 3, 4}, 10);
+    check(added.ops.size() == 3 && velocityOf(added, 1) == 110 && velocityOf(added, 3) == 127 && velocityOf(added, 4) == 15 &&
+              added.ops[0].label == "Add Velocity" && added.select == std::vector<std::uint64_t>({1, 3, 4}),
+          "Add: each velocity raised, none over 127; the selection kept");
+    const auto subtracted = addToVelocities(c, {4, 5}, -10);
+    check(velocityOf(subtracted, 4) == 1 && velocityOf(subtracted, 5) == 54 && subtracted.ops[0].label == "Subtract Velocity",
+          "Subtract: none under 1");
+    check(addToVelocities(c, {1}, 0).ops.empty(), "adding nothing writes nothing");
+    check(addToVelocities(c, {}, 1).ops.size() == 5, "with none selected, every note");
+    // Compress and Expand.
+    const auto halved = scaleVelocities(c, {1, 2, 4}, 50);
+    check(velocityOf(halved, 1) == 50 && velocityOf(halved, 2) == 20 && velocityOf(halved, 4) == 3 &&
+              halved.ops[0].label == "Compress Velocities",
+          "Scale under 100 per cent compresses, rounding to the nearest");
+    const auto grown = scaleVelocities(c, {1, 2}, 150);
+    check(velocityOf(grown, 1) == 127 && velocityOf(grown, 2) == 60 && grown.ops[0].label == "Expand Velocities",
+          "Scale over 100 per cent expands, to 127 at most");
+    check(scaleVelocities(c, {1}, 100).ops.empty(), "100 per cent writes nothing");
+    check(velocityOf(scaleVelocities(c, {1}, 0), 1) == 1, "and nothing goes under 1");
+    // Limit.
+    const auto limited = limitVelocities(c, {}, 40, 100);
+    check(limited.ops.size() == 2 && velocityOf(limited, 3) == 100 && velocityOf(limited, 4) == 40 && velocityOf(limited, 5) == -1 &&
+              limited.ops[0].label == "Limit Velocities",
+          "Limit: velocities outside the range brought to its ends; those inside left");
+    check(velocityOf(limitVelocities(c, {3}, 100, 40), 3) == 100, "the range reads the same either way round");
+    // Delete Doubles.
+    const auto doubles = deleteDoubles(c, {});
+    check(doubles.ops.size() == 1 && doubles.ops[0].opType == "note.delete" &&
+              doubles.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{2}}}) && doubles.ops[0].label == "Delete Doubles",
+          "Delete Doubles: of two notes on one key at one start, the first stays");
+    check(deleteDoubles(c, {2, 3}).ops.empty(), "a double is one only among the notes acted on");
+    check(deleteDoubles(c, {1, 2}).select == std::vector<std::uint64_t>({1}), "the survivor stays selected");
+    // Restrict Polyphony.
+    c.notes = {note(1, 60, 0, 4 * beat, 100), note(3, 62, beat, 4 * beat, 100), note(4, 64, 2 * beat, beat, 100),
+               note(5, 65, 3 * beat, beat, 100)};
+    const auto two = restrictPolyphony(c, {}, 2);
+    check(two.ops.size() == 1 && two.ops[0].opType == "note.resize" &&
+              two.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{1}}, {"dur", 2 * beat}}) &&
+              two.ops[0].label == "Restrict Polyphony",
+          "two voices: where a third note begins, the one that began earliest is cut to end there; a note that has ended frees its voice");
+    const auto one = restrictPolyphony(c, {}, 1);
+    check(one.ops.size() == 2 && one.ops[0].payload.at("dur") == beat && one.ops[1].payload.at("dur") == beat,
+          "one voice: every note ends where the next begins");
+    check(restrictPolyphony(c, {}, 4).ops.empty() && restrictPolyphony(c, {4, 5}, 1).ops.empty(), "within the limit, nothing is cut");
+    c.notes = {note(1, 60, 0, 2 * beat, 100), note(2, 64, 0, 2 * beat, 100), note(3, 67, 0, 2 * beat, 100), note(4, 72, beat, beat, 100)};
+    const auto chord = restrictPolyphony(c, {}, 2);
+    check(chord.ops.size() == 2, "a chord wider than the limit is left whole, since its notes begin together; a later note cuts down to the limit");
+    ClipDetails audio = c;
+    audio.kind = "audio";
+    check(!deleteDoubles(audio, {}).refusal.empty() && !restrictPolyphony(audio, {}, 2).refusal.empty() &&
+              !limitVelocities(audio, {}, 1, 127).refusal.empty(),
+          "an audio clip refuses them");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -628,6 +704,7 @@ int main() {
     pasting();
     overlaps();
     quantizeSplitJoin();
+    functions();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

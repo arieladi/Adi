@@ -1657,6 +1657,17 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::VelocityAmount || field == Field::VelocityPercent || field == Field::VelocityLow ||
+        field == Field::VelocityHigh || field == Field::Voices) {
+        // Each sits in the first column beside its button; Limit's two share a row above it.
+        const auto add = toolBox(Tool::VelocityAdd);
+        if (add.isEmpty())
+            return {};
+        const int left = toolsArea().getX() + 6;
+        const int below = field == Field::VelocityAmount ? 0 : field == Field::VelocityPercent ? 1 : field == Field::Voices ? 6 : 2;
+        const auto box = add.withY(add.getY() + below * 22);
+        return field == Field::VelocityHigh ? box : box.withX(left);
+    }
     return {main.getX() + column * (half + 6), main.getY() + row + kFieldLabel, half, kFieldBox};
 }
 // ---- The Pitch and Time panel (manual 8.5; STEP-7-PLAN 7.7 step 4) -----------------------------
@@ -1665,16 +1676,32 @@ juce::Rectangle<int> ClipViewPanel::toolsArea() const noexcept {
 }
 juce::Rectangle<int> ClipViewPanel::rangeBox() const noexcept {
     const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
-    return inner.isEmpty() ? inner : inner.withHeight(kFieldBox);
+    return inner.isEmpty() || toolsTab_ != 0 ? juce::Rectangle<int>() : inner.withHeight(kFieldBox);
 }
 juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
     if (inner.isEmpty())
         return {};
+    if (tabOf(tool) != toolsTab_)
+        return {};
     const int half = (inner.getWidth() - 6) / 2;
     // Two columns under the range: Transpose's field has the first place.
     int row = 1, column = 1;
     switch (tool) {
+    case Tool::VelocityAdd:
+        break;
+    case Tool::VelocityScale:
+        row = 2;
+        break;
+    case Tool::VelocityLimit:
+        row = 4, column = 0;
+        break;
+    case Tool::DeleteDoubles:
+        row = 6, column = 0;
+        break;
+    case Tool::RestrictPolyphony:
+        row = 7;
+        break;
     case Tool::FitToScale:
         break;
     case Tool::Invert:
@@ -1719,8 +1746,62 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     }
     return {inner.getX() + column * (half + 6), inner.getY() + row * 22, half, kFieldBox};
 }
+int ClipViewPanel::tabOf(Tool tool) noexcept {
+    return tool == Tool::VelocityAdd || tool == Tool::VelocityScale || tool == Tool::VelocityLimit ||
+                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony
+               ? 1
+               : 0;
+}
+void ClipViewPanel::setToolsTab(int tab) {
+    toolsTab_ = tab == 1 ? 1 : 0;
+    closeEditor();
+    repaint();
+}
+juce::Rectangle<int> ClipViewPanel::tabBox(int tab) const noexcept {
+    const auto title = toolsArea().withHeight(kTitleHeight);
+    if (title.isEmpty())
+        return {};
+    return tab == 0 ? title.withWidth(88) : title.withTrimmedLeft(88);
+}
+int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
+    const auto range = [&](int a, int b) {
+        if (low != nullptr)
+            *low = a;
+        if (high != nullptr)
+            *high = b;
+    };
+    switch (field) {
+    case Field::VelocityAmount:
+        range(-127, 127);
+        return &velocityAmount;
+    case Field::VelocityPercent:
+        range(0, 300);
+        return &velocityPercent;
+    case Field::VelocityLow:
+        range(1, 127);
+        return &velocityLow;
+    case Field::VelocityHigh:
+        range(1, 127);
+        return &velocityHigh;
+    case Field::Voices:
+        range(1, 16);
+        return &voices;
+    default:
+        return nullptr;
+    }
+}
 const char *ClipViewPanel::toolName(Tool tool) noexcept {
     switch (tool) {
+    case Tool::VelocityAdd:
+        return "Add";
+    case Tool::VelocityScale:
+        return "Scale";
+    case Tool::VelocityLimit:
+        return "Limit";
+    case Tool::DeleteDoubles:
+        return "Del. Doubles";
+    case Tool::RestrictPolyphony:
+        return "Restrict Poly";
     case Tool::FitToScale:
         return "Fit to Scale";
     case Tool::Invert:
@@ -1806,6 +1887,16 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(dropVoicing(d, ids, {2}, "Drop 2"));
     case Tool::Drop3:
         return notes.apply(dropVoicing(d, ids, {3}, "Drop 3"));
+    case Tool::VelocityAdd:
+        return notes.apply(addToVelocities(d, ids, velocityAmount));
+    case Tool::VelocityScale:
+        return notes.apply(scaleVelocities(d, ids, velocityPercent));
+    case Tool::VelocityLimit:
+        return notes.apply(limitVelocities(d, ids, velocityLow, velocityHigh));
+    case Tool::DeleteDoubles:
+        return notes.apply(deleteDoubles(d, ids));
+    case Tool::RestrictPolyphony:
+        return notes.apply(restrictPolyphony(d, ids, voices));
     }
     return false;
 }
@@ -1876,7 +1967,8 @@ std::int64_t ClipViewPanel::fieldTicks(Field field) const noexcept {
 }
 ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept {
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
-                             Field::Transpose})
+                             Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
+                             Field::VelocityHigh, Field::Voices})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -1915,6 +2007,20 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
     if (!details_)
         return false;
     const auto text = typed.toStdString();
+    {
+        int low = 0, high = 0;
+        if (auto *value = plainField(field, &low, &high)) {
+            const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false);
+            if (trimmed.isEmpty() || !trimmed.containsOnly("+-0123456789") || trimmed.lastIndexOfAnyOf("+-") > 0 ||
+                trimmed.length() > 5 || !trimmed.containsAnyOf("0123456789")) {
+                root.say("Type a whole number.");
+                return false;
+            }
+            *value = std::clamp(trimmed.getIntValue(), low, high);
+            repaint();
+            return true;
+        }
+    }
     if (field == Field::Transpose) {
         const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false);
         if (trimmed.isEmpty() || !trimmed.containsOnly("+-0123456789") || trimmed.lastIndexOfAnyOf("+-") > 0 ||
@@ -1976,6 +2082,7 @@ void ClipViewPanel::openEditor(Field field) {
                        : field == Field::Position  ? r.position
                        : field == Field::Length    ? r.length
                        : field == Field::Transpose ? juce::String("0")
+                       : plainField(field) != nullptr ? juce::String(*plainField(field))
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
     editor_.setText(value.removeCharacters(" "), false);
@@ -2009,6 +2116,11 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         toggleLoop();
         return;
     }
+    for (int tab = 0; tab < 2; ++tab)
+        if (tabBox(tab).contains(at)) {
+            setToolsTab(tab);
+            return;
+        }
     if (foldBox().contains(at)) {
         notes.setFold(!notes.folded());
         repaint();
@@ -2094,6 +2206,17 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
     dragSteps_ = 0;
     if (field == Field::None || !details_)
         return;
+    if (int low = 0, high = 0; plainField(field, &low, &high) != nullptr) {
+        // A field of the Functions tab holds a number: a drag changes it, a click opens it for typing.
+        if (dragged) {
+            auto *value = plainField(field);
+            *value = std::clamp(*value + steps, low, high);
+            repaint();
+        } else {
+            openEditor(field);
+        }
+        return;
+    }
     if (field == Field::Scale)
         // The root's part of the field opens the root notes; the rest, the scales.
         showScaleMenu(pressPart_ == 0);
@@ -2184,25 +2307,50 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
         // Transpose, and the utilities.
-        g.setColour(look::field);
-        g.fillRect(tools.withHeight(kTitleHeight));
-        text("Pitch and Time", tools.withHeight(kTitleHeight).withTrimmedLeft(6), juce::Justification::centredLeft,
-             look::text, 11.f, true);
-        const auto range = rangeBox();
-        look::box(g, range.toFloat(), look::display);
-        text(r.range, range.reduced(4, 0), juce::Justification::centred, juce::Colours::white, 11.f);
-        const auto semitones = fieldBox(Field::Transpose);
-        look::box(g, semitones.toFloat(), look::chooser);
-        text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+        for (int tab = 0; tab < 2; ++tab) {
+            const auto box = tabBox(tab);
+            g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
+            g.fillRect(box);
+            text(tab == 0 ? "Pitch and Time" : "Functions", box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft,
+                 look::text, 10.5f, tab == toolsTab_);
+        }
+        if (toolsTab_ == 1) {
+            // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
+            const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
+            text("Velocity", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Notes", inner.withY(inner.getY() + 5 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            const auto number = [&](Field which, const juce::String &suffix) {
+                const auto box = fieldBox(which);
+                int low = 0, high = 0;
+                const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
+                look::box(g, box.toFloat(), look::chooser);
+                text(juce::String(shown) + suffix, box.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+            };
+            number(Field::VelocityAmount, "");
+            number(Field::VelocityPercent, " %");
+            number(Field::VelocityLow, "");
+            number(Field::VelocityHigh, "");
+            number(Field::Voices, "");
+        }
+        if (toolsTab_ == 0) {
+            const auto range = rangeBox();
+            look::box(g, range.toFloat(), look::display);
+            text(r.range, range.reduced(4, 0), juce::Justification::centred, juce::Colours::white, 11.f);
+            const auto semitones = fieldBox(Field::Transpose);
+            look::box(g, semitones.toFloat(), look::chooser);
+            text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+            // The chord type's chooser, beside Add Chord.
+            const auto chord = chordBox();
+            look::box(g, chord.toFloat(), look::chooser);
+            text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+        }
         for (const auto tool : kTools) {
             const auto box = toolBox(tool);
+            if (box.isEmpty())
+                continue;
             look::box(g, box.toFloat(), look::button);
             text(toolName(tool), box.reduced(2, 0), juce::Justification::centred, look::text, 10.f);
         }
-        // The chord type's chooser, beside Add Chord.
-        const auto chord = chordBox();
-        look::box(g, chord.toFloat(), look::chooser);
-        text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
     }
 
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
