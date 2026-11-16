@@ -966,6 +966,39 @@ inline NoteEdit restrictPolyphony(const engine::ClipDetails &clip, const std::ve
     return edit;
 }
 
+// Add Interval (manual 10.5.9.4): a new note beside each note, `interval` semitones above it (below,
+// when negative), or that many degrees of the scale when `mask` is given (the clip's scale is on).
+// The new notes carry what theirs carry and are the selection. One that would leave the ruler is
+// left out.
+inline NoteEdit addInterval(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, int interval, std::int64_t mask = 0,
+                            int tonic = 0) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty() || interval == 0)
+        return edit;
+    auto id = freeNoteId(clip);
+    for (const auto *n : targets(clip, ids)) {
+        int key = n->key;
+        if (mask == 0) {
+            key += interval;
+        } else {
+            // By the scale's degrees, from the note's own place in it (the nearest, when it is outside).
+            key = nearestInScale(key, tonic, mask);
+            for (int step = 0; step < std::abs(interval) && key >= 0 && key < kNoteKeys; ++step)
+                do
+                    key += interval > 0 ? 1 : -1;
+                while (key >= 0 && key < kNoteKeys && !inScale(key, tonic, mask));
+        }
+        if (key < 0 || key >= kNoteKeys)
+            continue;
+        auto added = *n;
+        added.key = static_cast<std::uint8_t>(key);
+        piece(edit, clip.id, added, id++, n->startTicks, n->durationTicks, "Add Interval");
+    }
+    return edit;
+}
+
 // ---- Time inside the clip (manual 10.7) -----------------------------------------------------------
 // Crop Clip (10.7.1; Ctrl/Cmd+Shift+J): the notes outside `from` to `to` go. With `cut`, a note that
 // crosses an edge is cut there: the loop on, or a time selection (as measured on Live). Without

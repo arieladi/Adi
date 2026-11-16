@@ -4488,6 +4488,7 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
                                                   op("note.insert", {{"clip", 11}, {"note", 20}, {"start", 0}, {"dur", 3 * beat}, {"key", 60}, {"vel", 90}}, "Add Note")}).ok,
           "the clip holds one C3, three beats long");
     root.frame();
+    panel.setToolsTab(2);
     check(panel.chordMenu().getNumItems() == static_cast<int>(kChordTypes.size()) && !panel.chordBox().isEmpty() &&
               std::string(panel.chordType().name) == "Major",
           "the chord type's chooser lists the chord types, Major first");
@@ -4518,16 +4519,19 @@ void clipViewTools(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &n : panel.details()->notes)
         low = std::min(low, static_cast<int>(n.key));
     check(low == 55 && undoIs("Drop 2", 1), "Drop 2 takes the G down an octave");
+    panel.setToolsTab(0);
     click(panel.toolBox(Tool::FixedLength));
     bool allStep = true;
     for (const auto &n : panel.details()->notes)
         allStep = allStep && n.durationTicks == ed.gridTicks();
-    check(allStep && undoIs("Fixed Lengths", 4), "Fixed Length makes the four notes a grid step long");
+    check(allStep && undoIs("Set Length", 4), "Set Length, its Duration on Grid, makes the four notes a grid step long");
     ed.select({});
     check(submitter.submit(op("note.insert", {{"clip", 11}, {"note", 30}, {"start", beat / 2}, {"dur", beat}, {"key", 60}}, "Add Note")).ok,
           "a second C3 begins while the first still sounds");
     root.frame();
+    panel.setToolsTab(2);
     click(panel.toolBox(Tool::OverlapsMono));
+    panel.setToolsTab(0);
     check(note(20).durationTicks == beat / 2 && undoIs("Delete Overlaps (Mono)", 1), "Overlaps Mono cuts the first C3 where the second begins");
 
     // ADI's Functions tab (ADR-0242 d1): the velocity functions, Delete Doubles and Restrict Polyphony.
@@ -5956,6 +5960,97 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && ed.keyPressed(key(juce::KeyPress::escapeKey)), "the brace let go");
     check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 2 * beat + beat / 2 && undoIs("Duplicate Note"),
           "without the brace selected Ctrl+D duplicates the selected note, as before");
+
+    // Pitch and Time as Live's (manual 10.5.9): Interval and Add Interval, the Stretch control, Duration and Set Length;
+    // and ADI's chord and overlap tools on their own tab.
+    {
+        using Field = ClipViewPanel::Field;
+        using Tool = ClipViewPanel::Tool;
+        const auto click = [&](juce::Rectangle<int> box) {
+            panel.mouseDown(pressAt(panel, box.getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, box.getCentre().toFloat()));
+        };
+        const auto apart = [&](const std::vector<juce::Rectangle<int>> &boxes) {
+            bool ok = true;
+            for (std::size_t i = 0; i < boxes.size(); ++i) {
+                ok = ok && !boxes[i].isEmpty() && panel.toolsArea().contains(boxes[i]);
+                for (std::size_t j = i + 1; j < boxes.size(); ++j)
+                    ok = ok && !boxes[i].intersects(boxes[j]);
+            }
+            return ok;
+        };
+        check(undo() && details().notes.size() == 5, "the duplicate taken back: five notes");
+        panel.setToolsTab(0);
+        check(apart({panel.tabBox(0), panel.tabBox(1), panel.tabBox(2)}) && panel.tabBox(3).isEmpty() && panel.toolsTab() == 0,
+              "the tools panel has three tabs: Pitch and Time, Functions and Chords");
+        check(apart({panel.rangeBox(), panel.fieldBox(Field::Transpose), panel.toolBox(Tool::FitToScale), panel.toolBox(Tool::Invert),
+                     panel.toolBox(Tool::Reverse), panel.fieldBox(Field::Interval), panel.toolBox(Tool::AddInterval), panel.fieldBox(Field::Stretch),
+                     panel.toolBox(Tool::Double), panel.toolBox(Tool::Halve), panel.durationBox(), panel.toolBox(Tool::FixedLength),
+                     panel.toolBox(Tool::Legato)}) &&
+                  panel.toolBox(Tool::Chord).isEmpty() && panel.toolBox(Tool::OverlapsMono).isEmpty() && panel.chordBox().isEmpty(),
+              "Pitch and Time holds Live's tools, each in its own place: the range, Transpose, Fit to Scale, Invert, Reverse, the Interval size and Add "
+              "Interval, the Stretch control with x2 and /2, the Duration chooser and Set Length, and Legato");
+        click(panel.tabBox(2));
+        check(panel.toolsTab() == 2 && apart({panel.chordBox(), panel.toolBox(Tool::Chord), panel.toolBox(Tool::InvertUp), panel.toolBox(Tool::InvertDown),
+                                              panel.toolBox(Tool::Drop2), panel.toolBox(Tool::Drop3), panel.toolBox(Tool::OverlapsMono),
+                                              panel.toolBox(Tool::OverlapsPoly)}) &&
+                  panel.toolBox(Tool::Invert).isEmpty() && panel.rangeBox().isEmpty() && panel.fieldBox(Field::Interval).isEmpty(),
+              "the Chords tab holds ADI's chord tools and the overlap functions");
+        click(panel.tabBox(0));
+
+        // Add Interval.
+        ed.select({1});
+        click(panel.toolBox(Tool::AddInterval));
+        check(panel.intervalSize == 7 && details().notes.size() == 6 && ed.selected().size() == 1 && note(ed.selected().front()).key == 67 &&
+                  note(ed.selected().front()).startTicks == 0 && undoIs("Add Interval"),
+              "Add Interval puts a note a fifth above the selected C3 and selects it: one undo step");
+        check(panel.typeField(Field::Interval, "-12") && panel.intervalSize == -12 && details().notes.size() == 6, "the size typed as -12; typing adds nothing");
+        ed.select({});
+        click(panel.toolBox(Tool::AddInterval));
+        check(details().notes.size() == 12 && ed.selected().size() == 6 && undo() && details().notes.size() == 6,
+              "with no note selected Add Interval works on every note: six more, an octave below");
+        click(panel.scaleModeBox());
+        check(details().scale.local && panel.typeField(Field::Interval, "2"), "Scale Mode on, in C Major; the size 2");
+        ed.select({1});
+        click(panel.toolBox(Tool::AddInterval));
+        check(ed.selected().size() == 1 && note(ed.selected().front()).key == 64 && note(ed.selected().front()).startTicks == 0,
+              "with the scale on the size counts its degrees: two above C3 is E3");
+        check(undo() && undo() && !details().scale.local && undo() && details().notes.size() == 5, "undone: the note, the scale, and the fifth");
+
+        // The Stretch control.
+        ed.select({3});
+        check(panel.typeField(Field::Stretch, "150") && note(3).durationTicks == 3 * beat && note(3).startTicks == 2 * beat && undoIs("Stretch Notes"),
+              "Stretch typed as 150 makes the selected two-beat note three beats long");
+        {
+            const auto box = panel.fieldBox(Field::Stretch).getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, box));
+            panel.mouseDrag(dragAt(panel, box, box.translated(0.f, 40.f)));
+            panel.mouseUp(dragAt(panel, box, box.translated(0.f, 40.f)));
+        }
+        check(note(3).durationTicks == 3 * beat / 2 && undoIs("Stretch Notes"), "dragged down ten steps it is 50 per cent: a beat and a half");
+        const auto beforeBad = submitter.nextUndo()->txnId;
+        check(!panel.typeField(Field::Stretch, "5") && !panel.typeField(Field::Stretch, "fast") && !root.error().empty() &&
+                  submitter.nextUndo()->txnId == beforeBad && panel.typeField(Field::Stretch, "100") && submitter.nextUndo()->txnId == beforeBad,
+              "under 10 per cent and a word are refused; 100 per cent changes nothing");
+        check(undo() && undo() && note(3).durationTicks == 2 * beat, "both stretches undone");
+
+        // Duration and Set Length.
+        check(panel.duration() == 0 && panel.durationMenu().getNumItems() == 7 && panel.durationTicks() == ed.gridTicks() && panel.chooseDuration(5) &&
+                  panel.durationTicks() == beat && !panel.chooseDuration(0) && !panel.chooseDuration(8),
+              "the Duration chooser: the editing grid's step first, then fixed lengths; 1/4 chosen");
+        ed.select({3});
+        click(panel.toolBox(Tool::FixedLength));
+        check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && submitter.nextUndo()->opCount == 1,
+              "Set Length gives the selected note the chosen length");
+        check(panel.chooseDuration(4), "1/8");
+        ed.select({});
+        click(panel.toolBox(Tool::FixedLength));
+        bool allEighths = true;
+        for (const auto &n : details().notes)
+            allEighths = allEighths && n.durationTicks == beat / 2;
+        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(1),
+              "with no note selected, every note; undone, and the Duration back on Grid");
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {

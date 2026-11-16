@@ -2969,6 +2969,15 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
         const auto fit = toolBox(Tool::FitToScale);
         return fit.isEmpty() ? fit : fit.withX(toolsArea().getX() + 6);
     }
+    if (field == Field::Interval) {
+        const auto add = toolBox(Tool::AddInterval);
+        return add.isEmpty() ? add : add.withX(toolsArea().getX() + 6);
+    }
+    if (field == Field::Stretch) {
+        // In the first column, beside x2 and /2.
+        const auto fit = toolBox(Tool::FitToScale), twice = toolBox(Tool::Double);
+        return fit.isEmpty() || twice.isEmpty() ? juce::Rectangle<int>() : fit.withX(toolsArea().getX() + 6).withY(twice.getY());
+    }
     if (field == Field::FilterA || field == Field::FilterB || field == Field::FilterC) {
         // In the filter bar: each after its name, beside the chooser.
         const int slot = field == Field::FilterA ? 0 : field == Field::FilterB ? 1 : 2;
@@ -3018,9 +3027,10 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     if (tabOf(tool) != toolsTab_)
         return {};
     const int half = (inner.getWidth() - 6) / 2;
-    // Two columns under the range: Transpose's field has the first place.
+    // Two columns of rows; on Pitch and Time the range has the first row, and a field often the first column.
     int row = 1, column = 1;
     switch (tool) {
+    // Functions.
     case Tool::VelocityAdd:
         break;
     case Tool::VelocityScale:
@@ -3038,6 +3048,7 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::Quantize:
         row = 8, column = 0;
         break;
+    // Pitch and Time, as Live's.
     case Tool::FitToScale:
         break;
     case Tool::Invert:
@@ -3046,17 +3057,36 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::Reverse:
         row = 2;
         break;
-    case Tool::Double:
-        row = 3, column = 0;
-        break;
-    case Tool::Halve:
+    case Tool::AddInterval:
         row = 3;
         break;
-    case Tool::Legato:
-        row = 4, column = 0;
-        break;
+    case Tool::Double:
+    case Tool::Halve: {
+        // x2 and /2 share the place beside the Stretch control.
+        const int each = (half - 4) / 2;
+        return {inner.getX() + half + 6 + (tool == Tool::Halve ? each + 4 : 0), inner.getY() + 4 * 22, each, kFieldBox};
+    }
     case Tool::FixedLength:
-        row = 4;
+        row = 5;
+        break;
+    case Tool::Legato:
+        row = 6, column = 0;
+        break;
+    // Chords.
+    case Tool::Chord:
+        row = 1;
+        break;
+    case Tool::InvertUp:
+        row = 2, column = 0;
+        break;
+    case Tool::InvertDown:
+        row = 2;
+        break;
+    case Tool::Drop2:
+        row = 3, column = 0;
+        break;
+    case Tool::Drop3:
+        row = 3;
         break;
     case Tool::OverlapsMono:
         row = 5, column = 0;
@@ -3064,40 +3094,72 @@ juce::Rectangle<int> ClipViewPanel::toolBox(Tool tool) const noexcept {
     case Tool::OverlapsPoly:
         row = 5;
         break;
-    case Tool::Chord:
-        row = 6;
-        break;
-    case Tool::InvertUp:
-        row = 7, column = 0;
-        break;
-    case Tool::InvertDown:
-        row = 7;
-        break;
-    case Tool::Drop2:
-        row = 8, column = 0;
-        break;
-    case Tool::Drop3:
-        row = 8;
-        break;
     }
     return {inner.getX() + column * (half + 6), inner.getY() + row * 22, half, kFieldBox};
 }
 int ClipViewPanel::tabOf(Tool tool) noexcept {
-    return tool == Tool::VelocityAdd || tool == Tool::VelocityScale || tool == Tool::VelocityLimit ||
-                   tool == Tool::DeleteDoubles || tool == Tool::RestrictPolyphony || tool == Tool::Quantize
-               ? 1
-               : 0;
+    switch (tool) {
+    case Tool::VelocityAdd:
+    case Tool::VelocityScale:
+    case Tool::VelocityLimit:
+    case Tool::DeleteDoubles:
+    case Tool::RestrictPolyphony:
+    case Tool::Quantize:
+        return 1;
+    case Tool::Chord:
+    case Tool::InvertUp:
+    case Tool::InvertDown:
+    case Tool::Drop2:
+    case Tool::Drop3:
+    case Tool::OverlapsMono:
+    case Tool::OverlapsPoly:
+        return 2;
+    default:
+        return 0;
+    }
 }
 void ClipViewPanel::setToolsTab(int tab) {
-    toolsTab_ = tab == 1 ? 1 : 0;
+    toolsTab_ = std::clamp(tab, 0, kToolTabs - 1);
     closeEditor();
     repaint();
 }
 juce::Rectangle<int> ClipViewPanel::tabBox(int tab) const noexcept {
     const auto title = toolsArea().withHeight(kTitleHeight);
-    if (title.isEmpty())
+    if (title.isEmpty() || tab < 0 || tab >= kToolTabs)
         return {};
-    return tab == 0 ? title.withWidth(88) : title.withTrimmedLeft(88);
+    return tab == 0 ? title.withWidth(88) : tab == 1 ? title.withTrimmedLeft(88).withWidth(62) : title.withTrimmedLeft(150);
+}
+juce::Rectangle<int> ClipViewPanel::durationBox() const noexcept {
+    const auto set = toolBox(Tool::FixedLength);
+    return set.isEmpty() ? set : set.withX(toolsArea().getX() + 6);
+}
+juce::PopupMenu ClipViewPanel::durationMenu() const {
+    juce::PopupMenu menu;
+    for (std::size_t i = 0; i < kDurations.size(); ++i)
+        menu.addItem(static_cast<int>(i) + 1, kDurations[i].name, true, i == duration_);
+    return menu;
+}
+bool ClipViewPanel::chooseDuration(int item) {
+    if (item < 1 || item > static_cast<int>(kDurations.size()))
+        return false;
+    duration_ = static_cast<std::size_t>(item - 1);
+    repaint();
+    return true;
+}
+std::int64_t ClipViewPanel::durationTicks() const noexcept {
+    const auto fixed = kDurations[duration_].ticks;
+    return fixed > 0 ? fixed : notes.gridTicks();
+}
+bool ClipViewPanel::stretch(int percent) {
+    if (!details_ || !midi())
+        return false;
+    if (percent < 10 || percent > 1000) {
+        root.say("A stretch is 10 to 1000 per cent.");
+        return false;
+    }
+    if (percent == 100)
+        return true;
+    return notes.apply(stretchNotes(*details_, notes.selected(), percent, 100));
 }
 int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     const auto range = [&](int a, int b) {
@@ -3146,6 +3208,9 @@ int *ClipViewPanel::plainField(Field field, int *low, int *high) noexcept {
     case Field::Voices:
         range(1, 16);
         return &voices;
+    case Field::Interval:
+        range(-48, 48);
+        return &intervalSize;
     case Field::QuantizeAmount:
         range(0, 100);
         return &quantizeAmount;
@@ -3192,7 +3257,9 @@ const char *ClipViewPanel::toolName(Tool tool) noexcept {
     case Tool::Legato:
         return "Legato";
     case Tool::FixedLength:
-        return "Fixed Length";
+        return "Set Length";
+    case Tool::AddInterval:
+        return "Add Interval";
     case Tool::OverlapsMono:
         return "Overlap Mono";
     case Tool::OverlapsPoly:
@@ -3248,8 +3315,15 @@ bool ClipViewPanel::runTool(Tool tool) {
         return notes.apply(stretchNotes(d, ids, 1, 2));
     case Tool::Legato:
         return notes.apply(legatoNotes(d, ids));
-    case Tool::FixedLength:
-        return notes.apply(fixedLengths(d, ids, notes.gridTicks()));
+    case Tool::FixedLength: {
+        // Set Length (manual 10.5.9.6): the Duration chooser's length for the selected notes, or all.
+        auto set = fixedLengths(d, ids, durationTicks());
+        for (auto &o : set.ops)
+            o.label = "Set Length";
+        return notes.apply(std::move(set));
+    }
+    case Tool::AddInterval:
+        return notes.apply(addInterval(d, ids, intervalSize, d.scale.local ? d.scale.mask : 0, static_cast<int>(d.scale.root)));
     case Tool::OverlapsMono:
         return notes.apply(deleteOverlaps(d, ids, false));
     case Tool::OverlapsPoly:
@@ -3348,7 +3422,8 @@ ClipViewPanel::Field ClipViewPanel::fieldAt(juce::Point<int> at) const noexcept 
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length, Field::Signature, Field::Scale,
                              Field::Transpose, Field::VelocityAmount, Field::VelocityPercent, Field::VelocityLow,
                              Field::VelocityHigh, Field::Voices, Field::RandomAmount, Field::RampStart, Field::RampEnd,
-                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing})
+                             Field::FilterA, Field::FilterB, Field::FilterC, Field::QuantizeAmount, Field::QuantizeSwing,
+                             Field::Interval, Field::Stretch})
         if (fieldBox(field).contains(at) && (midi() || (field != Field::Scale && field != Field::Transpose)))
             return field;
     return Field::None;
@@ -3401,6 +3476,14 @@ bool ClipViewPanel::typeField(Field field, const juce::String &typed) {
             numberChanged(field, true);
             return true;
         }
+    }
+    if (field == Field::Stretch) {
+        const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false).upToFirstOccurrenceOf("%", false, false);
+        if (trimmed.isEmpty() || !trimmed.containsOnly("0123456789") || trimmed.length() > 4) {
+            root.say("Type a stretch in per cent: 150.");
+            return false;
+        }
+        return stretch(trimmed.getIntValue());
     }
     if (field == Field::Transpose) {
         const auto trimmed = typed.trim().upToFirstOccurrenceOf(" ", false, false);
@@ -3463,6 +3546,7 @@ void ClipViewPanel::openEditor(Field field) {
                        : field == Field::Position  ? r.position
                        : field == Field::Length    ? r.length
                        : field == Field::Transpose ? juce::String("0")
+                       : field == Field::Stretch   ? juce::String("100")
                        : plainField(field) != nullptr ? juce::String(*plainField(field))
                                                    : r.signature;
     editor_.setBounds(fieldBox(field));
@@ -3497,7 +3581,7 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
         toggleLoop();
         return;
     }
-    for (int tab = 0; tab < 2; ++tab)
+    for (int tab = 0; tab < kToolTabs; ++tab)
         if (tabBox(tab).contains(at)) {
             setToolsTab(tab);
             return;
@@ -3527,6 +3611,15 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
                 if (safe != nullptr && item > 0)
                     safe->chooseColours(item);
             });
+        return;
+    }
+    if (durationBox().contains(at)) {
+        juce::Component::SafePointer<ClipViewPanel> safe(this);
+        durationMenu().showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withTargetScreenArea(localAreaToGlobal(durationBox())),
+                                     [safe](int item) {
+                                         if (safe != nullptr && item > 0)
+                                             safe->chooseDuration(item);
+                                     });
         return;
     }
     if (quantizeChooserBox().contains(at)) {
@@ -3691,6 +3784,8 @@ void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
         openEditor(field);
     else if (field == Field::Transpose)
         transpose(steps);
+    else if (field == Field::Stretch)
+        stretch(std::clamp(100 + 5 * steps, 10, 1000));
     else if (field == Field::Signature)
         commit(setClipSignature(*details_, signature.first, signature.second));
     else
@@ -3782,12 +3877,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
         // Transpose, and the utilities.
-        for (int tab = 0; tab < 2; ++tab) {
+        static constexpr const char *kTabNames[kToolTabs] = {"Pitch and Time", "Functions", "Chords"};
+        for (int tab = 0; tab < kToolTabs; ++tab) {
             const auto box = tabBox(tab);
             g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
             g.fillRect(box);
-            text(tab == 0 ? "Pitch and Time" : "Functions", box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft,
-                 look::text, 10.5f, tab == toolsTab_);
+            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, 10.5f, tab == toolsTab_);
         }
         if (toolsTab_ == 1) {
             // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
@@ -3833,6 +3928,28 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const auto semitones = fieldBox(Field::Transpose);
             look::box(g, semitones.toFloat(), look::chooser);
             text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+            // The Interval size: semitones, or the scale's degrees while Scale Mode is on.
+            const auto interval = fieldBox(Field::Interval);
+            const int size = std::clamp(intervalSize + (dragged_ && pressed_ == Field::Interval ? dragSteps_ : 0), -48, 48);
+            look::box(g, interval.toFloat(), look::chooser);
+            text((size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"), interval.reduced(3, 0),
+                 juce::Justification::centredRight, look::text, 11.f);
+            // The Stretch control: 100 per cent until it is dragged or typed.
+            const auto factor = fieldBox(Field::Stretch);
+            look::box(g, factor.toFloat(), look::chooser);
+            text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
+            text(juce::String(dragged_ && pressed_ == Field::Stretch ? std::clamp(100 + 5 * dragSteps_, 10, 1000) : 100) + "%", factor.reduced(3, 0),
+                 juce::Justification::centredRight, look::text, 11.f);
+            // The Duration chooser, beside Set Length.
+            const auto length = durationBox();
+            look::box(g, length.toFloat(), look::chooser);
+            text(kDurations[duration_].name, length.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+        }
+        if (toolsTab_ == 2) {
+            // ADI's Chords tab (ADR-0241 d2, from Cubase): the chord tools, and the overlap functions.
+            const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
+            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
             // The chord type's chooser, beside Add Chord.
             const auto chord = chordBox();
             look::box(g, chord.toFloat(), look::chooser);

@@ -953,6 +953,39 @@ void clipTime() {
     check(!cropNotes(audio, 0, beat, true).refusal.empty() && !deleteTime(audio, 0, beat).refusal.empty(), "an audio clip refuses them");
 }
 
+void intervals() {
+    ClipDetails c;
+    c.id = 7;
+    c.kind = "midi";
+    auto note = [](std::uint64_t id, int key, std::int64_t start) {
+        ClipNote n;
+        n.id = id;
+        n.key = static_cast<std::uint8_t>(key);
+        n.startTicks = start;
+        n.durationTicks = beat;
+        n.velocity = 77;
+        return n;
+    };
+    c.notes = {note(1, 60, 0), note(2, 61, beat), note(3, 125, 2 * beat)};
+    const auto keyOf = [](const NoteEdit &e, std::size_t i) { return e.ops[i].payload.at("key").get<int>(); };
+    const auto fifth = addInterval(c, {1}, 7);
+    check(fifth.ops.size() == 1 && fifth.ops[0].opType == "note.insert" && keyOf(fifth, 0) == 67 && fifth.ops[0].payload.at("start") == 0 &&
+              fifth.ops[0].payload.at("dur") == beat && fifth.ops[0].payload.at("vel") == 77 && fifth.ops[0].label == "Add Interval" &&
+              fifth.select.size() == 1 && fifth.select[0] == fifth.ops[0].payload.at("note").get<std::uint64_t>(),
+          "Add Interval: a new note a fifth above, with its note's start, length and velocity; the new note is the selection");
+    const auto all = addInterval(c, {}, -12);
+    check(all.ops.size() == 3 && keyOf(all, 0) == 48 && keyOf(all, 1) == 49 && keyOf(all, 2) == 113, "with none selected, beside every note; a negative size goes below");
+    check(addInterval(c, {3}, 7).ops.empty() && addInterval(c, {1}, 0).ops.empty(), "a note that would leave the ruler is left out; a size of 0 adds none");
+    // By the degrees of C major (mask 2741).
+    const auto third = addInterval(c, {1}, 2, 2741, 0);
+    check(third.ops.size() == 1 && keyOf(third, 0) == 64, "with the scale on, the size counts its degrees: two above C is E");
+    const auto below = addInterval(c, {1}, -1, 2741, 0);
+    check(keyOf(below, 0) == 59, "one degree below C is B");
+    const auto outside = addInterval(c, {2}, 1, 2741, 0);
+    check(outside.ops.size() == 1 && (keyOf(outside, 0) == 62 || keyOf(outside, 0) == 64),
+          "a note outside the scale counts from the nearest degree");
+}
+
 void midiClips() {
     engine::Snapshot snapshot;
     auto track = [](std::int64_t id, const char *kind, const char *name) {
@@ -1014,6 +1047,7 @@ int main() {
     scaleMode();
     noteFilters();
     clipTime();
+    intervals();
     midiClips();
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
