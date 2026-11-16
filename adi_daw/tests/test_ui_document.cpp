@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
@@ -342,6 +343,115 @@ void mixSurfacePublication(const std::filesystem::path &file) {
     document->release();
 }
 } // namespace
+// E5: ADI's import with choices (Live 12 manual 9.2; ADR-0132 d6): prepared on a connection of its
+// own, as the app's worker does, and committed through the document as one undo step.
+void importWithChoices(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "import-choices.adi", true, {}, error);
+    check(doc != nullptr, "a project for the import with choices");
+    if (!doc)
+        return;
+    // A fresh settings file: every choice off, and the prompt asks.
+    {
+        settings::AppSettings fresh(appdata::App::Daw, dir / "import-settings.json");
+        check(ui::importChoicesFrom(fresh) == ui::ImportChoices{} && ui::importAsks(fresh),
+              "the prompt's defaults are all off, and it asks");
+        ui::ImportChoices chosen;
+        chosen.copyIn = true;
+        chosen.edgeFades = true;
+        std::string why;
+        check(ui::keepImportChoices(fresh, chosen, why) && ui::importChoicesFrom(fresh) == chosen,
+              "Import keeps the choices as the last ones");
+    }
+    // A second of a tone, outside the project's folder.
+    const auto outside = dir / "outside";
+    std::filesystem::create_directories(outside);
+    const auto wav = outside / "Tone.wav";
+    {
+        std::vector<float> samples(48000);
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(0.5 * std::sin(static_cast<double>(i) * 2 * 3.14159265358979 * 220 / 48000.));
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto audioTrack = [&] {
+        for (const auto &t : doc->view().current()->tracks)
+            if (t && t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&](std::int64_t track) {
+        std::size_t n = 0;
+        if (const auto *t = doc->view().current()->findTrack(track))
+            n = t->clips.size();
+        return n;
+    };
+    // Copy on: the file lands in the project's folder and plays from there, in one undo step.
+    ui::ImportChoices copy;
+    copy.copyIn = true;
+    const auto before = doc->ops().nextUndo();
+    auto job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'000);
+    auto prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(prepared.edit.ok && clipsOn(audioTrack) == 0, "prepared on its own connection, nothing written yet");
+    const auto clip = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    check(clip != 0 && clipsOn(audioTrack) == 1, "committed: one clip on the track");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        const auto rel = db.execAndGet("SELECT rel_path FROM media_files ORDER BY id DESC LIMIT 1").getString();
+        const auto copied = doc->store().path().parent_path() / ui::pathFromUtf8(rel);
+        check(std::filesystem::exists(copied) && copied.parent_path().filename() == "audio" &&
+                  copied.parent_path().parent_path() == doc->store().path().parent_path(),
+              "the file was copied into the project's audio folder, and the pool points there");
+    }
+    const auto step = doc->ops().nextUndo();
+    check(step && (!before || step->txnId != before->txnId), "one undo step");
+    check(doc->ops().undo().ok && (doc->synchronise(), clipsOn(audioTrack) == 0), "one undo takes the clip and its pool row away");
+    // Create Fades on Clip Edges on: the clip has short fades at both ends.
+    ui::ImportChoices fades;
+    fades.edgeFades = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, fades, 1'700'000'000'000'001);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto faded = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    bool edges = false;
+    if (const auto *t = doc->view().current()->findTrack(audioTrack))
+        for (const auto &c : t->clips)
+            if (c->id == faded)
+                edges = c->fadeInTicks > 0 && c->fadeOutTicks > 0;
+    check(faded != 0 && edges, "Create Fades on Clip Edges gives the clip fades at both ends");
+    doc->ops().undo();
+    doc->synchronise();
+    // Warp on, a second of a tone with no beat in it: a named refusal, nothing written.
+    ui::ImportChoices warp;
+    warp.warp = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, warp, 1'700'000'000'000'002);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("Tone.wav") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "Warp on with no beat to find is refused, named, and nothing lands");
+    // The project changed between preparing and committing: stale, and nothing is left.
+    job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'003);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", audioTrack}, {"name", "Renamed"}};
+    check(doc->ops().submit(std::move(rename)).ok, "an edit lands meanwhile");
+    doc->synchronise();
+    std::int64_t media = 0;
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        media = db.execAndGet("SELECT count(*) FROM media_files").getInt64();
+    }
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("changed") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "the import prepared before it refuses as stale");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        check(db.execAndGet("SELECT count(*) FROM media_files").getInt64() == media, "and leaves no pool row");
+    }
+    doc->release();
+}
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -1185,6 +1295,7 @@ int main(int argc, char **argv) {
         }
     }
     refusedBeginOwnership(temp.path());
+    importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

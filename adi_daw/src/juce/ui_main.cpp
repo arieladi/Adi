@@ -192,6 +192,8 @@ class AdiApplication final : public juce::JUCEApplication,
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
+        if (import_.joinable())
+            import_.join();
         stopLibrary();
         stopTimer();
         chooser_.reset();
@@ -392,6 +394,33 @@ class AdiApplication final : public juce::JUCEApplication,
                 return ok;
             };
         }
+        // ADI's import with choices (E5): prepared on a worker of its own, against a connection of
+        // its own on the project's file; committed back on the message thread, to the same document
+        // only, as one undo step (stale when the project moved meanwhile).
+        root->importMaterial = [this](const std::string &path, std::int64_t track, std::int64_t pos,
+                                      const ImportChoices &choices, AdiRootComponent::MaterialDone done) {
+            if (importing_ && importing_->load())
+                return false;
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            const auto job = document_->materialJob(path, track, pos, choices, now);
+            if (import_.joinable())
+                import_.join(); // the last one has finished
+            importing_ = std::make_shared<std::atomic<bool>>(true);
+            const auto *document = document_.get();
+            import_ = std::thread([this, job, done = std::move(done), document, running = importing_] {
+                auto prepared = std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterial(job));
+                running->store(false);
+                juce::MessageManager::callAsync([this, job, done, document, prepared] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || !root_ || document_.get() != document)
+                        return;
+                    const auto clip = document_->commitMaterial(*prepared, job);
+                    if (clip != 0 && !document_->synchronise())
+                        report(document_->error());
+                    done(clip, clip != 0 ? std::string{} : document_->error());
+                });
+            });
+            return true;
+        };
         root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
             // The history's clock: microseconds UTC.
             const auto now = juce::Time::currentTimeMillis() * 1000;
@@ -802,6 +831,9 @@ class AdiApplication final : public juce::JUCEApplication,
     bool libraryReady_ = false;
     // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
     std::thread export_;
+    // The import with choices' worker (E5) and whether it runs.
+    std::thread import_;
+    std::shared_ptr<std::atomic<bool>> importing_;
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
     // from; the engine refuses a paste into another project and says so.
     std::optional<adi::DeviceCopy> deviceClipboard_;

@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -172,6 +173,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool splitAllWithNoSelection() const noexcept { return splitAll_; }
     // The settings, read where an engine edit captures the editing policy (`edit_plan::capturePolicy`).
     const settings::AppSettings &settings() const noexcept { return settings_; }
+    // For what the window writes back: the import prompt's last choices (E5).
+    settings::AppSettings &writableSettings() noexcept { return settings_; }
     // The Arrangement's clipboard (Live 12 manual 6.9, 41.5; E2, N17): a clip's copy or a time
     // selection's, values the engine made (`copyClip`, `copyRange`), never ops. It is the app's, as
     // the device clipboard is, so it outlives a window; the engine refuses it in another project.
@@ -269,6 +272,19 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // ADI's import with choices (E5): the file prepared off the message thread with the prompt's
+    // Warp, edge fades and copy (the document's `prepareMaterial`), then committed here as one undo
+    // step; `done` comes on the message thread with the new clip's id, or 0 and why not. False when
+    // it could not start. Unset, the choices are not offered and the plain import runs.
+    using MaterialDone = std::function<void(std::int64_t clip, const std::string &why)>;
+    std::function<bool(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const ImportChoices &,
+                       MaterialDone done)>
+        importMaterial;
+    // ADI's import prompt (E5): open while a drop waits for its choices; none otherwise.
+    class ImportPrompt;
+    ImportPrompt *importPrompt() noexcept { return importPrompt_.get(); }
+    // Whether a drop with choices is still going: its files land one at a time.
+    bool importing() const noexcept { return importing_.has_value(); }
     // Live's Automation Arm and Re-Enable Automation (manual 25.1, 25.4; MR 6.1; N26): the
     // session's state, which the document owns, so the application sets these three. Re-Enable's
     // lit state is the snapshot's (`SnapshotReader::automationOverridden`); a click runs
@@ -285,6 +301,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Several files dropped at once, each a (path, clip name): one after another on that track, or
     // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
     // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
+    // The drop once the choices are known: the plain import when all are off, else the queue.
+    bool dropWithChoices(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                         std::int64_t pos, bool separate, const ImportChoices &);
     bool dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
                         std::int64_t pos, bool separate);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
@@ -572,6 +591,21 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
+    // E5: the prompt while open, and a drop with choices landing one file at a time.
+    std::unique_ptr<ImportPrompt> importPrompt_;
+    struct PendingImport {
+        std::vector<std::pair<std::string, std::string>> files;
+        std::int64_t track = 0, pos = 0;
+        bool separate = false;
+        ImportChoices choices;
+        std::size_t next = 0;
+        std::int64_t firstClip = 0, firstTrack = 0;
+    };
+    std::optional<PendingImport> importing_;
+    bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
+                   bool separate);
+    void importNext();
+    void finishImport(const std::string &why);
     StubMixViewProvider mixStub_;
     const MixViewProvider *mixProvider_ = &mixStub_;
     ReferenceAudition reference_;
@@ -645,5 +679,25 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     int tipDelayMs_ = 0;
     std::unique_ptr<ShellMenu> menu_;
     juce::VBlankAttachment clock_;
+};
+// ADI's import prompt (E5; Live 12 manual 9.2.1, 9.2.2, 5.7; ADR-0132 d6): what dropped audio is
+// imported with. Its own choices, all off by default; Import keeps them as the last ones (the
+// settings), Cancel imports nothing. It is ADI's dialog: Live imports without asking.
+class AdiRootComponent::ImportPrompt final : public juce::Component {
+  public:
+    ImportPrompt(std::size_t files, const ImportChoices &, std::function<void(std::optional<ImportChoices>)> answer);
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    // What the toggles say now.
+    ImportChoices choices() const;
+    // Import or Cancel, as the buttons do.
+    void answer(bool import);
+    juce::ToggleButton warp{"Warp"}, fades{"Create Fades on Clip Edges"}, copy{"Copy into the project's folder"};
+    juce::ComboBox mode;
+    juce::TextButton import{"Import"}, cancel{"Cancel"};
+
+  private:
+    juce::String title_;
+    std::function<void(std::optional<ImportChoices>)> answer_;
 };
 } // namespace adi::ui

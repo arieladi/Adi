@@ -493,6 +493,69 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+ProjectDocument::MaterialJob ProjectDocument::materialJob(const std::string &utf8Path, std::int64_t track,
+                                                          std::int64_t atTicks, const ImportChoices &choices,
+                                                          std::int64_t nowUtc) const {
+    MaterialJob job;
+    job.project = store_->path();
+    job.source = pathFromUtf8(utf8Path);
+    job.track = track;
+    job.atTicks = atTicks;
+    job.importedUtc = nowUtc;
+    job.choices = choices;
+    job.rate = engineRate_ > 0 ? engineRate_ : 48000.0;
+    // The next free ids as the project stands; a project changed before the commit refuses as stale.
+    job.clipId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
+    job.mediaId = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    return job;
+}
+clip_edit::MaterialEdit ProjectDocument::prepareMaterial(const MaterialJob &job, std::stop_token stop) {
+    clip_edit::MaterialEdit out;
+    // A connection of the worker's own on the project's file (SPEC §3.8): the import only reads it.
+    StoreError error{};
+    auto store = Store::open(job.project, error, false);
+    if (!store) {
+        out.edit.error = "the project could not be read for the import: " + std::string(toString(error));
+        return out;
+    }
+    clip_edit::ImportOptions options;
+    options.source = job.source;
+    options.track = job.track;
+    options.clipId = job.clipId;
+    options.mediaId = job.mediaId;
+    options.importedUtc = job.importedUtc;
+    options.at = {0, job.atTicks};
+    options.copyIn = job.choices.copyIn;
+    options.warp = job.choices.warp;
+    options.edgeFades = job.choices.edgeFades;
+    options.warpMode = job.choices.mode;
+    options.stop = stop;
+    out = clip_edit::prepareImportAudio(*store, options, job.rate);
+    return out;
+}
+std::int64_t ProjectDocument::commitMaterial(clip_edit::MaterialEdit &material, const MaterialJob &job) {
+    const auto name = job.source.filename().u8string();
+    const std::string file(name.begin(), name.end());
+    if (!material.edit.ok) {
+        // The engine's words, with the file named; an indeterminate beat with Warp on says what to do.
+        const auto &why = material.edit.error;
+        if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
+            error_ = file + ": ADI found no steady beat to warp it by. Import it with Warp off, or set its tempo first.";
+        else
+            error_ = file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
+        return 0;
+    }
+    const auto result = ops_.commitPrepared(material.edit.requests, [&](Store &s, Actor actor) {
+        return clip_edit::commitMaterial(s, material, actor);
+    });
+    if (!result) {
+        error_ = result.stale ? "The project changed while " + file + " was being prepared: drop it again."
+                              : result.error;
+        return 0;
+    }
+    error_.clear();
+    return job.clipId;
+}
 bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &expected,
                                           std::uint64_t stamp) {
     const bool pending = realisedGeneration_ != view_.generation();

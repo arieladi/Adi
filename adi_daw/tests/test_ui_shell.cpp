@@ -3231,6 +3231,109 @@ void clipClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     commands.detach(root);
     document->release();
 }
+// E5: ADI's import prompt (Live 12 manual 9.2; ADR-0132 d6): a drop asks while
+// `editing.importOptions` is "ask", its choices all off by default and kept as the last ones.
+void importPrompt(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "import-prompt.adi", true, {}, error);
+    check(document != nullptr, "a project for the import prompt");
+    if (!document)
+        return;
+    const auto wav = dir / "Prompted.wav";
+    {
+        std::vector<float> samples(24000, .2f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "import-prompt");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.importAudio = [&](const std::string &path, AudioImport &out, std::string &why) {
+        if (document->prepareImport(path, 1'700'000'000'000'000, out))
+            return true;
+        why = document->error();
+        return false;
+    };
+    // As the app's worker does, here on the spot.
+    std::vector<ImportChoices> asked;
+    root.importMaterial = [&](const std::string &path, std::int64_t track, std::int64_t pos, const ImportChoices &choices,
+                              AdiRootComponent::MaterialDone done) {
+        asked.push_back(choices);
+        auto job = document->materialJob(path, track, pos, choices, 1'700'000'000'000'000);
+        auto prepared = ProjectDocument::prepareMaterial(job);
+        const auto clip = document->commitMaterial(prepared, job);
+        document->synchronise();
+        done(clip, clip != 0 ? std::string{} : document->error());
+        return true;
+    };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    std::string why;
+    settings.set("editing.importOptions", std::string("ask"), {}, why);
+    check(keepImportChoices(settings, ImportChoices{}, why), "the choices start off");
+    const auto audioTrack = [&] {
+        for (const auto &t : root.reader().tracks())
+            if (t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&] {
+        const auto *t = root.reader().findTrack(audioTrack);
+        return t != nullptr ? t->clips.size() : std::size_t{0};
+    };
+    // A drop asks first, every choice off.
+    check(root.dropAudio(wav.string(), audioTrack, 0, "Prompted") && root.importPrompt() != nullptr &&
+              root.importPrompt()->isVisible() && clipsOn() == 0,
+          "a drop opens the prompt and imports nothing yet");
+    if (auto *prompt = root.importPrompt()) {
+        check(prompt->choices() == ImportChoices{} && !prompt->mode.isEnabled(), "every choice off; the Warp mode waits for Warp");
+        prompt->copy.setToggleState(true, juce::dontSendNotification);
+        prompt->warp.setToggleState(true, juce::sendNotificationSync);
+        check(prompt->mode.isEnabled(), "Warp on offers its mode");
+        prompt->warp.setToggleState(false, juce::sendNotificationSync);
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(picture);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-import-prompt.png");
+            file.deleteFile();
+            juce::FileOutputStream out(file);
+            juce::PNGImageFormat().writeImageToStream(picture, out);
+        }
+        prompt->import.triggerClick();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    }
+    root.frame();
+    check(root.importPrompt() == nullptr && asked.size() == 1 && asked[0].copyIn && !asked[0].warp && clipsOn() == 1,
+          "Import: the file is imported with Copy on, as one clip");
+    check(settings.get("files.copyImportedMedia") == "always", "the choice is kept as the last one");
+    // The next drop asks again, with the last choices; Cancel imports nothing.
+    check(root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr &&
+              root.importPrompt()->choices().copyIn,
+          "the prompt opens again with the last choices");
+    if (auto *prompt = root.importPrompt())
+        prompt->cancel.triggerClick();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    root.frame();
+    check(root.importPrompt() == nullptr && asked.size() == 1 && clipsOn() == 1, "Cancel imports nothing");
+    // Not asking: the last choices are used straight away.
+    settings.set("editing.importOptions", std::string("never"), {}, why);
+    check(root.dropAudio(wav.string(), audioTrack, 4 * textproj::kWhole, "Prompted") && root.importPrompt() == nullptr &&
+              asked.size() == 2 && asked[1].copyIn && clipsOn() == 2,
+          "with the prompt off, the last choices import at once");
+    // All off and not asking: the plain import, as before E5.
+    keepImportChoices(settings, ImportChoices{}, why);
+    check(root.dropAudio(wav.string(), audioTrack, 8 * textproj::kWhole, "Prompted") && asked.size() == 2 && clipsOn() == 3,
+          "every choice off: the plain import, no material import");
+    settings.set("editing.importOptions", std::string("ask"), {}, why);
+    settings.save(why);
+    commands.detach(root);
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -9868,6 +9971,7 @@ int main(int argc, char **argv) {
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
+    importPrompt(commands, settings, temp.path());
     browserDevices(commands, temp.path());
     splitAndRangeEdits(commands, settings, temp.path());
     clipClipboard(commands, temp.path());

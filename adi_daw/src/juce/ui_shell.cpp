@@ -1880,11 +1880,131 @@ bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track
 }
 bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
                                       std::int64_t track, std::int64_t pos, bool separate) {
-    // Where it lands is checked before the files are read; the batch is built from the CURRENT cell.
+    // Where it lands is checked before anything is asked or read.
     if (!view_.current())
         return fail("Dropping audio needs an open project.");
     if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
         return fail(std::move(refusal));
+    if (importing_)
+        return fail("The last drop is still being imported.");
+    // ADI's prompt (E5) while `editing.importOptions` asks and the import with choices is wired;
+    // else the last choices.
+    const auto last = importChoicesFrom(commands_.settings());
+    if (importMaterial && importAsks(commands_.settings())) {
+        importPrompt_ = std::make_unique<ImportPrompt>(
+            files.size(), last,
+            [this, files, track, pos, separate](std::optional<ImportChoices> answer) {
+                // The prompt goes once it is answered (deleted after its own click returns); the drop
+                // goes on with its choices.
+                if (importPrompt_) {
+                    removeChildComponent(importPrompt_.get());
+                    juce::MessageManager::callAsync([prompt = std::shared_ptr<ImportPrompt>(importPrompt_.release())] {});
+                }
+                if (!answer) {
+                    say("Nothing imported.");
+                    return;
+                }
+                std::string why;
+                if (!keepImportChoices(commands_.writableSettings(), *answer, why))
+                    say("The import's choices were not kept: " + why);
+                dropWithChoices(files, track, pos, separate, *answer);
+            });
+        addAndMakeVisible(*importPrompt_);
+        importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 214));
+        importPrompt_->toFront(true);
+        return true;
+    }
+    return dropWithChoices(files, track, pos, separate, last);
+}
+bool AdiRootComponent::dropWithChoices(const std::vector<std::pair<std::string, std::string>> &files,
+                                       std::int64_t track, std::int64_t pos, bool separate,
+                                       const ImportChoices &choices) {
+    if (!choices.any() || !importMaterial)
+        return dropPlain(files, track, pos, separate);
+    if (files.empty())
+        return fail("Drop an audio file.");
+    // One file at a time, each one undo step: the engine imports one file into one clip.
+    importing_ = PendingImport{files, track, std::max<std::int64_t>(0, pos), separate, choices, 0, 0, 0};
+    importNext();
+    return true;
+}
+void AdiRootComponent::finishImport(const std::string &why) {
+    if (!importing_)
+        return;
+    const auto first = importing_->firstClip, onTrack = importing_->firstTrack;
+    importing_.reset();
+    if (first != 0) {
+        // The first clip selected, as a click on it selects it.
+        auto &sel = arrangement.geometry.selection;
+        sel.track = onTrack;
+        sel.toTrack = 0;
+        sel.picked.clear();
+        sel.clip = first;
+        sel.pickedClips.clear();
+        if (const auto now = view_.current())
+            if (const auto *t = now->findTrack(onTrack))
+                for (const auto &c : t->clips)
+                    if (c->id == first) {
+                        sel.start = c->posTicks;
+                        sel.end = c->posTicks + c->lengthTicks;
+                    }
+        publishSelection();
+    }
+    if (!why.empty())
+        say(why);
+    else
+        error_.clear();
+    dirty_.mark(DirtySet::Status);
+}
+void AdiRootComponent::importNext() {
+    if (!importing_)
+        return;
+    auto &job = *importing_;
+    if (job.next >= job.files.size())
+        return finishImport({});
+    const auto current = view_.current();
+    if (!current)
+        return finishImport("The project closed during the import.");
+    // A new audio track first when the drop asks for one: below the tracks, or each file after the
+    // first with Ctrl/Cmd held. Its own undo step.
+    std::int64_t on = job.track;
+    if (on == 0 || (job.separate && job.next > 0)) {
+        auto made = newAudioTrack(*current, &commands_.recordingDefaults());
+        if (!submitEdits(std::move(made.ops)))
+            return finishImport(error_);
+        on = made.select;
+        if (job.track == 0)
+            job.track = on;
+    }
+    const auto at = job.pos;
+    const auto &[path, name] = job.files[job.next];
+    say("Importing " + name + "...");
+    const bool started = importMaterial(path, on, at, job.choices, [this, on](std::int64_t clip, const std::string &why) {
+        if (!importing_)
+            return;
+        if (clip == 0)
+            return finishImport(why.empty() ? std::string("The file was not imported.") : why);
+        auto &pending = *importing_;
+        if (pending.firstClip == 0) {
+            pending.firstClip = clip;
+            pending.firstTrack = on;
+        }
+        // The next file after this one on the same track; on its own track it starts where the drop did.
+        if (!pending.separate)
+            if (const auto now = view_.current())
+                if (const auto *t = now->findTrack(on))
+                    for (const auto &c : t->clips)
+                        if (c->id == clip)
+                            pending.pos = c->posTicks + c->lengthTicks;
+        ++pending.next;
+        importNext();
+    });
+    if (!started && importing_)
+        finishImport(error_.empty() ? std::string("The import could not start.") : error_);
+}
+bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
+                                 std::int64_t track, std::int64_t pos, bool separate) {
+    // The batch is built from the CURRENT cell.
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
     // Each file captured before the batch lands: a new pool row takes an id past the ones the files
@@ -3055,5 +3175,79 @@ bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
 bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
     // A held key comes up wherever the focus is: the root lets it go.
     return root_->keyStateChanged(isKeyDown);
+}
+AdiRootComponent::ImportPrompt::ImportPrompt(std::size_t files, const ImportChoices &choices,
+                                             std::function<void(std::optional<ImportChoices>)> answer)
+    : title_(files == 1 ? juce::String("Import Audio") : "Import " + juce::String(static_cast<int>(files)) + " Audio Files"),
+      answer_(std::move(answer)) {
+    for (auto *b : {&warp, &fades, &copy})
+        addAndMakeVisible(*b);
+    warp.setToggleState(choices.warp, juce::dontSendNotification);
+    fades.setToggleState(choices.edgeFades, juce::dontSendNotification);
+    copy.setToggleState(choices.copyIn, juce::dontSendNotification);
+    // Live's Warp modes, in Live's order (manual 9.2.1); ADI's stretch is its own (ADR-0061).
+    int item = 1;
+    for (const auto m : {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture, audio::WarpMode::RePitch,
+                         audio::WarpMode::Complex, audio::WarpMode::ComplexPro}) {
+        static const char *names[] = {"Beats", "Tones", "Texture", "Re-Pitch", "Complex", "Complex Pro"};
+        mode.addItem(names[item - 1], item);
+        if (m == choices.mode)
+            mode.setSelectedId(item, juce::dontSendNotification);
+        ++item;
+    }
+    mode.setEnabled(choices.warp);
+    warp.onClick = [this] { mode.setEnabled(warp.getToggleState()); };
+    addAndMakeVisible(mode);
+    addAndMakeVisible(import);
+    addAndMakeVisible(cancel);
+    import.onClick = [this] { answer(true); };
+    cancel.onClick = [this] { answer(false); };
+    setWantsKeyboardFocus(true);
+}
+ImportChoices AdiRootComponent::ImportPrompt::choices() const {
+    ImportChoices out;
+    out.warp = warp.getToggleState();
+    out.edgeFades = fades.getToggleState();
+    out.copyIn = copy.getToggleState();
+    static constexpr audio::WarpMode modes[] = {audio::WarpMode::Beats, audio::WarpMode::Tones, audio::WarpMode::Texture,
+                                                audio::WarpMode::RePitch, audio::WarpMode::Complex, audio::WarpMode::ComplexPro};
+    if (const auto id = mode.getSelectedId(); id >= 1 && id <= 6)
+        out.mode = modes[id - 1];
+    return out;
+}
+void AdiRootComponent::ImportPrompt::answer(bool importing) {
+    if (!answer_)
+        return;
+    auto reply = std::move(answer_);
+    answer_ = nullptr;
+    reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt);
+}
+void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
+    // A panel in Live's look: its title bar, then the choices, then a line on where they live.
+    g.setColour(look::panel);
+    g.fillRoundedRectangle(getLocalBounds().toFloat(), 5.f);
+    g.setColour(look::field);
+    g.fillRect(getLocalBounds().withHeight(24).reduced(1, 1));
+    g.setColour(look::text);
+    g.setFont(look::font(13.f, true));
+    g.drawText(title_, getLocalBounds().withHeight(24).reduced(8, 0), juce::Justification::centredLeft);
+    g.setFont(look::font(11.f));
+    g.drawFittedText("All off by default. The last choices are kept; Settings > Editing > Audio import options "
+                     "turns this prompt off.",
+                     getLocalBounds().withTrimmedTop(126).withHeight(34).reduced(10, 0), juce::Justification::topLeft, 2);
+    g.setColour(look::separator);
+    g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.f, 1.f);
+}
+void AdiRootComponent::ImportPrompt::resized() {
+    auto r = getLocalBounds().withTrimmedTop(32).reduced(10, 0);
+    auto row = r.removeFromTop(26);
+    warp.setBounds(row.removeFromLeft(90));
+    mode.setBounds(row.removeFromLeft(150).reduced(0, 2));
+    fades.setBounds(r.removeFromTop(26));
+    copy.setBounds(r.removeFromTop(26));
+    auto foot = getLocalBounds().removeFromBottom(40).reduced(10, 8);
+    cancel.setBounds(foot.removeFromRight(80));
+    foot.removeFromRight(8);
+    import.setBounds(foot.removeFromRight(80));
 }
 } // namespace adi::ui
