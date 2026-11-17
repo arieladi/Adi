@@ -6494,6 +6494,10 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "the View menu's Horizontally and Automatically choose the same");
         check(panel.chooseTitleItem(3) && panel.panelsFolded() && panel.panelsEdge().isEmpty() && panel.chooseTitleItem(3) && !panel.panelsFolded(),
               "Fold, in the title's menu, folds the panels and brings them back");
+        // Navigate > Clip View (manual 41.2): a hidden Clip View is shown first.
+        check(root.state().clipView && root.command(C::ToggleClipView) && !root.state().clipView && root.command(C::FocusClipView) &&
+                  root.state().clipView && panel.details() != nullptr,
+              "Navigate > Clip View shows a hidden Clip View, its clip still in it, and gives its editor the keyboard");
     }
 }
 
@@ -11175,7 +11179,7 @@ int main(int argc, char **argv) {
                       C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
-                      C::LastId == C::ArrangePanelsVertically,
+                      C::FocusClipView == C::ArrangePanelsVertically + 1 && C::LastId == C::FocusClipView,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -11200,9 +11204,11 @@ int main(int argc, char **argv) {
                           named(C::DrawMode).shortName == "Draw Mode" && on(C::DrawMode, 'b', 0) &&
                           named(C::ArrangePanelsAutomatically).shortName == "Arrange Clip View Panels Automatically" &&
                           named(C::ArrangePanelsHorizontally).shortName == "Arrange Clip View Panels Horizontally" &&
-                          named(C::ArrangePanelsVertically).shortName == "Arrange Clip View Panels Vertically",
+                          named(C::ArrangePanelsVertically).shortName == "Arrange Clip View Panels Vertically" &&
+                          named(C::FocusClipView).shortName == "Clip View" && on(C::FocusClipView, '3', alted),
                       "Invert Selection, Quantize, Quantize Settings, Crop Clip, Expand Clip View, Fold to Notes, Fold to Scale, "
-                      "Highlight Scales and Draw Mode are named, each on Live's key; then the three that arrange the Clip View's panels");
+                      "Highlight Scales and Draw Mode are named, each on Live's key; then the three that arrange the Clip View's panels, "
+                      "and the Navigate menu's Clip View on Alt/Option+3");
             }
             juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
             commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
@@ -11276,7 +11282,7 @@ int main(int argc, char **argv) {
               "the Create menu inserts tracks, returns too (§18.4), then an empty MIDI clip, then a time signature "
               "change (§6.5), then Add and Delete Locator (§6.4), then Create Fade In/Out and Delete "
               "Fades/Crossfades (§6.8)");
-        check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
+        check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement, C::FocusClipView,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
                                                     C::TabMovesFocus, C::WrapTabNavigation},

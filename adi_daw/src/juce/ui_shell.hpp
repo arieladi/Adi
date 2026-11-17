@@ -150,7 +150,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArrangePanelsAutomatically,
         ArrangePanelsHorizontally,
         ArrangePanelsVertically,
-        LastId = ArrangePanelsVertically
+        FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
+        LastId = FocusClipView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

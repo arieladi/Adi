@@ -197,7 +197,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically"};
+                                  "Arrange Clip View Panels Vertically", "Clip View"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -516,6 +516,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case FocusArrangement:
         info.addDefaultKeypress('2', alt);
+        break;
+    case FocusClipView: // §41.2: the Clip View's editor
+        info.addDefaultKeypress('3', alt);
         break;
     case FocusDeviceView:
         info.addDefaultKeypress('4', alt);
@@ -2910,6 +2913,18 @@ bool AdiRootComponent::focusView(int id) {
     case AppCommands::FocusArrangement:
         arrangement.canvas.grabKeyboardFocus();
         return true;
+    case AppCommands::FocusClipView:
+        // The editor of the clip shown: the Note Editor or the Sample Editor. With no clip, the
+        // view itself, empty as it is.
+        if (!showClipView())
+            return false;
+        if (clipView.details() == nullptr)
+            clipView.grabKeyboardFocus();
+        else if (clipView.midi())
+            clipView.notes.grabKeyboardFocus();
+        else
+            clipView.sample.grabKeyboardFocus();
+        return true;
     case AppCommands::FocusDeviceView:
         if (!state_.docked && !command(AppCommands::ToggleDeviceView))
             return false;
@@ -3338,6 +3353,7 @@ bool AdiRootComponent::command(int id) {
                fail("Select a track to rename.");
     case AppCommands::FocusControlBar:
     case AppCommands::FocusArrangement:
+    case AppCommands::FocusClipView:
     case AppCommands::FocusDeviceView:
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
@@ -3433,10 +3449,10 @@ const std::vector<MenuEntries> &menuBar() {
          {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::SoloInPlace, 0, C::Settings}},
 #endif
-        // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
-        // Pool and the Learn View come with those views; the Mixer with its keyboard.
+        // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
+        // Learn View come with those views; the Mixer with its keyboard.
         {"Navigate",
-         {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser, 0,
+         {C::FocusControlBar, C::FocusArrangement, C::FocusClipView, C::FocusDeviceView, C::FocusBrowser, 0,
           C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
           C::WrapTabNavigation}},
         {"Help", {}}};
