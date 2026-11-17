@@ -115,6 +115,13 @@ class NoteEditor final : public juce::Component {
     // keyboard, says which through `contextOverride`.
     bool hasContext() const;
     std::optional<bool> contextOverride;
+    // One command of the editor as a menu shows it now: its words, whether it can act, whether it is
+    // ticked. The editor's own menu and the window's Edit, View and Options menus read the same entry.
+    struct ContextEntry {
+        juce::String text;
+        bool enabled = true, ticked = false;
+    };
+    ContextEntry contextEntry(int item) const;
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
     // What a right-click does before its menu opens: a note under it that is not selected is selected.

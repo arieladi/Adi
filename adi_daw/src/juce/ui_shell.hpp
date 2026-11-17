@@ -136,7 +136,17 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         InsertSilence,
         CreateFade,
         DeleteFades,
-        LastId = DeleteFades
+        // The Note Editor's own (manual 10.5 and on): in the Edit, View and Options menus.
+        InvertSelection,
+        Quantize,
+        QuantizeSettings,
+        CropClip,
+        ExpandClipView,
+        FoldToNotes,
+        FoldToScale,
+        HighlightScales,
+        DrawMode,
+        LastId = DrawMode
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -588,6 +598,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void toggleClipViewFull();
     // Whether the Clip View's Note Editor is the view in use, so that the Edit menu's commands are its own.
     bool noteEditorHasContext() const;
+    // Whether the Clip View shows a MIDI clip's notes: the editor's own switches (the folds, Highlight
+    // Scales, Draw Mode) can then be thrown from the menus, with the keyboard anywhere.
+    bool noteEditorShown() const;
     bool clipViewFull() const noexcept { return clipViewRestore_ > 0; }
 
   private:

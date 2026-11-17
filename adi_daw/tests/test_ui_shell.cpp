@@ -5945,6 +5945,14 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
     ed.mouseDown(pressAt(ed, brace));
     ed.mouseUp(pressAt(ed, brace));
     check(ed.rulerSelection() == NoteEditor::RulerPart::Loop && details().notes.size() == 5, "the loop brace selected");
+    {
+        ed.contextOverride = true;
+        juce::ApplicationCommandInfo duplicateInfo(AppCommands::Duplicate);
+        commands.getCommandInfo(AppCommands::Duplicate, duplicateInfo);
+        check(duplicateInfo.shortName == "Duplicate Loop" && (duplicateInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0,
+              "with the brace selected, the Edit menu's Duplicate reads Duplicate Loop");
+        ed.contextOverride.reset();
+    }
     check(ed.keyPressed(key('d', command)) && details().loopLengthTicks == 5 * beat && details().loopStartTicks == 3 * beat && details().loopEnabled &&
               details().notes.size() == 6 && note(5).startTicks == 9 * beat + beat / 2 && note(4).startTicks == 5 * beat && undoIs("Duplicate Loop") &&
               submitter.nextUndo()->opCount == 3,
@@ -6338,6 +6346,82 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::SelectAll);
         check(ed.selected() == selectedBefore, "with the editor not in use, Edit > Select All is the arrangement's again");
         ed.contextOverride.reset();
+        ed.select({});
+    }
+
+    // The editor's other commands in the window's Edit, View and Options menus (manual 10.5 and on).
+    {
+        using C = AppCommands;
+        const auto info = [&](int id) {
+            juce::ApplicationCommandInfo i(id);
+            commands.getCommandInfo(id, i);
+            return i;
+        };
+        const auto active = [&](int id) { return (info(id).flags & juce::ApplicationCommandInfo::isDisabled) == 0; };
+        const auto ticked = [&](int id) { return (info(id).flags & juce::ApplicationCommandInfo::isTicked) != 0; };
+        commands.activate(root);
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({2});
+        // With the keyboard elsewhere.
+        check(!root.noteEditorHasContext() && root.noteEditorShown() && !active(C::InvertSelection) && !active(C::Quantize) && !active(C::QuantizeSettings) &&
+                  !active(C::CropClip) && !root.command(C::InvertSelection) && !root.command(C::CropClip) && ed.selected() == std::vector<std::uint64_t>{2} &&
+                  info(C::DeleteTrack).shortName != "Delete" && info(C::Split).shortName == "Split",
+              "with the keyboard elsewhere the editor's Edit commands are greyed and do nothing, and Delete and Split are the arrangement's");
+        const bool wasFolded = ed.folded(), wasHighlit = ed.highlightScale, wasDrawing = ed.drawMode();
+        check(active(C::FoldToNotes) && ticked(C::FoldToNotes) == wasFolded && root.command(C::FoldToNotes) && ed.folded() != wasFolded &&
+                  ticked(C::FoldToNotes) != wasFolded && root.command(C::FoldToNotes) && ed.folded() == wasFolded,
+              "View > Fold to Notes folds the editor on screen, with the keyboard anywhere, and is ticked while it is folded");
+        check(active(C::FoldToScale) == ed.scaleOn() && active(C::HighlightScales) && ticked(C::HighlightScales) == wasHighlit &&
+                  root.command(C::HighlightScales) && ed.highlightScale != wasHighlit && root.command(C::HighlightScales) && ed.highlightScale == wasHighlit,
+              "Fold to Scale is greyed without a scale of the clip's own; Highlight Scales is thrown and ticked the same way");
+        check(active(C::DrawMode) && ticked(C::DrawMode) == wasDrawing && root.command(C::DrawMode) && ed.drawMode() != wasDrawing && ticked(C::DrawMode) != wasDrawing &&
+                  root.command(C::DrawMode) && ed.drawMode() == wasDrawing,
+              "Options > Draw Mode switches the editor's Draw Mode and is ticked while it is on");
+        check(!commands.key(key('f'), root) && ed.folded() == wasFolded && !commands.key(key('b'), root) && ed.drawMode() == wasDrawing &&
+                  !commands.key(key('k'), root) && ed.highlightScale == wasHighlit,
+              "F, B and K pressed outside the editor are no command's: nothing folds or switches");
+        const int height = root.clipArea().getHeight();
+        check(active(C::ExpandClipView) && !ticked(C::ExpandClipView) && root.command(C::ExpandClipView) && root.clipViewFull() && ticked(C::ExpandClipView) &&
+                  root.clipArea().getHeight() > height && commands.key(key('e', command | juce::ModifierKeys::altModifier), root) && !root.clipViewFull() &&
+                  root.clipArea().getHeight() == height,
+              "View > Expand Clip View gives it its full height, ticked; Ctrl+Alt+E from outside the editor gives the height back");
+        // With the editor in use.
+        ed.contextOverride = true;
+        const auto tracks = view.current()->tracks.size();
+        check(info(C::DeleteTrack).shortName == "Delete" && active(C::DeleteTrack) && root.command(C::DeleteTrack) && details().notes.size() == 4 &&
+                  note(2).id == 0 && undoIs("Delete Note") && view.current()->tracks.size() == tracks && undo() && details().notes.size() == 5,
+              "with the editor in use, Edit > Delete deletes the selected note and never the track");
+        ed.select({2});
+        check(active(C::InvertSelection) && root.command(C::InvertSelection) && ed.selected().size() == 4 && !ed.isSelected(2),
+              "Edit > Invert Selection selects the other four notes");
+        ed.select({2});
+        panel.setToolsTab(0);
+        check(active(C::Quantize) && active(C::QuantizeSettings) && root.command(C::QuantizeSettings) && panel.toolsTab() == 1,
+              "Quantize is offered, and Quantize Settings shows the Functions tab");
+        panel.setToolsTab(0);
+        check(info(C::Split).shortName == "Chop Notes on Grid" && info(C::CropClip).shortName == "Crop Clip" && active(C::CropClip) && !active(C::DuplicateTime) &&
+                  !active(C::DeleteTime) && !active(C::InsertSilence) && !active(C::CutTime) && !active(C::CopyTime) && !active(C::PasteTime) &&
+                  info(C::RenameTrack).shortName == "Rename" && active(C::RenameTrack),
+              "with a note selected Split reads Chop Notes on Grid; with no time selected the Time commands are greyed; Rename is the clip's");
+        ed.select({});
+        ed.selectTime(song(2 * beat), song(4 * beat));
+        check(info(C::Split).shortName == "Split Notes at Time Selection" && info(C::CropClip).shortName == "Crop Clip to Time Selection" &&
+                  active(C::DuplicateTime) && active(C::DeleteTime) && info(C::InsertSilence).shortName == "Insert Time" && active(C::InsertSilence) &&
+                  !active(C::CutTime) && !root.command(C::CutTime),
+              "with time selected: Split and Crop read for it, Duplicate, Delete and Insert Time are the editor's, and Cut Time is not");
+        const auto arrangementInsert = geo.selection.insert;
+        check(root.command(C::DuplicateTime) && undoIs("Duplicate Time") && note(4).startTicks == 7 * beat && geo.selection.insert == arrangementInsert && undo() &&
+                  note(4).startTicks == 5 * beat,
+              "Edit > Duplicate Time works inside the clip: the later notes move on by the selection, and the arrangement is left alone");
+        const bool triplet = ed.time.grid.triplet, arrangementTriplet = geo.grid.triplet, snap = ed.time.grid.snap;
+        check(root.command(C::TripletGrid) && ed.time.grid.triplet != triplet && geo.grid.triplet == arrangementTriplet && ticked(C::TripletGrid) != triplet &&
+                  root.command(C::TripletGrid) && ed.time.grid.triplet == triplet && ticked(C::SnapToGrid) == snap,
+              "Options > Triplet Grid switches the editor's own grid and is ticked from it; the arrangement's grid stays");
+        ed.contextOverride = false;
+        check(info(C::InsertSilence).shortName == "Insert Silence" && ticked(C::TripletGrid) == arrangementTriplet && info(C::RenameTrack).shortName != "Rename Locator",
+              "with the editor not in use the same entries are the arrangement's again");
+        ed.contextOverride.reset();
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
         ed.select({});
     }
 }
@@ -10965,9 +11049,9 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
-              "the Options menu: Follow (§6.2), the grid (§6.10), then Solo in Place (§18.6)");
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
@@ -10979,9 +11063,9 @@ int main(int argc, char **argv) {
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
               "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them; it ends with Quit and no longer holds Settings");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
-              "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
+              "the Options menu: Follow (§6.2), Draw Mode (§10.4.1), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
         // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
@@ -11018,11 +11102,32 @@ int main(int argc, char **argv) {
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
                       C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
-                      C::LastId == C::DeleteFades,
+                      C::InvertSelection == C::DeleteFades + 1 && C::LastId == C::DrawMode,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
-                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades (the last id), each named");
+                  "Insert Silence, then Create Fade In/Out and Delete Fades/Crossfades, then the Note Editor's nine, each named");
+            // The Note Editor's commands, the last ids: named in the table's order, each on the editor's key.
+            {
+                const auto named = [&](int id) {
+                    juce::ApplicationCommandInfo i(id);
+                    commands.getCommandInfo(id, i);
+                    return i;
+                };
+                const auto on = [&](int id, int code, int mods) { return named(id).defaultKeypresses.contains(juce::KeyPress(code, juce::ModifierKeys(mods), 0)); };
+                const int ctrl = juce::ModifierKeys::commandModifier, shifted = juce::ModifierKeys::shiftModifier, alted = juce::ModifierKeys::altModifier;
+                check(named(C::InvertSelection).shortName == "Invert Selection" && on(C::InvertSelection, 'a', ctrl | shifted) &&
+                          named(C::Quantize).shortName == "Quantize" && on(C::Quantize, 'u', ctrl) &&
+                          named(C::QuantizeSettings).shortName == "Quantize Settings..." && on(C::QuantizeSettings, 'u', ctrl | shifted) &&
+                          named(C::CropClip).shortName == "Crop Clip" && on(C::CropClip, 'j', ctrl | shifted) &&
+                          named(C::ExpandClipView).shortName == "Expand Clip View" && on(C::ExpandClipView, 'e', ctrl | alted) &&
+                          named(C::FoldToNotes).shortName == "Fold to Notes" && on(C::FoldToNotes, 'f', 0) &&
+                          named(C::FoldToScale).shortName == "Fold to Scale" && on(C::FoldToScale, 'g', 0) &&
+                          named(C::HighlightScales).shortName == "Highlight Scales" && on(C::HighlightScales, 'k', 0) &&
+                          named(C::DrawMode).shortName == "Draw Mode" && on(C::DrawMode, 'b', 0),
+                      "Invert Selection, Quantize, Quantize Settings, Crop Clip, Expand Clip View, Fold to Notes, Fold to Scale, "
+                      "Highlight Scales and Draw Mode are named, each on Live's key");
+            }
             juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
             commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
             juce::ApplicationCommandInfo midiClipInfo(C::InsertMidiClip);
@@ -11051,11 +11156,12 @@ int main(int argc, char **argv) {
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0,
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
-                                                C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, 0, C::GroupTracks,
-                                                C::UngroupTracks},
+                                                C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
+                                                C::Quantize, C::QuantizeSettings, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), then the …Time commands and Insert Silence "
-              "(6.11), before Rename (§18.2) and Select All, then Loop Selection and Select Loop (§6.6), then Split heading the "
-              "clip commands (6.9), then Group and Ungroup Tracks");
+              "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
+              "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize and its settings (10.5.8), then Group and "
+              "Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
         // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
@@ -11117,6 +11223,11 @@ int main(int argc, char **argv) {
                     flat.push_back(item.itemID);
             }
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
+            const auto at = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) - flat.begin(); };
+            check(has(C::ExpandClipView) && at(C::ExpandClipView) == at(C::ToggleClipView) + 1 && has(C::FoldToNotes) &&
+                      at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1,
+                  "the View menu: Expand Clip View after Clip View (10.2), and the Note Editor's Fold to Notes, Fold to Scale "
+                  "and Highlight Scales (10.6)");
             // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
             // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&

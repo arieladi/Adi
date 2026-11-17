@@ -1431,43 +1431,80 @@ void NoteEditor::contextClick(juce::Point<int> at) {
     }
     repaint();
 }
-juce::PopupMenu NoteEditor::contextMenu() const {
-    juce::PopupMenu menu;
+NoteEditor::ContextEntry NoteEditor::contextEntry(int item) const {
     const auto *clip = panel.details();
     if (clip == nullptr)
-        return menu;
+        return {{}, false, false};
     const bool notes = anySelected(), timed = timeSelection().has_value();
-    bool allOff = notes;
-    for (const auto &n : clip->notes)
-        if (isSelected(n.id) && n.active)
-            allOff = false;
-    menu.addItem(kCut, "Cut", notes);
-    menu.addItem(kCopy, "Copy", notes);
-    menu.addItem(kPaste, "Paste", !panel.noteClipboard.empty());
-    menu.addItem(kDuplicate, "Duplicate", !selected_.empty());
-    menu.addItem(kDelete, "Delete", notes);
-    menu.addSeparator();
-    menu.addItem(kDeactivate, allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes);
-    menu.addSeparator();
-    menu.addItem(kSelectAll, "Select All");
-    menu.addItem(kInvertSelection, "Invert Selection", !clip->notes.empty());
-    menu.addSeparator();
-    menu.addItem(kQuantize, "Quantize", !clip->notes.empty());
-    menu.addItem(kQuantizeSettings, "Quantize Settings...");
-    menu.addItem(kSplit, notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
-                 notes || timed || insert_.has_value());
-    menu.addItem(kJoin, "Join Notes", notes);
-    menu.addSeparator();
-    menu.addItem(kCrop, timed ? "Crop Clip to Time Selection" : "Crop Clip");
-    menu.addItem(kDuplicateTime, "Duplicate Time", timed);
-    menu.addItem(kDeleteTime, "Delete Time", timed);
-    menu.addItem(kInsertTime, "Insert Time", timed);
-    menu.addItem(kDuplicateLoop, "Duplicate Loop", loopLengthOf(*clip) > 0);
-    menu.addSeparator();
-    menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
-    menu.addItem(kFoldToNotes, "Fold to Notes", true, folded_);
-    menu.addItem(kFoldToScale, "Fold to Scale", scaleOn(), scaleFolded_);
-    menu.addItem(kHighlightScale, "Highlight Scales", true, highlightScale);
+    switch (item) {
+    case kCut:
+        return {"Cut", notes};
+    case kCopy:
+        return {"Copy", notes};
+    case kPaste:
+        return {"Paste", !panel.noteClipboard.empty()};
+    case kDuplicate:
+        return {"Duplicate", !selected_.empty()};
+    case kDelete:
+        return {"Delete", notes};
+    case kDeactivate: {
+        bool allOff = notes;
+        for (const auto &n : clip->notes)
+            if (isSelected(n.id) && n.active)
+                allOff = false;
+        return {allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes};
+    }
+    case kSelectAll:
+        return {"Select All"};
+    case kInvertSelection:
+        return {"Invert Selection", !clip->notes.empty()};
+    case kQuantize:
+        return {"Quantize", !clip->notes.empty()};
+    case kQuantizeSettings:
+        return {"Quantize Settings..."};
+    case kSplit:
+        return {notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
+                notes || timed || insert_.has_value()};
+    case kJoin:
+        return {"Join Notes", notes};
+    case kCrop:
+        return {timed ? "Crop Clip to Time Selection" : "Crop Clip"};
+    case kDuplicateTime:
+        return {"Duplicate Time", timed};
+    case kDeleteTime:
+        return {"Delete Time", timed};
+    case kInsertTime:
+        return {"Insert Time", timed};
+    case kDuplicateLoop:
+        return {"Duplicate Loop", loopLengthOf(*clip) > 0};
+    case kFoldToNotes:
+        return {"Fold to Notes", true, folded_};
+    case kFoldToScale:
+        return {"Fold to Scale", scaleOn(), scaleFolded_};
+    case kHighlightScale:
+        return {"Highlight Scales", true, highlightScale};
+    default:
+        return {{}, false, false};
+    }
+}
+juce::PopupMenu NoteEditor::contextMenu() const {
+    juce::PopupMenu menu;
+    if (panel.details() == nullptr)
+        return menu;
+    // 0 is a separator; -1 the Grid submenu.
+    static constexpr int kItems[] = {kCut, kCopy, kPaste, kDuplicate, kDelete, 0, kDeactivate, 0, kSelectAll, kInvertSelection, 0,
+                                     kQuantize, kQuantizeSettings, kSplit, kJoin, 0, kCrop, kDuplicateTime, kDeleteTime, kInsertTime,
+                                     kDuplicateLoop, 0, -1, kFoldToNotes, kFoldToScale, kHighlightScale};
+    for (const int item : kItems) {
+        if (item == 0) {
+            menu.addSeparator();
+        } else if (item < 0) {
+            menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
+        } else {
+            const auto entry = contextEntry(item);
+            menu.addItem(item, entry.text, entry.enabled, entry.ticked);
+        }
+    }
     return menu;
 }
 bool NoteEditor::chooseContextItem(int item) {
