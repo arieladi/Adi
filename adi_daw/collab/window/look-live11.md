@@ -34,7 +34,7 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 
 ## What ADI adds (Master Reference)
 
-- ADI-Q and ADI-L, the channel slots (ADR-0204 d1): on the row after the sends in the track controls, under the name in a Mixer View strip.
+- ADI-Q and ADI-L, the channel slots (ADR-0204 d1): withdrawn on 17 November 2026 (ADR-0243 d2). No channel has a button for a Mix View function.
 - The AI tab at the foot of the browser's panes (Master Reference 3.1).
 - Pd Devices in the sidebar where Live has Max for Live (Master Reference 9.3).
 - Configure on a device's title bar, for the DAW-drawn panel (ADR-0150).

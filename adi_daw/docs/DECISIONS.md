@@ -18781,3 +18781,66 @@ gate against the DAW it comes from (ADR-0108).
 | ADR-0241 d1 | the pitch editing gains drift and transition per segment (d2) |
 | STEP-7-PLAN 7.7 step 5; ADR-0047 d2; FEATURES line 129 | multi-clip editing is built now, not later (d5) |
 | `docs/DEFERRED.md` | DF-W10 reworded; DF-W15 to DF-W18 added |
+
+## ADR-0243 — The look is not accepted as built: it is settled surface by surface with the director; no channel carries a button for a Mix View function; Live stays the base, with Bitwig's and FabFilter's design language; the Mix View takes the window — `DECIDED` (2026-11-17) — **DIRECTOR'S RULING; AMENDS ADR-0209 d11; ENDS WHAT WAS LEFT OF ADR-0204 d1 ON THE STRIPS**
+
+**His words (17 November),** after seeing the pictures of win's live retest of the Mix View and the
+window as it stands:
+- "it is so very wrong on so many levels ... it looks like an attempt to put the qualities of what i
+  want into the most generic looking things possible"
+- "i think we need to stop here and start going on the window lane one by one. you show me a photo
+  we talk about how it should look to the deepest details possible where you guide me and ask until
+  you sure of every pixel my answers will be from my mind or from references i will give you as
+  photos."
+- "please remove the Q and the L from the channels they are part of the mixview and same as other
+  tools like the adi-clip etc.. no special buttons for them in the channels themselves"
+- "the design is looks a bit like ablton 11 which is fine but i would like to change it a bit to be
+  like a Ableton and bitwig collaboration .. things should look new with design style in mind"
+- "the mixview is also terrible it stays within the arrangement window instead of switching to the
+  new mix view window (i don't need the devices area or browser window on the mix view) and it looks
+  really bad nothing like the gemini starting point i made and nothing like the fabfilter pro-q
+  instance list"
+- "for thing like the limiter we already have the adi-l so why the limiter has design so far from
+  it ? ... the mixview devices ... should look like the devices in the PRO-Q instance list"
+- "Ableton was the base (but not as generic as we made it) and now we need some fabfilter and
+  bitwig design lang"
+- Also named: an audio or MIDI clip that "just looks like an empty clip"; the Info box with its
+  analysers ("small boxed versions" of the main analysers); every native device panel he saw.
+
+**The decisions.**
+
+1. **The look is settled one surface at a time, with him.** Win shows a picture of one surface as it
+   stands; win asks and he answers, from his mind or from pictures he gives, until every detail of
+   that surface is certain; the agreed surface is written down as a sheet with its picture before
+   any of it is built; the built surface is then shown to him against the sheet. No seat builds or
+   restyles the look of a surface whose sheet is not agreed. What a surface does (its ops, its
+   engine side, its tests) is not stopped by this.
+2. **No channel has a button for a Mix View function.** The Q and L buttons leave every mixer strip
+   and every track row, with the row they stood on. The EQ and the limiter are added in the Mix View
+   like the clipper and every other function. This is the last of ADR-0204 d1's slots on the window
+   (ADR-0212 had withdrawn the slots themselves).
+3. **The design language.** Live stays the base, but not the plain reading of it built so far: the
+   window is to read as Live and Bitwig working together, with FabFilter's design language where
+   the mixing tools are. The particulars are settled surface by surface (d1), not here.
+4. **The Mix View takes the window.** Opening it switches the window to the Mix View; the Browser
+   and the Device View are not part of it. Its look starts from his own starting design and from
+   the instance list of FabFilter's Pro-Q 4. ADR-0209 d11 (docked in the centre of the main window,
+   or in a window of its own) is amended by this; what stays of the docked form is settled in the
+   review.
+5. **The Mix View's function panels look like the devices in that instance list,** and the limiter
+   follows ADI-L's own design, which exists. They are ADI's own drawing: nothing of another maker's
+   artwork is taken (the standing rule).
+6. **Named for the review, each a row in the register:** audio and notes shown inside a clip in the
+   Arrangement; the Info box and its small analysers; the Device View's panels.
+7. **Order and working rules** are win's to propose and his to change; they are in win's log of this
+   date, not here.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0204 d1 | its Q and L buttons on the strips are removed (d2) |
+| ADR-0209 d11 | the Mix View takes the window; no Browser or Device View beside it (d4) |
+| ADR-0208 (the window lane), ADR-0236, ADR-0237 | the look of every surface waits for its agreed sheet (d1); function work goes on |
+| `collab/window/look-live11.md`, `collab/window/parity-7.6-mixer.md` row 11 | the slots are withdrawn |
+| `docs/DEFERRED.md` | DF-W20 to DF-W23 and DF-M47, DF-M48 added |

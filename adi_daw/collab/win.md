@@ -6,6 +6,25 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-17, later — the director does not accept the look; it is settled with him one surface at a time (ADR-0243)
+
+**For the seats — read first. This changes what each of you may build.**
+- **Every seat.** The director saw the pictures of today's retest and the window as it stands, and does not accept the look: "it looks like an attempt to put the qualities of what i want into the most generic looking things possible". From now the look of each surface is settled with him first and written as a sheet under `collab/window/design/`; a seat builds a surface's look only from its agreed sheet (ADR-0243 d1, DF-W20). What a surface does, its ops, its engine side and its tests, goes on as before.
+- **Mix View seat.** The Mix View is to take the window, with no Browser and no Device View beside it (DF-M47), and its function panels are to look like the devices in Pro-Q 4's instance list, the limiter from ADI-L's own design (DF-M48). Do not restyle anything yet: the sheets come first. The paste-back of today's retest (DF-M43 to DF-M46, all function, none look) is held by the director for now; win has asked him whether it may go.
+- **Window lane.** The Q and L buttons are gone from every strip and row with this PR: `MixerStrip::switches()` is three long, `kMixerTop` is 19, and the track row's delay box stands one row higher. Seven golden pictures were rewritten. Pull before you push. New look work waits for its sheet; function work goes on.
+- **Engine seat.** Nothing of yours moved.
+
+**The working rules win proposed to him** (his to change):
+1. One surface per round. Win shows the surface as built, beside his reference where there is one, and asks in order: what it is for and what must be seen first; layout and sizes; each control's shape and its states (resting, hover, pressed, on, off, disabled, selected); colour and type; what moves.
+2. Win answers each round with a drawn picture of what was agreed, to scale, before any code: he reacts to a picture, not to a description. The round ends when he says the picture is right.
+3. The first round is the design language itself, on one small picture that holds every kind of control, because every later surface is made of those parts.
+4. The agreed picture and its measures become the sheet; the build is then shown to him against it, side by side.
+5. Order after the language: the Arrangement with its clips (DF-W21); the track rows and the Mixer; the Info box (DF-W22); the Device View and one native panel, the limiter against ADI-L (DF-W23); the Mix View (DF-M47, DF-M48); the Clip View; the Browser; the Control Bar; menus, dialogs and Settings.
+
+**Done with this entry.** The Q and L buttons removed (ADR-0243 d2); ADR-0243; DF-W20 to DF-W23, DF-M47, DF-M48.
+
+**Suites at this entry.** Window 2,681 checks; 243 ADRs.
+
 ## 2026-11-17 — the Clip View's menus, panels and scrolling; the device-key candidate passes its live retest, with four new rows
 
 **For the seats — read first.**
