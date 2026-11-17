@@ -1422,6 +1422,7 @@ bool NoteEditor::chooseSpelling(int item) {
     panel.root.mark(DirtySet::Status);
     return true;
 }
+bool NoteEditor::hasContext() const { return contextOverride.value_or(isShowing() && hasKeyboardFocus(true)); }
 void NoteEditor::contextClick(juce::Point<int> at) {
     if (const auto *n = noteAt(at); n != nullptr && !isSelected(n->id)) {
         selected_ = {n->id};

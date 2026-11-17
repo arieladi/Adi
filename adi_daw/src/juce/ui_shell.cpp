@@ -373,6 +373,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         const auto clip = id == Cut ? Clip::Cut : id == Copy ? Clip::Copy : id == Paste ? Clip::Paste : Clip::Duplicate;
         const bool stack = active_ && active_->mixViewPanel.stack.hasDeviceContext();
         const bool copied = active_ && active_->devices.holdsCopy && active_->devices.holdsCopy();
+        // The Note Editor takes them for its notes while it has the keyboard (manual 10.5).
+        if (active_ && !stack && active_->noteEditorHasContext()) {
+            const auto &notes = active_->clipView.notes;
+            info.setActive(id == Paste ? !active_->clipView.noteClipboard.empty() : id == Duplicate ? !notes.selected().empty() : notes.anySelected());
+            break;
+        }
         info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->canClipboard(static_cast<int>(id))));
         break;
     }
@@ -1316,6 +1322,9 @@ void AdiRootComponent::resizeMixerView(int height) {
 void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
+}
+bool AdiRootComponent::noteEditorHasContext() const {
+    return state_.clipView && clipView.midi() && clipView.details() != nullptr && clipView.notes.hasContext();
 }
 void AdiRootComponent::toggleClipViewFull() {
     if (!state_.clipView)
@@ -2827,6 +2836,24 @@ bool AdiRootComponent::command(int id) {
         if (id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
             id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack)
             return mixViewPanel.stack.deviceCommand(id);
+    }
+    // The Note Editor, while it has the keyboard, takes the Edit menu's clipboard commands and Select
+    // All for its notes (manual 10.5): chosen from the menu, they act where their keys do.
+    if (noteEditorHasContext()) {
+        switch (id) {
+        case AppCommands::Cut:
+            return clipView.notes.chooseContextItem(NoteEditor::kCut);
+        case AppCommands::Copy:
+            return clipView.notes.chooseContextItem(NoteEditor::kCopy);
+        case AppCommands::Paste:
+            return clipView.notes.chooseContextItem(NoteEditor::kPaste);
+        case AppCommands::Duplicate:
+            return clipView.notes.chooseContextItem(NoteEditor::kDuplicate);
+        case AppCommands::SelectAll:
+            return clipView.notes.chooseContextItem(NoteEditor::kSelectAll);
+        default:
+            break;
+        }
     }
     // The application's own: files and Settings.
     // In a window of its own, the Mix View is the application's to open and close (its floating
