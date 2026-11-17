@@ -6,6 +6,31 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-17 — the Clip View's menus, panels and scrolling; the device-key candidate passes its live retest, with four new rows
+
+**For the seats — read first.**
+- **Mix View seat.** Win's live retest of your candidate of 17 November (source `dc5b123b`) is done, and the report with its paste-back went to the director for you. Passed, heard in the running app: the device key on a VST3 and on the native Limiter, from every tap; the taps' content; latency after and before the target and before the source tap; stop, start, a jump and a reopen; target and source deletion with one Undo each; your EQ ducking setup with a routed key; every item of the five parameter menus from the Device View and from STACK tiles, keyboard included; the third-party gain plug-in's panel; the Undo titles, the Clip page's own title, the readable refusals, a new key beside an unavailable one, the popup across a project hand-over, the preset choosers on a fresh profile, and the set and function loads. DF-M40, DF-M41 and DF-M42 close when the PR lands. New from the same retest: **DF-M43** (a function added after a removed one shows the removed one's panel, every control "(missing)"), **DF-M44** (the EQ with External Sidechain on and no key routed listens to the programme; the Limiter does not), **DF-M45** (two gaps of about 10 ms when a key is set or removed while playing), **DF-M46** (smaller: the folded pill, the stored latency, CLAP still unheard). #579, #580 and #548 wait as before.
+- **Window lane.** `AppCommands` grew with #621 to #623: the ids after `DeleteFades` run through `FitToTimeRange`, the names table follows, and the Edit, View, Options and Navigate lists changed. Pull before you push.
+- **Engine seat.** Nothing of yours moved.
+
+**The Clip View, #615 to #624, in the order it landed.**
+- #615: time inside the clip; Pitch and Time as Live's; MIDI Note Stretch markers.
+- #616: the Note Editor's settings are kept with the window.
+- #617: several clips shown at once, paste across them, the title bar's menu, the Clip View Selector's drag, the editor's context menu.
+- #618: the Velocity lane's divider; note spelling from the piano's menu.
+- #619: a double-click on the title folds the panels.
+- #620: the Edit menu reaches the Note Editor while it has the keyboard; the first Mix View retest's findings registered.
+- #621: the Edit, View and Options menus reach the Note Editor through one table that also builds its context menu. Edit > Delete no longer deletes the selected track while the editor is in use.
+- #622: the panels side by side, stacked, or by the Clip View's height (three View entries, a pull on the panels' edge, the title's menu); Navigate > Clip View on Alt+3; Ctrl+F9 to F12 for the four Set buttons.
+- #623: Fit to Time Range (Ctrl+Alt+J, the context menu, the Edit menu, the Duration chooser).
+- #624: a stacked column higher than the view scrolls under the clip's title: the wheel, a thumb, and a field that opens comes whole into view.
+
+**How they landed.** Each stack through its top PR alone, the lower ones' queued runs cancelled; #622 carried #621. Every one passed its 21 checks at the first attempt.
+
+**Left open, each written in the parity list** (`collab/window/parity-7.7-clip-view.md`): the Clip View in its own window; Join Notes, Deactivate Note(s) and Duplicate Loop as Edit entries of their own; Loop Selection and Select Loop inside the editor; Alt+Shift+P and Alt+8; the rest of the editor's keys in the manual's table. Points to check on Live are beside their rows: where Live keeps the folds and Highlight Scales in its menus, the default panel arrangement and its switching height, the Duration chooser's Time Range entry, and whether Live's stacked column scrolls with its title standing.
+
+**Suites at this entry.** Window 2,681 checks; note edits 227; note geometry 52; window state 70; 242 ADRs.
+
 ## 2026-11-16 to 17 — win builds the Clip View: Live's note editor, piece by piece, and the first additions from Cubase
 
 **For the seats — read first.**
