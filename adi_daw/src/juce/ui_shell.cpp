@@ -196,7 +196,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Duplicate Time", "Delete Time", "Insert Silence", "Create Fade In/Out",
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
-                                  "Draw Mode"};
+                                  "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
+                                  "Arrange Clip View Panels Vertically"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -635,6 +636,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
         info.addDefaultKeypress('e', cmd | alt);
         info.setTicked(active_ != nullptr && active_->clipViewFull());
+        info.setActive(active_ != nullptr && active_->state().clipView);
+        break;
+    case ArrangePanelsAutomatically: // manual 8.1.2: the View menu's three, one of them ticked
+    case ArrangePanelsHorizontally:
+    case ArrangePanelsVertically:
+        info.setTicked(active_ != nullptr && static_cast<int>(active_->clipView.arrangement()) == id - ArrangePanelsAutomatically);
         info.setActive(active_ != nullptr && active_->state().clipView);
         break;
     // The editor's switches (manual 10.4.1, 10.6): F, G, K and B are the editor's own keys, shown
@@ -2976,6 +2983,12 @@ bool AdiRootComponent::command(int id) {
                                                 : id == AppCommands::FoldToScale ? NoteEditor::kFoldToScale
                                                                                  : NoteEditor::kHighlightScale);
     }
+    if (id >= AppCommands::ArrangePanelsAutomatically && id <= AppCommands::ArrangePanelsVertically) {
+        if (!state_.clipView)
+            return false;
+        clipView.arrange(static_cast<ClipViewPanel::Panels>(id - AppCommands::ArrangePanelsAutomatically));
+        return true;
+    }
     if (id == AppCommands::ExpandClipView) {
         if (!state_.clipView)
             return false;
@@ -3404,6 +3417,7 @@ const std::vector<MenuEntries> &menuBar() {
           C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
+          C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
           C::FoldToNotes, C::FoldToScale, C::HighlightScales, 0,
           C::SwapPanels}},
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place

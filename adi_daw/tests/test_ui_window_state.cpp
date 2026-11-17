@@ -65,6 +65,7 @@ int main() {
     state.highlightScale = false;
     state.noteColours = 3;
     state.noteLaneHeight = 90;
+    state.clipPanelsArrangement = 2;
     state.quantizeValue = 6;
     state.quantizeAmount = 40;
     state.quantizeSwing = 15;
@@ -109,6 +110,7 @@ int main() {
     check(!restored.noteGridSnap && restored.noteGridFixed && restored.noteGridTriplet && restored.noteGridNarrow == -1 &&
               restored.noteGridFixedQuarters == 2 && !restored.highlightScale && restored.noteColours == 3 && restored.quantizeValue == 6 &&
               restored.noteLaneHeight == 90 && views.load("other").noteLaneHeight == 56 &&
+              restored.clipPanelsArrangement == 2 && views.load("other").clipPanelsArrangement == 0 &&
               restored.quantizeAmount == 40 && restored.quantizeSwing == 15 && !restored.quantizeStarts && restored.quantizeEnds &&
               views.load("other").noteGridSnap && !views.load("other").noteGridFixed && views.load("other").highlightScale &&
               views.load("other").noteColours == 0 && views.load("other").quantizeAmount == 100 && views.load("other").quantizeStarts &&

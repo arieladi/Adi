@@ -6424,6 +6424,77 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         ed.keyPressed(key(juce::KeyPress::escapeKey));
         ed.select({});
     }
+
+    // The panels side by side, stacked, or as the Clip View's height allows (manual 8.1.2).
+    {
+        using C = AppCommands;
+        using Panels = ClipViewPanel::Panels;
+        using Field = ClipViewPanel::Field;
+        const int side = ClipViewPanel::kPanelWidth + ClipViewPanel::kToolsWidth, column = ClipViewPanel::kToolsWidth;
+        const auto arranged = [&] { return ViewStateStore(*store).load("clip-view-clip-time").clipPanelsArrangement; };
+        const auto ticked = [&](int id) {
+            juce::ApplicationCommandInfo i(id);
+            commands.getCommandInfo(id, i);
+            return (i.flags & juce::ApplicationCommandInfo::isTicked) != 0;
+        };
+        commands.activate(root);
+        check(panel.arrangement() == Panels::Automatic && panel.getHeight() < ClipViewPanel::kStackedHeight && !panel.panelsVertical() &&
+                  panel.panelWidth() == side && ticked(C::ArrangePanelsAutomatically) && !ticked(C::ArrangePanelsVertically),
+              "the panels follow the Clip View's height by default: at this height, side by side");
+        check(root.command(C::ArrangePanelsVertically) && panel.panelsVertical() && panel.panelWidth() == column && ed.getX() == column + 1 &&
+                  panel.toolsArea().getX() == 0 && panel.toolsArea().getY() == panel.mainArea().getBottom() + 1 &&
+                  panel.tabBox(0).getY() > panel.fieldBox(Field::Signature).getBottom() && panel.fieldBox(Field::End).getRight() <= column &&
+                  panel.titleArea().getWidth() == column && arranged() == 2 && ticked(C::ArrangePanelsVertically) && !ticked(C::ArrangePanelsAutomatically),
+              "View > Arrange Clip View Panels Vertically stacks them in one column, the tools under the Main panel; the editor takes the room; kept with the window");
+        panel.mouseDown(pressAt(panel, panel.tabBox(1).getCentre().toFloat()));
+        check(panel.toolsTab() == 1 && !panel.toolBox(ClipViewPanel::Tool::VelocityAdd).isEmpty() &&
+                  panel.toolBox(ClipViewPanel::Tool::VelocityAdd).getY() > panel.mainArea().getBottom(),
+              "stacked, a click on a tab still shows that tab's tools, now under the Main panel");
+        panel.setToolsTab(0);
+        const auto pull = [&](float by) {
+            const auto edge = panel.panelsEdge().getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, edge));
+            panel.mouseDrag(dragAt(panel, edge, {edge.x + by, edge.y}));
+            panel.mouseUp(dragAt(panel, edge, {edge.x + by, edge.y}));
+        };
+        pull(10.f);
+        check(panel.arrangement() == Panels::Vertical, "a short pull on the panels' right edge changes nothing");
+        pull(40.f);
+        check(panel.arrangement() == Panels::Horizontal && !panel.panelsVertical() && panel.panelWidth() == side && ed.getX() == side + 1 && arranged() == 1 &&
+                  ticked(C::ArrangePanelsHorizontally),
+              "the edge pulled to the right stands the panels side by side");
+        pull(-40.f);
+        check(panel.arrangement() == Panels::Vertical && panel.panelWidth() == column && arranged() == 2, "pulled to the left it stacks them");
+        check(panel.chooseTitleItem(2) && panel.arrangement() == Panels::Automatic && !panel.panelsVertical() && panel.panelWidth() == side && arranged() == 0,
+              "Arrange Clip View Panels Automatically, from the title's menu: at this height side by side again");
+        check(root.command(C::ExpandClipView) && panel.getHeight() >= ClipViewPanel::kStackedHeight && panel.panelsVertical() && ed.getX() == column + 1 &&
+                  root.command(C::ExpandClipView) && !panel.panelsVertical() && ed.getX() == side + 1,
+              "at its full height the Clip View is high enough for both: they stack, and stand side by side again at the height it had");
+        // The Clip View at its full height, its panels stacked, for the PR's picture (ADI_UI_PARITY).
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            root.command(C::ExpandClipView);
+            root.frame();
+            juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics gr(picture);
+                gr.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(gr, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-clip-view-stacked.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+            root.command(C::ExpandClipView);
+            root.frame();
+        }
+        check(panel.chooseTitleItem(2) && panel.arrangement() == Panels::Horizontal && panel.chooseTitleItem(2) && panel.arrangement() == Panels::Automatic,
+              "unticked, Automatically leaves the panels as they stand; ticked again, the height decides");
+        check(root.command(C::ArrangePanelsHorizontally) && panel.arrangement() == Panels::Horizontal && root.command(C::ArrangePanelsAutomatically) &&
+                  panel.arrangement() == Panels::Automatic && arranged() == 0,
+              "the View menu's Horizontally and Automatically choose the same");
+        check(panel.chooseTitleItem(3) && panel.panelsFolded() && panel.panelsEdge().isEmpty() && panel.chooseTitleItem(3) && !panel.panelsFolded(),
+              "Fold, in the title's menu, folds the panels and brings them back");
+    }
 }
 
 void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
@@ -6656,14 +6727,15 @@ void clipViewMulti(AppCommands &commands, const std::filesystem::path &dir) {
     {
         const auto edited = [&]() -> const engine::ClipDetails & { return *panel.details(); };
         const auto another = [&]() -> const engine::ClipDetails & { return panel.others()[0].details; };
-        check(panel.titleMenu().getNumItems() == 2 && panel.chooseTitleItem(1), "the title's menu: Rename, and Color; Rename opens the name for typing");
+        check(panel.titleMenu().getNumItems() == 4 && panel.chooseTitleItem(1),
+              "the title's menu: Rename, Color, Arrange Clip View Panels Automatically and Fold; Rename opens the name for typing");
         check(panel.typeField(ClipViewPanel::Field::Name, "  Verse A ") && edited().name == "Verse A" && another().name == "Verse A" &&
                   submitter.nextUndo()->label == "Rename Clip" && submitter.nextUndo()->opCount == 2 && panel.readings().title == "2 MIDI Clips",
               "a name typed names both shown clips, without the spaces at its ends: one undo step");
         const auto renamed = submitter.nextUndo()->txnId;
         check(panel.rename("Verse A") && submitter.nextUndo()->txnId == renamed, "the same name again writes nothing");
         check(panel.chooseTitleItem(105) && edited().color == 5 && another().color == 5 && submitter.nextUndo()->label == "Change Clip Color" &&
-                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(2),
+                  submitter.nextUndo()->opCount == 2 && !panel.chooseTitleItem(100 + ClipViewPanel::kTitleColours) && !panel.chooseTitleItem(4),
               "a colour chosen colours both: one undo step");
         root.frame();
         check(panel.colour() == look::paletteColour(5) && panel.others()[0].colour == look::paletteColour(5), "and the editor draws both clips in it");
@@ -11102,7 +11174,8 @@ int main(int argc, char **argv) {
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
                       C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
-                      C::InvertSelection == C::DeleteFades + 1 && C::LastId == C::DrawMode,
+                      C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
+                      C::LastId == C::ArrangePanelsVertically,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -11124,9 +11197,12 @@ int main(int argc, char **argv) {
                           named(C::FoldToNotes).shortName == "Fold to Notes" && on(C::FoldToNotes, 'f', 0) &&
                           named(C::FoldToScale).shortName == "Fold to Scale" && on(C::FoldToScale, 'g', 0) &&
                           named(C::HighlightScales).shortName == "Highlight Scales" && on(C::HighlightScales, 'k', 0) &&
-                          named(C::DrawMode).shortName == "Draw Mode" && on(C::DrawMode, 'b', 0),
+                          named(C::DrawMode).shortName == "Draw Mode" && on(C::DrawMode, 'b', 0) &&
+                          named(C::ArrangePanelsAutomatically).shortName == "Arrange Clip View Panels Automatically" &&
+                          named(C::ArrangePanelsHorizontally).shortName == "Arrange Clip View Panels Horizontally" &&
+                          named(C::ArrangePanelsVertically).shortName == "Arrange Clip View Panels Vertically",
                       "Invert Selection, Quantize, Quantize Settings, Crop Clip, Expand Clip View, Fold to Notes, Fold to Scale, "
-                      "Highlight Scales and Draw Mode are named, each on Live's key");
+                      "Highlight Scales and Draw Mode are named, each on Live's key; then the three that arrange the Clip View's panels");
             }
             juce::ApplicationCommandInfo clipViewInfo(C::ToggleClipView);
             commands.getCommandInfo(C::ToggleClipView, clipViewInfo);
@@ -11225,9 +11301,11 @@ int main(int argc, char **argv) {
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
             const auto at = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) - flat.begin(); };
             check(has(C::ExpandClipView) && at(C::ExpandClipView) == at(C::ToggleClipView) + 1 && has(C::FoldToNotes) &&
-                      at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1,
-                  "the View menu: Expand Clip View after Clip View (10.2), and the Note Editor's Fold to Notes, Fold to Scale "
-                  "and Highlight Scales (10.6)");
+                      at(C::FoldToScale) == at(C::FoldToNotes) + 1 && at(C::HighlightScales) == at(C::FoldToScale) + 1 &&
+                      has(C::ArrangePanelsAutomatically) && at(C::ArrangePanelsHorizontally) == at(C::ArrangePanelsAutomatically) + 1 &&
+                      at(C::ArrangePanelsVertically) == at(C::ArrangePanelsHorizontally) + 1,
+                  "the View menu: Expand Clip View after Clip View (10.2), the three that arrange the Clip View's panels (8.1.2), "
+                  "and the Note Editor's Fold to Notes, Fold to Scale and Highlight Scales (10.6)");
             // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
             // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&

@@ -146,7 +146,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FoldToScale,
         HighlightScales,
         DrawMode,
-        LastId = DrawMode
+        // The Clip View's panels (manual 8.1.2): the View menu's three.
+        ArrangePanelsAutomatically,
+        ArrangePanelsHorizontally,
+        ArrangePanelsVertically,
+        LastId = ArrangePanelsVertically
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
