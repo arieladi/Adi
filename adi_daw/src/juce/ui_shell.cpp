@@ -99,6 +99,47 @@ bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
     wrapTab_ = on;
     return true;
 }
+namespace {
+// The Note Editor's entry for a command of the window's menus, 0 when it has none. While the
+// editor has the keyboard these commands act in it, as their keys do there: Delete on its notes,
+// Duplicate on its notes or, with the loop brace selected, on the loop (manual 8.9), Split as its
+// Chop or Split, the Time commands inside the clip (10.7.2).
+int noteEditorItem(int id, const NoteEditor &notes) {
+    using C = AppCommands;
+    switch (id) {
+    case C::Cut:
+        return NoteEditor::kCut;
+    case C::Copy:
+        return NoteEditor::kCopy;
+    case C::Paste:
+        return NoteEditor::kPaste;
+    case C::Duplicate:
+        return notes.rulerSelection() == NoteEditor::RulerPart::Loop ? NoteEditor::kDuplicateLoop : NoteEditor::kDuplicate;
+    case C::DeleteTrack:
+        return NoteEditor::kDelete;
+    case C::SelectAll:
+        return NoteEditor::kSelectAll;
+    case C::InvertSelection:
+        return NoteEditor::kInvertSelection;
+    case C::Quantize:
+        return NoteEditor::kQuantize;
+    case C::QuantizeSettings:
+        return NoteEditor::kQuantizeSettings;
+    case C::Split:
+        return NoteEditor::kSplit;
+    case C::CropClip:
+        return NoteEditor::kCrop;
+    case C::DuplicateTime:
+        return NoteEditor::kDuplicateTime;
+    case C::DeleteTime:
+        return NoteEditor::kDeleteTime;
+    case C::InsertSilence:
+        return NoteEditor::kInsertTime;
+    default:
+        return 0;
+    }
+}
+} // namespace
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
     for (int id = PlayStop; id <= LastId; ++id)
         ids.add(id);
@@ -153,7 +194,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Show Plug-In Windows", "Split", "Clip View",
                                   "Insert Empty MIDI Clip(s)", "Cut Time", "Copy Time", "Paste Time",
                                   "Duplicate Time", "Delete Time", "Insert Silence", "Create Fade In/Out",
-                                  "Delete Fades/Crossfades"};
+                                  "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
+                                  "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
+                                  "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
+                                  "Arrange Clip View Panels Vertically", "Clip View"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -373,12 +417,6 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         const auto clip = id == Cut ? Clip::Cut : id == Copy ? Clip::Copy : id == Paste ? Clip::Paste : Clip::Duplicate;
         const bool stack = active_ && active_->mixViewPanel.stack.hasDeviceContext();
         const bool copied = active_ && active_->devices.holdsCopy && active_->devices.holdsCopy();
-        // The Note Editor takes them for its notes while it has the keyboard (manual 10.5).
-        if (active_ && !stack && active_->noteEditorHasContext()) {
-            const auto &notes = active_->clipView.notes;
-            info.setActive(id == Paste ? !active_->clipView.noteClipboard.empty() : id == Duplicate ? !notes.selected().empty() : notes.anySelected());
-            break;
-        }
         info.setActive(active_ && (stack ? (clip != Clip::Paste || copied) : active_->canClipboard(static_cast<int>(id))));
         break;
     }
@@ -479,6 +517,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case FocusArrangement:
         info.addDefaultKeypress('2', alt);
         break;
+    case FocusClipView: // §41.2: the Clip View's editor
+        info.addDefaultKeypress('3', alt);
+        break;
     case FocusDeviceView:
         info.addDefaultKeypress('4', alt);
         break;
@@ -575,14 +616,95 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('5', cmd);
         info.setTicked(active_ != nullptr && active_->arrangement.geometry.grid.fixed);
         break;
+    // The Note Editor's own (manual 10.5.2, 10.5.8, 10.7.1): Invert Selection on Ctrl/Cmd+Shift+A,
+    // Quantize on Ctrl/Cmd+U and its settings on Ctrl/Cmd+Shift+U, Crop Clip on Ctrl/Cmd+Shift+J.
+    // They act while the editor has the keyboard; what each reads and whether it can act is the
+    // editor's entry, below.
+    case InvertSelection:
+        info.addDefaultKeypress('a', cmd | shift);
+        info.setActive(false);
+        break;
+    case Quantize:
+        info.addDefaultKeypress('u', cmd);
+        info.setActive(false);
+        break;
+    case QuantizeSettings:
+        info.addDefaultKeypress('u', cmd | shift);
+        info.setActive(false);
+        break;
+    case CropClip:
+        info.addDefaultKeypress('j', cmd | shift);
+        info.setActive(false);
+        break;
+    case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
+        info.addDefaultKeypress('e', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->clipViewFull());
+        info.setActive(active_ != nullptr && active_->state().clipView);
+        break;
+    case ArrangePanelsAutomatically: // manual 8.1.2: the View menu's three, one of them ticked
+    case ArrangePanelsHorizontally:
+    case ArrangePanelsVertically:
+        info.setTicked(active_ != nullptr && static_cast<int>(active_->clipView.arrangement()) == id - ArrangePanelsAutomatically);
+        info.setActive(active_ != nullptr && active_->state().clipView);
+        break;
+    // The editor's switches (manual 10.4.1, 10.6): F, G, K and B are the editor's own keys, shown
+    // here beside their entries; from a menu they are thrown whenever the editor is on screen.
+    case FoldToNotes:
+    case FoldToScale:
+    case HighlightScales:
+    case DrawMode: {
+        info.addDefaultKeypress(id == FoldToNotes ? 'f' : id == FoldToScale ? 'g' : id == HighlightScales ? 'k' : 'b', 0);
+        const bool shown = active_ != nullptr && active_->noteEditorShown();
+        info.setActive(shown);
+        if (!shown)
+            break;
+        const auto &notes = active_->clipView.notes;
+        if (id == DrawMode) {
+            info.setTicked(notes.drawMode());
+            break;
+        }
+        const auto entry = notes.contextEntry(id == FoldToNotes   ? NoteEditor::kFoldToNotes
+                                              : id == FoldToScale ? NoteEditor::kFoldToScale
+                                                                  : NoteEditor::kHighlightScale);
+        info.setActive(entry.enabled);
+        info.setTicked(entry.ticked);
+        break;
+    }
     default:
         break;
+    }
+    // While the Note Editor has the keyboard, the Edit and Options menus' commands are its own
+    // (manual 10.5 and on): each reads as the editor's entry does and is greyed when the editor
+    // has nothing for it to act on. The Mix View's STACK, with a device in focus, comes first.
+    if (active_ != nullptr && active_->noteEditorHasContext() && !active_->mixViewPanel.stack.hasDeviceContext()) {
+        const auto &notes = active_->clipView.notes;
+        if (const int item = noteEditorItem(id, notes); item != 0) {
+            const auto entry = notes.contextEntry(item);
+            info.shortName = entry.text;
+            info.setActive(entry.enabled);
+            info.setTicked(entry.ticked);
+        } else if (id == CutTime || id == CopyTime || id == PasteTime) {
+            info.setActive(false); // the editor has Duplicate, Delete and Insert Time (manual 10.7.2)
+        } else if (id == RenameTrack) {
+            info.shortName = "Rename";
+            info.setActive(true);
+        } else if (id == TripletGrid) {
+            info.setTicked(notes.time.grid.triplet);
+        } else if (id == SnapToGrid) {
+            info.setTicked(notes.time.grid.snap);
+        } else if (id == FixedGrid) {
+            info.setTicked(notes.time.grid.fixed);
+        }
     }
     if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
+    // F, G, K and B are the Note Editor's own keys: it takes them itself while it has the keyboard.
+    // A key that comes here was pressed elsewhere, where they are no command's.
+    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); id >= FoldToNotes && id <= DrawMode)
+        return false;
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
@@ -1323,9 +1445,8 @@ void AdiRootComponent::resizeClipView(int height) {
     state_.clipViewHeight = std::clamp(height, kClipViewFloor, 4000);
     resized();
 }
-bool AdiRootComponent::noteEditorHasContext() const {
-    return state_.clipView && clipView.midi() && clipView.details() != nullptr && clipView.notes.hasContext();
-}
+bool AdiRootComponent::noteEditorShown() const { return state_.clipView && clipView.midi() && clipView.details() != nullptr; }
+bool AdiRootComponent::noteEditorHasContext() const { return noteEditorShown() && clipView.notes.hasContext(); }
 void AdiRootComponent::toggleClipViewFull() {
     if (!state_.clipView)
         return;
@@ -2792,6 +2913,18 @@ bool AdiRootComponent::focusView(int id) {
     case AppCommands::FocusArrangement:
         arrangement.canvas.grabKeyboardFocus();
         return true;
+    case AppCommands::FocusClipView:
+        // The editor of the clip shown: the Note Editor or the Sample Editor. With no clip, the
+        // view itself, empty as it is.
+        if (!showClipView())
+            return false;
+        if (clipView.details() == nullptr)
+            clipView.grabKeyboardFocus();
+        else if (clipView.midi())
+            clipView.notes.grabKeyboardFocus();
+        else
+            clipView.sample.grabKeyboardFocus();
+        return true;
     case AppCommands::FocusDeviceView:
         if (!state_.docked && !command(AppCommands::ToggleDeviceView))
             return false;
@@ -2837,24 +2970,49 @@ bool AdiRootComponent::command(int id) {
             id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack)
             return mixViewPanel.stack.deviceCommand(id);
     }
-    // The Note Editor, while it has the keyboard, takes the Edit menu's clipboard commands and Select
-    // All for its notes (manual 10.5): chosen from the menu, they act where their keys do.
+    // The Note Editor, while it has the keyboard, takes the Edit and Options menus' commands for
+    // its notes and its own grid (manual 10.5 and on): chosen from a menu, they act where their
+    // keys do. Cut, Copy and Paste Time are not the editor's: there they do nothing.
     if (noteEditorHasContext()) {
-        switch (id) {
-        case AppCommands::Cut:
-            return clipView.notes.chooseContextItem(NoteEditor::kCut);
-        case AppCommands::Copy:
-            return clipView.notes.chooseContextItem(NoteEditor::kCopy);
-        case AppCommands::Paste:
-            return clipView.notes.chooseContextItem(NoteEditor::kPaste);
-        case AppCommands::Duplicate:
-            return clipView.notes.chooseContextItem(NoteEditor::kDuplicate);
-        case AppCommands::SelectAll:
-            return clipView.notes.chooseContextItem(NoteEditor::kSelectAll);
-        default:
-            break;
+        if (const int item = noteEditorItem(id, clipView.notes); item != 0)
+            return clipView.notes.chooseContextItem(item);
+        if (id >= AppCommands::NarrowGrid && id <= AppCommands::FixedGrid) {
+            clipView.notes.gridKey(id - AppCommands::NarrowGrid + 1);
+            return true;
         }
+        if (id == AppCommands::CutTime || id == AppCommands::CopyTime || id == AppCommands::PasteTime)
+            return false;
+        if (id == AppCommands::RenameTrack)
+            return clipView.chooseTitleItem(1);
     }
+    // The editor's switches, from a menu, whenever it is on screen; the Clip View's full height
+    // whenever it is open (manual 10.2).
+    if (id >= AppCommands::FoldToNotes && id <= AppCommands::DrawMode) {
+        if (!noteEditorShown())
+            return false;
+        if (id == AppCommands::DrawMode) {
+            clipView.notes.setDrawMode(!clipView.notes.drawMode());
+            return true;
+        }
+        return clipView.notes.chooseContextItem(id == AppCommands::FoldToNotes   ? NoteEditor::kFoldToNotes
+                                                : id == AppCommands::FoldToScale ? NoteEditor::kFoldToScale
+                                                                                 : NoteEditor::kHighlightScale);
+    }
+    if (id >= AppCommands::ArrangePanelsAutomatically && id <= AppCommands::ArrangePanelsVertically) {
+        if (!state_.clipView)
+            return false;
+        clipView.arrange(static_cast<ClipViewPanel::Panels>(id - AppCommands::ArrangePanelsAutomatically));
+        return true;
+    }
+    if (id == AppCommands::ExpandClipView) {
+        if (!state_.clipView)
+            return false;
+        toggleClipViewFull();
+        return true;
+    }
+    // The editor's own Edit commands outside it: nothing to act on.
+    if (id >= AppCommands::InvertSelection && id <= AppCommands::CropClip)
+        return false;
     // The application's own: files and Settings.
     // In a window of its own, the Mix View is the application's to open and close (its floating
     // host); docked, the root's.
@@ -3195,6 +3353,7 @@ bool AdiRootComponent::command(int id) {
                fail("Select a track to rename.");
     case AppCommands::FocusControlBar:
     case AppCommands::FocusArrangement:
+    case AppCommands::FocusClipView:
     case AppCommands::FocusDeviceView:
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
@@ -3254,10 +3413,12 @@ const std::vector<MenuEntries> &menuBar() {
         // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
-        // clipboard's and the selection's, where Consolidate and Crop will join it.
+        // clipboard's and the selection's, with Crop Clip (10.7.1); Consolidate will join them.
+        // Invert Selection follows Select All, as measured on Live 12; Quantize and its settings
+        // (10.5.8) have a group of their own, whose place in Live's menu is to be read on Live.
         {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::CutTime, C::CopyTime,
-                  C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
-                  C::SelectLoop, 0, C::Split, 0,
+                  C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll,
+                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create
@@ -3269,9 +3430,11 @@ const std::vector<MenuEntries> &menuBar() {
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleClipView, C::ToggleDeviceView, C::TogglePluginWindows,
+          C::PlayReference, C::ToggleClipView, C::ExpandClipView, C::ToggleDeviceView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
+          C::ArrangePanelsAutomatically, C::ArrangePanelsHorizontally, C::ArrangePanelsVertically, 0,
+          C::FoldToNotes, C::FoldToScale, C::HighlightScales, 0,
           C::SwapPanels}},
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place
         // (§18.6), in its own group after the grid's, as Live 12's menu places it (read on Live 12,
@@ -3279,17 +3442,17 @@ const std::vector<MenuEntries> &menuBar() {
         // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6).
 #if JUCE_MAC
         {"Options",
-         {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::SoloInPlace}},
 #else
         {"Options",
-         {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+         {C::Follow, 0, C::DrawMode, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
           C::SoloInPlace, 0, C::Settings}},
 #endif
-        // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
-        // Pool and the Learn View come with those views; the Mixer with its keyboard.
+        // The views ADI has, in Live's order (§41.4.1): Session View, the Groove Pool and the
+        // Learn View come with those views; the Mixer with its keyboard.
         {"Navigate",
-         {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser, 0,
+         {C::FocusControlBar, C::FocusArrangement, C::FocusClipView, C::FocusDeviceView, C::FocusBrowser, 0,
           C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
           C::WrapTabNavigation}},
         {"Help", {}}};

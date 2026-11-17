@@ -49,6 +49,7 @@ struct WindowState {
     int noteLaneHeight = 56; // the Velocity lane, as its divider left it
     int noteSpelling = 0;    // sharps, flats, both, auto, numbers (manual 10.6)
     bool clipPanelsFolded = false; // the Clip View's panels folded to a strip (manual 8.1.1)
+    int clipPanelsArrangement = 0; // by the view's height, side by side, stacked (manual 8.1.2)
     int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
     bool quantizeStarts = true, quantizeEnds = false;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column

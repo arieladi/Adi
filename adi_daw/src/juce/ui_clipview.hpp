@@ -115,6 +115,13 @@ class NoteEditor final : public juce::Component {
     // keyboard, says which through `contextOverride`.
     bool hasContext() const;
     std::optional<bool> contextOverride;
+    // One command of the editor as a menu shows it now: its words, whether it can act, whether it is
+    // ticked. The editor's own menu and the window's Edit, View and Options menus read the same entry.
+    struct ContextEntry {
+        juce::String text;
+        bool enabled = true, ticked = false;
+    };
+    ContextEntry contextEntry(int item) const;
     juce::PopupMenu contextMenu() const;
     bool chooseContextItem(int item);
     // What a right-click does before its menu opens: a note under it that is not selected is selected.
@@ -386,7 +393,25 @@ class ClipViewPanel final : public juce::Component {
 
     static constexpr int kPanelWidth = 156, kToolsWidth = 196, kTitleHeight = 17, kHeaderHeight = 17;
     // The panels' whole width: the Main panel, and for a MIDI clip the Pitch and Time panel.
-    int panelWidth() const noexcept { return panelsFolded_ ? kFoldedWidth : midi() ? kPanelWidth + kToolsWidth : kPanelWidth; }
+    int panelWidth() const noexcept {
+        return panelsFolded_ ? kFoldedWidth : !midi() ? kPanelWidth : panelsVertical() ? kToolsWidth : kPanelWidth + kToolsWidth;
+    }
+    // How the panels are arranged (manual 8.1.2): side by side, the Main panel and then the tools;
+    // stacked in one column, the Main panel above the tools; or by the Clip View's height, stacked
+    // once it is high enough to hold both. Chosen from the View menu, from the title's menu
+    // (Automatically), or by a pull on the panels' right edge: to the left stacks them, to the
+    // right stands them side by side. Kept with the window. An audio clip has the one panel.
+    enum class Panels { Automatic, Horizontal, Vertical };
+    static constexpr int kMainHeight = 132, kToolsHeight = 264, kStackedHeight = kTitleHeight + kMainHeight + 1 + kToolsHeight;
+    static constexpr int kEdgePull = 24;
+    Panels arrangement() const noexcept { return arrangement_; }
+    void arrange(Panels);
+    bool panelsVertical() const noexcept {
+        return midi() && !panelsFolded_ &&
+               (arrangement_ == Panels::Vertical || (arrangement_ == Panels::Automatic && getHeight() >= kStackedHeight));
+    }
+    juce::Rectangle<int> panelsEdge() const noexcept;
+    void mouseMove(const juce::MouseEvent &) override;
     // A double-click on the title folds the panels (manual 8.1.1): the Main panel and the tools
     // give their place to the editor, and a narrow strip in the clip's colour stays, with the
     // activator; a double-click on the strip brings them back. Kept with the window.
@@ -656,6 +681,9 @@ class ClipViewPanel final : public juce::Component {
     // What follows a number field's change: a Ramp value ramps; the Randomize amount typed randomizes.
     void numberChanged(Field, bool typed);
     bool panelsFolded_ = false;
+    Panels arrangement_ = Panels::Automatic;
+    bool edgeDrag_ = false, wasVertical_ = false;
+    int edgeFrom_ = 0;
     // An edit of the Main panel's that belongs to every shown clip (manual 10.8: loop, signature and
     // scale apply to all the selected clips): `build` makes it for one clip; one batch, one undo
     // step. The edited clip's refusal refuses it; another clip that cannot take it is passed over.

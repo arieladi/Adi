@@ -1431,43 +1431,80 @@ void NoteEditor::contextClick(juce::Point<int> at) {
     }
     repaint();
 }
-juce::PopupMenu NoteEditor::contextMenu() const {
-    juce::PopupMenu menu;
+NoteEditor::ContextEntry NoteEditor::contextEntry(int item) const {
     const auto *clip = panel.details();
     if (clip == nullptr)
-        return menu;
+        return {{}, false, false};
     const bool notes = anySelected(), timed = timeSelection().has_value();
-    bool allOff = notes;
-    for (const auto &n : clip->notes)
-        if (isSelected(n.id) && n.active)
-            allOff = false;
-    menu.addItem(kCut, "Cut", notes);
-    menu.addItem(kCopy, "Copy", notes);
-    menu.addItem(kPaste, "Paste", !panel.noteClipboard.empty());
-    menu.addItem(kDuplicate, "Duplicate", !selected_.empty());
-    menu.addItem(kDelete, "Delete", notes);
-    menu.addSeparator();
-    menu.addItem(kDeactivate, allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes);
-    menu.addSeparator();
-    menu.addItem(kSelectAll, "Select All");
-    menu.addItem(kInvertSelection, "Invert Selection", !clip->notes.empty());
-    menu.addSeparator();
-    menu.addItem(kQuantize, "Quantize", !clip->notes.empty());
-    menu.addItem(kQuantizeSettings, "Quantize Settings...");
-    menu.addItem(kSplit, notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
-                 notes || timed || insert_.has_value());
-    menu.addItem(kJoin, "Join Notes", notes);
-    menu.addSeparator();
-    menu.addItem(kCrop, timed ? "Crop Clip to Time Selection" : "Crop Clip");
-    menu.addItem(kDuplicateTime, "Duplicate Time", timed);
-    menu.addItem(kDeleteTime, "Delete Time", timed);
-    menu.addItem(kInsertTime, "Insert Time", timed);
-    menu.addItem(kDuplicateLoop, "Duplicate Loop", loopLengthOf(*clip) > 0);
-    menu.addSeparator();
-    menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
-    menu.addItem(kFoldToNotes, "Fold to Notes", true, folded_);
-    menu.addItem(kFoldToScale, "Fold to Scale", scaleOn(), scaleFolded_);
-    menu.addItem(kHighlightScale, "Highlight Scales", true, highlightScale);
+    switch (item) {
+    case kCut:
+        return {"Cut", notes};
+    case kCopy:
+        return {"Copy", notes};
+    case kPaste:
+        return {"Paste", !panel.noteClipboard.empty()};
+    case kDuplicate:
+        return {"Duplicate", !selected_.empty()};
+    case kDelete:
+        return {"Delete", notes};
+    case kDeactivate: {
+        bool allOff = notes;
+        for (const auto &n : clip->notes)
+            if (isSelected(n.id) && n.active)
+                allOff = false;
+        return {allOff ? "Activate Note(s)" : "Deactivate Note(s)", notes};
+    }
+    case kSelectAll:
+        return {"Select All"};
+    case kInvertSelection:
+        return {"Invert Selection", !clip->notes.empty()};
+    case kQuantize:
+        return {"Quantize", !clip->notes.empty()};
+    case kQuantizeSettings:
+        return {"Quantize Settings..."};
+    case kSplit:
+        return {notes ? "Chop Notes on Grid" : timed ? "Split Notes at Time Selection" : "Split Notes at Insert Marker",
+                notes || timed || insert_.has_value()};
+    case kJoin:
+        return {"Join Notes", notes};
+    case kCrop:
+        return {timed ? "Crop Clip to Time Selection" : "Crop Clip"};
+    case kDuplicateTime:
+        return {"Duplicate Time", timed};
+    case kDeleteTime:
+        return {"Delete Time", timed};
+    case kInsertTime:
+        return {"Insert Time", timed};
+    case kDuplicateLoop:
+        return {"Duplicate Loop", loopLengthOf(*clip) > 0};
+    case kFoldToNotes:
+        return {"Fold to Notes", true, folded_};
+    case kFoldToScale:
+        return {"Fold to Scale", scaleOn(), scaleFolded_};
+    case kHighlightScale:
+        return {"Highlight Scales", true, highlightScale};
+    default:
+        return {{}, false, false};
+    }
+}
+juce::PopupMenu NoteEditor::contextMenu() const {
+    juce::PopupMenu menu;
+    if (panel.details() == nullptr)
+        return menu;
+    // 0 is a separator; -1 the Grid submenu.
+    static constexpr int kItems[] = {kCut, kCopy, kPaste, kDuplicate, kDelete, 0, kDeactivate, 0, kSelectAll, kInvertSelection, 0,
+                                     kQuantize, kQuantizeSettings, kSplit, kJoin, 0, kCrop, kDuplicateTime, kDeleteTime, kInsertTime,
+                                     kDuplicateLoop, 0, -1, kFoldToNotes, kFoldToScale, kHighlightScale};
+    for (const int item : kItems) {
+        if (item == 0) {
+            menu.addSeparator();
+        } else if (item < 0) {
+            menu.addSubMenu("Grid", panel.gridMenu(kGridItems));
+        } else {
+            const auto entry = contextEntry(item);
+            menu.addItem(item, entry.text, entry.enabled, entry.ticked);
+        }
+    }
     return menu;
 }
 bool NoteEditor::chooseContextItem(int item) {
@@ -2141,6 +2178,16 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             return true;
         }
     }
+    // The Main panel's Set buttons from the keyboard (manual 41.8): Ctrl/Cmd with F9 sets the Start
+    // marker, F10 the loop's start, F11 the loop's end, F12 the End marker.
+    if (mods.isCommandDown() && !mods.isShiftDown() && !mods.isAltDown() && code >= juce::KeyPress::F9Key && code <= juce::KeyPress::F12Key) {
+        using Field = ClipViewPanel::Field;
+        panel.setFieldHere(code == juce::KeyPress::F9Key    ? Field::Start
+                           : code == juce::KeyPress::F10Key ? Field::Position
+                           : code == juce::KeyPress::F11Key ? Field::Length
+                                                            : Field::End);
+        return true;
+    }
     // Time inside the clip (manual 10.7): Crop Clip, and the time commands over a time selection.
     if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
         crop();
@@ -2800,7 +2847,23 @@ ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sampl
 }
 juce::Rectangle<int> ClipViewPanel::titleArea() const noexcept {
     // Folded, the title is the whole strip.
-    return panelsFolded_ ? juce::Rectangle<int>(0, 0, kFoldedWidth, getHeight()) : juce::Rectangle<int>(0, 0, kPanelWidth, kTitleHeight);
+    return panelsFolded_ ? juce::Rectangle<int>(0, 0, kFoldedWidth, getHeight())
+                         : juce::Rectangle<int>(0, 0, panelsVertical() ? kToolsWidth : kPanelWidth, kTitleHeight);
+}
+void ClipViewPanel::arrange(Panels to) {
+    if (to == arrangement_)
+        return;
+    arrangement_ = to;
+    resized();
+    repaint();
+    keepSettings();
+}
+juce::Rectangle<int> ClipViewPanel::panelsEdge() const noexcept {
+    // A few pixels about the line between the panels and the editor.
+    return !details_ || !midi() || panelsFolded_ ? juce::Rectangle<int>() : juce::Rectangle<int>(panelWidth() - 3, 0, 5, getHeight());
+}
+void ClipViewPanel::mouseMove(const juce::MouseEvent &e) {
+    setMouseCursor(panelsEdge().contains(e.getPosition()) ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
 }
 void ClipViewPanel::foldPanels(bool fold) {
     if (fold == panelsFolded_)
@@ -2819,6 +2882,8 @@ juce::Rectangle<int> ClipViewPanel::activatorArea() const noexcept { return {4, 
 juce::Rectangle<int> ClipViewPanel::mainArea() const noexcept {
     if (panelsFolded_)
         return {};
+    if (panelsVertical())
+        return {0, kTitleHeight, kToolsWidth, kMainHeight};
     return {0, kTitleHeight, kPanelWidth, std::max(0, getHeight() - kTitleHeight)};
 }
 juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
@@ -2874,6 +2939,7 @@ void ClipViewPanel::applyState(const WindowState &state) {
     notes.setLaneHeight(state.noteLaneHeight);
     notes.spelling = static_cast<NoteSpelling>(std::clamp(state.noteSpelling, 0, 4));
     panelsFolded_ = state.clipPanelsFolded;
+    arrangement_ = static_cast<Panels>(std::clamp(state.clipPanelsArrangement, 0, 2));
     notes.noteColours = static_cast<NoteEditor::NoteColours>(std::clamp(state.noteColours, 0, 4));
     quantizeValue_ = static_cast<std::size_t>(std::clamp(state.quantizeValue, 0, static_cast<int>(kQuantizeValues.size()) - 1));
     quantizeAmount = state.quantizeAmount;
@@ -2893,6 +2959,7 @@ void ClipViewPanel::keepSettings() {
     state.noteLaneHeight = notes.laneHeight();
     state.noteSpelling = static_cast<int>(notes.spelling);
     state.clipPanelsFolded = panelsFolded_;
+    state.clipPanelsArrangement = static_cast<int>(arrangement_);
     state.noteColours = static_cast<int>(notes.noteColours);
     state.quantizeValue = static_cast<int>(quantizeValue_);
     state.quantizeAmount = quantizeAmount;
@@ -3175,6 +3242,11 @@ void ClipViewPanel::numberChanged(Field field, bool typed) {
         keepSettings();
 }
 void ClipViewPanel::resized() {
+    // A field open for typing closes when the panels change places under it.
+    if (const bool vertical = panelsVertical(); vertical != wasVertical_) {
+        wasVertical_ = vertical;
+        closeEditor();
+    }
     notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
@@ -3489,7 +3561,14 @@ juce::Rectangle<int> ClipViewPanel::fieldBox(Field field) const noexcept {
 }
 // ---- The Pitch and Time panel (manual 8.5; STEP-7-PLAN 7.7 step 4) -----------------------------
 juce::Rectangle<int> ClipViewPanel::toolsArea() const noexcept {
-    return midi() && !panelsFolded_ ? juce::Rectangle<int>(kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()) : juce::Rectangle<int>();
+    if (!midi() || panelsFolded_)
+        return {};
+    // Stacked, under the Main panel and a line; side by side, beside it.
+    if (panelsVertical()) {
+        const int top = kTitleHeight + kMainHeight + 1;
+        return {0, top, kToolsWidth, std::max(0, getHeight() - top)};
+    }
+    return {kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()};
 }
 juce::Rectangle<int> ClipViewPanel::rangeBox() const noexcept {
     const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
@@ -4066,6 +4145,9 @@ juce::PopupMenu ClipViewPanel::titleMenu() const {
         colours.addItem(std::move(item));
     }
     menu.addSubMenu("Color", colours);
+    menu.addSeparator();
+    menu.addItem(2, "Arrange Clip View Panels Automatically", true, arrangement_ == Panels::Automatic);
+    menu.addItem(3, "Fold", true, panelsFolded_);
     return menu;
 }
 bool ClipViewPanel::chooseTitleItem(int item) {
@@ -4073,6 +4155,15 @@ bool ClipViewPanel::chooseTitleItem(int item) {
         return false;
     if (item == 1) {
         openEditor(Field::Name);
+        return true;
+    }
+    if (item == 2) {
+        // Ticked, the height decides; unticked, the panels stay as they stand now.
+        arrange(arrangement_ != Panels::Automatic ? Panels::Automatic : panelsVertical() ? Panels::Vertical : Panels::Horizontal);
+        return true;
+    }
+    if (item == 3) {
+        foldPanels(!panelsFolded_);
         return true;
     }
     return item >= 100 && item < 100 + kTitleColours && recolour(item - 100);
@@ -4133,6 +4224,11 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     if (activatorArea().expanded(2).contains(at)) {
         root.submitEdit("clip.setMute", {{"id", clip_}, {"muted", !details_->muted}},
                         details_->muted ? "Activate Clip" : "Deactivate Clip");
+        return;
+    }
+    if (panelsEdge().contains(at)) {
+        edgeDrag_ = true;
+        edgeFrom_ = at.x;
         return;
     }
     for (const auto field : {Field::Start, Field::End, Field::Position, Field::Length})
@@ -4289,6 +4385,16 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
     }
 }
 void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
+    if (edgeDrag_) {
+        // Past a short pull the panels change places: to the left they stack, to the right they
+        // stand side by side. The pull is counted anew from there, so it can be taken back.
+        const int pulled = e.x - edgeFrom_;
+        if (pulled <= -kEdgePull || pulled >= kEdgePull) {
+            arrange(pulled < 0 ? Panels::Vertical : Panels::Horizontal);
+            edgeFrom_ = e.x;
+        }
+        return;
+    }
     if (pressed_ == Field::None)
         return;
     if (pressed_ == Field::Scale)
@@ -4320,6 +4426,8 @@ std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const no
     return {numerator, denominator};
 }
 void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
+    if (std::exchange(edgeDrag_, false))
+        return;
     // The drag's value, read before the state is cleared; one op, one undo step.
     const auto field = pressed_;
     const bool dragged = dragged_;
@@ -4380,7 +4488,9 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.setColour(look::field);
     g.fillRect(header);
     g.setColour(look::band);
-    if (!panelsFolded_)
+    if (panelsVertical())
+        g.fillRect(0, kTitleHeight + kMainHeight, kToolsWidth, 1);
+    else if (!panelsFolded_)
         g.fillRect(kPanelWidth, 0, 1, getHeight());
     if (midi() || panelsFolded_)
         g.fillRect(panelWidth(), 0, 1, getHeight());

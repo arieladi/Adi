@@ -87,6 +87,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.noteLaneHeight = std::clamp(j.value("noteLaneHeight", 56), 50, 2000);
         state.noteSpelling = std::clamp(j.value("noteSpelling", 0), 0, 4);
         state.clipPanelsFolded = j.value("clipPanelsFolded", false);
+        state.clipPanelsArrangement = std::clamp(j.value("clipPanelsArrangement", 0), 0, 2);
         state.quantizeValue = std::clamp(j.value("quantizeValue", 0), 0, 7);
         state.quantizeAmount = std::clamp(j.value("quantizeAmount", 100), 0, 100);
         state.quantizeSwing = std::clamp(j.value("quantizeSwing", 0), 0, 100);
@@ -195,6 +196,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"noteLaneHeight", state.noteLaneHeight},
                             {"noteSpelling", state.noteSpelling},
                             {"clipPanelsFolded", state.clipPanelsFolded},
+                            {"clipPanelsArrangement", state.clipPanelsArrangement},
                             {"quantizeValue", state.quantizeValue},
                             {"quantizeAmount", state.quantizeAmount},
                             {"quantizeSwing", state.quantizeSwing},
