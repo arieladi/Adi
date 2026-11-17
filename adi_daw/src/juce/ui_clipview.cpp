@@ -2932,7 +2932,7 @@ juce::Rectangle<int> ClipViewPanel::mainArea() const noexcept {
     if (panelsFolded_)
         return {};
     if (panelsVertical())
-        return {0, kTitleHeight, kToolsWidth, kMainHeight};
+        return {0, kTitleHeight - columnScroll(), kToolsWidth, kMainHeight};
     return {0, kTitleHeight, kPanelWidth, std::max(0, getHeight() - kTitleHeight)};
 }
 juce::Rectangle<int> ClipViewPanel::headerArea() const noexcept {
@@ -3296,6 +3296,8 @@ void ClipViewPanel::resized() {
         wasVertical_ = vertical;
         closeEditor();
     }
+    if (panelsVertical())
+        scroll_ = columnScroll();
     notes.setBounds(editorArea().withTrimmedTop(filterArea().getHeight()).withTrimmedBottom(velocityStripArea().getHeight()));
     sample.setBounds(editorArea());
 }
@@ -3614,10 +3616,46 @@ juce::Rectangle<int> ClipViewPanel::toolsArea() const noexcept {
         return {};
     // Stacked, under the Main panel and a line; side by side, beside it.
     if (panelsVertical()) {
-        const int top = kTitleHeight + kMainHeight + 1;
-        return {0, top, kToolsWidth, std::max(0, getHeight() - top)};
+        // As high as its tab, or to the view's foot; moved with the column.
+        const int scrolled = columnScroll(), top = kTitleHeight + kMainHeight + 1 - scrolled;
+        return {0, top, kToolsWidth, std::max(0, std::max(getHeight(), columnHeight() - scrolled) - top)};
     }
     return {kPanelWidth + 1, 0, kToolsWidth - 1, getHeight()};
+}
+// ---- The stacked column's scrolling ------------------------------------------------------------
+juce::Rectangle<int> ClipViewPanel::columnArea() const noexcept {
+    return panelsVertical() ? juce::Rectangle<int>(0, kTitleHeight, kToolsWidth, std::max(0, getHeight() - kTitleHeight)) : juce::Rectangle<int>();
+}
+int ClipViewPanel::columnHeight() const noexcept {
+    // The rows under each tab's title, by the lowest thing on it: Legato, the Quantize amounts, the overlaps.
+    static constexpr int kRows[kToolTabs] = {6, 10, 5};
+    return kTitleHeight + kMainHeight + 1 + kTitleHeight + 5 + kRows[toolsTab_] * 22 + kFieldBox + 5;
+}
+int ClipViewPanel::columnScrollLimit() const noexcept { return panelsVertical() ? std::max(0, columnHeight() - getHeight()) : 0; }
+bool ClipViewPanel::scrollColumn(int to) {
+    const int from = columnScroll();
+    scroll_ = std::clamp(to, 0, columnScrollLimit());
+    if (scroll_ == from)
+        return false;
+    // A field open for typing closes when the column moves under it.
+    closeEditor();
+    repaint();
+    return true;
+}
+juce::Rectangle<int> ClipViewPanel::scrollThumb() const noexcept {
+    const int limit = columnScrollLimit();
+    const auto view = columnArea();
+    if (limit <= 0 || view.getHeight() < 24)
+        return {};
+    // In the margin between the fields and the panels' edge; as long as the part of the column in view.
+    const int height = std::max(12, view.getHeight() * view.getHeight() / (view.getHeight() + limit));
+    return {view.getRight() - 6, view.getY() + (view.getHeight() - height) * columnScroll() / limit, 3, height};
+}
+void ClipViewPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
+    if (columnScrollLimit() > 0 && e.x < panelWidth())
+        scrollColumn(columnScroll() - static_cast<int>(std::lround(w.deltaY * 180.f)));
+    else
+        juce::Component::mouseWheelMove(e, w);
 }
 juce::Rectangle<int> ClipViewPanel::rangeBox() const noexcept {
     const auto inner = toolsArea().withTrimmedTop(kTitleHeight).reduced(6, 5);
@@ -3723,6 +3761,7 @@ int ClipViewPanel::tabOf(Tool tool) noexcept {
 }
 void ClipViewPanel::setToolsTab(int tab) {
     toolsTab_ = std::clamp(tab, 0, kToolTabs - 1);
+    scroll_ = columnScroll();
     closeEditor();
     repaint();
 }
@@ -4235,6 +4274,13 @@ bool ClipViewPanel::toggleLoop() {
     return commitForAll([on](const engine::ClipDetails &clip) { return clip.loopEnabled == on ? TrackEdit{} : toggleClipLoop(clip); });
 }
 void ClipViewPanel::openEditor(Field field) {
+    // A field of a scrolled column comes whole into view before it opens.
+    if (const auto view = columnArea(), box = fieldBox(field); !view.isEmpty() && field != Field::Name && !box.isEmpty() && box.getRight() <= view.getRight()) {
+        if (box.getY() < view.getY() + 2)
+            scrollColumn(columnScroll() - (view.getY() + 2 - box.getY()));
+        else if (box.getBottom() > view.getBottom() - 2)
+            scrollColumn(columnScroll() + box.getBottom() - (view.getBottom() - 2));
+    }
     editing_ = field;
     const auto r = readings();
     const auto value = field == Field::Start       ? r.start
@@ -4278,6 +4324,20 @@ void ClipViewPanel::mouseDown(const juce::MouseEvent &e) {
                         details_->muted ? "Activate Clip" : "Deactivate Clip");
         return;
     }
+    if (const auto thumb = scrollThumb(); !thumb.isEmpty() && columnArea().contains(at) && at.x >= thumb.getX() - 2 && at.x < thumb.getRight()) {
+        // On the thumb a drag moves the column; above or below it a click turns a page.
+        if (at.y < thumb.getY() || at.y >= thumb.getBottom()) {
+            scrollColumn(columnScroll() + (at.y < thumb.getY() ? -1 : 1) * columnArea().getHeight());
+        } else {
+            thumbDrag_ = true;
+            thumbFrom_ = at.y;
+            thumbScroll_ = columnScroll();
+        }
+        return;
+    }
+    // Scrolled, the title covers what lies under it.
+    if (columnScroll() > 0 && titleArea().contains(at))
+        return;
     if (panelsEdge().contains(at)) {
         edgeDrag_ = true;
         edgeFrom_ = at.x;
@@ -4447,6 +4507,11 @@ void ClipViewPanel::mouseDrag(const juce::MouseEvent &e) {
         }
         return;
     }
+    if (thumbDrag_) {
+        if (const int room = columnArea().getHeight() - scrollThumb().getHeight(); room > 0)
+            scrollColumn(thumbScroll_ + (e.y - thumbFrom_) * columnScrollLimit() / room);
+        return;
+    }
     if (pressed_ == Field::None)
         return;
     if (pressed_ == Field::Scale)
@@ -4478,7 +4543,7 @@ std::pair<std::int64_t, std::int64_t> ClipViewPanel::draggedSignature() const no
     return {numerator, denominator};
 }
 void ClipViewPanel::mouseUp(const juce::MouseEvent &) {
-    if (std::exchange(edgeDrag_, false))
+    if (std::exchange(edgeDrag_, false) || std::exchange(thumbDrag_, false))
         return;
     // The drag's value, read before the state is cleared; one op, one undo step.
     const auto field = pressed_;
@@ -4541,7 +4606,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     g.fillRect(header);
     g.setColour(look::band);
     if (panelsVertical())
-        g.fillRect(0, kTitleHeight + kMainHeight, kToolsWidth, 1);
+        g.fillRect(0, kTitleHeight + kMainHeight - columnScroll(), kToolsWidth, 1);
     else if (!panelsFolded_)
         g.fillRect(kPanelWidth, 0, 1, getHeight());
     if (midi() || panelsFolded_)
@@ -4576,6 +4641,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     }
     if (!panelsFolded_)
         text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
+    // A scrolled column is cut at the title, which stays over it.
+    const bool scrolled = columnScroll() > 0;
+    if (scrolled) {
+        g.saveState();
+        g.reduceClipRegion(columnArea());
+    }
     auto field = [&](Field which, const juce::String &name, const juce::String &value) {
         const auto box = fieldBox(which);
         if (box.isEmpty())
@@ -4710,6 +4781,12 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         }
     }
 
+    if (scrolled)
+        g.restoreState();
+    if (const auto thumb = scrollThumb(); !thumb.isEmpty()) {
+        g.setColour(look::text.withAlpha(0.45f));
+        g.fillRoundedRectangle(thumb.toFloat(), 1.5f);
+    }
     if (const auto strip = velocityStripArea(); !strip.isEmpty()) {
         // Live's Velocity Controls, under the lanes.
         g.setColour(look::field);
