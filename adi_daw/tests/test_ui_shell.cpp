@@ -6451,6 +6451,110 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
                   panel.toolBox(ClipViewPanel::Tool::VelocityAdd).getY() > panel.mainArea().getBottom(),
               "stacked, a click on a tab still shows that tab's tools, now under the Main panel");
         panel.setToolsTab(0);
+        // A stacked column higher than the Clip View scrolls under the clip's title.
+        {
+            using Tool = ClipViewPanel::Tool;
+            const auto wheel = [&](float by) {
+                panel.mouseWheelMove(pressAt(panel, panel.columnArea().getCentre().toFloat()), juce::MouseWheelDetails{0.f, by, false, false, false});
+            };
+            // Each tab's column ends a margin under the lowest thing on it.
+            bool fitted = true;
+            for (int tab = 0; tab < ClipViewPanel::kToolTabs; ++tab) {
+                panel.setToolsTab(tab);
+                int lowest = tab == 1 ? panel.fieldBox(Field::QuantizeAmount).getBottom() : 0;
+                for (const auto tool : ClipViewPanel::kTools)
+                    lowest = std::max(lowest, panel.toolBox(tool).getBottom());
+                fitted = fitted && lowest + 5 == panel.columnHeight();
+            }
+            check(fitted && panel.columnScroll() == 0, "the column is as high as the title, the Main panel and the shown tab's tools down to the lowest of them");
+            panel.setToolsTab(1);
+            const int limit = panel.columnScrollLimit();
+            const auto startBox = panel.fieldBox(Field::Start);
+            const auto editorBounds = ed.getBounds();
+            check(limit > 0 && limit == panel.columnHeight() - panel.getHeight() && panel.fieldBox(Field::QuantizeAmount).getBottom() > panel.getHeight() &&
+                      !panel.scrollThumb().isEmpty() && panel.scrollThumb().getY() == panel.columnArea().getY() &&
+                      panel.scrollThumb().getX() >= panel.toolBox(Tool::VelocityAdd).getRight() && panel.scrollThumb().getRight() <= panel.panelsEdge().getX(),
+                  "stacked at this height the column is higher than the view: its foot is out of sight, and a thumb stands between the fields and the panels' edge");
+            wheel(-0.25f);
+            check(panel.columnScroll() == 45 && panel.fieldBox(Field::Start).getY() == startBox.getY() - 45 && panel.fieldBox(Field::Start).getX() == startBox.getX() &&
+                      panel.tabBox(1).getY() == panel.mainArea().getBottom() + 1 && panel.titleArea().getY() == 0 && panel.columnArea().getY() == ClipViewPanel::kTitleHeight &&
+                      ed.getBounds() == editorBounds && panel.scrollThumb().getY() > panel.columnArea().getY(),
+                  "the wheel over the column moves the Main panel and the tools together; the title and the editor stay, and the thumb follows");
+            wheel(-10.f);
+            check(panel.columnScroll() == limit && panel.fieldBox(Field::QuantizeAmount).getBottom() + 5 == panel.getHeight() &&
+                      panel.scrollThumb().getBottom() == panel.columnArea().getBottom(),
+                  "the wheel stops at the column's foot, now whole in view, the thumb at the foot of its run");
+            wheel(10.f);
+            check(panel.columnScroll() == 0 && panel.fieldBox(Field::Start) == startBox, "and at its head");
+            // The title covers what is scrolled under it.
+            const bool looped = details().loopEnabled;
+            const auto undoBefore = submitter.nextUndo()->txnId;
+            const bool under = panel.scrollColumn(panel.loopBox().getY() - 2) && panel.titleArea().contains(panel.loopBox().getCentre());
+            panel.mouseDown(pressAt(panel, panel.loopBox().getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, panel.loopBox().getCentre().toFloat()));
+            check(under && details().loopEnabled == looped && submitter.nextUndo()->txnId == undoBefore,
+                  "a click on the title does not reach the Loop switch scrolled under it");
+            panel.scrollColumn(0);
+            // The thumb: a drag moves the column, a click beside it turns a page.
+            const auto thumbAt = panel.scrollThumb().getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, thumbAt));
+            panel.mouseDrag(dragAt(panel, thumbAt, {thumbAt.x, thumbAt.y + 500.f}));
+            const bool atFoot = panel.columnScroll() == limit;
+            panel.mouseDrag(dragAt(panel, thumbAt, {thumbAt.x, thumbAt.y}));
+            const bool backAtHead = panel.columnScroll() == 0;
+            panel.mouseUp(dragAt(panel, thumbAt, thumbAt));
+            check(atFoot && backAtHead && panel.arrangement() == Panels::Vertical && submitter.nextUndo()->txnId == undoBefore,
+                  "the thumb dragged down brings the foot, dragged back the head; nothing is edited and the panels stay stacked");
+            const juce::Point<float> below{thumbAt.x, static_cast<float>(panel.getHeight() - 3)};
+            panel.mouseDown(pressAt(panel, below));
+            panel.mouseUp(pressAt(panel, below));
+            check(panel.columnScroll() == std::min(limit, panel.columnArea().getHeight()), "a click below the thumb turns a page down");
+            // A field cut off at the foot comes whole into view when it opens.
+            panel.scrollColumn(0);
+            panel.scrollColumn(panel.fieldBox(Field::QuantizeAmount).getBottom() - panel.getHeight() - 8);
+            const auto cut = panel.fieldBox(Field::QuantizeAmount);
+            const juce::Point<float> visiblePart{static_cast<float>(cut.getCentreX()), static_cast<float>(cut.getY() + 3)};
+            panel.mouseDown(pressAt(panel, visiblePart));
+            panel.mouseUp(pressAt(panel, visiblePart));
+            check(cut.getBottom() == panel.getHeight() + 8 && panel.editing() == Field::QuantizeAmount && panel.fieldEditor().isVisible() &&
+                      panel.fieldBox(Field::QuantizeAmount).getBottom() == panel.getHeight() - 2 && panel.fieldEditor().getBounds() == panel.fieldBox(Field::QuantizeAmount),
+                  "a click on a field cut off at the foot brings it whole into view and opens it there");
+            wheel(-0.25f);
+            check(panel.editing() == Field::None && !panel.fieldEditor().isVisible(), "the open field closes when the column moves under it");
+            // A shorter tab, and the panels side by side: the place stays inside the column.
+            panel.scrollColumn(limit);
+            panel.setToolsTab(2);
+            check(panel.columnScrollLimit() < limit && panel.columnScroll() == panel.columnScrollLimit() &&
+                      panel.toolBox(Tool::OverlapsMono).getBottom() + 5 == panel.getHeight(),
+                  "a shorter tab chosen at the foot of a longer one ends at its own foot");
+            // The stacked column scrolled, for the PR's picture (ADI_UI_PARITY).
+            if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                panel.setToolsTab(1);
+                panel.scrollColumn(panel.columnScrollLimit() / 2);
+                root.frame();
+                juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics gr(picture);
+                    gr.addTransform(juce::AffineTransform::scale(2.f));
+                    root.paintEntireComponent(gr, true);
+                }
+                const auto file = juce::File(folder).getChildFile("adi-clip-view-scrolled.png");
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+            }
+            panel.setToolsTab(1);
+            panel.scrollColumn(40);
+            root.command(C::ArrangePanelsHorizontally);
+            const bool sideBySide = panel.columnScrollLimit() == 0 && panel.columnScroll() == 0 && panel.scrollThumb().isEmpty() && panel.columnArea().isEmpty() &&
+                                    panel.mainArea().getY() == ClipViewPanel::kTitleHeight && panel.toolsArea().getY() == 0;
+            wheel(-1.f);
+            check(sideBySide && panel.columnScroll() == 0 && panel.mainArea().getY() == ClipViewPanel::kTitleHeight,
+                  "side by side nothing scrolls: no thumb, and the wheel leaves the panels where they stand");
+            root.command(C::ArrangePanelsVertically);
+            panel.scrollColumn(0);
+            panel.setToolsTab(0);
+        }
         const auto pull = [&](float by) {
             const auto edge = panel.panelsEdge().getCentre().toFloat();
             panel.mouseDown(pressAt(panel, edge));
