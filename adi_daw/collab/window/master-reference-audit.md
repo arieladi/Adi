@@ -88,8 +88,8 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Partial (E1): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy and silence over a range, and Insert and Delete Time wait (N17) |
-| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Built (E1, E2, E3): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy, paste and duplicate over a range (E2); Cut, Copy, Paste, Duplicate and Delete Time (Ctrl/Cmd+Shift+X, C, V, D, Delete) and Insert Silence (Ctrl/Cmd+I) across every track, locators, the loop and time signature markers moving with the time (E3). Silence over a range that keeps the time (Live's Delete on a time selection leaves silence) is Delete's |
+| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Built (E4, `window/fades`): peak and curve handles on audio clips, the same fade on every selected clip in one step; Create Fade In/Out and Create Crossfade on Ctrl/Cmd+Alt+F; Delete Fades/Crossfades on Ctrl/Cmd+Alt+Backspace; F shows the handles. Waits: the fade-start handles (a fade offset in `clip.setFades`), a crossfade over hidden material (parity-7.3 row 43) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
 | Markers and locators, a marker holding a note and a prompt | 3.3 | Waits: no marker ops (new Need) |
@@ -112,8 +112,8 @@ MR § is the Master Reference's section.
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Built (D5, N28, #414): the Impulse tile beside Color Cab's controls takes a file from the desktop or the browser's Samples, in any format the browser lists; it shows the empty and the missing-file marks; Clear empties it; each is one undo step, and the live device takes the new state. Missing: undo and redo of an assignment reach the file, not the live device, until N47; the file is decoded on the message thread |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
-| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
-| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |
+| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing. Planned as STEP-7-PLAN §7.7 (window/clip-view), Live 12's layout; its picture `pictures/2026-10-28-clip-view.png` went to the director on 28 October. The frame can be built alone; the clip's properties wait on N32 and N33 |
+| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing. Planned in §7.7 with `parity-7.7-clip-view.md`. The note ruler and the geometry can be built alone; drawing and editing notes wait on reading them (N32); the five note ops exist and the Pitch and Time tools compose them |
 | Layered editing; the editors torn out | 3.4, 4.1 | Later, with the editors |
 | The Pd patch editor | 9.3 | Later (P1, its own step) |
 

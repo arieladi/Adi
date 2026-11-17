@@ -56,6 +56,21 @@ int main() {
     state.analysisPaletteReverse = true;
     state.analysisSpectrumSlope = "tilt45";
     state.showReference = true;
+    // The Note Editor's own settings.
+    state.noteGridSnap = false;
+    state.noteGridFixed = true;
+    state.noteGridTriplet = true;
+    state.noteGridNarrow = -1;
+    state.noteGridFixedQuarters = 2;
+    state.highlightScale = false;
+    state.noteColours = 3;
+    state.noteLaneHeight = 90;
+    state.clipPanelsArrangement = 2;
+    state.quantizeValue = 6;
+    state.quantizeAmount = 40;
+    state.quantizeSwing = 15;
+    state.quantizeStarts = false;
+    state.quantizeEnds = true;
     state.hideReturns = true;
     state.gridSnap = false;
     state.gridFixed = true;
@@ -92,6 +107,15 @@ int main() {
               !views.load("other").mixAnalyzerDock && views.load("other").mixAnalyzerWidth == 300 &&
               views.load("other").mixAnalyzerSource == 0,
           "optional analyzer dock source/tap/channel/width persist per window, off and Main by default");
+    check(!restored.noteGridSnap && restored.noteGridFixed && restored.noteGridTriplet && restored.noteGridNarrow == -1 &&
+              restored.noteGridFixedQuarters == 2 && !restored.highlightScale && restored.noteColours == 3 && restored.quantizeValue == 6 &&
+              restored.noteLaneHeight == 90 && views.load("other").noteLaneHeight == 56 &&
+              restored.clipPanelsArrangement == 2 && views.load("other").clipPanelsArrangement == 0 &&
+              restored.quantizeAmount == 40 && restored.quantizeSwing == 15 && !restored.quantizeStarts && restored.quantizeEnds &&
+              views.load("other").noteGridSnap && !views.load("other").noteGridFixed && views.load("other").highlightScale &&
+              views.load("other").noteColours == 0 && views.load("other").quantizeAmount == 100 && views.load("other").quantizeStarts &&
+              views.load("other").clipViewHeight == 286,
+          "the Note Editor's grid, Highlight Scale, note colours and Quantize settings persist per window, with Live's defaults");
     check(restored.analysisPalette == "viridis" && restored.analysisPaletteReverse &&
               views.load("other").analysisPalette == "adi" && !views.load("other").analysisPaletteReverse,
           "spectrogram palette/reverse persist per window with original ADI colors as the default");
