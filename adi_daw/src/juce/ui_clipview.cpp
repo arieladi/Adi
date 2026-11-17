@@ -452,6 +452,47 @@ bool NoteEditor::join() {
         return false;
     return commit(across([](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) { return joinNotes(of, ids); }));
 }
+bool NoteEditor::canFitToRange() const {
+    return panel.details() != nullptr && (anySelected() || timeSelection().has_value());
+}
+bool NoteEditor::fitToRange() {
+    const auto *clip = panel.details();
+    if (clip == nullptr)
+        return false;
+    // The range, in the song's time: the time selection, else what the selected notes span together.
+    auto range = timeSelection();
+    if (!range) {
+        std::int64_t from = std::numeric_limits<std::int64_t>::max(), to = std::numeric_limits<std::int64_t>::min();
+        const auto take = [&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+            const auto window = ClipWindow::of(of);
+            for (const auto &n : of.notes)
+                if (std::find(ids.begin(), ids.end(), n.id) != ids.end()) {
+                    from = std::min(from, window.toArrangement(n.startTicks));
+                    to = std::max(to, window.toArrangement(n.startTicks + n.durationTicks));
+                }
+        };
+        take(*clip, selected_);
+        if (!panel.focus())
+            for (const auto &layer : panel.others())
+                take(layer.details, selectedIn(layer.details.id));
+        if (from >= to)
+            return false;
+        range = std::pair{from, to};
+    }
+    const bool chosen = anySelected();
+    return commit(across([&](const engine::ClipDetails &of, const std::vector<std::uint64_t> &ids) {
+        const auto window = ClipWindow::of(of);
+        const auto from = window.toSource(range->first), to = window.toSource(range->second);
+        if (chosen)
+            return fitNotesToRange(of, ids, from, to);
+        // Time selected and no note: the notes that begin in it.
+        std::vector<std::uint64_t> within;
+        for (const auto &n : of.notes)
+            if (n.startTicks >= from && n.startTicks < to)
+                within.push_back(n.id);
+        return fitNotesToRange(of, within, from, to);
+    }));
+}
 bool NoteEditor::copySelected() {
     const auto *clip = panel.details();
     if (clip == nullptr || !anySelected())
@@ -1467,6 +1508,8 @@ NoteEditor::ContextEntry NoteEditor::contextEntry(int item) const {
                 notes || timed || insert_.has_value()};
     case kJoin:
         return {"Join Notes", notes};
+    case kFitToRange:
+        return {"Fit to Time Range", canFitToRange()};
     case kCrop:
         return {timed ? "Crop Clip to Time Selection" : "Crop Clip"};
     case kDuplicateTime:
@@ -1493,7 +1536,7 @@ juce::PopupMenu NoteEditor::contextMenu() const {
         return menu;
     // 0 is a separator; -1 the Grid submenu.
     static constexpr int kItems[] = {kCut, kCopy, kPaste, kDuplicate, kDelete, 0, kDeactivate, 0, kSelectAll, kInvertSelection, 0,
-                                     kQuantize, kQuantizeSettings, kSplit, kJoin, 0, kCrop, kDuplicateTime, kDeleteTime, kInsertTime,
+                                     kQuantize, kQuantizeSettings, kSplit, kJoin, kFitToRange, 0, kCrop, kDuplicateTime, kDeleteTime, kInsertTime,
                                      kDuplicateLoop, 0, -1, kFoldToNotes, kFoldToScale, kHighlightScale};
     for (const int item : kItems) {
         if (item == 0) {
@@ -1540,6 +1583,8 @@ bool NoteEditor::chooseContextItem(int item) {
         return splitOrChop();
     case kJoin:
         return join();
+    case kFitToRange:
+        return fitToRange();
     case kCrop:
         return crop();
     case kDuplicateTime:
@@ -2225,6 +2270,10 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
     }
     if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier, 0)) {
         join();
+        return true;
+    }
+    if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) {
+        fitToRange();
         return true;
     }
     // Cut, Copy and Paste are the editor's while it has the keyboard (manual 10.5.4).
@@ -3870,7 +3919,10 @@ bool ClipViewPanel::runTool(Tool tool) {
     case Tool::Legato:
         return notes.apply(legatoNotes(d, ids));
     case Tool::FixedLength: {
-        // Set Length (manual 10.5.9.6): the Duration chooser's length for the selected notes, or all.
+        // Set Length (manual 10.5.9.6): the Duration chooser's length for the selected notes, or all;
+        // with Time Range chosen, Fit to Time Range (10.5.5).
+        if (kDurations[duration_].ticks < 0)
+            return notes.fitToRange();
         auto set = fixedLengths(d, ids, durationTicks());
         for (auto &o : set.ops)
             o.label = "Set Length";

@@ -6043,20 +6043,20 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(undo() && undo() && note(3).durationTicks == 2 * beat, "both stretches undone");
 
         // Duration and Set Length.
-        check(panel.duration() == 0 && panel.durationMenu().getNumItems() == 7 && panel.durationTicks() == ed.gridTicks() && panel.chooseDuration(5) &&
-                  panel.durationTicks() == beat && !panel.chooseDuration(0) && !panel.chooseDuration(8),
+        check(panel.duration() == 1 && panel.durationMenu().getNumItems() == 8 && panel.durationTicks() == ed.gridTicks() && panel.chooseDuration(6) &&
+                  panel.durationTicks() == beat && !panel.chooseDuration(0) && !panel.chooseDuration(9),
               "the Duration chooser: the editing grid's step first, then fixed lengths; 1/4 chosen");
         ed.select({3});
         click(panel.toolBox(Tool::FixedLength));
         check(note(3).durationTicks == beat && note(4).durationTicks == beat && undoIs("Set Length") && submitter.nextUndo()->opCount == 1,
               "Set Length gives the selected note the chosen length");
-        check(panel.chooseDuration(4), "1/8");
+        check(panel.chooseDuration(5), "1/8");
         ed.select({});
         click(panel.toolBox(Tool::FixedLength));
         bool allEighths = true;
         for (const auto &n : details().notes)
             allEighths = allEighths && n.durationTicks == beat / 2;
-        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(1),
+        check(allEighths && submitter.nextUndo()->opCount == 5 && undo() && undo() && note(3).durationTicks == 2 * beat && panel.chooseDuration(2),
               "with no note selected, every note; undone, and the Duration back on Grid");
     }
 
@@ -6510,6 +6510,53 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.state().clipView && root.command(C::ToggleClipView) && !root.state().clipView && root.command(C::FocusClipView) &&
                   root.state().clipView && panel.details() != nullptr,
               "Navigate > Clip View shows a hidden Clip View, its clip still in it, and gives its editor the keyboard");
+    }
+
+    // Fit to Time Range (manual 10.5.5): Ctrl+Alt+J, the menus, the Duration chooser's Time Range.
+    {
+        using C = AppCommands;
+        const int alt = juce::ModifierKeys::altModifier;
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({});
+        check(!ed.canFitToRange() && !ed.contextEntry(NoteEditor::kFitToRange).enabled && !ed.fitToRange(),
+              "with no note and no time selected there is nothing to fit");
+        // The D3 (beat 1, a beat long) and the two-beat E3 (beat 2): together they span beats 1 to 4.
+        ed.select({2, 3});
+        const auto unfitted = submitter.nextUndo()->txnId;
+        check(ed.canFitToRange() && ed.keyPressed(key('j', command | alt)) && note(2).startTicks == beat && note(2).durationTicks == 3 * beat &&
+                  note(3).startTicks == beat && note(3).durationTicks == 3 * beat && note(2).key == 62 && note(3).key == 64 && undoIs("Fit to Time Range") &&
+                  submitter.nextUndo()->txnId != unfitted && ed.selected() == std::vector<std::uint64_t>({2, 3}),
+              "Ctrl+Alt+J with two notes selected: both begin where the first began and end where the last ended, on their own keys, one undo step");
+        check(undo() && note(2).durationTicks == beat && note(3).startTicks == 2 * beat && note(3).durationTicks == 2 * beat, "one Undo gives both back");
+        // A time selection is the range: the clip's beats 4 to 6, with the F3 (beat 5) selected.
+        ed.select({4});
+        ed.selectTime(song(4 * beat), song(6 * beat));
+        ed.select({4});
+        check(ed.timeSelection().has_value() && ed.chooseContextItem(NoteEditor::kFitToRange) && note(4).startTicks == 4 * beat && note(4).durationTicks == 2 * beat &&
+                  undoIs("Fit to Time Range") && undo(),
+              "with time selected the selected note takes the selection's start and end; from the editor's menu");
+        ed.select({});
+        ed.selectTime(song(4 * beat), song(6 * beat));
+        check(!ed.anySelected() && ed.fitToRange() && note(4).startTicks == 4 * beat && note(4).durationTicks == 2 * beat && note(5).startTicks == 7 * beat && undo(),
+              "with time selected and no note, the notes that begin in it are fitted; the others stay");
+        // The Edit menu's entry, with the editor in use.
+        ed.keyPressed(key(juce::KeyPress::escapeKey));
+        ed.select({2, 3});
+        ed.contextOverride = true;
+        juce::ApplicationCommandInfo fit(C::FitToTimeRange);
+        commands.getCommandInfo(C::FitToTimeRange, fit);
+        check(fit.shortName == "Fit to Time Range" && (fit.flags & juce::ApplicationCommandInfo::isDisabled) == 0 && root.command(C::FitToTimeRange) &&
+                  note(3).startTicks == beat && undoIs("Fit to Time Range") && undo(),
+              "Edit > Fit to Time Range does the same while the editor is in use");
+        ed.contextOverride = false;
+        check(!root.command(C::FitToTimeRange) && note(3).startTicks == 2 * beat, "and nothing outside it");
+        ed.contextOverride.reset();
+        // The Duration chooser's Time Range, applied by Set Length.
+        panel.setToolsTab(0);
+        check(panel.chooseDuration(1) && panel.duration() == 0 && panel.runTool(ClipViewPanel::Tool::FixedLength) && note(2).durationTicks == 3 * beat &&
+                  note(3).startTicks == beat && undoIs("Fit to Time Range") && undo() && panel.chooseDuration(2),
+              "Time Range in the Duration chooser: Set Length fits the selected notes to the range");
+        ed.select({});
     }
 }
 
@@ -11191,7 +11238,8 @@ int main(int argc, char **argv) {
                       C::ToggleClipView == C::Split + 1 && C::InsertMidiClip == C::ToggleClipView + 1 &&
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
-                      C::FocusClipView == C::ArrangePanelsVertically + 1 && C::LastId == C::FocusClipView,
+                      C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
+                      C::LastId == C::FitToTimeRange,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -11217,7 +11265,8 @@ int main(int argc, char **argv) {
                           named(C::ArrangePanelsAutomatically).shortName == "Arrange Clip View Panels Automatically" &&
                           named(C::ArrangePanelsHorizontally).shortName == "Arrange Clip View Panels Horizontally" &&
                           named(C::ArrangePanelsVertically).shortName == "Arrange Clip View Panels Vertically" &&
-                          named(C::FocusClipView).shortName == "Clip View" && on(C::FocusClipView, '3', alted),
+                          named(C::FocusClipView).shortName == "Clip View" && on(C::FocusClipView, '3', alted) &&
+                          named(C::FitToTimeRange).shortName == "Fit to Time Range" && on(C::FitToTimeRange, 'j', ctrl | alted),
                       "Invert Selection, Quantize, Quantize Settings, Crop Clip, Expand Clip View, Fold to Notes, Fold to Scale, "
                       "Highlight Scales and Draw Mode are named, each on Live's key; then the three that arrange the Clip View's panels, "
                       "and the Navigate menu's Clip View on Alt/Option+3");
@@ -11251,10 +11300,10 @@ int main(int argc, char **argv) {
                                                 C::CutTime, C::CopyTime, C::PasteTime, C::DuplicateTime, C::DeleteTime,
                                                 C::InsertSilence, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0,
-                                                C::Quantize, C::QuantizeSettings, 0, C::GroupTracks, C::UngroupTracks},
+                                                C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), then the …Time commands and Insert Silence "
               "(6.11), before Rename (§18.2), Select All and Invert Selection, then Loop Selection and Select Loop (§6.6), then "
-              "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize and its settings (10.5.8), then Group and "
+              "Split and Crop Clip, the clip commands (6.9, 10.7.1), then Quantize, its settings (10.5.8) and Fit to Time Range (10.5.5), then Group and "
               "Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its

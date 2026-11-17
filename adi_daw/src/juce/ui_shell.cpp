@@ -129,6 +129,8 @@ int noteEditorItem(int id, const NoteEditor &notes) {
         return NoteEditor::kSplit;
     case C::CropClip:
         return NoteEditor::kCrop;
+    case C::FitToTimeRange:
+        return NoteEditor::kFitToRange;
     case C::DuplicateTime:
         return NoteEditor::kDuplicateTime;
     case C::DeleteTime:
@@ -197,7 +199,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Delete Fades/Crossfades", "Invert Selection", "Quantize", "Quantize Settings...",
                                   "Crop Clip", "Expand Clip View", "Fold to Notes", "Fold to Scale", "Highlight Scales",
                                   "Draw Mode", "Arrange Clip View Panels Automatically", "Arrange Clip View Panels Horizontally",
-                                  "Arrange Clip View Panels Vertically", "Clip View"};
+                                  "Arrange Clip View Panels Vertically", "Clip View", "Fit to Time Range"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -634,6 +636,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case CropClip:
         info.addDefaultKeypress('j', cmd | shift);
+        info.setActive(false);
+        break;
+    case FitToTimeRange: // manual 10.5.5: the editor's, in the Edit menu too
+        info.addDefaultKeypress('j', cmd | alt);
         info.setActive(false);
         break;
     case ExpandClipView: // manual 10.2; Live 12's View menu: Expand Clip View, Ctrl/Cmd+Alt+E
@@ -3011,7 +3017,7 @@ bool AdiRootComponent::command(int id) {
         return true;
     }
     // The editor's own Edit commands outside it: nothing to act on.
-    if (id >= AppCommands::InvertSelection && id <= AppCommands::CropClip)
+    if ((id >= AppCommands::InvertSelection && id <= AppCommands::CropClip) || id == AppCommands::FitToTimeRange)
         return false;
     // The application's own: files and Settings.
     // In a window of its own, the Mix View is the application's to open and close (its floating
@@ -3415,10 +3421,11 @@ const std::vector<MenuEntries> &menuBar() {
         // Edit menu is to be read on Live. Split (6.9) heads the clip commands' group, after the
         // clipboard's and the selection's, with Crop Clip (10.7.1); Consolidate will join them.
         // Invert Selection follows Select All, as measured on Live 12; Quantize and its settings
-        // (10.5.8) have a group of their own, whose place in Live's menu is to be read on Live.
+        // (10.5.8) have a group of their own, with Fit to Time Range (10.5.5); the group's place in
+        // Live's menu is to be read on Live.
         {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::CutTime, C::CopyTime,
                   C::PasteTime, C::DuplicateTime, C::DeleteTime, C::InsertSilence, 0, C::RenameTrack, C::EditInfoText, C::SelectAll,
-                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, 0,
+                  C::InvertSelection, 0, C::LoopSelection, C::SelectLoop, 0, C::Split, C::CropClip, 0, C::Quantize, C::QuantizeSettings, C::FitToTimeRange, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change, then
         // Create Fade In/Out and Delete Fades/Crossfades (6.8); their place in Live 12's Create

@@ -398,6 +398,19 @@ void chordEditing() {
     check(fixed.ops.size() == 2 && fixed.ops[0].opType == "note.resize" && fixed.ops[0].payload.at("dur") == beat &&
               fixed.ops[0].label == "Fixed Lengths" && fixed.select == std::vector<std::uint64_t>({1, 3}),
           "Fixed Lengths makes the selected notes a grid step long");
+    // Fit to Time Range (manual 10.5.5): notes 2 (beat 1, a beat) and 3 (beat 1, four beats) into beats 1 to 3.
+    const auto fitted = fitNotesToRange(c, {2, 3}, beat, 3 * beat);
+    check(fitted.ops.size() == 2 && fitted.ops[0].opType == "note.resize" && fitted.ops[0].payload.at("note") == 2 &&
+              fitted.ops[0].payload.at("dur") == 2 * beat && fitted.ops[1].payload.at("note") == 3 && fitted.ops[1].payload.at("dur") == 2 * beat &&
+              fitted.ops[0].label == "Fit to Time Range" && fitted.select == std::vector<std::uint64_t>({2, 3}),
+          "Fit to Time Range: both notes already begin at the range's start, so each is only resized to end with it");
+    const auto moved = fitNotesToRange(c, {4}, beat, 3 * beat);
+    check(moved.ops.size() == 2 && moved.ops[0].opType == "note.move" && moved.ops[0].payload.at("start") == beat && moved.ops[0].payload.at("key") == 67 &&
+              moved.ops[1].opType == "note.resize" && moved.ops[1].payload.at("dur") == 2 * beat,
+          "a note that begins elsewhere is moved to the range's start on its own key, then resized");
+    check(fitNotesToRange(c, {}, beat, 3 * beat).ops.empty() && fitNotesToRange(c, {1}, 3 * beat, 3 * beat).ops.empty() &&
+              fitNotesToRange(c, {1}, 0, 2 * beat).ops.empty(),
+          "no notes named, an empty range, or a note that already fits: nothing to do");
     const auto mono = deleteOverlaps(c, {}, false);
     check(mono.ops.size() == 1 && mono.ops[0].payload.at("note") == 1 && mono.ops[0].payload.at("dur") == beat &&
               mono.ops[0].label == "Delete Overlaps (Mono)",
