@@ -2178,6 +2178,16 @@ bool NoteEditor::keyPressed(const juce::KeyPress &k) {
             return true;
         }
     }
+    // The Main panel's Set buttons from the keyboard (manual 41.8): Ctrl/Cmd with F9 sets the Start
+    // marker, F10 the loop's start, F11 the loop's end, F12 the End marker.
+    if (mods.isCommandDown() && !mods.isShiftDown() && !mods.isAltDown() && code >= juce::KeyPress::F9Key && code <= juce::KeyPress::F12Key) {
+        using Field = ClipViewPanel::Field;
+        panel.setFieldHere(code == juce::KeyPress::F9Key    ? Field::Start
+                           : code == juce::KeyPress::F10Key ? Field::Position
+                           : code == juce::KeyPress::F11Key ? Field::Length
+                                                            : Field::End);
+        return true;
+    }
     // Time inside the clip (manual 10.7): Crop Clip, and the time commands over a time selection.
     if (k == juce::KeyPress('j', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0)) {
         crop();

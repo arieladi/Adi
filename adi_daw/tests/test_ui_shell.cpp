@@ -6494,6 +6494,18 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
               "the View menu's Horizontally and Automatically choose the same");
         check(panel.chooseTitleItem(3) && panel.panelsFolded() && panel.panelsEdge().isEmpty() && panel.chooseTitleItem(3) && !panel.panelsFolded(),
               "Fold, in the title's menu, folds the panels and brings them back");
+        // The Set buttons' keys (manual 41.8): Ctrl+F9 to F12, at the arrangement's insert marker while stopped.
+        {
+            const auto insertBefore = geo.selection.insert;
+            const auto startBefore = details().startMarkerTicks;
+            geo.selection.insert = song(beat);
+            check(ed.keyPressed(key(juce::KeyPress::F9Key, command)) && details().startMarkerTicks == beat && undo() && details().startMarkerTicks == startBefore,
+                  "Ctrl+F9 sets the Start marker where the insert marker stands, as the panel's Set does");
+            geo.selection.insert = song(2 * beat);
+            check(ed.keyPressed(key(juce::KeyPress::F10Key, command)) && details().loopEnabled && details().loopStartTicks == 2 * beat && undo(),
+                  "Ctrl+F10 sets the loop's start there and switches the loop on");
+            geo.selection.insert = insertBefore;
+        }
         // Navigate > Clip View (manual 41.2): a hidden Clip View is shown first.
         check(root.state().clipView && root.command(C::ToggleClipView) && !root.state().clipView && root.command(C::FocusClipView) &&
                   root.state().clipView && panel.details() != nullptr,
