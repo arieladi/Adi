@@ -125,12 +125,17 @@ void preparedAndDocument(){
     check(!doc->setDeviceKey(target,3,"post_mixer") && OpJournal(doc->store()).headSeq()==start && instance->prepares==count,"feedback refuses before any journal or SDK preparation");
     check(doc->setDeviceKey(target,3,"pre_fx"),"same-channel earlier Pre FX key remains legal");
     check(doc->ops().undo().ok && doc->synchronise() && doc->session().model().routing.front().srcId==2,"document one Undo restores prior source");
+    check(doc->deviceAction("device.setEnabled",{{"id",30},{"enabled",false}}) &&
+        History(doc->store()).nextUndo() && History(doc->store()).nextUndo()->label=="Disable Target",
+        "activator history contains a readable device title");
+    check(doc->ops().undo().ok && doc->synchronise(),"activator Undo restores the exact prior device");
     auto staleTarget=target;staleTarget.instance++;
     check(!doc->setDeviceKey(staleTarget,2,"post_fx"),"stale runtime presentation cannot redirect routing");
     check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.empty(),"None disconnects through common document authority");
     check(doc->setDeviceKey(target,2,"post_fx") && doc->deviceAction("device.insert",{{"id",31},{"chain",3},{"ord",1},{"ref",77},{"name","Other target"}}),"two separate target devices can be authored");
     auto* other=static_cast<KeyInstance*>(doc->session().instanceFor(31));other->keysAvailable=false;
     check(doc->deviceAction("routing.connect",{{"id",99},{"srcKind","track"},{"src",2},{"dstKind","device"},{"dst",31},{"kind","sidechain"}}),"unavailable imported key remains a named stored route");
+    check(doc->setDeviceKey(target,2,"pre_fx"),"a valid new key is not blocked by an unrelated unavailable stored key");
     check(doc->setDeviceKey(target,{},"post_mixer") && doc->session().model().routing.size()==1 && doc->session().model().routing.front().dstId==31,"None can recover one route despite an unrelated unavailable key");
     doc->tick(10);const auto shown=doc->parameterFeed().current();
     const auto missing=std::find_if(shown->begin(),shown->end(),[](const auto& d){return d.id==31;});

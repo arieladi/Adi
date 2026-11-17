@@ -50,6 +50,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     const panel::Record *record = nullptr;
     double defaultValue = 0;
     juce::Label name, value;
+    int presentedMenuId_ = 0;
     std::int32_t menuSteps_ = 0;
     std::vector<std::string> menuLabels_;
 };

@@ -202,6 +202,7 @@ struct ItemInput {
     ItemClass cls = ItemClass::View;
     std::string_view name; // for the search; copied into the haystack
     bool available = true, enabled = true; // availability is distinct from the Device Activator
+    bool folded = false; // owner-authored device fold, independent of row zoom tier
 };
 // One track of the snapshot. The owner passes every track (not only the shown ones) in
 // TrackOrder's order (ArrangementGeometry::rows); the order is never stored.
@@ -587,6 +588,7 @@ struct ChainDeviceInput {
     std::string_view name;
     bool available = true, enabled = true;
     bool mixFunction = false; // stable native identity, never inferred from name
+    bool folded = false;
 };
 // The actual-chain surface (ADR-0236/0237): every real device, no reserved module columns. Track
 // order/scope/roles still come from the one snapshot. Unknown owners and invalid identities are
@@ -793,7 +795,7 @@ class StackModel {
         std::uint64_t identity = 0;
         stack::ItemClass cls = stack::ItemClass::View;
         std::uint32_t gen = 0;
-        bool available = true, enabled = true;
+        bool available = true, enabled = true, folded = false;
     };
     struct ModuleRec {
         stack::ModuleState state = stack::ModuleState::Absent;

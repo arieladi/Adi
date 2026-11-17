@@ -76,6 +76,77 @@ class CountedEq final : public device::DeviceInstance {
     std::shared_ptr<Probe> probe_;
     std::array<device::ParamDescriptor, 730> descriptors_;
 };
+class SparsePlugin final : public device::DeviceInstance {
+  public:
+    device::DeviceIdentity identity_{"vst3", "owned.sparse", "Sparse controls", "ADI", "1"};
+    std::vector<device::ParamDescriptor> descriptors;
+    mutable int values = 0, texts = 0;
+    SparsePlugin() : descriptors(4096) {
+        for (std::size_t i = 0; i < descriptors.size(); ++i) {
+            auto &d = descriptors[i];
+            d.id = std::to_string(i);
+            d.name = "Control " + d.id;
+            d.automatable = i < 3;
+        }
+    }
+    const device::DeviceIdentity &identity() const noexcept override { return identity_; }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+    std::int32_t paramCount() const noexcept override {
+        return static_cast<std::int32_t>(descriptors.size());
+    }
+    const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override {
+        return i >= 0 && i < paramCount() ? &descriptors[static_cast<std::size_t>(i)] : nullptr;
+    }
+    device::ParamValue getParam(const std::string &) const noexcept override {
+        ++values;
+        return device::ParamValue::fromNormalized(.5);
+    }
+    std::string paramText(const std::string &, double) const override {
+        ++texts;
+        return "Value";
+    }
+};
+void sparseVisibility() {
+    test::TempDirectory temp("mix_parameter_feed", "sparse");
+    std::string error;
+    SparsePlugin *plugin = nullptr;
+    auto doc = ui::ProjectDocument::open(
+        temp.path() / "sparse.adi", true,
+        [&](const engine::DeviceRequest &, std::string &) {
+            auto result = std::make_unique<SparsePlugin>();
+            plugin = result.get();
+            return result;
+        },
+        error);
+    auto &db = doc->store().db();
+    db.exec("INSERT INTO plugin_refs(id,format,uid,name) "
+            "VALUES(77,'vst3','owned.sparse','Sparse');"
+            "INSERT INTO device_chains(id,track_id) VALUES(77,2);"
+            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) "
+            "VALUES(77,77,77,'Sparse');");
+    doc->view().refresh(doc->store());
+    check(doc->synchronise() && plugin, "sparse ordinary plugin fixture loads");
+    if (!plugin)
+        return;
+    ui::ParameterFeed feed;
+    feed.setDemand(&feed, {77});
+    plugin->values = plugin->texts = 0;
+    feed.publish(doc->session(), doc->view().generation());
+    const auto &data = feed.current()->front();
+    check(data.declarations().size() == 4096 && data.parameters().size() == 3 && plugin->values == 3 &&
+              plugin->texts == 3,
+          "three visible controls query three values/texts despite 4093 unshown "
+          "controller endpoints");
+    check(doc->deviceAction("device.setPanel", {{"dev", 77}, {"params", Payload::array({"2079"})}}),
+          "explicit read-only controller panel is retained");
+    plugin->values = plugin->texts = 0;
+    feed.publish(doc->session(), doc->view().generation());
+    check(feed.current()->front().parameters().size() == 1 && plugin->values == 1 && plugin->texts == 1,
+          "explicit configured controls remain inspectable without polling every "
+          "unshown value");
+}
+
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -87,6 +158,7 @@ int main() {
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
     try {
+        sparseVisibility();
         test::TempDirectory temporary("mix_parameter_feed", "demand-cache");
         std::map<std::int64_t, std::shared_ptr<Probe>> probes;
         engine::DeviceLoader loader = [&](const engine::DeviceRequest &request, std::string &error)

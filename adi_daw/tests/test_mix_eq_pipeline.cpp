@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <type_traits>
+#include <utility>
 
 using namespace adi;
 namespace {
@@ -64,6 +65,52 @@ template<class Sample> void splitAudio(double rate, int channels) {
     check(peakError < 2e-7, "actual canonical band gain reaches audio rather than a dry stand-in");
     whole->release(); split->release();
 }
+void externalDynamics() {
+    constexpr int frames = 256;
+    for (bool external : {false, true})
+        for (bool active : {false, true})
+            for (bool silent : {false, true}) {
+                auto device = make();
+                for (const auto &[id, value] : std::array<std::pair<const char *, double>, 4>{
+                         {{"9", 1}, {"17", active ? 1. : 0.}, {"15", .3}, {"1", external ? 1. : 0.}}})
+                    check(device->setParam(id, device::ParamValue::fromNormalized(value)),
+                          "native dynamics setup accepts exact control IDs");
+                device->prepare(48000, frames);
+                std::array<float, frames> l{}, r{}, k{};
+                std::array<const float *, 2> input{l.data(), r.data()}, key{k.data(), k.data()};
+                std::array<float *, 2> output{l.data(), r.data()};
+                double inEnergy = 0, outEnergy = 0;
+                engine::NodeIo io;
+                io.in = input.data();
+                io.out = output.data();
+                io.sidechain = key.data();
+                io.channels = 2;
+                io.frames = frames;
+                io.sampleRate = 48000;
+                io.configuredLatency = device->latencySamples();
+                for (int block = 0; block < 650; ++block) {
+                    for (int i = 0; i < frames; ++i) {
+                        const auto tone =
+                            std::sin((block * frames + i) * 2 * 3.141592653589793 * 1000 / 48000);
+                        l[i] = r[i] = static_cast<float>(std::pow(10., -.9) * tone);
+                        k[i] = silent ? 0.f : static_cast<float>(.5 * tone);
+                        if (block > 550)
+                            inEnergy += double(l[i]) * l[i];
+                    }
+                    io.renderBlock = static_cast<std::uint64_t>(block + 1);
+                    device->process(io);
+                    if (block > 550)
+                        for (const auto x : l)
+                            outEnergy += double(x) * x;
+                }
+                const auto gain = 10 * std::log10(outEnergy / inEnergy);
+                const bool reducing = active && (!external || !silent);
+                check(reducing ? gain < -10 : std::abs(gain) < .01,
+                      "native EQ external/internal/silent-key controls produce the "
+                      "intended audible dynamics");
+                device->release();
+            }
+}
 void documentAuthority() {
     test::TempDirectory temp("mix_eq_pipeline", "document");
     std::string error;
@@ -115,6 +162,7 @@ void documentAuthority() {
 int main() {
     for (double rate : {44100., 48000., 96000.})
         for (int channels : {1, 2}) { splitAudio<float>(rate, channels); splitAudio<double>(rate, channels); }
+    externalDynamics();
     documentAuthority();
     std::printf("mix EQ pipeline: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -62,6 +62,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     std::vector<std::pair<std::int64_t, std::size_t>> deviceIndex;
     std::vector<stack::RowGeo> wanted;
     std::vector<std::int64_t> hidden;
+    std::set<std::int64_t> folded;
     std::vector<std::int64_t> demanded;
     std::shared_ptr<const ParameterPublication> publication, structure, editPublication;
     std::uint64_t generation = std::numeric_limits<std::uint64_t>::max(), revision = 1;
@@ -428,14 +429,15 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
         std::sort(state_->deviceIndex.begin(), state_->deviceIndex.end());
     }
     if (state_->generation != generation || state_->snapshot != reader.get() ||
-        state_->provider != &provider() || state_->hidden != hidden || changed) {
+        state_->provider != &provider() || state_->hidden != hidden ||
+        state_->folded != root.state().foldedDevices || changed) {
         ++state_->revision;
         state_->chain.clear();
         if (state_->publication)
             for (const auto &d : *state_->publication)
                 state_->chain.push_back({d.track, d.id, d.instance,
                     d.plugin ? stack::ItemClass::Plugin : stack::ItemClass::View, d.name, d.available, d.enabled,
-                    !d.plugin && mix::functionForUid(d.uid) != nullptr});
+                    !d.plugin && mix::functionForUid(d.uid) != nullptr, root.devices.folded(d.id)});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
         if (!alive || state_->frame != frame || state_->layout != layout) return;
@@ -443,6 +445,7 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
         state_->snapshot = reader.get();
         state_->provider = &provider();
         state_->hidden = hidden;
+        state_->folded = root.state().foldedDevices;
     }
     state_->structure = state_->publication;
 }

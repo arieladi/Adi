@@ -257,6 +257,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
+        juce::PopupMenu::dismissAllActiveMenus();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         mainMeterSource_.reset();
@@ -292,27 +293,27 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {
             const bool ok = document_->addMixFunction(kind, track);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.moveFunction = [this](const DevicePanelData &expected, std::int64_t track,
                                            std::optional<std::int64_t> before) {
             const bool ok = document_->moveMixFunction(expected, track, before);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
             const bool ok = document_->parameterGesture(id, param, kind, value);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_ && (!ok || kind == engine::ParamEventKind::Begin))
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.guardedGesture = [this](std::int64_t id, const std::string &param,
                                              engine::ParamEventKind kind, double value,
                                              const engine::DeviceRuntimeToken &expected, std::uint64_t instance) {
             const bool ok = document_->parameterGestureExpected(id, param, kind, value, expected, instance);
-            if (!ok && root_) root_->say(document_->error());
+            if (root_ && (!ok || kind == engine::ParamEventKind::Begin)) root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.targetCurrent = [this](std::int64_t id, const engine::DeviceRuntimeToken &expected,
@@ -321,8 +322,8 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->devices.submit = [this](const std::string &op, Payload p) {
             const bool ok = document_->deviceAction(op, std::move(p));
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.copy = [this](std::int64_t id, bool cut) {
@@ -332,8 +333,8 @@ class AdiApplication final : public juce::JUCEApplication,
             bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
             if (ok)
                 deviceClipboard_ = std::move(copy);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
@@ -345,15 +346,15 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
             adi::DeviceCopy copy;
             const bool ok = document_->copyDevice(id, copy) && document_->pasteDevice(copy, track, before);
-            if (!ok && root_)
-                root_->say(document_->error());
+            if (root_)
+                root_->say(ok ? std::string{} : document_->error());
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
-            if(!ok && root_)root_->say(document_->error());return ok;
+            if(root_)root_->say(ok ? std::string{} : document_->error());return ok;
         };
         // A device's sample slot (D5): a file assigned, or the slot cleared; one undo step each.
         root->devices.assignSample = [this](std::int64_t device, std::int32_t slot, const std::string &path) {

@@ -319,6 +319,13 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
+    if(op=="device.remove" || op=="device.setEnabled") {
+        const auto id=r.payload.value("id",std::int64_t{});
+        const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
+            [id](const auto& device){return device.id==id;});
+        const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
+        r.label=(op=="device.remove"?"Remove ":r.payload.value("enabled",false)?"Enable ":"Disable ")+name;
+    }
     const auto result = ops_.submit(r);
     error_ = result.error;
     if (!result.ok || !synchronise())
@@ -393,7 +400,12 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
     if(!prepared.ok){error_=prepared.error;return false;}
     // Removing edges cannot introduce feedback or an unavailable tap. Keep
     // recovery possible when another stored key is already unavailable.
-    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_))return false;
+    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_)) {
+        error_=error_.find("cycle")!=std::string::npos
+            ? "That sidechain would feed back into its own source. Choose an earlier tap or another channel."
+            : "That sidechain source or input is unavailable. Choose another source or remove the unavailable key.";
+        return false;
+    }
     const auto result=ops_.commitPrepared(std::move(prepared),[](Store& store,PreparedDeviceKey& p,Actor actor){return commitDeviceKey(store,p,actor);});
     error_=result.error;if(!result.ok || !synchronise())return false;
     feed_.publish(session_,realisedGeneration_);return true;

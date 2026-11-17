@@ -39,13 +39,24 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
         gesture(engine::ParamEventKind::End, toggle.getToggleState() ? 1 : 0);
     };
     menu.onChange = [this] {
-        if (!record)
+        if (!record || record->shape != panel::Shape::Menu) return;
+        const auto chosen = menu.getSelectedId();
+        if (chosen <= 0 || chosen > menuSteps_) return;
+        const auto previous = record->playing;
+        const double v = static_cast<double>(chosen - 1) / std::max(1, menuSteps_ - 1);
+        presentedMenuId_ = chosen; // consume before a gesture can synchronously present
+        if (v == previous) return;
+        const SafePointer<ParameterControl> safe(this);
+        if (!gesture(engine::ParamEventKind::Begin, previous)) {
+            if (safe) {
+                presentedMenuId_ = 1 + static_cast<int>(std::round(previous * std::max(1, menuSteps_ - 1)));
+                menu.setSelectedId(presentedMenuId_, juce::dontSendNotification);
+            }
             return;
-        const double v =
-            static_cast<double>(menu.getSelectedId() - 1) / std::max(1, record->stepCount - 1);
-        gesture(engine::ParamEventKind::Begin, v);
+        }
+        if (!safe) return;
         gesture(engine::ParamEventKind::Value, v);
-        gesture(engine::ParamEventKind::End, v);
+        if (safe) gesture(engine::ParamEventKind::End, v);
     };
     addChildComponent(slider);
     addChildComponent(toggle);
@@ -95,6 +106,7 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     if (r.shape == panel::Shape::Menu && (menuSteps_ != std::max(1, r.stepCount) || menuLabels_ != r.choiceLabels)) {
         menuSteps_ = std::max(1, r.stepCount); menuLabels_ = r.choiceLabels;
         menu.clear(juce::dontSendNotification);
+        presentedMenuId_ = 0;
         for (std::int32_t i = 0; i < menuSteps_; ++i) {
             const auto at = static_cast<std::size_t>(i);
             menu.addItem(at < menuLabels_.size() && !menuLabels_[at].empty() ? juce::String(menuLabels_[at])
@@ -104,8 +116,12 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     if (!slider.isMouseButtonDown())
         slider.setValue(r.playing, juce::dontSendNotification);
     toggle.setToggleState(r.playing >= .5, juce::dontSendNotification);
-    menu.setSelectedId(1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1))),
-                       juce::dontSendNotification);
+    // ComboBox sends its choice asynchronously. A differing ID is a choice
+    // not delivered yet; a frame must not replace it with the old playing value.
+    if (r.shape == panel::Shape::Menu && menu.getSelectedId() == presentedMenuId_) {
+        presentedMenuId_ = 1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1)));
+        menu.setSelectedId(presentedMenuId_, juce::dontSendNotification);
+    }
 }
 void ParameterControl::resized() {
     // Live's knob column: the name, the knob, the value under it.

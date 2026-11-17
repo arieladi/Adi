@@ -153,6 +153,23 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                     if (!descriptor->groupId.empty())
                         data.parameterGroups[descriptor->id] = {descriptor->groupId, descriptor->groupName,
                             descriptor->groupEnableControl, descriptor->bandIndex, descriptor->sectionId, descriptor->sectionName};
+                }
+            data.resolved = panel::resolve(model, row.id, data.declared);
+            if (!data.plugin && !data.parameterGroups.empty() && !data.resolved.configured) {
+                data.resolved.entries.clear();
+                for (const auto &parameter : data.declared) data.resolved.entries.push_back({parameter.id, false});
+                data.resolved.showsConfigureHint = false;
+            }
+            // Configure needs all metadata; only displayed controls need values/text.
+            // Large controller maps must not turn a small panel into quadratic SDK work.
+            const bool algorithmPanel = instance && instance->identity().uid.find("airwindows") != std::string::npos;
+            if (instance) {
+                const auto count = instance->paramCount();
+                for (std::int32_t i = 0; i < count; ++i) {
+                    const auto* descriptor = instance->paramAt(i);
+                    if (!descriptor) continue;
+                    if (!algorithmPanel && std::none_of(data.resolved.entries.begin(), data.resolved.entries.end(),
+                        [&](const auto& entryToShow) { return entryToShow.id == descriptor->id; })) continue;
                     panel::Record record;
                     record.id = descriptor->id; record.name = descriptor->name;
                     readValues(*descriptor, engine::automationParamRef(instance->identity().format, descriptor->id), record);
@@ -161,19 +178,19 @@ void ParameterFeed::publish(engine::Session &session, std::uint64_t modelRevisio
                     if (descriptor->shape == device::ParamShape::Menu) record.choiceLabels = descriptor->choiceLabels;
                     data.records.push_back(std::move(record));
                 }
-            data.resolved = panel::resolve(model, row.id, data.declared);
-            if (!data.plugin && !data.parameterGroups.empty() && !data.resolved.configured) {
-                data.resolved.entries.clear();
-                for (const auto &parameter : data.declared) data.resolved.entries.push_back({parameter.id, false});
-                data.resolved.showsConfigureHint = false;
             }
-            if (instance && instance->identity().uid.find("airwindows") != std::string::npos) {
-                const auto algorithm = instance->getParam("0");
-                const auto active = panel::activeAlgorithmParams(data.records,
-                    static_cast<std::int32_t>(algorithm.hasReal ? algorithm.real : 0));
-                std::vector<panel::Entry> entries;
-                for (auto index : active) entries.push_back({data.records[index].id, data.records[index].missing});
-                data.resolved.entries = std::move(entries); data.resolved.showsConfigureHint = false;
+            if (instance && instance->identity().uid.find("airwindows") !=
+                                std::string::npos) {
+              const auto algorithm = instance->getParam("0");
+              const auto active = panel::activeAlgorithmParams(
+                  data.records, static_cast<std::int32_t>(
+                                    algorithm.hasReal ? algorithm.real : 0));
+              std::vector<panel::Entry> entries;
+              for (auto index : active)
+                entries.push_back(
+                    {data.records[index].id, data.records[index].missing});
+              data.resolved.entries = std::move(entries);
+              data.resolved.showsConfigureHint = false;
             }
             std::unordered_set<std::string_view> recorded;
             recorded.reserve(data.records.size());

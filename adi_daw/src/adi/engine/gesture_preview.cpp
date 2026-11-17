@@ -468,6 +468,18 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->signatures=image->model.signatures;out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
         options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
+        // The GUI publishes both preview and committed generations through here.
+        // Keep auxiliary edges when an ordinary edit replaces the playing graph.
+        options.keyTapFor=[owner](std::int64_t track,Tap tap)->std::optional<Node*> {
+            if(tap==Tap::PreFx && owner->frozenSources_.contains(track))return std::nullopt;
+            return owner->tapFor(track,tap);
+        };
+        options.keyDeviceFor=[owner](std::int64_t device)->Node* {
+            const auto* entry=owner->entryFor(device);auto* instance=owner->instanceFor(device);
+            return entry && !entry->retired && !entry->parked && !entry->placeholder &&
+                instance && instance->loaded() && instance->sidechainInputChannels()>0
+                ? owner->nodeFor(device):nullptr;
+        };
         options.tapFor=[owner](std::int64_t id,Tap tap){return owner->tapFor(id,tap==Tap::PostFader?Tap::PostFx:tap);};
         options.sendFor=[owner](std::int64_t id)->Node*{return owner->strips_.sendFor(id);};
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
@@ -489,6 +501,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->rebuild.model=[image]{return &image->model;};
         out->rebuild.channels=owner->spec_.channels;out->rebuild.sampleRate=owner->spec_.sampleRate;out->rebuild.maxFrames=owner->spec_.maxFrames;
         out->rebuild.devicesFor=options.devicesFor;out->rebuild.sourcesFor=options.sourcesFor;
+        out->rebuild.keyTapFor=options.keyTapFor;out->rebuild.keyDeviceFor=options.keyDeviceFor;
         out->rebuild.tapFor=options.tapFor;out->rebuild.sendFor=options.sendFor;out->rebuild.sendTailFor=options.sendTailFor;
         out->rebuild.feedbackFor=options.feedbackFor;out->rebuild.eventSourceFor=options.eventSourceFor;
         out->rebuild.monitors=options.monitors;out->rebuild.transportState=timing;

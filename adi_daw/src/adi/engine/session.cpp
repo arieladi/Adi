@@ -655,7 +655,13 @@ bool Session::validateDeviceKey(const rows::Model& candidate,std::string& error)
     options.feedbackFor=[this](std::int64_t id){auto* loop=strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
     auto draft=realize(planGraph(candidate),options);
     if(!draft->ok()){error=draft->error();return false;}
-    if(!draft->problems().empty()){error=draft->problems().front();return false;}
+    if(!draft->problems().empty()) {
+        const auto baseline=realize(planGraph(model_),options);
+        for(const auto& problem:draft->problems())
+            if(std::find(baseline->problems().begin(),baseline->problems().end(),problem)==baseline->problems().end()) {
+                error=problem;return false;
+            }
+    }
     if(!draft->graph().validateTopology()){error=draft->graph().error();return false;}
     return true;
 }
