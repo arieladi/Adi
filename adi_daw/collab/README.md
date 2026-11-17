@@ -281,6 +281,7 @@ subject, say so in your log instead of writing it twice.
 | 0240 | win | `win/adr-0240` | the Clip View approved and built by win; loading a channel's Mix Set replaces its native functions in one undo step; the Mix View answers that lived only in the seat's log (director) | used |
 | 0241 | win | `win/clip-view-additions` | the Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken (director) | used |
 | 0242 | win | `win/adr-0242` | more Clip View additions: win's picks and Reason's drift taken; the rest of the candidates on condition they impair no Live function; slide notes and a drum editor not taken; Live's clip editing audited, multi-clip editing now (director) | used |
+| 0243 | win | `window/no-channel-slots` | the look is settled surface by surface with the director; no channel button for a Mix View function; Live the base with Bitwig's and FabFilter's design language; the Mix View takes the window |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

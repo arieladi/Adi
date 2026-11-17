@@ -229,12 +229,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     solo.setTooltip("Solos the track.");
     arm.setTitle("Arm Recording");
     arm.setTooltip("Arms the track for recording.");
-    eq.setTitle("ADI-Q");
-    eq.setTooltip("The channel EQ, built in and off until a band is touched (ADR-0204 d1).");
-    limiter.setTitle("ADI-L");
-    limiter.setTooltip("The channel limiter, built in and off (ADR-0204 d1).");
-    for (juce::TextButton *b :
-         {&active, static_cast<juce::TextButton *>(&solo), static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
+    for (juce::TextButton *b : {&active, static_cast<juce::TextButton *>(&solo), static_cast<juce::TextButton *>(&arm)}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, look::button);
         // Only the keyboard focuses a mixer switch, so a focused one is ringed (Live 12).
@@ -267,18 +262,6 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     prePost.getProperties().set("live.font", 11.0);
     prePost.onClick = [this] { throwPrePost(track_); };
     addChildComponent(prePost);
-    // Present but off: the slots exist on every strip; what fills them is ADI-Q and
-    // ADI-L from the clones lane, in the engine's channel slots (LANES §3 item 7).
-    // A slot opens the Mix View's STACK on its track, where every channel's EQ and limiter
-    // are seen together (ADR-0204 d1's one window, ADR-0209 d11), and says what it waits for.
-    auto open = [this](const char *why) {
-        panel_.root.arrangement.geometry.selection.track = track_;
-        panel_.root.publishSelection();
-        panel_.root.command(AppCommands::ShowChannelEq);
-        panel_.root.say(why);
-    };
-    eq.onClick = [open] { open("The channel EQ slot is off until ADI-Q is handed over."); };
-    limiter.onClick = [open] { open("The channel limiter slot is off until ADI-L is handed over."); };
 }
 void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     getLookAndFeel().drawButtonBackground(g, *this, findColour(buttonColourId), over, down);
@@ -411,13 +394,13 @@ void MixerStrip::frame(bool changed) noexcept {
 }
 void MixerStrip::resized() {
     if (panel_.vertical()) {
-        // Live 11's strip, measured: the name, ADI's slots where Live has the sends, then
+        // Live 11's strip, measured: the name, then
         // the mixer: the peak level at its head; pan, the activator, Solo and Arm down
         // to its foot; the meter with the fader beside them.
         // A row of the Sends section for each return, on every strip, Main's too, so the mixers
         // line up as Live's; as many as leave the mixer its room. Live scrolls the rest, ADI leaves
         // them out.
-        // Live 12's In/Out section under ADI's slots, when the Mixer Controls show it and the strip
+        // Live 12's In/Out section under the name, when the Mixer Controls show it and the strip
         // has room for it and the mixer; then as many rows of sends as leave the mixer its room.
         io_ = panel_.root.state().mixerInOut && getHeight() - kMixerTop - kInOutHeight >= kMixerRoom ? kInOutHeight : 0;
         // Live's Track Delay section under the mixer (manual 18.7), when the Mixer Controls' Track
@@ -454,8 +437,6 @@ void MixerStrip::resized() {
         pan.setVisible(audio_);
         peakHold.setVisible(audio_);
         const int top = mixerTop(), bottom = mixerBottom();
-        eq.setBounds(4, 22, 29, 13);
-        limiter.setBounds(37, 22, 29, 13);
         peakHold.setBounds(11, top + 5, 35, 12);
         pan.setBounds(15, bottom - 91, 27, 27);
         active.setBounds(18, bottom - 59, 21, 21);
@@ -507,8 +488,7 @@ void MixerStrip::resized() {
             pan.setVisible(false);
         }
     }
-    // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row; ADI's slots
-    // on the row after them, or under volume and pan while the sends are hidden.
+    // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row.
     const bool sends = showsSends();
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         const int row = 2 + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
@@ -516,12 +496,10 @@ void MixerStrip::resized() {
         if (!sends)
             sends_[i]->setVisible(false);
     }
-    const int slots = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
-    place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
-    place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
-    // Live's Track Delay on the row after the slots, with its "ms" box (paintDelayUnit), while the
+    // Live's Track Delay on the row after the sends, with its "ms" box (paintDelayUnit), while the
     // track controls' Track Options shows it (the D selector).
-    place(delay, slots + 1, {x + 4, 3 + 17 * (slots + 1), 45, 13});
+    const int after = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
+    place(delay, after, {x + 4, 3 + 17 * after, 45, 13});
     if (!panel_.root.state().trackOptions)
         delay.setVisible(false);
 }
@@ -553,7 +531,6 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillAll(selected_ ? look::laneSelectedAlt : look::panel);
         g.setColour(look::separator);
         g.fillRect(w, 0, 2, getHeight());
-        g.fillRect(0, 17, w, 2);
         g.fillRect(0, kMixerTop - 2, w, 2);
         if (io_ > 0) {
             paintMixerInOut(g);
@@ -1117,10 +1094,9 @@ bool MixerPanel::focusNeighbour(bool next) {
     const auto tracks = geometry.rows(root.reader());
     // The next or previous track this panel shows (the Mixer View keeps what a folded group
     // holds); at either end the focus stays.
-    // Main has no activator, Solo or Arm, as Live's: the focus passes it by for those (its ADI-Q and
-    // ADI-L it keeps).
+    // Main has no activator, Solo or Arm, as Live's: the focus passes it by.
     auto showing = [this, &geometry, slot](const engine::TrackNode *t) {
-        return (vertical_ ? geometry.inView(t->id) : geometry.shown(t->id)) && !(t->kind == "master" && slot < 3) &&
+        return (vertical_ ? geometry.inView(t->id) : geometry.shown(t->id)) && t->kind != "master" &&
                !(t->kind == "group" && slot == 2);
     };
     const auto i = tracks.find(from->track());
