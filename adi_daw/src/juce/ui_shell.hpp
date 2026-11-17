@@ -151,7 +151,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ArrangePanelsHorizontally,
         ArrangePanelsVertically,
         FocusClipView, // Live's Navigate menu: Clip View, Alt/Option+3
-        LastId = FocusClipView
+        FitToTimeRange, // the Note Editor's (manual 10.5.5), Ctrl/Cmd+Alt+J
+        LastId = FitToTimeRange
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

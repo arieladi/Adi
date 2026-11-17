@@ -643,6 +643,21 @@ inline NoteEdit fixedLengths(const engine::ClipDetails &clip, const std::vector<
     return edit;
 }
 
+// Fit to Time Range (Live 12 manual 10.5.5): every chosen note begins at the range's start and ends
+// at its end. In the clip's own time; the notes are named, never "all of them". One undo step.
+inline NoteEdit fitNotesToRange(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, std::int64_t from,
+                                std::int64_t to) {
+    using namespace note_edits_detail;
+    NoteEdit edit;
+    edit.refusal = closed(clip);
+    if (!edit.refusal.empty() || ids.empty() || to <= from)
+        return edit;
+    edit.select = ids;
+    for (const auto *n : pick(clip, ids))
+        place(edit, clip.id, *n, from, n->key, std::max(kShortestNote, to - from), "Fit to Time Range");
+    return edit;
+}
+
 // Delete Overlaps: a note that still sounds when a later one begins is cut to end there. Mono: only
 // against later notes on the same key. Poly: against any later note, so no two notes sound together.
 // Notes that start together are left as they are (a chord is not an overlap).

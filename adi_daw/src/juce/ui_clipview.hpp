@@ -101,6 +101,7 @@ class NoteEditor final : public juce::Component {
     enum ContextItem {
         kCut = 1, kCopy, kPaste, kDuplicate, kDelete, kDeactivate, kSelectAll, kInvertSelection, kQuantize, kQuantizeSettings,
         kSplit, kJoin, kCrop, kDuplicateTime, kDeleteTime, kInsertTime, kDuplicateLoop, kFoldToNotes, kFoldToScale, kHighlightScale,
+        kFitToRange,
         kGridItems = 1000
     };
     // Note spelling (manual 10.6): chosen from the piano ruler's own menu, a right-click on the
@@ -203,6 +204,11 @@ class NoteEditor final : public juce::Component {
     bool quantize();
     bool splitOrChop();
     bool join();
+    // Fit to Time Range (manual 10.5.5; Ctrl/Cmd+Alt+J): the selected notes begin and end with the
+    // time selection or, with no time selected, with the span the selected notes cover together.
+    // With time selected and no note selected, the edited clip's notes that begin in it.
+    bool canFitToRange() const;
+    bool fitToRange();
     // Time inside the clip (manual 10.7), one undo step each. Crop Clip (Ctrl/Cmd+Shift+J): the
     // notes outside the time selection go, or with none those outside the loop, and with the loop
     // off those outside the Start and End markers; a crossing note is cut at the edge, but kept
@@ -451,7 +457,9 @@ class ClipViewPanel final : public juce::Component {
         const char *name;
         std::int64_t ticks; // 0: the editing grid's step
     };
-    static constexpr std::array<Duration, 7> kDurations = {{{"Grid", 0},
+    // Time Range is Fit to Time Range (manual 10.5.5), applied by Set Length as the others are.
+    static constexpr std::array<Duration, 8> kDurations = {{{"Time Range", -1},
+                                                           {"Grid", 0},
                                                            {"1/32", textproj::kPPQ / 8},
                                                            {"1/16", textproj::kPPQ / 4},
                                                            {"1/8", textproj::kPPQ / 2},
@@ -713,7 +721,7 @@ class ClipViewPanel final : public juce::Component {
     Field pressed_ = Field::None, editing_ = Field::None;
     bool dragged_ = false;
     int pressPart_ = 0, dragSteps_ = 0;
-    std::size_t chord_ = 0, quantizeValue_ = 0, duration_ = 0;
+    std::size_t chord_ = 0, quantizeValue_ = 0, duration_ = 1; // Grid
     int toolsTab_ = 0;
     juce::Point<int> pressAt_;
     juce::TextEditor editor_;
