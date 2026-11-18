@@ -7,16 +7,34 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
+#include <mutex>
 namespace adi::ui {
+// Where the document's file is now. The message thread moves it at Save As; the waveform worker
+// reads it at each build.
+struct WaveformSource {
+    explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
+    std::mutex mutex;
+    std::filesystem::path path;
+};
 namespace {
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
 // at its first build and kept for the next (the worker is the only caller).
-WaveformCache::Build peaksFrom(std::filesystem::path file) {
+// The worker's reader follows the document's file: after Save As the pool rows of anything imported
+// since are in the new file only, and a reader left on the old one finds none of them.
+WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
     auto reader = std::make_shared<std::unique_ptr<Store>>();
-    return [path = std::move(file), reader](std::int64_t mediaId, std::stop_token stop) {
-        if (!*reader) {
+    auto opened = std::make_shared<std::filesystem::path>();
+    return [source = std::move(source), reader, opened](std::int64_t mediaId, std::stop_token stop) {
+        std::filesystem::path path;
+        {
+            std::lock_guard lock(source->mutex);
+            path = source->path;
+        }
+        if (!*reader || *opened != path) {
+            reader->reset();
             StoreError error{};
             *reader = Store::open(path, error, true);
+            *opened = path;
             if (!*reader) {
                 media::PeakResult refused;
                 refused.problem = media::PeakProblem::database;
@@ -30,7 +48,8 @@ WaveformCache::Build peaksFrom(std::filesystem::path file) {
 } // namespace
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
-      sessionState_(*store_), waveforms_(peaksFrom(store_->path())) {
+      sessionState_(*store_), waveformSource_(std::make_shared<WaveformSource>(store_->path())),
+      waveforms_(peaksFrom(waveformSource_)) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());
@@ -123,6 +142,10 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
         return false;
     }
     warning_ = result.warning;
+    {
+        std::lock_guard lock(waveformSource_->mutex);
+        waveformSource_->path = store_->path();
+    }
     const auto stem = store_->path().stem().u8string();
     name_.assign(reinterpret_cast<const char *>(stem.data()), stem.size());
     // The same rows, read again from the new file: the generation moves, the session follows

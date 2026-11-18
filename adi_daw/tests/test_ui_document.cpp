@@ -589,6 +589,48 @@ int main(int argc, char **argv) {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
         // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
         // Live's default Set (#307, with its two returns since N41), tracks 1 to 7, so the drop's audio track is an eighth.
+        {
+            // A file imported AFTER Save As has its pool row in the new file only: the waveform
+            // worker follows the document there (the outside review of 18 November; on main it kept
+            // reading the file the document was opened from, and the clip drew empty).
+            auto moved = ui::ProjectDocument::open(temp.path() / "wave-before.adi", true, {}, error);
+            check(moved != nullptr, "a project to save under another name");
+            if (moved) {
+                OpRequest audioTrack;
+                audioTrack.opType = "track.create";
+                audioTrack.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Drums"}};
+                check(moved->ops().submit(audioTrack).ok && moved->synchronise(), "an audio track before the save");
+                check(moved->saveAs(temp.path() / "wave-after.adi") && moved->error().empty(), "Save As to a new file");
+                const auto wav = temp.path() / "after-save.wav";
+                {
+                    std::array<float, 12000> samples{};
+                    for (std::size_t i = 0; i < samples.size(); ++i)
+                        samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .07) * .5);
+                    audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                    writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+                }
+                ui::AudioImport import;
+                check(moved->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file read after the save");
+                auto edit = ui::dropAudio(*moved->view().current(), 8, 0, "after", import);
+                check(edit.refusal.empty() && moved->ops().submit(std::move(edit.ops)).ok && moved->synchronise(),
+                      "its clip committed into the new file");
+                auto &waves = moved->waveforms();
+                const auto snapshot = moved->view().current();
+                const auto *track = snapshot->findTrack(8);
+                const bool there = track != nullptr && track->clips.size() == 1 && track->clips[0]->audio.has_value();
+                check(snapshot != nullptr, "a snapshot after the drop");
+                check(there, "the clip is on the track");
+                if (there) {
+                    const auto &clip = *track->clips[0];
+                    (void)waves.peaks(*clip.audio);
+                    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    const auto built = waves.peaks(*clip.audio);
+                    check(built != nullptr && built->frames == 12000 && !built->bins.empty() && waves.problem().empty(),
+                          "a file imported after Save As gets its waveform");
+                }
+            }
+        }
         auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
         check(dropped != nullptr, "a project for the drop");
         if (dropped) {
