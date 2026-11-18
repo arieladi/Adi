@@ -1,6 +1,12 @@
 # Mix View seat
 
 
+## 18 November 2026 evening — DF-M56–59 and approved appearance in Release review
+
+Windows x64 Release review commit `a15680bee316d8fd046fd42f276949e6d9a43bf1` includes the idle repairs and Part A fixes plus the fail-first regressions for aliased limiter keys and reset, non-finite dynamics inputs, overdue Focus FIR work and reverted latency plans, full-budget spectrogram history, and limiter loudness maxima. It uses the shared appearance tables for the Mix View, with Dark and Compact as defaults. No routing cables were added. Grouped returns will use ordinary rows when the engine publishes them.
+
+All 18 targeted Release suites passed. The Mix View software-peer fixture passed 786 checks. Native-window and audible-device verdicts remain with Claude. The private review ledger carries the archive and exact retest. Archive SHA-256 `28f3fd14b8bfec7702476f19d057ba40dc073d6f4ce182f341fcab1cf74674ba`. ADI.exe SHA-256 `045058e522ae9b451b6da8af21d6d002aad66b60f75259b8fe46f6034d4be3ab`. This candidate leaves the open PR landing order below intact.
+
 ## 18 November 2026 evening — Release review after stopped-project overload
 
 The first live round on fd0eb9f2 was blocked on Arrangement. The x64 Release package is 6e3fe84c. It coalesces certified parked-silent analysis, retains equivalent parameter publications and keeps spectrogram raster edits in software memory. Six Release suites and 785 software-peer checks passed. The stopped 48 kHz / 480-sample project probe measured 10.575 ms median Debug and 2.119 ms Release. That probe excluded the physical driver, windowing, vendor editors and analyzers. Claude owns the live responsiveness gate and the reopened DF-M43–46 cases.
