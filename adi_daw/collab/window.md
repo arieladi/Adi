@@ -140,6 +140,14 @@ His questions: the violet for agents; whether a resolved remark keeps a faint pi
 
 **Then: the look (win's note of 18 November).** Step 1, the theme and density tables (DF-W24), is built on `window/theme-tables`: every colour, type size and corner of the window's drawing code from `src/adi/ui/theme.hpp` and `density.hpp`, Dark the default, Mid grey matching the goldens drawn before the sheets pixel for pixel. Its PR follows its review. N52 to N55 are E1, E2 and E4's engine needs, raised now; N56 asks for the registry rows. E6 (the bounce prompts) is written on `window/bounce`, not yet built; it waits behind steps 1 to 6.
 
+**Since: step 1** ([#634](https://github.com/arieladi/Adi/pull/634) `window/theme-tables`): the theme and density tables (DF-W24). Dark by default, from the sheets; Mid grey matches the goldens drawn before them pixel for pixel; Light, Mix View and Open are a setting away. For the Mix View seat, the PR's first lines name the tables and how to read them (`src/adi/ui/theme.hpp`, `density.hpp`; `look::` in `ui_look.hpp`). The review found three defects, all fixed: the rotary's ring and needle in Dark, the Clip View's lit labels, two size literals. Gate: `test_all` 59447 checks across 245 suites, shell 2742, Pd off with `adi_app` green. DF-W28 holds what waits for win: the full sets of Light, Mix View and Open, and the registry rows (N56).
+
+**For win: what step 2 (the Control Bar) needs drawn or said.** The sheets leave these open; I will not draw my own answer:
+- **Key and scale.** `topBars` draws a "Key C# | Minor" group, but the engine has no project key or scale (only a clip's own, `ClipDetails::scale`). Is it the project's, which needs an op and a snapshot field from the engine (N57 if so), or the selected clip's?
+- **Live's controls the sheet leaves out.** The bar as built has Nudge down and up, Follow, Session Record, Capture and the key-map "Key" switch; `topBars` has no place for Nudge, Session Record or the key-map Key. Its cells read as: an arrow before the position (Follow?), then +, Automation Arm, a back arrow (Re-Enable Automation) and a circle (Capture, or Session Record?). Where does each go, or is it dropped?
+- **Its height.** The sheet's bar is 44 px with 28 px groups at 1920 wide; Compact is Live's 35 pt with 17 pt fields. Which does Compact take?
+- **The switch.** Arrangement | Mix View replaces the Mix button, bound to `ToggleMixView`; whichever seat lands first adds it.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
