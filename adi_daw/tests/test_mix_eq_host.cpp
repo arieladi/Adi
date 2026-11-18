@@ -2,6 +2,7 @@
 #include "juce/mix_eq_host.hpp"
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/eq/Core.hpp"
+#include "adi/mix/eq/Preview.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
@@ -62,6 +63,35 @@ std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBa
 }
 bool set(device::DeviceInstance& d,std::size_t id,double value) {
     return d.setParam(std::to_string(id),device::ParamValue::fromNormalized(value));
+}
+void publishedDesignPreview() {
+    auto device = make(std::make_unique<Observe>());
+    if (!device) { check(false, "preview fixture loads EQ"); return; }
+    set(*device, 9, 1);    // band 1 On
+    set(*device, 12, .25); // Left
+    set(*device, 14, .6);  // +6 dB
+    std::vector<panel::Record> records;
+    for (int i = 0; i < device->paramCount(); ++i) {
+        panel::Record r;
+        r.id = device->paramAt(i)->id;
+        r.playing = device->getParam(r.id).normalized;
+        records.push_back(r);
+    }
+    const auto settings = adi::device::publishedMixEqSettings(records);
+    check(settings && settings->bands[0].status == q::Status::On &&
+          settings->bands[0].route == q::Route::Left &&
+          std::abs(settings->bands[0].gainDb - 6.f) < .001f, "panel playing values become the same authored EQ settings");
+    if (settings) {
+        const auto graph = q::designPreview(*settings, 44100);
+        const auto peak = std::max_element(graph.decibels[1].begin(), graph.decibels[1].end());
+        const auto hz = 10.0 * std::pow(3000.0, static_cast<double>(peak - graph.decibels[1].begin()) / (graph.points - 1));
+        check(graph.visible[1] && graph.visible[2] && !graph.visible[0] && std::abs(*peak - 6.f) < .08f &&
+              hz > 970 && hz < 1030, "static preview draws the 1 kHz boost on its selected route");
+        check(std::all_of(graph.decibels[2].begin(), graph.decibels[2].end(), [](float db) { return db == 0; }),
+              "other route's designed response remains flat");
+    }
+    records.pop_back();
+    check(!adi::device::publishedMixEqSettings(records), "a withheld EQ publication never manufactures a curve");
 }
 void metadataAndMapping() {
     auto probe=std::make_unique<Observe>();auto* seen=probe.get();auto d=make(std::move(probe));
@@ -264,7 +294,7 @@ int main() {
     check(!make(std::make_unique<Observe>(),2,"vst3"),"ordinary plugin never relabelled native EQ");
     auto narrow=std::make_unique<Observe>();narrow->doubles=false;auto d=make(std::move(narrow));
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
-    metadataAndMapping();strictState();offsetsAndEvents<float>();offsetsAndEvents<double>();
+    publishedDesignPreview();metadataAndMapping();strictState();offsetsAndEvents<float>();offsetsAndEvents<double>();
     prepareLifecycle();continuousPrepare<float>();continuousPrepare<double>();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");

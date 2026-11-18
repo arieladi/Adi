@@ -102,7 +102,7 @@ class SampleTile final : public juce::Component,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component {
   public:
-    DevicePanelView(DeviceChainStrip &, const DevicePanelData &);
+    DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
     void present(const DevicePanelData &);
     void resized() override;
@@ -180,6 +180,12 @@ class DevicePanelView final : public juce::Component {
     bool editFunctionParameter(const std::string &, engine::ParamEventKind, double);
     void endFunctionParameter();
     bool validTarget() const { return !targetValid || targetValid(); }
+    const bool mixCard_;
+    struct EqPreview;
+    std::unique_ptr<EqPreview> eqPreview_;
+    void updateEqPreview(const DevicePanelData &);
+    juce::Rectangle<float> eqPreviewBounds() const;
+    void layoutCompactControls(int top);
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
     DeviceChainStrip &strip;

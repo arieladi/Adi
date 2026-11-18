@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "Preview.hpp"
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4100 4127 4334 5030)
 #endif
 #include <Source/SpectralDynamics.h>
+#include <Source/ResponsePlot.h>
 #include <ThirdParty/ZLEqualizer/source/zlp/controller.hpp>
 #ifdef _MSC_VER
 #pragma warning(pop)
@@ -19,6 +21,42 @@
 #endif
 
 namespace adi::mix::eq {
+DesignPreview designPreview(const Settings &settings, double sampleRate) {
+    DesignPreview result;
+    if (!(sampleRate >= 8000)) return result;
+    plot::ResponsePlotGrid<DesignPreview::points> grid;
+    grid.updateDesign(std::log(10.0), std::log(30000.0), sampleRate);
+    for (const auto &band : settings.bands) {
+        if (settings.bypass || band.status != Status::On) continue;
+        const bool cut = band.shape == Shape::LowCut || band.shape == Shape::HighCut;
+        const auto route = static_cast<std::size_t>(band.route);
+        const adi_eq_dsp::filter::FilterParameters parameters{
+            static_cast<adi_eq_dsp::filter::FilterType>(band.shape), band.order, band.frequencyHz,
+            std::clamp(band.gainDb * settings.gainScalePercent * .01f, -30.f, 30.f),
+            band.q * (cut ? std::numbers::sqrt2 * .5 : 1.0)};
+        std::array<float, DesignPreview::points> values{};
+        if (cut && band.fractionalSlope >= 0) {
+            for (std::size_t i = 0; i < values.size(); ++i) {
+                const auto gain = plot::ResponsePlotFilter::fractionalDesignMagnitude(grid.frequencies[i],
+                    band.frequencyHz, band.fractionalSlope, band.q, band.shape == Shape::LowCut);
+                values[i] = static_cast<float>(20 * std::log10(std::max(gain, 1.e-6)));
+            }
+        } else {
+            plot::ResponsePlotFilter(parameters, sampleRate, plot::ResponsePlotFilter::Model::Design)
+                .calculate(grid, values);
+        }
+        result.visible[route] = true;
+        for (std::size_t i = 0; i < values.size(); ++i) result.decibels[route][i] += values[i];
+    }
+    const bool lr = result.visible[1] || result.visible[2], ms = result.visible[3] || result.visible[4];
+    result.visible = {!lr && !ms, lr, lr, ms, ms};
+    for (std::size_t route = 1; route < result.visible.size(); ++route)
+        if (result.visible[route])
+            for (std::size_t i = 0; i < DesignPreview::points; ++i)
+                result.decibels[route][i] += result.decibels[0][i];
+    return result;
+}
+
 namespace {
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 static_assert(std::atomic<int>::is_always_lock_free);

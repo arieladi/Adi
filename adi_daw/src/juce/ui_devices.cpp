@@ -2,6 +2,8 @@
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
 #include "ui_browser.hpp"
+#include "mix_eq_host.hpp"
+#include "adi/mix/eq/Preview.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iterator>
@@ -108,6 +110,21 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
                        juce::dontSendNotification);
 }
 void ParameterControl::resized() {
+    if (getHeight() < 48) {
+        const int half = getHeight() / 2;
+        const int side = std::min(24, getHeight());
+        if (slider.isVisible()) {
+            slider.setBounds(0, (getHeight() - side) / 2, side, side);
+            name.setBounds(side, 0, getWidth() - side, half);
+            value.setBounds(side, half, getWidth() - side, getHeight() - half);
+        } else {
+            name.setBounds(0, 0, getWidth(), half);
+            value.setBounds({});
+            toggle.setBounds(getWidth() / 2 - 12, half, 24, getHeight() - half);
+            menu.setBounds(2, half, getWidth() - 4, getHeight() - half);
+        }
+        return;
+    }
     // Live's knob column: the name, the knob, the value under it.
     name.setBounds(0, 0, getWidth(), 14);
     slider.setBounds(getWidth() / 2 - 14, 13, 28, 28);
@@ -222,8 +239,48 @@ void SampleTile::itemDropped(const SourceDetails &details) {
     if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
         drop(files[0]);
 }
-DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
-    : id(d.id), strip(s) {
+struct DevicePanelView::EqPreview {
+    std::shared_ptr<const std::vector<panel::Record>> records;
+    std::optional<mix::eq::Settings> settings;
+    double sampleRate = 0;
+    std::array<juce::Path, 5> paths;
+};
+void DevicePanelView::updateEqPreview(const DevicePanelData &d) {
+    if (!mixCard_ || !eqPresentation(d)) return;
+    if (!eqPreview_) eqPreview_ = std::make_unique<EqPreview>();
+    auto &preview = *eqPreview_;
+    const auto rate = strip.root.editRate();
+    if (d.cachedRecords && preview.records == d.cachedRecords && preview.sampleRate == rate) return;
+    preview.records = d.cachedRecords;
+    const auto settings = device::publishedMixEqSettings(d.parameters());
+    if (settings == preview.settings && preview.sampleRate == rate) return;
+    preview.sampleRate = rate;
+    preview.settings = settings;
+    for (auto &path : preview.paths) path.clear();
+    if (settings) {
+        const auto graph = mix::eq::designPreview(*settings, rate);
+        for (std::size_t route = 0; route < graph.visible.size(); ++route) {
+            if (!graph.visible[route]) continue;
+            auto &path = preview.paths[route];
+            const auto &db = graph.decibels[route];
+            path.preallocateSpace(static_cast<int>(db.size() * 3));
+            path.startNewSubPath(0.f, db.front());
+            for (std::size_t i = 1; i < db.size(); ++i)
+                path.lineTo(static_cast<float>(i) / static_cast<float>(db.size() - 1), db[i]);
+        }
+    }
+    repaint();
+}
+
+juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
+    if (!eqPreview_ || !eqPreview_->settings || (!selectedPage_.empty() && selectedPage_ != "eq")) return {};
+    const auto remaining = std::max(0, getHeight() - kTitleHeight - 5);
+    const int h = getHeight() < 144 ? remaining : std::min(86, remaining / 2);
+    return juce::Rectangle<int>(5, kTitleHeight + 1, std::max(0, getWidth() - 10), h).toFloat();
+}
+
+DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, bool mixCard)
+    : id(d.id), mixCard_(mixCard), strip(s) {
     // The title is the bar's text, not a box (Live's device title).
     title.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
     title.getProperties().set("live.left", true);
@@ -640,11 +697,14 @@ void DevicePanelView::visibilityChanged() {
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
     presentFunctionSelection(d);
+    updateEqPreview(d);
     data = &d;
     auto hint = juce::String("Double-click to fold; right-click for device commands.\n") +
                       (d.available ? "Latency: " + juce::String(d.latency) + " samples."
                                    : juce::String("This device is unavailable."));
-    if (nativeFunction()) hint += "\nNative Mix View function; drag the header to move it within this channel.";
+    if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
+    if (mixCard_ && eqPresentation(d))
+        hint += "\nThe curve shows the static EQ design. L/R and Mid/Side bands use separate traces.";
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
                                                           : "Switches the device on or off.");
@@ -733,7 +793,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
         page.enabled->setEnabled(record && validTarget());
         page.enabled->setToggleState(record && record->playing >= .5, juce::dontSendNotification);
     }
-    if (!parameterPages.empty()) resized();
+    if (!parameterPages.empty() || mixCard_) resized();
 }
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
@@ -751,16 +811,40 @@ int DevicePanelView::widthFor(int height) const noexcept {
     return std::max({eqPresentation() ? 270 : 150, pageWidth,
                      columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0)});
 }
+void DevicePanelView::layoutCompactControls(int top) {
+    const int h = std::min(ParameterControl::kHeight, getHeight() - top - 2);
+    const auto columns = h >= 18 ? std::clamp((getWidth() - 8) / 68, 1, 4) : 0;
+    const int w = (getWidth() - 8) / std::max(1, columns);
+    std::array<ParameterControl *, 4> selected{};
+    int placed = 0;
+    const auto take = [&](ParameterControl &control) {
+        if (placed >= columns || std::find(selected.begin(), selected.end(), &control) != selected.end()
+            || !parameterShown(control.parameter)) return;
+        selected[static_cast<std::size_t>(placed++)] = &control;
+    };
+    for (const char *key : {"Threshold", "Ratio", "Input Gain", "Output Level", "Amount", "Attack", "Release"}) {
+        if (placed == columns) break;
+        for (auto &control : controls)
+            if (control->getTitle().endsWithIgnoreCase(key)) take(*control);
+    }
+    for (auto &control : controls) take(*control);
+    for (auto &control : controls) {
+        const auto at = std::find(selected.begin(), selected.end(), control.get());
+        control->setVisible(at != selected.end());
+        if (at != selected.end()) control->setBounds(4 + static_cast<int>(at - selected.begin()) * w, top,
+                                                     std::max(0, w - 2), h);
+    }
+}
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
-    configureButton.setVisible(!isFolded && !eqPresentation());
+    configureButton.setVisible(!mixCard_ && !isFolded && !eqPresentation());
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
     // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
     const int nameLeft = wrench.isVisible() ? 50 : 32;
     wrench.setBounds(32, 1, 16, 15);
-    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() ? 4 : 58)), 15);
+    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() || mixCard_ ? 4 : 58)), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     if (sample) {
         sample->setVisible(!isFolded);
@@ -770,6 +854,20 @@ void DevicePanelView::resized() {
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
     int top = kTitleHeight + (configuring ? 26 : 2);
+    if (mixCard_ && !isFolded) {
+        const auto graph = eqPreviewBounds();
+        if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
+        if (getHeight() < 144) {
+            for (auto &page : parameterPages) {
+                page.selector->setVisible(false);
+                page.enabled->setVisible(false);
+            }
+            functionBand.setVisible(false);
+            functionSection.setVisible(false);
+            layoutCompactControls(top);
+            return;
+        }
+    }
     int pageX = 6;
     for (auto &page : parameterPages) {
         page.selector->setVisible(!isFolded);
@@ -808,8 +906,25 @@ void DevicePanelView::paint(juce::Graphics &g) {
     const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
     g.fillAll(look::panel);
     g.setColour(edge);
-    g.fillRect(0, 0, getWidth(), kTitleHeight);
-    g.drawRect(getLocalBounds(), 2);
+    if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
+    g.drawRect(getLocalBounds(), mixCard_ ? 1 : 2);
+    if (mixCard_ && eqPreview_) {
+        const auto graph = eqPreviewBounds();
+        if (!graph.isEmpty()) {
+            juce::Graphics::ScopedSaveState saved(g);
+            g.reduceClipRegion(graph.toNearestInt());
+            g.setColour(look::field);
+            g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
+            const juce::AffineTransform transform{graph.getWidth(), 0.f, graph.getX(), 0.f,
+                                                  -graph.getHeight() / 36.f, graph.getCentreY()};
+            for (std::size_t r = 0; r < eqPreview_->paths.size(); ++r) {
+                const auto &path = eqPreview_->paths[r];
+                if (path.isEmpty()) continue;
+                g.setColour(r == 0 ? look::accent : look::trackColour(r));
+                g.strokePath(path, juce::PathStrokeType(1.5f), transform);
+            }
+        }
+    }
     // Live's fold switch beside the activator.
     const auto fold = foldSwitch().toFloat();
     g.setColour(look::button);

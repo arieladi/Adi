@@ -111,6 +111,17 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
               native->nativeFunction()->kind == mix::Function::Limiter,
           "external UID coincidence remains an ordinary plug-in; native identity is explicit");
     check(native->parameterPages.empty(), "a plain Limiter without group descriptors invents no Clip page");
+    {
+        DevicePanelView card(strip, publication->back(), true);
+        card.setSize((look::workspaceSegmentWidth * 3), look::mixStackRow);
+        card.present(publication->back());
+        const auto *gain = card.controls.empty() ? nullptr : card.controls.front().get();
+        check(gain && gain->isVisible() && gain->getBottom() <= card.getHeight() &&
+                  !card.configureButton.isVisible(), "the compact Limiter retains its actual Gain control");
+        card.setSize((look::workspaceSegmentWidth * 3) * 2, look::mixStackFocusedRow);
+        check(gain && card.controls.front().get() == gain && gain->isVisible(),
+              "the expanded card uses the same owned control as the compact card");
+    }
     check(!ordinary->beginFunctionDrag(), "ordinary plug-ins cannot enter the native function drag path");
     int duplicates = 0;
     strip.duplicate = [&](std::int64_t, std::int64_t, std::optional<std::int64_t>) { ++duplicates; return true; };

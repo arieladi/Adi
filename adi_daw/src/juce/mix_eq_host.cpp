@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <bitset>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -330,6 +331,21 @@ std::unique_ptr<DeviceInstance> makeMixEqFunction(const engine::DeviceRequest& r
     try {error.clear();return std::make_unique<EqDevice>(*request.ref,request.channels,std::move(backend));}
     catch(const std::exception& e){error=e.what();return {};}
 }
+std::optional<mix::eq::Settings> publishedMixEqSettings(std::span<const panel::Record> records) {
+    if (records.size() < count) return std::nullopt;
+    Values values{};
+    std::bitset<count> received;
+    for (const auto &r : records) {
+        const auto i = indexFor(r.id);
+        if (i == count) continue; // other pages in the serial device
+        if (r.missing || !std::isfinite(r.playing)) return std::nullopt;
+        values[i] = physical(i, r.playing);
+        received.set(i);
+    }
+    if (!received.all()) return std::nullopt;
+    return settings(values);
+}
+
 std::vector<MixEqCompanionEdit> mixEqCompanionEdits(const DeviceInstance& device,const std::string& id,
                                                  const ParamValue& desired) {
     const auto* info=mix::functionForReference(device.identity().format,device.identity().uid);

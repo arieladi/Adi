@@ -96,6 +96,7 @@ struct StackRow::State {
     std::uint64_t presentation = 0;
     bool destroying = false;
     juce::Component lane;
+    juce::TextButton mute{"M"}, solo{"S"};
     struct Tile {
         stack::ItemRef target;
         std::unique_ptr<DevicePanelView> view;
@@ -108,6 +109,23 @@ StackRow::StackRow(StackTab &s, std::int64_t track)
     setInterceptsMouseClicks(false, true);
     state_->lane.setInterceptsMouseClicks(false, true);
     addAndMakeVisible(state_->lane);
+    state_->mute.setTitle("Mute channel");
+    state_->solo.setTitle("Solo channel");
+    state_->mute.setTooltip("Mute or unmute this channel.");
+    state_->solo.setTooltip("Solo this channel. Ctrl/Cmd keeps other solos.");
+    for (auto *button : {&state_->mute, &state_->solo}) {
+        button->setColour(juce::TextButton::buttonOnColourId, look::accent);
+        button->setClickingTogglesState(false);
+        addChildComponent(*button);
+    }
+    const auto valid = [this] {
+        return state_->presentedRow.ref.valid() && stack_.model().rowRef(track_) == state_->presentedRow.ref &&
+            stack_.root.reader().findTrack(track_) != nullptr;
+    };
+    state_->mute.onClick = [this, valid] { if (valid()) stack_.root.activateTrack(track_, false); };
+    state_->solo.onClick = [this, valid] {
+        if (valid()) stack_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
+    };
     setTitle("Channel");
     setTooltip("The channel's actual devices. Hover to enlarge; pin to retain a channel.");
 }
@@ -148,7 +166,8 @@ void StackRow::present(const stack::RowGeo &input) {
         if (found == state_->tiles.end()) {
             State::Tile tile;
             tile.target = item.ref;
-            tile.view = std::make_unique<DevicePanelView>(stack_.root.devices, *data);
+            tile.view = std::make_unique<DevicePanelView>(stack_.root.devices, *data,
+                !data->plugin && mix::functionForUid(data->uid) != nullptr);
             const auto target = item.ref;
             const juce::Component::SafePointer<StackRow> owner(this);
             tile.view->targetValid = [owner, target] { return owner && !owner->state_->destroying && owner->stack_.validTarget(target); };
@@ -230,6 +249,19 @@ void StackRow::present(const stack::RowGeo &input) {
     if (!alive || state_->presentation != presentation) return;
     state_->presentedRow = geo;
     state_->presentedChip = chip;
+    const int buttonY = juce::roundToInt(chip.chip.y - geo.top + chip.chip.h) + look::border;
+    const auto *track = stack_.root.reader().findTrack(track_);
+    const auto small = look::fieldHeight;
+    const bool switches = track && track->kind != "master" && track->kind != "main" && buttonY + small <= getHeight();
+    state_->mute.setVisible(switches);
+    state_->solo.setVisible(switches);
+    if (switches) {
+        const auto x = juce::roundToInt(chip.chip.x);
+        state_->mute.setBounds(x, buttonY, small, small);
+        state_->solo.setBounds(x + small + look::border, buttonY, small, small);
+        state_->mute.setToggleState(track->muted, juce::dontSendNotification);
+        state_->solo.setToggleState(track->soloed, juce::dontSendNotification);
+    }
     state_->presentedLane = lane;
     state_->presentedItems.swap(state_->pendingItems);
 }
@@ -722,6 +754,8 @@ void StackTab::mouseExit(const juce::MouseEvent &e) {
 void StackTab::mouseDown(const juce::MouseEvent &e) {
     const juce::Component::SafePointer<StackTab> alive(this);
     if (!fromList(e)) return;
+    if (auto *row = dynamic_cast<StackRow*>(e.eventComponent->getParentComponent());
+        row && (e.eventComponent == &row->state_->mute || e.eventComponent == &row->state_->solo)) return;
     const auto p = modelPoint(e);
     // Hit the geometry that supplied the visible components. Reflowing a newer document
     // here would hit an unseen row at this screen point. Validate the seen identity against
