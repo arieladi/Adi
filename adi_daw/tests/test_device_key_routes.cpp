@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/realize.hpp"
 #include "adi/history.hpp"
+#include "adi/gesture_presentation.hpp"
 #include "adi/device_key_routes.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/ui/project_document.hpp"
@@ -78,13 +79,25 @@ struct Fixture {
 struct KeyInstance final:device::DeviceInstance {
     device::DeviceIdentity identity_;
     unsigned prepares=0;
+    bool warming=true;
     bool keysAvailable=true;
     KeyInstance(){identity_.format="internal";identity_.uid="owned-key-fixture";identity_.name="Key fixture";}
     const device::DeviceIdentity& identity()const noexcept override{return identity_;}
     bool loaded()const noexcept override{return true;}
     std::int32_t sidechainInputChannels()const noexcept override{return keysAvailable?2:0;}
-    void prepare(double,std::int32_t)override{++prepares;}
-    void process(const NodeIo&)noexcept override{}
+    void prepare(double,std::int32_t)override{++prepares;warming=true;}
+    void process(const NodeIo& io)noexcept override{
+        for(int c=0;c<io.channels;++c)
+            for(int i=io.blockOffset;i<io.blockOffset+io.frames;++i)
+                io.out[c][i]=warming ? 0.f : io.in[c][i];
+        warming=false;
+    }
+};
+struct ContinuousTone final : Node {
+    void process(const NodeIo& io) noexcept override {
+        for(int c=0;c<io.channels;++c)
+            std::fill_n(io.out[c]+io.blockOffset,io.frames,.25f);
+    }
 };
 void preparedAndDocument(){
     Fixture f;auto& store=*f.store;
@@ -109,14 +122,50 @@ void preparedAndDocument(){
     check(doc!=nullptr,"document resolves owned fixture without an editor or audio device");if(!doc)return;
     doc->tick(0);const auto publication=doc->parameterFeed().current();
     if(!publication || publication->empty()){check(false,"device feed exists");return;}
-    const auto target=publication->front();auto* instance=static_cast<KeyInstance*>(doc->session().instanceFor(30));
+    auto target=publication->front();auto* instance=static_cast<KeyInstance*>(doc->session().instanceFor(30));
     check(target.sidechainChannels==2,"declared auxiliary capability is published to both surfaces");
+    ContinuousTone tone;
+    auto& session=doc->session();
+    session.setSourcesFor([&](std::int64_t track) {
+        return track==3 ? std::vector<Node*>{&tone} : std::vector<Node*>{};
+    });
+    doc->prepare(48000,480);
+    session.graph().setFadeFrames(0);
+    session.transport().play();
+    gesture::EnginePresentation presentation(doc->view(),session);
+    auto adopt=[&]{
+        const auto source=appliedSource(doc->store());
+        return presentation.adoptCommitted(doc->store(),{source,History(doc->store()).head(),source.sequence()},nullptr).state;
+    };
+    check(adopt()!=gesture::PresentationState::Refused,"GUI coordinator adopts the continuous source");
+    std::array<float,480> left{},right{};
+    std::array<float*,2> output{left.data(),right.data()};
+    AudioIo io;io.out=output.data();io.numOut=2;io.frames=480;
+    auto continuous=[&]{
+        session.process(io);
+        return std::all_of(left.begin(),left.end(),[](float sample){return sample>.1f;}) &&
+               std::all_of(right.begin(),right.end(),[](float sample){return sample>.1f;});
+    };
+    (void)continuous();
+    check(continuous(),"programme is continuous before a key edit");
+    const auto* reader=session.clips();
+    doc->tick(1);target=doc->parameterFeed().current()->front();
     const auto before=instance->prepares;
     check(doc->setDeviceKey(target,2,"post_fx"),"document source and tap use actual prepared graph authority");
+    check(continuous() && reader==session.clips(),"first routed block retains every programme sample and the timeline reader");
+    const auto* graph=session.graph().currentGraph();
+    check(adopt()!=gesture::PresentationState::Refused && graph==session.graph().currentGraph() &&
+          reader==session.clips() && continuous(),"draining the routed receipt keeps the identical graph and continuous audio");
+    check(doc->setDeviceKey(target,{},"post_mixer") && continuous(),"first block after disconnect retains every programme sample");
+    graph=session.graph().currentGraph();
+    check(adopt()!=gesture::PresentationState::Refused && graph==session.graph().currentGraph() &&
+          reader==session.clips() && continuous(),"draining disconnect preserves audio and graph");
+    check(doc->ops().undo().ok && doc->synchronise() && continuous(),"Undo reconnects without restarting programme");
     const auto sameHead=OpJournal(doc->store()).headSeq();
     check(doc->setDeviceKey(target,2,"post_fx") && OpJournal(doc->store()).headSeq()==sameHead,"choosing current key is a no-op without an Undo entry");
     const auto after=instance->prepares;
-    check(after>=before && doc->deviceKeyChoices(target).size()==10,"menu choices come from real channels and three taps");
+    check(after==before,"key edits and coordinator drains never re-prepare a running device");
+    check(doc->deviceKeyChoices(target).size()==10,"menu choices come from real channels and three taps");
     const auto oldChoice=doc->deviceKeyChoices(target).back();
     check(doc->ops().submit(op("track.rename",{{"id",2},{"name","A changed source"}})).ok,"another surface can change source identity while a menu is retained");
     const auto menuHead=OpJournal(doc->store()).headSeq();

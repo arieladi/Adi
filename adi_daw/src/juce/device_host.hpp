@@ -108,6 +108,9 @@ public:
     /// before a session has a graph at all — and after a model edit. `tick`
     /// uses it for a shape report. Message thread.
     bool rebuildNow();
+    // A rewired auxiliary bus reuses the current source readers, bindings and
+    // prepared DSP. Keep the new model supplier for subsequent shape reports.
+    bool publishDeviceKeys(const rows::Model& model, std::function<const rows::Model*()> current);
 
     /// The chain supplier to hand `realize()`. Bound to this host, so a
     /// rebuild re-injects the DEVICES THAT ARE ALREADY LOADED rather than
@@ -184,6 +187,7 @@ private:
 
     engine::GraphHost* host_ = nullptr;
     RebuildSpec spec_;
+    bool rebuildModel(const rows::Model&, engine::NodePreparePolicy);
     Stats stats_;
     std::string lastError_;
 };

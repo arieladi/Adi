@@ -172,6 +172,7 @@ Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAud
 Session::~Session() {
     scopeRuntime_->revoke();
     endpoint_->owner_=nullptr;
+    endpoint_->keyRoutes_.reset();
     lifetime_.reset();
     for(const auto& client:runtimeClients_)client->sessionEnded();
     runtimeClients_.clear();
@@ -954,6 +955,17 @@ bool Session::rebuild() {
     try {
     attachTaps();   // ADR-0175: the new graph's latencies
 
+    refreshProblems();
+    } catch(const std::exception&) {
+        // The graph may already be audible. Preserve that fact and let the
+        // presentation owner retry; never report an untouched failed preview.
+        if(!ok)return false;
+        presentationPending_=true;
+    }
+    return ok;
+}
+
+void Session::refreshProblems() {
     problems_ = model_.problems;
     if (midi_) problems_.insert(problems_.end(), midi_->problems().begin(), midi_->problems().end());
     if (auto* c = clips()) problems_.insert(problems_.end(), c->problems().begin(), c->problems().end());
@@ -972,13 +984,6 @@ bool Session::rebuild() {
     problems_.insert(problems_.end(), deviceSourceProblems_.begin(), deviceSourceProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
-    } catch(const std::exception&) {
-        // The graph may already be audible. Preserve that fact and let the
-        // presentation owner retry; never report an untouched failed preview.
-        if(!ok)return false;
-        presentationPending_=true;
-    }
-    return ok;
 }
 
 bool Session::parkedDevice(const rows::Device &device) const {
@@ -1130,6 +1135,76 @@ bool Session::readPlayback(const Store &store) {
     }
 }
 
+struct SessionEndpoint::KeyRoutes final : AppliedObserver {
+    AppliedSubscription subscription;
+    std::uint64_t applied = 0;
+    std::shared_ptr<const std::vector<std::uint8_t>> image;
+    std::shared_ptr<const AppliedBatch> latest;
+    void committed(std::shared_ptr<const AppliedBatch> batch) override {
+        latest.reset();
+        image.reset();
+        if (batch->operations().empty()) return;
+        for (const auto& op : batch->operations())
+            if (op.dispatchedType != "routing.setKeyTap" && op.dispatchedType != "routing.connect" &&
+                op.dispatchedType != "routing.disconnect") return;
+        latest = std::move(batch);
+    }
+    void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override { latest.reset(); }
+};
+
+void Session::observeKeyRoutes() {
+    auto routes = std::make_shared<SessionEndpoint::KeyRoutes>();
+    auto observed = appliedSource_.observe(routes);
+    routes->subscription = std::move(observed.subscription);
+    endpoint_->keyRoutes_ = std::move(routes);
+}
+
+std::optional<bool> Session::refreshDeviceKeys(const Store& store, const std::shared_ptr<const std::vector<std::uint8_t>>& image) {
+    const auto& receipts = endpoint_->keyRoutes_;
+    if (!live_ || !receipts || !receipts->latest ||
+        gestureHoldsExternalTempo(gestureRuntime_)) return {};
+    const auto& batch = *receipts->latest;
+    if (!batch.source().sameConnection(adi::appliedSource(store)) ||
+        batch.sequence() != appliedSource_.sequence()) return {};
+    if (receipts->applied == batch.sequence() && appliedSequence_ == receipts->applied) {
+        if (image && receipts->image && (image == receipts->image || *image == *receipts->image)) return true;
+        return {};
+    }
+    if (batch.sequence() != appliedSequence_ + 1) return {};
+    auto next = rows::readModel(store);
+    if (!next.problems.empty()) return {};
+    auto isKey = [](const auto& routes, std::int64_t id) {
+        return std::any_of(routes.begin(), routes.end(), [id](const auto& row) {
+            return row.id == id && row.srcKind == "track" && row.dstKind == "device" && row.kind == "sidechain";
+        });
+    };
+    for (const auto& op : batch.operations()) {
+        const auto id = op.payload.at("id").get<std::int64_t>();
+        const auto& routes = op.dispatchedType == "routing.disconnect" ? model_.routing : next.routing;
+        if (!isKey(routes, id)) return {};
+    }
+    auto playbackRoutes = next.routing;
+    if (!devices_.publishDeviceKeys(next, [this] { return &model_; })) {
+        error_ = devices_.lastRebuildError();
+        return false;
+    }
+    model_.routing.swap(next.routing);
+    playbackModel_.routing.swap(playbackRoutes);
+    appliedSequence_ = receipts->applied = batch.sequence();
+    receipts->image = image;
+    ++stats_.rebuilds;
+    try {
+        presentationPending_ = !cueMonitor_.publish(cueSettings_, spec_.sampleRate, spec_.maxFrames,
+                                                    spec_.channels, spec_.performanceState, graph_.currentGraph());
+        attachTaps();
+        refreshProblems();
+    } catch (const std::exception&) {
+        presentationPending_ = true;
+    }
+    error_.clear();
+    return true;
+}
+
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     if(audio::onAudioThread)return false;
     error_.clear();
@@ -1149,6 +1224,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     // Offline rendering loads a coherent read-only project. It retains its
     // source identity without entering the editable gesture domain.
     if(!store.readOnly()) {
+        observeKeyRoutes();
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
         if(!registered.ok()) {error_=registered.message;return false;}
     }
@@ -1230,8 +1306,10 @@ bool Session::refresh(const Store& store) {
         return false;
     }
     const auto source = adi::appliedSource(store);
-    if (!appliedSource_.sameConnection(source)) appliedSequence_ = 0;
+    const bool replaced = !appliedSource_.sameConnection(source);
+    if (replaced) appliedSequence_ = 0;
     appliedSource_ = source;
+    if (replaced && !store.readOnly()) observeKeyRoutes();
     if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
         const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
         if(!registered.ok()) {error_=registered.message;return false;}

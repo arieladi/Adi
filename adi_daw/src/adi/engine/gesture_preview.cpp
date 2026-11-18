@@ -34,7 +34,7 @@ const std::set<std::string> materialTables{
     "event_streams","note_expression","automation_lanes","automation_data","automation_segment_ranges",
     "media_files","routing","plugin_refs","device_chains","devices","plugin_params","plugin_state",
     "device_panels","device_panel_params","device_expression_routes","markers","marker_details","remarks",
-    "frozen_renders","frozen_groups","return_send_taps","session_state","state_blobs"};
+    "frozen_renders","frozen_groups","return_send_taps","routing_key_taps","session_state","state_blobs"};
 Tables readTables(const Store& store) {
     Tables result;
     SQLite::Statement tables(store.db(),"SELECT name FROM sqlite_master WHERE type IN ('table','view') UNION SELECT name FROM sqlite_temp_master WHERE type IN ('table','view') ORDER BY name");
@@ -106,7 +106,7 @@ Tables topology(Tables value) {
         {"group_summing",{"track_id","enabled","flavor"}},
         {"routing",{"id","src_kind","src_id","dst_kind","dst_id","kind","ord","pre_fader","enabled","origin"}}};
     const std::set<std::string> whole{"plugin_refs","device_chains","devices","plugin_params","plugin_state",
-        "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps"};
+        "device_expression_routes","track_recording_options","frozen_renders","frozen_groups","return_send_taps","routing_key_taps"};
     for(auto it=value.begin();it!=value.end();) {
         const auto fields=retained.find(it->first);
         if(fields==retained.end()) {if(whole.contains(it->first)){++it;continue;}it=value.erase(it);continue;}
@@ -532,6 +532,17 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(!owner->appliedSource_.sameConnection(base.source))return refused("preview source does not match the loaded Session");
         try {
             auto next=readImage(store,base,owner->overridden_,tempoRule(owner));
+            // The document and the coordinator can see the same key transaction
+            // on different ticks. Publish it once, keeping the running readers.
+            if (active.empty()) {
+                if (const auto keyed = owner->refreshDeviceKeys(store, next->viewBytes)) {
+                    if (!*keyed) return refused(owner->error());
+                    committed = next;
+                    viewCommitted(next);
+                    return owner->presentationReady(base.source, base.sequence) ? PresentationStatus{} :
+                        PresentationStatus{PresentationState::Pending, "waiting for earlier device delivery", {}};
+                }
+            }
             if(committed && sameBase(committed->base,base) && committed->bytes==next->bytes &&
                committed->transport==next->transport && committed->cue==next->cue && committed->overrides==owner->overridden_) {
                 if(!owner->presentationReady(base.source,base.sequence))return {PresentationState::Pending,"earlier device delivery or capture is pending",{}};

@@ -82,7 +82,18 @@ bool DeviceHost::rebuildNow() {
 
     const rows::Model* model = spec_.model();
     if (model == nullptr) { lastError_ = "no model"; return false; }
+    return rebuildModel(*model, spec_.nodePreparation);
+}
 
+bool DeviceHost::publishDeviceKeys(const rows::Model& model, std::function<const rows::Model*()> current) {
+    if (!rebuildModel(model, engine::NodePreparePolicy::PreservePrepared)) return false;
+    spec_.model = std::move(current);
+    return true;
+}
+
+bool DeviceHost::rebuildModel(const rows::Model& model, engine::NodePreparePolicy preparation) {
+    lastError_.clear();
+    if (!host_) { lastError_ = "no host attached"; return false; }
     engine::RealizeOptions opts;
     opts.monitors=spec_.monitors;
     opts.channels = spec_.channels;
@@ -96,8 +107,8 @@ bool DeviceHost::rebuildNow() {
     opts.feedbackFor = spec_.feedbackFor;
     opts.eventSourceFor = spec_.eventSourceFor;
 
-    if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames, spec_.transformPlan,
-                        spec_.transportState, spec_.nodePreparation)) {
+    if (!host_->rebuild(model, opts, spec_.sampleRate, spec_.maxFrames, spec_.transformPlan,
+                        spec_.transportState, preparation)) {
         lastError_ = host_->error();
         return false;
     }

@@ -224,7 +224,8 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        if (!session_.refresh(*store_)) {
+        const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
+        if (!(keyed ? *keyed : session_.refresh(*store_))) {
             error_ = session_.error();
             return false;
         }

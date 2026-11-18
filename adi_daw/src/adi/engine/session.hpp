@@ -202,6 +202,8 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+    // nullopt means the latest transaction needs ordinary full synchronisation.
+    std::optional<bool> refreshDeviceKeys(const Store&, const std::shared_ptr<const std::vector<std::uint8_t>>& image);
 
     [[nodiscard]] std::shared_ptr<const SessionEndpoint> endpoint() const noexcept { return endpoint_; }
     [[nodiscard]] DeviceRuntimeToken deviceRuntimeToken(std::int64_t deviceId) const;
@@ -565,6 +567,8 @@ private:
     GraphHost graph_;
     rows::Model model_;
     AppliedSource appliedSource_;
+    void observeKeyRoutes();
+    void refreshProblems();
     std::uint64_t appliedSequence_ = 0;
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
     std::shared_ptr<SessionEndpoint> endpoint_;
