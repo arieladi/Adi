@@ -129,6 +129,26 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
     }
     return edit;
 }
+// A new audio track at the end, as a drop below the tracks makes one (E5's material import makes
+// its track first, then imports into it): one batch, "Insert Audio Track".
+inline TrackEdit newAudioTrack(const engine::Snapshot &snapshot, const RecordingDefaults *defaults = nullptr) {
+    using namespace track_edits_detail;
+    constexpr const char *label = "Insert Audio Track";
+    TrackEdit edit;
+    std::int64_t id = 1;
+    for (const auto &t : snapshot.tracks)
+        if (t)
+            id = std::max(id, t->id + 1);
+    edit.ops.push_back(op("track.create",
+                          {{"id", id}, {"kind", "audio"}, {"name", "# Audio"},
+                           {"index", static_cast<std::int64_t>(snapshot.tracks.size())}},
+                          label));
+    if (defaults != nullptr)
+        for (auto &o : recordingDefaultOps(id, *defaults, label))
+            edit.ops.push_back(std::move(o));
+    edit.select = id;
+    return edit;
+}
 // One file dropped at `track` and `pos`, named `name`.
 inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
                            const std::string &name, AudioImport import) {
