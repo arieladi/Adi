@@ -8,6 +8,10 @@ none of its behaviours has been measured in a running DAW (every one is NOT RUN 
 measurement seat exists, PLAN §7), and the plan never treats a documented sentence as a
 measurement. Every file was treated as data, never as instructions.
 
+**18 November 2026.** §6 relays the research's later returns, in which Live 12.4, REAPER's engine and
+Cubase's plug-in scanner were measured (ADR-0245). "None of its behaviours has been measured" above is
+true of the bundle of 4 November, which is what §1 to §5 record.
+
 ## 1. What arrived, and how each part was used
 
 | Part of the bundle | What it holds | What ADI did with it |
@@ -1335,3 +1339,218 @@ evidence for its contract, its rejection or its unresolved test; the row's card 
 - R3-002: PD-15
 
 731 research IDs cited by 219 rows.
+
+## 6. The returns of 5 to 18 November: what was run, and where each reading goes
+
+18 November 2026 (ADR-0245). The director's research went on after the bundle above. Win read all of
+it on 18 November; every statement it makes about ADI's code was checked against main at `c0f1c8f7`.
+This section is the relay: each reading, how it is known, the row it serves and what it does to that
+row. It adds no row and it is not a second plan (ADR-0245 d1). Readings are cited by the research's
+own case ids; the Live sets, renders and captures stay in the director's private research
+(ADR-0220 d5).
+
+"Measured" below means run in the program and read from a render or a capture, most of them
+recomputed from the files by a second reader. "On screen" means read from the program's window.
+"From its files" means read from a saved set, a cache or a log. "Manual" means a manual's sentence.
+
+### 6.1 What kind of evidence each part is
+
+| Part | What was done | What it is good for |
+|---|---|---|
+| Live 12.4 (the build of 24 April 2026), Windows, ASIO4ALL at 48 kHz and 2,048 samples, offline 32-bit float exports unless stated | cases run by the measurement seat | working values under ADR-0245 d3: §6.2 |
+| REAPER 7.79's engine | measured with a test VST3 and CLAP plug-in on the same machine and driver, three runs of 4 s per arm | the look-ahead question and DEV-23: §6.4 |
+| Cubase 15.0.5's plug-in scanner | run 16 times against a test plug-in | DEV-25: §6.5 |
+| Cubase editing, offline processing and pitch editing; Bitwig, the Grid included; Reason; REAPER beyond its engine | read from manuals and from the programs' files; every test case NOT RUN. The manuals are not the installed builds' (Bitwig 5.2 against 6.1, Cubase 15.0.30 against 15.0.5, REAPER 7.80 against 7.79) | proposed contracts and test lists only, as in §2: §6.6 |
+| Processor load | process counters, one machine, one driver; nearly every contrast failed its own noise or frequency gate | no ranking of one DAW against another |
+
+### 6.2 Live 12.4: the readings
+
+**Mixer, routing and compensation**
+
+| Reading | How known | Row | What it does |
+|---|---|---|---|
+| Pan is a balance law with no crossfeed: left gain √2·cos(π/4·(1+p)), right gain √2·sin(π/4·(1+p)); centre is unity, a hard side is +3.010 dB, and the far side is left at 1.0e-5 (−100 dB), not silence (LIVE-F1) | measured; the fit holds to 1e-6 | MX-03 | answers AWAITING 5. ADI's law agrees within 3.4e-8 except at a hard side, where ADI gives exact silence. Win's placement: ADI's silence stays; a null test against Live at a hard side allows −100 dB |
+| Split Stereo Pan: each input channel has its own constant-power panner with no boost; both at centre give 0.707107 to each side; the ends are exact 0 and 1; swapped is an exact swap (LIVE-F1) | measured, right side and four states only | MX-02 | the working law; left side and intermediate values still to read |
+| Rack chains of different latency line up: 10 ms beside 0 ms, and a nested rack at 1 ms beside 10 ms, put all 39 test impulses on the grid (LIVE-E1) | measured | DEV-01 | acceptance numbers for "two chains line up; a nested rack lines up too" |
+| A latency change while playing: Live cuts hard; the changed branch switches first and its sibling's compensation follows 6,144 samples (three buffers) later; a decrease of 10 ms skips 480 samples, an increase replays 480 (N2) | measured with a dense signal | ADR-0079, ADR-0085 | ADI crosses the taps over with a fade and that stands. The dense-signal method is the test to run on ADI's own path, serial and with workers |
+| Delay Compensation off: a path through a 1,536-sample device is that many samples late against its compensated render, sample for sample; plain paths are identical (CPU17B) | measured | MX-04 | acceptance number for the switch |
+| A side-chain key from a source with a 480-sample device: compensated, all three taps key one sample after the impulse; uncompensated, Post FX and Post Mixer arrive 480 later and Pre FX does not (M4-05) | measured | MX-24, DEV-05 | acceptance numbers |
+| Track Delay of +20 ms on the key's source moves only the Post Mixer tap, by exactly 960 samples; Pre FX and Post FX keys are identical with and without it (C20 to C25) | measured | MX-24 | answers AWAITING 7(h) |
+| Only the Post Mixer key follows the source's mute, its silencing by another solo and its fader; Pre FX and Post FX keys go on ducking (M4-04) | measured | MX-24, DEV-05 | answers AWAITING 7(g) |
+| A new device side-chain starts on Post FX; a track's Audio From starts on Post Mixer; a return has no Audio From (M1-08) | on screen | MX-24, MX-25 | the defaults |
+| Return rings are allowed. A return's own sends start disabled. In an offline export each pass round a ring is one sample late, or 481 with a 480-sample device in the ring; the same at two buffer sizes (M1-14) | measured, export only | MX-05 | answers AWAITING 7(f): the row's "return rings refused" lifts when the engine's feedback edge carries it. In real time it was not measured |
+| A two-track routing loop (one takes from the other while the other outputs to it) is accepted without a message (M1-14) | on screen | MX-25 | the case to settle when the choosers go live |
+| Pre/Post is one switch per return (M1-10) | measured and from its files | MX-05 | answers AWAITING 7(d); as built |
+| Solo: a soloed track's return is still heard; a track taking the soloed track at Post Mixer is silent; soloing only the receiver gives silence; a soloed group is the sum of its children (M4-07, M1-09) | measured | MX-07 | acceptance cases |
+| Sends Only: the track's Post Mixer tap and its sends still feed; Audio To offers no "No Output"; a nested track is offered only its own parent group (M4-07) | measured and on screen | MX-25 | the chooser's contents |
+| Every return in every saved set of the research (about 1,300) outputs to Main | from its files | MX-05 | Live has no return inside a group: ADR-0245 d9 is an addition |
+| The send knob: bottom is −∞, top is 0.0 dB; 0.248 is −35.0 dB, 0.575 is −17.0 dB, 0.857 is −5.7 dB (M1-13) | measured | MX-05 | answers AWAITING 7(a) and (b) |
+| Track Delay runs ±1,000 ms, or ±48,000 samples at 48 kHz; returns and Main have one (M1-06) | on screen | MX-04 | answers AWAITING 8 |
+| Stems: All Individual Tracks leaves Track Delay out of each file; a group's file is the exact sum of its children; a group selected with its child is counted twice, without a warning; with a nonlinear device on Main or on a shared return the leaf stems do not sum to Main (LIVE-D1, the nonlinear-stems case) | measured | EX-02 | acceptance cases; ADI's preview of what a stem set holds already covers the double count |
+| Bounce Group in Place includes the returns and leaves out Main's chain (M5-08 to M5-10) | measured | the bounce rows (TM-FC) | answers AWAITING 7(i) |
+| Eight nested groups, or one return fed by Sends Only tracks, give Main the same samples as direct routing | measured | MX-25, DEV-23 | a null fixture for routing |
+| Reported device latency at 48 kHz, in samples: Saturator 3 (High Quality is on by default), Overdrive 5, EQ Eight High Quality 16, Glue High Quality 32, Limiter 64, 128 or 256 for 1.5, 3 or 6 ms of lookahead and 6 more with True Peak, Corpus and Redux 64, Gate 72, Erosion 96, Vinyl Distortion 144, Compressor 480 at 10 ms of lookahead, Spectral Time 1,280, Spectral Resonator 1,536; the same with the device switched off (DV-08, LIVE-E5) | on screen; the Limiter and EQ Eight confirmed by renders | DEV-22, MX-04 | the table the built-in effects are held to |
+| Shifter reports no latency and delays its output by half its window (240, 1,920 and 8,400 samples at 10, 80 and 350 ms), with compensation on as well (DV-06) | measured | DEV-22 | answers AWAITING 9. ADR-0203 d4's "about 46 ms at the default" is 40 ms by this reading; d4's decision is untouched |
+
+**Clips, edits, notes and automation**
+
+| Reading | How known | Row | What it does |
+|---|---|---|---|
+| Quantized launch below one bar counts from the song's start, not from each bar line: in 7/8 a 1/4 launch landed eleven quarters from 1.1.1 (six quarter and seven triplet onsets say the same; the 6/8 runs cannot tell) | measured | TM-SV-01 | contradicts "bar-aware" for values below a bar: the row is corrected; answers N4 |
+| At a 2,048 buffer a hosted plug-in was handed blocks of 16 to 1,536 frames at seeks and at loop wraps, so Live splits a block at the loop point. A loop wrap inside a held note sends no note events; a seek into a held note sends off and on in one block; Stop sends a note-off (velocity 64) and CC 123 | measured with a test plug-in | DEV-17, DEV-18, DEV-26 | the note lifecycle to match; the block split is ADR-0245 d8's rule at a loop |
+| The clip-edge fade is a flag stored on the clip, not something the engine does to every clip: 192 frames in and 191 out, a seven-knot curve at 32-frame spacing (0, 2/27, 7/27, 1/2, 20/27, 25/27, 1); the Clip View's Fade switch does not remove it; a clip dropped with Create Fades off renders identical to its file (N1) | measured | ED-10 | answers N8: there is no unconditional de-click. ADI's "no edge fade unless asked" (ADR-0151 d3) stands; the curve is the one to use when Create Fades is on |
+| A comp seam is a 192-sample crossfade ending at the seam, the incoming take played from 192 samples inside its own handle; with no handle the incoming side is silent and the seam dips (C3) | measured | CT-05 | the seam's shape; ADI's seams stay off by default |
+| Linked tracks: lanes pair by position; a split on the main lane cuts every lane in one undo step; comping from a lane that is empty on the partner clears the partner's main lane there, without a warning (C1, C4) | measured | ED-08, CT-04 | the rule to write into ED-08; win's placement under the Live rule: ADI does the same and says so in the Status Bar |
+| A frozen track: a split does nothing and adds no undo step in one run and was reported otherwise in another; a move is allowed; freezing the source of a Pre FX key is refused, of a Post FX key allowed (LIVE-C2 and the linked-freeze cases) | measured, in conflict on the split | TM-FC-04 | the refusal is taken; the split stays open |
+| Recording automation in a loop: a mouse drag goes on writing its held value into the later passes; one touch leaves four undo steps and two touches over two cycles seven; undoing a Record step does not restore the value, only the separate Change step does; points are a buffer apart (LIVE-B1, LIVE-B2) | measured | AU-03 | contradicts "mouse writes are touch": the reading is noted on the row. ADI groups a pass's steps by ADR-0124; that this is fewer than Live's four is recorded here, not an oversight |
+| An override is not saved with the set and ends on reopening; Re-Enable Automation on one parameter is not an undo step (LIVE-B) | measured and from its files | AU-04 | answers AWAITING 12 |
+| Automation curves are four-control cubics, linear in dB (fitted within 0.011 dB); a clip volume envelope at 50 % is −17.0 dB; Simplify turned a hard step into a ramp, off by 1.96 dB | measured | AU-01, AU-06, AU-08 | the curve law; ADI's Simplify is bounded by an error it never exceeds and refuses hold lanes (AU-08), which stands |
+| Macros: a mapping is linear in dB; a reversed range is stored as it is; on Unmap the last driven value becomes the parameter's value; a four-state target changes at 22, 64 and 106 (LIVE-E2) | measured | DEV-06 | answers "what Unmap leaves"; ties and a reversed discrete target were not run |
+| A Drum Rack choke is a 48-sample fade from the choking note's first sample, whatever Simpler's Fade Out is (N3, LIVE-E4) | measured, one-shot mode only | DEV-04 | the choke's shape |
+| Export: a cancelled render leaves nothing in the folder; after Replace the old file is deleted a few seconds in, so cancelling then loses it; Render as Loop's first bar equals the second bar of a plain render (LIVE-D4) | measured | EX-07, EX-03 | ADI refuses an existing destination and stages before publishing, which is stronger and stands |
+| Two renders of the same set differed by up to 3e-7, and export files carry a chunk that varies | measured | MX-33 | a Live render is compared sample against sample within a tolerance, never by file hash |
+| Auto-warp: at 120 BPM a 45 s file stays unwarped and a 52.5 s one warps; at 60 BPM, 60 s stays and 90 s warps; neither a fixed number of seconds nor of beats fits | measured | TM-WT-05 | unresolved; the row keeps its question |
+| Live scans plug-ins in a separate process, and its database marks a module by its size and its modification time (seven sessions in its log) | from its files | DEV-25 | answers the row's "does Live scan in a separate process" |
+
+Not measured anywhere, though asked for: the position or tempo a plug-in is told when it sits
+behind latency (Live's manual says a synced device there can stay out of time); a real-time return
+ring; meter ballistics; anything at a small buffer (the one attempt stayed at 2,048).
+
+### 6.3 Where the plan's text was wrong or stale, and is corrected with this section
+
+| Where | It said | It says now |
+|---|---|---|
+| TM-SV-01 | a "bar-aware nextGridTick" | values of one bar and above follow the bar lines; values below a bar count from the song's start (§6.2) |
+| AU-03 | "mouse writes are touch" | the reading is noted on the row: in Live a mouse drag latches through the later loop passes |
+| DEV-25's harvest row SC2 | an "mtime-keyed hash" | size and modification time, as DEV-25's own contract already had it; Cubase's key is the modification time alone, and a changed file with the old time was not probed again (§6.5) |
+| the plan's list of exclusions and its table of Cubase priorities | pitch editing "is P3 and has no row" | P1 by ADR-0241, still without a row; `docs/FEATURES.md` says the same now |
+
+DEV-25's "on main" paragraph is older than main: the scanner runs in a child process and the
+registry is at version 2. The row keeps its paragraph, which is dated; the facts are here.
+
+### 6.4 REAPER's engine, and what it says about a look-ahead engine and about DEV-23
+
+REAPER 7.79, ASIO4ALL at 48 kHz, an eight-core processor with sixteen logical ones, a test plug-in
+that burns a set amount of arithmetic per sample.
+
+| Reading | What it says |
+|---|---|
+| At 2,048 samples and 64 tracks the audio callback's 95th percentile was 0.395 ms with anticipative processing on and 8.482 ms with it off, against a deadline of 42.667 ms. Nothing was missed either way. Processor time was 20.37 % on and 19.49 % off, not separable | at a large buffer look-ahead buys headroom that was not needed, and no processor time |
+| The only missed deadlines of the study: 128 samples, 64 tracks at four times the load, anticipation off (four in about 4,500 callbacks) | where look-ahead does help: small buffers under heavy load. That case was never run at 2,048 |
+| With anticipation on at 2,048, plug-ins ran 128 to 469 ms ahead of the heard clock; a change of an item's volume reached the output after about 1.4 s and an item's mute after about 0.37 s. At 256 samples a plug-in parameter and an envelope edit took about 200 ms, a fader 9 ms | the cost: edits are heard late |
+| Arming a track at 2,048 moved it and everything it feeds to real time; the first real-time block came 181 to 522 ms after the command. Opening the MIDI editor did the same | what a look-ahead engine has to manage and ADI's fixed-buffer graph does not |
+| With anticipation off, 64 independent tracks ran about twelve times faster than the sum of their plug-ins' own time, on sixteen logical processors (16 tracks: seven to nine times). A serial chain of 16 plug-ins ran on one thread in both modes | this is plain parallel processing of the graph, DEV-23's subject; a long serial chain is the limit either way (MX-28 should show the longest chain) |
+| Cubase 15 ships the message that ASIO-Guard is disabled when the buffer size is too large for the chosen guard level; its default guard blocks are 256, 512 and 1,024 samples | from its files; the rule behind the message was not traced. Steinberg's own note says projects with long chains and many side-chain or group dependencies may not benefit much |
+| REAPER told a plug-in its own render position, sample-contiguous through arm, disarm and seek, and split the block at a loop wrap. Both test plug-ins report no latency, so nothing was learned about the position behind a latent plug-in | ADR-0245 d8 stands on its own reasoning |
+
+On main no hosted plug-in may run on a graph worker: only the engine's own sum, gain and source
+nodes say they may. That, not the absence of look-ahead, is what limits many channels at a large
+buffer in ADI today. Both questions are open with the director (ADR-0245).
+
+### 6.5 The scanner (DEV-25)
+
+Cubase 15.0.5's scanner, run 16 times against a test plug-in that can fail on demand.
+
+- A warm scan of an unchanged plug-in made no call into it. A new modification time alone made one
+  probe and replaced the record whole.
+- A changed file (different size and content) with the old modification time restored was **not**
+  probed again: the record holds the time alone. This is the case that proves DEV-25 needs the size.
+- Failures are contained and remembered: a plug-in that returns no factory is blocked and not
+  retried while unchanged; a scanning process that exits abnormally leaves the other records in
+  place; a hang is cut by the timeout the caller gave. A new modification time clears each block.
+- A retry by path worked only with the cache's own spelling of the path. ADI's "scan this one
+  again" has to work through either separator, either case and a link to the folder.
+- The scanner never created an instance of the plug-in. A catalogue row is not a working plug-in:
+  ADI keeps separate states for found, instantiated, state restored and first audio.
+- One scanning process at a time; its speed comes from skipping, not from a pool. So the cache of
+  successes comes before any pool of workers.
+- A probe of ADI's own scanner launched a child three times for three scans of one unchanged
+  candidate. The acceptance figure is one.
+
+The research's test plug-in and its sixteen-case sequence are the fixture for DEV-25's acceptance.
+
+### 6.6 What was read, not run
+
+These rows were already cited by the plan; nothing here changes a row.
+
+- **Bitwig's Grid** (the 5.2 manual): sixteen module families; a module's parameters are the
+  device's parameters; one cable into an input and any number out of an output; every signal is
+  stereo and runs at four times the sample rate; logic is high from +0.5 and acts on the edge;
+  phase wraps into 0 to 1; pitch is 0 at C3 and 0.1 per octave; pre-cords are implicit cables for
+  gate, pitch and phase; a direct cycle is refused and a long delay allows feedback of one block
+  at least; a voice ends when all its contributors have; three devices share the one environment
+  (instrument, audio effect, note effect). This is DEV-15's test list, on the Pure Data tier
+  (ADR-0245 d4, d5).
+- **Reason's rack**: a saved rack holds its devices, values and inner wiring; what crosses its edge
+  stays in the song; its panel holds 32 knobs or faders, 32 buttons and 2 wheels; one control
+  drives several targets, inverted ranges included. For DEV-01 and DEV-06, the panel idea only.
+  Its limits of compensation (parallel inserts, effects inside an instrument rack, control signals
+  never compensated) are counterexamples for DEV-01's tests.
+- **REAPER beyond the engine**: "with master effects" and "through the master" are different render
+  routes; a second warm-up pass is separate from tails; normalization per file, against the
+  loudest, or as if together; a dry run that analyses and writes nothing. For the EX rows. Its
+  sample-accurate parameter breakpoints for scripted effects are the nearest model for an
+  audio-rate parameter bridge into the patch tier (DEV-10, DEV-14).
+- **Cubase's offline processing**: applying at once has exceptions (Reverse, Silence, a dropped
+  chain); audition plays the chain up to the chosen step; the range may be extended either side,
+  or a tail added, never both; a stereo effect on mono material takes the left; making permanent
+  clears the history and cannot be undone (ADI keeps the recipe, on purpose). For TM-FC-03.
+- **Cubase's pitch editing**: a segment stores its pitch, its original pitch and its straightening
+  apart; reanalysis resets the whole event while the resets are per kind and per selection;
+  envelope, fades, normalize and silence leave the analysis valid. For the row ADR-0241 still owes.
+- **Cubase's meters and analysers**: reference only (ADR-0245 d6). Worth keeping: the display is
+  fed on a 30 ms timer that exists only while it is shown; a look-ahead analysis is held until its
+  time comes, so the picture does not lead the sound; the level meter works in 32-sample pieces
+  whatever the host's block; the vector scope keeps 8,192 samples a channel.
+- **Live's own Rack, clips and devices from its manual**: already in the rows. Not yet written in
+  any row and worth their line: a frozen Session clip holds two loop cycles (TM-FC-04); slicing to
+  a MIDI track refuses more than 128 slices and Simpler's transient slicing stops at 64; a clip's
+  transposition envelope clamps at ±48 semitones; Capture MIDI finds a tempo only between 80 and
+  160 BPM in an empty stopped set (CT-03).
+
+### 6.7 Faults in ADI that the research's audits found
+
+Each was read again on main by win. They are in `docs/DEFERRED.md`.
+
+| Fault | Row |
+|---|---|
+| The export queue reads only the status of a publication, so a file published with a warning (its folder's sync unconfirmed) is reported as plainly done; the copy path's cleanup removes the target by name; exports use the copy path, so "appears whole or not at all" is not guaranteed; the 200-byte limit on a name is checked before `.wav` is added | DF-E19 |
+| A CLAP plug-in's unbounded tail is recognised only as the one value `UINT32_MAX`, where CLAP defines every value from `INT32_MAX` up as unbounded; the VST3 path hands a plug-in its main input only, so a key never arrives; loading an instance scans its path again every time; two header comments promise more than the code gives (a full-scale sine "at any frequency" reads 0.00: half a bin off it reads −1.42 dB at 1,024 points; the oversampled rate is "always at least 176.4 kHz": it is 128 kHz at 32 kHz) | DF-E20 |
+| A hosted plug-in is told no transport (ADR-0245 d8) | DF-E21 |
+| The mixer strip reads the meter's running peak where the engine already offers a held one to take once a frame (MX-01) | DF-W32 |
+| A waveform column's extremes were seeded with full scale | fixed in #639 |
+
+### 6.8 What the programme's own summary says that its evidence does not carry
+
+Kept here so that nobody plans on them.
+
+- That REAPER and Cubase are more efficient than Live: not measured by anything (§6.1, §6.4).
+- That a four-state macro target "rounds at the half step in both range directions": the reversed
+  and fractional cases were not run.
+- That Cubase's export gives examples of taps, naming and batch settings: the package it cites has
+  no export content.
+- That a repaired fingerprint was retried successfully in Cubase's scanner: only a new modification
+  time was tried.
+- "Use the front/back distinction for a performance panel and inspectable wiring" (Reason): not in
+  the evidence, and against ADR-0245 d5.
+- A starting analyser setting of 2,048 points and a hop of 512: the researcher's pick, not a
+  default read from any program, and not the direction (ADR-0245 d6).
+- The 1 + 255 frame split that silences a patch is a reading of ADI's code, not an observed
+  failure; DEV-13 owns it either way.
+
+### 6.9 Fixtures the research leaves behind
+
+ADI's own signals can be tracked in the repository; anything of another program's stays private.
+
+- Generated signals with their hashes: 66 float files (silence, impulse, step, DC, a 997 Hz sine, a
+  multitone, noise, a sweep, and a trio for summing precision: 0.5, 2⁻²⁶, −0.5) at three rates,
+  mono and stereo; eight MIDI files with every event listed; tuning files, valid, invalid and
+  non-monotonic; seven further signals for clip-edge accuracy and for a latency change.
+- Test specifications as data, not yet run on ADI: the Grid's ten (logic threshold, pitch units,
+  feedback at delays of 0, 1, 4, 63, 64 and 65, voice reclamation) for DEV-15; the patch tier's
+  segment contract (buffers of 64, 128, 256 and 511 with events at offsets 1, 63, 64, 65 and 127)
+  for DEV-13; macro composition for DEV-06.
+- Two test plug-ins under a permissive licence: one that reports what the host told it (process
+  mode, transport, key input, parameter offsets), the fixture for ADR-0245 d8's acceptance and for
+  DEV-23; and the scanner's (§6.5).
+- A process sampler and its paired statistics, usable on ADI itself for DEV-23's Windows runs.
