@@ -439,6 +439,37 @@ void importWithChoices(const std::filesystem::path &dir) {
     }
     doc->release();
 }
+// The extremes a waveform column draws (`peakSpan`): always those of real bins.
+void peakSpans() {
+    media::MediaPeaks p;
+    p.channels = 2;
+    p.framesPerBin = 256;
+    p.frames = 4 * 256;
+    // Channel 0: an ordinary bin, one wholly above full scale, one wholly below it, a quiet one.
+    // Channel 1 holds other values, so a wrong channel index shows.
+    p.bins = {{-.5f, .5f}, {9.f, 9.f}, {1.4f, 1.8f}, {9.f, 9.f}, {-1.8f, -1.4f}, {9.f, 9.f}, {-.1f, .2f}, {9.f, 9.f}};
+    const auto span = [&p](double from, double to) { return ui::peakSpan(p, from, to, 0); };
+    const auto is = [](const std::optional<media::PeakBin> &got, float low, float high) {
+        return got && got->minimum == low && got->maximum == high;
+    };
+    check(is(span(0., 256.), -.5f, .5f), "peak span: one whole bin is that bin");
+    check(is(span(256., 512.), 1.4f, 1.8f), "peak span: a bin wholly above full scale keeps its own lower edge");
+    check(is(span(512., 768.), -1.8f, -1.4f), "peak span: a bin wholly below full scale keeps its own upper edge");
+    check(is(span(0., 768.), -1.8f, 1.8f), "peak span: several bins give the lowest and the highest of them");
+    check(is(span(256.2, 256.7), 1.4f, 1.8f), "peak span: a span inside one frame answers with its bin");
+    check(is(span(768.5, 768.6), -.1f, .2f), "peak span: the same in the last bin");
+    check(is(span(800., 5000.), -.1f, .2f) && is(span(600., 5000.), -1.8f, .2f),
+          "peak span: a span running past the file stops at its last bin");
+    check(is(span(-100., 10.), -.5f, .5f), "peak span: a span that starts before the file begins at its first bin");
+    check(!span(-512., -256.) && !span(-10., 0.), "peak span: a span that ends at or before the first frame holds nothing");
+    check(!span(1024., 2000.) && !span(1e300, 2e300), "peak span: a span past the last bin holds nothing");
+    check(!span(10., 10.) && !span(20., 10.), "peak span: an empty or backwards span holds nothing");
+    const double nan = std::nan("");
+    check(!span(nan, 10.) && !span(0., nan) && !span(nan, nan), "peak span: a span that is not a number holds nothing");
+    check(!ui::peakSpan(p, 0., 256., 2), "peak span: a channel the file does not have holds nothing");
+    check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
+}
+
 int main(int argc, char **argv) {
 #if defined(_MSC_VER) && defined(_DEBUG)
     _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
@@ -457,6 +488,7 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    peakSpans();
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
     Tone tone;
