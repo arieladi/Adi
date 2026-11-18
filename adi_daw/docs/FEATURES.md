@@ -111,7 +111,7 @@ the priorities were re-ruled row by row. A row that cites ADR-0203 was changed b
 | **Audio Alignment**: target clips' timing matched to a reference clip | Cubase | P2 | ✅ | The result is warp markers: one changeset of `audioClip.setWarpMarkers`, plus a split and a crossfade at a partial overlap; no schema change. The matching is a dynamic time-warping path over audio features, not transient-to-transient mapping, which fails on vocals and on takes with an extra note. Cubase's options (pp. 261–263): Match Words, Prefer Time Shifting (tries the scope's `bestOffset` first) and Alignment Precision; its bounce-first rules are not copied. **Needs warped playback first** (ADR-0061), which the engine does not have yet (ADR-0176) |
 | AudioWarp quantise / groove from audio | Cubase | P2 | 🔶 | groove templates need a table |
 | Groove pool | Ableton | P2 | ❌ | shared groove templates — no schema |
-| VariAudio / pitch-time editing of vocals | Cubase | P3 | ❌ | per-segment pitch model; big, unspecified |
+| VariAudio / pitch-time editing of vocals | Cubase | P1 | ❌ | per-segment pitch model; P1 by ADR-0241, no plan row yet |
 | ARA2 (Melodyne, SpectraLayers) | Cubase | P3 | 🔶 | ARA state lives in `plugin_state`; doc model needed |
 | **Consolidate** (Ctrl/Cmd+J) as Live's: audio rendered pre-effects into one clip with a compensating clip gain, MIDI clips merged with no render; **Paste Bounced Audio**; **Bounce Group in Place** and **Bounce Group to New Track** | Ableton | P1 | ✅ | TM-FC-02 with ED-06; the consolidated clip's warp state is the director's (Q-H); FL's `clip.consolidate` is this op |
 | **Crop** a clip to its loop or the selection | Ableton | P1 | ✅ | ED-04; no file written |
