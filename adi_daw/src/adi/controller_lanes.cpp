@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/controller_lanes.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -435,24 +436,8 @@ PreparedWrite prepareWrite(Store &store, std::int64_t clip, int channel, int con
             if (slot.executeStep())
                 location.id = slot.getColumn(0).getInt64();
             else {
-                const auto maximum =
-                    store.db().execAndGet("SELECT COALESCE(MAX(id),0) FROM event_streams").getInt64();
-                if (maximum < std::numeric_limits<std::int64_t>::max())
-                    location.id = std::max<std::int64_t>(0, maximum) + 1;
-                else {
-                    location.id = 1;
-                    SQLite::Statement ids(store.db(), "SELECT id FROM event_streams WHERE id>0 ORDER BY id");
-                    while (ids.executeStep()) {
-                        const auto id = ids.getColumn(0).getInt64();
-                        if (id > location.id)
-                            break;
-                        if (id == location.id) {
-                            if (location.id == std::numeric_limits<std::int64_t>::max())
-                                throw std::runtime_error("no free controller stream ID");
-                            ++location.id;
-                        }
-                    }
-                }
+                RowIds ids(store.db());
+                location.id = ids.next("event_streams", RowIdExhaustion::FirstPositiveGap);
             }
         }
         auto previous = readSlot(store.db(), location);
