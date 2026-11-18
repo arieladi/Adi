@@ -141,10 +141,18 @@ bool MainLoudness::prepare(double sampleRate,int channels,std::span<const double
     impl_->formats.publish(std::move(format));impl_->rate=sampleRate;impl_->weights=std::move(next);collect();return true;
 }
 void MainLoudness::collect(){impl_->formats.collect();}
+std::uint64_t MainLoudness::preparedFormatSequence() const noexcept {
+    const auto* format=impl_->formats.peek();
+    return format ? format->seq : 0;
+}
 void MainLoudness::process(const AudioIo& io) noexcept {
     SnapshotPublisher<Format>::AudioRead format(impl_->formats);
     if(!format.valid())return;
-    if(impl_->playingSeq!=format->seq){impl_->playingSeq=format->seq;clear(readout_);}
+    if(impl_->playingSeq!=format->seq){
+        readout_.formatSequence.store(0,std::memory_order_release);
+        impl_->playingSeq=format->seq;clear(readout_);
+        readout_.formatSequence.store(format->seq,std::memory_order_release);
+    }
     if(reset_.exchange(false,std::memory_order_acq_rel)){format->render->reset();clear(readout_);}
     if(io.frames<=0)return;
     if(io.out64)format->render->process(io.out64,io.numOut,io.frames,readout_);

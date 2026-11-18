@@ -18094,6 +18094,239 @@ infrastructure, on a seat of its own, in parallel with the lanes.
 | LANES §1 | a control seat row and the paths of d7, per `docs/PLAN.md` §8.1 and his Q-C answer |
 | CTL-01, CTL-03, CTL-04 (`docs/PLAN.md`) | decided; the record at M0, the code with Track C |
 
+## ADR-0233 — The director's MCP request of 11 November is ADR-0232's control stack, built now: the registry's own schema, the transport-free core with its MCP projection, telemetry from what the engine already publishes, and a headless `adi-mcp` that holds no writable handle; win builds the first slice — `DECIDED` (2026-11-11) — **WIN'S CONTRACT UNDER ADR-0232, ADR-0168 d3, ADR-0039, ADR-0148, ADR-0209 d11, ADR-0203 d8/d14/d20 AND ADR-0222, AT THE DIRECTOR'S REQUEST OF 11 NOVEMBER; Q-O STAYS HIS; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** On 11 November the director asked for "a native C++20/JUCE MCP server and
+unified tool registry" and pasted a specification:
+- one registry serving an in-app assistant and external clients;
+- atomic undo and a proposal mode;
+- resources for the manifest, the graph, the Mix Radar's telemetry and the browser's catalogue;
+- one tool per action, and ML jobs.
+
+He asked for Gemini's help to make sure it all makes sense. ADR-0232 had already decided the
+control stack on 8 November, but the seat it named never ran, and no control code existed on main.
+This entry:
+- maps the request onto that stack;
+- records what of the request is adopted, what conflicts with a ruling and why;
+- records what the first slice builds.
+
+`docs/CONTROL-MCP.md` is the design: its §1 has the request, part by part, and §3 the threading
+diagram.
+
+### Decisions
+
+1. **The request is ADR-0232's stack, built now, and win builds its first slice.** The director
+   asked win directly, so win takes the control seat's first items on branches `control/*`, under
+   the seat prompt's rules for owners, the gate and one PR per item:
+   - CTL-02;
+   - the in-process part of CTL-03;
+   - AGT-01's caps and queue;
+   - AGT-02's levelled read;
+   - CTL-08's headless backend.
+
+   The prompt of 5 November stays for whichever seat continues with CTL-04, CTL-09 and
+   `--connect`.
+2. **Adopted from the request.**
+   - **MCP resources** join the four tools as read-only views on the same methods:
+     `adi://projects/{project}/manifest`, `.../graph` and `.../telemetry`, plus `adi://ops` and
+     `adi://ops/{name}`. The four tools are ADR-0168 d3's three (`project_read`, `ops_describe`,
+     `changeset_propose`) plus CTL-08's `changeset_status`; no tool is added here.
+   - **A telemetry resource** that reads only what the engine already publishes: `StripMeter`,
+     `MainLoudnessReadout` and the transport.
+     - It is sampled on the message thread at the UI clock into one immutable frame.
+     - No new audio-to-anything path is added (ADR-0050 §4; MX-30).
+     - Each value is labelled with what it is: a strip's peak and RMS are as last stored, two
+       independent reads, possibly from different callbacks, and not held; Main's loudness is
+       four independent reads.
+     - Every Mix Radar input that does not exist yet is listed, with its milestone: nine rows,
+       the AI Mix Radar's findings (P2) among them.
+     - Headless, the result is `{available: false, reason, unavailable, project}`.
+   - **In-process callers** are `Principal`s of the same dispatcher, under the same grants, with no
+     side door. A model-backed button such as the Mix Radar's [Propose Fix] (AI-AGENT §8) is one.
+3. **Mapped onto what exists, not adopted as named.**
+   - The "unified tool registry" is the op registry, which already is the one vocabulary
+     (AI-AGENT §3). CTL-02's generated schema is how registering once produces the schemas.
+   - `adi.batch_transaction`, SQLite savepoints and `dry_run` / `stage_proposal` are the changeset
+     (ADR-0148): one transaction, one `txn_id`, one undo step. The Propose preview runs in a
+     transaction that is always rolled back. No savepoint API is added.
+   - Tools per action (`create_track`, `set_routing`, `configure_sidechain`, ...) are ops inside
+     one `changeset_propose`. ADR-0168 d3 stands: a few tools, never one per op, approved by the
+     director on 25 September; CTL-08 names the four.
+   - "Mix Radar telemetry" is `adi://projects/{project}/telemetry`. The AI Mix Radar itself stays
+     at P2 (ADR-0209 §6, d11; MX-21), because its inputs (MX-30's spectra, AGT-07's `analyze.*`)
+     do not exist yet. Its assisted fixes (`apply_gain_staging`, `propose_eq_match`,
+     `resolve_frequency_masking`) wait for its findings; each is then one `changeset_propose`.
+   - The request's `prompts/list` is not built. No prompts are ruled, and the instructions text
+     carries the guidance a prompt would. The method answers −32601, and no `prompts`
+     capability is declared.
+   - `adi://browser/catalog` waits for AGT-05, and with it inserting a plug-in that is not yet in
+     the project. A plug-in already in the project can be inserted again now, through the
+     `pluginRefs` and device `ref`s that `project_read` lists at level 0.
+4. **Not adopted, because a ruling says otherwise.** The director may strike the ruling.
+   - HTTP+SSE, which MCP itself deprecated in 2025-03-26, and named pipes: one listener, one
+     network stack (ADR-0232 d1).
+   - LAN clients by default: loopback, off by default, and a bearer token always (ADR-0039 d4).
+   - A `juce::Thread` in the core: the core is JUCE-free (ADR-0232).
+   - A model inside the DAW process: the agent is the sidecar (ADR-0168).
+   - Live LUFS per bus: rejected (ADR-0203 d14).
+5. **Refinements made while building.**
+   - **CTL-02's default bounds apply at the remote boundary only** (`Bounds::Remote`): text at
+     most 16 KiB characters, arrays at most 4096 elements, unless a field declares otherwise.
+     - Applied to local submissions, they would refuse a long automation pass or a large note
+       diff.
+     - Declared metadata applies everywhere, with one authority: `validateSubmission` enforces
+       what `opInputSchema` says.
+     - The "ids at least 0" default needs an id marker on `Field`, so it is deferred.
+     - At the boundary, a float with no fractional part in an Int field becomes the integer,
+       because JSON Schema calls 1.0 an integer.
+     - An Int keeps the whole range a JSON integer can hold, signed or unsigned, because a note's
+       persisted id is a full uint64 (ANOT); the schema's bounds say so (INT64_MIN to UINT64_MAX),
+       and a whole number beyond them is refused.
+     - AC-24 holds over values as nlohmann parses them, not over JSON text: an integer literal
+       outside int64 and uint64 arrives as a double, so one just below INT64_MIN can collapse to
+       it. The result is still a legal int64, and no handler accepts such an id or position.
+   - **`project_read` is its own derived view, with durable ids and `nextIds`.** It is not the
+     canonical text projection, whose rule R2 forbids row ids. Ops never allocate ids (ADR-0021),
+     so a caller creating rows takes them from `nextIds`, and the stale check keeps them free.
+   - **`project_read` reads the rows and the head in one read transaction**, so a head is never
+     paired with older rows.
+   - **`baseHead` is required in `changeset_propose`**, unless an RPC caller sends
+     `meta.expectHead`. `null` is the root, an empty history, as `project_read` reports it. There
+     is no default to "the head now", which would let a change the user made between the read
+     and the proposal pass unseen. With both, the stale check really keeps `nextIds` free.
+   - **`project_read` in detail.** `level` runs from 0 to 2. Scope arguments are refused at a
+     level that ignores them (`tracks`, `fromBar` and `toBar` at level 0, `clips` below level 2),
+     and `fromBar` must be before `toBar`. Level 0 adds `pluginRefs`, each device's `ref`, and
+     every tempo and meter change by position (`tempoChanges`, `meterChanges`), because the ops
+     that remove them address them by position. Note positions use the meter in force at the
+     clip's start, `start` is raw ticks, and the bars select clips, not notes.
+   - **A proposal changes nothing, so proposals do not chain.** Each preview runs against the
+     project as it is. Chained edits need an apply in between and a fresh `project_read`.
+   - **`changeset_propose`'s result includes the changeset**, so the user can save it for
+     `adi_tool` without a second call.
+   - **`changeset_status`** reports `headError` instead of a null head when the head cannot be
+     read, because null would mean the root. `applied` means applied once; it may since have
+     been undone. `Review::Rejected` is reserved for the app host's review panel; nothing in this
+     slice sets it.
+   - **`adi-mcp --project` holds no writable handle** (AI-AGENT §6 rule 1), and no handle at all
+     between requests.
+     - Each read opens a read-only connection and closes it again, so an idle bridge holds no
+       lock that could stop ADI leaving WAL mode at close (SPEC §3.3).
+     - Previews run on a private snapshot, taken with SQLite's backup API and retaken whenever the
+       head moves. This is ADR-0148 d1's rolled-back preview, run on a copy because the bridge's
+       own connection is read-only. The copy lives in a folder named for the bridge's process,
+       and a folder left by a crashed or killed bridge is swept when the next one starts.
+     - The file is never written, upgraded or locked for writing.
+     - Applying stays the user's act: `adi_tool propose --apply` with the changeset that
+       `changeset_propose` returns (and `changeset_status`, while it awaits review). adi_tool
+       now holds it to the same `agent.maxOpsPerRequest`.
+   - **Validation runs on the calling thread** (ADR-0232 d4): a method's screen checks its
+     parameters and normalises and validates every op before the hop, so a refusal never costs
+     the owner thread anything.
+   - **The preview's diff is bounded in memory.** The common prefix and suffix are trimmed before
+     Myers, each step keeps only its live diagonals, and past a budget the changed middle is shown
+     as one replacement. A remote request that deletes a large track, or inserts thousands of
+     notes, could otherwise make the diff allocate gigabytes.
+   - **The grant applies at the MCP layer too.** Listing tools or resources needs a grant like any
+     call, and `tools/list` offers only the tools the caller's tier can call. Only `initialize`,
+     `ping` and `server/discover` answer without one. The grant is checked again on the owner
+     thread, so a grant revoked while a call waits stops it unrun.
+   - **The audit keeps codes, not text.** A refusal is recorded by its code and refusal kind,
+     never by its message, which may quote the request. Every refusal is audited, those the MCP
+     layer makes before the `Service` included. Every field is capped, and the connection's start
+     and end are recorded.
+   - **Internal errors leak nothing.** The wire says only "internal error"; the detail goes to
+     adi-mcp's stderr.
+   - **Idempotency keys are exact.** A key reused with different arguments is refused, never
+     replayed, and a `_meta` idempotency key that is present but invalid is refused, as
+     `parseMeta` refuses it on the RPC path.
+   - **An explicit project, except for a single-project host.** `project` may be omitted only by
+     a host bound to one project for its life (adi-mcp). Everywhere else it is required, as
+     ADR-0232 d2 says.
+   - **A request whose deadline passed while it waited is −32003** and never runs. ADR-0232 d5
+     named no code for it.
+   - **Both MCP eras, as published:**
+     - 2025-11-25, 2025-06-18 and 2024-11-05 through `initialize`; 2024-11-05 carries no batch
+       obligation. 2025-03-26 is not offered: it MUST receive JSON-RPC batches, which this server
+       refuses, so such a client is answered 2025-11-25, and the lifecycle says a client that
+       cannot speak it SHOULD (not MUST) disconnect.
+     - 2026-07-28, stateless:
+       - each request carries `_meta` with the protocol version and the client's capabilities;
+       - `resultType` on every result;
+       - `ttlMs` and `cacheScope` on discover, list and read results (0 and `private`);
+       - a mandatory `server/discover`, and no `ping`;
+       - −32022 with `{supported, requested}` for an unsupported version.
+     - A modern-shaped request whose `_meta` names a legacy version is treated as legacy: it
+       needs `initialize` first.
+     - In `tools/call`, a refusal is a tool execution error carrying ADI's refusal, so the model
+       can correct itself. An unknown tool is −32602.
+     - `resources/read` answers "resource not found" with −32002 in a legacy session (2025-11-25
+       says SHOULD) and −32602 for a modern request (2026-07-28 says MUST NOT emit −32002).
+     - A refusal whose id could not be read omits the id, as MCP's schema allows
+       (`id?: RequestId`, never null). Malformed requests are still answered.
+     - A response-shaped message (no `method`, with `result` or `error`) is dropped whatever its
+       id, so ADI never answers a peer's response.
+   - **ADI's `_meta` prefix is `io.github.arieladi.adi/`**, the reverse DNS of the project's
+     GitHub Pages domain. The one key read today is `idempotencyKey`, in `tools/call`'s
+     `params._meta`. The `meta` sibling of `params` (ADR-0232 d2), with `expectHead` and
+     `deadlineMs`, arrives with the WebSocket listener (CTL-04); `parseMeta` is built and tested
+     for it.
+   - **`Limits::maxOps` defaults to 6000** (ADR-0203 d20), and adi-mcp reads
+     `agent.maxOpsPerRequest`. This is AGT-01's first half. The per-minute cap applies at Apply,
+     which no MCP client reaches yet.
+6. **Jobs and models.**
+   - `jobs_*` arrive with AGT-04, at M5. MCP's `notifications/progress` and its
+     `io.modelcontextprotocol/tasks` extension map onto ADR-0222's states.
+   - The request's model claims are corrected in CONTROL-MCP §10.2:
+     - Demucs runs at 44.1 kHz.
+     - Whisper gives no syllable or transient alignment.
+     - RVC is voice conversion: it needs a model per voice and is Tier 2 by ADR-0086.
+     - Timbre transfer is a P3 row.
+7. **Q-O, where the session token lives, stays the director's**, asked with this first PR
+   (ADR-0232 d8). This slice writes no token and no discovery file. adi-mcp's grant is keyed by a
+   per-process secret, because stdio is private to the client that started it.
+8. **Consent before AGT-03: headless adi-mcp ships first, and the director may rule otherwise.**
+   CTL-08 asks for AGT-03's consent before `project_read` returns anything to a non-local
+   destination; AGT-03 is P2, and PLAN's Track C itself schedules the headless bridge first.
+   - Until AGT-03 exists, the user's own MCP host configuration, which names the file, is the
+     per-project opt-in.
+   - adi-mcp says on stderr, at start, what the client reads: names, routing, devices,
+     parameters, clips, notes and remarks; never audio or media files.
+   - `--connect` and the app's listener wait for AGT-03.
+   - ADR-0039's open consent item stays open.
+9. **The Gemini round.** At the director's request, the design and the code go to a Gemini check
+   of at most five file-and-prompt pairs, which he runs. Win verifies every claim, and the PRs
+   merge after that round. Before it, an internal review of five lenses, each finding checked by
+   a verifier trying to refute it, confirmed 51 findings of 55; every confirmed one is fixed or
+   recorded here.
+10. **Acceptance:**
+   - `adi_ops_schema_tests` (AC-24, nested metadata included);
+   - `adi_rpc_permissions_tests` (`test_rpc_permissions`: the screen, the audit's codes);
+   - `adi_changeset_tests` (the bounded diff);
+   - `adi_control_projection_tests` (AGT-02's levels over a seeded project: clips, lanes, notes,
+     the bar window, the scope refusals, tempo and meter changes, `pluginRefs`);
+   - `adi_control_mcp_tests`:
+     - AC-23 and AC-17, with two projects open;
+     - CONTROL-MCP §6.3's group-and-sidechain changeset that one undo restores;
+     - the grant gate;
+     - telemetry;
+     - hostile lines;
+     - the binary over pipes.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0232 d1, d7 | the first slice is win's, at the director's request; the listener and the app host come next |
+| ADR-0168 d3 | ADR-0168 d3 (three tools) plus CTL-08's `changeset_status`: resources join these four as read-only views; no tool is added here |
+| CTL-02 (`docs/PLAN.md`) | default bounds at the remote boundary only; whole-number floats normalised; ids-at-least-0 deferred |
+| CTL-08 | the headless backend previews on a snapshot and holds no handle between requests; the 2026-07-28 details as published; `baseHead` is required in `changeset_propose`; its consent precondition is deferred until AGT-03, and headless adi-mcp ships before it (d8) |
+| ADR-0148 d1 | headless, the rolled-back preview runs on a backup-API copy, swept if a bridge dies; the preview's diff is bounded in memory |
+| ADR-0232 d2 | the project may be omitted only by a host bound to one project for its life |
+| ADR-0232 d4 | validation on the calling thread is each method's screen |
+| AGT-01 | the cap defaults to 6000 and adi-mcp reads the row; the queue is in memory, by credential |
+| AGT-02 | `project_read` carries ids and `nextIds`, and at level 0 `pluginRefs`, device `ref`s and every tempo and meter change; levels 0 to 2 are built, and 3 is refused with its card; scope arguments a level ignores are refused |
+
 ## ADR-0234 — The ArtCraft integration is cancelled: no bridge, no FilmCraft time base or link tables, no contribution to storytold's apps; the general AAF, OTIO and timecode work stays, built from specifications and ADI's own code — `DECIDED` (2026-11-11) — **DIRECTOR'S RULING; CANCELS ADR-0206 EXCEPT d6; AMENDS ADR-0232 d1 AND ADR-0207's FILMCRAFT ITEM**
 
 **The ruling.** On 11 November the director cancelled the integration with storytold's ArtCraft
@@ -18329,3 +18562,380 @@ elements from mix view in the device area".
 | ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
 | ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
 | ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
+
+## ADR-0238 — JUCE moves from 9.0.2 to 9.0.5 — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; SUPERSEDES ADR-0048's PIN; ANSWERS ADI-VIEW D7**
+
+**The ruling, in his words (12 November):** "yes ADI should move from JUCE 9.0.2 to 9.0.5".
+
+**Why it came up.** The Mix View seat's foundation PR (#537) moved the pin inside a feature
+commit. Win's review held that for him: ADR-0024 needs a named reason for a pin change, and the
+JUCE version was one of his open ADI-View questions (D7).
+
+### Decisions
+
+1. **The pin is `juce-framework/JUCE` 9.0.5, commit `d60b7a78030661574a615b586d9325ba7a7fa7dd`**,
+   still under AGPLv3 and still never a hard dependency (ADR-0048 otherwise stands).
+2. **The named reason (ADR-0024):** the Mix View takes the source of his plug-ins (ADR-0212,
+   ADR-0236, ADR-0237). ADI-Clip is built on 9.0.5, ADI-Q and ADI-L on 9.0.4, and 9.0.5 is the
+   newest stable release. One JUCE for the DAW and the code it takes.
+3. **ADI-Q's hash-guarded JUCE peer patches stay ADI-Q's.** They are not applied to the DAW, and
+   whatever the Mix View needs from them is ported as ADI code.
+4. **Where the change lands:** with #537. That PR carries the fetch script, the EXTERNAL-CODE row,
+   the CMake updates and the fake-peer signature that 9.0.5's peer interface needs; its CI passes
+   on every platform. This entry and BUILD-BRIEF §3 record it.
+5. **Shared checkouts:** `tools/fetch_external.sh` moves an existing `third_party/JUCE` to the
+   new tag in place, so every worktree that links a shared `third_party` moves with it.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0048 | the pin: 9.0.2 / `72782788` becomes 9.0.5 / `d60b7a78` |
+| BUILD-BRIEF §3 | JUCE 9.0.5 |
+| ADI-View D7 | answered |
+
+## ADR-0239 — The control stack's two open questions answered: the token both ways, the user's choice; the standalone adi-mcp ships first; and every deferral is a tracked row until it is done — `DECIDED` (2026-11-13) — **DIRECTOR'S RULING; ANSWERS Q-O AND ADR-0233 d8; AMENDS ADR-0039 d4**
+
+**His answers, in his words (13 November):**
+- Q-O: "we want both - present the 2 options to the users either Shown in ADI, and you paste it
+  into each AI tool. or install in a folder readable only by your Windows account."
+- Consent before AGT-03: "ship the standalone version first. but dont count on me to remember to move
+  things you keep for later, document all and make sure we will do everything in the end result
+  after all the tests for the things that comes first of cures."
+- Merging: "i never merge you merge tell me what the options and your recommendation."
+
+### Decisions
+
+1. **The session token, both ways; the user chooses** (Q-O, CTL-05). When ADI's own listener is
+   switched on, ADI offers:
+   - **shown in ADI**, to copy into each AI tool (ADR-0039 d4's model), or
+   - **a discovery file in the user's profile, readable only by that Windows account** (owner-only
+     ACL on Windows, mode 0600 in a 0700 folder on macOS and Linux), which AI tools find on their
+     own; it exists only while the listener is on and is removed when it stops.
+   The token is never written into the `.adi`. ADR-0039 d4 is amended to allow the second option.
+2. **The standalone `adi-mcp` ships first** (ADR-0233 d8 confirmed). The user's MCP host
+   configuration, which names the project, is the opt-in. `--connect`, ADI's listener and the
+   in-app host wait for AGT-03's consent.
+3. **Nothing deferred is left to memory.** Every piece of work a ruling, review or slice postpones is
+   a row in `docs/DEFERRED.md`, added in the same change, closed only by the PR that does it.
+   No release, and no milestone marked complete, while one of its rows is open, unless he re-rules
+   that row by name. Win keeps the register and re-reads it at every gate.
+4. **Win merges; he decides.** Win lands PRs. Where a merge needs his decision, win brings him the
+   options and a recommendation, never a request to merge.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0039 d4 | a token may also live in an owner-only discovery file, the user's choice (d1) |
+| ADR-0232 d8, ADR-0233 d7 | Q-O answered (d1) |
+| ADR-0233 d8 | confirmed: standalone first (d2) |
+| PLAN CTL-05 | both options, user's choice |
+| `docs/DEFERRED.md` | new: the register (d3) |
+
+## ADR-0240 — The Clip View is approved and win builds it; loading a channel's Mix Set replaces its native functions; the Mix View answers that lived only in the seat's log — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; OPENS STEP-7-PLAN 7.7; ANSWERS DF-M23's LOAD QUESTION; CLOSES DF-M27**
+
+**His words (16 November):**
+- The Clip View, shown its picture of 28 October again: "yes build the clip view", and "i will give
+  window lane your prompt and you build the clip view".
+- Loading a channel's Mix Set, asked by the Mix View seat whether it merges into or replaces what
+  the channel has: he chose replace. As the seat recorded it: "Replace the whole native function
+  set, as one undo step. To change one function and keep the rest, the user loads that function's
+  own preset."
+
+### Decisions
+
+1. **The Clip View and the MIDI Note Editor are approved as pictured**
+   (`collab/window/pictures/2026-10-28-clip-view.png`): Live 12's Clip View in ADI's look, nothing
+   added. STEP-7-PLAN 7.7's build order stands, and `collab/window/parity-7.7-clip-view.md` holds
+   the rows to check against Live 12.
+2. **Win builds it.** The window lane keeps its own list (`collab/prompts/2026-11-16-window-lane.md`)
+   so neither waits for the other. For this item win writes in the window lane's area (ADR-0208):
+   new files `src/juce/ui_clipview.*` and `src/adi/ui/note_*.hpp`, `clip_edits.hpp`, and small
+   changes in `ui_shell.*`, `ui_arrangement.cpp` and `ProjectDocument`. The lane's ownership of
+   everything else is unchanged.
+3. **Loading a channel's Mix Set replaces the channel's whole native function set, as one undo
+   step** (ADR-0237 d4 made precise).
+   - Functions the set holds are added or take its settings; functions it does not hold are removed.
+   - Ordinary plug-ins on the channel are untouched.
+   - One Undo restores the former functions, their settings and their order; Redo applies the set
+     again. A load that is refused changes nothing.
+   - The way to change one function and keep the rest is that function's own preset.
+   Where preset files live, their format, and where a set's functions sit among a channel's ordinary
+   plug-ins are not ruled here; win writes that ADR from the seat's proposal (DF-M23).
+4. **The director's earlier answers to the Mix View seat, until now only in its log**
+   (`collab/mixview.md`, entries of 13 to 16 November). They are recorded as the seat wrote them
+   down; where one is wrong he strikes it here.
+   - The Mix View's rows show **channels that have Mix View tools** by default; all channels is the
+     other choice.
+   - **An analyser dock at the right of the rows is optional**, shown and hidden by the user, off by
+     default; the separate analyser tab stays.
+   - **Clip and Limiter** have independent switches, in the order Clip → Limiter.
+   - **EQ, Carve and Focus** are separate pages with independent switches, in the order
+     EQ → Carve → Focus. A suggestion changes nothing until the user applies it.
+   - **Focus** recalls from its current settings; no hidden history of how the knobs were moved is
+     kept.
+   - **ADI Still stays an ordinary plug-in** (ADR-0237 d2 had left its place open).
+   - **The Versatile limiter style keeps its per-instance seed**, so a recall repeats.
+   - The reference sketch of the Mix View is a starting point, not a requirement that every row is
+     expanded.
+   - Not settled: whether an edit across several channels is relative or absolute.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| STEP-7-PLAN 7.7 | approved; the build is win's (d1, d2) |
+| ADR-0208 | for the Clip View only, win writes in the window lane's area (d2) |
+| ADR-0237 d4 | a channel set's load replaces the native set, one undo step (d3) |
+| `docs/DEFERRED.md` | DF-M27 closed; DF-M23 carries d3; the window rows DF-W1 to DF-W7 added |
+
+## ADR-0241 — The Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §4; AMENDS FEATURES LINE 114, PLAN MI-07, MI-08, MI-09**
+
+**His words (16 November):** asked the four decisions of `docs/CLIP-VIEW-ADDITIONS.md` §4, each with
+win's recommendation: "yes to all 4, keep going". Earlier the same day: "don't forget Cubase
+variaudio and Cubase clip view tools (all we need to add from Cubase that is missing in Ableton and
+also bitwig (the grid or maybe instead taken from reason 14) modulation parts, MPE supports".
+
+### Decisions
+
+1. **Pitch editing of audio is P1** (was P3, FEATURES line 114): segments of a monophonic recording
+   on a piano roll over the waveform, each with its pitch, time, straightening, tilt, formant and
+   volume, pitch quantized to the clip's scale, and notes extracted to MIDI. It comes after the
+   Sample Editor's warp markers (TM-WT-02, TM-WT-06) and stands on the same analysis; its pitch
+   tracker is the one Convert Melody to MIDI needs (TM-WT-09). It is an addition shown in the audio
+   editor (ADR-0203 d2), under a name of ADI's own (ADR-0176 d5), with whole new tables designed
+   with it (ADR-0144 d3) and a parity gate against Cubase (ADR-0108). Win adds its plan card; the
+   research `docs/CLIP-VIEW-ADDITIONS.md` §5 lists comes first.
+2. **Four note-editor additions from Cubase's Key Editor, in this order**, none changing the file:
+   - line tools in the Velocity lane and the controller lanes (line, parabola, sine, triangle,
+     square, paint);
+   - chord editing (triads and four-note chords from a note, inversions, drop 2, drop 3);
+   - the trim tool and the length functions Live lacks (fixed lengths, delete overlaps);
+   - handles on a selection of velocity or controller events: tilt, compress, scale.
+   Each is a composition of the note and controller ops that exist, one undo step, shown in the
+   Clip View where its Live neighbours are.
+3. **Per-note gain and pan curves are edited beside Live's pitch, slide and pressure**, in the MPE
+   tab, as Bitwig's note expressions are. The file stores them already (SPEC 6.3.2); the ops and the
+   playback are MI-08's, which now covers the five dimensions.
+4. **Bitwig's operators are taken:** repeats (ratchets), occurrence and recurrence, with chance,
+   which was decided. They are properties of a note, stored in a side table with Live 12's
+   probability groups (MI-09), and need the engine to play them. This strikes MI-07's and MI-09's
+   "reject Bitwig's operators", which was win's placement. Their priority is win's placement until
+   he says otherwise: P2, with MI-09.
+
+Not reopened: the Grid tier stays his answer of 5 November, the hybrid on Pure Data (DEV-15), and no
+feature is taken from Reason; `docs/CLIP-VIEW-ADDITIONS.md` §3.3 says what its rack and its pitch
+editor are used for.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| FEATURES line 114; PLAN §1.6 | pitch editing of audio is P1, after the warp markers (d1) |
+| ADR-0240 d1 | "nothing added" stood for the approved picture; these are the first additions (d2, d3) |
+| PLAN MI-08 | the editing UI and playback cover gain and pan as well as pitch, slide and pressure (d3) |
+| PLAN MI-07, MI-09 | the rejection of Bitwig's operators is struck; they are P2 with MI-09 (d4) |
+| `docs/CLIP-VIEW-ADDITIONS.md` | §4 answered; `docs/DEFERRED.md` DF-W10 split into the rows that build it |
+
+## ADR-0242 — More Clip View additions: win's picks and Reason's drift are taken; the rest of the candidates on one condition; slide notes and a drum editor are not; Live's own clip editing is audited — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §3.3 AND §3.5**
+
+**His words (16 November),** to the candidates of `docs/CLIP-VIEW-ADDITIONS.md` §3.5 and win's question
+about Reason's pitch editor:
+- "yes to all your picks and reason drift, keep going"
+- "slide notes (FL), a drum editor with drum maps (Cubase) are not needed (drum editor of Ableton is
+  better) but the rest you suggested if not crippling the Ableton functions then please add them"
+- "also go on Ableton complete research on salon-tv to make sure we don't miss any Ableton
+  qualities, like i can put 2 different midi channel different colors then select both and open them
+  together to see different color midi and edit both channel at once etc.. not sure we know Ableton
+  can do it from our doc.. (and it defiantly can)"
+
+### Decisions
+
+1. **Win's picks are taken** (§3.5's starred rows): N1 note colours, N2 the quantize panel, N3
+   quantize that can be taken back, N4 velocity functions, N5 delete doubles and restrict polyphony,
+   N6 several controller lanes at once, N7 scale help; A1 harmony voices, A2 Detect Silence, A3 clip
+   gain drawn in the editor, A4 pitch, formant, gain and pan per audio event; M1 take envelopes for
+   pitch and mute, M2 a shape tool that writes points.
+2. **Reason's Drift and Transition per pitch segment** (A9) are part of the pitch editing of audio
+   (ADR-0241 d1).
+3. **Not taken:** slide notes (N11) and a drum editor with drum maps (N15); Live's own way of editing
+   drums stays.
+4. **The rest of §3.5 is taken on one condition: none may impair a function of Live's.** N8, N9, N10,
+   N12, N13, N14, N16 to N19; A5 to A8, A10, A11; M3 to M5. Where one would change how a Live
+   function behaves, win brings that one back to him before building it. Their order is win's
+   placement: what needs no file change first; what needs tables or the engine with those; and what
+   is known only from memory (FL Studio, Logic, Studio One) after it is researched.
+5. **Live's own clip editing is audited** against ADI's parity list from his Ableton research and
+   the manual, so that nothing of Live's is missed. Editing several clips together (each clip's
+   notes in its own colour, all editable at once), which the plan had placed later, is built now.
+
+Each addition keeps ADR-0241's terms: shown where its Live neighbours are, one undo step, a parity
+gate against the DAW it comes from (ADR-0108).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `docs/CLIP-VIEW-ADDITIONS.md` §3.3, §3.5 | answered (d1 to d4) |
+| ADR-0241 d1 | the pitch editing gains drift and transition per segment (d2) |
+| STEP-7-PLAN 7.7 step 5; ADR-0047 d2; FEATURES line 129 | multi-clip editing is built now, not later (d5) |
+| `docs/DEFERRED.md` | DF-W10 reworded; DF-W15 to DF-W18 added |
+
+## ADR-0243 — The look is not accepted as built: it is settled surface by surface with the director; no channel carries a button for a Mix View function; Live stays the base, with Bitwig's and FabFilter's design language; the Mix View takes the window — `DECIDED` (2026-11-17) — **DIRECTOR'S RULING; AMENDS ADR-0209 d11; ENDS WHAT WAS LEFT OF ADR-0204 d1 ON THE STRIPS**
+
+**His words (17 November),** after seeing the pictures of win's live retest of the Mix View and the
+window as it stands:
+- "it is so very wrong on so many levels ... it looks like an attempt to put the qualities of what i
+  want into the most generic looking things possible"
+- "i think we need to stop here and start going on the window lane one by one. you show me a photo
+  we talk about how it should look to the deepest details possible where you guide me and ask until
+  you sure of every pixel my answers will be from my mind or from references i will give you as
+  photos."
+- "please remove the Q and the L from the channels they are part of the mixview and same as other
+  tools like the adi-clip etc.. no special buttons for them in the channels themselves"
+- "the design is looks a bit like ablton 11 which is fine but i would like to change it a bit to be
+  like a Ableton and bitwig collaboration .. things should look new with design style in mind"
+- "the mixview is also terrible it stays within the arrangement window instead of switching to the
+  new mix view window (i don't need the devices area or browser window on the mix view) and it looks
+  really bad nothing like the gemini starting point i made and nothing like the fabfilter pro-q
+  instance list"
+- "for thing like the limiter we already have the adi-l so why the limiter has design so far from
+  it ? ... the mixview devices ... should look like the devices in the PRO-Q instance list"
+- "Ableton was the base (but not as generic as we made it) and now we need some fabfilter and
+  bitwig design lang"
+- Also named: an audio or MIDI clip that "just looks like an empty clip"; the Info box with its
+  analysers ("small boxed versions" of the main analysers); every native device panel he saw.
+
+**The decisions.**
+
+1. **The look is settled one surface at a time, with him.** Win shows a picture of one surface as it
+   stands; win asks and he answers, from his mind or from pictures he gives, until every detail of
+   that surface is certain; the agreed surface is written down as a sheet with its picture before
+   any of it is built; the built surface is then shown to him against the sheet. No seat builds or
+   restyles the look of a surface whose sheet is not agreed. What a surface does (its ops, its
+   engine side, its tests) is not stopped by this.
+2. **No channel has a button for a Mix View function.** The Q and L buttons leave every mixer strip
+   and every track row, with the row they stood on. The EQ and the limiter are added in the Mix View
+   like the clipper and every other function. This is the last of ADR-0204 d1's slots on the window
+   (ADR-0212 had withdrawn the slots themselves).
+3. **The design language.** Live stays the base, but not the plain reading of it built so far: the
+   window is to read as Live and Bitwig working together, with FabFilter's design language where
+   the mixing tools are. The particulars are settled surface by surface (d1), not here.
+4. **The Mix View takes the window.** Opening it switches the window to the Mix View; the Browser
+   and the Device View are not part of it. Its look starts from his own starting design and from
+   the instance list of FabFilter's Pro-Q 4. ADR-0209 d11 (docked in the centre of the main window,
+   or in a window of its own) is amended by this; what stays of the docked form is settled in the
+   review.
+5. **The Mix View's function panels look like the devices in that instance list,** and the limiter
+   follows ADI-L's own design, which exists. They are ADI's own drawing: nothing of another maker's
+   artwork is taken (the standing rule).
+6. **Named for the review, each a row in the register:** audio and notes shown inside a clip in the
+   Arrangement; the Info box and its small analysers; the Device View's panels.
+7. **Order and working rules** are win's to propose and his to change; they are in win's log of this
+   date, not here.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0204 d1 | its Q and L buttons on the strips are removed (d2) |
+| ADR-0209 d11 | the Mix View takes the window; no Browser or Device View beside it (d4) |
+| ADR-0208 (the window lane), ADR-0236, ADR-0237 | the look of every surface waits for its agreed sheet (d1); function work goes on |
+| `collab/window/look-live11.md`, `collab/window/parity-7.6-mixer.md` row 11 | the slots are withdrawn |
+| `docs/DEFERRED.md` | DF-W20 to DF-W23 and DF-M47, DF-M48 added |
+
+## ADR-0244 — The first design round: five sheets agreed; a cloned tool looks like its source, and the scope is s(M)exoscope itself; the Mix View's pages are Stack, Focus and Analysers — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 17 AND 18 NOVEMBER; CARRIES OUT ADR-0243 d1, d3, d4, d5; AMENDS ADR-0209 d11 AND THE TAB LIST OF ADR-0236**
+
+**What this records.** The first round of the review ADR-0243 ordered. Win drew, he answered, win
+redrew: two proposals of the design language, two of the Arrangement, six of the Mix View's Stack,
+two of Focus and one of the Analysers. The agreed pictures and the words that go with them are the
+sheets in `collab/window/design/`; that file is the detail and this entry is the rulings.
+
+**His words on each sheet.**
+- The design language: "design language looks very good".
+- The Arrangement: "as a design guide that seems good enough".
+- The Mix View's Stack: "yha thats good".
+- Focus and the Analysers (18 November): "its hard for me to rap my mind around it so lets take it
+  as approved for now".
+
+**The decisions.**
+
+1. **The five sheets are the look to build from.** A seat builds the look of these surfaces from
+   `collab/window/design/` and shows the result to him against the sheet (ADR-0243 d1). "Approved
+   for now" is his: he may reopen any of them, and a sheet changes only by his word.
+2. **The design language (ADR-0243 d3 made particular).** Live stays the base for the Arrangement,
+   the Browser and the Device View, with its controls in its order. Buttons are drawn in rounded
+   groups as Bitwig draws them; the knob is Bitwig's ring knob, one knob everywhere; the tools of
+   the Mix View follow FabFilter's design language. The default theme is dark, as Live 12's dark.
+   Colours are a matter of settings: "we should support many themes". Density is a setting with two
+   values: Compact, with Live 12's sizes, is the default; Open is the other.
+3. **No device is a box of dials.** "nothing in adi daw can look like a generic design-less
+   device." Every device panel has a display that shows what the device does.
+4. **A cloned tool looks like its source.** "the elements we are cloning (BX_meter, SPAN, VISU,
+   BLUPRINT, s(m)exoscope oscope2 psyscope pro, fuser, trackspacer) ... they should look the same
+   as the plugins we are cloning (about the same at least)". Its layout, its read-outs and the way
+   its display is drawn are the source's; no seat invents another look for it. It is drawn by ADI:
+   no other maker's bitmaps, logos or fonts (the standing rule, ADR-0243 d5). Such a tool needs no
+   sheet of its own: it is shown to him as built, beside its source.
+5. **The scope is s(M)exoscope itself.** "should be literally the exo scope embedded in there as we
+   actually have s(m)exoscope code as it is open code". Its display and controls come from its
+   source, not from a redrawing. ADR-0183 d5 (its own buffer) stands; what that source lacks for
+   the DAW (safe hand-over from the audio thread, a size that follows the window) is added round
+   it, not in place of it.
+6. **The spectrum has three looks:** SPAN's, BluPrint's, and Live's Spectrum device ("we also want
+   the ableton like spectrum option").
+7. **The Info box's analyser** is the spectrogram (the VISU clone) by default, with a switch to
+   the spectrum. A click on it opens the Analysers.
+8. **The Arrangement.** A track inside a group is as wide as its group and is not indented; it
+   carries a line in the group's colour as in Live, and a second line for a group inside a group.
+   Over the track names stand the switch of sides and a chooser that shows only chosen groups.
+9. **The Device View.** The EQ, the compressor and the limiter there "are the Mix View's own
+   panels". The Pd EQ Eight, limiter and compressor "are used as regulars devices like vst or clap
+   and are not part of the mixview solution". The other Pd devices stay, each with a designed panel
+   of its own, "one sheet per device".
+10. **The Mix View's layout (ADR-0243 d4 made particular).** It takes the whole window. From the
+    left: the channel browser (search, the list, the group filters) with the Info box under it; the
+    rows; the meter at the far right. Above them the song strip, an overview with the ruler in
+    which he moves as in the Arrangement. Its pages are **Stack, Focus and Analysers**.
+11. **The Stack's rows are a lens,** as the instance list of FabFilter's Pro-Q 4 behaves: with the
+    pointer in the list, the row under it is the largest, its neighbours are partly grown and the
+    rest stay small; rows push each other and nothing overlaps; the tool under the pointer is wider
+    than its row-mates. With the pointer on the meter or the analyser, every row is small. A slider
+    sets how many channels are seen at once.
+12. **A row** is one channel: its name with its colour, M and S at the row's left, then its tools
+    as cards without title bars. There is no channel block at the right. What else the name tag
+    carries waits for his use of it.
+13. **Every chain ends with a "+"** that adds a Mix View tool (one of each in a channel, ADR-0237)
+    or a device or plug-in.
+14. **A third-party plug-in in a chain** is a chip; a click opens its editor over the Mix View and
+    closing it leaves him there.
+15. **"Sounding now"** is a filter that shows the channels sounding at the moment it is chosen. It
+    is a snapshot: "what i chose at that moment stays" until it is refreshed or another filter is
+    chosen.
+16. **The meter** at the right has bx_meter's layout and readings (d4): "i want it same design and
+    reads".
+17. **Focus.** Two or more channels (A, B, C and on), one of them the main, worked on together with
+    Unmask (the Trackspacer and FUSER class), Match, Align and Scope to begin with: "i want all the
+    tools but need to build around it slowly lets start with this and add as needed". Leaving Focus
+    keeps the solos. Two readings are win's and wait for his word: that the Mix View button opens
+    Focus while tracks are soloed ("when tracks are followed"), and that un-soloing a channel in
+    Focus takes it out and makes the first one still soloed the main.
+18. **The Analysers** are a page of the Mix View: every analyser at once, and a page for each
+    (Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis), on Main, a chosen channel or the
+    selected one followed. The layout is agreed; each analyser's look is its source's (d4).
+
+**What is not settled here.** Each Pd device's panel; the Clip View; the Mixer and the track rows in
+detail; the Browser; menus, dialogs and Settings. They stay under DF-W20 and DF-W23.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0243 d1, d3, d4, d5 | carried out for five surfaces (d1, d2, d10 to d16) |
+| ADR-0209 d11, ADR-0236 (the tab model) | the Mix View's pages are Stack, Focus and Analysers (d10); the earlier tabs' content lives in them |
+| ADR-0183 | its EXO tab is s(M)exoscope's own display and controls (d5); its spectrogram and spectrum look like their sources (d4, d6) |
+| ADR-0167 | the scope's panel takes its look from its sources (d4, d5); what it does is unchanged |
+| ADR-0237 | the analysers' places are the Info box and the Analysers page (d7, d18); one of each tool per channel stands (d13) |
+| `collab/window/design/` | new: the five sheets |
+| `docs/DEFERRED.md` | DF-W24 to DF-W27 and DF-M49 to DF-M55 added; DF-W22, DF-M47 and DF-M48 now build from the sheets |

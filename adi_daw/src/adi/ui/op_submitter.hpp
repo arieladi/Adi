@@ -367,6 +367,10 @@ public:
     [[nodiscard]] Actor actor() const noexcept { return actor_; }
     [[nodiscard]] const std::string& actorDetail() const noexcept { return actorDetail_; }
 
+    /// The store the batches go to: what a window prepares an engine edit against
+    /// (`clip_edit::prepareSplit`, `prepareDeleteRange`) before `commitPrepared`.
+    Store& store() noexcept { return store_; }
+
 private:
     /// Fills in who is acting, without overwriting a caller that said so. A UI
     /// component should not have to name the actor on every edit, and an agent

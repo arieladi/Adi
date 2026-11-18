@@ -9,11 +9,30 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <exception>
+#include <optional>
 #include <utility>
 
 namespace adi::agent {
 namespace {
+
+/// A JSON integer that fits an int64, or a float with no fraction inside that
+/// range (JSON Schema calls both an integer); nullopt otherwise, so an
+/// unsigned value above INT64_MAX is refused, never wrapped to a negative.
+/// The rule control/methods.cpp's asInt64 applies on the MCP path.
+std::optional<std::int64_t> int64Of(const Payload& v) {
+    if (v.is_number_integer() && !v.is_number_unsigned()) return v.get<std::int64_t>();
+    if (v.is_number_unsigned() && v.get<std::uint64_t>() <= static_cast<std::uint64_t>(INT64_MAX))
+        return static_cast<std::int64_t>(v.get<std::uint64_t>());
+    if (v.is_number_float()) {
+        const double d = v.get<double>();
+        if (std::isfinite(d) && std::floor(d) == d && d >= -9223372036854775808.0 && d < 9223372036854775808.0)
+            return static_cast<std::int64_t>(d);
+    }
+    return std::nullopt;
+}
 
 // --- guardrails, shared by preview and apply ---------------------------------------
 
@@ -88,12 +107,34 @@ Change describe(const OpRequest& q, const OpDescriptor& d, const std::optional<P
         // the before-state, in the op's own keys -- a parameter's old value.
         c.before = *inverse;
         c.after = q.payload;
-    } else if (inverse->size() < q.payload.size()) {
-        // Paired, and the inverse is only the identity: a creation.
-        c.after = q.payload;
     } else {
-        // Paired, and the inverse captured the row: a deletion.
-        c.before = *inverse;
+        // Paired. Classified by content, not by key count (R4.6): a capture
+        // op's inverse may have as many keys as its payload -- automation.
+        // createLane is {id,row} against {id,state} -- and must not read as a
+        // deletion.
+        const bool objects = inverse->is_object() && q.payload.is_object();
+        const auto everyKeyIn = [](const Payload& from, const Payload& in, bool equalValues) {
+            for (auto it = from.begin(); it != from.end(); ++it) {
+                const auto found = in.find(it.key());
+                if (found == in.end()) return false;
+                if (equalValues && *found != it.value()) return false;
+            }
+            return true;
+        };
+        if (objects && everyKeyIn(*inverse, q.payload, true)) {
+            // The inverse is only the identity, repeated from the payload: a creation.
+            c.after = q.payload;
+        } else if (objects && everyKeyIn(q.payload, *inverse, true)) {
+            // The inverse captured the row the payload names, and the payload
+            // is only that row's identity: a deletion. Compared by value, so
+            // clip.split ({id,changes} against {id,changes reversed}) shows
+            // both sides.
+            c.before = *inverse;
+        } else {
+            // A capture beside new values: the old state, then the new.
+            c.before = *inverse;
+            c.after = q.payload;
+        }
     }
     return c;
 }
@@ -115,66 +156,115 @@ std::vector<std::string> splitLines(const std::string& s) {
 
 enum class Edit : char { Keep = ' ', Del = '-', Ins = '+' };
 
-/// Myers' O(ND) shortest edit script. A project's projection is tens of
-/// thousands of lines and a changeset touches few of them, so D is small and
-/// the quadratic LCS table this replaces would be the wrong trade.
+/// The most diagonals the edit script's trace may hold: about 64 MB. Past it
+/// the changed middle is shown as one replacement instead (see editScript).
+constexpr std::size_t kTraceBudget = std::size_t{8} << 20;
+
+/// Myers' O(ND) shortest edit script, in bounded memory.
+///
+/// A project's projection is tens of thousands of lines and a changeset
+/// usually touches few of them, so D is small and the quadratic LCS table this
+/// replaces would be the wrong trade. But a preview is reachable from a remote
+/// caller (the control stack, ADR-0233), and one request may delete a track of
+/// ten thousand notes or insert six thousand, so the edit script must not grow
+/// with what a request touches:
+///   * the common prefix and suffix are trimmed first: a contiguous edit (a
+///     track deleted, notes added to one clip) then costs no trace at all;
+///   * each step keeps only its live diagonals, -(d-1)..d-1, not the whole V;
+///   * past kTraceBudget diagonals the untrimmed middle becomes one deletion
+///     and one insertion -- still a correct diff, only a coarser one.
 std::vector<Edit> editScript(const std::vector<std::string>& a, const std::vector<std::string>& b) {
-    const auto n = static_cast<std::ptrdiff_t>(a.size());
-    const auto m = static_cast<std::ptrdiff_t>(b.size());
-    const std::ptrdiff_t max = n + m;
-    const std::ptrdiff_t offset = max + 1;
-    std::vector<std::ptrdiff_t> v(static_cast<std::size_t>(2 * max + 3), 0);
-    std::vector<std::vector<std::ptrdiff_t>> trace;
+    std::size_t prefix = 0;
+    while (prefix < a.size() && prefix < b.size() && a[prefix] == b[prefix]) ++prefix;
+    std::size_t suffix = 0;
+    while (suffix < a.size() - prefix && suffix < b.size() - prefix &&
+           a[a.size() - 1 - suffix] == b[b.size() - 1 - suffix])
+        ++suffix;
 
-    const auto at = [&](std::ptrdiff_t k) -> std::ptrdiff_t& {
-        return v[static_cast<std::size_t>(k + offset)];
+    const auto n = static_cast<std::ptrdiff_t>(a.size() - prefix - suffix);
+    const auto m = static_cast<std::ptrdiff_t>(b.size() - prefix - suffix);
+    const auto A = [&](std::ptrdiff_t i) -> const std::string& {
+        return a[prefix + static_cast<std::size_t>(i)];
     };
-    std::ptrdiff_t dFound = -1;
-    for (std::ptrdiff_t d = 0; d <= max && dFound < 0; ++d) {
-        trace.push_back(v);
-        for (std::ptrdiff_t k = -d; k <= d; k += 2) {
-            std::ptrdiff_t x = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? at(k + 1)
-                                                                            : at(k - 1) + 1;
-            std::ptrdiff_t y = x - k;
-            while (x < n && y < m &&
-                   a[static_cast<std::size_t>(x)] == b[static_cast<std::size_t>(y)]) {
-                ++x;
-                ++y;
-            }
-            at(k) = x;
-            if (x >= n && y >= m) {
-                dFound = d;
-                break;
+    const auto B = [&](std::ptrdiff_t i) -> const std::string& {
+        return b[prefix + static_cast<std::size_t>(i)];
+    };
+
+    std::vector<Edit> middle;
+    bool found = false;
+    if (n > 0 && m > 0) {
+        const std::ptrdiff_t max = n + m;
+        const std::ptrdiff_t offset = max + 1;
+        std::vector<std::ptrdiff_t> v(static_cast<std::size_t>(2 * max + 3), 0);
+        const auto at = [&](std::ptrdiff_t k) -> std::ptrdiff_t& {
+            return v[static_cast<std::size_t>(k + offset)];
+        };
+        // trace[d] holds V as step d found it, diagonals -(d-1)..d-1: exactly
+        // what the walk back reads for step d.
+        std::vector<std::vector<std::ptrdiff_t>> trace;
+        std::size_t held = 0;
+        std::ptrdiff_t dFound = -1;
+        for (std::ptrdiff_t d = 0; d <= max && dFound < 0; ++d) {
+            const std::size_t width = d == 0 ? 0 : static_cast<std::size_t>(2 * d - 1);
+            if (held + width > kTraceBudget) break;
+            held += width;
+            std::vector<std::ptrdiff_t> snapshot(width);
+            for (std::size_t i = 0; i < width; ++i) snapshot[i] = at(-(d - 1) + static_cast<std::ptrdiff_t>(i));
+            trace.push_back(std::move(snapshot));
+            for (std::ptrdiff_t k = -d; k <= d; k += 2) {
+                std::ptrdiff_t x = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? at(k + 1) : at(k - 1) + 1;
+                std::ptrdiff_t y = x - k;
+                while (x < n && y < m && A(x) == B(y)) {
+                    ++x;
+                    ++y;
+                }
+                at(k) = x;
+                if (x >= n && y >= m) {
+                    dFound = d;
+                    break;
+                }
             }
         }
+
+        if (dFound >= 0) {
+            found = true;
+            // Walk the trace backwards from (n, m).
+            std::ptrdiff_t x = n, y = m;
+            for (std::ptrdiff_t d = dFound; d > 0; --d) {
+                const auto& pv = trace[static_cast<std::size_t>(d)];
+                const auto prev = [&](std::ptrdiff_t k) { return pv[static_cast<std::size_t>(k + (d - 1))]; };
+                const std::ptrdiff_t k = x - y;
+                const bool down = (k == -d || (k != d && prev(k - 1) < prev(k + 1)));
+                const std::ptrdiff_t pk = down ? k + 1 : k - 1;
+                const std::ptrdiff_t px = prev(pk);
+                const std::ptrdiff_t py = px - pk;
+                while (x > px && y > py) {
+                    middle.push_back(Edit::Keep);
+                    --x;
+                    --y;
+                }
+                middle.push_back(down ? Edit::Ins : Edit::Del);
+                x = px;
+                y = py;
+            }
+            while (x > 0 && y > 0) {
+                middle.push_back(Edit::Keep);
+                --x;
+                --y;
+            }
+            std::reverse(middle.begin(), middle.end());
+        }
+    }
+    if (!found) {
+        // Only deletions or only insertions (exact), or over the budget (a
+        // coarser but correct diff): the changed middle, deleted then inserted.
+        middle.assign(static_cast<std::size_t>(n), Edit::Del);
+        middle.insert(middle.end(), static_cast<std::size_t>(m), Edit::Ins);
     }
 
-    // Walk the trace backwards from (n, m).
-    std::vector<Edit> out;
-    std::ptrdiff_t x = n, y = m;
-    for (std::ptrdiff_t d = dFound; d > 0; --d) {
-        const auto& pv = trace[static_cast<std::size_t>(d)];
-        const auto prev = [&](std::ptrdiff_t k) { return pv[static_cast<std::size_t>(k + offset)]; };
-        const std::ptrdiff_t k = x - y;
-        const bool down = (k == -d || (k != d && prev(k - 1) < prev(k + 1)));
-        const std::ptrdiff_t pk = down ? k + 1 : k - 1;
-        const std::ptrdiff_t px = prev(pk);
-        const std::ptrdiff_t py = px - pk;
-        while (x > px && y > py) {
-            out.push_back(Edit::Keep);
-            --x;
-            --y;
-        }
-        out.push_back(down ? Edit::Ins : Edit::Del);
-        x = px;
-        y = py;
-    }
-    while (x > 0 && y > 0) {
-        out.push_back(Edit::Keep);
-        --x;
-        --y;
-    }
-    std::reverse(out.begin(), out.end());
+    std::vector<Edit> out(prefix, Edit::Keep);
+    out.insert(out.end(), middle.begin(), middle.end());
+    out.insert(out.end(), suffix, Edit::Keep);
     return out;
 }
 
@@ -224,6 +314,14 @@ bool agentMayEmit(std::string_view opType) {
     // disk, and the agent has no business asserting what is on the disk.
     // Any media op added later is refused until it is named here.
     if (opType.rfind("media.", 0) == 0) return opType == "media.unlink" || opType == "media.relink";
+    // The restore ops exist to replay an inverse another op captured, and
+    // write what they are given past that op's own checks: raw stream bytes,
+    // a lane row, a recording row. Named, not inferred from "has no inverse
+    // and is some op's inverse", which would also catch controller.bind, a
+    // forward op. arranger.splice, clip.split and clip.join are edits.
+    for (const std::string_view internal : {"automation.restoreLane", "automation.restoreData",
+                                            "cc.restoreStream", "note.restoreNotes", "track.restoreRecording"})
+        if (opType == internal) return false;
     return true;
 }
 
@@ -422,12 +520,23 @@ std::optional<Changeset> changesetFromJson(const Store& store, const Payload& j,
                                            std::string& error) {
     try {
         if (!j.is_object()) { error = "a changeset is a JSON object"; return std::nullopt; }
+        std::int64_t createdUtc = 0;
+        if (const auto c = j.find("createdUtc"); c != j.end()) {
+            const auto v = int64Of(*c);
+            if (!v) { error = "\"createdUtc\" is an integer"; return std::nullopt; }
+            createdUtc = *v;
+        }
         Changeset cs = begin(store, j.value("request", std::string{}),
-                             j.value("actorDetail", std::string{}),
-                             j.value("createdUtc", std::int64_t{0}));
+                             j.value("actorDetail", std::string{}), createdUtc);
         if (j.contains("baseHead")) {
             const auto& h = j.at("baseHead");
-            cs.baseHead = h.is_null() ? std::nullopt : std::optional<std::int64_t>(h.get<std::int64_t>());
+            if (h.is_null()) {
+                cs.baseHead = std::nullopt;
+            } else {
+                const auto v = int64Of(h);
+                if (!v) { error = "\"baseHead\" is an integer or null"; return std::nullopt; }
+                cs.baseHead = *v;
+            }
         }
         if (cs.request.empty()) { error = "\"request\" is required (AI-AGENT 6.8)"; return std::nullopt; }
         if (!j.contains("ops") || !j.at("ops").is_array()) {
@@ -440,8 +549,11 @@ std::optional<Changeset> changesetFromJson(const Store& store, const Payload& j,
             q.payload = o.value("payload", Payload::object());
             q.label = o.value("label", std::string{});
             q.targetKind = o.value("targetKind", std::string{});
-            if (o.contains("targetId") && o.at("targetId").is_number_integer())
-                q.targetId = o.at("targetId").get<std::int64_t>();
+            if (const auto t = o.find("targetId"); t != o.end() && !t->is_null()) {
+                const auto v = int64Of(*t);
+                if (!v) { error = "\"targetId\" is an integer"; return std::nullopt; }
+                q.targetId = *v;
+            }
             cs.ops.push_back(std::move(q));
         }
         return cs;

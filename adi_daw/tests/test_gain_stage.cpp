@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 #include "adi/history.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +16,16 @@ using namespace adi::engine;
 namespace {
 int checks=0, failures=0;
 void check(bool ok,const char* name) { ++checks; if(!ok) { ++failures; std::printf("FAIL %s\n",name); } }
+bool settleScopes(Session& session) {
+    for (int attempt=0; attempt<4; ++attempt) {
+        const auto pending=session.scopeStats();
+        if (!pending.awaitingAudio && !pending.deferredPlans) return true;
+        { auto boundary=session.beginRender(); static_cast<void>(boundary); }
+        session.collectScopeTaps();
+    }
+    const auto pending=session.scopeStats();
+    return !pending.awaitingAudio && !pending.deferredPlans;
+}
 struct Synth : device::DeviceInstance {
     device::DeviceIdentity id;
     bool active=false;
@@ -83,6 +94,57 @@ void transaction() {
     const auto again=f.session.autoGainStage(*f.store);
     check(again.commit.ok && again.tracks[0].gainDb==r.tracks[0].gainDb && again.tracks[1].gainDb==r.tracks[1].gainDb,"repeat is deterministic");
 }
+void firstBlockMeasurement() {
+    for (const int block : {32,512}) {
+        Fixture f(block);
+        f.store->db().exec("UPDATE tracks SET index_in_parent=4 WHERE id=9;"
+            "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(4,'audio','First block stereo',3);"
+            "INSERT INTO mixer_strip(track_id,input_gain_db) VALUES(4,7);"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(2,'first-block','first-block.wav','wav');"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(3,4,'audio',1,0,1000000);"
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(3,2,0,48);");
+        std::array<float,96> samples{};
+        for (std::size_t i=0; i<48; ++i) { samples[2*i]=.125f; samples[2*i+1]=-.25f; }
+        audio::WavWriter wav(f.dir.path()/"first-block.wav",48000,2,audio::WavFormat::Float32);
+        wav.write(samples.data(),48);wav.close();
+        struct Trace { int calls=0, noteOns=0; std::int64_t frames=0, first=-1; } trace;
+        struct WatchedSynth final : Synth {
+            explicit WatchedSynth(Trace& value) : trace(value) {}
+            Trace& trace;
+            void process(const NodeIo& io) noexcept override {
+                if (!trace.calls) trace.first=io.transport->timelineSample+io.blockOffset;
+                ++trace.calls;trace.frames+=io.frames;
+                for (const auto& event : io.events) if (event.type==EventType::NoteOn) ++trace.noteOns;
+                Synth::process(io);
+            }
+        };
+        Session session;session.graph().setFadeFrames(0);
+        const bool loaded=session.load(*f.store,[&](const DeviceRequest&,std::string&) {
+            return std::make_unique<WatchedSynth>(trace);
+        },{2,48000,block});
+        check(loaded,"first-block three-track measurement project loads");
+        if (!loaded) continue;
+        GainStageOptions options;options.endSample=48;
+        const auto result=session.autoGainStage(*f.store,options);
+        check(result.commit.ok && result.tracks.size()==3 && result.commit.seqs.size()==3,
+              "every audio and MIDI track is measured from the first callback");
+        const std::array<std::pair<std::int64_t,double>,3> expected{{
+            {1,10*std::log10(.1*.1*.5*48/19200)},
+            {2,10*std::log10(.05*.05*.5*48/19200)},
+            {4,10*std::log10((.125*.125+.25*.25)*.5*48/19200)}
+        }};
+        for (const auto& [track,db] : expected) {
+            const auto measured=std::find_if(result.tracks.begin(),result.tracks.end(),[&](const auto& item) {
+                return item.trackId==track;
+            });
+            check(result.commit.ok && measured!=result.tracks.end() && !measured->silent &&
+                      std::abs(measured->measuredDb-db)<.001,
+                  "first selection retains both stereo channels and the sample-zero MIDI note");
+        }
+        check(trace.first==0 && trace.frames==48 && trace.calls==(48+block-1)/block && trace.noteOns==1,
+              "tap startup neither renders extra samples nor consumes the initial MIDI event");
+    }
+}
 struct Square : Synth {
     EventFlow eventFlow() const noexcept override { return EventFlow::Through; }
     void process(const NodeIo& io) noexcept override {
@@ -102,7 +164,10 @@ void placement() {
         return std::make_unique<Square>();
     },{2,48000,512}),"gain-placement project loads");
     auto tap=s.openScope(1,1,ScopePoint::PreFader);
-    auto instrument=s.openScope(2,1,ScopePoint::PreFader); s.transport().play();
+    auto instrument=s.openScope(2,1,ScopePoint::PreFader);
+    check(settleScopes(s) && tap->written()==0 && instrument->written()==0 && s.transport().position()==0,
+          "gain-placement taps adopt without consuming source samples or MIDI");
+    s.transport().play();
     std::array<float,512> l{},r{};float* output[]{l.data(),r.data()};
     check(s.clips()->prime(),"gain-placement media ready");
     s.process({output,nullptr,2,0,512,0});std::int64_t stamp=0;
@@ -165,7 +230,7 @@ void modes() {
 int main(int argc, char** argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     if(argc==2 && std::string(argv[1])=="--placement") placement();
-    else { transaction(); modes(); placement(); stale(); }
+    else { transaction(); modes(); firstBlockMeasurement(); placement(); stale(); }
     std::printf("%s -- %d checks, %d failures\n",failures?"FAIL":"PASS",checks,failures);
     return failures?1:0;
 }

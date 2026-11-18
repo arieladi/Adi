@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/engine/clip_fade.hpp"
+#include "adi/ui/fade_edits.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -1410,6 +1414,18 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     if (!header) {
         auto &commands = root.commands();
         commands.activate(root);
+        // A clip's menu (Live 12 manual 6.9): Cut, Copy, Paste and Duplicate, then Split at where it
+        // was clicked, above the lanes' items. The lanes' own menu offers Paste.
+        if (geometry.selection.clip != 0) {
+            for (const auto id : {AppCommands::Cut, AppCommands::Copy, AppCommands::Paste, AppCommands::Duplicate})
+                menu.addCommandItem(&commands.manager, id);
+            menu.addSeparator();
+            menu.addCommandItem(&commands.manager, AppCommands::Split);
+            menu.addSeparator();
+        } else if (!commands.clipClipboard().empty()) {
+            menu.addCommandItem(&commands.manager, AppCommands::Paste);
+            menu.addSeparator();
+        }
         menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
         menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
         // The lanes' menu sets the grid as well (§6.10).
@@ -2135,6 +2151,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                static_cast<float>(std::max(0, h - 4 - kClipBarHeight)));
                 }
             }
+            // Its fades, and their handles (manual 6.8), over the waveform and any selection tint;
+            // not while it moves.
+            if (c->audio && c->id != moving_ && !along && c->id != resizing_)
+                paintFades(g, *c, static_cast<float>(x), static_cast<float>(end), static_cast<float>(y + 1 + kClipBarHeight),
+                           static_cast<float>(y + h - 3));
         };
         // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
         // each of several selected clips dragged across tracks.
@@ -2170,6 +2191,188 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             top += geo.heightFor(id);
         }
     }
+}
+std::vector<ArrangementCanvas::ClipBody> ArrangementCanvas::clipBodies() const {
+    // Every clip drawn, where it is drawn: the same walk as the paint, the foot over the tracks
+    // scrolled under it.
+    std::vector<ClipBody> out;
+    const auto &geo = view.geometry;
+    const auto rows = geo.rows(view.reader());
+    const auto foot = geo.footStart(rows);
+    const int footY = geo.footTop(view.reader());
+    int top = -geo.scrollY;
+    for (const auto row : rows) {
+        if (row.position == foot)
+            top = footY;
+        const auto *t = row.track;
+        const int h = geo.heightFor(t->id);
+        // A track scrolled under the returns' and Main's foot is cut at its top, as the paint covers
+        // it there: nothing under the foot is hit (barAt's rule).
+        const float bottom = static_cast<float>(row.position < foot && foot < rows.size() ? std::min(top + h - 3, footY) : top + h - 3);
+        const float bodyTop = static_cast<float>(top + 1 + kClipBarHeight);
+        if (h > 0 && bottom > bodyTop)
+            for (const auto &c : t->clips)
+                if (c)
+                    out.push_back({t, c.get(), static_cast<float>(geo.x(c->posTicks)),
+                                   static_cast<float>(geo.x(c->posTicks + c->lengthTicks)), bodyTop, bottom});
+        top += h;
+    }
+    return out;
+}
+bool ArrangementCanvas::fadeHandlesShown(const engine::ClipNode &c) const {
+    return c.audio && (showFades || c.id == hoverClip_ || view.geometry.clipSelected(c.id) ||
+                       (fadeDrag_ && fadeDrag_->clip == c.id));
+}
+void ArrangementCanvas::fadesOf(const engine::ClipNode &c, std::int64_t &in, std::int64_t &out,
+                                std::optional<double> &inTension, std::optional<double> &outTension) const {
+    in = c.fadeInTicks;
+    out = c.fadeOutTicks;
+    inTension = c.fadeInTension;
+    outTension = c.fadeOutTension;
+    if (!fadeDrag_)
+        return;
+    // The drag reaches the dragged clip and, when it is one of them, every other selected clip.
+    const bool dragged = fadeDrag_->clip == c.id ||
+                         (view.geometry.clipSelected(fadeDrag_->clip) && view.geometry.clipSelected(c.id));
+    if (!dragged)
+        return;
+    if (fadeDrag_->curve)
+        (fadeDrag_->in ? inTension : outTension) = fadeTension_;
+    else
+        (fadeDrag_->in ? in : out) = fadeLimit(c, fadeDrag_->in, fadeTicks_);
+}
+void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c, float left, float right, float top,
+                                   float bottom) const {
+    // Live's fades (the manual's Adjusted Fades figure): the part of the clip the fade takes away
+    // darkened above its curve, the curve drawn; with the handles shown, a square at each fade's
+    // peak and a diamond on each curve.
+    if (bottom - top < 8.f || right - left < 4.f)
+        return;
+    std::int64_t in = 0, out = 0;
+    std::optional<double> inTension, outTension;
+    fadesOf(c, in, out, inTension, outTension);
+    const auto &geo = view.geometry;
+    const float xIn = static_cast<float>(geo.x(c.posTicks + in)), xOut = static_cast<float>(geo.x(c.posTicks + c.lengthTicks - out));
+    const auto curveY = [&](double shape) { return bottom - static_cast<float>(shape) * (bottom - top); };
+    const auto draw = [&](float x0, float x1, bool fadeIn, std::int64_t curve, const std::optional<double> &tension) {
+        if (x1 - x0 < 1.f)
+            return;
+        juce::Path line, shade;
+        const int steps = std::max(2, static_cast<int>((x1 - x0) / 3.f));
+        for (int i = 0; i <= steps; ++i) {
+            const double u = static_cast<double>(i) / steps;
+            const float px = x0 + static_cast<float>(u) * (x1 - x0);
+            const float py = curveY(engine::clipFadeShape(fadeIn ? u : 1.0 - u, curve, tension));
+            if (i == 0)
+                line.startNewSubPath(px, py);
+            else
+                line.lineTo(px, py);
+        }
+        shade = line;
+        shade.lineTo(x1, top);
+        shade.lineTo(x0, top);
+        shade.closeSubPath();
+        g.setColour(juce::Colours::black.withAlpha(0.22f));
+        g.fillPath(shade);
+        g.setColour(juce::Colours::black.withAlpha(0.85f));
+        g.strokePath(line, juce::PathStrokeType(1.f));
+    };
+    const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
+    const bool bendingOut = fadeDrag_ && fadeDrag_->curve && !fadeDrag_->in && outTension != c.fadeOutTension;
+    const auto inCurve = bendingIn ? kBentFadeCurve : c.fadeInCurve, outCurve = bendingOut ? kBentFadeCurve : c.fadeOutCurve;
+    draw(left, xIn, true, inCurve, inTension);
+    draw(xOut, right, false, outCurve, outTension);
+    if (!fadeHandlesShown(c))
+        return;
+    const auto square = [&](float x, bool chosen) {
+        const auto box = juce::Rectangle<float>(x - 3.5f, top, 7.f, 7.f);
+        g.setColour(chosen ? juce::Colour(0xff5dc9e8) : juce::Colour(0xfff4eba0));
+        g.fillRect(box);
+        g.setColour(juce::Colours::black);
+        g.drawRect(box, 1.f);
+    };
+    const auto diamond = [&](float x, float y, bool chosen) {
+        juce::Path d;
+        d.addQuadrilateral(x, y - 4.f, x + 4.f, y, x, y + 4.f, x - 4.f, y);
+        g.setColour(chosen ? juce::Colour(0xff5dc9e8) : juce::Colour(0xfff4eba0));
+        g.fillPath(d);
+        g.setColour(juce::Colours::black);
+        g.strokePath(d, juce::PathStrokeType(1.f));
+    };
+    const auto chosen = [&](bool fadeIn, bool curve) {
+        const auto &h = fadeDrag_ ? fadeDrag_ : selectedFade_;
+        return h && h->clip == c.id && h->in == fadeIn && h->curve == curve;
+    };
+    square(std::max(left + 3.5f, xIn), chosen(true, false));
+    square(std::min(right - 3.5f, xOut), chosen(false, false));
+    if (in > 0)
+        diamond((left + xIn) / 2.f, curveY(engine::clipFadeShape(0.5, inCurve, inTension)), chosen(true, true));
+    if (out > 0)
+        diamond((xOut + right) / 2.f, curveY(engine::clipFadeShape(0.5, outCurve, outTension)), chosen(false, true));
+}
+std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h) const {
+    for (const auto &b : clipBodies())
+        if (b.clip->id == h.clip)
+            return fadeHandlePoint(h, b);
+    return std::nullopt;
+}
+std::optional<juce::Point<float>> ArrangementCanvas::fadeHandlePoint(const FadeHandle &h, const ClipBody &b) const {
+    {
+        if (b.clip->id != h.clip || !fadeHandlesShown(*b.clip) || b.bottom - b.top < 8.f)
+            return std::nullopt;
+        std::int64_t in = 0, out = 0;
+        std::optional<double> inTension, outTension;
+        fadesOf(*b.clip, in, out, inTension, outTension);
+        const auto &geo = view.geometry;
+        const float xIn = static_cast<float>(geo.x(b.clip->posTicks + in));
+        const float xOut = static_cast<float>(geo.x(b.clip->posTicks + b.clip->lengthTicks - out));
+        if (!h.curve)
+            return juce::Point<float>(h.in ? std::max(b.left + 3.5f, xIn) : std::min(b.right - 3.5f, xOut), b.top + 3.5f);
+        if ((h.in ? in : out) == 0)
+            return std::nullopt;
+        const bool bending = fadeDrag_ && fadeDrag_->curve && fadeDrag_->clip == h.clip && fadeDrag_->in == h.in;
+        const auto curve = bending ? kBentFadeCurve : h.in ? b.clip->fadeInCurve : b.clip->fadeOutCurve;
+        const auto shape = engine::clipFadeShape(0.5, curve, h.in ? inTension : outTension);
+        return juce::Point<float>(h.in ? (b.left + xIn) / 2.f : (xOut + b.right) / 2.f,
+                                  b.bottom - static_cast<float>(shape) * (b.bottom - b.top));
+    }
+}
+std::optional<ArrangementCanvas::FadeHandle> ArrangementCanvas::fadeHandleAt(int x, int y) const {
+    // The nearest shown handle within a few pixels; the curve's diamond before the squares, which
+    // sit at the clip's top.
+    const juce::Point<float> at(static_cast<float>(x), static_cast<float>(y));
+    for (const auto &b : clipBodies()) {
+        if (!fadeHandlesShown(*b.clip))
+            continue;
+        for (const bool curve : {true, false})
+            for (const bool in : {true, false}) {
+                const FadeHandle h{b.clip->id, b.track->id, in, curve};
+                if (const auto p = fadeHandlePoint(h, b); p && p->getDistanceFrom(at) <= 6.f)
+                    return h;
+            }
+    }
+    return std::nullopt;
+}
+void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
+    if (hoverClip_ != 0) {
+        hoverClip_ = 0;
+        repaint();
+    }
+}
+void ArrangementCanvas::focusLost(FocusChangeType) {
+    // F released where the canvas cannot hear it: the handles go back.
+    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+        showFades = false;
+        repaint();
+    }
+}
+bool ArrangementCanvas::keyStateChanged(bool) {
+    // F up: the handles go back to the clip under the mouse and the selected ones.
+    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+        showFades = false;
+        repaint();
+    }
+    return false;
 }
 void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
                                       float right, float top, float bottom) const {
@@ -2254,6 +2457,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     moving_ = resizing_ = 0;
     keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
+    selectedFade_.reset(); // a click chooses a fade handle again, or nothing
+    focusLost(focusChangedDirectly);
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
@@ -2261,6 +2466,29 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     } else if (!panning) {
         // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
         beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+        // A fade's handle (manual 6.8): its length or its curve, the clip chosen with it.
+        if (const auto h = fadeHandleAt(e.x, e.y)) {
+            for (const auto &b : clipBodies())
+                if (b.clip->id == h->clip) {
+                    auto &sel = view.geometry.selection;
+                    if (!view.geometry.clipSelected(h->clip)) {
+                        sel.track = h->track;
+                        sel.toTrack = 0;
+                        sel.picked.clear();
+                        sel.clip = h->clip;
+                        sel.pickedClips.clear();
+                        sel.start = b.clip->posTicks;
+                        sel.end = b.clip->posTicks + b.clip->lengthTicks;
+                    }
+                    fadeDrag_ = h;
+                    selectedFade_ = h;
+                    fadeTicks_ = h->in ? b.clip->fadeInTicks : b.clip->fadeOutTicks;
+                    fadeTensionFrom_ = fadeTension_ = (h->in ? b.clip->fadeInTension : b.clip->fadeOutTension).value_or(0.0);
+                    fadeFromY_ = e.y;
+                }
+            view.changed();
+            return;
+        }
         // Only a clip's bar moves it, not its body; its right edge changes its length (§6.7).
         std::int64_t track = 0;
         bool edge = false;
@@ -2359,6 +2587,21 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     return nullptr;
 }
 void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
+    focusLost(focusChangedDirectly);
+    // The audio clip under the mouse shows its fade handles (manual 6.8).
+    std::int64_t over = 0;
+    for (const auto &b : clipBodies())
+        if (const auto mx = static_cast<float>(e.x), my = static_cast<float>(e.y);
+            b.clip->audio && mx >= b.left && mx < b.right && my >= b.top - kClipBarHeight && my <= b.bottom)
+            over = b.clip->id;
+    if (over != hoverClip_) {
+        hoverClip_ = over;
+        repaint();
+    }
+    if (const auto h = fadeHandleAt(e.x, e.y)) {
+        setMouseCursor(h->curve ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::LeftRightResizeCursor);
+        return;
+    }
     std::int64_t track = 0;
     bool edge = false;
     const auto *c = barAt(e.x, e.y, track, edge);
@@ -2368,6 +2611,21 @@ void ArrangementCanvas::mouseMove(const juce::MouseEvent &e) {
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
+    if (fadeDrag_) {
+        // A peak's square follows the mouse along the clip; a curve's diamond, up and down.
+        if (fadeDrag_->curve) {
+            fadeTension_ = std::clamp(fadeTensionFrom_ - (e.y - fadeFromY_) / 60.0, -1.0, 1.0);
+        } else {
+            for (const auto &b : clipBodies())
+                if (b.clip->id == fadeDrag_->clip) {
+                    const auto at = view.geometry.tick(e.x);
+                    fadeTicks_ = fadeDrag_->in ? at - b.clip->posTicks : b.clip->posTicks + b.clip->lengthTicks - at;
+                    fadeTicks_ = fadeLimit(*b.clip, fadeDrag_->in, fadeTicks_);
+                }
+        }
+        repaint();
+        return;
+    }
     if (resizing_ != 0) {
         // The clip's end follows the mouse, to the nearest grid line while snapping, never
         // shorter than one grid step; at the lanes' side the view scrolls along.
@@ -2453,6 +2711,33 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
+    if (fadeDrag_) {
+        // One drag, one undo step: the dragged clip, and every other selected audio clip with it.
+        const auto h = *fadeDrag_;
+        fadeDrag_.reset();
+        std::vector<std::int64_t> clips{h.clip};
+        if (view.geometry.clipSelected(h.clip))
+            for (const auto &b : clipBodies())
+                if (b.clip->id != h.clip && view.geometry.clipSelected(b.clip->id))
+                    clips.push_back(b.clip->id);
+        const engine::ClipNode *dragged = nullptr;
+        for (const auto &b : clipBodies())
+            if (b.clip->id == h.clip)
+                dragged = b.clip;
+        const bool changed = dragged != nullptr &&
+                             (h.curve ? (h.in ? dragged->fadeInTension : dragged->fadeOutTension).value_or(0.0) != fadeTension_
+                                      : (h.in ? dragged->fadeInTicks : dragged->fadeOutTicks) != fadeTicks_);
+        if (changed) {
+            if (const auto current = view.root.current()) {
+                auto edit = dragFades(current->tracks, clips, h.in, h.curve ? std::nullopt : std::optional<std::int64_t>(fadeTicks_),
+                                      h.curve ? std::optional<double>(fadeTension_) : std::nullopt);
+                if (!edit.ops.empty())
+                    view.root.submitEdits(std::move(edit.ops));
+            }
+        }
+        view.changed();
+        return;
+    }
     if (resizing_ != 0 && !keyResize_) {
         const auto clip = resizing_, length = resizeLength_;
         resizing_ = 0;
@@ -2541,6 +2826,62 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
         return false;
     const auto &sel = view.geometry.selection;
     const auto selected = view.geometry.selectedTracks(view.reader());
+    const auto content = rangeContent(current->tracks, selected, sel.start, sel.end);
+    // A clip crossing the selection's edge (E1, N17): Delete trims it there, or cuts the middle out
+    // of a clip the selection lies inside (`prepareDeleteRange`, with the settings' editing policy);
+    // 0 over one clip splits it at the selection's edges inside it and deactivates the part inside,
+    // one batch.
+    if (content.crossing > 0 && !deactivate) {
+        clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
+        const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
+        auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
+        if (prepared.ok) {
+            if (!view.root.commitEdit(std::move(prepared)))
+                return false;
+            view.changed();
+            return true;
+        }
+        // The engine will not trim here (a track whose automation follows its clips, a frozen track,
+        // the editing settings): the whole clips inside go as before, and the Status Bar says why the
+        // crossing ones stay.
+        const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
+                         prepared.error + ").";
+        auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
+        if (whole.ops.empty()) {
+            view.root.say(why);
+            return false;
+        }
+        if (!view.root.submitEdits(std::move(whole.ops)))
+            return false;
+        view.changed();
+        view.root.say(why);
+        return true;
+    }
+    if (deactivate)
+        if (const auto split = edgeSplit(content, sel.start, sel.end)) {
+            const auto right = audio_drop_detail::newClipId(*current);
+            // Two cuts: the middle piece is `right`, the last one the next identity.
+            auto prepared = split->second != 0
+                                ? clip_edit::prepareSplit(view.root.editStore(), split->clip, right, right + 1,
+                                                          clip_edit::TimePoint{0, split->at},
+                                                          clip_edit::TimePoint{0, split->second}, view.root.editRate())
+                                : clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
+                                                          clip_edit::TimePoint{0, split->at}, view.root.editRate());
+            const auto inside = split->second != 0 || split->insideIsRight ? right : split->clip;
+            // 0 toggles, as on whole clips: a clip already deactivated has its inside part activated.
+            bool wasOff = false;
+            for (const auto *c : content.crossers)
+                if (c->id == split->clip)
+                    wasOff = c->muted;
+            auto mute = track_edits_detail::op("clip.setMute", {{"id", inside}, {"muted", !wasOff}},
+                                               wasOff ? "Activate Clip" : "Deactivate Clip");
+            mute.targetKind = "clip";
+            mute.targetId = inside;
+            if (!view.root.commitEdit(std::move(prepared), std::move(mute)))
+                return false;
+            view.changed();
+            return true;
+        }
     const auto note = rangeNote(current->tracks, selected, sel.start, sel.end);
     auto edit = deactivate ? deactivateRange(current->tracks, selected, sel.start, sel.end)
                            : deleteRange(current->tracks, selected, sel.start, sel.end);
@@ -2555,6 +2896,26 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     if (!note.empty())
         view.root.say(note);
     return true;
+}
+void ArrangementCanvas::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live: a double-click on a clip opens it in the Clip View (manual 8).
+    if (e.mods.isPopupMenu())
+        return;
+    const auto *t = view.geometry.trackAt(view.reader(), e.y);
+    const auto *c = t != nullptr ? view.geometry.hit(*t, view.geometry.tick(e.x)) : nullptr;
+    if (c == nullptr) {
+        // On an empty part of a MIDI track's lane it makes a clip of the bar under the pointer and
+        // opens it (Live 12 makes a clip on a double-click there; its length is to be measured).
+        if (t == nullptr || !isMidiTrack(*t) || view.geometry.meters == nullptr)
+            return;
+        const auto bar = view.geometry.barHolding(view.geometry.tick(e.x));
+        if (view.root.insertMidiClips({t->id}, bar.start, bar.end))
+            view.root.showClipView();
+        return;
+    }
+    if (view.geometry.selection.clip != c->id)
+        view.selectClip(t->id, c->id);
+    view.root.showClipView();
 }
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
@@ -2574,6 +2935,39 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     const auto code = k.getKeyCode();
     const auto mods = k.getModifiers();
     auto &sel = view.geometry.selection;
+    // F held shows every audio clip's fade handles (manual 6.8).
+    if ((code == 'f' || code == 'F') && !mods.isAnyModifierKeyDown()) {
+        if (!showFades) {
+            showFades = true;
+            repaint();
+        }
+        return true;
+    }
+    // Delete with a fade's handle chosen deletes that fade (manual 6.8; Create Fades on Clip
+    // Edges is off, ADR-0132 d6, so it goes to nothing, not to 4 ms).
+    if ((code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey) && !mods.isAnyModifierKeyDown() &&
+        selectedFade_) {
+        // Only while that fade's clip is still what is chosen, nothing else is (a locator, a marker,
+        // the brace), and the fade has a length; else Delete is the selection's, as without one.
+        const auto h = *selectedFade_;
+        selectedFade_.reset();
+        const engine::ClipNode *clip = nullptr;
+        for (const auto &b : clipBodies())
+            if (b.clip->id == h.clip)
+                clip = b.clip;
+        const bool stillChosen = clip != nullptr && sel.clip == h.clip && !view.loopSelected && view.selectedLocator == 0 &&
+                                 view.selectedMeter < 0;
+        if (stillChosen && (h.in ? clip->fadeInTicks : clip->fadeOutTicks) > 0)
+            if (const auto current = view.root.current()) {
+                auto edit = dragFades(current->tracks, {h.clip}, h.in, std::int64_t{0}, std::nullopt);
+                for (auto &op : edit.ops)
+                    op.label = "Delete Fade";
+                if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
+                    view.changed();
+                    return true;
+                }
+            }
+    }
     // A clip's length from the keyboard (online §41.4.1.3): the arrows move its end by the
     // grid, Enter keeps it as one undo step, Esc or any other key puts it back.
     if (keyResizing()) {
@@ -2837,15 +3231,23 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (sel.start != sel.end) {
-        // A time selection moves by the grid when it holds no clip; moving part of a clip
-        // needs it split first.
+        // A time selection moves by the grid when it holds no clip. Part of a clip moves once Split
+        // has cut it there (which selects the part inside); a whole clip moves once selected.
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
-        if (track != nullptr)
-            for (const auto &c : track->clips)
-                if (c->posTicks < hi && c->posTicks + c->lengthTicks > lo) {
-                    view.root.say("Moving part of a clip waits for the engine's split (window log, N17).");
-                    return true;
-                }
+        if (track != nullptr) {
+            bool crosses = false, holds = false;
+            for (const auto &c : track->clips) {
+                const auto a = c->posTicks, b = c->posTicks + c->lengthTicks;
+                if (a < hi && b > lo)
+                    (a < lo || b > hi ? crosses : holds) = true;
+            }
+            if (crosses || holds) {
+                view.root.say(crosses ? "The arrow keys move whole clips: split the clip at the selection first "
+                                        "(Ctrl/Cmd+E), which selects the part inside."
+                                      : "The arrow keys move a selected clip: click the clip to move it.");
+                return true;
+            }
+        }
         const auto delta = geo.nextGridLine(lo, forward) - lo;
         sel.start += delta;
         sel.end += delta;

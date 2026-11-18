@@ -74,6 +74,36 @@ struct Field {
     std::string_view key;   // short, and as permanent as the op name (ADR-0025)
     FieldType type;
     bool required = true;
+
+    // CTL-02 (ADR-0168 d5.1, ADR-0039 d2): words and constraints for the
+    // generated JSON Schema (ops_schema.hpp). Every member below is optional
+    // and trailing, so every existing initialiser stays valid. There is ONE
+    // authority: validateSubmission enforces exactly what is declared here,
+    // and the schema says exactly that. Replay never reads them
+    // (decodeFromLog stays permissive), so a later constraint cannot strand
+    // an op already in someone's log.
+
+    /// Words for a short key (`pos`, `dev`, `ord`): what a model reads.
+    std::string_view description = {};
+    /// Text: the value must be one of these. Copy the SQL CHECK's list, so
+    /// the refusal comes earlier and names the key, and never disagrees.
+    std::span<const std::string_view> enumValues = {};
+    /// Int or Real: inclusive bounds.
+    std::optional<double> minimum = std::nullopt;
+    std::optional<double> maximum = std::nullopt;
+    /// Text: the most characters (Unicode code points, as JSON Schema counts).
+    std::optional<std::size_t> maxLength = std::nullopt;
+    /// Array: the most elements.
+    std::optional<std::size_t> maxItems = std::nullopt;
+    /// Array: each element is a closed object with exactly these fields.
+    /// Object: the value is a closed object with exactly these fields.
+    /// Empty: the elements, or the object's members, are not described.
+    std::span<const Field> items = {};
+    /// Int: the value may be any unsigned 64-bit integer as well as any
+    /// signed one. Only a note's persisted id (ANOT), which its handler reads
+    /// with noteIdValue; every other Int is read as int64, so above INT64_MAX
+    /// it is refused rather than wrapped to a negative.
+    bool fullUint64 = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -192,8 +222,29 @@ struct ValidationIssue {
 };
 
 /// Strict: every required field present and correctly typed, no unknown keys,
-/// no non-finite floats. For payloads arriving from a caller.
+/// no non-finite floats, and every constraint a Field declares (CTL-02). For
+/// payloads arriving from a caller.
 std::vector<ValidationIssue> validateSubmission(const OpDescriptor&, const Payload&);
+
+/// Which default bounds a submission meets on top of what its Fields declare.
+///
+///   Local   nothing more. The UI, scripts and import submit through this, and
+///           an automation pass or a note diff may legitimately carry more
+///           than any default would allow.
+///   Remote  MAGDA's request limits for a caller across the control boundary
+///           (CTL-02): text at most kRemoteMaxTextLength characters and arrays
+///           at most kRemoteMaxArrayItems elements unless a Field declares its
+///           own. The schema a remote caller is shown says the same.
+enum class Bounds { Local, Remote };
+inline constexpr std::size_t kRemoteMaxTextLength = 16 * 1024;
+inline constexpr std::size_t kRemoteMaxArrayItems = 4096;
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor&, const Payload&, Bounds);
+
+/// Characters as JSON Schema's maxLength counts them: Unicode code points, which
+/// in UTF-8 is every byte that does not continue a sequence. One definition, so
+/// every length the control boundary checks agrees with the schema it shows.
+[[nodiscard]] std::size_t utf8CodePoints(std::string_view text) noexcept;
 
 /// Permissive: decodes CBOR and keeps everything, including fields this build
 /// does not know. For payloads already in the log.

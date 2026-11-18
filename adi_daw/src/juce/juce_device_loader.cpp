@@ -4,6 +4,8 @@
 
 #include "juce/juce_device_loader.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/mix_pipeline_host.hpp"
+#include "adi/mix_functions.hpp"
 
 #include <string>
 #include <utility>
@@ -59,7 +61,8 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
     if (f == "vst3") return makeVst3(rq, err);
     if (f == "clap") return makeClap(rq, err);
     if (f == "internal") {
-        auto instance=makeBuiltinDevice(rq,err);
+        const auto* function=mix::functionForReference(f,rq.ref->uid);
+        auto instance=function&&function->kind==mix::Function::Limiter?makeFullMixFunction(rq,err):makeBuiltinDevice(rq,err);
         if(instance)++stats_.builtin;else ++stats_.failed;
         return instance;
     }

@@ -1,0 +1,69 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Analysers sheet, proposal 1</title>
+<style>html,body{margin:0;background:#101013}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="lib.js"></script><script src="lib2.js"></script>
+<script>
+// ADI, the Analysers view of the Mix View, proposal 1 (17 November 2026): the large forms of the analysers
+// whose small forms live in the Info box. A click on the Info box comes here. ADI's own drawing.
+Object.assign(C,{win:'#131316',bar:'#1c1c21',panel:'#202027',head:'#2a2a33',well:'#141418',ctl:'#30303a',edge:'#3f3f4b',grp:'#26262e',grpEdge:'#3a3a45',text:'#d9d9de',dim:'#8b8b96',faint:'#55555f',ink:'#16161a',val:'#5ec8ff',acc:'#ffb13b'});
+const W=1920,H=1080,SB=H-26;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','mix');s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'ANALYSERS SHEET  ·  proposal 1',{z:11,w:700,a:'middle',f:C.ink});
+// the song strip
+s+=R(0,69,W,62,'#17171b');s+=L(0,131,W,131,C.line);
+{const lanes=['#ff8a5c','#ffb13b','#f2e15a','#7fd36b','#42c9c2','#5ec8ff','#8f8cff','#c479ff','#ff6fb1','#b7b7c2'];const r=rng(7);for(let i=0;i<10;i++){let px=8;while(px<1900){const len=40+Math.floor(r()*260);if(r()>0.28)s+=R(px,73+i*3.6,Math.min(len,1904-px),2.6,lanes[i],{op:0.85});px+=len+6}}}
+for(let b=1;b<=120;b+=8){const bx=8+(b-1)*15.8;s+=L(bx,112,bx,131,'#3a3a45');s+=T(bx+4,126,String(b),{z:10.5,f:C.dim})}
+s+=R(8+32*15.8,112,16*15.8,5,C.acc,{op:0.9,r:2});s+=R(8+32*15.8,69,16*15.8,43,C.acc,{op:0.06});s+=L(8+41.3*15.8,69,8+41.3*15.8,131,'#ffffff',1.5);
+// the Mix View's bar: the view, then the Analysers' own pages, then what is analysed
+s+=R(0,132,W,36,C.bar);s+=L(0,168,W,168,C.line);
+s+=grp(270,138,264,24);s+=T(305,154.5,'Stack',{z:12,a:'middle',f:C.dim,w:600});s+=T(377,154.5,'Focus',{z:12,a:'middle',f:C.dim,w:600});s+=R(424,140,108,20,'#3d3d49',{r:6});s+=T(478,154.5,'Analysers',{z:12,a:'middle',w:700});
+{let tx=556;[['All',1],['Spectrogram',0],['Spectrum',0],['Scope',0],['Phase',0],['Loudness',0],['Analysis',0]].forEach(([t,on])=>{const w=20+t.length*6.8;if(on)s+=R(tx,140,w,20,'#34343f',{r:5,s:'#4a4a57'});s+=T(tx+w/2,154.5,t,{z:11.5,a:'middle',f:on?C.text:C.dim,w:on?600:400});tx+=w+4});s+=note(1066,150,1)}
+s+=T(1120,154.5,'Analyse',{z:11.5,f:C.dim});s+=chooser(1176,139,150,22,'Main',{z:11.5});s+=R(1344,141,28,18,'#141418',{r:9,s:'#3a3a45'});s+=CI(1353,150,7,C.dim);s+=T(1380,154.5,'Follow the selected channel',{z:11.5,f:C.dim});s+=note(1560,150,2);
+
+// ---- the left column, as in the Stack ----
+const lx=6,lwid=252,infoH=250,infoY=SB-6-infoH;
+const names=[['Kick','#ff8a5c'],['Snare','#ff8a5c'],['Hats','#ffb13b'],['Drum Bus','#ffb13b'],['Bass','#f2e15a'],['Lead Vocals','#5ec8ff'],['Backing Vox','#5eb4ff'],['Melodic Guitar','#7fd36b'],['Keys','#8f8cff'],['Pads','#c479ff'],['FX','#ff6fb1'],['A Reverb','#b7b7c2'],['B Delay','#b7b7c2'],['Main','#e8e8ee',1]];
+s+=R(lx,176,lwid,28,C.well,{r:6,s:'#30303a'});s+=T(lx+12,195,'Search channels and tools',{z:11.5,f:C.faint});
+s+=R(lx,210,lwid,14*21+12,C.panel,{r:6});const mv=[0.72,0.61,0.38,0.78,0.66,0.7,0.52,0.58,0.44,0.4,0.33,0.36,0.29,0.8];
+names.forEach(([n,c,sel],i)=>{const yy=216+i*21;if(sel)s+=R(lx+4,yy,lwid-8,20,'#34343f',{r:4});s+=R(lx+10,yy+5,10,10,c,{r:2});s+=T(lx+27,yy+14.5,n,{z:11.5,f:sel?C.text:'#b9b9c3',w:sel?600:400});s+=meterH(lx+lwid-78,yy+8,68,4,mv[i],Math.min(0.97,mv[i]+0.1))});
+const gy=210+14*21+20;s+=R(lx,gy,lwid,infoY-gy-8,C.panel,{r:6});s+=T(lx+12,gy+18,'Analysed',{z:11.5,w:600});s+=T(lx+lwid-12,gy+18,'Main',{z:10.5,f:C.dim,a:'end'});
+s+=T(lx+12,gy+42,'Click a channel to analyse it.',{z:10.5,f:C.faint});s+=T(lx+12,gy+58,'Ctrl-click a second one to lay it',{z:10.5,f:C.faint});s+=T(lx+12,gy+74,'over the first in every view.',{z:10.5,f:C.faint});
+s+=btn(lx+10,gy+92,lwid-20,22,'Back to the Stack',{z:11,f:C.dim});
+s+=infoBox(lx,infoY,lwid,infoH,{seed:9});
+// ---- the meter ----
+const mw=196,mx0=W-6-mw;s+=bigMeter(mx0,176,mw,SB-6-176,'Meter');
+
+// ---- the analysers, large ----
+const ax=lx+lwid+8,ar=mx0-8,cw=ar-ax,g=8;
+const frame=(x,y,w,h,title,sub)=>{let q=R(x,y,w,h,'#17171c',{r:8,s:'#2a2a33'});q+=T(x+14,y+21,title,{z:13,w:700});if(sub)q+=T(x+18+title.length*8.2,y+21,sub,{z:10.5,f:C.dim});
+  q+=P(`M${x+w-26} ${y+12}h8v8M${x+w-18} ${y+12}l-8 8`,{s:C.dim,sw:1.5});return q};
+let y=176;
+// Spectrogram
+{const h=320,w=Math.round(cw*0.60);s+=frame(ax,y,w,h,'Spectrogram','Enhanced  ·  Log  ·  4096  ·  scroll');const ix=ax+44,iy=y+32,iw=w-56,ih=h-58;s+=spectro(ix,iy,iw,ih,21);
+ ['20k','10k','5k','2k','1k','500','200','100','50'].forEach((t,k)=>s+=T(ax+38,iy+8+k*(ih-10)/8,t,{z:9.5,f:C.dim,a:'end'}));for(let k=0;k<=8;k++)s+=T(ix+iw*k/8-(k===8?18:0),iy+ih+14,(k-8)+' s',{z:9.5,f:C.dim});
+ s+=pill(ax+w-250,y+8,56,17,'Freeze');s+=pill(ax+w-188,y+8,70,17,'Colours ▾');s+=pill(ax+w-112,y+8,74,17,'Keyboard');s+=note(ax-2,y+12,3);
+ // Spectrum
+ const x2=ax+w+g,w2=cw-w-g;s+=frame(x2,y,w2,h,'Spectrum','Stereo  ·  4096  ·  slope 4.5 dB');const jx=x2+38,jy=y+32,jw=w2-50,jh=h-58;s+=spectrumd(jx,jy,jw,jh,5);
+ ['0','-12','-24','-36','-48','-60','-72'].forEach((t,k)=>s+=T(x2+32,jy+6+k*(jh-8)/6,t,{z:9.5,f:C.dim,a:'end'}));[['20',20],['50',50],['100',100],['200',200],['500',500],['1k',1000],['2k',2000],['5k',5000],['10k',10000]].forEach(([t,f])=>s+=T(jx+jw*Math.log(f/20)/Math.log(1000)+2,jy+jh+14,t,{z:9.5,f:C.dim}));
+ s+=R(jx+jw*0.566-34,jy+24,84,34,'#0f0f13',{r:6,s:'#4b4b5a'});s+=T(jx+jw*0.566+8,jy+38,'1.04 kHz',{z:10.5,a:'middle'});s+=T(jx+jw*0.566+8,jy+52,'-21.6 dB   C6',{z:9.5,a:'middle',f:C.dim});s+=note(x2-2,y+12,4);y+=h+g}
+// Scope, Phase, Loudness
+{const h=300,w1=Math.round(cw*0.42),w2=Math.round(cw*0.26),w3=cw-w1-w2-2*g;
+ s+=frame(ax,y,w1,h,'Scope','1 bar  ·  trigger: beat  ·  L and R');{const ix=ax+38,iy=y+32,iw=w1-50,ih=h-58;s+=R(ix,iy,iw,ih,'#0c0d10',{r:6});for(let k=1;k<8;k++)s+=L(ix+iw*k/8,iy,ix+iw*k/8,iy+ih,'#ffffff',1,{op:k%2?0.04:0.08});for(let k=1;k<4;k++)s+=L(ix,iy+ih*k/4,ix+iw,iy+ih*k/4,'#ffffff',1,{op:k===2?0.12:0.05});
+  const wave=(seed,c,ph)=>{const r=rng(seed);let d='',e=0;for(let k=0;k<=iw;k+=1.2){const u=k/iw,hit=(u*4%1)<0.04?1:0;e=Math.max(e*0.99,hit);const v=(Math.sin(u*70+ph)*0.55+Math.sin(u*190+ph*2)*0.3+(r()-0.5)*0.35)*(0.18+0.82*e);d+=(k?'L':'M')+(ix+k).toFixed(1)+' '+(iy+ih/2-v*ih*0.44).toFixed(1)}return P(d,{s:c,sw:1.1,op:0.9})};s+=wave(4,'#ff8a4a',0.4)+wave(9,C.val,0);
+  ['+1','0','-1'].forEach((t,k)=>s+=T(ax+32,iy+8+k*(ih-10)/2,t,{z:9.5,f:C.dim,a:'end'}));['1.1','1.2','1.3','1.4','2.1'].forEach((t,k)=>s+=T(ix+iw*k/4-(k===4?16:0),iy+ih+14,t,{z:9.5,f:C.dim}));s+=pill(ax+w1-196,y+8,56,17,'Freeze');s+=pill(ax+w1-134,y+8,96,17,'Add a channel')}
+ s+=note(ax-2,y+12,5);
+ const x2=ax+w1+g;s+=frame(x2,y,w2,h,'Phase','');{const mx=x2+w2/2,my=y+128,rr=86;s+=CI(mx,my,rr,'#0c0d10',{s:'#30303a'});s+=L(mx-rr,my,mx+rr,my,'#ffffff',1,{op:0.07})+L(mx,my-rr,mx,my+rr,'#ffffff',1,{op:0.07})+L(mx-61,my-61,mx+61,my+61,'#ffffff',1,{op:0.06})+L(mx-61,my+61,mx+61,my-61,'#ffffff',1,{op:0.06});
+  const r=rng(99);let d='';for(let k=0;k<700;k++){const m=(r()+r()+r()-1.5)*58,sd=(r()+r()-1)*24;d+=`M${(mx+sd).toFixed(1)} ${(my-m).toFixed(1)}h0.1`}s+=`<path d="${d}" stroke="${C.val}" stroke-width="1.6" stroke-linecap="round" opacity="0.75"/>`;s+=T(mx-rr+4,my-rr+10,'L',{z:10,f:C.dim});s+=T(mx+rr-10,my-rr+10,'R',{z:10,f:C.dim});
+  let yy=y+h-70;s+=T(x2+14,yy,'Correlation',{z:10.5,f:C.dim});s+=T(x2+w2-14,yy,'+0.62',{z:11.5,a:'end',w:700});s+=R(x2+14,yy+7,w2-28,7,'#0d0d0f',{r:3});s+=R(x2+w2/2,yy+7,(w2-28)*0.31,7,C.grn,{r:3});s+=L(x2+w2/2,yy+4,x2+w2/2,yy+17,'#777');
+  yy+=30;s+=T(x2+14,yy,'By band',{z:10.5,f:C.dim});const n=24,bw2=(w2-28)/n;const r2=rng(4);for(let k=0;k<n;k++){const v=k<3?0.95:0.35+0.6*r2();s+=R(x2+14+k*bw2,yy+8,bw2-1.5,18,v>0.5?C.grn:v>0.42?C.yel:C.rec,{r:1.5,op:0.35+0.6*v})}}
+ const x3=x2+w2+g;s+=frame(x3,y,w3,h,'Loudness','LUFS');{const ix=x3+38,iy=y+32,iw=w3-50,ih=150;s+=R(ix,iy,iw,ih,'#0c0d10',{r:6});['-6','-12','-18','-24','-30'].forEach((t,k)=>{const yy=iy+ih*k/4;s+=L(ix,yy,ix+iw,yy,'#ffffff',1,{op:0.05});s+=T(x3+32,yy+6,t,{z:9.5,f:C.dim,a:'end'})});
+  const r=rng(12);let d='',m='',a=0.5,b=0.5;for(let k=0;k<=iw;k+=2){a=a*0.9+0.1*r();b=b*0.5+0.5*r();const sv=0.42+0.3*a,mv2=sv+0.12*(b-0.5);d+=(k?'L':'M')+(ix+k)+' '+(iy+ih-sv*ih).toFixed(1);m+=(k?'L':'M')+(ix+k)+' '+(iy+ih-mv2*ih).toFixed(1)}
+  s+=P(m,{s:'#8b8b96',sw:0.8,op:0.7});s+=P(d+`L${ix+iw} ${iy+ih}L${ix} ${iy+ih}Z`,{f:C.val,op:0.14});s+=P(d,{s:C.val,sw:1.6});s+=L(ix,iy+ih*0.36,ix+iw,iy+ih*0.36,C.acc,1,{op:0.8});s+=T(ix+iw-4,iy+ih*0.36-4,'target -14',{z:9.5,f:C.acc,a:'end'});
+  const nums=[['Momentary','-8.9'],['Short-term','-9.6'],['Integrated','-10.4'],['Range','6.2 LU'],['True peak','-0.3 dB'],['PLR','10.1']];nums.forEach(([l,v],k)=>{const cx=x3+16+(k%3)*((w3-32)/3),cy=y+208+Math.floor(k/3)*44;s+=T(cx,cy,l,{z:10,f:C.dim});s+=T(cx,cy+22,v,{z:k===2?19:16,w:k===2?700:400})});s+=pill(x3+w3-108,y+8,70,17,'Reset')}
+ s+=note(x3-2,y+12,6);y+=h+g}
+// Analysis: one line per channel, what a mix engineer would look for
+{const h=SB-6-y;s+=frame(ax,y,cw,h,'Analysis','what stands out, channel by channel');const cols=[['Channel',14],['Peak',230],['Loudness',320],['Dynamic range',430],['Width',570],['Correlation',670],['Clipped',800],['Masked by',900],['Note',1080]];cols.forEach(([t,x])=>s+=T(ax+x,y+46,t,{z:10,f:C.dim}));s+=L(ax+12,y+54,ax+cw-12,y+54,'#2a2a33');
+ const rowsA=[['Lead Vocals','#5ec8ff','-3.4 dB','-14.2','8.5 dB','12 %','+0.96','0','Melodic Guitar, 1.1 to 3.8 kHz','Unmask is on: -6.2 dB'],['Bass','#f2e15a','-6.1 dB','-15.8','5.2 dB','0 %','+1.00','0','Kick, 50 to 90 Hz','no tool on it yet'],['Drum Bus','#ffb13b','-0.1 dB','-9.9','4.1 dB','38 %','+0.71','14 samples','—','limiter works 5.8 dB'],['Pads','#c479ff','-12.0 dB','-24.5','11.3 dB','92 %','-0.12','0','—','out of phase below 180 Hz'],['Main','#e8e8ee','-0.3 dB','-10.4','8.5 dB','41 %','+0.62','0','—','true peak within limit']];
+ rowsA.forEach((rw,i)=>{const yy=y+74+i*((h-80)/5);s+=R(ax+14,yy-10,10,10,rw[1],{r:2});s+=T(ax+32,yy,rw[0],{z:11.5,w:600});[230,320,430,570,670,800,900,1080].forEach((x,k)=>{const v=rw[k+2],warn=(k===5&&v!=='0')||(k===4&&v.startsWith('-'))||(k===7&&(v.includes('no tool')||v.includes('out of')));s+=T(ax+x,yy,v,{z:11,f:warn?C.acc:k===7?C.dim:C.text})})});s+=note(ax-2,y+12,7)}
+s+=R(0,SB,W,26,'#0e0e11');s+=T(12,SB+17,'Analysers  ·  Main  ·  nothing here costs processing while this view is closed',{z:11.5,f:C.dim});s+=T(W-12,SB+17,'17 Nov 2026  ·  a picture to talk about, not a build',{z:11,f:C.faint,a:'end'});
+finish(W,H,s);
+</script></body></html>

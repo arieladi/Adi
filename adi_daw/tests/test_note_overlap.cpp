@@ -352,28 +352,40 @@ void canonicalOrder() {
     const auto baseline = stream({a, b, c}, false, 48, 7, trailer);
     const Diff intent{{high, low}, {b}, {{c, cc}, {a, ca}}};
     std::string error;
+    // Every braced value is a named local: GCC 15's -Wdangling-pointer flags
+    // brace-initialised temporaries passed by reference here although the
+    // results are held by value (OverlapPlan, StreamPlan and Diff own theirs).
     const auto ordered = nd::orderOverlapDiff(baseline, intent, error);
-    check(ordered && *ordered == Diff{{low, high}, {b}, {{a, ca}, {c, cc}}},
-          "canonical arrays use baseline ordinal and unsigned added identity");
+    const Diff canonical{{low, high}, {b}, {{a, ca}, {c, cc}}};
+    check(ordered && *ordered == canonical, "canonical arrays use baseline ordinal and unsigned added identity");
     const auto plan = nd::resolveOverlap(baseline, intent);
     check(plan.ok(), "unsorted future stream accepts canonical diff");
-    if (plan.ok()) check(plan.stream.bytes == encoded(stream({ca, cc, low, high}, false, 48, 7, trailer)),
+    const auto unsortedFinal = encoded(stream({ca, cc, low, high}, false, 48, 7, trailer));
+    if (plan.ok()) check(plan.stream.bytes == unsortedFinal,
                          "unsorted future stream retains baseline order and appends canonical additions");
-    const auto sorted = nd::resolveOverlap(stream({b, a, c}, true, 48, 7, trailer), intent);
+    const auto sortedBaseline = stream({b, a, c}, true, 48, 7, trailer);
+    const auto sorted = nd::resolveOverlap(sortedBaseline, intent);
     check(sorted.ok(), "sorted future stream accepts canonical diff");
-    if (sorted.ok()) check(sorted.stream.bytes == encoded(stream({ca, cc, low, high}, true, 48, 7, trailer)),
+    const auto sortedFinal = encoded(stream({ca, cc, low, high}, true, 48, 7, trailer));
+    if (sorted.ok()) check(sorted.stream.bytes == sortedFinal,
                            "equal-time originals precede ID-canonical additions without pitch sorting");
     const auto small = record(5, 0, 1, 1), wide = record(wideId, 0, 1, 2), maximum = record(maximumId, 0, 1, 3);
-    const auto added = nd::resolveOverlap(stream({}), Diff{{maximum, small, wide}, {}, {}});
-    check(added.ok() && added.stream.effects.added == std::vector<Record>{small, wide, maximum},
+    const auto emptyStream = stream({});
+    const Diff additions{{maximum, small, wide}, {}, {}};
+    const auto added = nd::resolveOverlap(emptyStream, additions);
+    const std::vector<Record> addedOrder{small, wide, maximum};
+    check(added.ok() && added.stream.effects.added == addedOrder,
           "added IDs sort across the entire unsigned 64-bit domain");
-    if (added.ok()) check(added.stream.bytes == encoded(stream({small, wide, maximum})),
+    const auto addedFinal = encoded(stream({small, wide, maximum}));
+    if (added.ok()) check(added.stream.bytes == addedFinal,
                           "coincident additions have deterministic full-width identity order");
     error.clear();
-    const auto noOpOrder = nd::orderOverlapDiff(baseline, Diff{{}, {}, {{c, c}, {a, a}}}, error);
-    check(noOpOrder && noOpOrder->changed == std::vector<notes::Change>{{a, a}, {c, c}},
+    const Diff noOps{{}, {}, {{c, c}, {a, a}}};
+    const auto noOpOrder = nd::orderOverlapDiff(baseline, noOps, error);
+    const std::vector<notes::Change> noOpChanges{{a, a}, {c, c}};
+    check(noOpOrder && noOpOrder->changed == noOpChanges,
           "order-only helper retains outer byte-identical changes for later full comparison");
-    const auto noOpPlan = nd::resolveOverlap(baseline, Diff{{}, {}, {{c, c}, {a, a}}});
+    const auto noOpPlan = nd::resolveOverlap(baseline, noOps);
     check(noOpPlan.ok() && !noOpPlan.stream.changed && empty(noOpPlan.intent) && empty(noOpPlan.stream.effects),
           "normalized inner intent omits byte-identical changes");
 }

@@ -85,6 +85,16 @@ class Knobs final : public device::DeviceInstance {
     // Set to make the plug-in refuse every value, as a host whose set failed.
     bool refuse = false;
     int sets = 0;
+    void configuration(bool enabled) {
+        params_[0].automatable = !enabled;
+        params_[0].configurable = enabled;
+    }
+    void windowGesture(std::int32_t index, double value) {
+        broadcastParam(index, engine::ParamEventKind::Begin, 0);
+        values_[static_cast<std::size_t>(index)].store(value, std::memory_order_relaxed);
+        broadcastParam(index, engine::ParamEventKind::Value, value);
+        broadcastParam(index, engine::ParamEventKind::End, 0);
+    }
 
   private:
     device::DeviceIdentity identity_;

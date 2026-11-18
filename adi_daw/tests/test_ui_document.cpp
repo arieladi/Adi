@@ -5,14 +5,19 @@
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <thread>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -47,8 +52,305 @@ double bin(const std::array<float, 2048> &data, int k) {
                std::polar(1., -2 * 3.141592653589793 * k * i / 1024.);
     return std::abs(sum) / 512.;
 }
+
+// A declared nonzero runtime latency prevents the publication test from passing merely because
+// DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
+class SurfaceKnobs final : public device::DeviceInstance {
+  public:
+    const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+    std::int32_t latencySamples() const noexcept override { return 37; }
+    std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
+    const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
+    device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
+    bool setParam(const std::string &id, const device::ParamValue &v) override { return controls.setParam(id, v); }
+    std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
+    test::Knobs controls;
+};
+
+void refusedBeginOwnership(const std::filesystem::path &dir) {
+    using engine::ParamEventKind;
+    for (const bool guarded : {false, true}) for (const bool configuration : {false, true}) {
+        std::string error;
+        const auto file = dir / (std::string("refused-begin-") + (guarded ? "guarded-" : "common-") +
+                                 (configuration ? "configuration.adi" : "automatable.adi"));
+        auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+        check(document != nullptr, "refused Begin: fresh headless document");
+        if (!document) continue;
+        try {
+            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+                  "refused Begin: loaded device");
+            document->tick(0);
+            auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+            check(knobs && knobs->hasParamSink(), "refused Begin: callback producer attached");
+            if (!knobs) continue;
+            knobs->configuration(configuration);
+            const auto publication = document->parameterFeed().current();
+            const auto shown = std::find_if(publication->begin(), publication->end(), [](const auto &p) { return p.id == 3; });
+            check(shown != publication->end(), "refused Begin: published exact target");
+            if (shown == publication->end()) continue;
+            const auto runtime = shown->runtime;
+            const auto stamp = shown->instance;
+            const auto event = [&](ParamEventKind kind, double v) {
+                return guarded ? document->parameterGestureExpected(3, "cutoff", kind, v, runtime, stamp)
+                               : document->parameterGesture(3, "cutoff", kind, v);
+            };
+            const auto count = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64(); };
+            const auto before = count();
+            const auto undoBefore = document->ops().nextUndo()->txnId;
+            // A completed SDK-window edit is queued without a timer tick. Begin must
+            // drain it and discover the SQL refusal only after accepting the new owner.
+            knobs->windowGesture(1, .6);
+            document->store().db().exec("CREATE TEMP TRIGGER refuse_older BEFORE INSERT ON main.ops "
+                "WHEN NEW.op_type='device.setParam' BEGIN SELECT RAISE(ABORT,'older gesture rejected'); END");
+            check(!event(ParamEventKind::Begin, .5) &&
+                      document->error().find("older gesture rejected") != std::string::npos &&
+                      count() == before && document->ops().nextUndo()->txnId == undoBefore,
+                  "refused Begin: reports older store failure without a journal/head change");
+            const auto pending = document->pendingParameterGestures();
+            const auto old = std::find_if(pending.begin(), pending.end(), [](const auto &p) {
+                return p.parameterId == "gain";
+            });
+            check(old != pending.end() && old->owner && old->submission == CapturedSubmissionPhase::Refused,
+                  "refused Begin: older refused transaction remains owned and inspectable");
+            const auto oldOwner = old != pending.end() ? old->owner : nullptr;
+            document->store().db().exec("DROP TRIGGER refuse_older");
+            document->tick(1);
+            document->tick(2);
+            const auto settled = document->pendingParameterGestures();
+            check(std::none_of(settled.begin(), settled.end(), [](const auto &p) {
+                      return p.parameterId == "cutoff";
+                  }) && std::any_of(settled.begin(), settled.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }) && count() == before,
+                  "refused Begin: new unclaimed owner retires; older refusal is never retried or cancelled");
+            check(event(ParamEventKind::Begin, .5) && event(ParamEventKind::Value, .75) &&
+                      event(ParamEventKind::End, .75) &&
+                      std::abs(knobs->getParam("cutoff").normalized - .75) < 1e-12,
+                  "refused Begin: first fresh same-parameter gesture accepts and releases its explicit bracket");
+            // Completed packets remain FIFO behind the deliberately unretried older
+            // refusal. Accepting the new edit must neither retry nor erase that packet.
+            const auto completed = document->pendingParameterGestures();
+            check(count() == before && std::any_of(completed.begin(), completed.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
+        } catch (const std::exception &e) { check(false, e.what()); }
+    }
+}
+
+void mixSurfacePublication(const std::filesystem::path &file) {
+    using engine::ParamEventKind;
+    engine::DeviceLoader loader = [](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == test::kKnobsUid)
+            return std::make_unique<SurfaceKnobs>();
+        error = "not the surface fixture";
+        return nullptr;
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, std::move(loader), error);
+    check(document != nullptr, "Mix View: an owned document for the real parameter publication");
+    if (!document)
+        return;
+    try {
+        document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                   test::kKnobsUid + "','Surface controls'),(4,'clap','test.unavailable','Unavailable')");
+        std::vector<OpRequest> make(3);
+        make[0].opType = "chain.create";
+        make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+        make[1].opType = "device.insert";
+        make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 1}, {"ref", 3},
+                           {"name", "Same name"}, {"latency", 0}};
+        make[2].opType = "device.insert";
+        make[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 0}, {"ref", 4},
+                           {"name", "Same name"}, {"latency", 999}};
+        check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+              "Mix View: actual loaded and missing devices in authored order");
+        document->setParameterDemand(document.get(), {3, 4});
+        document->tick(0);
+        const auto panelOf = [&](std::int64_t id) -> const ui::DevicePanelData * {
+            const auto publication = document->parameterFeed().current();
+            for (const auto &data : *publication)
+                if (data.id == id)
+                    return &data;
+            return nullptr;
+        };
+        auto *knobs = dynamic_cast<SurfaceKnobs *>(document->session().instanceFor(3));
+        const auto *initial = panelOf(3);
+        const auto *missing = panelOf(4);
+        check(knobs && initial && missing, "Mix View: both devices retain their own publication records");
+        if (!knobs || !initial || !missing)
+            return;
+        const auto firstStamp = initial->instance;
+        const auto firstRuntime = initial->runtime;
+        check(firstStamp != 0 && missing->instance != 0 && firstStamp != missing->instance &&
+                  initial->available && initial->latency == 37 && !missing->available && missing->latency == 0 &&
+                  firstRuntime.sameInstance(document->session().deviceRuntimeToken(3)) &&
+                  document->session().resolveDevice(firstRuntime) == knobs,
+              "Mix View: opaque stamps, exact runtime, actual latency and missing availability are published");
+        std::vector<std::int64_t> order;
+        for (const auto &data : *document->parameterFeed().current())
+            if (data.track == 2)
+                order.push_back(data.id);
+        check(order == std::vector<std::int64_t>{4, 3},
+              "Mix View: publication follows chain order rather than device id or duplicate names");
+        const auto kept = document->parameterFeed().current();
+        document->tick(1);
+        check(panelOf(3)->instance == firstStamp && panelOf(4)->instance == missing->instance,
+              "Mix View: a fresh value publication does not remint loaded or missing instance stamps");
+        check(document->deviceAction("device.rename", {{"id", 3}, {"name", "Renamed controls"}}) &&
+                  document->deviceAction("device.setEnabled", {{"id", 3}, {"enabled", false}}) &&
+                  document->deviceAction("device.move", {{"id", 3}, {"chain", 3}, {"ord", -1}}),
+              "Mix View: rename, bypass and reorder use existing document operations");
+        check(panelOf(3)->instance == firstStamp && panelOf(3)->available && !panelOf(3)->enabled &&
+                  panelOf(3)->latency == 37 && panelOf(3)->runtime.sameInstance(firstRuntime) &&
+                  panelOf(3)->name == "Renamed controls",
+              "Mix View: metadata edits preserve the instance and a bypassed device remains available");
+        const auto old = std::find_if(kept->begin(), kept->end(), [](const auto &d) { return d.id == 3; });
+        check(old != kept->end() && old->name == "Same name" && old->enabled,
+              "Mix View: another surface's retained publication stays immutable");
+        const auto headTxn = [&] {
+            const auto head = document->ops().nextUndo();
+            return head ? head->txnId : std::int64_t{0};
+        };
+        const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64(); };
+        const auto rowValue = [&](const std::string &param) -> std::optional<double> {
+            for (const auto &row : document->session().model().pluginParams)
+                if (row.deviceId == 3 && row.paramId == param)
+                    return row.normalized;
+            return std::nullopt;
+        };
+        const auto beforeGesture = opCount(), beforeTxn = headTxn();
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin, .5, firstRuntime, firstStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .65, firstRuntime, firstStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .8, firstRuntime, firstStamp) &&
+                  opCount() == beforeGesture && headTxn() == beforeTxn &&
+                  std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9,
+              "Mix View: the exact presented target sounds immediately and writes nothing before gesture End");
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::End, .8, firstRuntime, firstStamp) &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->opCount == 2 &&
+                  headTxn() != beforeTxn && rowValue("cutoff") && std::abs(*rowValue("cutoff") - .8) < 1e-9 &&
+                  panelOf(3)->instance == firstStamp,
+              "Mix View: one guarded gesture is one undo transaction and preserves the instance stamp");
+        check(document->ops().undo().ok && document->synchronise() && headTxn() == beforeTxn && !rowValue("cutoff"),
+              "Mix View: one undo returns the guarded parameter gesture to the previous stored state");
+        check(document->ops().redo().ok && document->synchronise() && rowValue("cutoff") &&
+                  std::abs(*rowValue("cutoff") - .8) < 1e-9,
+              "Mix View: one redo restores the whole guarded gesture");
+
+        check(document->deviceAction("device.remove", {{"id", 3}}) && !panelOf(3),
+              "Mix View: removing a device removes its publication before undo");
+        check(document->ops().undo().ok && document->synchronise(), "Mix View: undo restores the actual device");
+        document->tick(2);
+        const auto restoredStamp = panelOf(3)->instance;
+        const auto restoredRuntime = panelOf(3)->runtime;
+        check(restoredStamp != firstStamp && restoredRuntime.sameInstance(firstRuntime),
+              "Mix View: undo remints the surface stamp even when the engine deliberately retains the runtime");
+        const auto setsBeforeStale = knobs->controls.sets;
+        const auto opsBeforeStale = opCount();
+        const auto valueBeforeStale = knobs->getParam("gain").normalized;
+        bool rejected = true;
+        for (const auto event : {ParamEventKind::Begin, ParamEventKind::Value, ParamEventKind::End})
+            rejected = !document->parameterGestureExpected(3, "gain", event, .9, firstRuntime, firstStamp) && rejected;
+        check(rejected && document->error().find("changed") != std::string::npos &&
+                  knobs->controls.sets == setsBeforeStale && opCount() == opsBeforeStale &&
+                  knobs->getParam("gain").normalized == valueBeforeStale && !rowValue("gain"),
+              "Mix View: stale retained callbacks cannot change the restored device or create undo operations");
+        check(document->parameterGestureExpected(3, "gain", ParamEventKind::Begin, .25, restoredRuntime, restoredStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .4, restoredRuntime, restoredStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::End, .4, restoredRuntime, restoredStamp) &&
+                  rowValue("gain") && std::abs(*rowValue("gain") - .4) < 1e-9,
+              "Mix View: the restored device accepts a fresh explicitly targeted gesture");
+
+        document->prepare(48000, 128);
+        document->tick(3);
+        const auto formatStamp = panelOf(3)->instance;
+        const auto formatRuntime = panelOf(3)->runtime;
+        const auto setsBeforeFormat = knobs->controls.sets;
+        const auto opsBeforeFormat = opCount();
+        check(formatRuntime.sameInstance(restoredRuntime) && !document->session().resolveDevice(restoredRuntime) &&
+                  !document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .95, restoredRuntime, formatStamp) &&
+                  knobs->controls.sets == setsBeforeFormat && opCount() == opsBeforeFormat &&
+                  std::abs(knobs->getParam("gain").normalized - .4) < 1e-9,
+              "Mix View: a format-stale runtime is refused even when its instance claim is unchanged");
+        check(document->parameterGestureExpected(3, "gain", ParamEventKind::Begin, .4, formatRuntime, formatStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .45, formatRuntime, formatStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::End, .45, formatRuntime, formatStamp),
+              "Mix View: the new format's presented runtime remains editable");
+
+        const auto activeStamp = panelOf(3)->instance;
+        const auto activeRuntime = panelOf(3)->runtime;
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin, .8, activeRuntime, activeStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .82, activeRuntime, activeStamp),
+              "Mix View: an explicit target-owned drag is active when the device format changes");
+        document->prepare(96000, 256);
+        document->tick(4);
+        const auto resumedStamp = panelOf(3)->instance;
+        const auto resumedRuntime = panelOf(3)->runtime;
+        check(resumedStamp != activeStamp && resumedRuntime.sameInstance(activeRuntime),
+              "Mix View: format epoch invalidation remints the surface target even for the same SDK instance");
+        const auto setsBeforeStaleEnd = knobs->controls.sets;
+        const auto opsBeforeStaleEnd = opCount();
+        check(!document->parameterGestureExpected(3, "cutoff", ParamEventKind::End, .82,
+                                                  activeRuntime, activeStamp) &&
+                  knobs->controls.sets == setsBeforeStaleEnd && opCount() == opsBeforeStaleEnd,
+              "Mix View: stale End cannot write a value into the changed format or append a stale commit");
+        const bool resumedBegin = document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin,
+            knobs->getParam("cutoff").normalized, resumedRuntime, resumedStamp);
+        const auto beginError = document->error();
+        const bool resumedValue = resumedBegin && document->parameterGestureExpected(3, "cutoff",
+            ParamEventKind::Value, .86, resumedRuntime, resumedStamp);
+        const auto valueError = document->error();
+        const bool resumedEnd = resumedBegin && document->parameterGestureExpected(3, "cutoff",
+            ParamEventKind::End, .86, resumedRuntime, resumedStamp);
+        const auto endError = document->error();
+        const bool resumed = resumedBegin && resumedValue && resumedEnd;
+        if (!resumed)
+            std::printf("  active-format recovery Begin=%d (%s), Value=%d (%s), End=%d (%s)\n",
+                        resumedBegin ? 1 : 0, beginError.c_str(), resumedValue ? 1 : 0, valueError.c_str(),
+                        resumedEnd ? 1 : 0, endError.c_str());
+        check(resumed && rowValue("cutoff") && std::abs(*rowValue("cutoff") - .86) < 1e-9,
+              "Mix View: a format interruption releases the explicit owner and a fresh same-parameter drag commits");
+
+        check(document->deviceAction("device.remove", {{"id", 3}}) &&
+                  document->deviceAction("device.insert", {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 4},
+                                                            {"name", "Replacement"}, {"latency", 999}}),
+              "Mix View: reuse of the numeric device id with another authored reference");
+        const auto *replacement = panelOf(3);
+        check(replacement && replacement->instance != resumedStamp && !replacement->available && replacement->latency == 0 &&
+                  std::all_of(replacement->records.begin(), replacement->records.end(), [](const auto &r) { return r.missing; }),
+              "Mix View: an unmatched retained engine instance cannot advertise editable replacement controls");
+        const auto replacementSets = knobs->controls.sets;
+        const auto replacementOps = opCount();
+        check(replacement && !document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .99,
+                                                                 resumedRuntime, replacement->instance) &&
+                  knobs->controls.sets == replacementSets && opCount() == replacementOps,
+              "Mix View: the exact current stamp cannot authorize editing an unavailable replacement");
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
+    document->release();
+}
 } // namespace
 int main(int argc, char **argv) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc == 3 && std::string(argv[1]) == "--fixture") {
         std::string error;
         auto doc = ui::ProjectDocument::open(ui::pathFromUtf8(argv[2]), true, {}, error);
@@ -562,8 +864,8 @@ int main(int argc, char **argv) {
                       back.insert.value("params", Payload::array()) == cut.insert.value("params", Payload::array()) &&
                       back.insert.value("name", "") == "UI knobs",
                   "with its name and stored parameters");
-            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error().find("no device chain") != std::string::npos,
-                  "a track with no chain is refused, with the reason");
+            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error()=="destination track is missing",
+                  "a missing destination track is refused, with the reason");
             // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
             {
                 const auto rack = chainOrder()[0];
@@ -614,6 +916,7 @@ int main(int argc, char **argv) {
             make[1].opType = "device.insert";
             make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
             check(strip->ops().submit(std::move(make)).ok && strip->synchronise(), "a device on track 2");
+            strip->setParameterDemand(strip.get(), {3});
             strip->tick(0); // the timer's frame: the feed publishes the new device
             auto *knobs = dynamic_cast<test::Knobs *>(strip->session().instanceFor(3));
             const auto *entry = strip->session().entryFor(3);
@@ -747,6 +1050,7 @@ int main(int argc, char **argv) {
             spec.defaultValue = .5;
             check(armed->ops().submit(automation::createLane(spec)).ok && armed->synchronise(),
                   "a lane on its Cutoff, with no points: the lane plays its default");
+            armed->setParameterDemand(armed.get(), {3});
             armed->tick(0); // the timer's frame: the feed publishes the device
             auto *knobs = dynamic_cast<test::Knobs *>(armed->session().instanceFor(3));
             auto snapshot = [&] { return armed->view().current(); };
@@ -854,6 +1158,7 @@ int main(int argc, char **argv) {
             spec.defaultValue = .5;
             make.push_back(automation::createLane(spec));
             check(clap->ops().submit(std::move(make)).ok && clap->synchronise(), "the device and a lane on its Cutoff");
+            clap->setParameterDemand(clap.get(), {3});
             clap->tick(0);
             auto cutoffRecord = [&]() -> const panel::Record * {
                 const auto feed = clap->parameterFeed().current();
@@ -879,6 +1184,8 @@ int main(int argc, char **argv) {
             check(false, e.what());
         }
     }
+    refusedBeginOwnership(temp.path());
+    mixSurfacePublication(temp.path() / "mix-surface.adi");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

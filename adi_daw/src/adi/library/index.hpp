@@ -15,7 +15,18 @@ struct Entry {
     std::int64_t modifiedNs = 0;
     bool present = true;
 };
-struct ScanResult { bool ok = false; std::uint64_t files = 0, unchanged = 0, queued = 0; std::string error; };
+struct ScanResult {
+    bool ok = false;
+    std::uint64_t files = 0, unchanged = 0, queued = 0;
+    std::string error;
+    bool cancelled = false;
+};
+struct ScanProgress {
+    enum class Phase { Discovering, Publishing };
+    Phase phase = Phase::Discovering;
+    std::uint64_t visited = 0, files = 0;
+};
+using ScanObserver = std::function<void(const ScanProgress &)>;
 struct WorkerStats { std::uint64_t hashed = 0, failed = 0; bool lowPriority = false; };
 // Off-callback, application-scoped persistent library, one indexing owner per database.
 // File-index rows are rebuildable; authored annotations/sample defaults are user
@@ -34,7 +45,15 @@ public:
     Index& operator=(const Index&) = delete;
     // Metadata pass returns before hashes; relativeFolder cannot escape root.
     // Incomplete scans fail without marking unseen files missing.
-    ScanResult scan(const Volume&, const std::filesystem::path& relativeFolder = {});
+    // Cooperative stop between filesystem/SQL operations, including waiting
+    // for the database mutex. Cancellation preserves the last complete index
+    // and queues no hashes. A stop after commit is a completed scan.
+    // Observer runs synchronously during discovery and before publication,
+    // always outside the database mutex. It may inspect entries/request stop;
+    // do not recursively scan or mutate the index from it. Return reports the
+    // terminal state; no fallible observer is called after a durable commit.
+    ScanResult scan(const Volume &, const std::filesystem::path &relativeFolder = {},
+                    std::stop_token stop = {}, ScanObserver observer = {});
     std::vector<Entry> entries() const;
     void start();
     void cancel(); // Cooperative stop + join. Pending rows remain restartable.

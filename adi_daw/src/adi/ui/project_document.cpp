@@ -2,6 +2,8 @@
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
+#include "adi/mix_function_edit.hpp"
+#include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
@@ -32,7 +34,24 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());
+    const auto lifetime = session_.lifetimeToken();
+    analysis_ = std::make_shared<SharedAnalysis>(
+        [this, lifetime](engine::ScopeSource source, double seconds) -> std::shared_ptr<const engine::ScopeTap> {
+            if (lifetime.expired()) return std::shared_ptr<const engine::ScopeTap>{};
+            auto &held = analysisSources_[source];
+            if (!held.lease || held.seconds != seconds) {
+                // Prepare the new history while the old lease still holds its publication.
+                auto replacement = session_.requestScope({source, seconds});
+                held.lease = std::move(replacement);
+                held.seconds = seconds;
+            }
+            return held.lease.tap();
+        },
+        [this, lifetime](engine::ScopeSource source) {
+            if (!lifetime.expired()) analysisSources_.erase(source);
+        });
 }
+ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
@@ -64,7 +83,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         }
         document->realisedGeneration_ = document->view_.generation();
         document->parameterOps_.attachSession(document->session_);
-        document->feed_.publish(document->session_);
+        document->feed_.publish(document->session_, document->realisedGeneration_);
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -192,6 +211,7 @@ bool ProjectDocument::synchronise() {
                 parameterOps_.detach(entry.deviceId);
         }
         parameterOps_.attachSession(session_);
+        analysis_->refreshSources();
         error_.clear();
     }
     // The session re-read the rows after the submitter's refresh, so an override it found there,
@@ -225,7 +245,7 @@ bool ProjectDocument::reenableAutomation() {
     // snapshot unlights the switch and the strip's marks go back from overridden to automated in
     // the same call, so the window never shows a set the session no longer holds.
     followOverrides();
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     error_ = refusal;
     return ok;
 }
@@ -255,7 +275,10 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
+}
+void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
+    if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
 }
 bool ProjectDocument::autoGainStage(bool lufs) {
     engine::GainStageOptions options;
@@ -276,7 +299,7 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
@@ -307,8 +330,34 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
+}
+bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
+    const auto available = device::mixFunctionAvailability(kind);
+    if (!available.ready) { error_ = available.reason; return false; }
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready);
+    if (!prepared.ok) { error_ = prepared.error; return false; }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
+        return mix::commitFunctionEdit(s, p, a);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise()) return false;
+    feed_.publish(session_, realisedGeneration_); return true;
+}
+bool ProjectDocument::moveMixFunction(const DevicePanelData &expected, std::int64_t track,
+                                       std::optional<std::int64_t> before) {
+    if (!deviceTargetCurrent(expected.id, expected.runtime, expected.instance)) {
+        error_ = "That function changed before it could be moved."; return false;
+    }
+    auto prepared = mix::prepareFunctionMove(*store_, expected.id, track, before);
+    if (!prepared.ok) { error_ = prepared.error; return false; }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
+        return mix::commitFunctionEdit(s, p, a);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise()) return false;
+    feed_.publish(session_, realisedGeneration_); return true;
 }
 namespace {
 // Commits a prepared sample batch and hands each new state to the live device, as the engine's
@@ -340,7 +389,7 @@ bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
@@ -360,7 +409,7 @@ bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
         parameterOps_.appliedState(*store_, state, captureNowMs());
     if (!synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 std::string ProjectDocument::deviceCopyIdentity() const {
@@ -371,6 +420,16 @@ std::string ProjectDocument::deviceCopyIdentity() const {
     return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
+    if (copy.reference && mix::functionForReference(copy.reference->format, copy.reference->uid)) {
+        SQLite::Statement exists(store_->db(),
+            "WITH RECURSIVE chains(id) AS (SELECT id FROM device_chains WHERE track_id=? "
+            "UNION SELECT c.id FROM device_chains c JOIN devices owner ON owner.id=c.parent_device_id "
+            "JOIN chains parent ON parent.id=owner.chain_id) "
+            "SELECT 1 FROM devices d JOIN chains c ON c.id=d.chain_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+            "WHERE p.format='internal' AND p.uid=? LIMIT 1");
+        exists.bind(1,track); exists.bind(2,copy.reference->uid);
+        if (exists.executeStep()) { error_ = "That function is already present on this channel."; return false; }
+    }
     // The chain the device goes into: the one holding `before`, else the track's own (a rack's
     // nested chains belong to a device, never to the track).
     std::int64_t chain = 0;
@@ -394,7 +453,8 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
         ++id;
     // With no chain the engine still checks the copy first, so a copy from another project or a rack
     // says so rather than that the track has no chain.
-    auto prepared = prepareDevicePaste(*store_, copy, id, chain, before);
+    auto prepared = !before && chain == 0 ? prepareDevicePasteForTrack(*store_, copy, id, track)
+                                         : prepareDevicePaste(*store_, copy, id, chain, before);
     if (!prepared.ok) {
         error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
                  : prepared.error.empty()                         ? "The device could not be pasted."
@@ -407,7 +467,7 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;
-    feed_.publish(session_);
+    feed_.publish(session_, realisedGeneration_);
     return true;
 }
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
@@ -433,6 +493,59 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
+bool ProjectDocument::deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &expected,
+                                          std::uint64_t stamp) {
+    const bool pending = realisedGeneration_ != view_.generation();
+    if (!synchronise()) return false;
+    if (pending) feed_.publish(session_, realisedGeneration_);
+    const auto publication = feed_.current();
+    const auto shown = std::find_if(publication->begin(), publication->end(), [&](const auto &d) {
+        return d.id == id && d.instance == stamp;
+    });
+    if (shown == publication->end()) return false;
+    if (expected.claimIdentity().expired()) return shown->runtime.claimIdentity().expired();
+    const auto current = session_.deviceRuntimeToken(id);
+    return expected.sameInstance(current) && session_.resolveDevice(expected);
+}
+bool ProjectDocument::parameterGestureExpected(std::int64_t id, const std::string &param,
+                                             engine::ParamEventKind kind, double value,
+                                             const engine::DeviceRuntimeToken &expected, std::uint64_t stamp) {
+    const bool current = deviceTargetCurrent(id, expected, stamp);
+    const auto publication = feed_.current();
+    const bool available = std::any_of(publication->begin(), publication->end(), [&](const auto &d) {
+        return d.id == id && d.instance == stamp && d.available;
+    });
+    if (!current || !available || !session_.resolveDevice(expected)) {
+        const auto held = surfaceGestures_.find({id, param});
+        if (held != surfaceGestures_.end() && held->second.instance == stamp) {
+            // End the exact common owner issued to this surface. Sending a numeric-ID End to
+            // a replacement would be unsafe; cancellation can retire a detached presentation
+            // without invoking that obsolete SDK. A newer surface's owner is never cancelled.
+            const auto cancelled = parameterOps_.cancelPending(*held->second.owner, captureNowMs());
+            if (cancelled.status.ok()) surfaceGestures_.erase(held);
+        }
+        error_ = "That device changed while it was being edited. Start a new edit.";
+        return false;
+    }
+    const auto key = std::make_pair(id, param);
+    if (kind == engine::ParamEventKind::Begin && !surfaceGestures_.contains(key)) {
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.deviceId == id && pending.parameterId == param) {
+                error_ = "Another editor is still editing that parameter.";
+                return false;
+            }
+    }
+    const bool taken = parameterGesture(id, param, kind, value);
+    if (taken && kind == engine::ParamEventKind::Begin) {
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.deviceId == id && pending.parameterId == param && pending.owner) {
+                surfaceGestures_[key] = {stamp, pending.owner};
+                break;
+            }
+    }
+    if (taken && kind == engine::ParamEventKind::End) surfaceGestures_.erase(key);
+    return taken;
+}
 bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double normalized) {
     // A drag in the strip is an edit and goes through the capture, so a first touch emits its
@@ -444,14 +557,50 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     // (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the parameter's
     // automation lane for this run, which is what lights Re-Enable Automation.
     std::vector<OpRequest> requests;
-    const bool taken = parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    // Dispatch can accept a new Begin while draining an older completed edit. If the
+    // older transaction is refused below, this caller reports failure and cannot
+    // subsequently own/End the new gesture. Track core-issued identities, never
+    // infer its owner from a device/parameter id after store reconciliation.
+    const auto before = kind == engine::ParamEventKind::Begin
+                            ? parameterOps_.pendingGestures()
+                            : std::vector<engine::PendingParameterGesture>{};
+    // Explicit configuration uses this same owner, transaction and exact-runtime
+    // path without treating the setting as automatable. Other non-automatable
+    // parameters remain read-only.
+    const auto *instance = session_.instanceFor(id);
+    bool configuration = false;
+    if (instance)
+        for (std::int32_t i = 0; i < instance->paramCount(); ++i)
+            if (const auto *d = instance->paramAt(i); d && d->id == param) {
+                configuration = !d->automatable && d->configurable;
+                break;
+            }
+    const bool taken = configuration
+                           ? parameterOps_.uiConfigurationEvent(id, param, kind, normalized, captureNowMs(), requests)
+                           : parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    std::shared_ptr<const gesture::OwnerToken> newOwner;
+    if (taken && kind == engine::ParamEventKind::Begin)
+        for (const auto &pending : parameterOps_.pendingGestures())
+            if (pending.owner && pending.deviceId == id && pending.parameterId == param &&
+                std::none_of(before.begin(), before.end(), [&](const auto &old) {
+                    return old.owner && old.owner->sameOwner(*pending.owner);
+                })) {
+                newOwner = pending.owner;
+                break;
+            }
     const bool appended = !requests.empty();
     const bool committed = commitCaptured(requests); // error_ says why when the store refused
+    if (!committed && newOwner) {
+        // cancelPending retains a pending restoration if the exact runtime is busy;
+        // the normal owner pump retries it. Leave the older refusal and its error
+        // untouched, and never send an End to an authored id's replacement.
+        (void)parameterOps_.cancelPending(*newOwner, captureNowMs());
+    }
     // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
     // frame, so Re-Enable Automation lights with the knob's move.
     followOverrides();
     if (appended && committed)
-        feed_.publish(session_);
+        feed_.publish(session_, realisedGeneration_);
     if (!committed)
         return false;
     if (!taken) {
@@ -476,7 +625,7 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
         return "The plug-in has no parameter \"" + param + "\".";
     if (descriptor->missing)
         return "The plug-in no longer has the parameter \"" + descriptor->name + "\".";
-    if (!descriptor->automatable)
+    if (!descriptor->automatable && !descriptor->configurable)
         return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
     return "The plug-in did not take the value.";
 }
@@ -484,6 +633,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     engineRate_ = rate;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
+    analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {

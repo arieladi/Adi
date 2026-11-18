@@ -6,6 +6,178 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18 — the first design round closes on five sheets; a cloned tool looks like its source (ADR-0244)
+
+**For the seats — read first.**
+- **Every seat.** The sheets are in `collab/window/design/`: the design language, the Arrangement (with the Browser, the Info box and the Device View), and the Mix View's Stack, Focus and Analysers. Read that folder's README before any look work; where its words and a picture differ, the words win. A sheet changes only by the director's word.
+- **Every seat, the rule for clones.** Whatever ADI clones looks like its source: bx_meter, SPAN, VISU, BluPrint, s(M)exoscope, OScope, PsyScope Pro, FUSER, Trackspacer. "they should look the same as the plugins we are cloning (about the same at least)". Take the source's layout, read-outs and way of drawing; do not design another look. ADI draws it: no other maker's bitmaps, logos or fonts. The scope is s(M)exoscope's own display and controls from its source.
+- **Mix View seat.** Your look work is DF-M49 to DF-M55, in that order unless the director says otherwise: the layout that takes the window, the lens rows, the "+" and the plug-in chips, Sounding now, the meter, Focus, the Analysers. The director still holds everything addressed to you, the paste-back of the 17 November retest included (DF-M43 to DF-M46), until he says the round is closed; your prompt comes from him.
+- **Window lane.** DF-W24 (the design language in the window, the Control Bar first), DF-W25 (the Arrangement's group lines and the buttons over the track names), DF-W26 (the Device View showing the Mix View's EQ, compressor and limiter panels). Each Pd device still needs its own sheet before its panel is restyled (DF-W23).
+- **Engine seat.** Nothing of yours moved.
+
+**How the round went.** Thirteen pictures in two days: the language twice, the Arrangement twice, the Stack six times, Focus twice, the Analysers once. What turned the Stack was his video of Pro-Q 4's instance list: the list is a lens round the pointer, not a row that pops out. What he corrected most often was the drawing of things ADI clones (the meter, the spectrogram), which is where the rule above comes from.
+
+**Left open with him (DF-W27).** Two readings of his answers on Focus are win's and are marked so on the sheet; the contents of a channel's name tag in the Mix View wait for his own use of it.
+
+**Done with this entry.** ADR-0244; `collab/window/design/` with five pictures; DF-W24 to DF-W27 and DF-M49 to DF-M55; DF-W22 and DF-W23 brought up to date.
+
+**Suites at this entry.** Window 2,681 checks (no code moved); 244 ADRs.
+
+## 2026-11-17, later — the director does not accept the look; it is settled with him one surface at a time (ADR-0243)
+
+**For the seats — read first. This changes what each of you may build.**
+- **Every seat.** The director saw the pictures of today's retest and the window as it stands, and does not accept the look: "it looks like an attempt to put the qualities of what i want into the most generic looking things possible". From now the look of each surface is settled with him first and written as a sheet under `collab/window/design/`; a seat builds a surface's look only from its agreed sheet (ADR-0243 d1, DF-W20). What a surface does, its ops, its engine side and its tests, goes on as before.
+- **Mix View seat.** The Mix View is to take the window, with no Browser and no Device View beside it (DF-M47), and its function panels are to look like the devices in Pro-Q 4's instance list, the limiter from ADI-L's own design (DF-M48). Do not restyle anything yet: the sheets come first. The paste-back of today's retest (DF-M43 to DF-M46, all function, none look) is held by the director for now; win has asked him whether it may go.
+- **Window lane.** The Q and L buttons are gone from every strip and row with this PR: `MixerStrip::switches()` is three long, `kMixerTop` is 19, and the track row's delay box stands one row higher. Seven golden pictures were rewritten. Pull before you push. New look work waits for its sheet; function work goes on.
+- **Engine seat.** Nothing of yours moved.
+
+**The working rules win proposed to him** (his to change):
+1. One surface per round. Win shows the surface as built, beside his reference where there is one, and asks in order: what it is for and what must be seen first; layout and sizes; each control's shape and its states (resting, hover, pressed, on, off, disabled, selected); colour and type; what moves.
+2. Win answers each round with a drawn picture of what was agreed, to scale, before any code: he reacts to a picture, not to a description. The round ends when he says the picture is right.
+3. The first round is the design language itself, on one small picture that holds every kind of control, because every later surface is made of those parts.
+4. The agreed picture and its measures become the sheet; the build is then shown to him against it, side by side.
+5. Order after the language: the Arrangement with its clips (DF-W21); the track rows and the Mixer; the Info box (DF-W22); the Device View and one native panel, the limiter against ADI-L (DF-W23); the Mix View (DF-M47, DF-M48); the Clip View; the Browser; the Control Bar; menus, dialogs and Settings.
+
+**Done with this entry.** The Q and L buttons removed (ADR-0243 d2); ADR-0243; DF-W20 to DF-W23, DF-M47, DF-M48.
+
+**Suites at this entry.** Window 2,681 checks; 243 ADRs.
+
+## 2026-11-17 — the Clip View's menus, panels and scrolling; the device-key candidate passes its live retest, with four new rows
+
+**For the seats — read first.**
+- **Mix View seat.** Win's live retest of your candidate of 17 November (source `dc5b123b`) is done, and the report with its paste-back went to the director for you. Passed, heard in the running app: the device key on a VST3 and on the native Limiter, from every tap; the taps' content; latency after and before the target and before the source tap; stop, start, a jump and a reopen; target and source deletion with one Undo each; your EQ ducking setup with a routed key; every item of the five parameter menus from the Device View and from STACK tiles, keyboard included; the third-party gain plug-in's panel; the Undo titles, the Clip page's own title, the readable refusals, a new key beside an unavailable one, the popup across a project hand-over, the preset choosers on a fresh profile, and the set and function loads. DF-M40, DF-M41 and DF-M42 close when the PR lands. New from the same retest: **DF-M43** (a function added after a removed one shows the removed one's panel, every control "(missing)"), **DF-M44** (the EQ with External Sidechain on and no key routed listens to the programme; the Limiter does not), **DF-M45** (two gaps of about 10 ms when a key is set or removed while playing), **DF-M46** (smaller: the folded pill, the stored latency, CLAP still unheard). #579, #580 and #548 wait as before.
+- **Window lane.** `AppCommands` grew with #621 to #623: the ids after `DeleteFades` run through `FitToTimeRange`, the names table follows, and the Edit, View, Options and Navigate lists changed. Pull before you push.
+- **Engine seat.** Nothing of yours moved.
+
+**The Clip View, #615 to #624, in the order it landed.**
+- #615: time inside the clip; Pitch and Time as Live's; MIDI Note Stretch markers.
+- #616: the Note Editor's settings are kept with the window.
+- #617: several clips shown at once, paste across them, the title bar's menu, the Clip View Selector's drag, the editor's context menu.
+- #618: the Velocity lane's divider; note spelling from the piano's menu.
+- #619: a double-click on the title folds the panels.
+- #620: the Edit menu reaches the Note Editor while it has the keyboard; the first Mix View retest's findings registered.
+- #621: the Edit, View and Options menus reach the Note Editor through one table that also builds its context menu. Edit > Delete no longer deletes the selected track while the editor is in use.
+- #622: the panels side by side, stacked, or by the Clip View's height (three View entries, a pull on the panels' edge, the title's menu); Navigate > Clip View on Alt+3; Ctrl+F9 to F12 for the four Set buttons.
+- #623: Fit to Time Range (Ctrl+Alt+J, the context menu, the Edit menu, the Duration chooser).
+- #624: a stacked column higher than the view scrolls under the clip's title: the wheel, a thumb, and a field that opens comes whole into view.
+
+**How they landed.** Each stack through its top PR alone, the lower ones' queued runs cancelled; #622 carried #621. Every one passed its 21 checks at the first attempt.
+
+**Left open, each written in the parity list** (`collab/window/parity-7.7-clip-view.md`): the Clip View in its own window; Join Notes, Deactivate Note(s) and Duplicate Loop as Edit entries of their own; Loop Selection and Select Loop inside the editor; Alt+Shift+P and Alt+8; the rest of the editor's keys in the manual's table. Points to check on Live are beside their rows: where Live keeps the folds and Highlight Scales in its menus, the default panel arrangement and its switching height, the Duration chooser's Time Range entry, and whether Live's stacked column scrolls with its title standing.
+
+**Suites at this entry.** Window 2,681 checks; note edits 227; note geometry 52; window state 70; 242 ADRs.
+
+## 2026-11-16 to 17 — win builds the Clip View: Live's note editor, piece by piece, and the first additions from Cubase
+
+**For the seats — read first.**
+- **Window lane.** The Clip View is win's by the director's word of 16 November (ADR-0240); your list is `collab/prompts/2026-11-16-window-lane.md`, with the Plug-Ins browser first (DF-W9: a MIDI clip is silent until an instrument can be put on its track from the window). Win's Clip View work touched three shared places since your last pull: `ui_shell.cpp` (`selectionText` reads the Note Editor first; `toggleClipViewFull`), `ui_shell.hpp` (the same two), and `window_state.hpp` (the Clip View's default height is 278). No command id was added after `DeleteFades`. Pull before you push.
+- **Mix View seat.** Nothing of yours moved in this stretch. #579 still waits for DF-M32, #580 for DF-M33, #548 for DF-M29 and DF-M30.
+- **Engine seat.** The window now leans on these of yours every day: `readClipDetails`, `note.insert/delete/move/resize/setVelocity/setMute/quantize`, `clip.setLoop/setStartMarker/setEndMarker/setScale/setTimeSignature`. Three things the editor cannot do until notes carry more: Velocity Deviation and probability groups (MI-09), per-note expression (MI-08).
+
+**The rulings.** ADR-0240: the Clip View of 28 October is approved and win builds it. ADR-0241: audio pitch editing is P1 after warp markers; four note-editor tools from Cubase; per-note gain and pan with the MPE tab; Bitwig's operators, P2. ADR-0242: win's picks of the candidates are taken, slide notes and a drum editor are not, the rest is taken on condition that none impairs a function of Live's; Live's own clip editing was audited against our list (`collab/window/live-clip-view-audit-2026-11-16.md`), and it found that editing several clips together was one "later" row against some thirty behaviours in the manual. That was built first.
+
+**What is on main, in the order it landed (#586 to #612).** The frame and the read-only notes; creating a MIDI clip; adding, moving, resizing and deleting notes; the Main panel's fields and Set buttons; Pitch and Time's first tools; Fold, Draw Mode, zoom; chord editing, line tools, the trim tool and handles on velocities (ADR-0241 d2); several clips in one editor, each in its colour, with Focus; note cut, copy and paste and the insert marker; Live's overlap rule as the director measured it; Quantize, Split, Chop, Join; the Functions tab (velocity functions, Delete Doubles, Restrict Polyphony); time selection, the insert marker's keys and walking the notes by keys; the loop brace and the Start and End markers dragged; the Velocity lane as Live's, with Draw Mode in it; Randomize and Ramp; Scale Mode with Highlight Scale and Fold to Scale; the Status Bar's note readout.
+
+**In CI or waiting behind it.** #613 carries four steps in one PR: Find and Select Notes, the Quantize settings with swing, note colours, and getting about (Page keys, W and H, ruler and piano drags, the grid's keys and chooser, Follow, full height). Two more are committed and wait for it: time inside the clip (Crop Clip, Duplicate, Delete and Insert Time, Duplicate Loop), and Pitch and Time as Live's (Interval and Add Interval, the Stretch control, Duration and Set Length), which moves ADI's chord and overlap tools to a third tab, Chords.
+
+**How the work is checked.** Every rule that can live without a window does: `adi/ui/note_edits.hpp`, `note_filters.hpp`, `clip_edits.hpp`, `note_geometry.hpp`, tested by `adi_ui_note_edits_tests` (219 checks) and `adi_ui_note_geometry_tests` (49). The window suite drives the real components headless (2,547 checks) and still counts allocations in a steady frame: zero. Nothing was driven on the director's desktop.
+
+**The macOS runner.** Jobs shown as "cancelled" with no log were never run: the annotation reads "the job was not acquired by Runner of type hosted", GitHub's macOS arm64 capacity. One run per stacked PR starved it. The stack now lands through its top PR alone (`land_top.sh` in win's scratch: it re-runs cancelled jobs, stops on a real failure, retargets to main, merges, and closes the lower PRs as landed). #607 to #609 landed through #609, #610 to #612 through #612.
+
+**Left open, each written in the parity list beside its row** (`collab/window/parity-7.7-clip-view.md`): points to check on Live (which modifier walks the notes on Windows: the manual's text says Ctrl, its shortcut table Alt, and ADI follows the table; whether Up is the previous note; the units of the Time and Duration filters; what a note crossing a time selection's edge does in the time commands); points to read on Cubase (the trim tool's start side, the handles' formulas, the chord list, swing's range). Not built because the engine has no home for it yet: Velocity Deviation, the Chance lane and probability groups, the MPE tab, hearing a note as it is clicked. Not built yet at all: Humanize, the MIDI Tools, the Envelopes tab, the Sample Editor beyond its waveform, Note Stretch markers, the Clip View's own window.
+
+**Suites at this entry.** Window 2,547 checks; note edits 219; note geometry 49; 242 ADRs.
+
+## 2026-11-13 to 16 — the register; the Mix View's first functions and its analyser stack land; the seat turned toward what a user can reach; the window lane's next list
+
+**For the seats — read first.**
+- **Mix View seat.** #548 stays open for DF-M29 (the EQ goes dry after a processing-precision switch) and DF-M30 (a latency-neutral plan edit lands 2 to 32 blocks late and offline render does not wait). The compressor, gate and de-esser cores (#552 to #573) stay open for DF-M16, DF-M17 and DF-M18. #579 and #580 are in CI; win reviews them next.
+- **Window lane.** The next list is `collab/prompts/2026-11-16-window-lane.md`: group E's rest, recording from the window, C7, B6 and B7, the Delay Compensation item, F3, then the surfaces that landed with the engine's stack. The Mix View seat is working in `ui_devices.*`, `ui_stack.*` and the `mix_*` files.
+- **Engine seat (away).** DF-E9 (automation Undo deletes and re-inserts rows) and DF-E10 (the Link session tests under parallel ctest) are new since your last entry. #530 is still held for DF-E2.
+- **Control seat.** DF-C5 is new: `device.insert` does not check one function of each kind per channel.
+
+**The register (13 November).** The director asked that nothing postponed be left to memory. Every postponed item is now a row in `docs/DEFERRED.md` with an owner and a trigger, and a row closes only with a PR. It reached main with #512 on 16 November. The same day he answered the control slice's two open questions; they are ADR-0239 (the session token both ways, the user choosing; standalone first). He also said he does not merge: win merges, and brings him the options with a recommendation.
+
+**The control slice, #512, is merged.** Its last head was `5c976cae`, 21 of 21 checks. The outside security round on the MCP server was verified finding by finding and fixed in `ddd704bd` and `bb97ce23` (DF-C4, done). The director gave his go on 16 November and win merged it (`729892e2`). The fence on `ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.*` and `src/main.cpp` is lifted, and `docs/DEFERRED.md`, ADR-0233 and ADR-0239 are on main.
+
+**The Mix View, 13 to 15 November.**
+- Merged: #537 and #540 (13 November); #541 to #546 (15 November), each with its review findings fixed first. On main a user can add an EQ and a Limiter (with Clip) from the device area's +, see them as tabs, move and remove them with Undo, and see compact rows in the Mix View. Nobody has run that path in the app yet (DF-M1).
+- **The analyser stack landed as one merge, #578 (`ac5050bd`).** Twelve stacked PRs (#551, #553, #554, #556, #557, #559, #563, #565, #568, #569, #571, #574) had been checked against old bases. Win merged their two tips onto current main in one branch, ran the 21 checks once on the real result, merged it, and closed the twelve as landed. Changing a PR's base does not re-run its checks; a branch that merges the tips does.
+- **A decision-by-decision check of ADR-0236 and ADR-0237 against the code (15 November).** The foundation is on track. The drift: of 25 open PRs, twelve were compressor, gate and de-esser parts no user can load, and five were analyser parts nothing on screen uses. The seat's log said those functions wait for device sidechain keys; the Clean compressor does not need them. The findings are rows DF-M20 to DF-M28. The seat was asked to put a complete compressor a user can add first, then presets, adding from the Mix View and one meaning for a function's switch, then the keys. It resumed on 16 November with #579 (a usable Clean compressor) and #580 (adding from the Mix View; the remove switches unified).
+- **#548 reviewed and held.** Two regressions against main, both reproduced: DF-M29 and DF-M30. DF-M31 (a failure text naming a reload that does not exist) may follow.
+
+**CI and outside reviews.**
+- #575: `fetch_external.sh` stops on a failed or mismatched submodule (from the round on #518, #528 and #516; #518 was clean, #516 became DF-E9).
+- #576: the Python 3.9 validators run on ubuntu-24.04. #577: GCC 15's dangling-pointer warning in `test_note_overlap`.
+- `adi_link_session_tests` failed once on ubuntu arm64 on #548 and passed on re-run (DF-E10).
+
+**The window lane.** #549 (E2: Cut, Copy, Paste and Duplicate for clips and ranges) merged on 14 November; 24 of the worklist's 37 items are on main. The Clip View's picture (`window/clip-view`, 28 October) was put to the director again on 16 November; G1 to G3 start on his yes. C5's picture is asked of the lane. Win still owes the lane N10's home for `midi.port.remote` and N38's `tracks.role` column (the column can go ahead now that #512 is merged), and its three notes of 10 November (the ZIP's progress, the sidebar's labels, the place of Rec-Q and Play-Q).
+
+**DF-R1.** The director ruled on 15 November to continue as is. The row stays; no work on it is planned.
+
+**Next ADR is 0240.** DF-M27's two answers of the director's go into it.
+
+---
+
+## 2026-11-12 (afternoon) — #530 held for the engine seat; the Mix View foundation reviewed
+
+**For the engine seat — read first (#530, `engine/clip-trim`, now at `da1de8db`; fetch first).**
+- **Win added two commits.**
+  - `f1d64d3e`: main merged in.
+  - `da1de8db`: `sampleAtNs` puts linear clip envelope endpoints in exact integer samples. Your new check "linear clip envelope retains its native absolute end through a left-edge change" failed only on ubuntu arm64. It sits on a long-double half-sample tie (35 ms at 44.1 kHz is 1543.5), and long double is a different width on each platform.
+- **Held: #530 against main's #535.** #535's `silentAfterEnd` (adi_clip_candidate_ready_tests) fails with this branch on every leg. Its clip is what an import followed by moving Start leaves: `end_marker_ticks` = 40,000 samples, and `source_end_ns` still pinned at the whole file (2 s).
+  - On main, the End marker limits `playEnd`.
+  - On this branch, an unwarped clip with a physical clock applies only the ns pin and ignores the tick End. So the clip plays past the End the user sees.
+  - Decide which End wins when they disagree. Either way, make `clip.setStartMarker` and `clip.setEndMarker` keep `source_end_ns` and `end_marker_ticks` in sync, so the two cannot disagree. Then align the rule or #535's fixture. The note is on #530 too.
+
+**The Mix View seat's foundation, #537** (draft): STACK on the real device chains, and one shared Main spectrum for the Info box and OVERVIEW. Win's four-lens review confirmed 11 findings and refuted 5. They are posted on #537:
+- JUCE moved 9.0.2 → 9.0.5 inside the feature commit with no ADR. That waits for the director; win recommends yes, as its own ADR.
+- The first spectrum frame after a reopen or seek is mostly old audio.
+- An orphan tap is left attached when acquire throws.
+- An explicit gesture is left open when the Begin's commit is refused.
+- The analyser is unavailable after a rate change (deferred to MX-30).
+- Two test gaps.
+
+#537 merges after the fixes and his answer. The seat had stopped at its live-test gate; the live check now trails its work.
+
+**Merged since the morning entry:** #538 (window E1: Split and range edits), #535, #533, #536.
+
+---
+
+## 2026-11-12 — two outside reviews verified and fixed; the Mix View seat and ADiJ ruled; #512 green and still held
+
+**For the engine seat — read first.**
+- **Win pushed onto three of your branches.** Fetch before touching them again.
+  - `engine/clip-trim` (#530): `ffeec650` on your `e9712ecb`. It covers three things:
+    - `captureSampleDefaults` measures a linear clip from `pos_ns` and clamps the tick fallback at 0, because the ns→tick round trip could give −1 and refuse the save;
+    - `trimFrozenStart` treats a left extension of a clip already at source zero as a true no-op;
+    - it refuses `begin >= end`, and refuses a Start at or past an unlooped MIDI or warped clip's End marker.
+  - `engine/library-scan-cancel` (#533): `56d976cb` on your `953e15cd`. A file that vanishes between enumeration and stat is skipped, not a failed scan. A publication that throws reports no counts.
+  - `engine/transport-start` (#527, merged): a device stop (`Session::release`) cancels a pending count-in.
+- **Merged into `engine/log`** (`783f7c66`): main with #515 to #533, #527, #529 and ADR-0235 to 0237. Your next branches include them.
+- **Yours to take, verified but not fixed by win:**
+  1. **End-marker rounding.** `TempoMap::secondsToTicks` truncates, and `ticksToSeconds`/`nanos` round, so a linear clip's End that lands exactly on a tick can come back one tick short (the outside review's B1, found on #531). Summing `pos_ns + length_ns` as int64 in `defaultEnd`/`readClipDetails` fixes only some tempos. The real fix is in the conversion: snap when within a few ulps, or convert exactly for step maps. Also compute ClipPlayback's pinned `playEnd` from absolute endpoints, not a rounded duration: about 12.5 % of arbitrary linear clips lose their tail sample on a pinned End today.
+  2. `clip.setStartMarker` should clear or recompute `source_end_ns` when it pins End, so End and the source-end pin cannot disagree.
+  3. `ProgressiveDecoder`: when the last lease of a still-queued job goes, drop the job and release its admission at once.
+  4. `Index::scan`: a throw after `tx.commit()` (in the post-commit enqueue) is reported as a rollback with zero counts. And a subdirectory that vanishes mid-walk still fails the scan; walk it with `increment(ec)`.
+  5. #530's linear B2 test uses a zero ns offset, so it proves only the clamp. Add a case with a one-sample offset.
+  6. Count-in clicks are not on the latency-compensated clock (outside review 3.2), so with a latency-reporting plug-in, bar 1 lands that many samples after the count-in's grid. When the latency exceeds a beat, it needs a decision: extend the count-in, or let the metronome emit count-in beats. Measure Live first.
+
+**The outside reviews (Gemini via Antigravity), each claim checked twice against the code with probes:**
+- **Round 2,** on #520, #522 and #527: 8 claims; 5 real or partly real (all minor), 1 false, 2 harmless. Fixed in #529 (deferred foreign keys leaking out of compaction's rolled-back probe; leftover files on a failed project creation) and on #527 (count-in on device stop).
+- **Round 3,** on #515 and #530 to #533: 17 claims; 15 real or partly real (all minor), 2 false.
+  - #535 fixes #515's follow-ups: the worker no longer claims a ready page of its own request; reservations stop at End; a muted clip opens nothing; three tests now prove what they say.
+  - #530 and #533 are fixed on their branches.
+  - Not changed: A3 (not reachable), A4 and B5 (false), B6 (unreachable now, and a full-row guard would over-refuse).
+
+**Merged today:** #519, #520 (with win's Windows replace fix), #515–#518, #521–#529, #531, #532, #534 (ADR-0235 ADiJ stays light; ADR-0236 the Mix View seat; ADR-0237 his first Mix View answers; the Fable reviewer prompt for Sunday).
+
+**The Mix View seat.** It is a local Codex Pro session, with its mission in the director's private prompts folder. It builds the Mix View across the lanes, starting with a decision guide. Its branches are `mixview/…` and its log is `collab/mixview.md` on `mixview/log`.
+
+**#512** (the control MCP slice): main merged in (`ca55ceb1`, the ADR count now 237), all 21 checks green. Still held for the director's Q-O ruling, consent before AGT-03, and his go.
+
+---
+
 ## 2026-11-11 (afternoon) — the MCP slice waits for the director; FilmCraft cancelled; six engine PRs; a Windows replace fix; the runner outage
 
 **For the engine seat — read first.**
