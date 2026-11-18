@@ -841,20 +841,20 @@ ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
 void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
     // The shared chooser (language.png part D) with its arrow; in it "Show", dim, then the view.
     const auto r = getLocalBounds().toFloat();
-    controls::chooser(g, r, {}, look::fontLabel);
-    const auto font = look::font(look::fontLabel);
+    controls::chooser(g, r, {}, look::fontCaption);
+    const auto font = look::font(look::fontCaption);
     constexpr const char *kShow = "Show";
     const float label = juce::GlyphArrangement::getStringWidth(font, kShow);
-    const float left = r.getX() + 6.f, arrow = 14.f;
+    const float left = r.getX() + 5.f, arrow = 13.f;
     g.setFont(font);
     g.setColour(over || down ? look::text : look::textDim);
     g.drawText(kShow, juce::Rectangle<float>(left, r.getY(), label + 1.f, r.getHeight()),
                juce::Justification::centredLeft, false);
     // The view chosen, cut plain before the arrow as the shared chooser cuts its text (Live 12
     // manual, Figure 6.1).
-    const float from = left + label + 5.f;
+    const float from = left + label + 4.f;
     const auto room = juce::Rectangle<float>(from, r.getY(), std::max(0.f, r.getRight() - arrow - from), r.getHeight());
-    g.setFont(look::font(look::fontLabel, true));
+    g.setFont(look::font(look::fontCaption, true));
     g.setColour(getToggleState() ? look::accent : look::text);
     juce::Graphics::ScopedSaveState keep(g);
     g.reduceClipRegion(room.getSmallestIntegerContainer());
@@ -876,8 +876,10 @@ void BarButton::paintButton(juce::Graphics &g, bool over, bool down) {
     if (cell) {
         // A cell of its group (part B): lit in the accent while on, its letters in the ink; off, dim,
         // brighter under the pointer.
-        if (on)
-            controls::groupCell(g, r.reduced(1.f, 2.f), look::accent);
+        if (on) {
+            g.setColour(look::accent);
+            g.fillRoundedRectangle(r.reduced(1.f, 2.f), look::radiusBox);
+        }
         ink = on ? look::ink : over || down ? look::text : look::textDim;
     } else {
         const auto state = controls::stateOf(on, over, down, isEnabled());
@@ -889,7 +891,7 @@ void BarButton::paintButton(juce::Graphics &g, bool over, bool down) {
         return;
     }
     g.setColour(ink);
-    g.setFont(look::font(look::fontMini, true));
+    g.setFont(look::font(look::fontTiny, true));
     g.drawText(getButtonText(), r, juce::Justification::centred, false);
 }
 namespace {
@@ -906,26 +908,28 @@ void flipGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
 void automationGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
     g.setColour(ink);
     const auto c = r.getCentre();
-    g.drawLine(c.x - 5.f, c.y + 3.f, c.x + 5.f, c.y - 3.f, 1.4f);
-    g.fillEllipse(c.x - 6.5f, c.y + 1.5f, 3.f, 3.f);
-    g.fillEllipse(c.x + 3.5f, c.y - 4.5f, 3.f, 3.f);
+    juce::Path curve;
+    curve.startNewSubPath(c.x - 6.f, c.y + 5.f);
+    curve.cubicTo(c.x - 1.f, c.y + 5.f, c.x - 1.f, c.y - 4.f, c.x + 4.f, c.y - 4.f);
+    g.strokePath(curve, juce::PathStrokeType(1.5f));
+    g.fillEllipse(c.x + 2.5f, c.y - 6.f, 4.f, 4.f);
 }
 void lockGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
     g.setColour(ink);
     const auto c = r.getCentre();
-    g.drawRoundedRectangle(c.x - 5.f, c.y - 1.f, 10.f, 7.f, 1.5f, 1.4f);
+    g.drawRoundedRectangle(c.x - 4.5f, c.y - 0.5f, 9.f, 6.5f, 1.5f, 1.3f);
     juce::Path shackle;
-    shackle.addCentredArc(c.x, c.y - 3.f, 3.f, 3.f, 0.f, -juce::MathConstants<float>::halfPi,
+    shackle.addCentredArc(c.x, c.y - 2.5f, 2.5f, 2.5f, 0.f, -juce::MathConstants<float>::halfPi,
                           juce::MathConstants<float>::halfPi, true);
-    shackle.lineTo(c.x + 3.f, c.y - 1.f);
-    shackle.startNewSubPath(c.x - 3.f, c.y - 3.f);
-    shackle.lineTo(c.x - 3.f, c.y - 1.f);
+    shackle.lineTo(c.x + 2.5f, c.y - 0.5f);
+    shackle.startNewSubPath(c.x - 2.5f, c.y - 2.5f);
+    shackle.lineTo(c.x - 2.5f, c.y - 0.5f);
     g.strokePath(shackle, juce::PathStrokeType(1.4f));
 }
 } // namespace
 NamesBar::NamesBar()
     : flip("Flip Sides", "Flip sides", false, flipGlyph),
-      inOut("I-O", "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
+      inOut(juce::String::fromUTF8("I\xc2\xb7O"), "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
       sends("S", "Sends: show or hide the track controls' sends (Ctrl/Cmd+Alt+S).", true),
       returns("R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R).", true),
       mixer("M", "Mixer: the track controls' mixer.", true),
@@ -945,13 +949,13 @@ void NamesBar::resized() {
     // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the
     // ruler's row, each a little narrower than drawn there, as the window's names and track controls
     // are Live's width, narrower than the sheet's; Show takes what is left.
-    constexpr int kGap = 4, kPad = 2, kFlip = 24, kCell = 20, kSize = 20, kAutomation = 24, kLock = 22;
+    constexpr int kEdge = 2, kGap = 3, kPad = 2, kFlip = 22, kCell = 18, kSize = 18, kAutomation = 22, kLock = 20;
     const int h = std::min(20, std::max(0, getHeight() - 4));
     const int y = (getHeight() - h) / 2;
     const int sectionsW = 5 * kCell + 2 * kPad, sizesW = 2 * kSize + 2 * kPad;
-    const int fixed = kGap + kFlip + kGap + kGap + sectionsW + kGap + sizesW + kGap + kAutomation + kGap + kLock + kGap;
+    const int fixed = kEdge + kFlip + kGap + kGap + sectionsW + kGap + sizesW + kGap + kAutomation + kGap + kLock + kEdge;
     const int showW = std::max(0, getWidth() - fixed);
-    int x = kGap;
+    int x = kEdge;
     flip.setBounds(x, y, kFlip, h);
     x += kFlip + kGap;
     show.setBounds(x, y, showW, h);
@@ -1027,16 +1031,19 @@ void ArrangementView::leaveOut() {
                                                                 reference) == geometry.hidden.end())
         geometry.hidden.push_back(reference);
     std::sort(geometry.hidden.begin(), geometry.hidden.end());
-    // Show says the view chosen: All groups, or the group's name, lit.
-    juce::String shown = ProjectViewButton::kAllGroups;
-    if (group != 0)
-        for (std::size_t i = 0; i < reader().tracks().size(); ++i)
-            if (const auto &t = reader().tracks()[i]; t->id == group)
-                shown = juce::String::fromUTF8(displayName(t->name, i + 1).c_str());
+    // Show says the view chosen: All groups, or the group's name as the tree has it, lit. Its text is
+    // set only when it changes, so a frame with the same view allocates nothing.
     auto &show = root.namesBar.show;
     show.setToggleState(group != 0, juce::dontSendNotification);
-    if (show.getButtonText() != shown)
-        show.setButtonText(shown);
+    const TrackRow *chosen = nullptr;
+    for (const auto &row : tree_.rows())
+        if (group != 0 && row.id == group)
+            chosen = &row;
+    if (chosen == nullptr) {
+        if (show.getButtonText() != ProjectViewButton::kAllGroups)
+            show.setButtonText(ProjectViewButton::kAllGroups);
+    } else if (show.getButtonText() != juce::CharPointer_UTF8(chosen->name.c_str()))
+        show.setButtonText(juce::String::fromUTF8(chosen->name.c_str()));
     // Live's folded groups: what each holds, at any depth, down to the next row as shallow as
     // it. A group the project view leaves out folds nothing, so a view inside it still shows.
     geometry.foldedAway.clear();
@@ -2180,8 +2187,12 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         if (top >= bottom)
             return;
         lanes(top, bottom - top, false);
-        g.setColour(look::text);
-        g.setFont(look::font(look::fontField));
+        // Its words, faint as the Arrangement sheet draws them, only where the area holds them.
+        const auto font = look::font(look::fontField);
+        if (static_cast<float>(bottom - top) < font.getHeight() + 6.f)
+            return;
+        g.setColour(look::textFaint);
+        g.setFont(font);
         g.drawText("Drop Files and Devices Here", 0, top, getWidth(), bottom - top, juce::Justification::centred);
     };
     for (std::size_t i = 0; i < rows.size(); ++i) {

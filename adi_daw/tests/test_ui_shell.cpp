@@ -12835,10 +12835,11 @@ int main(int argc, char **argv) {
                       overview.getBottom() <=
                           integrated.arrangement.getY() + ArrangementView::kOverviewHeight &&
                       overview.getX() == integrated.arrangement.getX() + arrangement.canvas.getX() &&
-                      overview.getRight() > integrated.arrangement.getRight() &&
+                      overview.getRight() <= integrated.arrangement.getX() + arrangement.canvas.getRight() &&
+                      overview.getRight() >= integrated.arrangement.getX() + arrangement.canvas.getRight() - 8 &&
                       arrangement.ruler.getY() == ArrangementView::kOverviewHeight &&
                       arrangement.canvas.getY() == ArrangementView::kTopHeight,
-                  "the Overview sits above the beat-time ruler, across the track headers as Live's");
+                  "the Overview sits above the beat-time ruler, over the lanes as the Arrangement sheet draws it");
             arrangement.geometry.left = 1;
             arrangement.geometry.scale = 48;
             arrangement.changed();
