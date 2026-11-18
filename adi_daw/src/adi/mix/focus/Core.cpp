@@ -294,9 +294,9 @@ struct Core::Impl {
         if(!prepared || pendingToken.load(std::memory_order_acquire)!=0) return false;
         Settings s;std::uint64_t version=0;
         if(!mailbox.read(s,version)||version==ready.load(std::memory_order_acquire)) return false;
-        // This owner's previous nonzero token can become zero only through
-        // acquire-observed audio admission. Thus published is the immutable
-        // admitted plan, and any other bank/off-phase storage is dormant.
+        // Audio clears a nonzero token only after admission or after restoring
+        // published to the active slot at a physical-block reversion. In both
+        // cases the owner sees the admitted plan here.
         const int current=published.load(std::memory_order_acquire);
         for(int index=0;index<static_cast<int>(slots.size());++index) {
             if(index==current) continue;
@@ -321,7 +321,7 @@ struct Core::Impl {
         if(!prepared||!valid(s)) return {};
         // A delayed control publication cannot invalidate a usable audio plan.
         // lastRequested advances only on success, so a later call retries it.
-        static_cast<void>(request(s));
+        const bool requested=request(s);
         if(block!=0&&block==physical)
             return configured==activeLatency.load(std::memory_order_acquire)?BlockContext{generation,serial,epoch}:BlockContext{};
         physical=block;++serial;
@@ -334,14 +334,26 @@ struct Core::Impl {
             }
             if(held) {
                 const auto &plan=slot.coefficients;
-                if(plan.version>applied.load(std::memory_order_relaxed)&&
-                   pendingToken.load(std::memory_order_acquire)==plan.version&&
-                   latencyFor(plan.settings,spec.sampleRate)==configured) {
+                const bool outstanding=plan.version>applied.load(std::memory_order_relaxed)&&
+                    pendingToken.load(std::memory_order_acquire)==plan.version;
+                const auto offeredLatency=latencyFor(plan.settings,spec.sampleRate);
+                if(outstanding&&offeredLatency==configured) {
                     slots[static_cast<std::size_t>(activeSlot)].readers.fetch_sub(1,std::memory_order_release);
                     activeSlot=next;applied.store(plan.version,std::memory_order_release);++generation;
                     activeLatency.store(configured,std::memory_order_release);
                     if(pendingToken.load(std::memory_order_acquire)==plan.version) pendingToken.store(0,std::memory_order_release);
-                } else slot.readers.fetch_sub(1,std::memory_order_release);
+                } else {
+                    // No aggregate hold and no new PDC: the user returned to
+                    // the active configuration while this latency was still unused.
+                    const bool revert=outstanding&&requested&&
+                        configured==activeLatency.load(std::memory_order_acquire)&&
+                        sameConfiguration(s,slots[static_cast<std::size_t>(activeSlot)].coefficients.settings);
+                    slot.readers.fetch_sub(1,std::memory_order_release);
+                    if(revert) {
+                        published.store(activeSlot,std::memory_order_release);
+                        pendingToken.store(0,std::memory_order_release);
+                    }
+                }
             }
         }
         if(configured!=activeLatency.load(std::memory_order_acquire))return {};
@@ -500,15 +512,22 @@ struct Core::Impl {
         stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
         return used;
     }
-    bool launchFir() noexcept {
-        if(firStage!=FirStage::Idle) {++stats.firDeadlineMisses;return false;}
+    void launchFir() noexcept {
+        if(firStage!=FirStage::Idle) {
+            ++stats.firDeadlineMisses;
+            // Keep the source clock and dry delay intact. Abandon unfinished
+            // work at this capture boundary, before it can write late output.
+            // The preceding spectrum no longer belongs to the adjacent capture.
+            firTransform.cancel();
+            releaseFirTag(jobTag);
+            releaseFirTag(previousTag);
+        }
         jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
         jobSpectrumBank=1-previousSpectrumBank;jobOutput=firCursor+1+p;
         jobStream=jobNode=jobIndex=0;firStage=FirStage::ForwardStart;firFill=0;
         ++stats.firJobsStarted;
         // Retain the diagnostic's original h-sample source-hop unit.
         if((firCursor+1)%h==0)++stats.filterHops;
-        return true;
     }
     template<class Sample> bool process(Sample *const *main,const Sample *const *key,std::int32_t keyChannels,
         std::int32_t frames,const Settings &s,BlockContext context) noexcept {
@@ -599,7 +618,7 @@ struct Core::Impl {
                             y[c]-=(1.-std::pow(10.,appliedGain*.05))*band*s.wet;
                     }
                 }
-                if(++firFill==p&&!launchFir())return false;
+                if(++firFill==p)launchFir();
                 ++firCursor;
                 stats.firCaptureVersion=captureTag.version;stats.firCaptureMask=captureTag.mask;
                 stats.firJobVersion=jobTag.version;stats.firJobMask=jobTag.mask;
