@@ -475,7 +475,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     };
     const auto before = items();
     check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
-              before[2].first == "Fx" && !before[2].second && !root.arrangement.projectView.getToggleState(),
+              before[2].first == "Fx" && !before[2].second && !root.namesBar.show.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
     check(before[4].first == "Reference Track" && !before[4].second,
           "and, after them, the Reference track's toggle, off (ADR-0209 d11: hidden by default)");
@@ -486,10 +486,11 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     for (int y = 0; y < root.arrangement.canvas.getHeight(); ++y)
         if (const auto *t = lanes.trackAt(root.reader(), y); t != nullptr && t->id == 2)
             passesOver = false;
-    check(root.state().viewGroup == 3 && root.arrangement.projectView.getToggleState() &&
+    check(root.state().viewGroup == 3 && root.namesBar.show.getToggleState() &&
+              root.namesBar.show.getButtonText() == "Fx" &&
               lanes.hidden == std::vector<std::int64_t>{2} && lanes.heightFor(2) == 0 && passesOver &&
               lanes.selection.track == 3 && items()[2].second,
-          "Fx chosen: Body is left out of the lanes, Main kept, the button lit, the selection on Fx");
+          "Fx chosen: Body is left out of the lanes, Main kept, Show lit and saying Fx, the selection on Fx");
     render("adi-parity-project-view.png");
     check(shownRows(root.mixer) == std::vector<std::int64_t>{1, 3, 4} &&
               shownRows(root.mixerView) == std::vector<std::int64_t>{1, 3, 4},
@@ -514,12 +515,12 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
                 {3, 2, false, false, 0, "Fx", 0},
                 {4, 2, false, false, 0, "Hits", 0}};
     });
-    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState(),
+    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.namesBar.show.getToggleState(),
           "a chosen group that is gone gives way to the whole project");
     choose("Body");
     check(root.state().viewGroup == 2 && lanes.hidden.empty(), "a group at the top shows everything inside it");
     choose("Project");
-    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState() &&
+    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.namesBar.show.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
 }
@@ -741,21 +742,22 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // Above the names, Live's two automation toggles wait for the engine; a click on each says what
-    // for (the director's R6, 2 November). The locator buttons act since C3 (the `locators` scene).
+    // On the bar over the names, Live's two automation toggles wait for the engine; a click on each
+    // says what for (the director's R6, 2 November). The locator buttons act since C3 (the `locators`
+    // scene).
     {
-        auto &arr = root.arrangement;
-        using B = ArrangementView::TopButton;
-        for (const auto &[button, words] : {std::pair{B::Automation, "Automation Mode waits for the engine's automation"},
-                                            std::pair{B::Lock, "Lock Envelopes waits for the engine's automation"}}) {
+        for (auto *button : {&root.namesBar.automation, &root.namesBar.lock}) {
+            const std::string words = button == &root.namesBar.automation ? "Automation Mode waits for the engine's automation"
+                                                                          : "Lock Envelopes waits for the engine's automation";
             root.say({});
-            arr.mouseDown(pressAt(arr, arr.topButton(button).getCentre()));
-            check(root.error().rfind(words, 0) == 0, (std::string("a click on it says: ") + words).c_str());
+            button->onClick();
+            check(root.error().rfind(words, 0) == 0, ("a click on it says: " + words).c_str());
         }
-        root.say({});
-        arr.mouseDown(pressAt(arr, arr.topButton(B::Lock).getBottomRight().translated(20.f, 0.f)));
-        check(root.error().empty(), "a click beside them says nothing");
     }
+    // Show says the whole project while no group is chosen.
+    check(!root.namesBar.show.getToggleState() &&
+              root.namesBar.show.getButtonText() == ProjectViewButton::kAllGroups,
+          "Show says All groups while the whole project shows");
     // The tree is the snapshot's: a new generation with the same rows costs a frame nothing, groups
     // and all, and the order is built again in place.
     {
@@ -2163,9 +2165,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mixer.reveal(root.arrangement.geometry.rows(root.reader()).find(3));
     root.frame();
     auto *audioRow = rowOf(root.mixer, 3);
-    check(audioRow != nullptr && !root.strip.delay.getToggleState() && !audioRow->delay.isVisible() &&
+    check(audioRow != nullptr && !root.namesBar.delay.getToggleState() && !audioRow->delay.isVisible() &&
               root.command(AppCommands::ToggleTrackOptions) && root.state().trackOptions && !root.state().mixerTrackOptions &&
-              root.strip.delay.getToggleState() && trackControls().endsWith("Track Options *"),
+              root.namesBar.delay.getToggleState() && trackControls().endsWith("Track Options *"),
           "Arrangement Track Controls › Track Options shows the rows' Track Delay; D lights, the Mixer View's stays off");
     root.frame();
     audioRow = rowOf(root.mixer, 3);
@@ -2177,9 +2179,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     } else
         check(false, "3 Audio's row in view");
     render("adi-track-delay-rows.png");
-    root.strip.delay.onClick();
+    root.namesBar.delay.onClick();
     audioRow = rowOf(root.mixer, 3);
-    check(!root.state().trackOptions && !root.strip.delay.getToggleState() && audioRow != nullptr && !audioRow->delay.isVisible(),
+    check(!root.state().trackOptions && !root.namesBar.delay.getToggleState() && audioRow != nullptr && !audioRow->delay.isVisible(),
           "D hides it again");
     root.arrangement.geometry.scrollY = scrollBefore;
     root.arrangement.changed();
@@ -2373,22 +2375,60 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     } else
         check(false, "3 Audio's Mixer View strip");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
-    // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
-    // each is lit while its part shows.
-    check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&
-              root.strip.mixer.getToggleState() && !root.strip.delay.getToggleState(),
-          "I-O, R and M lit, D not, as Live's");
-    root.strip.returns.onClick();
-    check(root.state().hideReturns && !root.strip.returns.getToggleState() &&
+    // The sections on the bar over the names repeat the View menu, as Live's selectors do: R hides the
+    // returns, I-O the In/Out, S the sends; each is lit while its part shows.
+    check(root.namesBar.returns.getToggleState() && root.namesBar.inOut.getToggleState() &&
+              root.namesBar.sends.getToggleState() == root.state().sends &&
+              root.namesBar.mixer.getToggleState() && !root.namesBar.delay.getToggleState(),
+          "I-O, S, R and M lit, D not, as the sheet draws them");
+    {
+        const bool sends = root.state().sends;
+        root.namesBar.sends.onClick();
+        check(root.state().sends != sends && root.namesBar.sends.getToggleState() == root.state().sends,
+              "S hides or shows the sends, and is lit while they show");
+        root.namesBar.sends.onClick();
+        check(root.state().sends == sends && root.namesBar.sends.getToggleState() == sends, "and back");
+    }
+    // The bar's parts in its order, each inside it, none overlapping the next: Flip, Show, the sections,
+    // H and W, Automation Mode, Lock Envelopes.
+    {
+        auto &bar = root.namesBar;
+        int x = 0;
+        bool ordered = true;
+        for (juce::Component *c : std::initializer_list<juce::Component *>{
+                 &bar.flip, &bar.show, &bar.inOut, &bar.sends, &bar.returns, &bar.mixer, &bar.delay, &bar.height,
+                 &bar.width, &bar.automation, &bar.lock}) {
+            ordered = ordered && c->getX() >= x && c->getRight() <= bar.getWidth() && c->getWidth() > 0 &&
+                      c->getY() >= 0 && c->getBottom() <= bar.getHeight();
+            x = c->getRight();
+        }
+        check(ordered && bar.show.getWidth() >= 60, "the bar's parts sit in the sheet's order, inside it");
+        // H and W are Live's Optimize Arrangement Width and Height: what their commands do.
+        auto &geometry = root.arrangement.geometry;
+        root.command(AppCommands::OptimizeWidth);
+        const double fitted = geometry.scale;
+        geometry.scale = fitted * 3;
+        bar.width.onClick();
+        root.frame();
+        check(geometry.scale == fitted, "W fits the song across the lanes, as Optimize Arrangement Width");
+        root.command(AppCommands::OptimizeHeight);
+        const int tall = geometry.heightFor(1);
+        root.command(AppCommands::ShrinkTracks);
+        bar.height.onClick();
+        root.frame();
+        check(tall > 0 && geometry.heightFor(1) == tall, "H fills the lanes, as Optimize Arrangement Height");
+    }
+    root.namesBar.returns.onClick();
+    check(root.state().hideReturns && !root.namesBar.returns.getToggleState() &&
               shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
           "R hides the returns and goes dark");
-    root.strip.returns.onClick();
-    root.strip.inOut.onClick();
-    check(!root.state().hideReturns && root.strip.returns.getToggleState() && !root.state().inOut &&
-              !root.strip.inOut.getToggleState() && !rowOf(root.mixer, 1)->showsInOut(),
+    root.namesBar.returns.onClick();
+    root.namesBar.inOut.onClick();
+    check(!root.state().hideReturns && root.namesBar.returns.getToggleState() && !root.state().inOut &&
+              !root.namesBar.inOut.getToggleState() && !rowOf(root.mixer, 1)->showsInOut(),
           "R shows them again; I-O hides the In/Out");
-    root.strip.inOut.onClick();
-    check(root.state().inOut && root.strip.inOut.getToggleState(), "and shows it again");
+    root.namesBar.inOut.onClick();
+    check(root.state().inOut && root.namesBar.inOut.getToggleState(), "and shows it again");
     // Live drags the returns among themselves, at the foot: B above A. Their letters and the sends
     // follow their places.
     {
@@ -8379,10 +8419,51 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         juce::Graphics g(image);
         root.paintEntireComponent(g, true);
     }
-    const auto file = juce::File(folder).getChildFile("adi-showcase.png");
-    file.deleteFile();
-    juce::FileOutputStream out(file);
-    juce::PNGImageFormat().writeImageToStream(image, out);
+    const auto save = [&folder](const juce::Image &picture, const char *name) {
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    };
+    save(image, "adi-showcase.png");
+    // The Arrangement sheet's groups (DF-W25): the drums in a group, the loop in a group inside it, the
+    // chords and the pad in a second group; Bass and Melody stand alone between them.
+    {
+        std::vector<OpRequest> grouping;
+        const auto op = [&grouping](const char *type, Payload payload) {
+            OpRequest r;
+            r.opType = type;
+            r.payload = std::move(payload);
+            r.label = "Group Tracks";
+            grouping.push_back(std::move(r));
+        };
+        op("track.create", {{"id", 30}, {"kind", "group"}, {"name", "Drums"}, {"index", 0}});
+        op("track.rename", {{"id", 2}, {"name", "Kit"}});
+        op("track.setParent", {{"id", 2}, {"parent", 30}});
+        op("track.create", {{"id", 31}, {"kind", "group"}, {"name", "Loops"}, {"parent", 30}, {"index", 1}});
+        op("track.setParent", {{"id", 4}, {"parent", 31}});
+        op("track.create", {{"id", 32}, {"kind", "group"}, {"name", "Keys"}, {"index", 0}});
+        op("track.setParent", {{"id", 3}, {"parent", 32}});
+        op("track.setParent", {{"id", 5}, {"parent", 32}});
+        std::int64_t place = 0;
+        for (const std::int64_t id : {30, 20, 21, 32})
+            op("track.reorder", {{"id", id}, {"index", place++}});
+        place = 0;
+        for (const std::int64_t id : {2, 31})
+            op("track.reorder", {{"id", id}, {"index", place++}});
+        check(document->ops().submit(std::move(grouping)).ok && document->synchronise(), "the song's tracks grouped");
+    }
+    root.frame();
+    root.command(AppCommands::OptimizeHeight);
+    sel.track = 21;
+    root.frame();
+    root.frame();
+    juce::Image grouped(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(grouped);
+        root.paintEntireComponent(g, true);
+    }
+    save(grouped, "adi-arrangement.png");
     commands.detach(root);
     document->release();
 }
@@ -11411,32 +11492,36 @@ int main(int argc, char **argv) {
         const auto at = a.arrangement.getPosition();
         const auto namesC = a.arrangement.headers.getBounds() + at;
         const auto lanesC = a.arrangement.canvas.getBounds() + at;
-        check(a.arrangement.namesFirst() && a.strip.flip.getToggleState() &&
+        check(a.arrangement.namesFirst() && a.namesBar.flip.getToggleState() &&
                   a.stripArea().getX() == look::gap && a.stripArea().getRight() <= namesC.getX() &&
                   namesC.getRight() <= a.mixerArea().getX() &&
                   lanesC.getX() - a.mixerArea().getRight() <= ArrangementView::kLeftMargin &&
                   lanesC.getRight() <= a.browserArea().getX() &&
                   a.arrangement.ruler.getX() + at.x == lanesC.getX(),
               "flipped: the strip at the left edge, the names, the track controls against the lanes");
-        // The director's place for the arrows (2026-10-28): under the strip's two view switches.
-        auto underSwitches = [&a] {
-            const auto r = a.strip.flip.getBounds() + a.strip.getPosition();
-            return a.strip.isVisible() && a.stripArea().contains(r) && r.getY() >= a.stripArea().getY() + 44 &&
-                   r.getBottom() <= a.stripArea().getY() + a.arrangement.topHeight() &&
-                   a.strip.flip.getTooltip() == "Flip sides";
+        // The Arrangement sheet's place for the flip (DF-W25): first on the bar over the track names,
+        // which spans the names, their controls and the strip, level with the beat ruler.
+        auto onTheBar = [&a] {
+            const auto bar = a.namesBar.getBounds();
+            const auto names = a.arrangement.headers.getBounds() + a.arrangement.getPosition();
+            const auto r = a.namesBar.flip.getBounds() + bar.getPosition();
+            return a.namesBar.isVisible() && bar.getX() <= std::min(names.getX(), a.stripArea().getX()) &&
+                   bar.getRight() >= std::max(a.mixerArea().getRight(), a.stripArea().getRight()) &&
+                   bar.getY() == a.arrangement.ruler.getY() + a.arrangement.getY() && r.getX() < names.getRight() &&
+                   bar.contains(r) && a.namesBar.flip.getTooltip() == "Flip sides";
         };
-        check(underSwitches(), "the flip arrows sit under the strip's view switches and say Flip sides");
-        a.strip.flip.onClick();
+        check(onTheBar(), "the flip leads the bar over the names, level with the ruler, and says Flip sides");
+        a.namesBar.flip.onClick();
         a.frame();
         const auto atL = a.arrangement.getPosition();
         const auto namesL = a.arrangement.headers.getBounds() + atL;
         const auto lanesL = a.arrangement.canvas.getBounds() + atL;
-        check(!a.arrangement.namesFirst() && !a.strip.flip.getToggleState() &&
+        check(!a.arrangement.namesFirst() && !a.namesBar.flip.getToggleState() &&
                   a.state().panels.slots()[0].panel == Panel::Browser &&
                   a.browserArea().getRight() <= lanesL.getX() &&
                   lanesL.getRight() <= namesL.getX() &&
                   namesL.getRight() <= a.mixerArea().getX() &&
-                  a.mixerArea().getRight() == a.stripArea().getX() && underSwitches(),
+                  a.mixerArea().getRight() == a.stripArea().getX() && onTheBar(),
               "the arrows put Live's sides back: lanes, names, track controls, the strip at the edge");
         // With the track controls hidden, the strip goes with them and the arrangement takes
         // their place, up to the window's edge.
@@ -11447,7 +11532,7 @@ int main(int argc, char **argv) {
               "hidden track controls take the strip with them; the arrangement reaches the edge");
         a.command(AppCommands::ToggleMixer);
         a.frame();
-        a.strip.flip.onClick();
+        a.namesBar.flip.onClick();
         a.frame();
         check(a.arrangement.namesFirst() && a.state().panels.slots()[0].panel == Panel::Mixer,
               "and swaps them again");
@@ -11475,9 +11560,8 @@ int main(int argc, char **argv) {
         };
         const auto at = a.strip.tracks.getBounds() + a.strip.getPosition();
         check(first != 0 && a.state().largeTracks && a.strip.tracks.getToggleState() && ticked() &&
-                  at.getY() >= (a.strip.flip.getBounds() + a.strip.getPosition()).getBottom() &&
-                  a.stripArea().contains(at),
-              "large tracks by default: the button lit under the flip arrows, the View menu ticked");
+                  at.getY() >= a.namesBar.getBottom() && a.stripArea().contains(at),
+              "large tracks by default: the button lit on the strip under the bar, the View menu ticked");
         a.strip.tracks.onClick();
         a.frame();
         check(!a.state().largeTracks && !a.strip.tracks.getToggleState() && !ticked() &&

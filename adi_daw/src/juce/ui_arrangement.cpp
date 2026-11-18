@@ -724,13 +724,13 @@ void ArrangementCanvas::announce(const juce::String &words) {
 }
 ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
-    for (auto *c : std::array<juce::Component *, 7>{&overview, &ruler, &scrub, &headers, &canvas,
-                                                     &playhead, &projectView})
+    for (auto *c : std::array<juce::Component *, 6>{&overview, &ruler, &scrub, &headers, &canvas, &playhead})
         addAndMakeVisible(c);
     // The tree the snapshot carries (#299).
     trackRows_ = rowsFromSnapshot;
-    projectView.onClick = [this] {
-        projectViewMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&projectView));
+    auto &show = root.namesBar.show;
+    show.onClick = [this, &show] {
+        projectViewMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&show));
     };
 }
 namespace {
@@ -832,25 +832,152 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
 } // namespace
 ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
     setTitle("Project View");
-    setTooltip("Project view: see the whole project, or only a group and what is inside it.");
+    setButtonText(kAllGroups);
+    setTooltip("Show: see the whole project, or only a group and what is inside it.");
     // A view command, as Bitwig's: it takes no keyboard focus.
     setWantsKeyboardFocus(false);
     setMouseClickGrabsKeyboardFocus(false);
 }
 void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
-    // The shared button (language.png part B) in its state, and on it Bitwig's icon: a list with
-    // its lower lines indented, and the menu's arrow beside it.
-    const auto state = controls::stateOf(getToggleState(), over, down, isEnabled());
-    controls::button(g, getLocalBounds().toFloat(), state);
-    g.setColour(controls::labelColour(state));
-    const auto r = getLocalBounds().toFloat().reduced(2.f, 3.f);
-    for (int line = 0; line < 3; ++line)
-        g.fillRect(r.getX() + (line == 0 ? 0.f : 4.f), r.getY() + static_cast<float>(line) * 4.f,
-                   line == 0 ? 12.f : 8.f, 2.f);
-    const float ax = r.getX() + 15.f, ay = r.getY() + 3.f;
-    juce::Path arrow;
-    arrow.addTriangle(ax, ay, ax + 7.f, ay, ax + 3.5f, ay + 4.f);
-    g.fillPath(arrow);
+    // The shared chooser (language.png part D) with its arrow; in it "Show", dim, then the view.
+    const auto r = getLocalBounds().toFloat();
+    controls::chooser(g, r, {}, look::fontLabel);
+    const auto font = look::font(look::fontLabel);
+    constexpr const char *kShow = "Show";
+    const float label = juce::GlyphArrangement::getStringWidth(font, kShow);
+    const float left = r.getX() + 6.f, arrow = 14.f;
+    g.setFont(font);
+    g.setColour(over || down ? look::text : look::textDim);
+    g.drawText(kShow, juce::Rectangle<float>(left, r.getY(), label + 1.f, r.getHeight()),
+               juce::Justification::centredLeft, false);
+    // The view chosen, cut plain before the arrow as the shared chooser cuts its text (Live 12
+    // manual, Figure 6.1).
+    const float from = left + label + 5.f;
+    const auto room = juce::Rectangle<float>(from, r.getY(), std::max(0.f, r.getRight() - arrow - from), r.getHeight());
+    g.setFont(look::font(look::fontLabel, true));
+    g.setColour(getToggleState() ? look::accent : look::text);
+    juce::Graphics::ScopedSaveState keep(g);
+    g.reduceClipRegion(room.getSmallestIntegerContainer());
+    g.drawText(getButtonText(), room.withWidth(1000.f), juce::Justification::centredLeft, false);
+}
+BarButton::BarButton(const juce::String &name, const juce::String &tooltip, bool isCell, Glyph glyph)
+    : juce::Button(name), cell(isCell), glyph_(std::move(glyph)) {
+    setTitle(name);
+    setTooltip(tooltip);
+    setClickingTogglesState(false);
+    // A view command, reached from the keyboard through the View menu: it takes no focus.
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void BarButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    const auto r = getLocalBounds().toFloat();
+    const bool on = getToggleState();
+    juce::Colour ink;
+    if (cell) {
+        // A cell of its group (part B): lit in the accent while on, its letters in the ink; off, dim,
+        // brighter under the pointer.
+        if (on)
+            controls::groupCell(g, r.reduced(1.f, 2.f), look::accent);
+        ink = on ? look::ink : over || down ? look::text : look::textDim;
+    } else {
+        const auto state = controls::stateOf(on, over, down, isEnabled());
+        controls::button(g, r, state);
+        ink = controls::labelColour(state);
+    }
+    if (glyph_) {
+        glyph_(g, r, ink);
+        return;
+    }
+    g.setColour(ink);
+    g.setFont(look::font(look::fontMini, true));
+    g.drawText(getButtonText(), r, juce::Justification::centred, false);
+}
+namespace {
+// The bar's glyphs, as the sheet draws them: Flip Sides' two arrows, one each way; Automation Mode's
+// envelope, a line between two breakpoints; Lock Envelopes' padlock.
+void flipGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
+    g.setColour(ink);
+    const auto c = r.getCentre();
+    juce::Path arrows;
+    arrows.addArrow({c.x - 6.f, c.y - 2.5f, c.x + 6.f, c.y - 2.5f}, 1.4f, 5.f, 3.5f);
+    arrows.addArrow({c.x + 6.f, c.y + 2.5f, c.x - 6.f, c.y + 2.5f}, 1.4f, 5.f, 3.5f);
+    g.fillPath(arrows);
+}
+void automationGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
+    g.setColour(ink);
+    const auto c = r.getCentre();
+    g.drawLine(c.x - 5.f, c.y + 3.f, c.x + 5.f, c.y - 3.f, 1.4f);
+    g.fillEllipse(c.x - 6.5f, c.y + 1.5f, 3.f, 3.f);
+    g.fillEllipse(c.x + 3.5f, c.y - 4.5f, 3.f, 3.f);
+}
+void lockGlyph(juce::Graphics &g, juce::Rectangle<float> r, juce::Colour ink) {
+    g.setColour(ink);
+    const auto c = r.getCentre();
+    g.drawRoundedRectangle(c.x - 5.f, c.y - 1.f, 10.f, 7.f, 1.5f, 1.4f);
+    juce::Path shackle;
+    shackle.addCentredArc(c.x, c.y - 3.f, 3.f, 3.f, 0.f, -juce::MathConstants<float>::halfPi,
+                          juce::MathConstants<float>::halfPi, true);
+    shackle.lineTo(c.x + 3.f, c.y - 1.f);
+    shackle.startNewSubPath(c.x - 3.f, c.y - 3.f);
+    shackle.lineTo(c.x - 3.f, c.y - 1.f);
+    g.strokePath(shackle, juce::PathStrokeType(1.4f));
+}
+} // namespace
+NamesBar::NamesBar()
+    : flip("Flip Sides", "Flip sides", false, flipGlyph),
+      inOut("I-O", "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I).", true),
+      sends("S", "Sends: show or hide the track controls' sends (Ctrl/Cmd+Alt+S).", true),
+      returns("R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R).", true),
+      mixer("M", "Mixer: the track controls' mixer.", true),
+      delay("D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options).", true),
+      height("H", "Optimize Arrangement Height (H).", true), width("W", "Optimize Arrangement Width (W).", true),
+      automation("Automation Mode", "Automation Mode (A)", false, automationGlyph),
+      lock("Lock Envelopes", "Lock Envelopes", false, lockGlyph) {
+    setOpaque(true);
+    for (juce::Component *c : std::initializer_list<juce::Component *>{
+             &flip, &show, &inOut, &sends, &returns, &mixer, &delay, &height, &width, &automation, &lock})
+        addAndMakeVisible(c);
+    for (auto *b : {&inOut, &sends, &returns, &mixer})
+        b->setToggleState(true, juce::dontSendNotification);
+    mixer.setInterceptsMouseClicks(false, false);
+}
+void NamesBar::resized() {
+    // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the
+    // ruler's row, each a little narrower than drawn there, as the window's names and track controls
+    // are Live's width, narrower than the sheet's; Show takes what is left.
+    constexpr int kGap = 4, kPad = 2, kFlip = 24, kCell = 20, kSize = 20, kAutomation = 24, kLock = 22;
+    const int h = std::min(20, std::max(0, getHeight() - 4));
+    const int y = (getHeight() - h) / 2;
+    const int sectionsW = 5 * kCell + 2 * kPad, sizesW = 2 * kSize + 2 * kPad;
+    const int fixed = kGap + kFlip + kGap + kGap + sectionsW + kGap + sizesW + kGap + kAutomation + kGap + kLock + kGap;
+    const int showW = std::max(0, getWidth() - fixed);
+    int x = kGap;
+    flip.setBounds(x, y, kFlip, h);
+    x += kFlip + kGap;
+    show.setBounds(x, y, showW, h);
+    x += showW + kGap;
+    sections_ = juce::Rectangle<int>(x, y, sectionsW, h).toFloat();
+    x += kPad;
+    for (auto *b : {&inOut, &sends, &returns, &mixer, &delay}) {
+        b->setBounds(x, y, kCell, h);
+        x += kCell;
+    }
+    x += kPad + kGap;
+    sizes_ = juce::Rectangle<int>(x, y, sizesW, h).toFloat();
+    height.setBounds(x + kPad, y, kSize, h);
+    width.setBounds(x + kPad + kSize, y, kSize, h);
+    x += sizesW + kGap;
+    automation.setBounds(x, y, kAutomation, h);
+    x += kAutomation + kGap;
+    lock.setBounds(x, y, kLock, h);
+}
+void NamesBar::paint(juce::Graphics &g) {
+    // The ruler's band, and the two groups' boxes (part B: related buttons share one), H and W with
+    // the line between them.
+    g.fillAll(look::band);
+    controls::group(g, sections_);
+    controls::group(g, sizes_);
+    controls::separator(g, static_cast<float>(height.getRight()), sizes_.getY() + 3.f, sizes_.getHeight() - 6.f);
 }
 void ArrangementView::setTrackRows(TrackRows rows) {
     trackRows_ = std::move(rows);
@@ -900,7 +1027,16 @@ void ArrangementView::leaveOut() {
                                                                 reference) == geometry.hidden.end())
         geometry.hidden.push_back(reference);
     std::sort(geometry.hidden.begin(), geometry.hidden.end());
-    projectView.setToggleState(group != 0, juce::dontSendNotification);
+    // Show says the view chosen: All groups, or the group's name, lit.
+    juce::String shown = ProjectViewButton::kAllGroups;
+    if (group != 0)
+        for (std::size_t i = 0; i < reader().tracks().size(); ++i)
+            if (const auto &t = reader().tracks()[i]; t->id == group)
+                shown = juce::String::fromUTF8(displayName(t->name, i + 1).c_str());
+    auto &show = root.namesBar.show;
+    show.setToggleState(group != 0, juce::dontSendNotification);
+    if (show.getButtonText() != shown)
+        show.setButtonText(shown);
     // Live's folded groups: what each holds, at any depth, down to the next row as shallow as
     // it. A group the project view leaves out folds nothing, so a view inside it still shows.
     geometry.foldedAway.clear();
@@ -1014,8 +1150,6 @@ void ArrangementView::resized() {
     canvas.setBounds(lanesX, top, clipsW, body);
     geometry.lanesHeight = body;
     headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
-    // Bitwig's place for it: the top of the track names, level with the ruler.
-    projectView.setBounds(headers.getX() + 4, above + 5, 30, 17);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
@@ -1034,13 +1168,9 @@ juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcep
     case TopButton::Previous:
         return {hx + 4, top + 15, 12, 12};
     case TopButton::Next:
-        return {hx + 21, top + 15, 12, 12};
-    case TopButton::Automation:
-        return {hx + 45, top + 15, 22, 12};
-    case TopButton::Lock:
         break;
     }
-    return {hx + 72, top + 15, 22, 12};
+    return {hx + 21, top + 15, 12, 12};
 }
 void ArrangementView::mouseDown(const juce::MouseEvent &e) {
     // The window's rule for a control that cannot act yet: a click says what it waits for.
@@ -1054,20 +1184,12 @@ void ArrangementView::mouseDown(const juce::MouseEvent &e) {
         root.jumpLocator(topButton(B::Next).expanded(1.f).contains(e.position));
         return;
     }
-    for (const auto &[button, words] :
-         {std::pair{B::Automation, "Automation Mode waits for the engine's automation lanes (window log, N26)."},
-          std::pair{B::Lock, "Lock Envelopes waits for the engine's automation lanes (window log, N26)."}})
-        if (topButton(button).expanded(1.f).contains(e.position)) {
-            root.say(words);
-            return;
-        }
 }
 void ArrangementView::paint(juce::Graphics &g) {
     // The arrangement's frame is Live's dark band; the rulers and the header column's
     // top sit on it.
     g.fillAll(look::band);
-    // Above the headers: Live's locator buttons ("Set", previous, next) and its two
-    // toggles, Automation Mode and Lock Envelopes.
+    // Under the bar over the headers: Live's locator buttons ("Set", previous, next).
     // The shared button (language.png part B); none of these tracks the pointer, so each is at rest.
     const auto set = topButton(TopButton::Set);
     controls::button(g, set, controls::ButtonState::Rest, selectedLocator != 0 ? "Del" : "Set", look::fontLabel);
@@ -1085,22 +1207,6 @@ void ArrangementView::paint(juce::Graphics &g) {
         g.drawLine(cx + 3.f * dir, cy, cx, cy - 3.f, 1.5f);
         g.drawLine(cx + 3.f * dir, cy, cx, cy + 3.f, 1.5f);
     }
-    const auto automation = topButton(TopButton::Automation);
-    const float ax = automation.getX(), ay = automation.getY();
-    controls::button(g, automation, controls::ButtonState::Rest);
-    g.setColour(controls::labelColour(controls::ButtonState::Rest));
-    g.drawLine(ax + 6, ay + 9, ax + 16, ay + 3, 1.2f);
-    g.fillEllipse(ax + 4.5f, ay + 7.5f, 3, 3);
-    g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
-    // Lock Envelopes, lit in its own colour: the shared button's shape in that colour, as LiveLook
-    // draws a button lit in a colour of its own, and its glyph in the ink a lit button's label takes.
-    const auto lock = topButton(TopButton::Lock);
-    const float lx = lock.getX(), ly = lock.getY();
-    g.setColour(look::lock);
-    g.fillRoundedRectangle(lock, std::min(look::radiusControl, lock.getHeight() / 2));
-    g.setColour(controls::labelColour(controls::ButtonState::On));
-    g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
-    g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
     const int clipsW = canvas.getWidth();
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
@@ -1669,9 +1775,11 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         g.fillRect(0, y, 2, h);
         g.fillRect(0, y + h - 2, getWidth(), 2);
         const int x = nameLeft(row.place.depth);
+        // A line in each of its groups' colours down the whole row, so a group's lines run unbroken
+        // past its tracks' feet (the Arrangement sheet).
         for (int band = 0; 2 + band * ArrangementView::kGroupBand < x; ++band) {
             g.setColour(groups[static_cast<std::size_t>(band)]);
-            g.fillRect(2 + band * ArrangementView::kGroupBand, y, ArrangementView::kGroupBand - 1, h - 2);
+            g.fillRect(2 + band * ArrangementView::kGroupBand, y, ArrangementView::kGroupLine, h);
         }
         g.setColour(colour);
         g.fillRect(x, y, getWidth() - x, h - 2);
