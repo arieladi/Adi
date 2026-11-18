@@ -19,6 +19,8 @@ ButtonState stateOf(bool on, bool over, bool down, bool enabled, Lit lit = Lit::
 // A button: a rounded box in its state's colours, its label (or nothing) centred in it.
 void button(juce::Graphics &, juce::Rectangle<float>, ButtonState, const juce::String &label = {},
             float fontSize = look::fontBody);
+// A round button (the Status Bar's and the Browser's, a selector): the button's colours in a circle.
+void roundButton(juce::Graphics &, juce::Rectangle<float>, ButtonState);
 // The colour a button's label or glyph takes in a state: the ink on a lit button.
 juce::Colour labelColour(ButtonState) noexcept;
 // A rounded group (part B: related buttons share one), and the line between two of its buttons.
@@ -42,8 +44,10 @@ float ringWidth(float radius) noexcept;
 // A value box (part D): a dark well, its value's part filled in the value's colour, its text.
 void valueBox(juce::Graphics &, juce::Rectangle<float>, const juce::String &text,
               std::optional<float> fill = std::nullopt, float fontSize = look::fontBody);
-// A chooser: a control-coloured box, its text at the left and the arrow at the right.
-void chooser(juce::Graphics &, juce::Rectangle<float>, const juce::String &text, float fontSize = look::fontBody);
+// A chooser: a control-coloured box, its text at the left and the arrow at the right; a disabled
+// one keeps its text, dim.
+void chooser(juce::Graphics &, juce::Rectangle<float>, const juce::String &text, float fontSize = look::fontBody,
+             bool enabled = true);
 // One of several (part D's one-of-three): a group with the lit one in the accent.
 void oneOf(juce::Graphics &, juce::Rectangle<float>, const juce::StringArray &labels, int lit,
            float fontSize = look::fontBody);

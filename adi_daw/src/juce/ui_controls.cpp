@@ -91,6 +91,39 @@ void button(juce::Graphics &g, juce::Rectangle<float> r, ButtonState state, cons
     }
     label(g, r.reduced(2.f, 0.f), text, labelColour(state), fontSize, true);
 }
+void roundButton(juce::Graphics &g, juce::Rectangle<float> r, ButtonState state) {
+    // The button's fill and edge for the state, on a circle (part B's states, round).
+    juce::Colour fill = look::buttonRest, edge = look::buttonEdge;
+    switch (state) {
+    case ButtonState::Over:
+        fill = look::buttonHover;
+        edge = look::buttonHoverEdge;
+        break;
+    case ButtonState::Pressed:
+        fill = look::buttonPressed;
+        edge = look::buttonPressedEdge;
+        break;
+    case ButtonState::On:
+        fill = edge = look::accent;
+        break;
+    case ButtonState::OnRecord:
+        fill = edge = look::record;
+        break;
+    case ButtonState::OnValue:
+        fill = edge = look::value;
+        break;
+    case ButtonState::Disabled:
+        fill = look::buttonDisabled;
+        edge = look::buttonDisabledEdge;
+        break;
+    case ButtonState::Rest:
+        break;
+    }
+    g.setColour(fill);
+    g.fillEllipse(r);
+    g.setColour(edge);
+    g.drawEllipse(r.reduced(look::hairline / 2), look::hairline);
+}
 void group(juce::Graphics &g, juce::Rectangle<float> r) {
     const float radius = std::min(look::radiusGroup, r.getHeight() / 2);
     g.setColour(look::group);
@@ -167,12 +200,12 @@ void valueBox(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &t
     }
     label(g, r.reduced(3.f, 0.f), text, look::text, fontSize, false);
 }
-void chooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &text, float fontSize) {
+void chooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &text, float fontSize, bool enabled) {
     g.setColour(look::buttonRest);
     g.fillRoundedRectangle(r, look::radiusBox);
     g.setColour(look::buttonEdge);
     g.drawRoundedRectangle(r.reduced(look::hairline / 2), look::radiusBox, look::hairline);
-    label(g, r.withTrimmedLeft(6.f).withTrimmedRight(16.f), text, look::text, fontSize, false,
+    label(g, r.withTrimmedLeft(6.f).withTrimmedRight(16.f), text, enabled ? look::text : look::textDim, fontSize, false,
           juce::Justification::centredLeft);
     juce::Path arrow;
     const float ax = r.getRight() - 12.f, ay = r.getCentreY() - 2.f;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "ui_controls.hpp"
 #include "ui_floating.hpp"
 #include "adi/edit_plan.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -826,6 +827,11 @@ juce::Rectangle<float> StatusBar::clipViewFrame() const {
     return {inner.getX() + inner.getWidth() * static_cast<float>(from), inner.getY() - 1.f,
             std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
+namespace {
+// A round button in the shared button's colours (language.png part B): the shared box, larger than
+// the circle, seen through it, so the shape stays round and the colours stay the painter's.
+
+} // namespace
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();
@@ -840,10 +846,9 @@ void StatusBar::paint(juce::Graphics &g) {
     // The Mixer View Control's arrow, pointing down to its menu.
     // The Clip View Selector: the shown clip's notes in miniature, in its colour; lit while the
     // Clip View is open.
-    if (clipToggle.getToggleState()) {
-        g.setColour(look::accent);
-        g.drawRect(second.reduced(2), 1);
-    }
+    controls::button(g, second.reduced(2).toFloat(),
+                     controls::stateOf(clipToggle.getToggleState(), clipToggle.isOver(), clipToggle.isDown(),
+                                       clipToggle.isEnabled()));
     if (const auto *clip = root_.clipView.details(); clip != nullptr && clip->lengthTicks.value_or(0) > 0) {
         const auto inner = second.reduced(5, 4).toFloat();
         const double length = static_cast<double>(*clip->lengthTicks);
@@ -870,14 +875,23 @@ void StatusBar::paint(juce::Graphics &g) {
         g.setColour(look::text.withAlpha(0.75f));
         g.drawRect(frame, 1.f);
     }
-    look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
-                   juce::MathConstants<float>::halfPi, look::text);
-    // The corner buttons: dark and round, with Live's light triangles.
+    {
+        // As the shared chooser's arrow (language.png part D): a chevron half as tall as it is wide.
+        const auto a = mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f);
+        const float top = a.getCentreY() - a.getWidth() / 4;
+        juce::Path arrow;
+        arrow.startNewSubPath(a.getX(), top);
+        arrow.lineTo(a.getCentreX(), top + a.getWidth() / 2);
+        arrow.lineTo(a.getRight(), top);
+        g.setColour(look::textDim);
+        g.strokePath(arrow, juce::PathStrokeType(look::line, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    }
+    // The corner buttons: round, in the shared button's colours, with Live's triangles.
     for (auto *b : {&infoToggle, &detailToggle}) {
         const auto c = b->getBounds().toFloat();
-        g.setColour(look::band);
-        g.fillEllipse(c);
-        look::triangle(g, c.reduced(5.f), -juce::MathConstants<float>::halfPi, look::panel);
+        const auto state = controls::stateOf(false, b->isOver(), b->isDown(), b->isEnabled());
+        controls::roundButton(g, c, state);
+        look::triangle(g, c.reduced(5.f), -juce::MathConstants<float>::halfPi, controls::labelColour(state));
     }
     const bool error = !root_.error().empty();
     g.setColour(look::text);

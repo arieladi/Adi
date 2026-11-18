@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
+#include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/midi_tracks.hpp"
@@ -8,7 +9,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
-#include <string_view>
 namespace adi::ui {
 namespace {
 // The meter's ballistics, the window's (UI-ARCHITECTURE §9: the engine writes {peak, rms} per
@@ -37,29 +37,20 @@ double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : 
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
     {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
-// One of Live's In/Out choosers: its box, its label cut at the box's edge with no ellipsis, as Live
-// cuts "All Channe" (Live 12 manual, Figure 6.1), and its arrow; an empty one has no arrow.
+// One of Live's In/Out choosers: the shared chooser (language.png part D), its label and its arrow.
+// A dimmed one keeps its label dim; an empty one has no arrow: the button's box alone.
 void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
-    look::box(g, r, look::chooser);
-    g.setColour(enabled ? look::text : look::textDim);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
-    if (*label != 0)
-        look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
-                       enabled ? look::text : look::textDim);
-}
-// Live's monitoring switch: In, Auto (lit) and Off, `gap` apart.
-void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
-    const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
-    for (const auto &[label, width] : monitor) {
-        const juce::Rectangle<float> r(x, y, static_cast<float>(width), 13);
-        const bool on = std::string_view(label) == "Auto";
-        look::box(g, r, on ? look::accent : look::button);
-        g.setColour(on ? look::ink : look::text);
-        g.setFont(look::font(look::fontBody));
-        g.drawText(label, r, juce::Justification::centred);
-        x += static_cast<float>(width) + gap;
+    if (*label == 0) {
+        controls::button(g, r, controls::ButtonState::Rest);
+        return;
     }
+    controls::chooser(g, r, label, look::fontBody, enabled);
+}
+// Live's monitoring switch: In, Auto (lit) and Off, one of three (language.png part D) across the
+// span its three boxes took (16, 23 and 19 wide, `gap` apart).
+void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
+    static const juce::StringArray labels{"In", "Auto", "Off"};
+    controls::oneOf(g, {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f}, labels, 1);
 }
 } // namespace
 double meterDepth(double db) noexcept {
@@ -92,17 +83,11 @@ PeakHold::PeakHold() : juce::Button("Peak Level") {
         repaint();
     };
 }
-void PeakHold::paintButton(juce::Graphics &g, bool over, bool) {
-    // Live's pill: light, red once the track has clipped.
-    const auto r = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour(held >= 1 ? look::record : over ? look::chooser.brighter(0.1f) : look::chooser);
-    g.fillRoundedRectangle(r, r.getHeight() / 2);
-    g.setColour(look::outline);
-    g.drawRoundedRectangle(r, r.getHeight() / 2, look::hairline);
-    g.setColour(look::text);
-    g.setFont(look::font(look::fontBody));
-    g.drawText(held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1), r,
-               juce::Justification::centred);
+void PeakHold::paintButton(juce::Graphics &g, bool over, bool down) {
+    // The shared button (language.png part B): lit in the record's red once the track has clipped.
+    controls::button(g, getLocalBounds().toFloat(),
+                     controls::stateOf(held >= 1, over, down, isEnabled(), controls::Lit::Record),
+                     held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1));
 }
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     if (panel.vertical()) {
@@ -265,8 +250,9 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
 }
 void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     getLookAndFeel().drawButtonBackground(g, *this, findColour(buttonColourId), over, down);
-    // Live's Arm switch: a dark dot, light on red when armed.
-    g.setColour(getToggleState() ? look::text : look::band);
+    // Live's Arm switch: a dark dot, light on red when armed. The ink, not the band, when unarmed: the
+    // shared button's pressed fill is the band's grey.
+    g.setColour(getToggleState() ? look::text : look::ink);
     g.fillEllipse(getLocalBounds().toFloat().withSizeKeepingCentre(8, 8));
 }
 void MixerStrip::bind(std::int64_t id) {
@@ -612,10 +598,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
-    look::box(g, r, look::accent);
-    g.setColour(look::ink);
-    g.setFont(look::font(look::fontBody));
-    g.drawText("ms", r, juce::Justification::centred);
+    controls::button(g, r, controls::ButtonState::On, "ms");
 }
 void MixerStrip::commitDelay() {
     // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
@@ -1244,13 +1227,9 @@ void MixerPanel::paintTop(juce::Graphics &g) const {
     g.setColour(look::band);
     g.fillRect(0, 0, getWidth(), rowsBand().getStart());
     // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
-    g.setFont(look::font(look::fontField));
-    for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
-        const juce::Rectangle<float> r(static_cast<float>(x), 4, 18, 15);
-        look::box(g, r, look::chooser);
-        g.setColour(look::text);
-        g.drawText(label, r, juce::Justification::centred);
-    }
+    for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}})
+        controls::button(g, juce::Rectangle<float>(static_cast<float>(x), 4, 18, 15), controls::ButtonState::Rest,
+                         label, look::fontField);
 }
 juce::Range<int> MixerPanel::rowsBand() const noexcept {
     if (vertical_)
@@ -1317,11 +1296,20 @@ SelectorButton::SelectorButton(const juce::String &letters, const juce::String &
     setWantsKeyboardFocus(false);
 }
 void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
+    // Round, in the shared button's colours (language.png part B): the accent when on, the rest's
+    // box and edge when off; its letters in the state's label colour.
     const auto r = getLocalBounds().toFloat();
-    const bool on = getToggleState();
-    g.setColour(on ? look::accent : look::selectorOff);
-    g.fillEllipse(r);
-    g.setColour(on ? look::ink : look::textOnBand);
+    const auto state = getToggleState() ? controls::ButtonState::On : controls::ButtonState::Rest;
+    if (state == controls::ButtonState::On) {
+        g.setColour(look::accent);
+        g.fillEllipse(r);
+    } else {
+        g.setColour(look::buttonRest);
+        g.fillEllipse(r);
+        g.setColour(look::buttonEdge);
+        g.drawEllipse(r.reduced(look::hairline / 2), look::hairline);
+    }
+    g.setColour(controls::labelColour(state));
     g.setFont(look::font(getButtonText().length() > 1 ? look::fontMini : look::fontMicro, true));
     g.drawText(getButtonText(), r, juce::Justification::centred);
 }
@@ -1351,12 +1339,12 @@ void SideStrip::resized() {
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
     // At the strip's head, Live's switches between Arrangement and Session View; the
-    // Arrangement's is lit.
+    // Arrangement's is lit. Two shared buttons (language.png part B), their lines in the label's colour.
     for (int i = 0; i < 2; ++i) {
         const juce::Rectangle<float> r(4.f, 3.f + 22.f * static_cast<float>(i), 19, 19);
-        g.setColour(look::selectorEdge);
-        g.fillEllipse(r);
-        g.setColour(i == 0 ? look::accent : look::panel);
+        const auto state = i == 0 ? controls::ButtonState::On : controls::ButtonState::Rest;
+        controls::button(g, r, state);
+        g.setColour(controls::labelColour(state));
         for (int line = 0; line < 3; ++line)
             if (i == 0)
                 g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
