@@ -10735,7 +10735,7 @@ int main(int argc, char **argv) {
         grey.setSize(960, 540);
         grey.frame();
         reference(grey, "root-default-midgrey", write);
-        for (const auto id : {ThemeId::Light, ThemeId::MixView})
+        for (const auto id : kThemes)
             for (const auto density : kDensities) {
                 look::apply(id, density);
                 AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "other");
@@ -10751,6 +10751,21 @@ int main(int argc, char **argv) {
                       "another theme and density draw the window in their own colours");
                 check(other.transport.getHeight() == look::controlBarHeight,
                       "the Control Bar takes the density's height");
+                // The PR's picture (ADI_UI_PARITY): each theme and density, at twice the size.
+                if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                    juce::Image twice(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+                    {
+                        juce::Graphics g(twice);
+                        g.addTransform(juce::AffineTransform::scale(2.f));
+                        other.paintEntireComponent(g, true);
+                    }
+                    const auto file = juce::File(folder).getChildFile(
+                        juce::String("adi-theme-") + juce::String(std::string(themeName(id))) + "-" +
+                        juce::String(std::string(densityName(density))) + ".png");
+                    file.deleteFile();
+                    juce::FileOutputStream out(file);
+                    juce::PNGImageFormat().writeImageToStream(twice, out);
+                }
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
         // The settings choose them: the registry's word for the theme, the density's key once it is there.
