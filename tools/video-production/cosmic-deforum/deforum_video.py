@@ -8,6 +8,13 @@ video.json:
    "hold": 0.08, "camera": "still"}     optional, for people: the start picture stays underneath at alpha "hold" (the
                                           approved 0:50-2:03 hybrid way) and the camera does not travel, so the scene
                                           keeps its people while Deforum transforms them
+  Optional, the music-driven cartoon test (Adi 2026-11-18, "anything cool and psychedelic that is light to run"):
+   "model": "toonyou_beta6.safetensors"   checkpoint for this run (DreamShaper_8_pruned is put back afterwards)
+   "suffix": "..."                        replaces the painterly prompt suffix
+   "start_prompt": "..."                  no start_image: the first frame is drawn by txt2img with this prompt
+   "hits": "<track-hits.json from cosmic-full/analyse_hits.py>"   frame 0 = track_start on the track's own clock;
+        kick on a quarter beat -> zoom pulse, mid (melody/snare) off the beat -> angle flick, accents and the bar
+        lines where a theme changes -> a morph burst (strength dip) so the change lands on the music
 Same as run_deforum.py mode "ending" (Adi approved test C, 2026-11-13), without the Cosmic Rain opening: the approved
 settings-8s.json unchanged, the approved strength envelope from frame 0, the approved LUT, RealESRGAN + RIFE to
 1280x720 24 fps. Without a track the video is silent and the music is added later.
@@ -24,15 +31,22 @@ FF = imageio_ffmpeg.get_ffmpeg_exe()
 API = "http://127.0.0.1:7865"
 LUT = Path("D:/AvasthaAI/CosmicRain-20261025/approved-lut.npy")
 LUT_SHA = "847229a33fca2012b0a69f453cab6e906d55a343e77287cd1cac3a588586c48a"
-SUFFIX = ", visionary psychedelic painting, rich intricate detail, continuous organic transformation"
 V = json.loads((R / "video.json").read_text(encoding="utf-8"))
+SUFFIX = V.get("suffix", ", visionary psychedelic painting, rich intricate detail, continuous organic transformation")
+DEFAULT_MODEL = "DreamShaper_8_pruned.safetensors"
 FPS = 15
 N = round(V["seconds"] * FPS)
 BATCH = "Deforum_" + "".join(c if c.isalnum() else "_" for c in V["title"])[:60]
 
 
 def save(name, obj):
-    t = R / (name + ".tmp"); t.write_text(json.dumps(obj, indent=2)); t.replace(R / name)
+    t = R / (name + ".tmp"); t.write_text(json.dumps(obj, indent=2))
+    for i in range(30):  # a reader (status check over SSH) can hold the file for a moment on Windows
+        try:
+            return t.replace(R / name)
+        except PermissionError:
+            time.sleep(1)
+    t.replace(R / name)
 
 
 def status(stage, **kw):
@@ -45,8 +59,53 @@ def api(path, data=None, timeout=120):
         return json.load(f)
 
 
+def music_schedules(s):
+    """Per-frame zoom / angle / strength from the hit map, on top of the approved camera and strength envelope."""
+    H = json.loads(Path(V["hits"]).read_text())
+    six, t0 = H["sixteenth_seconds"], V.get("track_start", 0.0)
+    frame = lambda t: round((t - t0) * FPS)
+    zoom, angle = np.full(N, 1.005), np.full(N, 0.06)
+    env = {}
+    for base in range(0, N, 120):
+        for off, v in ((0, .62), (35, .55), (60, .48), (90, .55), (119, .60)):
+            if base + off < N:
+                env[base + off] = v
+    ks = sorted(env)
+    strength = np.interp(np.arange(N), ks, [env[k] for k in ks])
+    flick = 1
+    for b in H["bars"]:
+        for i in range(16):
+            f = frame(b["t"] + i * six)
+            if not 0 <= f < N:
+                continue
+            if b["kick_hits"][i] and i % 4 == 0:  # on the beat: the picture breathes in
+                for d, z in ((0, 1.03), (1, 1.018), (2, 1.01)):
+                    if f + d < N:
+                        zoom[f + d] = max(zoom[f + d], z)
+            if b["mid_hits"][i] and i % 4 != 0:  # melody / snare off the beat: a small turn, alternating
+                angle[f] = 0.9 * flick; flick = -flick
+    bursts = [frame(t) for t in H["accent_seconds"]]
+    bar = 240 / V["bpm"]
+    bursts += [round(bb * bar * FPS) for bb, _ in V["themes"] if bb > 0]
+    for f in bursts:
+        for d, v in ((0, .36), (1, .42), (2, .50)):
+            if 0 <= f + d < N:
+                strength[f + d] = min(strength[f + d], v)
+                zoom[f + d] = max(zoom[f + d], 1.045 if d == 0 else zoom[f + d])
+    sched = lambda a: ", ".join(f"{i}:({v:.4f})" for i, v in enumerate(a) if i == 0 or v != a[i - 1] or (i + 1 < N and a[i + 1] != v))
+    s.update(zoom=sched(zoom), angle=sched(angle), strength_schedule=sched(strength))
+    save("music.json", {"zoom_pulses": int((zoom > 1.02).sum()), "flicks": int((angle != 0.06).sum()), "bursts": sorted(set(bursts))})
+
+
 def prepare():
-    ImageOps.fit(Image.open(V["start_image"]).convert("RGB"), (848, 480), method=Image.Resampling.LANCZOS).save(R / "start.png")
+    if V.get("start_image"):
+        ImageOps.fit(Image.open(V["start_image"]).convert("RGB"), (848, 480), method=Image.Resampling.LANCZOS).save(R / "start.png")
+    elif not (R / "start.png").exists():
+        import base64
+        r = api("/sdapi/v1/txt2img", {"prompt": V["start_prompt"] + SUFFIX, "negative_prompt": "text, watermark, logo, blurry, muddy, dull, low quality",
+                                      "width": 848, "height": 480, "steps": 28, "cfg_scale": 6, "sampler_name": "DPM++ 2M",
+                                      "seed": 271828}, timeout=600)
+        (R / "start.png").write_bytes(base64.b64decode(r["images"][0]))
     s = json.loads(Path("D:/AvasthaAI/ActualDeforum/settings-8s.json").read_text())
     s.update(max_frames=N, batch_name=BATCH, init_image=str(R / "start.png"))
     bar = 240 / V["bpm"]
@@ -57,6 +116,8 @@ def prepare():
             if base + off < N:
                 keys[base + off] = v
     s["strength_schedule"] = ", ".join(f"{k}:({v})" for k, v in sorted(keys.items()))
+    if V.get("hits"):
+        music_schedules(s)
     if V.get("hold"):
         guide = R / "guide.mp4"
         subprocess.run([FF, "-v", "error", "-y", "-loop", "1", "-i", str(R / "start.png"), "-frames:v", str(N), "-r", "15",
@@ -71,7 +132,21 @@ def prepare():
     return s
 
 
+def use_model(name):
+    if api("/sdapi/v1/options").get("sd_model_checkpoint", "").split(" ")[0] != name:
+        api("/sdapi/v1/options", {"sd_model_checkpoint": name}, timeout=600)
+
+
 def generate():
+    # Every run sets its own checkpoint before submitting, and the default is put back only after the job has
+    # finished: switching it while Deforum is still drawing changes the model mid-video (2026-11-18 toon test).
+    use_model(V.get("model", DEFAULT_MODEL))
+    frames = _generate()
+    use_model(DEFAULT_MODEL)
+    return frames
+
+
+def _generate():
     s = json.loads((R / "settings.json").read_text()) if (R / "settings.json").exists() else prepare()
     if (R / "receipt.json").exists():
         job_id = json.loads((R / "receipt.json").read_text())["job_ids"][0]
@@ -87,7 +162,7 @@ def generate():
             job = api(f"/deforum_api/jobs/{job_id}", timeout=30)
         except Exception as e:
             job = {"status": "NOT FOUND", "error": repr(e)}
-        if job.get("status") == "NOT FOUND":
+        if job.get("status") in ("NOT FOUND", "CANCELLED"):  # lost or cancelled: continue the same frames
             last = json.loads((R / "last-job.json").read_text()) if (R / "last-job.json").exists() else None
             if not last or not last.get("timestring"):
                 raise RuntimeError("Deforum job lost before it reported a timestring; inspect before resubmitting")
