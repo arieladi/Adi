@@ -1054,14 +1054,14 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
             headers.mouseDrag(dragAt(headers, from, to, mods));
             const auto shown = headers.drop();
             if (shown) {
-                // The line, white, where the drop would land; or the group outlined.
+                // The line, bright, where the drop would land; or the group outlined.
                 juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
                 {
                     juce::Graphics g(image);
                     headers.paintEntireComponent(g, true);
                 }
                 const int y = shown->into != 0 ? topOf(shown->into) + 1 : shown->y;
-                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == juce::Colours::white;
+                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == look::textBright;
             }
             if (shots != nullptr)
                 picture((std::string(shots) + "-dragging.png").c_str());
@@ -5686,7 +5686,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         using Colours = NoteEditor::NoteColours;
         const auto paler = [&](int velocity) {
-            return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+            return panel.colour().interpolatedWith(look::textBright, 0.55f * static_cast<float>(127 - velocity) / 126.f);
         };
         check(ed.noteColours == Colours::Clip && !panel.coloursBox().isEmpty() && panel.headerArea().contains(panel.coloursBox()) &&
                   !panel.coloursBox().intersects(panel.findBox()) && panel.coloursMenu().getNumItems() == 5,
@@ -5702,12 +5702,12 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
               "by pitch: every C has one colour in any octave; E and G have their own");
         check(panel.chooseColours(4) && ed.noteFill(note(1)) == ed.noteFill(note(2)) && ed.noteFill(note(1)) == ed.noteFill(note(70)),
               "by channel: these notes are all on one channel, and one colour");
-        check(panel.chooseColours(5) && ed.noteFill(note(70)) == juce::Colour(0xff6e6e6e) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+        check(panel.chooseColours(5) && ed.noteFill(note(70)) == look::noteOutOfScale && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
                   ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
               "by scale degree: the root, the third and the fifth each have a colour; the C# outside C Major is dark grey");
         ed.select({2});
-        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a) && panel.chooseColours(2) &&
-                  ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a),
+        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == look::mutedClip && panel.chooseColours(2) &&
+                  ed.noteFill(note(2)) == look::mutedClip,
               "a deactivated note is grey whatever the notes are coloured by");
         check(ed.keyPressed(key('0')) && note(2).active && panel.chooseColours(1) && ed.noteColours == Colours::Clip && !panel.chooseColours(9),
               "activated again; the clip's colours again");

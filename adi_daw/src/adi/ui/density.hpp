@@ -38,6 +38,7 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_FLOAT(line) /* a separator, a marker's stem */ \
     ADI_DENSITY_FLOAT(heavyLine) /* a selection's or a drop's frame */ \
     /* type, in points */ \
+    ADI_DENSITY_FLOAT(fontMini) /* a two-letter selector's label */ \
     ADI_DENSITY_FLOAT(fontMicro) /* the smallest read-out (a meter's scale) */ \
     ADI_DENSITY_FLOAT(fontTiny) /* a knob's label in a device */ \
     ADI_DENSITY_FLOAT(fontSmall) /* a ruler's numbers, a unit */ \

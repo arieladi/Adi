@@ -1686,7 +1686,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         } else
             look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, ink);
         if (t->id != renaming_) {
-            g.setColour(look::text);
+            g.setColour(look::ink);
             g.setFont(look::font(look::fontBody, true));
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
@@ -2128,7 +2128,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
-                g.setColour(look::text);
+                g.setColour(look::ink);
                 g.setFont(look::font(look::fontSmall));
                 g.drawText(juce::String::fromUTF8(c->name.c_str()),
                            juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,

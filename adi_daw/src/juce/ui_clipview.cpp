@@ -4640,7 +4640,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
                        static_cast<float>(title.getY()), 2.f);
     }
     if (!panelsFolded_)
-        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, look::fontField, true);
     // A scrolled column is cut at the title, which stays over it.
     const bool scrolled = columnScroll() > 0;
     if (scrolled) {
@@ -4653,7 +4653,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             return; // folded
         const auto set = setBox(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
-             juce::Justification::centredLeft, look::text, 10.5f);
+             juce::Justification::centredLeft, look::text, look::fontCaption);
         // Live's Set button: a small pill beside the field's name.
         if (!set.isEmpty()) {
             g.setColour(look::button);
@@ -4699,13 +4699,13 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const auto box = tabBox(tab);
             g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
             g.fillRect(box);
-            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, 10.5f, tab == toolsTab_);
+            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, look::fontCaption, tab == toolsTab_);
         }
         if (toolsTab_ == 1) {
             // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
             const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
-            text("Velocity", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
-            text("Notes", inner.withY(inner.getY() + 5 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Velocity", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
+            text("Notes", inner.withY(inner.getY() + 5 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
             const auto number = [&](Field which, const juce::String &suffix) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
@@ -4750,13 +4750,13 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const int size = std::clamp(intervalSize + (dragged_ && pressed_ == Field::Interval ? dragSteps_ : 0), -48, 48);
             look::box(g, interval.toFloat(), look::chooser);
             text((size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"), interval.reduced(3, 0),
-                 juce::Justification::centredRight, look::text, 11.f);
+                 juce::Justification::centredRight, look::text, look::fontLabel);
             // The Stretch control: 100 per cent until it is dragged or typed.
             const auto factor = fieldBox(Field::Stretch);
             look::box(g, factor.toFloat(), look::chooser);
             text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), look::fontMicro);
             text(juce::String(dragged_ && pressed_ == Field::Stretch ? std::clamp(100 + 5 * dragSteps_, 10, 1000) : 100) + "%", factor.reduced(3, 0),
-                 juce::Justification::centredRight, look::text, 11.f);
+                 juce::Justification::centredRight, look::text, look::fontLabel);
             // The Duration chooser, beside Set Length.
             const auto length = durationBox();
             look::box(g, length.toFloat(), look::chooser);
@@ -4765,8 +4765,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (toolsTab_ == 2) {
             // ADI's Chords tab (ADR-0241 d2, from Cubase): the chord tools, and the overlap functions.
             const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
-            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
-            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
+            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
             // The chord type's chooser, beside Add Chord.
             const auto chord = chordBox();
             look::box(g, chord.toFloat(), look::chooser);
@@ -4836,7 +4836,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto colours = coloursBox();
         look::box(g, colours.toFloat(), look::chooser);
         text(NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], colours.reduced(4, 0), juce::Justification::centredLeft,
-             look::text, 10.f);
+             look::text, look::fontSmall);
     }
     if (const auto bar = filterArea(); !bar.isEmpty()) {
         // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
@@ -4872,11 +4872,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         text("Select", select, juce::Justification::centred, look::text, look::fontSmall);
     }
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
-         juce::Justification::centredLeft, look::text, 11.5f, true);
+         juce::Justification::centredLeft, look::text, look::fontBody, true);
     text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())
         text(juce::String(problem_), header.withTrimmedLeft(76).withTrimmedRight(84), juce::Justification::centredLeft,
-             look::text, 11.f);
+             look::text, look::fontLabel);
     if (!midi() && !audio()) {
         g.setColour(look::lane);
         g.fillRect(editorArea());

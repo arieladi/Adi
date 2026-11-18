@@ -55,7 +55,7 @@ void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
         const juce::Rectangle<float> r(x, y, static_cast<float>(width), 13);
         const bool on = std::string_view(label) == "Auto";
         look::box(g, r, on ? look::accent : look::button);
-        g.setColour(look::text);
+        g.setColour(on ? look::ink : look::text);
         g.setFont(look::font(look::fontBody));
         g.drawText(label, r, juce::Justification::centred);
         x += static_cast<float>(width) + gap;
@@ -578,7 +578,7 @@ void MixerStrip::paint(juce::Graphics &g) {
                 g.fillRect(0, 0, w, 3);
             }
             if (const auto *track = panel_.root.reader().findTrack(track_)) {
-                g.setColour(look::text);
+                g.setColour(look::ink);
                 g.setFont(look::font(look::fontBody, true));
                 g.drawText(juce::String::fromUTF8(displayName(track->name, position_).c_str()), 4, 0, w - 8,
                            17, juce::Justification::centredLeft);
@@ -613,7 +613,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     const auto b = delay.getBounds();
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
     look::box(g, r, look::accent);
-    g.setColour(look::text);
+    g.setColour(look::ink);
     g.setFont(look::font(look::fontBody));
     g.drawText("ms", r, juce::Justification::centred);
 }
@@ -1321,8 +1321,8 @@ void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
     const bool on = getToggleState();
     g.setColour(on ? look::accent : look::selectorOff);
     g.fillEllipse(r);
-    g.setColour(on ? look::text : look::textOnBand);
-    g.setFont(look::font(getButtonText().length() > 1 ? 7.f : 9.f, true));
+    g.setColour(on ? look::ink : look::textOnBand);
+    g.setFont(look::font(getButtonText().length() > 1 ? look::fontMini : look::fontMicro, true));
     g.drawText(getButtonText(), r, juce::Justification::centred);
 }
 SideStrip::SideStrip() {

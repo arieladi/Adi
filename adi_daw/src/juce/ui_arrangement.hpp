@@ -6,6 +6,7 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/track_tree.hpp"
+#include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <optional>
