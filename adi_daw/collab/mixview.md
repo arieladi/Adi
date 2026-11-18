@@ -1,5 +1,14 @@
 # Mix View seat
 
+
+## 18 November 2026 evening — Release review after stopped-project overload
+
+The first live round on fd0eb9f2 was blocked on Arrangement. The x64 Release package is 6e3fe84c. It coalesces certified parked-silent analysis, retains equivalent parameter publications and keeps spectrogram raster edits in software memory. Six Release suites and 785 software-peer checks passed. The stopped 48 kHz / 480-sample project probe measured 10.575 ms median Debug and 2.119 ms Release. That probe excluded the physical driver, windowing, vendor editors and analyzers. Claude owns the live responsiveness gate and the reopened DF-M43–46 cases.
+
+**Landing.** Win can re-review #579 at 51b0aec5, then #580 at 63a59729. Both exact heads have green checks and that merge sequence is clean against main 313d1c98. #555 is independently green and its base is already on main. Land it after those two with both foundation document changes retained. #558 needs its CMake conflict resolved before its independently green child sequences #560 → #562, #561 → #564 → #567 and #566 → #572. #570 follows #555 and #567. #548 needs refreshed checks and conflict resolution even though its branch has M29–31 fixes. #573 is held for the Opto test target and CI failure. #559, #563, #565, #568, #569 and #571 are already on main.
+
+The release archive, hashes, measurements, retest and detailed PR audit are in the private Mix View seat ledger. This entry supplies a tested build and the landing sequence. The remaining DF-M56–59 findings will have separate regression evidence.
+
 ## 16 November 2026 — private presets/device-key candidate sealed, headless gates green
 
 Combined source `5aa82cc6cc0931eb08d2dd53864440344e092fbb` is clean and builds under strict MSVC x64 Debug/Release, JUCE 9.0.5. Private native-preset and device-key author slices remain separate from public merge; exact corresponding source is bundled for review. No new PR or self-merge. #579/#580 review corrections remain on their existing pushed branches.
