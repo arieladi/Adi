@@ -1,0 +1,191 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI design language, proposal 1</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div>
+<script>
+// ADI design language, proposal 1 (17 November 2026): the default dark theme, the Control Bar's
+// buttons in grouped, rounded form, the ring knob, the boxes. ADI's own drawing; not a build.
+const W=1920,H=1080;let s='';
+const C={win:'#1b1b1b',bar:'#242424',panel:'#2b2b2b',lane:'#323232',lane2:'#2e2e2e',ctl:'#3d3d3d',edge:'#4a4a4a',line:'#111111',text:'#dcdcdc',dim:'#8f8f8f',faint:'#5c5c5c',
+  acc:'#ffad3b',val:'#4fc3ea',rec:'#ff4a4a',grn:'#62d36b',yel:'#f2c53d'};
+function rng(seed){let a=seed>>>0;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const R=(x,y,w,h,f,o={})=>`<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${o.r||0}" fill="${f}"${o.s?` stroke="${o.s}" stroke-width="${o.sw||1}"`:''}${o.op!=null?` opacity="${o.op}"`:''}${o.d?` stroke-dasharray="${o.d}"`:''}/>`;
+const T=(x,y,t,o={})=>`<text x="${x}" y="${y}" font-size="${o.z||12}" fill="${o.f||C.text}" text-anchor="${o.a||'start'}" font-weight="${o.w||400}"${o.ls?` letter-spacing="${o.ls}"`:''}${o.op!=null?` opacity="${o.op}"`:''}>${t}</text>`;
+const L=(x1,y1,x2,y2,c,w=1,o={})=>`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${c}" stroke-width="${w}"${o.op!=null?` opacity="${o.op}"`:''}${o.cap?` stroke-linecap="${o.cap}"`:''}/>`;
+const P=(d,o={})=>`<path d="${d}" fill="${o.f||'none'}"${o.s?` stroke="${o.s}" stroke-width="${o.sw||1}"`:''}${o.op!=null?` opacity="${o.op}"`:''} stroke-linejoin="round" stroke-linecap="round"/>`;
+const pol=(cx,cy,r,deg)=>{const a=(deg-90)*Math.PI/180;return[cx+r*Math.cos(a),cy+r*Math.sin(a)]};
+function arc(cx,cy,r,a0,a1){const[p0x,p0y]=pol(cx,cy,r,a0),[p1x,p1y]=pol(cx,cy,r,a1);return`M${p0x.toFixed(2)} ${p0y.toFixed(2)}A${r} ${r} 0 ${Math.abs(a1-a0)>180?1:0} ${a1>a0?1:0} ${p1x.toFixed(2)} ${p1y.toFixed(2)}`}
+function knob(cx,cy,r,v,col,label,val,o={}){let g='';const a0=-135,a1=135,av=a0+(a1-a0)*v,rw=o.ring||Math.max(2.2,r*0.17);
+  g+=P(arc(cx,cy,r,a0,a1),{s:o.track||'#141414',sw:rw});
+  if(o.bi)g+=P(arc(cx,cy,r,Math.min(0,av),Math.max(0,av)+0.01),{s:col,sw:rw});else g+=P(arc(cx,cy,r,a0,av+0.01),{s:col,sw:rw,op:o.dis?0.35:1});
+  if(o.mod){const m0=a0+(a1-a0)*o.mod[0],m1=a0+(a1-a0)*o.mod[1];g+=P(arc(cx,cy,r+rw+1.5,m0,m1),{s:'#c479ff',sw:1.6})}
+  g+=`<circle cx="${cx}" cy="${cy}" r="${r-rw-1.5}" fill="${o.hover?'url(#dialh)':'url(#dial)'}" stroke="#141414" stroke-width="1"/>`;
+  const[px,py]=pol(cx,cy,r-rw-3,av),[qx,qy]=pol(cx,cy,(r-rw-3)*0.3,av);g+=L(qx,qy,px,py,o.dis?'#777':'#f0f0f0',Math.max(1.4,r*0.09),{cap:'round'});
+  if(o.auto)g+=`<circle cx="${cx+r}" cy="${cy-r}" r="2.6" fill="${C.rec}"/>`;
+  if(label)g+=T(cx,cy+r+14,label,{z:o.lz||10.5,f:C.dim,a:'middle'});
+  if(val)g+=T(cx,cy+r+(label?28:15),val,{z:o.lz||10.5,f:o.dis?C.faint:C.text,a:'middle'});return g}
+const btn=(x,y,w,h,t,o={})=>R(x,y,w,h,o.on?o.c||C.acc:o.fill||C.ctl,{r:o.r==null?5:o.r,s:o.on?null:o.s||C.edge})+(t?T(x+w/2,y+h/2+4,t,{z:o.z||11.5,a:'middle',f:o.on?'#1a1a1a':o.f||C.text,w:o.w||600}):'');
+const head=(x,y,t,sub)=>T(x,y,t,{z:15,w:600})+(sub?T(x,y+18,sub,{z:11.5,f:C.dim}):'');
+const cap=(x,y,t,a)=>T(x,y,t,{z:10.5,f:C.dim,a:a||'middle'});
+// icons, drawn round and a little heavy
+const iPlay=(x,y,c)=>P(`M${x-5} ${y-7}L${x+7} ${y}L${x-5} ${y+7}Z`,{f:c,s:c,sw:2.6});
+const iStop=(x,y,c)=>R(x-6.5,y-6.5,13,13,c,{r:2.8});
+const iRec=(x,y,c)=>`<circle cx="${x}" cy="${y}" r="7" fill="${c}"/>`;
+const iPlus=(x,y,c)=>P(`M${x-7} ${y}h14M${x} ${y-7}v14`,{s:c,sw:2.2});
+const iArm=(x,y,c)=>P(`M${x-7} ${y+5}c5 0 3 -10 8 -10`,{s:c,sw:2.2})+`<circle cx="${x+5}" cy="${y-5}" r="2.6" fill="${c}"/>`;
+const iBack=(x,y,c)=>P(`M${x+7} ${y}h-13M${x-6} ${y}l5 -5M${x-6} ${y}l5 5`,{s:c,sw:2.2});
+const iLoop=(x,y,c)=>P(`M${x-8} ${y+5}v-6a4 4 0 0 1 4 -4h8a4 4 0 0 1 4 4v6`,{s:c,sw:2.2});
+const iIn=(x,y,c)=>P(`M${x-7} ${y+5}h5c3 0 3 -10 6 -10h4`,{s:c,sw:2.2});
+const iOut=(x,y,c)=>P(`M${x-7} ${y-5}h4c3 0 3 10 6 10h5`,{s:c,sw:2.2});
+const iUndo=(x,y,c)=>P(`M${x-6} ${y-2}h8a4.5 4.5 0 0 1 0 9h-5M${x-6} ${y-2}l4 -4M${x-6} ${y-2}l4 4`,{s:c,sw:2.1});
+const iRedo=(x,y,c)=>P(`M${x+6} ${y-2}h-8a4.5 4.5 0 0 0 0 9h5M${x+6} ${y-2}l-4 -4M${x+6} ${y-2}l-4 4`,{s:c,sw:2.1});
+const iPen=(x,y,c)=>P(`M${x-6} ${y+6}l2 -5l8 -8l3 3l-8 8z`,{s:c,sw:1.9});
+const iKeys=(x,y,c)=>R(x-8,y-6,16,12,'none',{r:2,s:c,sw:1.8})+L(x-3,y-6,x-3,y+1,c,1.8)+L(x+3,y-6,x+3,y+1,c,1.8);
+const iMetro=(x,y,c)=>`<circle cx="${x-4}" cy="${y}" r="4" fill="none" stroke="${c}" stroke-width="1.9"/><circle cx="${x+6}" cy="${y}" r="3.2" fill="${c}"/>`;
+const grp=(x,y,w,h)=>R(x,y,w,h,'#2f2f2f',{r:8,s:'#454545'});
+const sep=(x,y,h)=>L(x,y+4,x,y+h-4,'#484848');
+
+function eqd(x,y,w,h,bands,seed){let g='';const r=rng(seed);const mid=y+h*0.5;
+  g+=`<clipPath id="c${seed}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/></clipPath><g clip-path="url(#c${seed})">`;g+=R(x,y,w,h,'#161616');
+  for(let k=1;k<10;k++){const gx=x+w*Math.log10(1+k*1.9)/Math.log10(20);g+=L(gx,y,gx,y+h,'#ffffff',1,{op:0.04})}for(let k=1;k<4;k++)g+=L(x,y+h*k/4,x+w,y+h*k/4,'#ffffff',1,{op:0.05});
+  let sp=`M${x} ${y+h}`,n=90,lv=0.5;for(let k=0;k<=n;k++){const u=k/n;lv=lv*0.72+0.28*r();const env=Math.sin(Math.PI*Math.pow(u,0.8))*(1-u*0.3);sp+=`L${(x+w*u).toFixed(1)} ${(y+h-h*0.62*env*(0.45+0.75*lv)).toFixed(1)}`}sp+=`L${x+w} ${y+h}Z`;g+=P(sp,{f:'#ffffff',op:0.10});g+=P(sp,{s:'#cfcfcf',sw:0.8,op:0.35});
+  const one=(b,u)=>b.t==='hp'?-1.4*Math.max(0,(b.f-u)/0.12):b.t==='hs'?b.g/(1+Math.exp((b.f-u)/0.04)):b.g*Math.exp(-Math.pow((u-b.f)/(b.q||0.07),2));
+  const resp=u=>bands.reduce((v,b)=>v+one(b,u),0);let d='';const m=140;
+  for(const b of bands){if(b.t==='hp')continue;let bd=`M${x} ${mid}`;for(let k=0;k<=m;k++){const u=k/m;bd+=`L${(x+w*u).toFixed(1)} ${(mid-one(b,u)*h*0.36).toFixed(1)}`}g+=P(bd+`L${x+w} ${mid}Z`,{f:b.c,op:0.22})}
+  for(let k=0;k<=m;k++){const u=k/m,yy=Math.max(y-4,Math.min(y+h+4,mid-resp(u)*h*0.36));d+=(k?'L':'M')+(x+w*u).toFixed(1)+' '+yy.toFixed(1)}
+  g+=L(x,mid,x+w,mid,'#ffffff',1,{op:0.12});g+=P(d,{s:C.yel,sw:2});
+  for(const b of bands){const yy=mid-resp(b.f)*h*0.36;g+=`<circle cx="${(x+w*b.f).toFixed(1)}" cy="${Math.max(y+7,Math.min(y+h-7,yy)).toFixed(1)}" r="5.5" fill="${b.c}" stroke="#161616" stroke-width="1.5"/>`}
+  return g+'</g>'}
+function dynd(x,y,w,h,seed,o={}){let g='';const r=rng(seed);
+  g+=`<clipPath id="d${seed}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/></clipPath><g clip-path="url(#d${seed})">`;g+=R(x,y,w,h,'#161616');
+  let lv=`M${x} ${y+h}`,gr=`M${x} ${y}`,n=Math.floor(w/2.6),a=0.5,q=0;
+  for(let k=0;k<=n;k++){const u=k/n;a=a*0.6+0.4*r();const hit=(k%(o.per||10))<2?1:0;q=Math.max(q*0.8,hit*(0.5+0.5*r()));const e=0.35+0.4*a+0.22*q;
+    lv+=`L${(x+w*u).toFixed(1)} ${(y+h-h*0.8*e).toFixed(1)}`;gr+=`L${(x+w*u).toFixed(1)} ${(y+h*0.4*q*(0.6+0.4*a)+1).toFixed(1)}`}
+  g+=P(lv+`L${x+w} ${y+h}Z`,{f:'#9db3c9',op:0.22});g+=P(lv,{s:'#b9c7d6',sw:0.8,op:0.5});g+=P(gr+`L${x+w} ${y}Z`,{f:C.rec,op:0.28});g+=P(gr,{s:C.rec,sw:1.1});
+  g+=L(x,y+h*0.34,x+w,y+h*0.34,C.acc,1,{op:0.7});return g+'</g>'}
+function curved(x,y,w,h){let g=R(x,y,w,h,'#161616',{r:5});for(let k=1;k<4;k++){g+=L(x+w*k/4,y,x+w*k/4,y+h,'#ffffff',1,{op:0.05});g+=L(x,y+h*k/4,x+w,y+h*k/4,'#ffffff',1,{op:0.05})}
+  g+=L(x,y+h,x+w,y,'#ffffff',1,{op:0.12});const tx=x+w*0.55,ty=y+h*0.45;g+=P(`M${x} ${y+h}L${tx-10} ${ty+10}Q${tx} ${ty} ${tx+12} ${ty-4}L${x+w} ${y+h*0.33}`,{s:C.val,sw:2});
+  g+=`<circle cx="${tx}" cy="${ty+1}" r="4.5" fill="${C.acc}" stroke="#161616" stroke-width="1.5"/>`;return g}
+function filterd(x,y,w,h){let g=`<clipPath id="fl${x}"><rect x="${x}" y="${y}" width="${w}" height="${h}" rx="5"/></clipPath><g clip-path="url(#fl${x})">`+R(x,y,w,h,'#161616');
+  for(let k=1;k<10;k++){const gx=x+w*Math.log10(1+k*1.9)/Math.log10(20);g+=L(gx,y,gx,y+h,'#ffffff',1,{op:0.04})}
+  const f=0.62,mid=y+h*0.52;let d='';for(let k=0;k<=120;k++){const u=k/120;const v=0.55*Math.exp(-Math.pow((u-f)/0.035,2))-(u>f?(u-f)*4.2:0);d+=(k?'L':'M')+(x+w*u).toFixed(1)+' '+(mid-v*h*0.5).toFixed(1)}
+  g+=P(d+`L${x+w} ${y+h}L${x} ${y+h}Z`,{f:C.val,op:0.14});g+=P(d,{s:C.val,sw:2});g+=`<circle cx="${x+w*f}" cy="${mid-0.55*h*0.5}" r="5.5" fill="${C.val}" stroke="#161616" stroke-width="1.5"/>`;return g+'</g>'}
+const pill=(x,y,w,h,t,o={})=>R(x,y,w,h,o.on?o.c||C.acc:'#383838',{r:h/2,s:o.on?null:'#4a4a4a'})+T(x+w/2,y+h/2+3.8,t,{z:o.z||10.5,a:'middle',f:o.on?'#1a1a1a':o.f||C.text,w:o.on?600:400});
+function panel(x,y,w,h,name,sub){let g=R(x,y,w,h,C.panel,{r:6,s:'#404040'});g+=R(x,y,w,22,'#383838',{r:6});g+=R(x,y+12,w,10,'#383838');g+=`<circle cx="${x+13}" cy="${y+11}" r="5.5" fill="${C.acc}"/>`;g+=T(x+26,y+15.5,name,{z:12,w:600});if(sub)g+=T(x+w-10,y+15.5,sub,{z:10.5,f:C.dim,a:'end'});return g}
+// A compressor panel that scales with the density.
+function compPanel(x,y,w,h,k){let g=panel(x,y,w,h,'Compressor','Vocal');const gh=Math.round(h*0.36),cw=gh;g+=curved(x+8,y+30,cw,gh);g+=dynd(x+14+cw,y+30,w-cw-36,gh,91+w);
+  g+=R(x+w-18,y+30,4,gh,'#141414',{r:2})+R(x+w-18,y+30+gh*0.3,4,gh*0.7,C.grn,{r:2})+R(x+w-11,y+30,4,gh,'#141414',{r:2})+R(x+w-11,y+30,4,gh*0.3,C.rec,{r:2});
+  const ky=y+30+gh+ (k>1?34:24),cols=5,cwid=(w-16)/cols;[['Thresh','-18.0 dB',0.4,C.val],['Ratio','4 : 1',0.5,C.val],['Attack','12 ms',0.3,C.val],['Release','160 ms',0.55,C.val],['Makeup','+3.0',0.6,C.acc]].forEach(([l,v,pv,c],n)=>g+=knob(x+8+cwid*(n+0.5),ky,k>1?16:11,pv,c,l,v,{lz:k>1?11:9.5}));
+  const py=y+h-(k>1?30:24);g+=pill(x+10,py,k>1?92:80,k>1?19:16,'Key: Internal');g+=pill(x+(k>1?110:96),py,k>1?52:44,k>1?19:16,'Listen');return g}
+
+s+=`<defs>
+<radialGradient id="dial" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#565656"/><stop offset="1" stop-color="#2a2a2a"/></radialGradient>
+<radialGradient id="dialh" cx="35%" cy="28%" r="80%"><stop offset="0" stop-color="#6c6c6c"/><stop offset="1" stop-color="#353535"/></radialGradient>
+</defs>`;
+s+=R(0,0,W,H,'#151515');
+s+=T(24,34,'ADI  ·  design language, proposal 2',{z:20,w:600});s+=T(24,54,'Default theme: Dark. Live stays the base for the Arrangement, the Browser and the Device View; the buttons, icons and knobs are redrawn. A picture to talk about, not a build.',{z:12.5,f:C.dim});s+=R(1660,14,236,34,C.acc,{r:6});s+=T(1778,37,'LANGUAGE SHEET',{z:16,w:700,a:'middle',f:'#1a1a1a'});
+
+// ---------- A: the Control Bar ----------
+s+=head(24,92,'A   Control Bar','Top: as built today. Bottom: proposed. The same controls in the same order as Live; only how they are drawn changes.');
+s+=`<image href="controlbar-as-built.png" x="24" y="120" width="1872" height="46.8" preserveAspectRatio="none"/>`;
+const by=184,bh=44;s+=R(24,by,1872,bh,C.bar,{r:4});
+let x=36;const cy=by+bh/2,t=by+8,h=28;
+s+=grp(x,t,318,h);s+=T(x+26,cy+4,'Link',{z:11.5,a:'middle',f:C.dim,w:600});s+=sep(x+52,t,h);s+=T(x+74,cy+4,'Tap',{z:11.5,a:'middle',f:C.dim,w:600});s+=sep(x+96,t,h);
+s+=T(x+130,cy+4,'120.00',{z:12,a:'middle',f:C.val,w:600});s+=sep(x+164,t,h);s+=T(x+192,cy+4,'4 / 4',{z:12,a:'middle',w:600});s+=sep(x+220,t,h);s+=iMetro(x+244,cy,C.dim);s+=sep(x+266,t,h);s+=T(x+292,cy+4,'1 Bar',{z:11.5,a:'middle',f:C.dim,w:600});
+x=660;s+=grp(x,t,36,h);s+=iBack(x+18,cy,C.dim);s+=btn(x+42,t,84,h,'1.  1.  1',{fill:'#1a1a1a',s:'#3a3a3a',f:C.text,r:6});
+x=796;s+=grp(x,t,150,h);s+=iPlay(x+25,cy,C.grn);s+=sep(x+50,t,h);s+=iStop(x+75,cy,C.text);s+=sep(x+100,t,h);s+=iRec(x+125,cy,C.rec);
+x=956;s+=grp(x,t,200,h);s+=iPlus(x+25,cy,C.text);s+=sep(x+50,t,h);s+=R(x+52,t+2,46,h-4,C.acc,{r:6});s+=iArm(x+75,cy,'#1a1a1a');s+=sep(x+100,t,h);s+=iBack(x+125,cy,C.dim);s+=sep(x+150,t,h);s+=iRec(x+175,cy,'none')+`<circle cx="${x+175}" cy="${cy}" r="6.5" fill="none" stroke="${C.text}" stroke-width="2"/>`;
+x=1170;s+=btn(x,t,84,h,'3.  1.  1',{fill:'#1a1a1a',s:'#3a3a3a',r:6});s+=grp(x+90,t,116,h);s+=iIn(x+110,cy,C.dim);s+=sep(x+129,t,h);s+=R(x+131,t+2,36,h-4,C.acc,{r:6});s+=iLoop(x+149,cy,'#1a1a1a');s+=sep(x+168,t,h);s+=iOut(x+188,cy,C.dim);s+=btn(x+212,t,84,h,'4.  0.  0',{fill:'#1a1a1a',s:'#3a3a3a',r:6});
+x=1560;s+=grp(x,t,76,h);s+=iUndo(x+20,cy,C.text);s+=sep(x+38,t,h);s+=iRedo(x+57,cy,C.dim);
+x=1648;s+=grp(x,t,116,h);s+=iPen(x+20,cy,C.dim);s+=sep(x+38,t,h);s+=iKeys(x+58,cy,C.dim);s+=sep(x+78,t,h);s+=T(x+97,cy+4,'Key',{z:11.5,a:'middle',f:C.dim,w:600});
+s+=grp(1776,t,108,h);s+=T(1802,cy+4,'MIDI',{z:11.5,a:'middle',f:C.dim,w:600});s+=sep(1830,t,h);s+=T(1857,cy+4,'6 %',{z:11.5,a:'middle',f:C.dim,w:600});
+
+// ---------- B: buttons ----------
+const By=262;s+=head(24,By,'B   Buttons','Related buttons share one rounded group. States left to right.');
+{let bx=24;const yy=By+34;[['Rest',{}],['Pointer over',{fill:'#4a4a4a',s:'#5c5c5c'}],['Pressed',{fill:'#262626',s:'#3a3a3a'}],['On',{on:1}],['On, record',{on:1,c:C.rec}],['On, value',{on:1,c:C.val}],['Disabled',{f:C.faint,fill:'#2c2c2c',s:'#363636'}]].forEach(([n,o])=>{s+=btn(bx,yy,74,28,'Solo',o);s+=cap(bx+37,yy+46,n);bx+=86});
+ const gy=yy+66;s+=grp(24,gy,150,30);s+=iPlay(49,gy+15,C.grn);s+=sep(74,gy,30);s+=iStop(99,gy+15,C.text);s+=sep(124,gy,30);s+=iRec(149,gy+15,C.rec);s+=cap(99,gy+48,'Stopped');
+ s+=grp(196,gy,150,30);s+=R(198,gy+2,46,26,C.grn,{r:6});s+=iPlay(221,gy+15,'#1a1a1a');s+=sep(246,gy,30);s+=iStop(271,gy+15,C.text);s+=sep(296,gy,30);s+=iRec(321,gy+15,C.rec);s+=cap(271,gy+48,'Playing');
+ s+=grp(368,gy,150,30);s+=R(370,gy+2,46,26,C.grn,{r:6});s+=iPlay(393,gy+15,'#1a1a1a');s+=sep(418,gy,30);s+=iStop(443,gy+15,C.text);s+=sep(468,gy,30);s+=R(470,gy+2,46,26,C.rec,{r:6});s+=iRec(493,gy+15,'#1a1a1a');s+=cap(443,gy+48,'Recording');
+ // track switches
+ s+=btn(540,gy+3,34,24,'1',{on:1,r:5});s+=btn(578,gy+3,26,24,'S',{r:5,f:C.dim});s+=btn(608,gy+3,26,24,'');s+=`<circle cx="621" cy="${gy+15}" r="5" fill="${C.dim}"/>`;s+=cap(587,gy+48,'Track: on, Solo, Arm');}
+
+// ---------- C: the ring knob ----------
+const Kx=660;s+=head(Kx,By,'C   Ring knob','The value is the ring. The same knob everywhere, in three sizes.');
+{const yy=By+62;let kx=Kx+26;
+ s+=knob(kx,yy,11,0.55,C.val,'','Small');kx+=58;s+=knob(kx,yy,15,0.55,C.val,'','Medium');kx+=70;s+=knob(kx,yy,21,0.55,C.val,'','Large');kx+=92;
+ s+=knob(kx,yy,17,0.3,C.val,'Freq','1.2 kHz');kx+=66;s+=knob(kx,yy,17,0.3,C.val,'Freq','1.2 kHz',{hover:1});s+=cap(kx,yy+62,'pointer over');kx+=66;
+ s+=knob(kx,yy,17,0.72,C.val,'Pan','24 R',{bi:1});s+=cap(kx,yy+62,'from centre');kx+=66;
+ s+=knob(kx,yy,17,0.6,C.val,'Gain','+2.0 dB',{auto:1});s+=cap(kx,yy+62,'automated');kx+=66;
+ s+=knob(kx,yy,17,0.45,C.val,'Cutoff','800 Hz',{mod:[0.3,0.7]});s+=cap(kx,yy+62,'modulated');kx+=66;
+ s+=knob(kx,yy,17,0.5,C.val,'Res','—',{dis:1});s+=cap(kx,yy+62,'disabled');kx+=66;
+ s+=knob(kx,yy,17,0.64,C.acc,'Ratio','4 : 1');s+=cap(kx,yy+62,'second colour');}
+
+// ---------- D: boxes ----------
+const Dx=1380;s+=head(Dx,By,'D   Boxes, choosers, switches, tabs');
+{const yy=By+34;
+ s+=R(Dx,yy,70,22,'#1a1a1a',{r:4,s:'#3a3a3a'});s+=R(Dx+1,yy+1,40,20,C.val,{r:3,op:0.28});s+=T(Dx+35,yy+15.5,'-6.0 dB',{z:11.5,a:'middle'});s+=cap(Dx+35,yy+38,'Value box');
+ s+=R(Dx+86,yy,104,22,C.ctl,{r:4,s:C.edge});s+=T(Dx+96,yy+15.5,'Ext. In',{z:11.5});s+=P(`M${Dx+174} ${yy+9}l4 4l4 -4`,{s:C.dim,sw:1.8});s+=cap(Dx+138,yy+38,'Chooser');
+ s+=R(Dx+206,yy,96,22,'#2f2f2f',{r:6,s:'#454545'});s+=T(Dx+222,yy+15.5,'In',{z:11.5,a:'middle',f:C.dim,w:600});s+=R(Dx+238,yy+2,34,18,C.acc,{r:4});s+=T(Dx+255,yy+15.5,'Auto',{z:11.5,a:'middle',f:'#1a1a1a',w:700});s+=T(Dx+287,yy+15.5,'Off',{z:11.5,a:'middle',f:C.dim,w:600});s+=cap(Dx+254,yy+38,'One of three');
+ s+=R(Dx+318,yy+2,32,18,C.acc,{r:9});s+=`<circle cx="${Dx+341}" cy="${yy+11}" r="7" fill="#1a1a1a"/>`;s+=R(Dx+360,yy+2,32,18,'#1a1a1a',{r:9,s:'#3a3a3a'});s+=`<circle cx="${Dx+369}" cy="${yy+11}" r="7" fill="${C.dim}"/>`;s+=cap(Dx+355,yy+38,'Switch');
+ const ty=yy+66;s+=R(Dx,ty,392,30,'#202020',{r:7});s+=R(Dx+3,ty+3,84,24,'#3d3d3d',{r:5,s:'#525252'});s+=T(Dx+45,ty+19.5,'Notes',{z:12,a:'middle',w:600});['Envelopes','MPE','Expression'].forEach((n,i)=>s+=T(Dx+136+i*96,ty+19.5,n,{z:12,a:'middle',f:C.dim}));s+=cap(Dx+196,ty+48,'Tabs');}
+
+// ---------- E: how the Arrangement and the Device View read in the dark theme ----------
+const Ey=442;s+=head(24,Ey,'E   The Arrangement and the Device View, dark','Live 12 layout and sizes. A clip always shows what is in it. Over the track names: switch sides, show only chosen groups, the show/hide switches. Every device has a display, not only dials.');
+const ax=24,ay=Ey+34,aw=1240,ah=H-ay-24;s+=R(ax,ay,aw,ah,C.win,{r:4});
+// ruler
+s+=R(ax,ay,aw,22,'#202020');for(let b=0;b<16;b++){const bx=ax+b*62;s+=L(bx,ay+12,bx,ay+22,'#555');s+=T(bx+4,ay+15,String(b*4+1),{z:10.5,f:C.dim})}
+s+=R(ax+124,ay+2,248,6,'#6a6a6a',{r:3});
+// The track area's buttons, over the headers: switch sides, show only chosen groups, and Live's show/hide switches.
+{const hx=ax+aw-250,by=ay+2;s+=R(hx,ay,250,22,'#262626');
+ s+=btn(hx+4,by,24,18,'',{r:4});s+=P(`M${hx+9} ${by+7}h13l-3 -3M${hx+23} ${by+12}h-13l3 3`,{s:C.text,sw:1.5});
+ s+=btn(hx+32,by,102,18,'',{r:4});s+=T(hx+38,by+13,'Show',{z:10.5,f:C.dim});s+=T(hx+70,by+13,'Drums',{z:10.5,w:600,f:C.acc});s+=P(`M${hx+120} ${by+7}l4 4l4 -4`,{s:C.dim,sw:1.6});
+ [['I·O',1],['S',1],['R',0],['M',1],['D',0]].forEach(([t,on],k)=>s+=btn(hx+140+k*22,by,20,18,t,{r:4,z:9.5,on:on,f:C.dim}));}
+
+const tracks=[{n:'1 Drums',c:'#f08a5d',k:'a'},{n:'2 Bass',c:'#f2e15a',k:'m'},{n:'3 Keys',c:'#8f8cff',k:'m'},{n:'4 Lead Vocals',c:'#5ec8ff',k:'a'}];
+const th=62,hw=250,lw=aw-hw;
+tracks.forEach((tr,i)=>{const ty=ay+26+i*(th+2);s+=R(ax,ty,lw,th,i%2?C.lane2:C.lane);
+  for(let b=1;b<16;b++)s+=L(ax+b*62,ty,ax+b*62,ty+th,'#000',1,{op:0.18});
+  const r=rng(11+i);const clips=i===0?[[0,496],[558,372]]:i===1?[[124,372],[558,248]]:i===2?[[0,248],[372,496]]:[[248,620]];
+  clips.forEach(([cx,cw],ci)=>{const x0=ax+cx+1;s+=R(x0,ty+1,cw-2,th-2,tr.c,{r:3,op:0.30});s+=R(x0,ty+1,cw-2,13,tr.c,{r:3});s+=T(x0+5,ty+11.5,tr.n.slice(2)+(ci?' 2':''),{z:10,f:'#161616',w:600});
+    if(tr.k==='a'){let up='',dn='';const n=Math.floor(cw/2.2),mid=ty+15+(th-17)/2,amp=(th-22)/2;let e=0;for(let k=0;k<=n;k++){const beat=i===0?((k*2.2)%31)<3?1:0:0;e=Math.max(e*0.86,beat?1:0);const v=i===0?(0.12+0.88*e)*(0.6+0.4*r()):(0.25+0.6*Math.abs(Math.sin(k/23)+0.5*Math.sin(k/7)))*(0.5+0.5*r());up+=(k?'L':'M')+(x0+k*2.2).toFixed(1)+' '+(mid-amp*v).toFixed(1);dn=`L${(x0+k*2.2).toFixed(1)} ${(mid+amp*v).toFixed(1)}`+dn}
+      s+=P(up+dn+'Z',{f:'#141414',op:0.85})}
+    else{const rows=9,nh=(th-20)/rows;for(let k=0;k<Math.floor(cw/20);k++){const p=Math.floor(r()*rows),len=10+Math.floor(r()*3)*10;if(r()<0.85)s+=R(x0+4+k*20,ty+17+p*nh,Math.min(len,cw-10-k*20),Math.max(2,nh-1.2),'#141414',{r:1,op:0.9})}}
+  });
+  // the track's header and mixer controls
+  const hx=ax+lw;s+=R(hx,ty,110,th,tr.c);s+=`<circle cx="${hx+12}" cy="${ty+12}" r="6" fill="none" stroke="#161616" stroke-width="1.6"/>`+P(`M${hx+9} ${ty+11}l3 3l3 -3`,{s:'#161616',sw:1.6});s+=T(hx+24,ty+16,tr.n,{z:11.5,f:'#161616',w:700});
+  s+=R(hx+110,ty,hw-110,th,C.panel);s+=btn(hx+118,ty+6,34,18,String(i+1),{on:1,r:4,z:10.5});s+=btn(hx+156,ty+6,22,18,'S',{r:4,z:10.5,f:C.dim});s+=btn(hx+182,ty+6,22,18,'',{r:4});s+=`<circle cx="${hx+193}" cy="${ty+15}" r="4" fill="${C.dim}"/>`;
+  s+=R(hx+118,ty+30,50,18,'#1a1a1a',{r:4,s:'#3a3a3a'});s+=R(hx+119,ty+31,30,16,C.val,{r:3,op:0.28});s+=T(hx+143,ty+43,['-3.0','-6.5','-9.0','0.0'][i],{z:10.5,a:'middle'});s+=knob(hx+190,ty+40,8.5,0.5,C.val,'','',{bi:1,ring:2});
+  s+=R(hx+214,ty+5,5,th-10,'#141414',{r:2});s+=R(hx+221,ty+5,5,th-10,'#141414',{r:2});const mv=[0.7,0.55,0.4,0.62][i];s+=R(hx+214,ty+5+(th-10)*(1-mv),5,(th-10)*mv,C.grn,{r:2});s+=R(hx+221,ty+5+(th-10)*(1-mv*0.92),5,(th-10)*mv*0.92,C.grn,{r:2});
+});
+s+=L(ax+ 3.4*62,ay,ax+3.4*62,ay+26+4*(th+2),'#f0f0f0',1.3);
+// the Device View: every device has a display that shows what it does, then its controls
+const dy=ay+26+4*(th+2)+10,dh=ah-(dy-ay)-8;s+=R(ax+6,dy,aw-12,dh,'#202020',{r:5});
+{const py=dy+8,ph=dh-16;let px=ax+16;
+ // EQ: the Mix View's EQ, the same panel here
+ s+=panel(px,py,390,ph,'EQ','4 bands  ·  Zero latency');
+ s+=eqd(px+8,py+30,374,ph-74,[{t:'hp',f:0.13,c:'#ffad3b'},{f:0.34,g:-0.4,q:0.05,c:'#c479ff'},{f:0.6,g:0.5,q:0.07,c:'#62d36b'},{t:'hs',f:0.84,g:0.45,c:'#4fc3ea'}],41);
+ s+=pill(px+10,py+ph-36,58,16,'Band 3',{on:1,c:'#62d36b'});s+=pill(px+74,py+ph-36,48,16,'Bell');s+=pill(px+128,py+ph-36,70,16,'12 dB/oct');s+=pill(px+204,py+ph-36,54,16,'Stereo');s+=pill(px+264,py+ph-36,62,16,'Dynamic');
+ s+=T(px+10,py+ph-7,'2.84 kHz   +4.1 dB   Q 1.20',{z:10.5,f:C.dim});s+=T(px+380,py+ph-7,'Analyzer  Pre + Post',{z:10.5,f:C.dim,a:'end'});px+=398;
+ // Compressor: the Mix View's
+ s+=compPanel(px,py,310,ph,1);px+=318;
+ // Auto Filter: a built-in device, with its curve
+ s+=panel(px,py,300,ph,'Auto Filter','Clean');s+=filterd(px+8,py+30,188,96);
+ s+=knob(px+222,py+62,13,0.62,C.val,'Freq','1.2 kHz',{lz:9.5});s+=knob(px+270,py+62,13,0.4,C.val,'Res','40 %',{lz:9.5});
+ s+=pill(px+10,py+134,34,16,'LP',{on:1});s+=pill(px+48,py+134,34,16,'HP');s+=pill(px+86,py+134,34,16,'BP');s+=pill(px+124,py+134,42,16,'Notch');s+=pill(px+204,py+134,40,16,'12');s+=pill(px+248,py+134,40,16,'24',{on:1});
+ s+=T(px+10,py+172,'Envelope',{z:10,f:C.dim});s+=T(px+160,py+172,'LFO',{z:10,f:C.dim});s+=L(px+150,py+160,px+150,py+ph-8,'#404040');
+ [['Amount','+12',0.6],['Attack','6 ms',0.2],['Release','200 ms',0.5]].forEach(([l,v,pv],n)=>s+=knob(px+28+n*46,py+196,10,pv,C.acc,l,v,{lz:9.5,bi:n===0}));
+ [['Amount','20 %',0.2],['Rate','1/8',0.45],['Phase','180°',1]].forEach(([l,v,pv],n)=>s+=knob(px+178+n*46,py+196,10,pv,C.acc,l,v,{lz:9.5}));px+=308;
+ s+=T(px+(ax+aw-12-px)/2,py+ph/2+4,'Drop Audio Effects Here',{z:12,f:C.faint,a:'middle'});}
+
+// ---------- F: density ----------
+const Fx=1292;s+=head(Fx,Ey,'F   Density: Compact (Live 12, the default) or Open','A setting. The same panel in both.');
+s+=compPanel(Fx,Ey+34,270,236,1);s+=cap(Fx+135,Ey+288,'Compact');
+s+=compPanel(Fx+286,Ey+34,316,290,2);s+=cap(Fx+286+158,Ey+342,'Open');
+
+// ---------- G: themes ----------
+const Gy=Ey+372;s+=head(Fx,Gy,'G   Themes','Every colour comes from the theme. Dark is the default; the others ship with it.');
+[['Dark (default)',['#1b1b1b','#2b2b2b','#3d3d3d','#dcdcdc','#ffad3b','#4fc3ea']],['Mid grey (as built today)',['#7d7d7d','#8e8e8e','#a5a5a5','#111111','#ffb532','#62d0f3']],['Light',['#e9e9e9','#f6f6f6','#ffffff','#1c1c1c','#ff9d1c','#1fa3d1']],['Mix View (darker, cooler)',['#131316','#202027','#30303a','#d9d9de','#ffb13b','#5ec8ff']]].forEach(([n,cs],i)=>{const yy=Gy+34+i*44;s+=T(Fx,yy+19,n,{z:12});cs.forEach((c,k)=>s+=R(Fx+250+k*56,yy,50,28,c,{r:5,s:'#000'}));});
+['window','panel','control','text','accent','value'].forEach((n,k)=>s+=cap(Fx+275+k*56,Gy+34+4*44+6,n));
+
+document.getElementById('o').innerHTML=`<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${s}</svg>`;
+</script></body></html>

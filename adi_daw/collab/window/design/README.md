@@ -6,6 +6,21 @@ from its sheet, and the built surface is then shown to him against it.
 
 The pictures are drawings to talk about, not builds. They are ADI's own drawing throughout.
 
+## The drawings' sources
+
+[`src/`](src/) holds the pages that draw the pictures. Each builds one 1920x1080 SVG, so every
+position, size, radius and colour on a sheet is a number in its source. Open a page in a browser;
+read it to measure.
+
+| Page | Draws |
+|---|---|
+| `language.html` | the design language |
+| `arrangement.html` | the Arrangement |
+| `mixview6.html` with `rows6.js` | the Mix View's Stack: the rows, the lens sizes, the cards, the "+" |
+| `focus2.html` | Focus |
+| `analysers.html` | the Analysers (places and sizes only) |
+| `lib.js`, `lib2.js` | the shared parts: the colour table, the ring knob and its states, buttons, groups, choosers, the Control Bar, the Info box, the meter |
+
 ## Round 1 — 17 and 18 November 2026 (ADR-0244)
 
 | Sheet | Picture | His word |
