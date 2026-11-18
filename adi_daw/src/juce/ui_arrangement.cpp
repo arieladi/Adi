@@ -2117,10 +2117,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
             const bool picked = geo.clipSelected(c->id);
-            // A clip in its track's colour: a solid title strip, a lighter body. A
-            // deactivated clip is grey, as Live's.
+            // A clip as Live 12 draws it (the director's reference pictures, 18 November): the whole
+            // clip in its colour, solid, title strip and body alike, and what it holds drawn dark on
+            // it. A deactivated clip is grey, as Live's.
             const auto clipColour = c->muted ? look::mutedClip : colour;
-            g.setColour(picked ? clipColour.brighter(0.25f) : clipColour.withMultipliedAlpha(0.75f));
+            g.setColour(picked ? clipColour.brighter(0.25f) : clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
@@ -2392,7 +2393,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
                                static_cast<double>(peaks->sampleRate));
     const float band = (bottom - top) / static_cast<float>(peaks->channels);
-    g.setColour(look::ink.withAlpha(clip.muted ? 0.35f : 0.6f));
+    g.setColour(look::ink.withAlpha(clip.muted ? 0.4f : 0.85f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
     for (int x = from; x < to; ++x) {
@@ -2459,7 +2460,7 @@ void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &cl
         if (x1 <= left || x0 >= right)
             return;
         const float y = top + 1.f + inner - (static_cast<float>(n.key - lowest) + 1.f) * pitch + (pitch - thick) * .5f;
-        g.setColour(look::ink.withAlpha(clip.muted || !n.active ? 0.3f : 0.75f));
+        g.setColour(look::ink.withAlpha(clip.muted || !n.active ? 0.35f : 0.9f));
         g.fillRect(x0, y, std::max(1.f, x1 - x0), thick);
     };
     for (const auto &n : held.bars) {
