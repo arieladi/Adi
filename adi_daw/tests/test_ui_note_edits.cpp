@@ -366,9 +366,34 @@ void chordEditing() {
           "the chord types start with Major and Minor");
     const auto minor = makeChords(c, {5}, kChordTypes[1]);
     check(minor.ops.size() == 2 && minor.ops[0].opType == "note.insert" && minor.ops[0].label == "Insert Chord" &&
-              minor.ops[0].payload == Payload({{"clip", 7}, {"note", std::uint64_t{6}}, {"start", 4 * beat}, {"dur", 2 * beat}, {"key", 65}, {"vel", 80}}) &&
+              minor.ops[0].payload.at("clip") == 7 && minor.ops[0].payload.at("note") == std::uint64_t{6} &&
+              minor.ops[0].payload.at("start") == 4 * beat && minor.ops[0].payload.at("dur") == 2 * beat &&
+              minor.ops[0].payload.at("key") == 65 && minor.ops[0].payload.at("vel") == 80 &&
               minor.ops[1].payload.at("key") == 69 && minor.select == std::vector<std::uint64_t>({5, 6, 7}),
           "a minor chord on D3 adds F3 and A3 with the root's start, length and velocity; all three selected");
+    {
+        // What the root carries, its chord's notes carry (the outside review of 18 November).
+        auto carried = c;
+        carried.notes[4].releaseVelocity = 33;
+        carried.notes[4].channel = 5;
+        carried.notes[4].probability = 5000;
+        carried.notes[4].tuningCents = 12.0f;
+        carried.notes[4].active = false;
+        const auto kept = makeChords(carried, {5}, kChordTypes[1]);
+        check(kept.ops.size() == 4 && kept.ops[0].payload.at("velOff") == 33 && kept.ops[0].payload.at("chan") == 5 &&
+                  kept.ops[0].payload.at("prob") == 5000 && kept.ops[0].payload.at("cents") == 12.0 &&
+                  kept.ops[1].opType == "note.setMute" && kept.ops[1].payload.at("note") == std::uint64_t{6} &&
+                  kept.ops[3].opType == "note.setMute",
+              "a chord's notes carry the root's release velocity, channel, chance, tuning and deactivation");
+        // Two roots a major third apart: an augmented chord on each wants G#3 twice; it is added once.
+        auto two = c;
+        two.notes = {note(1, 60, 0, beat), note(2, 64, 0, beat)};
+        const auto once = makeChords(two, {1, 2}, kChordTypes[3]);
+        int gSharp = 0;
+        for (const auto &o : once.ops)
+            gSharp += o.opType == "note.insert" && o.payload.at("key") == 68 ? 1 : 0;
+        check(gSharp == 1, "two roots that want the same chord note get it once");
+    }
     const auto seventh = makeChords(c, {1}, kChordTypes[6]);
     check(seventh.ops.empty() && seventh.refusal.empty(), "a chord whose notes are all there already adds nothing");
     auto high = c;
@@ -527,6 +552,25 @@ void overlaps() {
           "a note made longer over a later one removes it");
     const auto together = withOverlaps(c, moveNotes(c, {1, 2}, beat, 0));
     check(together.ops.size() == 2, "notes moved together never cut each other");
+    {
+        // Two notes the batch itself carries to one key at one start are one note (Fit to Scale, an
+        // inversion or a fold can do that): the first stays, the second goes.
+        NoteEdit both;
+        both.ops = {note_edits_detail::op("note.move", {{"clip", 7}, {"note", std::uint64_t{2}}, {"start", 100 * beat}, {"key", 70}}, "Fit to Scale"),
+                    note_edits_detail::op("note.move", {{"clip", 7}, {"note", std::uint64_t{3}}, {"start", 100 * beat}, {"key", 70}}, "Fit to Scale")};
+        both.select = {2, 3};
+        const auto one = withOverlaps(c, both);
+        check(one.ops.size() == 3 && one.ops[2].opType == "note.delete" && one.ops[2].payload.at("note") == std::uint64_t{3} &&
+                  one.select == std::vector<std::uint64_t>{2},
+              "two moved notes that land on one key and start: the second is deleted and leaves the selection");
+        NoteEdit twice;
+        twice.ops = {note_edits_detail::op("note.insert", {{"clip", 7}, {"note", std::uint64_t{90}}, {"start", 100 * beat}, {"dur", beat}, {"key", 70}, {"vel", 80}}, "Add"),
+                     note_edits_detail::op("note.insert", {{"clip", 7}, {"note", std::uint64_t{91}}, {"start", 100 * beat}, {"dur", beat}, {"key", 70}, {"vel", 80}}, "Add")};
+        twice.select = {90, 91};
+        const auto single = withOverlaps(c, twice);
+        check(single.ops.size() == 1 && single.ops[0].payload.at("note") == std::uint64_t{90} && single.select == std::vector<std::uint64_t>{90},
+              "two notes added on one key and start: the second is not added");
+    }
     const auto velocity = withOverlaps(c, changeVelocities(c, {1}, 5));
     check(velocity.ops.size() == 1, "an edit that places nothing cuts nothing");
     ClipDetails elsewhere = c;
@@ -603,6 +647,17 @@ void quantizeSplitJoin() {
           "a note off the grid is cut where the grid line crosses it");
     check(chopNotes(c, {2}, beat, 0).ops.empty() && chopNotes(c, {2}, beat, 0).select == std::vector<std::uint64_t>{2},
           "a note no grid line crosses is left whole");
+    {
+        // Past the cap the chop is refused whole: it used to stop part way, leaving the note it had
+        // reached cut to one piece and every later note cut to its first (the review of 18 November).
+        auto wide = c;
+        wide.notes = {note(1, 60, 0, 3000 * beat), note(2, 62, 0, 3000 * beat)};
+        const auto tooMany = chopNotes(wide, {1, 2}, beat, 0);
+        check(tooMany.ops.empty() && !tooMany.refusal.empty(), "a chop past the cap is refused whole, nothing cut");
+        const auto within = chopNotes(wide, {1}, beat, 0);
+        check(within.refusal.empty() && within.ops.size() == 3000 && within.ops.back().payload.at("start") == 2999 * beat,
+              "a chop within the cap reaches the note's last piece");
+    }
 
     const auto join = joinNotes(c, {1, 2, 3});
     check(join.ops.size() == 2 && join.ops[0].opType == "note.delete" && join.ops[0].payload.at("note") == 2 &&

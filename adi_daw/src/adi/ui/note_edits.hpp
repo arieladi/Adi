@@ -552,6 +552,11 @@ inline std::vector<std::vector<const engine::ClipNote *>> chords(const engine::C
 // A chord made on each selected note, taken as its root: the chord's other notes are added with the
 // root's start, length and velocity. A note that is already there, or would lie past the top key, is
 // left out. The roots and the new notes are selected.
+namespace note_edits_detail {
+// Defined with Split, below: a new note that carries everything `n` carries.
+inline void piece(NoteEdit &edit, std::int64_t clip, const engine::ClipNote &n, std::uint64_t id, std::int64_t start,
+                  std::int64_t duration, const char *label);
+} // namespace note_edits_detail
 inline NoteEdit makeChords(const engine::ClipDetails &clip, const std::vector<std::uint64_t> &ids, const ChordType &type) {
     using namespace note_edits_detail;
     NoteEdit edit;
@@ -560,6 +565,7 @@ inline NoteEdit makeChords(const engine::ClipDetails &clip, const std::vector<st
         return edit;
     edit.select = ids;
     auto id = freeNoteId(clip);
+    std::vector<std::pair<std::int64_t, int>> made; // where this batch has put a note already
     for (const auto *root : pick(clip, ids))
         for (const int above : type.above) {
             const int key = root->key + above;
@@ -567,18 +573,15 @@ inline NoteEdit makeChords(const engine::ClipDetails &clip, const std::vector<st
                 continue;
             const bool there = std::any_of(clip.notes.begin(), clip.notes.end(), [&](const engine::ClipNote &n) {
                 return n.key == key && n.startTicks == root->startTicks;
-            });
+            }) || std::find(made.begin(), made.end(), std::pair<std::int64_t, int>{root->startTicks, key}) != made.end();
             if (there)
                 continue;
-            edit.ops.push_back(op("note.insert",
-                                  {{"clip", clip.id},
-                                   {"note", id},
-                                   {"start", root->startTicks},
-                                   {"dur", root->durationTicks},
-                                   {"key", key},
-                                   {"vel", root->velocity}},
-                                  "Insert Chord"));
-            edit.select.push_back(id++);
+            // The chord's note carries what its root carries: release velocity, channel, chance,
+            // tuning and whether it is deactivated.
+            auto added = *root;
+            added.key = static_cast<std::uint8_t>(key);
+            piece(edit, clip.id, added, id++, root->startTicks, root->durationTicks, "Insert Chord");
+            made.emplace_back(root->startTicks, key);
         }
     return edit;
 }
@@ -676,7 +679,8 @@ inline NoteEdit deleteOverlaps(const engine::ClipDetails &clip, const std::vecto
             if (other->startTicks > n->startTicks && (poly || other->key == n->key) && (!next || other->startTicks < *next))
                 next = other->startTicks;
         if (next && *next < n->startTicks + n->durationTicks)
-            place(edit, clip.id, *n, n->startTicks, n->key, std::max(kShortestNote, *next - n->startTicks), label);
+            place(edit, clip.id, *n, n->startTicks, n->key,
+                  std::min(n->durationTicks, std::max(kShortestNote, *next - n->startTicks)), label);
     }
     return edit;
 }
@@ -743,6 +747,8 @@ inline void piece(NoteEdit &edit, std::int64_t clip, const engine::ClipNote &n, 
         edit.ops.push_back(op("note.setMute", {{"clip", clip}, {"note", id}, {"muted", true}}, label));
     edit.select.push_back(id);
 }
+// The most ops one Chop may hold.
+inline constexpr std::size_t kMostChopOps = 4096;
 } // namespace note_edits_detail
 
 // Split (manual 10.5.8.1; Ctrl/Cmd+E with no note selected): every note sounding at `at` is cut
@@ -800,21 +806,40 @@ inline NoteEdit chopNotes(const engine::ClipDetails &clip, const std::vector<std
         return edit;
     if (grid <= 0)
         return edit;
-    auto id = freeNoteId(clip);
-    for (const auto *n : pick(clip, ids)) {
-        const auto end = n->startTicks + n->durationTicks;
-        // The first grid line after the note's start.
-        auto rel = n->startTicks - origin;
+    // The first grid line after a note's start.
+    const auto firstLine = [&](const engine::ClipNote &n) {
+        const auto rel = n.startTicks - origin;
         auto line = origin + (rel >= 0 ? rel / grid + 1 : -((-rel) / grid)) * grid;
-        if (line <= n->startTicks)
+        if (line <= n.startTicks)
             line += grid;
+        return line;
+    };
+    const auto notes = pick(clip, ids);
+    // Counted first, and refused whole past the cap: a chop that stopped part way would leave a
+    // note cut to its first piece with the rest of it gone.
+    std::size_t count = 0;
+    for (const auto *n : notes) {
+        const auto end = n->startTicks + n->durationTicks;
+        const auto line = firstLine(*n);
+        if (line >= end)
+            continue;
+        const auto pieces = static_cast<std::size_t>((end - line + grid - 1) / grid);
+        if (pieces > kMostChopOps || (count += 1 + pieces * (n->active ? 1u : 2u)) > kMostChopOps) {
+            edit.refusal = "That is too many pieces to chop into. Choose a wider grid or fewer notes.";
+            return edit;
+        }
+    }
+    auto id = freeNoteId(clip);
+    for (const auto *n : notes) {
+        const auto end = n->startTicks + n->durationTicks;
+        auto line = firstLine(*n);
         if (line >= end) {
             edit.select.push_back(n->id);
             continue;
         }
         edit.ops.push_back(op("note.resize", {{"clip", clip.id}, {"note", n->id}, {"dur", line - n->startTicks}}, "Chop Notes"));
         edit.select.push_back(n->id);
-        for (; line < end && edit.ops.size() < 4096; line += grid)
+        for (; line < end; line += grid)
             piece(edit, clip.id, *n, id++, line, std::min(grid, end - line), "Chop Notes");
     }
     return edit;
@@ -973,11 +998,13 @@ inline NoteEdit restrictPolyphony(const engine::ClipDetails &clip, const std::ve
         sounding.push_back({n, n->startTicks + n->durationTicks});
         all.push_back({n, n->startTicks + n->durationTicks});
     }
-    for (const auto &kept : all)
-        if (kept.end != kept.note->startTicks + kept.note->durationTicks)
-            edit.ops.push_back(op("note.resize",
-                                  {{"clip", clip.id}, {"note", kept.note->id}, {"dur", std::max(kShortestNote, kept.end - kept.note->startTicks)}},
-                                  "Restrict Polyphony"));
+    for (const auto &kept : all) {
+        // Cut, never lengthened: a note already shorter than the shortest stays as it is.
+        const auto duration = std::min(kept.note->durationTicks, std::max(kShortestNote, kept.end - kept.note->startTicks));
+        if (duration != kept.note->durationTicks)
+            edit.ops.push_back(
+                op("note.resize", {{"clip", clip.id}, {"note", kept.note->id}, {"dur", duration}}, "Restrict Polyphony"));
+    }
     return edit;
 }
 
@@ -1139,6 +1166,7 @@ inline NoteEdit withOverlaps(const engine::ClipDetails &clip, NoteEdit edit) {
         std::int64_t start, duration;
         int key;
         bool touched, gone;
+        bool placed = false; // put where it is by this batch: inserted, or moved
     };
     std::vector<Placed> notes;
     for (const auto &n : clip.notes)
@@ -1155,12 +1183,13 @@ inline NoteEdit withOverlaps(const engine::ClipDetails &clip, NoteEdit edit) {
         const auto id = o.payload.at("note").get<std::uint64_t>();
         if (o.opType == "note.insert") {
             notes.push_back({id, o.payload.at("start").get<std::int64_t>(), o.payload.at("dur").get<std::int64_t>(),
-                             o.payload.at("key").get<int>(), true, false});
+                             o.payload.at("key").get<int>(), true, false, true});
         } else if (auto *n = find(id); n != nullptr) {
             if (o.opType == "note.move") {
                 n->start = o.payload.at("start").get<std::int64_t>();
                 n->key = o.payload.at("key").get<int>();
                 n->touched = true;
+                n->placed = true;
             } else if (o.opType == "note.resize") {
                 n->duration = o.payload.at("dur").get<std::int64_t>();
                 n->touched = true;
@@ -1193,6 +1222,36 @@ inline NoteEdit withOverlaps(const engine::ClipDetails &clip, NoteEdit edit) {
         else if (old.duration != was->durationTicks)
             extra.push_back(op("note.resize", {{"clip", clip.id}, {"note", old.id}, {"dur", std::max<std::int64_t>(1, old.duration)}}, label));
     }
+    // Two notes this batch puts on one key at one start are one note: the first stays. (Fit to Scale,
+    // an inversion or a fold can carry two notes to one place.)
+    std::vector<std::uint64_t> dropped, removed;
+    for (std::size_t i = 0; i < notes.size(); ++i) {
+        const auto &first = notes[i];
+        if (!first.touched || first.gone)
+            continue;
+        for (std::size_t j = i + 1; j < notes.size(); ++j) {
+            auto &second = notes[j];
+            if (!second.touched || second.gone || second.key != first.key || second.start != first.start ||
+                !(first.placed || second.placed))
+                continue;
+            second.gone = true;
+            removed.push_back(second.id);
+            if (note_edits_detail::find(clip, second.id) != nullptr)
+                extra.push_back(op("note.delete", {{"clip", clip.id}, {"note", second.id}}, label));
+            else
+                dropped.push_back(second.id); // made by this batch: its ops go instead
+        }
+    }
+    const auto among = [](const std::vector<std::uint64_t> &ids, std::uint64_t id) {
+        return std::find(ids.begin(), ids.end(), id) != ids.end();
+    };
+    if (!dropped.empty())
+        std::erase_if(edit.ops, [&](const OpRequest &o) {
+            return o.payload.contains("clip") && o.payload.at("clip") == clip.id && o.payload.contains("note") &&
+                   among(dropped, o.payload.at("note").get<std::uint64_t>());
+        });
+    if (!removed.empty())
+        std::erase_if(edit.select, [&](std::uint64_t id) { return among(removed, id); });
     for (auto &o : extra)
         edit.ops.push_back(std::move(o));
     return edit;
