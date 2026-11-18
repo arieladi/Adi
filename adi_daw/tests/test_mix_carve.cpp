@@ -213,8 +213,9 @@ void inactiveAndDisabled() {
         b.samples = a.samples;
         bypassExact &= process(paused, a, &floatKey, 2, disabled) && same(a, b);
     }
-    check(bypassExact && paused.activity() == priorActivity,
-          "disabled calls preserve audio and activity while controls change");
+    check(bypassExact && priorActivity == carve::Activity::Active &&
+              paused.activity() == carve::Activity::Sleeping,
+          "disabling reports sleeping after an active block and preserves every sample");
     a.tone(12 * frames, 733, .2, 48000, true);
     b.samples = a.samples;
     floatKey.tone(12 * frames, 733, .6, 48000, true);
@@ -554,6 +555,17 @@ void bufferAliasingAndRejectedCalls() {
     b.samples = a.samples;
     check(!process(checked, a, &key, 2, bad) && same(a, b),
           "invalid live controls do not change audio");
+    {
+        AudioCall call;
+        const float *shiftedKey[]{a.keyPointers[0]+1};
+        check(!checked.process(a.pointers.data(), shiftedKey, 1, static_cast<int>(frames)-1, settings) &&
+                  same(a, b),
+              "partial main/key overlap is rejected before changing programme");
+        float *overlappingMain[]{a.pointers[0], a.pointers[0]+1};
+        check(!checked.process(overlappingMain, key.keyPointers.data(), 2, static_cast<int>(frames)-1, settings) &&
+                  same(a, b),
+              "overlapping writable programme planes are rejected before changing programme");
+    }
     auto disabled = settings;
     disabled.enabled = false;
     check(process(checked, a, static_cast<const Audio<float> *>(nullptr), 2, disabled) && same(a, b),

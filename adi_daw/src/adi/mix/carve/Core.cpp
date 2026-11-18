@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "adi/mix/AudioPlanes.hpp"
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
@@ -200,21 +201,33 @@ bool Core::processImpl(Sample *const *main, const Sample *const *key, std::int32
     if (!prepared_ || !valid(s) || frames < 0 || frames > spec_.maximumFrames ||
         keyChannels < 0 || keyChannels > 2)
         return false;
-    if (frames == 0)
+    if (frames == 0) {
+        if (!s.enabled)
+            activity_ = Activity::Sleeping;
         return true;
+    }
     if (!main)
         return false;
     for (std::int32_t c = 0; c < spec_.channels; ++c)
         if (!main[c])
             return false;
-    if (!s.enabled)
+    if (spec_.channels == 2 && audioPlanesOverlap(main[0], main[1], frames))
+        return false;
+    if (!s.enabled) {
+        activity_ = Activity::Sleeping;
         return true;
+    }
     if (keyChannels > 0) {
         if (!key)
             return false;
-        for (std::int32_t c = 0; c < keyChannels; ++c)
+        for (std::int32_t c = 0; c < keyChannels; ++c) {
             if (!key[c])
                 return false;
+            for (std::int32_t m = 0; m < spec_.channels; ++m)
+                if (key[c] != main[m] &&
+                    audioPlanesOverlap(key[c], static_cast<const Sample *>(main[m]), frames))
+                    return false;
+        }
     }
     admit(s);
     // A zero crossing at the beginning of an otherwise active first block is
