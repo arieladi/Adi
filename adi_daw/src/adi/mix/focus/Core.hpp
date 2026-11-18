@@ -45,6 +45,9 @@ class Core final {
     void reset(const Settings &);
     // Bounded publication only: no planning, allocation, wait or lock.
     bool requestConfiguration(const Settings &) noexcept;
+    // Serialized audio owner, after it has retired an aggregate that never
+    // promised latency. The token is the held child offer from that aggregate.
+    void withdrawUnpromisedOffer(std::uint64_t token) noexcept;
     // Owner builds the newest requested complete coefficient generation.
     // FIR frequency and Q jointly update one shared main/key extraction kernel:
     // identical settings and a fresh stream have identical sound for any edit order.

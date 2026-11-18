@@ -290,6 +290,12 @@ struct Core::Impl {
         if(mailbox.publish(s)==0) return false;
         lastRequested=s;return true;
     }
+    void withdraw(std::uint64_t token) noexcept {
+        if(!token||pendingToken.load(std::memory_order_acquire)!=token) return;
+        lastRequested=slots[static_cast<std::size_t>(activeSlot)].coefficients.settings;
+        published.store(activeSlot,std::memory_order_release);
+        pendingToken.store(0,std::memory_order_release);
+    }
     bool service() {
         if(!prepared || pendingToken.load(std::memory_order_acquire)!=0) return false;
         Settings s;std::uint64_t version=0;
@@ -345,14 +351,12 @@ struct Core::Impl {
                 } else {
                     // No aggregate hold and no new PDC: the user returned to
                     // the active configuration while this latency was still unused.
+                    const auto version=plan.version;
                     const bool revert=outstanding&&requested&&
                         configured==activeLatency.load(std::memory_order_acquire)&&
                         sameConfiguration(s,slots[static_cast<std::size_t>(activeSlot)].coefficients.settings);
                     slot.readers.fetch_sub(1,std::memory_order_release);
-                    if(revert) {
-                        published.store(activeSlot,std::memory_order_release);
-                        pendingToken.store(0,std::memory_order_release);
-                    }
+                    if(revert)withdraw(version);
                 }
             }
         }
@@ -652,6 +656,7 @@ Core::~Core()=default;
 void Core::prepare(PrepareSpec spec,const Settings &s){impl_->prepare(spec,s);}
 void Core::reset(const Settings &s){impl_->prepare(impl_->spec,s);}
 bool Core::requestConfiguration(const Settings &s) noexcept{return impl_->request(s);}
+void Core::withdrawUnpromisedOffer(std::uint64_t token) noexcept{impl_->withdraw(token);}
 bool Core::serviceConfiguration(){return impl_->service();}
 ConfigurationStatus Core::configurationStatus() const noexcept {
     return {impl_->mailbox.sequence.load(std::memory_order_acquire),impl_->ready.load(std::memory_order_acquire),impl_->applied.load(std::memory_order_acquire)};
