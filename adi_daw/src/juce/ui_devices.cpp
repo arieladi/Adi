@@ -247,8 +247,41 @@ bool nodeHasGain(mix::eq::Shape shape) {
            shape == S::TiltShelf || shape == S::FlatTilt || shape == S::FlatGain;
 }
 constexpr float eqDbSpan = 36.f;
+float eqFrequencyPosition(float hz) {
+    return std::clamp(std::log(hz / 10.f) / std::log(3000.f), 0.f, 1.f);
+}
+void drawEqGrid(juce::Graphics &g, juce::Rectangle<float> graph) {
+    struct Tick { float fraction; bool decade; };
+    static const auto ticks = [] {
+        std::array<Tick, 29> values{};
+        auto out = values.begin();
+        for (float decade : {10.f, 100.f, 1000.f}) {
+            for (int tick = 1; tick <= 9; ++tick)
+                *out++ = {eqFrequencyPosition(decade * static_cast<float>(tick)), tick == 1};
+        }
+        *out++ = {eqFrequencyPosition(10000.f), true};
+        *out = {eqFrequencyPosition(20000.f), false};
+        return values;
+    }();
+    g.setColour(look::display);
+    g.fillRect(graph);
+    for (const auto &tick : ticks) {
+        g.setColour(look::gridLine.withMultipliedAlpha(tick.decade ? 1.f : .46f));
+        const float x = graph.getX() + tick.fraction * graph.getWidth();
+        g.drawVerticalLine(juce::roundToInt(x), graph.getY(), graph.getBottom());
+    }
+    g.setColour(look::outline);
+    g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
+    if (graph.getHeight() >= 2 * look::fieldHeight) {
+        g.setColour(look::gridLine);
+        for (float offset : {-1.f / 3.f, 1.f / 3.f}) {
+            const auto y = graph.getCentreY() + offset * graph.getHeight();
+            g.drawHorizontalLine(juce::roundToInt(y), graph.getX(), graph.getRight());
+        }
+    }
+}
 juce::Point<float> nodePosition(const mix::eq::BandSettings &band, juce::Rectangle<float> graph) {
-    const auto fraction = std::clamp(std::log(band.frequencyHz / 10.f) / std::log(3000.f), 0.f, 1.f);
+    const auto fraction = eqFrequencyPosition(band.frequencyHz);
     const auto gain = nodeHasGain(band.shape) ? band.gainDb : 0.f;
     return {graph.getX() + fraction * graph.getWidth(),
             std::clamp(graph.getCentreY() - gain * graph.getHeight() / eqDbSpan, graph.getY(), graph.getBottom())};
@@ -379,12 +412,24 @@ void DevicePanelView::drawEqNodes(juce::Graphics &g, juce::Rectangle<float> grap
     juce::String label = juce::String(band.frequencyHz, band.frequencyHz < 100.f ? 2 : 1) + " Hz";
     if (nodeHasGain(band.shape)) label += "   " + juce::String(band.gainDb, 2) + " dB";
     label += "   Q " + juce::String(band.q, 2);
-    const auto width = std::min(173.f, graph.getWidth());
+    const auto font = look::font(look::fontSmall);
+    const auto gap = static_cast<float>(look::gap);
+    const auto height = static_cast<float>(look::fieldHeight);
+    const auto width = std::min(juce::GlyphArrangement::getStringWidth(font, label) + 2.f * gap,
+                                graph.getWidth());
     const float left = std::clamp(p.x - width * .5f, graph.getX(), graph.getRight() - width);
-    const float top = p.y >= graph.getCentreY() ? graph.getY() : graph.getBottom() - 17.f;
-    juce::Rectangle<float> rect{left, top, width, 17.f};
-    g.setColour(look::panel); g.fillRoundedRectangle(rect, 2.f);
-    g.setColour(look::text); g.setFont(look::font(10.f));
+    const float above = p.y - gap - height, below = p.y + gap;
+    const float preferred = band.gainDb >= 0.f || !nodeHasGain(band.shape) ? above : below;
+    const float alternative = preferred == above ? below : above;
+    const float last = graph.getBottom() - height;
+    const auto fits = [&](float y) { return y >= graph.getY() && y <= last; };
+    const float top = fits(preferred) ? preferred :
+                      fits(alternative) ? alternative : std::clamp(preferred, graph.getY(), last);
+    const juce::Rectangle<float> rect{left, top, width, height};
+    g.setColour(look::tooltip);
+    g.fillRoundedRectangle(rect, look::radiusBox);
+    g.setColour(look::text);
+    g.setFont(font);
     g.drawText(label, rect, juce::Justification::centred);
 }
 
@@ -1083,15 +1128,19 @@ void DevicePanelView::paint(juce::Graphics &g) {
         if (!graph.isEmpty()) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(graph.toNearestInt());
-            g.setColour(look::field);
-            g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
+            drawEqGrid(g, graph);
             const juce::AffineTransform transform{graph.getWidth(), 0.f, graph.getX(), 0.f,
                                                   -graph.getHeight() / eqDbSpan, graph.getCentreY()};
             for (std::size_t r = 0; r < eqPreview_->paths.size(); ++r) {
                 const auto &path = eqPreview_->paths[r];
                 if (path.isEmpty()) continue;
-                g.setColour(r == 0 ? look::accent : look::trackColour(r));
-                g.strokePath(path, juce::PathStrokeType(1.5f), transform);
+                const auto colour = r == 0 ? static_cast<juce::Colour>(look::accent) : look::trackColour(r);
+                if (r == 0 && eqPreview_->hovered >= 0) {
+                    g.setColour(colour.withMultipliedAlpha(.18f));
+                    g.strokePath(path, juce::PathStrokeType(look::line + look::heavyLine), transform);
+                }
+                g.setColour(colour);
+                g.strokePath(path, juce::PathStrokeType(look::line), transform);
             }
             drawEqNodes(g, graph);
         }

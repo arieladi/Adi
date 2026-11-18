@@ -107,6 +107,13 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     card.setSize(480, 246);
     const float x = 5.f + 470.f * std::log(100.f) / std::log(3000.f);
     const juce::Point<float> point{x, 61.f};
+    juce::Image grid(juce::Image::RGB, card.getWidth(), card.getHeight(), true,
+                     juce::SoftwareImageType{});
+    juce::Graphics graphics(grid);
+    card.paint(graphics);
+    const int decadeX = juce::roundToInt(x);
+    check(grid.getPixelAt(decadeX, 30) != grid.getPixelAt(decadeX + 3, 30),
+          "the Stack EQ paints frequency decades at the same log positions as its nodes");
     check(card.pressEqGraph(point) && card.selectedFunctionBand() == 1, "plotted handle selects its actual band");
     const auto gain = point.translated(15.f, 6.f), frequency = point.translated(15.f, -6.f);
     check(card.pressEqGraph(gain) && card.dragEqHandle(gain.translated(20.f, -4.f)) &&
