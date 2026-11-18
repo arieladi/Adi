@@ -6,6 +6,23 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18 — the first design round closes on five sheets; a cloned tool looks like its source (ADR-0244)
+
+**For the seats — read first.**
+- **Every seat.** The sheets are in `collab/window/design/`: the design language, the Arrangement (with the Browser, the Info box and the Device View), and the Mix View's Stack, Focus and Analysers. Read that folder's README before any look work; where its words and a picture differ, the words win. A sheet changes only by the director's word.
+- **Every seat, the rule for clones.** Whatever ADI clones looks like its source: bx_meter, SPAN, VISU, BluPrint, s(M)exoscope, OScope, PsyScope Pro, FUSER, Trackspacer. "they should look the same as the plugins we are cloning (about the same at least)". Take the source's layout, read-outs and way of drawing; do not design another look. ADI draws it: no other maker's bitmaps, logos or fonts. The scope is s(M)exoscope's own display and controls from its source.
+- **Mix View seat.** Your look work is DF-M49 to DF-M55, in that order unless the director says otherwise: the layout that takes the window, the lens rows, the "+" and the plug-in chips, Sounding now, the meter, Focus, the Analysers. The director still holds everything addressed to you, the paste-back of the 17 November retest included (DF-M43 to DF-M46), until he says the round is closed; your prompt comes from him.
+- **Window lane.** DF-W24 (the design language in the window, the Control Bar first), DF-W25 (the Arrangement's group lines and the buttons over the track names), DF-W26 (the Device View showing the Mix View's EQ, compressor and limiter panels). Each Pd device still needs its own sheet before its panel is restyled (DF-W23).
+- **Engine seat.** Nothing of yours moved.
+
+**How the round went.** Thirteen pictures in two days: the language twice, the Arrangement twice, the Stack six times, Focus twice, the Analysers once. What turned the Stack was his video of Pro-Q 4's instance list: the list is a lens round the pointer, not a row that pops out. What he corrected most often was the drawing of things ADI clones (the meter, the spectrogram), which is where the rule above comes from.
+
+**Left open with him (DF-W27).** Two readings of his answers on Focus are win's and are marked so on the sheet; the contents of a channel's name tag in the Mix View wait for his own use of it.
+
+**Done with this entry.** ADR-0244; `collab/window/design/` with five pictures; DF-W24 to DF-W27 and DF-M49 to DF-M55; DF-W22 and DF-W23 brought up to date.
+
+**Suites at this entry.** Window 2,681 checks (no code moved); 244 ADRs.
+
 ## 2026-11-17, later — the director does not accept the look; it is settled with him one surface at a time (ADR-0243)
 
 **For the seats — read first. This changes what each of you may build.**
