@@ -2377,6 +2377,8 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
         return fail(std::move(refusal));
     if (importing_)
         return fail("The last drop is still being imported.");
+    if (importPrompt_)
+        return fail("Answer the import prompt first.");
     // ADI's prompt (E5) while `editing.importOptions` asks and the import with choices is wired;
     // else the last choices.
     const auto last = importChoicesFrom(commands_.settings());
@@ -2394,10 +2396,26 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
                     say("Nothing imported.");
                     return;
                 }
+                // The track may have gone while the prompt was open: the drop's own refusal.
+                if (!view_.current()) {
+                    fail("Dropping audio needs an open project.");
+                    return;
+                }
+                if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty()) {
+                    fail(std::move(refusal));
+                    return;
+                }
                 std::string why;
-                if (!keepImportChoices(commands_.writableSettings(), *answer, why))
-                    say("The import's choices were not kept: " + why);
+                const bool kept = keepImportChoices(commands_.writableSettings(), *answer, why,
+                                                    juce::Time::currentTimeMillis() * 1000);
                 dropWithChoices(files, track, pos, separate, *answer);
+                if (!kept) {
+                    const auto warning = "The import's choices were used but not saved: " + why;
+                    if (importing_)
+                        importing_->warning = warning;
+                    else
+                        say(warning);
+                }
             });
         addAndMakeVisible(*importPrompt_);
         importPrompt_->setBounds(getLocalBounds().withSizeKeepingCentre(380, 214));
@@ -2414,13 +2432,31 @@ bool AdiRootComponent::dropWithChoices(const std::vector<std::pair<std::string, 
     if (files.empty())
         return fail("Drop an audio file.");
     // One file at a time, each one undo step: the engine imports one file into one clip.
-    importing_ = PendingImport{files, track, std::max<std::int64_t>(0, pos), separate, choices, 0, 0, 0};
+    importing_ = PendingImport{files, track, std::max<std::int64_t>(0, pos), separate, choices, 0, 0, 0, 0, 0, 0, {}};
     importNext();
     return true;
 }
 void AdiRootComponent::finishImport(const std::string &why) {
     if (!importing_)
         return;
+    // A refused file leaves nothing: the track this queue made for it goes, while its step is still
+    // the latest.
+    std::string message = why;
+    if (!why.empty() && importing_->madeStep != 0)
+        if (const auto step = submitter_.nextUndo(); step && step->txnId == importing_->madeStep) {
+            if (submitter_.undo().ok && afterEdit)
+                afterEdit();
+        }
+    // Stopped part-way through several files: what landed, and what was not tried.
+    if (!why.empty() && importing_->files.size() > 1) {
+        const auto &pending = *importing_;
+        const auto untried = pending.files.size() - pending.next - 1;
+        if (pending.landed > 0 || untried > 0)
+            message += " (" + std::to_string(pending.landed) + (pending.landed == 1 ? " file" : " files") +
+                       " imported; " + std::to_string(untried) + " not tried.)";
+    }
+    if (!importing_->warning.empty())
+        message += (message.empty() ? "" : " ") + importing_->warning;
     const auto first = importing_->firstClip, onTrack = importing_->firstTrack;
     importing_.reset();
     if (first != 0) {
@@ -2440,8 +2476,8 @@ void AdiRootComponent::finishImport(const std::string &why) {
                     }
         publishSelection();
     }
-    if (!why.empty())
-        say(why);
+    if (!message.empty())
+        say(message);
     else
         error_.clear();
     dirty_.mark(DirtySet::Status);
@@ -2458,11 +2494,15 @@ void AdiRootComponent::importNext() {
     // A new audio track first when the drop asks for one: below the tracks, or each file after the
     // first with Ctrl/Cmd held. Its own undo step.
     std::int64_t on = job.track;
+    job.madeTrack = job.madeStep = 0;
     if (on == 0 || (job.separate && job.next > 0)) {
         auto made = newAudioTrack(*current, &commands_.recordingDefaults());
         if (!submitEdits(std::move(made.ops)))
             return finishImport(error_);
         on = made.select;
+        job.madeTrack = on;
+        if (const auto step = submitter_.nextUndo())
+            job.madeStep = step->txnId;
         if (job.track == 0)
             job.track = on;
     }
@@ -2475,6 +2515,8 @@ void AdiRootComponent::importNext() {
         if (clip == 0)
             return finishImport(why.empty() ? std::string("The file was not imported.") : why);
         auto &pending = *importing_;
+        ++pending.landed;
+        pending.madeTrack = pending.madeStep = 0;
         if (pending.firstClip == 0) {
             pending.firstClip = clip;
             pending.firstTrack = on;
@@ -2490,7 +2532,7 @@ void AdiRootComponent::importNext() {
         importNext();
     });
     if (!started && importing_)
-        finishImport(error_.empty() ? std::string("The import could not start.") : error_);
+        finishImport("The last import is still being prepared: drop " + name + " again when it ends.");
 }
 bool AdiRootComponent::dropPlain(const std::vector<std::pair<std::string, std::string>> &files,
                                  std::int64_t track, std::int64_t pos, bool separate) {
@@ -3801,6 +3843,33 @@ void AdiRootComponent::ImportPrompt::answer(bool importing) {
     auto reply = std::move(answer_);
     answer_ = nullptr;
     reply(importing ? std::optional<ImportChoices>(choices()) : std::nullopt);
+}
+bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
+    if (key == juce::KeyPress::returnKey) {
+        answer(true);
+        return true;
+    }
+    if (key == juce::KeyPress::escapeKey) {
+        answer(false);
+        return true;
+    }
+    if (key.getKeyCode() == juce::KeyPress::tabKey) {
+        // Round its own controls, whatever the window's Tab setting.
+        std::array<juce::Component *, 6> order{&warp, &mode, &fades, &copy, &import, &cancel};
+        const auto at = std::find(order.begin(), order.end(), getCurrentlyFocusedComponent());
+        const auto step = key.getModifiers().isShiftDown() ? order.size() - 1 : 1;
+        const auto from = at == order.end() ? (step == 1 ? order.size() - 1 : 0)
+                                            : static_cast<std::size_t>(at - order.begin());
+        for (std::size_t n = 1; n <= order.size(); ++n) {
+            auto *next = order[(from + n * step) % order.size()];
+            if (next->isEnabled()) {
+                next->grabKeyboardFocus();
+                break;
+            }
+        }
+        return true;
+    }
+    return true;
 }
 void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
     // A panel in Live's look: its title bar, then the choices, then a line on where they live.

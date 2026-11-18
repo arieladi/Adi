@@ -680,6 +680,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
         ImportChoices choices;
         std::size_t next = 0;
         std::int64_t firstClip = 0, firstTrack = 0;
+        // The track this queue made for the file being imported, and that step: a refusal undoes it,
+        // so a refused file leaves nothing.
+        std::int64_t madeTrack = 0, madeStep = 0;
+        std::size_t landed = 0;
+        // A choice that could not be saved, said when the import ends.
+        std::string warning;
     };
     std::optional<PendingImport> importing_;
     bool dropPlain(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track, std::int64_t pos,
@@ -772,6 +778,9 @@ class AdiRootComponent::ImportPrompt final : public juce::Component {
     ImportChoices choices() const;
     // Import or Cancel, as the buttons do.
     void answer(bool import);
+    // Return imports and Escape cancels; Tab moves among its controls; every other key stays here,
+    // so the arrangement's keys do not act behind an open prompt.
+    bool keyPressed(const juce::KeyPress &) override;
     juce::ToggleButton warp{"Warp"}, fades{"Create Fades on Clip Edges"}, copy{"Copy into the project's folder"};
     juce::ComboBox mode;
     juce::TextButton import{"Import"}, cancel{"Cancel"};

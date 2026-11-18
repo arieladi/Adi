@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <thread>
 namespace adi::ui {
 namespace {
@@ -192,6 +193,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
+        importStop_.request_stop();
         if (import_.joinable())
             import_.join();
         stopLibrary();
@@ -252,6 +254,9 @@ class AdiApplication final : public juce::JUCEApplication,
             report(error);
             return false;
         }
+        // A worker preparing for the document going is stopped; its result is dropped.
+        ++installGeneration_;
+        importStop_.request_stop();
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         mainMeterSource_.reset();
@@ -406,12 +411,19 @@ class AdiApplication final : public juce::JUCEApplication,
             if (import_.joinable())
                 import_.join(); // the last one has finished
             importing_ = std::make_shared<std::atomic<bool>>(true);
-            const auto *document = document_.get();
-            import_ = std::thread([this, job, finished = std::move(done), document, running = importing_] {
-                auto prepared = std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterial(job));
+            importStop_ = std::stop_source{};
+            // The window and the document it asked for, by the install's generation and a safe
+            // pointer, never by an address a later document could reuse.
+            const auto installed = installGeneration_;
+            const auto asker = juce::Component::SafePointer<AdiRootComponent>(root_);
+            import_ = std::thread([this, job, finished = std::move(done), installed, asker, running = importing_,
+                                   stop = importStop_.get_token()] {
+                auto prepared =
+                    std::make_shared<adi::clip_edit::MaterialEdit>(ProjectDocument::prepareMaterial(job, stop));
                 running->store(false);
-                juce::MessageManager::callAsync([this, job, finished, document, prepared] {
-                    if (juce::JUCEApplicationBase::getInstance() != this || !root_ || document_.get() != document)
+                juce::MessageManager::callAsync([this, job, finished, installed, asker, prepared] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || installGeneration_ != installed ||
+                        asker == nullptr || asker.getComponent() != root_ || !document_)
                         return;
                     const auto clip = document_->commitMaterial(*prepared, job);
                     if (clip != 0 && !document_->synchronise())
@@ -834,6 +846,9 @@ class AdiApplication final : public juce::JUCEApplication,
     // The import with choices' worker (E5) and whether it runs.
     std::thread import_;
     std::shared_ptr<std::atomic<bool>> importing_;
+    std::stop_source importStop_;
+    // Moves with every install, so a worker's result finds the document it was for, or nothing.
+    std::uint64_t installGeneration_ = 0;
     // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
     // from; the engine refuses a paste into another project and says so.
     std::optional<adi::DeviceCopy> deviceClipboard_;

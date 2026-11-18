@@ -540,7 +540,7 @@ std::int64_t ProjectDocument::commitMaterial(clip_edit::MaterialEdit &material, 
         // The engine's words, with the file named; an indeterminate beat with Warp on says what to do.
         const auto &why = material.edit.error;
         if (why.find("source tempo") != std::string::npos || why.find("beat") != std::string::npos)
-            error_ = file + ": ADI found no steady beat to warp it by. Import it with Warp off, or set its tempo first.";
+            error_ = file + ": ADI found no steady beat to warp it by. Import it with Warp off.";
         else
             error_ = file + " was not imported: " + (why.empty() ? std::string("the file could not be read") : why);
         return 0;

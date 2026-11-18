@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/audio/warp.hpp"
 #include "adi/settings/store.hpp"
+#include <cstdint>
 #include <string>
 namespace adi::ui {
 // ADI's import prompt (E5; Live 12 manual 9.2.1, 9.2.2, 5.7; ADR-0132 d6): what a dropped audio file
@@ -32,18 +33,29 @@ inline ImportChoices importChoicesFrom(const settings::AppSettings &settings) {
     out.copyIn = copy.is_string() && copy.get<std::string>() == "always";
     return out;
 }
-// The prompt shows while `editing.importOptions` is "ask" (its default); otherwise the last
-// choices are used without asking.
+// Whether `files.copyImportedMedia` is "ask": the copy is asked on every drop, and the prompt's
+// answer is not kept over it.
+inline bool copyAsks(const settings::AppSettings &settings) {
+    const auto v = settings.get("files.copyImportedMedia");
+    return v.is_string() && v.get<std::string>() == "ask";
+}
+// The prompt shows while `editing.importOptions` is "ask" (its default), or while the copy is to be
+// asked; otherwise the last choices are used without asking.
 inline bool importAsks(const settings::AppSettings &settings) {
     const auto v = settings.get("editing.importOptions");
-    return !v.is_string() || v.get<std::string>() == "ask";
+    return !v.is_string() || v.get<std::string>() == "ask" || copyAsks(settings);
 }
-// The prompt's answer kept as the last choices, and saved.
-inline bool keepImportChoices(settings::AppSettings &settings, const ImportChoices &choices, std::string &why) {
-    return settings.set("record.importAutoWarp", choices.warp, {}, why) &&
-           settings.set("record.importEdgeFades", choices.edgeFades, {}, why) &&
-           settings.set("record.defaultWarpMode", std::string(audio::warpModeName(choices.mode)), {}, why) &&
-           settings.set("files.copyImportedMedia", std::string(choices.copyIn ? "always" : "never"), {}, why) &&
+// The prompt's answer kept as the last choices, and saved; a copy setting of "ask" stays "ask".
+// `nowUtc` (microseconds) dates the settings' change log, as the Settings window does.
+inline bool keepImportChoices(settings::AppSettings &settings, const ImportChoices &choices, std::string &why,
+                              std::int64_t nowUtc = 0) {
+    settings::ChangeContext who;
+    who.timeUtc = nowUtc;
+    return settings.set("record.importAutoWarp", choices.warp, who, why) &&
+           settings.set("record.importEdgeFades", choices.edgeFades, who, why) &&
+           settings.set("record.defaultWarpMode", std::string(audio::warpModeName(choices.mode)), who, why) &&
+           (copyAsks(settings) ||
+            settings.set("files.copyImportedMedia", std::string(choices.copyIn ? "always" : "never"), who, why)) &&
            settings.save(why);
 }
 } // namespace adi::ui

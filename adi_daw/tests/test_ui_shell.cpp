@@ -3336,6 +3336,64 @@ void importPrompt(AppCommands &commands, settings::AppSettings &settings, const 
     const bool plain = root.dropAudio(wav.string(), audioTrack, 8 * textproj::kWhole, "Prompted");
     root.frame();
     check(plain && asked.size() == 2 && clipsOn() == 3, "every choice off: the plain import, no material import");
+    // The prompt's keys, and a second drop while it is open.
+    settings.set("editing.importOptions", std::string("ask"), {}, why);
+    check(root.dropAudio(wav.string(), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
+          "the prompt again");
+    check(!root.dropAudio(wav.string(), audioTrack, 16 * textproj::kWhole, "Prompted") &&
+              root.error() == "Answer the import prompt first.",
+          "a second drop waits for the open prompt, and says so");
+    if (auto *prompt = root.importPrompt()) {
+        check(prompt->keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) && root.importPrompt() != nullptr && clipsOn() == 3,
+              "another key stays with the prompt: Delete deletes nothing behind it");
+        prompt->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    }
+    root.frame();
+    check(root.importPrompt() == nullptr && clipsOn() == 3, "Escape cancels");
+    check(root.dropAudio(wav.string(), audioTrack, 12 * textproj::kWhole, "Prompted") && root.importPrompt() != nullptr,
+          "and again");
+    if (auto *prompt = root.importPrompt())
+        prompt->keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+    root.frame();
+    check(root.importPrompt() == nullptr && clipsOn() == 4, "Return imports");
+    // A refused file leaves nothing: Warp on a file with no beat, dropped below the tracks.
+    settings.set("editing.importOptions", std::string("never"), {}, why);
+    ImportChoices warped;
+    warped.warp = true;
+    keepImportChoices(settings, warped, why);
+    const auto trackCount = root.reader().tracks().size();
+    const auto headBefore = document->ops().nextUndo();
+    root.dropAudio(wav.string(), 0, 0, "Prompted");
+    root.frame();
+    const auto headAfter = document->ops().nextUndo();
+    check(root.reader().tracks().size() == trackCount && headBefore && headAfter && headAfter->txnId == headBefore->txnId &&
+              root.error().find("no steady beat") != std::string::npos && !root.importing(),
+          "a refused file below the tracks leaves no track and no undo step, and says why");
+    // Several files: the first refused stops the rest, and the Status Bar says so.
+    root.dropAudioFiles({{wav.string(), "Prompted"}, {wav.string(), "Prompted"}}, audioTrack, 20 * textproj::kWhole, false);
+    root.frame();
+    check(clipsOn() == 4 && root.error().find("(0 files imported; 1 not tried.)") != std::string::npos,
+          "a refusal part-way through says what landed and what was not tried");
+    // The worker busy: the drop says so.
+    auto material = root.importMaterial;
+    root.importMaterial = [](const std::string &, std::int64_t, std::int64_t, const ImportChoices &,
+                             AdiRootComponent::MaterialDone) { return false; };
+    root.dropAudio(wav.string(), audioTrack, 20 * textproj::kWhole, "Prompted");
+    check(!root.importing() && root.error().find("still being prepared") != std::string::npos && clipsOn() == 4,
+          "a worker still busy: the drop says to drop it again");
+    root.importMaterial = material;
+    // Copy set to "ask": the prompt asks even with the import options off, and "ask" stays.
+    keepImportChoices(settings, ImportChoices{}, why);
+    settings.set("files.copyImportedMedia", std::string("ask"), {}, why);
+    check(importAsks(settings) && root.dropAudio(wav.string(), audioTrack, 20 * textproj::kWhole, "Prompted") &&
+              root.importPrompt() != nullptr,
+          "Copy on \"ask\" asks on every drop");
+    if (auto *prompt = root.importPrompt())
+        prompt->answer(true);
+    root.frame();
+    check(settings.get("files.copyImportedMedia") == "ask" && clipsOn() == 5, "and the answer leaves \"ask\" as it was");
+    keepImportChoices(settings, ImportChoices{}, why);
+    settings.set("files.copyImportedMedia", std::string("never"), {}, why);
     settings.set("editing.importOptions", std::string("ask"), {}, why);
     settings.save(why);
     commands.detach(root);
