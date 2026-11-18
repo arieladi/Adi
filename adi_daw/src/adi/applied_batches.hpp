@@ -26,7 +26,7 @@ struct AppliedBatchAccess;
 }
 
 enum class AppliedBatchKind {
-    Commit, Undo, Redo, BranchSwitch, SnapshotRevert, ReplayBaseReset
+    Commit, Undo, Redo, BranchSwitch, SnapshotRevert, ReplayBaseReset, HistoryMove
 };
 enum class AppliedSourceInvalidation { Closed, Replaced };
 enum class AppliedSubscriptionState {
