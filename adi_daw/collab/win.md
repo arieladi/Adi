@@ -6,6 +6,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18, later — the round is closed and the seats have their prompts; seven engine requests win had missed are landed; an outside review found four defects in win's own Note Editor logic
+
+**For the seats — read first.**
+- **Every seat.** The director closed the design round on 18 November and released the prompts. The window lane's is `collab/prompts/2026-11-18-window-lane.md`, the engine seat's `collab/prompts/2026-11-18-engine-lane-codex.md`; the Mix View seat's comes from the director. The sheets' drawing sources are in `collab/window/design/src/` (#629): every size and colour on a sheet is a number there.
+- **Engine seat.** Seven of your requests of 11 and 12 November had never been opened: win's miss. They are on main as one chain, #630 (`9db1d820`): automation-splice, automation-splice-store, row-ids, history-move-to, relative-mixer-gestures, quiet-gesture-end, history-retention-fuzz. All 21 checks passed on the first run, MSVC and Apple included; nothing was changed on your branches. Win's two merge resolutions: the CMake source list keeps `row_ids.cpp` beside both `automation_splice*.cpp`; `test_gesture_playback.cpp`'s case list keeps main's `countInAcrossGesture` beside your three relative cases. `engine/log` has main merged in (`ac8db667`): cut from it. **Three new rows are yours, DF-E13 to DF-E15,** from the outside review below: read, not yet probed, all minor.
+- **Window lane.** Your E5 was pushed without a PR; win opened it as #628 and it is on main (`be9642d1`). `note_edits.hpp` changed with #631: `chopNotes` refuses past its cap, `makeChords` makes its notes through `piece`, `withOverlaps` has a `placed` flag. Pull before you push.
+- **Mix View seat.** The window lane builds the theme and density tables in `src/adi/ui` first (DF-W24) and you use them; the Arrangement | Mix View switch is one control on `ToggleMixView`, whichever of you lands first adds it.
+
+**The outside review (the director's Gemini), 22 claims over five bundles, each checked against the code.**
+- **Real, in win's Note Editor logic, fixed in #631** (`b18f261e`; `adi_ui_note_edits_tests` 233 checks): Chop Notes past 4,096 ops stopped part way, leaving the note it had reached cut to its first piece and every later note the same; Make Chords dropped the root's release velocity, channel, chance, tuning and deactivation, and two roots could add one chord note twice; Delete Overlaps and Restrict Polyphony could lengthen a note shorter than a 128th; two notes one batch carries to the same key and start stayed two.
+- **Real or plausible, in the engine chain, registered and not blocking:** DF-E13 (a redundant range row beside a splice; the start guard's value when two kept points share the begin sample; a missing test case), DF-E14 (`moveTo` writes a branch for a childless stored root; a low-level refusal on a legacy checkpoint), DF-E15 (`QuietSession` and the `Cancelling` state).
+- **False:** five, among them the report's first finding, marked "certain", which quotes an expression that is in no file and on no branch, and three that cite functions the Note Editor does not have. **Not defects:** seven (Live's own behaviour, callers that cannot produce the input, or the code's stated design).
+- **The lesson for the next round:** the bundles now carry line numbers and the prompt discards a finding whose quoted lines are not there. A second round of five went to the director the same day: the Arrangement's edit logic, the track and mixer logic, the commit path, and the Mix View's dynamics, EQ and focus cores.
+
+**Win's own miss, and the rule.** The engine's requests sat six days because the session of the 12th to the 17th never compared `origin/engine/*` and `origin/window/*` against the open PRs. That comparison is now the first act of every session, before anything else.
+
+**Merged today:** #627 (the five sheets, ADR-0244), #629 (the prompts and the sheets' sources), #630 (the engine chain), #628 (the window's import prompt), #631 (the Note Editor fixes).
+
+**Suites at this entry.** Note edits 233 checks; 244 ADRs.
+
 ## 2026-11-18 — the first design round closes on five sheets; a cloned tool looks like its source (ADR-0244)
 
 **For the seats — read first.**
