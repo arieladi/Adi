@@ -52,8 +52,8 @@ void LiveLook::setColours() {
     setColour(juce::Slider::trackColourId, value);
     setColour(juce::Slider::backgroundColourId, chooser);
     setColour(juce::Slider::thumbColourId, text);
-    setColour(juce::Slider::rotarySliderFillColourId, knobFace);
-    setColour(juce::Slider::rotarySliderOutlineColourId, knobTrack);
+    setColour(juce::Slider::rotarySliderFillColourId, knobRing);
+    setColour(juce::Slider::rotarySliderOutlineColourId, knobNeedle);
     setColour(juce::PopupMenu::backgroundColourId, field);
     setColour(juce::PopupMenu::textColourId, text);
     setColour(juce::PopupMenu::highlightedBackgroundColourId, selection);
@@ -193,8 +193,8 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
 }
 void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, float pos,
                                 float start, float end, juce::Slider &s) {
-    // Live's knob: a thick dark ring open at the foot, blue from its start to the
-    // value, and a dark needle from the centre that stops short of the ring.
+    // Live's knob: a thick ring open at the foot (knobRing), blue from its start to the value,
+    // and a needle from the centre that stops short of the ring (knobNeedle).
     const auto b = juce::Rectangle<int>(x, y, w, h).toFloat();
     const float r = std::min(b.getWidth(), b.getHeight()) / 2 - 3.f;
     const float cx = b.getCentreX(), cy = b.getCentreY();
@@ -212,7 +212,7 @@ void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, f
         g.setColour(value);
         g.strokePath(fill, stroke);
     }
-    g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId));
+    g.setColour(s.findColour(juce::Slider::rotarySliderOutlineColourId));
     juce::Path needle;
     needle.startNewSubPath(cx, cy);
     needle.lineTo(cx + 0.72f * r * std::sin(a), cy - 0.72f * r * std::cos(a));

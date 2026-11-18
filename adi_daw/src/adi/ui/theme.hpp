@@ -79,7 +79,8 @@ enum class ThemeId { Dark, MidGrey, Light, MixView };
     /* controls */ \
     ADI_THEME_ROLE(selectorOff) /* the side strip's selector when off */ \
     ADI_THEME_ROLE(selectorEdge) /* its frame */ \
-    ADI_THEME_ROLE(knobFace) /* a rotary's face */ \
+    ADI_THEME_ROLE(knobRing) /* a rotary's ring, where the value is not */ \
+    ADI_THEME_ROLE(knobNeedle) /* a rotary's needle */ \
     ADI_THEME_ROLE(knobTrack) /* a rotary's track, a scroll bar's thumb */ \
     ADI_THEME_ROLE(knobRim) /* a rotary's rim */ \
     ADI_THEME_ROLE(tooltip) /* a tooltip's ground */ \

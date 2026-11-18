@@ -30,6 +30,8 @@ ADI_DENSITY_ROLES(ADI_LOOK_INT, ADI_LOOK_FLOAT)
 ThemeId themeId() noexcept;
 DensityId densityId() noexcept;
 bool apply(ThemeId, DensityId);
+// The text on a switch: the theme's text when it is off, the ink on its lit colour when it is on.
+inline juce::Colour textOn(bool lit) { return lit ? ink : text; }
 // Live's colours for new tracks, in the order its default set shows them, then its
 // palette's first row. Measured from the four default tracks; the rest from Live's
 // palette, to be read again off Live (AWAITING).

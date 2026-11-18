@@ -7,7 +7,7 @@ namespace {
 // #262626, the selected lane #3a3a3a, the grid as black at 20 % over a lane, the Browser's area
 // #202020 and its selected row #3f5866, the menu and status bars #0f0f10). Where the sheets draw
 // no colour for a role, Dark takes the nearest of theirs: the markers and the loop brace in the
-// ruler's greys, the handles in yel and val, the rotary in the dial's gradient.
+// ruler's greys, the handles in yel and val, the rotary in the sheet's ring and needle.
 //
 // Mid grey is the window as built before the sheets, literal for literal.
 //
@@ -66,8 +66,9 @@ constexpr Theme kDark{
     .meterPeak = 0xfff3f3f3,
     .selectorOff = 0xff161616,
     .selectorEdge = 0xff4a4a4a,
-    .knobFace = 0xff28282c,
-    .knobTrack = 0xff101012,
+    .knobRing = 0xff101012,
+    .knobNeedle = 0xfff0f0f0,
+    .knobTrack = 0xff5a5a5a,
     .knobRim = 0xff4a4a4a,
     .tooltip = 0xff383838,
     .menuBack = 0xff2b2b2b,
@@ -134,7 +135,8 @@ constexpr Theme kMidGrey{
     .meterPeak = 0xffdcdcdc,
     .selectorOff = 0xff0a0a0a,
     .selectorEdge = 0xff3c3c3c,
-    .knobFace = 0xff1a1a1a,
+    .knobRing = 0xff1a1a1a,
+    .knobNeedle = 0xff1a1a1a,
     .knobTrack = 0xff6a6a6a,
     .knobRim = 0xff3a3a3a,
     .tooltip = 0xfff5f5d0,
@@ -202,8 +204,9 @@ constexpr Theme kLight{
     .meterPeak = 0xff1c1c1c,
     .selectorOff = 0xffececec,
     .selectorEdge = 0xffececec,
-    .knobFace = 0xfff5f5f5,
-    .knobTrack = 0xffeeeeee,
+    .knobRing = 0xffeeeeee,
+    .knobNeedle = 0xff1c1c1c,
+    .knobTrack = 0xffd6d6d6,
     .knobRim = 0xffececec,
     .tooltip = 0xfffcfcfc,
     .menuBack = 0xff2b2b2b,
@@ -270,8 +273,9 @@ constexpr Theme kMixView{
     .meterPeak = 0xffd9d9de,
     .selectorOff = 0xff0f0f12,
     .selectorEdge = 0xff3e3e47,
-    .knobFace = 0xff1f1f25,
-    .knobTrack = 0xff0c0c0e,
+    .knobRing = 0xff0c0c0e,
+    .knobNeedle = 0xffd9d9de,
+    .knobTrack = 0xff4f4f58,
     .knobRim = 0xff3e3e47,
     .tooltip = 0xff2c2c35,
     .menuBack = 0xff2b2b2b,

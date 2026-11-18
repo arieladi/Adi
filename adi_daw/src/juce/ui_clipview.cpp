@@ -2690,7 +2690,7 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.reduceClipRegion(keyboard);
         g.setColour(look::pianoWhite);
         g.fillRect(keyboard);
-        g.setFont(look::font(std::min(10.f, static_cast<float>(keys.keyHeight)), false));
+        g.setFont(look::font(std::min(look::fontSmall, static_cast<float>(keys.keyHeight)), false));
         for (int row = firstRow; row < rows; ++row) {
             const int y = keyboard.getY() + row * keys.keyHeight - keys.scrollY;
             if (y >= keyboard.getBottom())
@@ -2758,7 +2758,7 @@ void NoteEditor::paint(juce::Graphics &g) {
         const auto shape = shapeBox();
         look::box(g, shape.toFloat(), shape_ == LaneShape::Pointer ? look::button : look::accent);
         labels_.push_back(shape);
-        g.setColour(look::text);
+        g.setColour(look::textOn(shape_ != LaneShape::Pointer));
         g.setFont(look::font(look::fontTiny));
         g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
         // The selected notes' velocity, or their range, or the value being typed (manual 10.5.12).
@@ -4640,7 +4640,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
                        static_cast<float>(title.getY()), 2.f);
     }
     if (!panelsFolded_)
-        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, look::fontField, true);
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::ink, look::fontField, true);
     // A scrolled column is cut at the title, which stays over it.
     const bool scrolled = columnScroll() > 0;
     if (scrolled) {
@@ -4676,7 +4676,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
     }
     if (!loop.isEmpty())
-        text("Loop", loop, juce::Justification::centred, look::text, look::fontLabel);
+        text("Loop", loop, juce::Justification::centred, look::textOn(r.loop && !r.loopMixed), look::fontLabel);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
@@ -4688,7 +4688,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRoundedRectangle(mode.toFloat(), look::radiusControl);
         g.setColour(look::outline);
         g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), look::radiusControl, look::hairline);
-        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::text, look::fontMicro);
+        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::textOn(details_->scale.local), look::fontMicro);
     }
 
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
@@ -4724,9 +4724,9 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
             const auto starts = quantizeStartBox(), ends = quantizeEndBox();
             look::box(g, starts.toFloat(), quantizeStarts ? look::accent : look::button);
-            text("Start", starts, juce::Justification::centred, look::text, look::fontSmall);
+            text("Start", starts, juce::Justification::centred, look::textOn(quantizeStarts), look::fontSmall);
             look::box(g, ends.toFloat(), quantizeEnds ? look::accent : look::button);
-            text("End", ends, juce::Justification::centred, look::text, look::fontSmall);
+            text("End", ends, juce::Justification::centred, look::textOn(quantizeEnds), look::fontSmall);
             const auto named = [&](Field which, const char *name) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
@@ -4785,7 +4785,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.restoreState();
     if (const auto thumb = scrollThumb(); !thumb.isEmpty()) {
         g.setColour(look::text.withAlpha(0.45f));
-        g.fillRoundedRectangle(thumb.toFloat(), 1.5f);
+        g.fillRoundedRectangle(thumb.toFloat(), look::radiusSmall);
     }
     if (const auto strip = velocityStripArea(); !strip.isEmpty()) {
         // Live's Velocity Controls, under the lanes.
@@ -4812,26 +4812,26 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     if (const auto fold = foldBox(); !fold.isEmpty()) {
         look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
-        text("Fold", fold, juce::Justification::centred, look::text, look::fontSmall);
+        text("Fold", fold, juce::Justification::centred, look::textOn(notes.folded()), look::fontSmall);
         const auto draw = drawBox();
         look::box(g, draw.toFloat(), notes.drawMode() ? look::accent : look::button);
-        text("Draw", draw, juce::Justification::centred, look::text, look::fontSmall);
+        text("Draw", draw, juce::Justification::centred, look::textOn(notes.drawMode()), look::fontSmall);
         const auto trim = trimBox();
         look::box(g, trim.toFloat(), notes.trimMode() ? look::accent : look::button);
-        text("Trim", trim, juce::Justification::centred, look::text, look::fontSmall);
+        text("Trim", trim, juce::Justification::centred, look::textOn(notes.trimMode()), look::fontSmall);
         if (const auto focus = focusBox(); !focus.isEmpty()) {
             look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
-            text("Focus", focus, juce::Justification::centred, look::text, look::fontSmall);
+            text("Focus", focus, juce::Justification::centred, look::textOn(focus_), look::fontSmall);
         }
         // Fold to Scale and Highlight Scale; Fold to Scale is dimmed while the clip holds no scale of its own.
         const auto scaleFold = scaleFoldBox(), highlight = highlightBox();
         look::box(g, scaleFold.toFloat(), notes.scaleFolded() ? look::accent : look::button);
-        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), look::fontSmall);
+        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::textOn(notes.scaleFolded()) : look::textOn(notes.scaleFolded()).withAlpha(0.4f), look::fontSmall);
         look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
-        text("Highlight", highlight, juce::Justification::centred, look::text, look::fontSmall);
+        text("Highlight", highlight, juce::Justification::centred, look::textOn(notes.highlightScale), look::fontSmall);
         const auto find = findBox();
         look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
-        text("Find", find, juce::Justification::centred, look::text, look::fontSmall);
+        text("Find", find, juce::Justification::centred, look::textOn(filtersShown_), look::fontSmall);
         // What the notes are coloured by (ADI's addition).
         const auto colours = coloursBox();
         look::box(g, colours.toFloat(), look::chooser);
@@ -4863,11 +4863,11 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         for (int i = 0; i < filterToggleCount(); ++i) {
             const auto box = filterToggleBox(i);
             look::box(g, box.toFloat(), filterToggle(i) ? look::accent : look::button);
-            text(filterToggleName(i), box, juce::Justification::centred, look::text, look::fontTiny);
+            text(filterToggleName(i), box, juce::Justification::centred, look::textOn(filterToggle(i)), look::fontTiny);
         }
         const auto invert = filterInvertBox(), select = filterSelectBox();
         look::box(g, invert.toFloat(), filters.invert[static_cast<std::size_t>(filter_)] ? look::accent : look::button);
-        text("Invert", invert, juce::Justification::centred, look::text, look::fontSmall);
+        text("Invert", invert, juce::Justification::centred, look::textOn(filters.invert[static_cast<std::size_t>(filter_)]), look::fontSmall);
         look::box(g, select.toFloat(), look::button);
         text("Select", select, juce::Justification::centred, look::text, look::fontSmall);
     }

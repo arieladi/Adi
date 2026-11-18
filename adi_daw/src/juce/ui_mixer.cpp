@@ -98,7 +98,7 @@ void PeakHold::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(held >= 1 ? look::record : over ? look::chooser.brighter(0.1f) : look::chooser);
     g.fillRoundedRectangle(r, r.getHeight() / 2);
     g.setColour(look::outline);
-    g.drawRoundedRectangle(r, r.getHeight() / 2, 1.f);
+    g.drawRoundedRectangle(r, r.getHeight() / 2, look::hairline);
     g.setColour(look::text);
     g.setFont(look::font(look::fontBody));
     g.drawText(held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1), r,
