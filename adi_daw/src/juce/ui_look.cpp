@@ -154,26 +154,27 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
     const juce::Rectangle<float> r(static_cast<float>(x), static_cast<float>(y),
                                    static_cast<float>(w), static_cast<float>(h));
     if (style == juce::Slider::LinearBar || style == juce::Slider::LinearBarVertical) {
-        // Live's value box: light, filled in blue up to the value.
-        box(g, r.reduced(0.5f), chooser);
+        // The shared value box (language.png part D): a dark well, filled in the value's colour up
+        // to the value; JUCE's own label draws the number over it.
+        g.setColour(boxFill);
+        g.fillRoundedRectangle(r, radiusBox);
         // A value field dragged up or down (the Track Delay's, manual 18.7): the number alone in
         // the box, as Live's figure shows it; JUCE's vertical bar gives it Live's drag axis.
-        if (s.getProperties()["live.valueField"])
-            return;
-        g.setColour(value);
-        const auto inner = r.reduced(1.f);
-        if (style == juce::Slider::LinearBarVertical)
-            g.fillRect(inner.withTop(pos));
-        else if (s.getProperties()["live.bipolar"]) {
-            // A two-sided value, as pan: filled from the middle to the value.
-            const float mid = inner.getCentreX();
-            g.fillRect(juce::Rectangle<float>::leftTopRightBottom(std::min(mid, pos), inner.getY(),
-                                                                  std::max(mid, pos), inner.getBottom()));
-        } else
-            g.fillRect(inner.withWidth(std::max(0.f, pos - r.getX() - 1)));
-        // Live redraws the edge over the fill.
-        g.setColour(outline);
-        g.drawRect(r.reduced(0.5f), 1.f);
+        if (!s.getProperties()["live.valueField"]) {
+            g.setColour(value.withAlpha(0.28f));
+            const auto inner = r.reduced(1.f);
+            if (style == juce::Slider::LinearBarVertical)
+                g.fillRect(inner.withTop(pos));
+            else if (s.getProperties()["live.bipolar"]) {
+                // A two-sided value, as pan: filled from the middle to the value.
+                const float mid = inner.getCentreX();
+                g.fillRect(juce::Rectangle<float>::leftTopRightBottom(std::min(mid, pos), inner.getY(),
+                                                                      std::max(mid, pos), inner.getBottom()));
+            } else
+                g.fillRect(inner.withWidth(std::max(0.f, pos - r.getX() - 1)));
+        }
+        g.setColour(boxEdge);
+        g.drawRoundedRectangle(r.reduced(hairline / 2), radiusBox, hairline);
         return;
     }
     if (s.isHorizontal()) {

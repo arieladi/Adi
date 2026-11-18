@@ -827,11 +827,6 @@ juce::Rectangle<float> StatusBar::clipViewFrame() const {
     return {inner.getX() + inner.getWidth() * static_cast<float>(from), inner.getY() - 1.f,
             std::max(2.f, inner.getWidth() * static_cast<float>(to - from)), inner.getHeight() + 2.f};
 }
-namespace {
-// A round button in the shared button's colours (language.png part B): the shared box, larger than
-// the circle, seen through it, so the shape stays round and the colours stay the painter's.
-
-} // namespace
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const int w = getWidth();

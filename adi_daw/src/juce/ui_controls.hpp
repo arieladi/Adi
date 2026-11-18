@@ -51,8 +51,11 @@ void chooser(juce::Graphics &, juce::Rectangle<float>, const juce::String &text,
 // One of several (part D's one-of-three): a group with the lit one in the accent.
 void oneOf(juce::Graphics &, juce::Rectangle<float>, const juce::StringArray &labels, int lit,
            float fontSize = look::fontBody);
-// Where each of `count` choices sits inside a one-of box, for hit tests.
+// Where each of `count` equal choices sits inside a box (the tabs'); and where each of a one-of's
+// labels sits, each as wide as it wants, for hit tests.
 juce::Rectangle<float> oneOfCell(juce::Rectangle<float>, int count, int index) noexcept;
+juce::Rectangle<float> oneOfCell(juce::Rectangle<float>, const juce::StringArray &labels, int index,
+                                 float fontSize = look::fontBody);
 // A switch: a pill track, its knob at the right and the track lit when on.
 void toggleSwitch(juce::Graphics &, juce::Rectangle<float>, bool on, bool enabled = true);
 // Tabs: a ground, the chosen tab raised, the others dim.

@@ -219,6 +219,24 @@ juce::Rectangle<float> oneOfCell(juce::Rectangle<float> r, int count, int index)
     const float w = r.getWidth() / static_cast<float>(std::max(1, count));
     return {r.getX() + w * static_cast<float>(index), r.getY(), w, r.getHeight()};
 }
+juce::Rectangle<float> oneOfCell(juce::Rectangle<float> r, const juce::StringArray &labels, int index, float fontSize) {
+    // Each choice as wide as its label wants, the box shared in that proportion, so a long one
+    // ("Auto") is not cut where a short one ("In") has room to spare.
+    const auto font = look::font(fontSize, true);
+    float total = 0, before = 0, own = 0;
+    for (int i = 0; i < labels.size(); ++i) {
+        const float want = juce::GlyphArrangement::getStringWidth(font, labels[i]) + 2 * look::hairline;
+        if (i < index)
+            before += want;
+        if (i == index)
+            own = want;
+        total += want;
+    }
+    if (total <= 0)
+        return oneOfCell(r, labels.size(), index);
+    const float scale = r.getWidth() / total;
+    return {r.getX() + before * scale, r.getY(), own * scale, r.getHeight()};
+}
 void oneOf(juce::Graphics &g, juce::Rectangle<float> r, const juce::StringArray &labels, int lit, float fontSize) {
     const float radius = std::min(look::radiusPanel, r.getHeight() / 2);
     g.setColour(look::group);
@@ -226,10 +244,11 @@ void oneOf(juce::Graphics &g, juce::Rectangle<float> r, const juce::StringArray 
     g.setColour(look::groupEdge);
     g.drawRoundedRectangle(r.reduced(look::hairline / 2), radius, look::hairline);
     for (int i = 0; i < labels.size(); ++i) {
-        const auto cell = oneOfCell(r, labels.size(), i);
+        const auto cell = oneOfCell(r, labels, i, fontSize);
         if (i == lit) {
+            const float inset = std::min(2.f, cell.getHeight() / 8);
             g.setColour(look::accent);
-            g.fillRoundedRectangle(cell.reduced(2.f), std::min(look::radiusBox, cell.getHeight() / 2 - 2.f));
+            g.fillRoundedRectangle(cell.reduced(inset), std::min(look::radiusBox, cell.getHeight() / 2 - inset));
         }
         label(g, cell, labels[i], i == lit ? look::ink : look::textDim, fontSize, true);
     }

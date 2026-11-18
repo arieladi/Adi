@@ -6,9 +6,6 @@
 #include <algorithm>
 namespace adi::ui {
 namespace {
-// A round button in the shared button's colours (language.png part B): the shared box, larger than
-// the circle, seen through it, so the shape stays round and the colours stay the painter's.
-
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
              Samples, Grooves, Templates, Packs, User, Project, AddFolder };
 void icon(juce::Graphics &g, int kind, juce::Rectangle<float> r) {

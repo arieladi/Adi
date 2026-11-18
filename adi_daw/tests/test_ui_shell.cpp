@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
+#include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
@@ -10908,9 +10909,9 @@ int main(int argc, char **argv) {
               a.transport.play.glyph == BarItem::Glyph::Play,
           "the transport's buttons are Live's glyphs, named for the Info View");
     reference(a, "root-default", write);
-    // The theme and density tables (DF-W24). Dark is the default; Mid grey is the window as built
-    // before the sheets, value for value: a window made in it draws the golden drawn before them,
-    // pixel for pixel (root-default-midgrey.png is that golden, kept). Each other theme and Open
+    // The theme and density tables (DF-W24). Dark is the default; Mid grey keeps the colours of the
+    // window as built before the sheets (step 1 matched that golden pixel for pixel; since the
+    // shared controls of step 3, root-default-midgrey.png is the Mid grey window with them). Each other theme and Open
     // draw a window too.
     {
         check(look::themeId() == ThemeId::Dark && look::densityId() == DensityId::Compact &&
@@ -10956,6 +10957,116 @@ int main(int argc, char **argv) {
                 }
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
+        // The shared controls (DF-W24 step 3; language.png parts B, C, D): one painter each.
+        look::apply(ThemeId::Dark, DensityId::Compact);
+        {
+            using controls::ButtonState;
+            using controls::Lit;
+            check(controls::stateOf(false, false, false, true) == ButtonState::Rest &&
+                      controls::stateOf(false, true, false, true) == ButtonState::Over &&
+                      controls::stateOf(false, true, true, true) == ButtonState::Pressed &&
+                      controls::stateOf(true, true, true, true) == ButtonState::On &&
+                      controls::stateOf(true, false, false, true, Lit::Record) == ButtonState::OnRecord &&
+                      controls::stateOf(true, false, false, true, Lit::Value) == ButtonState::OnValue &&
+                      controls::stateOf(true, true, true, false) == ButtonState::Disabled,
+                  "a button's state: rest, pointer over, pressed, on (in the accent, the record's red or the value's "
+                  "blue), disabled");
+            check(controls::labelColour(ButtonState::On) == look::ink && controls::labelColour(ButtonState::OnRecord) == look::ink &&
+                      controls::labelColour(ButtonState::Rest) == look::text &&
+                      controls::labelColour(ButtonState::Disabled) == look::textFaint,
+                  "a lit button's label is the ink, a resting one's the text, a disabled one's faint");
+            const juce::Rectangle<float> monitor(0, 0, 70, 13);
+            const juce::StringArray io{"In", "Auto", "Off"};
+            const auto in = controls::oneOfCell(monitor, io, 0), autoCell = controls::oneOfCell(monitor, io, 1),
+                       off = controls::oneOfCell(monitor, io, 2);
+            check(autoCell.getWidth() > in.getWidth() && in.getRight() == autoCell.getX() &&
+                      std::abs(off.getRight() - monitor.getRight()) < 0.01f,
+                  "one of three: each choice as wide as its label wants, the three filling the box");
+            // A button drawn at rest and on: the sheet's colours, at its middle.
+            juce::Image cell(juce::Image::ARGB, 40, 20, true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(cell);
+                controls::button(g, {0, 0, 40, 20}, ButtonState::Rest);
+            }
+            const bool rest = cell.getPixelAt(20, 3) == look::buttonRest;
+            {
+                juce::Graphics g(cell);
+                controls::button(g, {0, 0, 40, 20}, ButtonState::OnRecord);
+            }
+            check(rest && cell.getPixelAt(20, 3) == look::record, "a button at rest and on for record, in the sheet's colours");
+            // The PR's picture: every control in every state, as the sheet's parts B, C and D lay them out.
+            if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                juce::Image sheet(juce::Image::ARGB, 1920, 300, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(sheet);
+                    g.fillAll(look::frame);
+                    g.setFont(look::font(look::fontBody));
+                    const auto caption = [&](float cx, float y, const char *t) {
+                        g.setColour(look::textDim);
+                        g.drawText(t, juce::Rectangle<float>(cx - 50, y, 100, 14), juce::Justification::centred);
+                    };
+                    float x = 24;
+                    for (const auto &[state, name] : std::vector<std::pair<ButtonState, const char *>>{
+                             {ButtonState::Rest, "Rest"}, {ButtonState::Over, "Pointer over"}, {ButtonState::Pressed, "Pressed"},
+                             {ButtonState::On, "On"}, {ButtonState::OnRecord, "On, record"}, {ButtonState::OnValue, "On, value"},
+                             {ButtonState::Disabled, "Disabled"}}) {
+                        controls::button(g, {x, 34, 74, 28}, state, "Solo");
+                        caption(x + 37, 70, name);
+                        x += 86;
+                    }
+                    controls::group(g, {24, 110, 150, 30});
+                    controls::separator(g, 74, 110, 30);
+                    controls::separator(g, 124, 110, 30);
+                    controls::button(g, {540, 113, 34, 24}, ButtonState::On, "1");
+                    controls::button(g, {578, 113, 26, 24}, ButtonState::Rest, "S");
+                    controls::button(g, {608, 113, 26, 24}, ButtonState::Rest);
+                    caption(587, 146, "Track: on, Solo, Arm");
+                    float kx = 686;
+                    const auto knob = [&](float r, float v, controls::KnobLook k, const char *name) {
+                        controls::ringKnob(g, {kx, 62}, r, v, k);
+                        caption(kx, 96, name);
+                        kx += r * 2 + 40;
+                    };
+                    knob(look::knobSmall, 0.55f, {}, "Small");
+                    knob(look::knobMedium, 0.55f, {}, "Medium");
+                    knob(look::knobLarge, 0.55f, {}, "Large");
+                    controls::KnobLook over;
+                    over.over = true;
+                    knob(17, 0.3f, over, "pointer over");
+                    controls::KnobLook centre;
+                    centre.fromCentre = true;
+                    knob(17, 0.72f, centre, "from centre");
+                    controls::KnobLook automated;
+                    automated.automated = true;
+                    knob(17, 0.6f, automated, "automated");
+                    controls::KnobLook modulated;
+                    modulated.modulation = std::make_pair(0.3f, 0.7f);
+                    knob(17, 0.45f, modulated, "modulated");
+                    controls::KnobLook disabled;
+                    disabled.disabled = true;
+                    knob(17, 0.5f, disabled, "disabled");
+                    controls::KnobLook second;
+                    second.colour = look::accent;
+                    knob(17, 0.64f, second, "second colour");
+                    const float dx = 1380;
+                    controls::valueBox(g, {dx, 34, 70, 22}, "-6.0 dB", 0.57f);
+                    caption(dx + 35, 62, "Value box");
+                    controls::chooser(g, {dx + 86, 34, 104, 22}, "Ext. In");
+                    caption(dx + 138, 62, "Chooser");
+                    controls::oneOf(g, {dx + 206, 34, 96, 22}, {"In", "Auto", "Off"}, 1);
+                    caption(dx + 254, 62, "One of three");
+                    controls::toggleSwitch(g, {dx + 318, 36, 32, 18}, true);
+                    controls::toggleSwitch(g, {dx + 360, 36, 32, 18}, false);
+                    caption(dx + 355, 62, "Switch");
+                    controls::tabs(g, {dx, 100, 392, 30}, {"Notes", "Envelopes", "MPE", "Expression"}, 0);
+                    caption(dx + 196, 138, "Tabs");
+                }
+                const auto file = juce::File(folder).getChildFile("adi-shared-controls.png");
+                file.deleteFile();
+                juce::FileOutputStream out(file);
+                juce::PNGImageFormat().writeImageToStream(sheet, out);
+            }
+        }
         // The settings choose them: the registry's word for the theme, the density's key once it is there.
         std::string why;
         settings.set("lookfeel.theme", std::string("light"), {}, why);
