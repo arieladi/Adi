@@ -1054,14 +1054,14 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
             headers.mouseDrag(dragAt(headers, from, to, mods));
             const auto shown = headers.drop();
             if (shown) {
-                // The line, white, where the drop would land; or the group outlined.
+                // The line, bright, where the drop would land; or the group outlined.
                 juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
                 {
                     juce::Graphics g(image);
                     headers.paintEntireComponent(g, true);
                 }
                 const int y = shown->into != 0 ? topOf(shown->into) + 1 : shown->y;
-                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == juce::Colours::white;
+                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == look::textBright;
             }
             if (shots != nullptr)
                 picture((std::string(shots) + "-dragging.png").c_str());
@@ -5852,7 +5852,7 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
     {
         using Colours = NoteEditor::NoteColours;
         const auto paler = [&](int velocity) {
-            return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+            return panel.colour().interpolatedWith(look::textBright, 0.55f * static_cast<float>(127 - velocity) / 126.f);
         };
         check(ed.noteColours == Colours::Clip && !panel.coloursBox().isEmpty() && panel.headerArea().contains(panel.coloursBox()) &&
                   !panel.coloursBox().intersects(panel.findBox()) && panel.coloursMenu().getNumItems() == 5,
@@ -5868,12 +5868,12 @@ void clipViewTime(AppCommands &commands, const std::filesystem::path &dir) {
               "by pitch: every C has one colour in any octave; E and G have their own");
         check(panel.chooseColours(4) && ed.noteFill(note(1)) == ed.noteFill(note(2)) && ed.noteFill(note(1)) == ed.noteFill(note(70)),
               "by channel: these notes are all on one channel, and one colour");
-        check(panel.chooseColours(5) && ed.noteFill(note(70)) == juce::Colour(0xff6e6e6e) && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
+        check(panel.chooseColours(5) && ed.noteFill(note(70)) == look::noteOutOfScale && ed.noteFill(note(1)) == ed.noteFill(note(80)) &&
                   ed.noteFill(note(1)) != ed.noteFill(note(2)) && ed.noteFill(note(2)) != ed.noteFill(note(4)),
               "by scale degree: the root, the third and the fifth each have a colour; the C# outside C Major is dark grey");
         ed.select({2});
-        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a) && panel.chooseColours(2) &&
-                  ed.noteFill(note(2)) == juce::Colour(0xff9a9a9a),
+        check(ed.keyPressed(key('0')) && !note(2).active && ed.noteFill(note(2)) == look::mutedClip && panel.chooseColours(2) &&
+                  ed.noteFill(note(2)) == look::mutedClip,
               "a deactivated note is grey whatever the notes are coloured by");
         check(ed.keyPressed(key('0')) && note(2).active && panel.chooseColours(1) && ed.noteColours == Colours::Clip && !panel.chooseColours(9),
               "activated again; the clip's colours again");
@@ -10886,6 +10886,65 @@ int main(int argc, char **argv) {
               a.transport.play.glyph == BarItem::Glyph::Play,
           "the transport's buttons are Live's glyphs, named for the Info View");
     reference(a, "root-default", write);
+    // The theme and density tables (DF-W24). Dark is the default; Mid grey is the window as built
+    // before the sheets, value for value: a window made in it draws the golden drawn before them,
+    // pixel for pixel (root-default-midgrey.png is that golden, kept). Each other theme and Open
+    // draw a window too.
+    {
+        check(look::themeId() == ThemeId::Dark && look::densityId() == DensityId::Compact &&
+                  look::panel == juce::Colour(themeFor(ThemeId::Dark).panel) && look::controlBarHeight == 35,
+              "the window starts in Dark and Compact");
+        check(look::apply(ThemeId::MidGrey, DensityId::Compact) && look::panel == juce::Colour(0xff8f8f8f) &&
+                  look::liveLook().findColour(juce::ComboBox::backgroundColourId) == look::chooser,
+              "a theme set reaches the look:: colours and the JUCE controls' own");
+        AdiRootComponent grey(view, submitter, mailbox, commands, persistence, session, "grey");
+        grey.setSize(960, 540);
+        grey.frame();
+        reference(grey, "root-default-midgrey", write);
+        for (const auto id : kThemes)
+            for (const auto density : kDensities) {
+                look::apply(id, density);
+                AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "other");
+                other.setSize(960, 540);
+                other.frame();
+                juce::Image image(juce::Image::ARGB, 960, 540, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    other.paintEntireComponent(g, true);
+                }
+                check(image.getPixelAt(2, 300) == look::frame || image.getPixelAt(2, 300) == look::panel ||
+                          image.getPixelAt(2, 300) == look::band,
+                      "another theme and density draw the window in their own colours");
+                check(other.transport.getHeight() == look::controlBarHeight,
+                      "the Control Bar takes the density's height");
+                // The PR's picture (ADI_UI_PARITY): each theme and density, at twice the size.
+                if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                    juce::Image twice(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+                    {
+                        juce::Graphics g(twice);
+                        g.addTransform(juce::AffineTransform::scale(2.f));
+                        other.paintEntireComponent(g, true);
+                    }
+                    const auto file = juce::File(folder).getChildFile(
+                        juce::String("adi-theme-") + juce::String(std::string(themeName(id))) + "-" +
+                        juce::String(std::string(densityName(density))) + ".png");
+                    file.deleteFile();
+                    juce::FileOutputStream out(file);
+                    juce::PNGImageFormat().writeImageToStream(twice, out);
+                }
+            }
+        check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
+        // The settings choose them: the registry's word for the theme, the density's key once it is there.
+        std::string why;
+        settings.set("lookfeel.theme", std::string("light"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Light && look::densityId() == DensityId::Compact,
+              "lookfeel.theme \"light\" chooses Light; no density key reads as Compact");
+        settings.set("lookfeel.theme", std::string("os"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Dark, "and \"os\", the registry's default, reads as Dark");
+        look::apply(ThemeId::Dark, DensityId::Compact);
+    }
     check(submitter.submit(track(1)).ok, "commit between window frames");
     const auto before = b.generation();
     a.frame();

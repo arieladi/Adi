@@ -119,7 +119,7 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     case Type::Table:
     case Type::Record: {
         auto editor = std::make_unique<juce::TextEditor>();
-        editor->setFont(look::font(12.f));
+        editor->setFont(look::font(look::fontField));
         editor->setIndents(4, 2);
         // A table is kept by the windows themselves (window.zoom, N4) and a record by its
         // own dialogs (the channel configuration, N20): shown, not typed.
@@ -219,7 +219,7 @@ void SettingRow::paint(juce::Graphics &g) {
         g.drawRect(control->getBounds().expanded(1), 1);
     }
     g.setColour(setting.scope == Scope::App ? look::text : look::textDim);
-    g.setFont(look::font(12.5f));
+    g.setFont(look::font(look::fontHeading));
     int right = kControlX - 8;
     // The scope's mark beside the name when the value is not the application's (R-03).
     if (setting.scope != Scope::App) {
@@ -228,10 +228,10 @@ void SettingRow::paint(juce::Graphics &g) {
         g.setColour(look::field);
         g.fillRoundedRectangle(pill, pill.getHeight() / 2);
         g.setColour(look::text);
-        g.setFont(look::font(10.5f));
+        g.setFont(look::font(look::fontCaption));
         g.drawText(setting.scope == Scope::Project ? "Project" : "Device", pill, juce::Justification::centred);
         g.setColour(look::textDim);
-        g.setFont(look::font(12.5f));
+        g.setFont(look::font(look::fontHeading));
     }
     g.drawText(getTitle(), kLabelX, 0, std::max(0, right - kLabelX), kHeight, juce::Justification::centredLeft,
                true);
@@ -244,7 +244,7 @@ SettingsHeading::SettingsHeading(const juce::String &words) {
     setInterceptsMouseClicks(false, false);
 }
 void SettingsHeading::paint(juce::Graphics &g) {
-    const auto font = look::font(12.5f, true);
+    const auto font = look::font(look::fontHeading, true);
     g.setFont(font);
     g.setColour(look::text);
     const int x = SettingRow::kLabelX;
@@ -317,9 +317,9 @@ void SettingsPageList::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         if (open)
             g.fillRect(r.withTrimmedLeft(8));
-        g.fillRoundedRectangle(r, 4.f);
+        g.fillRoundedRectangle(r, look::radiusBox);
         g.setColour(look::text);
-        g.setFont(look::font(12.5f, true));
+        g.setFont(look::font(look::fontHeading, true));
         int y = rects[i].getY() + 2;
         for (const auto &line : lines(names[i])) {
             g.drawText(line, rects[i].getX() + 10, y, rects[i].getWidth() - 12, 15, juce::Justification::centredLeft);
@@ -357,9 +357,9 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
     setLookAndFeel(&look::liveLook());
     setTitle("Settings");
     setWantsKeyboardFocus(true);
-    search.setTextToShowWhenEmpty("Find a setting", juce::Colour(0xff5a5a5a));
+    search.setTextToShowWhenEmpty("Find a setting", look::textFaint);
     search.setTitle("Find a setting");
-    search.setFont(look::font(12.5f));
+    search.setFont(look::font(look::fontHeading));
     search.setIndents(8, 3);
     search.onTextChange = [this] { find(search.getText()); };
     search.onEscapeKey = [this] {
@@ -541,14 +541,14 @@ void SettingsPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
     const auto page = pageArea();
     g.setColour(look::panel);
-    g.fillRoundedRectangle(page.toFloat(), 6.f);
+    g.fillRoundedRectangle(page.toFloat(), look::radiusPanel);
     // ADI's help line at the page's foot: what the setting under the mouse does (R-02).
     const juce::Rectangle<int> foot(page.getX() + SettingRow::kLabelX, page.getBottom() - kHelpHeight + 4,
                                     page.getWidth() - 2 * SettingRow::kLabelX, kHelpHeight - 36);
     g.setColour(look::outline);
     g.fillRect(foot.getX(), foot.getY() - 4, foot.getWidth(), 1);
     g.setColour(look::text);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawFittedText(help_, foot.withTrimmedTop(2), juce::Justification::topLeft, 2, 1.f);
 }
 bool SettingsPanel::keyPressed(const juce::KeyPress &k) {

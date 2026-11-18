@@ -308,7 +308,7 @@ void AudioDevicePage::resized() {
 void AudioDevicePage::paint(juce::Graphics &g) {
     // Live's names on the left; the latencies are read, not set. A held row draws its own.
     g.setColour(look::text);
-    g.setFont(look::font(12.5f));
+    g.setFont(look::font(look::fontHeading));
     std::array<int, 3> headingY{};
     int height = 0;
     for (const auto &line : lines(headingY, height)) {
@@ -322,7 +322,7 @@ void AudioDevicePage::paint(juce::Graphics &g) {
     }
     // A device that cannot be opened always says so, never switches silently (d11).
     if (error_.isNotEmpty()) {
-        g.setColour(juce::Colour(0xffb02020));
+        g.setColour(look::error);
         g.drawText(error_, SettingRow::kLabelX, height - 20, getWidth() - 24, 16, juce::Justification::centredLeft,
                    true);
     }

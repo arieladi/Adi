@@ -124,16 +124,17 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         content = r.withTrimmedRight(10);
     }
     if (glyph != Glyph::None)
-        paintGlyph(g, glyph, content, getToggleState() && !boxed ? look::accent : look::text);
+        paintGlyph(g, glyph, content,
+                   getToggleState() ? (boxed ? look::ink : look::accent) : look::text);
     if (text.isNotEmpty()) {
-        g.setColour(look::text);
-        g.setFont(look::font(11.5f));
+        g.setColour(boxed && getToggleState() ? look::ink : look::text);
+        g.setFont(look::font(look::fontBody));
         g.drawText(text, content, juce::Justification::centred);
     }
     if (automationLed) {
         // Live 12's figure: a red dot with a dark rim in the corner (its size to be measured).
         const juce::Rectangle<float> led(r.getX() + 2.f, r.getY() + 2.f, 5.f, 5.f);
-        g.setColour(juce::Colour(0xffe8453c));
+        g.setColour(look::recordLed);
         g.fillEllipse(led);
         g.setColour(look::separator);
         g.drawEllipse(led, .8f);

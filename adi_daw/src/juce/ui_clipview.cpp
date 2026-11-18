@@ -40,10 +40,10 @@ void paintRuler(juce::Graphics &g, juce::Rectangle<int> area, const ArrangementG
     while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
         barStep *= 2;
     const int foot = area.getBottom();
-    g.setFont(look::font(11.f, true));
+    g.setFont(look::font(look::fontLabel, true));
     auto label = [&](std::int64_t tick, const juce::String &text) {
         const int x = area.getX() + static_cast<int>(time.x(tick));
-        g.setColour(juce::Colour(0xff7d7d7d));
+        g.setColour(look::rulerLabel);
         g.fillRect(x, foot - 9, 1, 7);
         g.setColour(look::textOnBand);
         g.drawText(text, x + 4, foot - 14, 60, 13, juce::Justification::centredLeft);
@@ -85,7 +85,7 @@ void shadeOutside(juce::Graphics &g, juce::Rectangle<int> area, const Arrangemen
                   const ClipWindow &window) {
     const int start = area.getX() + static_cast<int>(std::clamp(time.x(window.pos), -1., 1e6));
     const int end = area.getX() + static_cast<int>(std::clamp(time.x(window.end()), -1., 1e6));
-    g.setColour(juce::Colours::black.withAlpha(0.16f));
+    g.setColour(look::ink.withAlpha(0.16f));
     if (start > area.getX())
         g.fillRect(area.getX(), area.getY(), start - area.getX(), area.getHeight());
     if (end < area.getRight())
@@ -1200,7 +1200,7 @@ juce::String NoteEditor::statusText(const std::vector<textproj::Meter> &meters) 
 }
 juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
     if (!note.active)
-        return juce::Colour(0xff9a9a9a);
+        return look::mutedClip;
     const auto *clip = panel.details();
     const int velocity = std::clamp<int>(note.velocity, 1, 127);
     switch (noteColours) {
@@ -1212,7 +1212,7 @@ juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
         return juce::Colour::fromHSV(static_cast<float>(note.channel % 16) / 16.f, 0.58f, 0.92f, 1.f);
     case NoteColours::Degree: {
         if (clip == nullptr || !inScale(note.key, static_cast<int>(clip->scale.root), clip->scale.mask))
-            return juce::Colour(0xff6e6e6e);
+            return look::noteOutOfScale;
         // Which degree of the scale it is, and of how many.
         const int above = (note.key % 12 + 12 - static_cast<int>(clip->scale.root) % 12) % 12;
         int degree = 0, degrees = 0;
@@ -1228,7 +1228,7 @@ juce::Colour NoteEditor::noteFill(const engine::ClipNote &note) const {
         break;
     }
     // Live's: the clip's colour, paler as the velocity falls.
-    return panel.colour().interpolatedWith(juce::Colours::white, 0.55f * static_cast<float>(127 - velocity) / 126.f);
+    return panel.colour().interpolatedWith(look::textBright, 0.55f * static_cast<float>(127 - velocity) / 126.f);
 }
 // ---- Getting about (manual 8.7, 10.2) ----------------------------------------------------------
 void NoteEditor::fitWidth() {
@@ -2508,10 +2508,10 @@ void NoteEditor::paint(juce::Graphics &g) {
         for (std::size_t i = 0; i <= panel.others().size(); ++i) {
             const auto bar = loopBar(i);
             const auto own = i == 0 ? panel.colour() : panel.others()[i - 1].colour;
-            g.setColour(i != 0 && panel.focus() ? juce::Colour(0xff8a8a8a) : own);
+            g.setColour(i != 0 && panel.focus() ? look::neutral : own);
             g.fillRect(bar);
             if (i == 0) {
-                g.setColour(juce::Colours::black);
+                g.setColour(look::ink);
                 g.drawRect(bar, 1);
             }
         }
@@ -2529,7 +2529,7 @@ void NoteEditor::paint(juce::Graphics &g) {
         // The loop brace (manual 8.2.2): over the loop's window, lit while the clip loops.
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(ruler);
-        const auto lit = picked_ == RulerPart::Loop ? juce::Colours::white : look::textOnBand;
+        const auto lit = picked_ == RulerPart::Loop ? look::textBright : look::textOnBand;
         g.setColour(clip->loopEnabled ? lit : lit.withAlpha(0.35f));
         g.fillRect(brace->getStart(), ruler.getY() + 1, std::max(1, brace->getLength()), 3);
         g.fillRect(brace->getStart(), ruler.getY() + 1, 2, 6);
@@ -2544,7 +2544,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             const auto x = static_cast<float>(markerX(end));
             juce::Path flag;
             flag.addTriangle(x, foot - 8.f, x + (end ? -6.f : 6.f), foot - 4.f, x, foot);
-            g.setColour(picked_ == (end ? RulerPart::EndMarker : RulerPart::StartMarker) ? juce::Colours::white : look::textOnBand);
+            g.setColour(picked_ == (end ? RulerPart::EndMarker : RulerPart::StartMarker) ? look::textBright : look::textOnBand);
             g.fillPath(flag);
         }
     }
@@ -2587,13 +2587,13 @@ void NoteEditor::paint(juce::Graphics &g) {
                     continue;
                 const juce::Rectangle<float> r(static_cast<float>(box->x), static_cast<float>(box->y),
                                                static_cast<float>(box->width), static_cast<float>(box->height));
-                g.setColour(panel.focus() || !note.active ? juce::Colour(0xffa4a4a4) : layer.colour);
+                g.setColour(panel.focus() || !note.active ? look::noteInactive : layer.colour);
                 g.fillRect(r);
                 g.setColour(look::outline.withAlpha(0.7f));
                 g.drawRect(r, 1.f);
                 const auto &ids = selectedIn(layer.details.id);
                 if (!panel.focus() && std::find(ids.begin(), ids.end(), note.id) != ids.end() && r.getWidth() > 4.f) {
-                    g.setColour(juce::Colours::white);
+                    g.setColour(look::textBright);
                     g.drawRect(r.reduced(1.f), 1.f);
                 }
             }
@@ -2619,7 +2619,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             g.drawRect(r, 1.f);
             // A selected note: a light line inside its edge.
             if (isSelected(note.id) && r.getWidth() > 4.f && r.getHeight() > 4.f) {
-                g.setColour(juce::Colours::white);
+                g.setColour(look::textBright);
                 g.drawRect(r.reduced(1.f), 1.f);
             }
         }
@@ -2645,7 +2645,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             // The time selection: a lighter band down the key tracks.
             const int left = area.getX() + static_cast<int>(std::clamp(time.x(span->first), -1e6, 1e6));
             const int right = area.getX() + static_cast<int>(std::clamp(time.x(span->second), -1e6, 1e6));
-            g.setColour(juce::Colours::white.withAlpha(0.16f));
+            g.setColour(look::textBright.withAlpha(0.16f));
             g.fillRect(juce::Rectangle<int>(left, area.getY(), std::max(1, right - left), area.getHeight()).getIntersection(area));
         } else if (insert_) {
             // The insert marker: a thin line down the key tracks.
@@ -2661,26 +2661,26 @@ void NoteEditor::paint(juce::Graphics &g) {
                 const auto x = static_cast<float>(area.getX()) + static_cast<float>(std::clamp(time.x(tick), -1e6, 1e6));
                 juce::Path pointer;
                 pointer.addTriangle(x - 4.f, top + 1.f, x + 4.f, top + 1.f, x, top + static_cast<float>(kStretchHeight));
-                g.setColour(juce::Colours::white);
+                g.setColour(look::textBright);
                 g.fillPath(pointer);
                 g.setColour(look::outline);
                 g.strokePath(pointer, juce::PathStrokeType(1.f));
             }
             if (drag_ == Drag::Stretch && stretchPart_ == StretchPart::Middle) {
                 const int x = area.getX() + static_cast<int>(std::clamp(time.x(stretchNow_), -1e6, 1e6));
-                g.setColour(juce::Colours::white.withAlpha(0.7f));
+                g.setColour(look::textBright.withAlpha(0.7f));
                 g.fillRect(x, area.getY(), 1, area.getHeight());
             }
         }
         if (drag_ == Drag::Trim) {
-            g.setColour(juce::Colours::white.withAlpha(0.8f));
+            g.setColour(look::textBright.withAlpha(0.8f));
             g.fillRect(to_.x, std::min(from_.y, to_.y), 1, std::max(1, std::abs(to_.y - from_.y)));
         }
         if (drag_ == Drag::Band) {
             const juce::Rectangle<int> band(from_, to_);
-            g.setColour(juce::Colours::white.withAlpha(0.18f));
+            g.setColour(look::textBright.withAlpha(0.18f));
             g.fillRect(band);
-            g.setColour(juce::Colours::white.withAlpha(0.7f));
+            g.setColour(look::textBright.withAlpha(0.7f));
             g.drawRect(band, 1);
         }
     }
@@ -2688,20 +2688,20 @@ void NoteEditor::paint(juce::Graphics &g) {
         // The note ruler: Live's piano, the Cs named (C3 is middle C).
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(keyboard);
-        g.setColour(juce::Colour(0xffe6e6e6));
+        g.setColour(look::pianoWhite);
         g.fillRect(keyboard);
-        g.setFont(look::font(std::min(10.f, static_cast<float>(keys.keyHeight)), false));
+        g.setFont(look::font(std::min(look::fontSmall, static_cast<float>(keys.keyHeight)), false));
         for (int row = firstRow; row < rows; ++row) {
             const int y = keyboard.getY() + row * keys.keyHeight - keys.scrollY;
             if (y >= keyboard.getBottom())
                 break;
             const int key = *keys.keyOfRow(row);
             if (blackKey(key)) {
-                g.setColour(juce::Colour(0xff2a2a2a));
+                g.setColour(look::pianoBlack);
                 g.fillRect(keyboard.getX(), y, keyboard.getWidth() * 3 / 5, keys.keyHeight);
             } else if (keys.isFolded() || key % 12 == 0 || key % 12 == 5) {
                 // The lines between E and F, and between B and C, where two white keys meet.
-                g.setColour(juce::Colour(0xff9a9a9a));
+                g.setColour(look::pianoLine);
                 g.fillRect(keyboard.getX(), y + keys.keyHeight - 1, keyboard.getWidth(), 1);
             }
             if (clip->scale.local && inScale(key, static_cast<int>(clip->scale.root), clip->scale.mask)) {
@@ -2714,7 +2714,7 @@ void NoteEditor::paint(juce::Graphics &g) {
             if ((key % 12 == 0 || keys.isFolded()) && keys.keyHeight >= 9) {
                 const juce::Rectangle<int> name(keyboard.getRight() - 26, y, 24, keys.keyHeight);
                 labels_.push_back(name);
-                g.setColour(blackKey(key) ? juce::Colours::white : look::text);
+                g.setColour(blackKey(key) ? look::textBright : look::ink);
                 g.drawText(named(key), name, juce::Justification::centredRight);
             }
         }
@@ -2740,11 +2740,11 @@ void NoteEditor::paint(juce::Graphics &g) {
             if (x < static_cast<float>(lane.getX()) - 4.f || x > static_cast<float>(lane.getRight()) + 4.f)
                 continue;
             const float y = static_cast<float>(velocityY(note.velocity, top, height));
-            g.setColour(note.active ? look::text : juce::Colour(0xff6a6a6a));
+            g.setColour(note.active ? look::text : look::noteOff);
             g.fillRect(x, y, 1.f, static_cast<float>(lane.getBottom()) - y);
-            g.setColour(note.active ? panel.colour() : juce::Colour(0xff9a9a9a));
+            g.setColour(note.active ? panel.colour() : look::mutedClip);
             g.fillEllipse(x - 2.5f, y - 2.5f, 6.f, 6.f);
-            g.setColour(isSelected(note.id) ? juce::Colours::white : look::outline);
+            g.setColour(isSelected(note.id) ? look::textBright : look::outline);
             g.drawEllipse(x - 2.5f, y - 2.5f, 6.f, 6.f, 1.f);
         }
     }
@@ -2752,30 +2752,30 @@ void NoteEditor::paint(juce::Graphics &g) {
         const juce::Rectangle<int> name(2, velocity.getY() + 3, kKeysWidth - 6, 12);
         labels_.push_back(name);
         g.setColour(look::text);
-        g.setFont(look::font(10.f));
+        g.setFont(look::font(look::fontSmall));
         g.drawText("Velocity", name, juce::Justification::centredLeft);
         // The line tool's chooser (ADR-0241 d2).
         const auto shape = shapeBox();
         look::box(g, shape.toFloat(), shape_ == LaneShape::Pointer ? look::button : look::accent);
         labels_.push_back(shape);
-        g.setColour(look::text);
-        g.setFont(look::font(9.5f));
+        g.setColour(look::textOn(shape_ != LaneShape::Pointer));
+        g.setFont(look::font(look::fontTiny));
         g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
         // The selected notes' velocity, or their range, or the value being typed (manual 10.5.12).
         const auto readout = readoutBox();
         labels_.push_back(readout);
-        g.setColour(typedVelocity_.isNotEmpty() ? juce::Colours::white : look::text);
-        g.setFont(look::font(9.5f));
+        g.setColour(typedVelocity_.isNotEmpty() ? look::textBright : look::text);
+        g.setFont(look::font(look::fontTiny));
         g.drawText(velocityReadout(), readout, juce::Justification::centredLeft);
         for (const auto handle : {LaneHandle::TiltLeft, LaneHandle::TiltRight, LaneHandle::Scale, LaneHandle::Compress})
             if (const auto box = handleBox(handle); !box.isEmpty()) {
-                g.setColour(juce::Colours::white);
+                g.setColour(look::textBright);
                 g.fillRect(box);
                 g.setColour(look::outline);
                 g.drawRect(box, 1);
             }
         if (drag_ == Drag::Shape && shape_ != LaneShape::Paint) {
-            g.setColour(juce::Colours::white.withAlpha(0.6f));
+            g.setColour(look::textBright.withAlpha(0.6f));
             g.drawLine(static_cast<float>(from_.x), static_cast<float>(from_.y), static_cast<float>(to_.x),
                        static_cast<float>(to_.y), 1.f);
         }
@@ -2848,7 +2848,7 @@ void SampleEditor::paint(juce::Graphics &g) {
     const float band = (bottom - top) / static_cast<float>(peaks->channels);
     const int from = std::max(0, static_cast<int>(std::floor(time.x(window.pos)))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(time.x(window.end()))));
-    g.setColour(juce::Colours::black.withAlpha(node->muted ? 0.35f : 0.7f));
+    g.setColour(look::ink.withAlpha(node->muted ? 0.35f : 0.7f));
     for (int x = from; x < to; ++x) {
         const auto f0 = source.frameAt(time.tick(x)), f1 = source.frameAt(time.tick(x + 1));
         if (!f0)
@@ -2875,11 +2875,11 @@ ClipViewPanel::ClipViewPanel(AdiRootComponent &r) : root(r), notes(*this), sampl
     // One editor for whichever field is typed into: Enter keeps the value, Esc and a click
     // elsewhere leave the field as it was.
     addChildComponent(editor_);
-    editor_.setFont(look::font(11.f));
+    editor_.setFont(look::font(look::fontLabel));
     editor_.setJustification(juce::Justification::centredRight);
     editor_.setIndents(2, 0);
     editor_.setBorder({});
-    editor_.setColour(juce::TextEditor::backgroundColourId, juce::Colours::white);
+    editor_.setColour(juce::TextEditor::backgroundColourId, look::inputBack);
     editor_.setColour(juce::TextEditor::textColourId, look::text);
     editor_.setColour(juce::TextEditor::outlineColourId, look::outline);
     editor_.setColour(juce::TextEditor::focusedOutlineColourId, look::outline);
@@ -4621,7 +4621,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     const auto &d = *details_;
     // The title bar in the clip's colour: Live's round activator, lit while the clip plays, and
     // the clip's name.
-    g.setColour(d.muted ? juce::Colour(0xff9a9a9a) : colour_);
+    g.setColour(d.muted ? look::mutedClip : colour_);
     g.fillRect(title);
     const auto dot = activatorArea().toFloat();
     g.setColour(d.muted ? look::button : look::accent);
@@ -4634,13 +4634,13 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         // Several clips shown: a striped title (manual 10.8).
         juce::Graphics::ScopedSaveState state(g);
         g.reduceClipRegion(title.withTrimmedLeft(20));
-        g.setColour(juce::Colours::white.withAlpha(0.22f));
+        g.setColour(look::textBright.withAlpha(0.22f));
         for (int x = title.getX() - title.getHeight(); x < title.getRight(); x += 8)
             g.drawLine(static_cast<float>(x), static_cast<float>(title.getBottom()), static_cast<float>(x + title.getHeight()),
                        static_cast<float>(title.getY()), 2.f);
     }
     if (!panelsFolded_)
-        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::text, 12.f, true);
+        text(r.title, title.withTrimmedLeft(20).withTrimmedRight(4), juce::Justification::centredLeft, look::ink, look::fontField, true);
     // A scrolled column is cut at the title, which stays over it.
     const bool scrolled = columnScroll() > 0;
     if (scrolled) {
@@ -4653,17 +4653,17 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             return; // folded
         const auto set = setBox(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
-             juce::Justification::centredLeft, look::text, 10.5f);
+             juce::Justification::centredLeft, look::text, look::fontCaption);
         // Live's Set button: a small pill beside the field's name.
         if (!set.isEmpty()) {
             g.setColour(look::button);
-            g.fillRoundedRectangle(set.toFloat(), 5.f);
+            g.fillRoundedRectangle(set.toFloat(), look::radiusControl);
             g.setColour(look::outline);
-            g.drawRoundedRectangle(set.toFloat().reduced(0.5f), 5.f, 1.f);
-            text("Set", set, juce::Justification::centred, look::text, 9.f);
+            g.drawRoundedRectangle(set.toFloat().reduced(0.5f), look::radiusControl, look::hairline);
+            text("Set", set, juce::Justification::centred, look::text, look::fontMicro);
         }
         look::box(g, box.toFloat(), look::chooser);
-        text(value, box.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+        text(value, box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
     };
     field(Field::Start, "Start", r.start);
     field(Field::End, "End", r.end);
@@ -4676,7 +4676,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
     }
     if (!loop.isEmpty())
-        text("Loop", loop, juce::Justification::centred, look::text, 11.f);
+        text("Loop", loop, juce::Justification::centred, look::textOn(r.loop && !r.loopMixed), look::fontLabel);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
@@ -4685,10 +4685,10 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         // Scale Mode's switch (manual 8.2.4): lit while the clip holds a scale of its own.
         const auto mode = scaleModeBox();
         g.setColour(details_->scale.local ? look::accent : look::button);
-        g.fillRoundedRectangle(mode.toFloat(), 5.f);
+        g.fillRoundedRectangle(mode.toFloat(), look::radiusControl);
         g.setColour(look::outline);
-        g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), 5.f, 1.f);
-        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::text, 9.f);
+        g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), look::radiusControl, look::hairline);
+        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::textOn(details_->scale.local), look::fontMicro);
     }
 
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
@@ -4699,19 +4699,19 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const auto box = tabBox(tab);
             g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
             g.fillRect(box);
-            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, 10.5f, tab == toolsTab_);
+            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, look::fontCaption, tab == toolsTab_);
         }
         if (toolsTab_ == 1) {
             // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
             const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
-            text("Velocity", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
-            text("Notes", inner.withY(inner.getY() + 5 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Velocity", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
+            text("Notes", inner.withY(inner.getY() + 5 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
             const auto number = [&](Field which, const juce::String &suffix) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
                 const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
                 look::box(g, box.toFloat(), look::chooser);
-                text(juce::String(shown) + suffix, box.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+                text(juce::String(shown) + suffix, box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
             };
             number(Field::VelocityAmount, "");
             number(Field::VelocityPercent, " %");
@@ -4721,19 +4721,19 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             // The Quantize settings: the value, which ends move, how far, and swing.
             const auto value = quantizeChooserBox();
             look::box(g, value.toFloat(), look::chooser);
-            text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+            text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
             const auto starts = quantizeStartBox(), ends = quantizeEndBox();
             look::box(g, starts.toFloat(), quantizeStarts ? look::accent : look::button);
-            text("Start", starts, juce::Justification::centred, look::text, 10.f);
+            text("Start", starts, juce::Justification::centred, look::textOn(quantizeStarts), look::fontSmall);
             look::box(g, ends.toFloat(), quantizeEnds ? look::accent : look::button);
-            text("End", ends, juce::Justification::centred, look::text, 10.f);
+            text("End", ends, juce::Justification::centred, look::textOn(quantizeEnds), look::fontSmall);
             const auto named = [&](Field which, const char *name) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
                 const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
                 look::box(g, box.toFloat(), look::chooser);
-                text(name, box.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
-                text(juce::String(shown) + "%", box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+                text(name, box.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), look::fontMicro);
+                text(juce::String(shown) + "%", box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
             };
             named(Field::QuantizeAmount, "Amt");
             named(Field::QuantizeSwing, "Swing");
@@ -4741,43 +4741,43 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         if (toolsTab_ == 0) {
             const auto range = rangeBox();
             look::box(g, range.toFloat(), look::display);
-            text(r.range, range.reduced(4, 0), juce::Justification::centred, juce::Colours::white, 11.f);
+            text(r.range, range.reduced(4, 0), juce::Justification::centred, look::textBright, look::fontLabel);
             const auto semitones = fieldBox(Field::Transpose);
             look::box(g, semitones.toFloat(), look::chooser);
-            text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, 11.f);
+            text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
             // The Interval size: semitones, or the scale's degrees while Scale Mode is on.
             const auto interval = fieldBox(Field::Interval);
             const int size = std::clamp(intervalSize + (dragged_ && pressed_ == Field::Interval ? dragSteps_ : 0), -48, 48);
             look::box(g, interval.toFloat(), look::chooser);
             text((size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"), interval.reduced(3, 0),
-                 juce::Justification::centredRight, look::text, 11.f);
+                 juce::Justification::centredRight, look::text, look::fontLabel);
             // The Stretch control: 100 per cent until it is dragged or typed.
             const auto factor = fieldBox(Field::Stretch);
             look::box(g, factor.toFloat(), look::chooser);
-            text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), 9.f);
+            text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), look::fontMicro);
             text(juce::String(dragged_ && pressed_ == Field::Stretch ? std::clamp(100 + 5 * dragSteps_, 10, 1000) : 100) + "%", factor.reduced(3, 0),
-                 juce::Justification::centredRight, look::text, 11.f);
+                 juce::Justification::centredRight, look::text, look::fontLabel);
             // The Duration chooser, beside Set Length.
             const auto length = durationBox();
             look::box(g, length.toFloat(), look::chooser);
-            text(kDurations[duration_].name, length.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+            text(kDurations[duration_].name, length.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
         }
         if (toolsTab_ == 2) {
             // ADI's Chords tab (ADR-0241 d2, from Cubase): the chord tools, and the overlap functions.
             const auto inner = tools.withTrimmedTop(kTitleHeight).reduced(6, 5);
-            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
-            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, 10.5f, true);
+            text("Chords", inner.withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
+            text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
             // The chord type's chooser, beside Add Chord.
             const auto chord = chordBox();
             look::box(g, chord.toFloat(), look::chooser);
-            text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, 10.f);
+            text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
         }
         for (const auto tool : kTools) {
             const auto box = toolBox(tool);
             if (box.isEmpty())
                 continue;
             look::box(g, box.toFloat(), look::button);
-            text(toolName(tool), box.reduced(2, 0), juce::Justification::centred, look::text, 10.f);
+            text(toolName(tool), box.reduced(2, 0), juce::Justification::centred, look::text, look::fontSmall);
         }
     }
 
@@ -4785,7 +4785,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.restoreState();
     if (const auto thumb = scrollThumb(); !thumb.isEmpty()) {
         g.setColour(look::text.withAlpha(0.45f));
-        g.fillRoundedRectangle(thumb.toFloat(), 1.5f);
+        g.fillRoundedRectangle(thumb.toFloat(), look::radiusSmall);
     }
     if (const auto strip = velocityStripArea(); !strip.isEmpty()) {
         // Live's Velocity Controls, under the lanes.
@@ -4795,48 +4795,48 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(strip.withHeight(1));
         const auto button = randomizeBox();
         look::box(g, button.toFloat(), look::button);
-        text("Randomize", button, juce::Justification::centred, look::text, 10.f);
+        text("Randomize", button, juce::Justification::centred, look::text, look::fontSmall);
         const auto number = [&](Field which) {
             const auto box = fieldBox(which);
             int low = 0, high = 0;
             const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
             look::box(g, box.toFloat(), look::chooser);
-            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
         };
         number(Field::RandomAmount);
         const auto start = fieldBox(Field::RampStart);
-        text("Ramp", {start.getX() - 34, start.getY(), 30, start.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+        text("Ramp", {start.getX() - 34, start.getY(), 30, start.getHeight()}, juce::Justification::centredRight, look::text, look::fontSmall);
         number(Field::RampStart);
         number(Field::RampEnd);
     }
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     if (const auto fold = foldBox(); !fold.isEmpty()) {
         look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
-        text("Fold", fold, juce::Justification::centred, look::text, 10.f);
+        text("Fold", fold, juce::Justification::centred, look::textOn(notes.folded()), look::fontSmall);
         const auto draw = drawBox();
         look::box(g, draw.toFloat(), notes.drawMode() ? look::accent : look::button);
-        text("Draw", draw, juce::Justification::centred, look::text, 10.f);
+        text("Draw", draw, juce::Justification::centred, look::textOn(notes.drawMode()), look::fontSmall);
         const auto trim = trimBox();
         look::box(g, trim.toFloat(), notes.trimMode() ? look::accent : look::button);
-        text("Trim", trim, juce::Justification::centred, look::text, 10.f);
+        text("Trim", trim, juce::Justification::centred, look::textOn(notes.trimMode()), look::fontSmall);
         if (const auto focus = focusBox(); !focus.isEmpty()) {
             look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
-            text("Focus", focus, juce::Justification::centred, look::text, 10.f);
+            text("Focus", focus, juce::Justification::centred, look::textOn(focus_), look::fontSmall);
         }
         // Fold to Scale and Highlight Scale; Fold to Scale is dimmed while the clip holds no scale of its own.
         const auto scaleFold = scaleFoldBox(), highlight = highlightBox();
         look::box(g, scaleFold.toFloat(), notes.scaleFolded() ? look::accent : look::button);
-        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::text : look::text.withAlpha(0.4f), 10.f);
+        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::textOn(notes.scaleFolded()) : look::textOn(notes.scaleFolded()).withAlpha(0.4f), look::fontSmall);
         look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
-        text("Highlight", highlight, juce::Justification::centred, look::text, 10.f);
+        text("Highlight", highlight, juce::Justification::centred, look::textOn(notes.highlightScale), look::fontSmall);
         const auto find = findBox();
         look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
-        text("Find", find, juce::Justification::centred, look::text, 10.f);
+        text("Find", find, juce::Justification::centred, look::textOn(filtersShown_), look::fontSmall);
         // What the notes are coloured by (ADI's addition).
         const auto colours = coloursBox();
         look::box(g, colours.toFloat(), look::chooser);
         text(NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], colours.reduced(4, 0), juce::Justification::centredLeft,
-             look::text, 10.f);
+             look::text, look::fontSmall);
     }
     if (const auto bar = filterArea(); !bar.isEmpty()) {
         // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
@@ -4846,7 +4846,7 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(bar.withY(bar.getBottom() - 1).withHeight(1));
         const auto chooser = filterChooserBox();
         look::box(g, chooser.toFloat(), look::chooser);
-        text(kNoteFilterNames[static_cast<std::size_t>(filter_)], chooser.reduced(4, 0), juce::Justification::centredLeft, look::text, 10.5f);
+        text(kNoteFilterNames[static_cast<std::size_t>(filter_)], chooser.reduced(4, 0), juce::Justification::centredLeft, look::text, look::fontCaption);
         if (filters.applied[static_cast<std::size_t>(filter_)]) {
             g.setColour(look::accent);
             g.fillEllipse(static_cast<float>(chooser.getRight() - 10), static_cast<float>(chooser.getY() + 4), 5.f, 5.f);
@@ -4856,27 +4856,27 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             const auto box = fieldBox(which);
             int low = 0, high = 0;
             const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
-            text(filterFieldName(slot), {box.getX() - 46, box.getY(), 42, box.getHeight()}, juce::Justification::centredRight, look::text, 10.f);
+            text(filterFieldName(slot), {box.getX() - 46, box.getY(), 42, box.getHeight()}, juce::Justification::centredRight, look::text, look::fontSmall);
             look::box(g, box.toFloat(), look::chooser);
-            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, 10.5f);
+            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
         }
         for (int i = 0; i < filterToggleCount(); ++i) {
             const auto box = filterToggleBox(i);
             look::box(g, box.toFloat(), filterToggle(i) ? look::accent : look::button);
-            text(filterToggleName(i), box, juce::Justification::centred, look::text, 9.5f);
+            text(filterToggleName(i), box, juce::Justification::centred, look::textOn(filterToggle(i)), look::fontTiny);
         }
         const auto invert = filterInvertBox(), select = filterSelectBox();
         look::box(g, invert.toFloat(), filters.invert[static_cast<std::size_t>(filter_)] ? look::accent : look::button);
-        text("Invert", invert, juce::Justification::centred, look::text, 10.f);
+        text("Invert", invert, juce::Justification::centred, look::textOn(filters.invert[static_cast<std::size_t>(filter_)]), look::fontSmall);
         look::box(g, select.toFloat(), look::button);
-        text("Select", select, juce::Justification::centred, look::text, 10.f);
+        text("Select", select, juce::Justification::centred, look::text, look::fontSmall);
     }
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
-         juce::Justification::centredLeft, look::text, 11.5f, true);
-    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, 11.f);
+         juce::Justification::centredLeft, look::text, look::fontBody, true);
+    text(r.grid, header.withTrimmedRight(8).removeFromRight(70), juce::Justification::centredRight, look::text, look::fontLabel);
     if (!problem_.empty())
         text(juce::String(problem_), header.withTrimmedLeft(76).withTrimmedRight(84), juce::Justification::centredLeft,
-             look::text, 11.f);
+             look::text, look::fontLabel);
     if (!midi() && !audio()) {
         g.setColour(look::lane);
         g.fillRect(editorArea());
