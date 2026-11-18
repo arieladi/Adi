@@ -418,6 +418,17 @@ class ClipViewPanel final : public juce::Component {
     }
     juce::Rectangle<int> panelsEdge() const noexcept;
     void mouseMove(const juce::MouseEvent &) override;
+    // A stacked column higher than the Clip View scrolls under the clip's title, which stays: by
+    // the wheel over it, by the thumb at its right (a click above or below the thumb turns a
+    // page), and by itself to a field that opens for typing. The place is the view's, not the
+    // project's: it is not kept.
+    juce::Rectangle<int> columnArea() const noexcept; // what shows of the column, under the title
+    int columnHeight() const noexcept;                // the title, the Main panel and the shown tab's tools
+    int columnScrollLimit() const noexcept;
+    int columnScroll() const noexcept { return std::min(scroll_, columnScrollLimit()); }
+    bool scrollColumn(int to);
+    juce::Rectangle<int> scrollThumb() const noexcept;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     // A double-click on the title folds the panels (manual 8.1.1): the Main panel and the tools
     // give their place to the editor, and a narrow strip in the clip's colour stays, with the
     // activator; a double-click on the strip brings them back. Kept with the window.
@@ -692,6 +703,8 @@ class ClipViewPanel final : public juce::Component {
     Panels arrangement_ = Panels::Automatic;
     bool edgeDrag_ = false, wasVertical_ = false;
     int edgeFrom_ = 0;
+    int scroll_ = 0, thumbFrom_ = 0, thumbScroll_ = 0;
+    bool thumbDrag_ = false;
     // An edit of the Main panel's that belongs to every shown clip (manual 10.8: loop, signature and
     // scale apply to all the selected clips): `build` makes it for one clip; one batch, one undo
     // step. The edited clip's refusal refuses it; another clip that cannot take it is passed over.

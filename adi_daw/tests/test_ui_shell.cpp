@@ -190,8 +190,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             if (!strip->isVisible())
                 continue;
             for (juce::Component *c : std::initializer_list<juce::Component *>{
-                     &strip->active, &strip->solo, &strip->eq, &strip->limiter, &strip->volume,
-                     &strip->pan})
+                     &strip->active, &strip->solo, &strip->volume, &strip->pan})
                 g.fillRect(root.getLocalArea(c, c->getLocalBounds()));
             // The In/Out column's choosers are words.
             if (strip->showsInOut())
@@ -1691,17 +1690,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               b.getBounds() == juce::Rectangle<int>(x + 37, 37, 29, 13) && a.getTextFromValue(a.getValue()) == "-inf" &&
               a.getTitle() == "Send A" && b.getTitle() == "Send B",
           "Live's two -inf boxes on the row under volume and pan, as its capture");
-    check(audio->eq.getY() == 54 && audio->limiter.getY() == 54, "ADI-Q and ADI-L on the row after the sends");
+    {
+        // No row has a button of its own for a Mix View function (ADR-0243).
+        bool none = audio->switches().size() == 3;
+        for (auto *child : audio->getChildren())
+            none = none && child->getTitle() != "ADI-Q" && child->getTitle() != "ADI-L";
+        check(none, "a row has the Track Activator, Solo and Arm, and no button for a Mix View function");
+    }
     auto *main = rowOf(root.mixer, 7);
     auto *reverb = rowOf(root.mixer, 5);
     check(main != nullptr && main->sendKnobs().empty(), "Main has no sends");
     // Live's MIDI tracks with no instrument (look-live11 difference row 3): their switches, no volume,
-    // pan or sends; ADI-Q and ADI-L on the row where volume and pan would be.
+    // pan or sends.
     auto *firstMidi = rowOf(root.mixer, 1);
     check(firstMidi != nullptr && firstMidi->isMidi() && !firstMidi->hasAudio() && firstMidi->active.isVisible() &&
-              !firstMidi->volume.isVisible() && !firstMidi->pan.isVisible() && firstMidi->sendKnobs().empty() &&
-              firstMidi->eq.getY() == 20,
-          "1 MIDI: its switches, no volume, pan or sends; ADI-Q and ADI-L on the second row");
+              !firstMidi->volume.isVisible() && !firstMidi->pan.isVisible() && firstMidi->sendKnobs().empty(),
+          "1 MIDI: its switches, no volume, pan or sends");
     check(!audio->isMidi() && audio->hasAudio() && audio->volume.isVisible(), "3 Audio keeps its mixer");
     // An instrument on 2 MIDI gives it volume, pan and a send per return.
     auto withSynth = std::make_shared<ParameterPublication>();
@@ -1906,10 +1910,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "3 Audio's strip shows both sends");
     if (column != nullptr && column->sendsShown() == 2) {
         const auto ka = column->sendKnobs()[0]->getBounds(), kb = column->sendKnobs()[1]->getBounds();
-        check(ka == juce::Rectangle<int>(10, 46, 32, 32) && kb == juce::Rectangle<int>(51, 68, 32, 32) &&
+        check(ka == juce::Rectangle<int>(10, 25, 32, 32) && kb == juce::Rectangle<int>(51, 47, 32, 32) &&
                   column->sendKnobs()[0]->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag,
               "knob A on the left, B to its right and 22 pt lower, as Live's");
-        check(column->volume.getY() == 40 + 72 + 6 && column->peakHold.getY() == 40 + 72 + 5,
+        check(column->volume.getY() == 19 + 72 + 6 && column->peakHold.getY() == 19 + 72 + 5,
               "the mixer begins under the sends");
         check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
               "and send A reads the same row as the track controls");
@@ -1993,8 +1997,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.keyPressed(sendsKey) && !root.state().sends && root.state().mixerSends, "Ctrl/Cmd+Alt+S hides the track controls' sends");
     column = rowOf(root.mixerView, 3);
     auto *mainStrip = rowOf(root.mixerView, 7);
-    check(!a.isVisible() && !b.isVisible() && audio->eq.getY() == 37 && audio->limiter.getY() == 37,
-          "the row's -inf boxes go; ADI-Q and ADI-L take their row");
+    check(!a.isVisible() && !b.isVisible(), "the row's -inf boxes go");
     check(column != nullptr && column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
           "the Mixer View strips keep theirs");
     check(root.command(AppCommands::ToggleMixerSends) && !root.state().mixerSends && root.mixerOptionsMenu().getNumItems() > 0,
@@ -2002,11 +2005,11 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
-              column->volume.getY() == 40 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
+              column->volume.getY() == 19 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
-    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54,
+    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && a.getY() == 37,
           "Ctrl/Cmd+Alt+S shows the track controls' again");
     column = rowOf(root.mixerView, 3);
     check(column != nullptr && column->sendsShown() == 0 && root.command(AppCommands::ToggleMixerSends) &&
@@ -2017,13 +2020,13 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     auto mixerOptions = [&root] { return menuLine(root.mixerOptionsMenu()); };
     check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact - | Return Tracks *",
           "the Mixer View's options in Live's order and groups (manual 18.1, its figure), In/Out and Track Options off");
-    // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
+    // Its In/Out: Live 12's section under the name and over the sends; as many sends as still
     // leave the mixer its room, then the rest when the strip is taller.
     check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
           "the Mixer's In/Out shows, and its item is ticked");
     column = rowOf(root.mixerView, 3);
     check(column != nullptr && column->showsMixerInOut() && column->sendsShown() < 2 &&
-              (column->sendsShown() == 0 || column->sendKnobs()[0]->getY() == 40 + MixerStrip::kInOutHeight + 6),
+              (column->sendsShown() == 0 || column->sendKnobs()[0]->getY() == 19 + MixerStrip::kInOutHeight + 6),
           "at 320 points the strip shows its In/Out over the sends, and leaves out the sends that do not fit");
     root.resizeMixerView(440);
     root.mark(DirtySet::All);
@@ -2031,7 +2034,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     column = rowOf(root.mixerView, 3);
     mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->showsMixerInOut() && column->sendsShown() == 2 &&
-              column->volume.getY() == 40 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
+              column->volume.getY() == 19 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
               mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
           "taller, both sends come back under it, Main's Pre/Post switches with them");
     render("adi-mixer-inout.png");
@@ -2167,9 +2170,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     audioRow = rowOf(root.mixer, 3);
     if (audioRow != nullptr) {
         const int rx = audioRow->showsInOut() ? MixerPanel::kInOutWidth : 0;
-        check(audioRow->delay.isVisible() && audioRow->delay.getBounds() == juce::Rectangle<int>(rx + 4, 71, 45, 13) &&
+        check(audioRow->delay.isVisible() && audioRow->delay.getBounds() == juce::Rectangle<int>(rx + 4, 54, 45, 13) &&
                   audioRow->delay.getTextFromValue(audioRow->delay.getValue()) == "10.00",
-              "3 Audio's row shows its 10.00 ms on the row after the slots");
+              "3 Audio's row shows its 10.00 ms on the row after the sends");
     } else
         check(false, "3 Audio's row in view");
     render("adi-track-delay-rows.png");
@@ -6617,6 +6620,110 @@ void clipViewClipTime(AppCommands &commands, const std::filesystem::path &dir) {
                   panel.toolBox(ClipViewPanel::Tool::VelocityAdd).getY() > panel.mainArea().getBottom(),
               "stacked, a click on a tab still shows that tab's tools, now under the Main panel");
         panel.setToolsTab(0);
+        // A stacked column higher than the Clip View scrolls under the clip's title.
+        {
+            using Tool = ClipViewPanel::Tool;
+            const auto wheel = [&](float by) {
+                panel.mouseWheelMove(pressAt(panel, panel.columnArea().getCentre().toFloat()), juce::MouseWheelDetails{0.f, by, false, false, false});
+            };
+            // Each tab's column ends a margin under the lowest thing on it.
+            bool fitted = true;
+            for (int tab = 0; tab < ClipViewPanel::kToolTabs; ++tab) {
+                panel.setToolsTab(tab);
+                int lowest = tab == 1 ? panel.fieldBox(Field::QuantizeAmount).getBottom() : 0;
+                for (const auto tool : ClipViewPanel::kTools)
+                    lowest = std::max(lowest, panel.toolBox(tool).getBottom());
+                fitted = fitted && lowest + 5 == panel.columnHeight();
+            }
+            check(fitted && panel.columnScroll() == 0, "the column is as high as the title, the Main panel and the shown tab's tools down to the lowest of them");
+            panel.setToolsTab(1);
+            const int limit = panel.columnScrollLimit();
+            const auto startBox = panel.fieldBox(Field::Start);
+            const auto editorBounds = ed.getBounds();
+            check(limit > 0 && limit == panel.columnHeight() - panel.getHeight() && panel.fieldBox(Field::QuantizeAmount).getBottom() > panel.getHeight() &&
+                      !panel.scrollThumb().isEmpty() && panel.scrollThumb().getY() == panel.columnArea().getY() &&
+                      panel.scrollThumb().getX() >= panel.toolBox(Tool::VelocityAdd).getRight() && panel.scrollThumb().getRight() <= panel.panelsEdge().getX(),
+                  "stacked at this height the column is higher than the view: its foot is out of sight, and a thumb stands between the fields and the panels' edge");
+            wheel(-0.25f);
+            check(panel.columnScroll() == 45 && panel.fieldBox(Field::Start).getY() == startBox.getY() - 45 && panel.fieldBox(Field::Start).getX() == startBox.getX() &&
+                      panel.tabBox(1).getY() == panel.mainArea().getBottom() + 1 && panel.titleArea().getY() == 0 && panel.columnArea().getY() == ClipViewPanel::kTitleHeight &&
+                      ed.getBounds() == editorBounds && panel.scrollThumb().getY() > panel.columnArea().getY(),
+                  "the wheel over the column moves the Main panel and the tools together; the title and the editor stay, and the thumb follows");
+            wheel(-10.f);
+            check(panel.columnScroll() == limit && panel.fieldBox(Field::QuantizeAmount).getBottom() + 5 == panel.getHeight() &&
+                      panel.scrollThumb().getBottom() == panel.columnArea().getBottom(),
+                  "the wheel stops at the column's foot, now whole in view, the thumb at the foot of its run");
+            wheel(10.f);
+            check(panel.columnScroll() == 0 && panel.fieldBox(Field::Start) == startBox, "and at its head");
+            // The title covers what is scrolled under it.
+            const bool looped = details().loopEnabled;
+            const auto undoBefore = submitter.nextUndo()->txnId;
+            const bool under = panel.scrollColumn(panel.loopBox().getY() - 2) && panel.titleArea().contains(panel.loopBox().getCentre());
+            panel.mouseDown(pressAt(panel, panel.loopBox().getCentre().toFloat()));
+            panel.mouseUp(pressAt(panel, panel.loopBox().getCentre().toFloat()));
+            check(under && details().loopEnabled == looped && submitter.nextUndo()->txnId == undoBefore,
+                  "a click on the title does not reach the Loop switch scrolled under it");
+            panel.scrollColumn(0);
+            // The thumb: a drag moves the column, a click beside it turns a page.
+            const auto thumbAt = panel.scrollThumb().getCentre().toFloat();
+            panel.mouseDown(pressAt(panel, thumbAt));
+            panel.mouseDrag(dragAt(panel, thumbAt, {thumbAt.x, thumbAt.y + 500.f}));
+            const bool atFoot = panel.columnScroll() == limit;
+            panel.mouseDrag(dragAt(panel, thumbAt, {thumbAt.x, thumbAt.y}));
+            const bool backAtHead = panel.columnScroll() == 0;
+            panel.mouseUp(dragAt(panel, thumbAt, thumbAt));
+            check(atFoot && backAtHead && panel.arrangement() == Panels::Vertical && submitter.nextUndo()->txnId == undoBefore,
+                  "the thumb dragged down brings the foot, dragged back the head; nothing is edited and the panels stay stacked");
+            const juce::Point<float> below{thumbAt.x, static_cast<float>(panel.getHeight() - 3)};
+            panel.mouseDown(pressAt(panel, below));
+            panel.mouseUp(pressAt(panel, below));
+            check(panel.columnScroll() == std::min(limit, panel.columnArea().getHeight()), "a click below the thumb turns a page down");
+            // A field cut off at the foot comes whole into view when it opens.
+            panel.scrollColumn(0);
+            panel.scrollColumn(panel.fieldBox(Field::QuantizeAmount).getBottom() - panel.getHeight() - 8);
+            const auto cut = panel.fieldBox(Field::QuantizeAmount);
+            const juce::Point<float> visiblePart{static_cast<float>(cut.getCentreX()), static_cast<float>(cut.getY() + 3)};
+            panel.mouseDown(pressAt(panel, visiblePart));
+            panel.mouseUp(pressAt(panel, visiblePart));
+            check(cut.getBottom() == panel.getHeight() + 8 && panel.editing() == Field::QuantizeAmount && panel.fieldEditor().isVisible() &&
+                      panel.fieldBox(Field::QuantizeAmount).getBottom() == panel.getHeight() - 2 && panel.fieldEditor().getBounds() == panel.fieldBox(Field::QuantizeAmount),
+                  "a click on a field cut off at the foot brings it whole into view and opens it there");
+            wheel(-0.25f);
+            check(panel.editing() == Field::None && !panel.fieldEditor().isVisible(), "the open field closes when the column moves under it");
+            // A shorter tab, and the panels side by side: the place stays inside the column.
+            panel.scrollColumn(limit);
+            panel.setToolsTab(2);
+            check(panel.columnScrollLimit() < limit && panel.columnScroll() == panel.columnScrollLimit() &&
+                      panel.toolBox(Tool::OverlapsMono).getBottom() + 5 == panel.getHeight(),
+                  "a shorter tab chosen at the foot of a longer one ends at its own foot");
+            // The stacked column scrolled, for the PR's picture (ADI_UI_PARITY).
+            if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                panel.setToolsTab(1);
+                panel.scrollColumn(panel.columnScrollLimit() / 2);
+                root.frame();
+                juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics gr(picture);
+                    gr.addTransform(juce::AffineTransform::scale(2.f));
+                    root.paintEntireComponent(gr, true);
+                }
+                const auto file = juce::File(folder).getChildFile("adi-clip-view-scrolled.png");
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+            }
+            panel.setToolsTab(1);
+            panel.scrollColumn(40);
+            root.command(C::ArrangePanelsHorizontally);
+            const bool sideBySide = panel.columnScrollLimit() == 0 && panel.columnScroll() == 0 && panel.scrollThumb().isEmpty() && panel.columnArea().isEmpty() &&
+                                    panel.mainArea().getY() == ClipViewPanel::kTitleHeight && panel.toolsArea().getY() == 0;
+            wheel(-1.f);
+            check(sideBySide && panel.columnScroll() == 0 && panel.mainArea().getY() == ClipViewPanel::kTitleHeight,
+                  "side by side nothing scrolls: no thumb, and the wheel leaves the panels where they stand");
+            root.command(C::ArrangePanelsVertically);
+            panel.scrollColumn(0);
+            panel.setToolsTab(0);
+        }
         const auto pull = [&](float by) {
             const auto edge = panel.panelsEdge().getCentre().toFloat();
             panel.mouseDown(pressAt(panel, edge));
@@ -8661,13 +8768,13 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
         root.frame();
         check(root.reader().findTrack(4)->recording.keepMonitoringLatency && wide->keepLatency.getToggleState(),
               "clicked: on again, lit from the snapshot");
-        // The Mixer View's own In/Out section draws In and Auto 59 px under the mixer's top (40): a
+        // The Mixer View's own In/Out section draws In and Auto 59 px under the name (19): a
         // right-click there is the monitor's too, as the toggle's tooltip says; Audio From is not.
         // A strip tall enough for the In/Out section, Track Options and the mixer together.
         const auto keptHeight = wide->getHeight();
         wide->setSize(wide->getWidth(), 360);
-        check(wide->onMonitorInOrAuto({10, 40 + 65}) && wide->onMonitorInOrAuto({35, 40 + 65}) &&
-                  !wide->onMonitorInOrAuto({10, 40 + 20}),
+        check(wide->onMonitorInOrAuto({10, 19 + 65}) && wide->onMonitorInOrAuto({35, 19 + 65}) &&
+                  !wide->onMonitorInOrAuto({10, 19 + 20}),
               "a right-click on In or Auto in the Mixer View's In/Out section is the monitor's");
         wide->setSize(wide->getWidth(), keptHeight);
     }
@@ -12928,18 +13035,19 @@ int main(int argc, char **argv) {
             integrated.frame();
             check(document->view().current()->findTrack(2)->soloed, "Solo solos it");
             row->solo.onClick();
+            // The Mix View's STACK on a channel is the command's, with the track selected: no strip
+            // has a button of its own for it (ADR-0243).
             const auto opsBefore =
                 document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
             const bool mixOpen = integrated.state().mixView;
-            row->eq.onClick();
-            row->limiter.onClick();
-            check(!row->eq.getToggleState() && !row->limiter.getToggleState() &&
-                      !integrated.error().empty() &&
+            integrated.arrangement.geometry.selection.track = 2;
+            integrated.publishSelection();
+            check(row->switches().size() == 3 && integrated.command(AppCommands::ShowChannelEq) &&
                       document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                           opsBefore,
-                  "the ADI-Q and ADI-L slots are on every strip, present and off");
+                  "a strip has the Track Activator, Solo and Arm, and no button for a Mix View function");
             check(integrated.state().mixView && integrated.mixViewPanel.stack.focused() == 2,
-                  "and a slot opens the Mix View's STACK on its channel (ADR-0204 d1, ADR-0209 d11)");
+                  "the command opens the Mix View's STACK on the selected channel (ADR-0209 d11)");
             if (!mixOpen)
                 integrated.command(AppCommands::ToggleMixView);
         }
@@ -13004,11 +13112,12 @@ int main(int argc, char **argv) {
             if (strip) {
                 const auto selectedBefore = integrated.arrangement.geometry.selection.track;
                 const bool mixWas = integrated.state().mixView;
-                strip->eq.onClick();
-                check(integrated.arrangement.geometry.selection.track == strip->track() &&
-                          integrated.state().mixView && integrated.state().mixViewTab == 1 &&
+                integrated.arrangement.geometry.selection.track = strip->track();
+                integrated.publishSelection();
+                check(integrated.command(AppCommands::ShowChannelEq) && integrated.state().mixView &&
+                          integrated.state().mixViewTab == 1 &&
                           integrated.mixViewPanel.stack.focused() == strip->track(),
-                      "a channel row's Q selects its track and opens the Mix View on STACK, on its row");
+                      "with another track selected the command opens the Mix View on STACK, on its row");
                 if (!mixWas)
                     integrated.command(AppCommands::ToggleMixView);
                 integrated.arrangement.geometry.selection.track = selectedBefore;

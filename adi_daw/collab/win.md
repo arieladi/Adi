@@ -6,6 +6,67 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18 — the first design round closes on five sheets; a cloned tool looks like its source (ADR-0244)
+
+**For the seats — read first.**
+- **Every seat.** The sheets are in `collab/window/design/`: the design language, the Arrangement (with the Browser, the Info box and the Device View), and the Mix View's Stack, Focus and Analysers. Read that folder's README before any look work; where its words and a picture differ, the words win. A sheet changes only by the director's word.
+- **Every seat, the rule for clones.** Whatever ADI clones looks like its source: bx_meter, SPAN, VISU, BluPrint, s(M)exoscope, OScope, PsyScope Pro, FUSER, Trackspacer. "they should look the same as the plugins we are cloning (about the same at least)". Take the source's layout, read-outs and way of drawing; do not design another look. ADI draws it: no other maker's bitmaps, logos or fonts. The scope is s(M)exoscope's own display and controls from its source.
+- **Mix View seat.** Your look work is DF-M49 to DF-M55, in that order unless the director says otherwise: the layout that takes the window, the lens rows, the "+" and the plug-in chips, Sounding now, the meter, Focus, the Analysers. The director still holds everything addressed to you, the paste-back of the 17 November retest included (DF-M43 to DF-M46), until he says the round is closed; your prompt comes from him.
+- **Window lane.** DF-W24 (the design language in the window, the Control Bar first), DF-W25 (the Arrangement's group lines and the buttons over the track names), DF-W26 (the Device View showing the Mix View's EQ, compressor and limiter panels). Each Pd device still needs its own sheet before its panel is restyled (DF-W23).
+- **Engine seat.** Nothing of yours moved.
+
+**How the round went.** Thirteen pictures in two days: the language twice, the Arrangement twice, the Stack six times, Focus twice, the Analysers once. What turned the Stack was his video of Pro-Q 4's instance list: the list is a lens round the pointer, not a row that pops out. What he corrected most often was the drawing of things ADI clones (the meter, the spectrogram), which is where the rule above comes from.
+
+**Left open with him (DF-W27).** Two readings of his answers on Focus are win's and are marked so on the sheet; the contents of a channel's name tag in the Mix View wait for his own use of it.
+
+**Done with this entry.** ADR-0244; `collab/window/design/` with five pictures; DF-W24 to DF-W27 and DF-M49 to DF-M55; DF-W22 and DF-W23 brought up to date.
+
+**Suites at this entry.** Window 2,681 checks (no code moved); 244 ADRs.
+
+## 2026-11-17, later — the director does not accept the look; it is settled with him one surface at a time (ADR-0243)
+
+**For the seats — read first. This changes what each of you may build.**
+- **Every seat.** The director saw the pictures of today's retest and the window as it stands, and does not accept the look: "it looks like an attempt to put the qualities of what i want into the most generic looking things possible". From now the look of each surface is settled with him first and written as a sheet under `collab/window/design/`; a seat builds a surface's look only from its agreed sheet (ADR-0243 d1, DF-W20). What a surface does, its ops, its engine side and its tests, goes on as before.
+- **Mix View seat.** The Mix View is to take the window, with no Browser and no Device View beside it (DF-M47), and its function panels are to look like the devices in Pro-Q 4's instance list, the limiter from ADI-L's own design (DF-M48). Do not restyle anything yet: the sheets come first. The paste-back of today's retest (DF-M43 to DF-M46, all function, none look) is held by the director for now; win has asked him whether it may go.
+- **Window lane.** The Q and L buttons are gone from every strip and row with this PR: `MixerStrip::switches()` is three long, `kMixerTop` is 19, and the track row's delay box stands one row higher. Seven golden pictures were rewritten. Pull before you push. New look work waits for its sheet; function work goes on.
+- **Engine seat.** Nothing of yours moved.
+
+**The working rules win proposed to him** (his to change):
+1. One surface per round. Win shows the surface as built, beside his reference where there is one, and asks in order: what it is for and what must be seen first; layout and sizes; each control's shape and its states (resting, hover, pressed, on, off, disabled, selected); colour and type; what moves.
+2. Win answers each round with a drawn picture of what was agreed, to scale, before any code: he reacts to a picture, not to a description. The round ends when he says the picture is right.
+3. The first round is the design language itself, on one small picture that holds every kind of control, because every later surface is made of those parts.
+4. The agreed picture and its measures become the sheet; the build is then shown to him against it, side by side.
+5. Order after the language: the Arrangement with its clips (DF-W21); the track rows and the Mixer; the Info box (DF-W22); the Device View and one native panel, the limiter against ADI-L (DF-W23); the Mix View (DF-M47, DF-M48); the Clip View; the Browser; the Control Bar; menus, dialogs and Settings.
+
+**Done with this entry.** The Q and L buttons removed (ADR-0243 d2); ADR-0243; DF-W20 to DF-W23, DF-M47, DF-M48.
+
+**Suites at this entry.** Window 2,681 checks; 243 ADRs.
+
+## 2026-11-17 — the Clip View's menus, panels and scrolling; the device-key candidate passes its live retest, with four new rows
+
+**For the seats — read first.**
+- **Mix View seat.** Win's live retest of your candidate of 17 November (source `dc5b123b`) is done, and the report with its paste-back went to the director for you. Passed, heard in the running app: the device key on a VST3 and on the native Limiter, from every tap; the taps' content; latency after and before the target and before the source tap; stop, start, a jump and a reopen; target and source deletion with one Undo each; your EQ ducking setup with a routed key; every item of the five parameter menus from the Device View and from STACK tiles, keyboard included; the third-party gain plug-in's panel; the Undo titles, the Clip page's own title, the readable refusals, a new key beside an unavailable one, the popup across a project hand-over, the preset choosers on a fresh profile, and the set and function loads. DF-M40, DF-M41 and DF-M42 close when the PR lands. New from the same retest: **DF-M43** (a function added after a removed one shows the removed one's panel, every control "(missing)"), **DF-M44** (the EQ with External Sidechain on and no key routed listens to the programme; the Limiter does not), **DF-M45** (two gaps of about 10 ms when a key is set or removed while playing), **DF-M46** (smaller: the folded pill, the stored latency, CLAP still unheard). #579, #580 and #548 wait as before.
+- **Window lane.** `AppCommands` grew with #621 to #623: the ids after `DeleteFades` run through `FitToTimeRange`, the names table follows, and the Edit, View, Options and Navigate lists changed. Pull before you push.
+- **Engine seat.** Nothing of yours moved.
+
+**The Clip View, #615 to #624, in the order it landed.**
+- #615: time inside the clip; Pitch and Time as Live's; MIDI Note Stretch markers.
+- #616: the Note Editor's settings are kept with the window.
+- #617: several clips shown at once, paste across them, the title bar's menu, the Clip View Selector's drag, the editor's context menu.
+- #618: the Velocity lane's divider; note spelling from the piano's menu.
+- #619: a double-click on the title folds the panels.
+- #620: the Edit menu reaches the Note Editor while it has the keyboard; the first Mix View retest's findings registered.
+- #621: the Edit, View and Options menus reach the Note Editor through one table that also builds its context menu. Edit > Delete no longer deletes the selected track while the editor is in use.
+- #622: the panels side by side, stacked, or by the Clip View's height (three View entries, a pull on the panels' edge, the title's menu); Navigate > Clip View on Alt+3; Ctrl+F9 to F12 for the four Set buttons.
+- #623: Fit to Time Range (Ctrl+Alt+J, the context menu, the Edit menu, the Duration chooser).
+- #624: a stacked column higher than the view scrolls under the clip's title: the wheel, a thumb, and a field that opens comes whole into view.
+
+**How they landed.** Each stack through its top PR alone, the lower ones' queued runs cancelled; #622 carried #621. Every one passed its 21 checks at the first attempt.
+
+**Left open, each written in the parity list** (`collab/window/parity-7.7-clip-view.md`): the Clip View in its own window; Join Notes, Deactivate Note(s) and Duplicate Loop as Edit entries of their own; Loop Selection and Select Loop inside the editor; Alt+Shift+P and Alt+8; the rest of the editor's keys in the manual's table. Points to check on Live are beside their rows: where Live keeps the folds and Highlight Scales in its menus, the default panel arrangement and its switching height, the Duration chooser's Time Range entry, and whether Live's stacked column scrolls with its title standing.
+
+**Suites at this entry.** Window 2,681 checks; note edits 227; note geometry 52; window state 70; 242 ADRs.
+
 ## 2026-11-16 to 17 — win builds the Clip View: Live's note editor, piece by piece, and the first additions from Cubase
 
 **For the seats — read first.**
