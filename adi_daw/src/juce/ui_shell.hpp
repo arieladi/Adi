@@ -295,6 +295,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
+    std::int64_t renderedSamplePosition() const noexcept { return mailbox_.position(); }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     unsigned lastDrain() const noexcept { return lastDrain_; }

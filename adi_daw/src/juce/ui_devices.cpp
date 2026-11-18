@@ -299,6 +299,15 @@ struct DevicePanelView::EqPreview {
     std::optional<mix::eq::Settings> settings;
     double sampleRate = 0;
     std::array<juce::Path, 5> paths;
+    std::weak_ptr<SharedAnalysis> spectrumBroker;
+    SharedAnalysis::Lease spectrumLease;
+    SharedAnalysis::Lease::SourcePosition freshSpectrum;
+    std::shared_ptr<const SharedAnalysis::Result> spectrumResult;
+    std::vector<float> spectrumPositions;
+    double spectrumRate = 0;
+    int spectrumFftSize = 0;
+    int spectrumWidth = 0;
+    juce::Path spectrumPath;
     int hovered = -1;
     struct Edit {
         std::size_t band;
@@ -343,6 +352,117 @@ void DevicePanelView::updateEqPreview(const DevicePanelData &d) {
         }
     }
     repaint();
+}
+
+void DevicePanelView::releaseEqSpectrum() {
+    if (!eqPreview_) return;
+    auto &preview = *eqPreview_;
+    // The broker's release hook can change the owning document. Leave the
+    // picture and lease state clear before calling it.
+    auto lease = std::move(preview.spectrumLease);
+    preview.freshSpectrum = {};
+    preview.spectrumResult.reset();
+    if (preview.spectrumPath.isEmpty()) return;
+    preview.spectrumPath.clear();
+    repaint(eqPreviewBounds().toNearestInt());
+}
+
+bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &broker) {
+    if (!eqPreview_) return false;
+    if (!broker || !isShowing() || !data || !data->available || strip.folded(id)) {
+        releaseEqSpectrum();
+        return false;
+    }
+    const auto graph = eqPreviewBounds().toNearestInt();
+    auto visible = graph;
+    for (auto *p = getParentComponent(); p != nullptr && !visible.isEmpty(); p = p->getParentComponent())
+        visible = visible.getIntersection(getLocalArea(p, p->getLocalBounds()));
+    if (visible.isEmpty()) {
+        releaseEqSpectrum();
+        return false;
+    }
+    const auto safe = SafePointer<DevicePanelView>(this);
+    auto &preview = *eqPreview_;
+    if (preview.spectrumBroker.lock() != broker) {
+        releaseEqSpectrum();
+        if (!safe) return false;
+        preview.spectrumBroker = broker;
+    }
+    if (!preview.spectrumLease) {
+        const auto track = data->track;
+        const auto instance = presentedInstance();
+        SharedAnalysis::Request request{track, engine::ScopePoint::DeviceOutput};
+        request.device = id;
+        request.channel = SharedAnalysis::Channel::StereoPower;
+        SharedAnalysis::Lease acquired;
+        try { acquired = broker->acquire(request); }
+        catch (...) { return false; }
+        if (!safe || !data || !data->available || data->track != track || presentedInstance() != instance ||
+            preview.spectrumBroker.lock() != broker || !isShowing() || strip.folded(id) || eqPreviewBounds().isEmpty()) return false;
+        if (!preview.spectrumLease) {
+            preview.freshSpectrum = acquired.sourcePosition();
+            preview.spectrumLease = std::move(acquired);
+        }
+    }
+    auto next = preview.spectrumLease.read();
+    // The broker fences an adopted tap before it publishes its first window.
+    if (next && next->generation != preview.freshSpectrum.generation)
+        preview.freshSpectrum = {next->generation, 0};
+    if (next && next->firstSequence + next->request.fftSize <= preview.freshSpectrum.written)
+        next.reset();
+    // The graph stamps the output at the time it is heard. A result built
+    // before a driver callback finishes waits for its last audible sample.
+    if (next && next->advancing && next->firstStamp + next->request.fftSize > strip.root.renderedSamplePosition()) {
+        next = preview.spectrumResult && preview.spectrumResult->sourceEpoch == next->sourceEpoch
+            ? preview.spectrumResult : nullptr;
+    }
+    if (next == preview.spectrumResult && graph.getWidth() == preview.spectrumWidth)
+        return static_cast<bool>(preview.spectrumLease);
+    preview.spectrumPath.clear();
+    if (next && std::max(next->peak[0], next->peak[1]) > 0.f) {
+        if (preview.spectrumPositions.empty() || preview.spectrumRate != next->sampleRate ||
+            preview.spectrumFftSize != next->request.fftSize) {
+            preview.spectrumPositions.clear();
+            preview.spectrumRate = next->sampleRate;
+            preview.spectrumFftSize = next->request.fftSize;
+            const auto step = static_cast<float>(next->sampleRate / next->request.fftSize);
+            for (std::size_t bin = 1; bin < next->binsDbfs.size(); ++bin) {
+                const auto hz = static_cast<float>(bin) * step;
+                if (hz > 30000.f) break;
+                preview.spectrumPositions.push_back(eqFrequencyPosition(hz));
+            }
+        }
+        // Retain the loudest bin in each on-screen column. Use its actual Hz
+        // to align it to the nodes, and stop at Nyquist rather than extending it.
+        constexpr float floorDb = -96.f;
+        const auto width = graph.getWidth();
+        int column = -1;
+        float x = 0.f, peak = floorDb;
+        bool firstPoint = true;
+        const auto append = [&] {
+            const auto y = std::clamp(peak / floorDb, 0.f, 1.f);
+            if (firstPoint) preview.spectrumPath.startNewSubPath(x, y);
+            else preview.spectrumPath.lineTo(x, y);
+            firstPoint = false;
+        };
+        preview.spectrumPath.preallocateSpace(3 * std::min(width, static_cast<int>(preview.spectrumPositions.size())));
+        for (std::size_t i = 0; i < preview.spectrumPositions.size(); ++i) {
+            const auto position = preview.spectrumPositions[i];
+            const int pixel = static_cast<int>(position * static_cast<float>(width));
+            const auto value = next->binsDbfs[i + 1];
+            if (pixel != column) {
+                if (column >= 0) append();
+                column = pixel; x = position; peak = value;
+            } else if (value > peak) {
+                x = position; peak = value;
+            }
+        }
+        if (column >= 0) append();
+    }
+    preview.spectrumWidth = graph.getWidth();
+    preview.spectrumResult = std::move(next);
+    repaint(graph);
+    return static_cast<bool>(preview.spectrumLease);
 }
 
 juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
@@ -811,6 +931,8 @@ bool DevicePanelView::chooseParameterPage(const std::string &page) {
     if (!safe || !safe->validTarget()) return false;
     if (std::none_of(parameterPages.begin(), parameterPages.end(), [&](const auto &p) { return p.id == requested; })) return false;
     selectedPage_ = requested;
+    if (selectedPage_ != "eq") releaseEqSpectrum();
+    if (!safe) return false;
     for (auto &p : parameterPages) p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
     if (eqPresentation()) present(*data);
     if (!safe) return false;
@@ -907,7 +1029,10 @@ bool DevicePanelView::presentParameterPages(const DevicePanelData &next) {
     return true;
 }
 void DevicePanelView::visibilityChanged() {
-    if (!parameterPages.empty() && !isShowing()) cancelInteractions();
+    if (isShowing()) return;
+    const auto safe = SafePointer<DevicePanelView>(this);
+    releaseEqSpectrum();
+    if (safe && !parameterPages.empty()) cancelInteractions();
 }
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
@@ -1129,6 +1254,11 @@ void DevicePanelView::paint(juce::Graphics &g) {
             juce::Graphics::ScopedSaveState saved(g);
             g.reduceClipRegion(graph.toNearestInt());
             drawEqGrid(g, graph);
+            if (!eqPreview_->spectrumPath.isEmpty()) {
+                g.setColour(look::textDim);
+                g.strokePath(eqPreview_->spectrumPath, juce::PathStrokeType(look::hairline),
+                    juce::AffineTransform{graph.getWidth(), 0.f, graph.getX(), 0.f, graph.getHeight(), graph.getY()});
+            }
             const juce::AffineTransform transform{graph.getWidth(), 0.f, graph.getX(), 0.f,
                                                   -graph.getHeight() / eqDbSpan, graph.getCentreY()};
             for (std::size_t r = 0; r < eqPreview_->paths.size(); ++r) {

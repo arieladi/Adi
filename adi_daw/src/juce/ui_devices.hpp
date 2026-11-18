@@ -19,6 +19,7 @@ class ClockedView : public juce::Component {
 };
 class AdiRootComponent;
 class DeviceChainStrip;
+class SharedAnalysis;
 // One parameter of the DAW-drawn panel (ADR-0150, ADR-0198): its name, a control
 // shaped as the plug-in declares it, and the plug-in's own text for the value.
 class ParameterControl final : public juce::Component, public juce::SettableTooltipClient {
@@ -105,6 +106,8 @@ class DevicePanelView final : public juce::Component {
     DevicePanelView(DeviceChainStrip &, const DevicePanelData &, bool mixCard = false);
     ~DevicePanelView() override;
     void present(const DevicePanelData &);
+    bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
+    void releaseEqSpectrum();
     void resized() override;
     void paint(juce::Graphics &) override;
     bool keyPressed(const juce::KeyPress &) override;

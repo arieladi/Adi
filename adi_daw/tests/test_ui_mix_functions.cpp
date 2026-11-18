@@ -2,13 +2,19 @@
 // Retained function controls and prepared drag targets, with a software peer only.
 // No native host, OS window, desktop input, capture or audio device is involved.
 #include "../src/juce/ui_shell.hpp"
+#include "../src/juce/ui_look.hpp"
+#include "juce/builtin_host.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <functional>
+#include <iostream>
 #include <memory>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -333,6 +339,128 @@ void parameterPages(AppCommands &commands, const std::filesystem::path &director
     check(events.empty(), "page enable rejects a replaced runtime before mutation");
     peer.removeChildComponent(&root); peer.removeFromDesktop();
 }
+void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto document = ProjectDocument::open(directory / "stack-eq-spectrum.adi", true, device::withBuiltinDevices(), error);
+    check(document && document->addMixFunction(mix::Function::Eq, 2), "Stack spectrum opens a native EQ fixture");
+    if (!document) return;
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    const auto eq = std::ranges::find(*publication, "org.adidaw.mix.eq", &DevicePanelData::uid);
+    if (eq == publication->end()) return;
+    const auto device = eq->id;
+    const engine::ScopeSource expected{2, engine::ScopePoint::DeviceOutput, device};
+    auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    std::vector<engine::ScopeSource> opened, closed;
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            opened.push_back(source);
+            return source == expected ? tap : nullptr;
+        }, [&](engine::ScopeSource source) { closed.push_back(source); }, SharedAnalysis::Mode::Manual);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "stack-eq-spectrum");
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    root.sharedAnalysis = broker;
+    root.state().mixView = true;
+    root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
+    root.arrangement.geometry.selection.track = 2;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1200, 720);
+    peer.setVisible(true); peer.addToDesktop(0);
+    StackTab surface(root);
+    surface.setBounds(peer.getLocalBounds()); peer.addAndMakeVisible(surface);
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.model().setAutoZoom(false, 0);
+    surface.frameAt(root.reader(), 500);
+    check(opened == std::vector{expected} && broker->stats().consumers == 1,
+          "visible EQ graph demands exactly its stable device output");
+
+    const auto findPanel = [&](const auto &walk, juce::Component &parent) -> DevicePanelView * {
+        if (auto *item = dynamic_cast<DevicePanelView *>(&parent); item && item->id == device) return item;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    const auto paintPanel = [](DevicePanelView &panel) {
+        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
+        juce::Graphics g(image);
+        panel.paint(g);
+        return image;
+    };
+    auto *panel = findPanel(findPanel, surface);
+    check(panel != nullptr, "the spectrum uses the existing EQ card");
+    if (!panel) return;
+    juce::Component::SafePointer<DevicePanelView> card(panel);
+    SharedAnalysis::Request request{expected.track, expected.point};
+    request.device = expected.device;
+    request.channel = SharedAnalysis::Channel::StereoPower;
+    auto sibling = broker->acquire(request);
+    check(sibling.available() && broker->stats().consumers == 2 && broker->stats().domains == 1 &&
+              broker->stats().spectralPlans == 1 && opened.size() == 1,
+          "a compatible sibling shares the same tap, FFT plan and worker domain");
+
+    tap->write(static_cast<const float *>(nullptr), nullptr, 1024, 0, false);
+    broker->pump(); surface.frameAt(root.reader(), 520);
+    const auto silent = paintPanel(*card);
+    std::array<float, 1024> left{}, right{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = .5f * static_cast<float>(std::sin(2. * std::numbers::pi * 16. * static_cast<double>(i) / static_cast<double>(left.size())));
+        right[i] = -left[i];
+    }
+    tap->write(left.data(), right.data(), static_cast<std::int32_t>(left.size()), 0, false);
+    broker->pump(); surface.frameAt(root.reader(), 540);
+    const auto audible = paintPanel(*card);
+    const auto result = sibling.read();
+    int changedPixels = 0;
+    bool withinGraph = true;
+    for (int y = 0; y < silent.getHeight(); ++y)
+        for (int x = 0; x < silent.getWidth(); ++x)
+            if (silent.getPixelAt(x, y) != audible.getPixelAt(x, y)) {
+                ++changedPixels;
+                withinGraph = withinGraph && y > DevicePanelView::kTitleHeight && x > 0 && x < silent.getWidth() - 1;
+            }
+    if (!result || std::abs(result->binsDbfs[16] + 6.0206f) >= .002f || changedPixels == 0 || !withinGraph)
+        std::cout << "Stack spectrum fixture: bin16=" << (result ? result->binsDbfs[16] : -999.f)
+                  << ", peak=" << (result ? result->peak[0] : -1.f)
+                  << ", changed=" << changedPixels << ", withinGraph=" << withinGraph << '\n';
+    check(result && std::abs(result->binsDbfs[16] + 6.0206f) < .002f && changedPixels > 0 && withinGraph,
+          "valid antiphase sound after silence changes only pixels clipped to the graph");
+    const auto shown = broker->stats();
+    const auto width = card->getWidth();
+    surface.model().setBaseHeight(122, 550);
+    surface.frameAt(root.reader(), 800);
+    broker->pump();
+    check(card && card->getWidth() != width && broker->stats().transforms == shown.transforms &&
+              broker->stats().publications == shown.publications && broker->stats().consumers == shown.consumers,
+          "resizing changes graph geometry without requesting a new transform or lease");
+
+    surface.setVisible(false);
+    check(broker->stats().consumers == 1 && closed.empty(),
+          "hiding the Stack immediately releases its reader while the sibling remains live");
+    sibling.reset();
+    check(broker->stats().consumers == 0 && closed == std::vector{expected},
+          "last hide unbinds the physical EQ tap exactly once");
+    surface.setVisible(true);
+    surface.frameAt(root.reader(), 850);
+    check(broker->stats().consumers == 1, "showing the EQ attaches one new reader");
+    surface.filterChannels(std::nullopt);
+    surface.setSize(1200, 165);
+    surface.frameAt(root.reader(), 900);
+    surface.model().scrollTo(surface.model().maxScroll(), 905);
+    surface.frameAt(root.reader(), 1200);
+    check(broker->stats().consumers == 0 && closed.size() == opened.size(),
+          "scrolling all EQ graph pixels outside the viewport unbinds its device tap");
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.setBounds(peer.getLocalBounds()); surface.frameAt(root.reader(), 1300);
+    const auto live = broker->stats();
+    surface.suspendParameters(true);
+    broker->pump();
+    check(live.consumers == 1 && broker->stats().consumers == 0 && broker->stats().workerPasses == live.workerPasses,
+          "suspending the window removes its last EQ reader and schedules no idle work");
+    peer.removeChildComponent(&surface); peer.removeFromDesktop();
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI init;
@@ -341,6 +469,7 @@ int main() {
     AppCommands commands(settings);
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
+    stackEqSpectrum(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
 }

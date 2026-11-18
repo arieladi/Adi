@@ -93,6 +93,7 @@ class StackTab final : public juce::Component {
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
     void layoutRows();
+    void releaseEqSpectra();
     void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();

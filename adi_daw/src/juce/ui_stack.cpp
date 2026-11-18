@@ -95,6 +95,7 @@ struct StackRow::State {
     std::vector<stack::ItemGeo> presentedItems, pendingItems;
     std::uint64_t presentation = 0;
     bool destroying = false;
+    bool spectrumDemand = false;
     juce::Component lane;
     juce::TextButton mute{"M"}, solo{"S"};
     struct Tile {
@@ -142,6 +143,7 @@ void StackRow::present(const stack::RowGeo &input) {
     const auto publication = stack_.state_->publication;
     (void)publication; // callbacks may publish a replacement while this row adopts these records
     state_->geo = geo;
+    state_->spectrumDemand = false;
     const auto lane = stack_.model().lane(geo.shown);
     const auto chip = stack_.model().chip(geo.shown);
     state_->pendingItems.clear();
@@ -231,6 +233,10 @@ void StackRow::present(const stack::RowGeo &input) {
                                 static_cast<int>(std::round(item.top - geo.top)) + 2,
                                 std::max(0, static_cast<int>(std::round(item.width))),
                                 std::max(0, static_cast<int>(std::round(item.height)) - 4));
+        if (!alive || !panel || state_->presentation != presentation) return;
+        const bool spectrum = panel->frameEqSpectrum(stack_.state_->parametersSuspended ? nullptr : stack_.root.sharedAnalysis);
+        if (!alive || !panel || state_->presentation != presentation) return;
+        state_->spectrumDemand |= spectrum;
     };
     const auto count = state_->pendingItems.size();
     for (std::size_t j = 0; j < count; ++j) {
@@ -559,6 +565,7 @@ void StackTab::layoutRows() {
         if (!current()) return;
     }
     const auto count = state_->wanted.size();
+    bool spectrumDemand = false;
     for (std::size_t j = 0; j < count; ++j) {
         if (!current()) return;
         const auto geo = state_->wanted[j];
@@ -576,6 +583,7 @@ void StackTab::layoutRows() {
                                                       static_cast<std::size_t>(std::numeric_limits<int>::max()))));
         (*found)->present(geo);
         if (!current()) return;
+        spectrumDemand |= (*found)->state_->spectrumDemand;
     }
     if (state_->rename.isVisible())
         if (const auto cap = model().capture(); cap && cap->target.place == stack::ItemPlace::None)
@@ -583,6 +591,15 @@ void StackTab::layoutRows() {
                 state_->rename.setBounds(rect(model().chip(*at).chip).toNearestInt());
     state_->rename.toFront(false);
     syncScroll();
+    if (spectrumDemand && root.sharedAnalysis) root.sharedAnalysis->requestFrame();
+}
+void StackTab::releaseEqSpectra() {
+    std::vector<juce::Component::SafePointer<DevicePanelView>> tiles;
+    for (const auto &row : rows_)
+        for (const auto &tile : row->state_->tiles)
+            tiles.emplace_back(tile.view.get());
+    for (auto &tile : tiles)
+        if (tile) tile->releaseEqSpectrum();
 }
 void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
     if (state_->destroying) return;
@@ -934,6 +951,9 @@ void StackTab::focusOfChildComponentChanged(FocusChangeType type) {
 }
 void StackTab::visibilityChanged() {
     if (!isShowing()) {
+        const auto safe = SafePointer<StackTab>(this);
+        releaseEqSpectra();
+        if (!safe) return;
         cancelInteractions();
         effects(model().pointerExit(clockNow()), false);
         effects(model().setKeyboardFocus(false, clockNow()), false);
@@ -952,6 +972,8 @@ void StackTab::suspendParameters(bool suspended) {
     state_->parametersSuspended = suspended;
     if (suspended) {
         const auto safe = SafePointer<StackTab>(this);
+        releaseEqSpectra();
+        if (!safe) return;
         cancelInteractions();
         if (safe) updateParameterDemand({});
     }
