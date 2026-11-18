@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_look.hpp"
+#include "ui_controls.hpp"
 #include <array>
 namespace adi::ui::look {
 juce::Colour trackColour(std::size_t position) {
@@ -66,39 +67,56 @@ void LiveLook::setColours() {
     setColour(juce::ToggleButton::tickColourId, text);
     setColour(juce::ToggleButton::tickDisabledColourId, textDim);
 }
+namespace {
+// How a lit button is lit: in the record's red, the value's blue, or the accent (or a colour of its
+// own, a track's, which is drawn as it is).
+controls::Lit litOf(const juce::Colour &on) noexcept {
+    return on == record ? controls::Lit::Record : on == value ? controls::Lit::Value : controls::Lit::Accent;
+}
+controls::ButtonState stateOf(juce::Button &b, bool highlighted, bool down) {
+    return controls::stateOf(b.getToggleState(), highlighted, down, b.isEnabled(),
+                             litOf(b.findColour(juce::TextButton::buttonOnColourId)));
+}
+} // namespace
 void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const juce::Colour &bg,
                                     bool highlighted, bool down) {
-    // Live's buttons are flat boxes: light when off, orange when on, a hair darker
-    // under the mouse (ADR-0203 d5, hover as Live).
-    auto fill = b.getToggleState() ? b.findColour(juce::TextButton::buttonOnColourId) : bg;
-    // A transparent button is a bar's text, as a device's title: no box at all.
-    if (fill.isTransparent())
+    // The shared button (language.png part B): rest, pointer over, pressed, on, on for record, on
+    // for a value, disabled. A transparent button is a bar's text, as a device's title: no box.
+    const bool on = b.getToggleState();
+    const auto lit = b.findColour(juce::TextButton::buttonOnColourId);
+    if ((on ? lit : bg).isTransparent())
         return;
-    if (down)
-        fill = fill.darker(0.15f);
-    else if (highlighted)
-        fill = fill.brighter(0.08f);
-    box(g, b.getLocalBounds().toFloat().reduced(0.5f), fill);
+    const auto r = b.getLocalBounds().toFloat();
+    if (on && litOf(lit) == controls::Lit::Accent && lit != accent) {
+        // A colour of its own (a track's activator): the same shape in that colour.
+        g.setColour(lit);
+        g.fillRoundedRectangle(r, std::min(radiusControl, r.getHeight() / 2));
+    } else {
+        controls::button(g, r, stateOf(b, highlighted, down));
+    }
     // Live's half-coloured Solo on a group holding a soloed track (Live 12 manual 18.3): the box cut
     // corner to corner, its lower right half lit.
-    if (!b.getToggleState() && b.getProperties()["live.half"]) {
-        const auto r = b.getLocalBounds().toFloat().reduced(1.5f);
+    if (!on && b.getProperties()["live.half"]) {
+        const auto inner = r.reduced(1.5f);
         juce::Path half;
-        half.addTriangle(r.getRight(), r.getY(), r.getRight(), r.getBottom(), r.getX(), r.getBottom());
-        g.setColour(b.findColour(juce::TextButton::buttonOnColourId));
+        half.addTriangle(inner.getRight(), inner.getY(), inner.getRight(), inner.getBottom(), inner.getX(),
+                         inner.getBottom());
+        g.setColour(lit);
         g.fillPath(half);
     }
     // Live 12's focus ring, on a switch that only the keyboard can focus.
     if (b.getProperties()["live.focusRing"] && b.hasKeyboardFocus(false)) {
         g.setColour(accent);
-        g.drawRect(b.getLocalBounds(), 1);
+        g.drawRoundedRectangle(r.reduced(hairline / 2), std::min(radiusControl, r.getHeight() / 2), hairline);
     }
 }
-void LiveLook::drawButtonText(juce::Graphics &g, juce::TextButton &b, bool, bool) {
+void LiveLook::drawButtonText(juce::Graphics &g, juce::TextButton &b, bool highlighted, bool down) {
     g.setFont(getTextButtonFont(b, b.getHeight()));
-    g.setColour(!b.isEnabled() ? textDim
-                : b.getToggleState() ? b.findColour(juce::TextButton::textColourOnId)
-                                     : b.findColour(juce::TextButton::textColourOffId));
+    const auto state = stateOf(b, highlighted, down);
+    g.setColour(state == controls::ButtonState::Rest || state == controls::ButtonState::Over ||
+                        state == controls::ButtonState::Pressed
+                    ? b.findColour(juce::TextButton::textColourOffId)
+                    : controls::labelColour(state));
     const bool left = b.getProperties()["live.left"];
     g.drawFittedText(b.getButtonText(), b.getLocalBounds().reduced(2, 0),
                      left ? juce::Justification::centredLeft : juce::Justification::centred, 1, 1.f);
@@ -110,27 +128,21 @@ juce::Font LiveLook::getTextButtonFont(juce::TextButton &b, int buttonHeight) {
     return font(std::min(fontField, static_cast<float>(buttonHeight) - 1) -
                 (b.getProperties()["live.small"] ? 1.f : 0.f));
 }
-void LiveLook::drawToggleButton(juce::Graphics &g, juce::ToggleButton &b, bool highlighted,
-                                bool down) {
-    // A switch: a small square that turns blue, as Live's device switches do.
+void LiveLook::drawToggleButton(juce::Graphics &g, juce::ToggleButton &b, bool, bool) {
+    // The shared switch (language.png part D): a pill, lit when on, its label at its right.
     const auto r = b.getLocalBounds().toFloat();
-    const float s = std::min(r.getHeight(), 14.f);
-    const juce::Rectangle<float> sq(r.getX() + 1, r.getCentreY() - s / 2, s, s);
-    box(g, sq, b.getToggleState() ? value : chooser);
-    if (highlighted || down)
-        g.fillAll(textBright.withAlpha(0.04f));
+    const float h = std::min(r.getHeight() - 2.f, static_cast<float>(fieldHeight) - 1.f), w = h * 1.78f;
+    const juce::Rectangle<float> pill(r.getX() + 1, r.getCentreY() - h / 2, w, h);
+    controls::toggleSwitch(g, pill, b.getToggleState(), b.isEnabled());
     if (b.getButtonText().isNotEmpty()) {
-        g.setColour(text);
+        g.setColour(b.isEnabled() ? text : textFaint);
         g.setFont(font());
-        g.drawText(b.getButtonText(), r.withTrimmedLeft(s + 5), juce::Justification::centredLeft);
+        g.drawText(b.getButtonText(), r.withTrimmedLeft(w + 6), juce::Justification::centredLeft);
     }
 }
-void LiveLook::drawComboBox(juce::Graphics &g, int w, int h, bool, int, int, int, int,
-                            juce::ComboBox &c) {
-    box(g, juce::Rectangle<float>(0.5f, 0.5f, static_cast<float>(w) - 1, static_cast<float>(h) - 1),
-        c.findColour(juce::ComboBox::backgroundColourId));
-    triangle(g, {static_cast<float>(w) - 11, static_cast<float>(h) / 2 - 3, 7, 6},
-             juce::MathConstants<float>::halfPi, text);
+void LiveLook::drawComboBox(juce::Graphics &g, int w, int h, bool, int, int, int, int, juce::ComboBox &) {
+    // The shared chooser (language.png part D); its text is the ComboBox's own label.
+    controls::chooser(g, juce::Rectangle<float>(0.f, 0.f, static_cast<float>(w), static_cast<float>(h)), {});
 }
 juce::Font LiveLook::getComboBoxFont(juce::ComboBox &) { return font(); }
 void LiveLook::positionComboBoxText(juce::ComboBox &c, juce::Label &l) {
@@ -191,33 +203,20 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
         g.fillPath(cap);
     }
 }
-void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, float pos,
-                                float start, float end, juce::Slider &s) {
-    // Live's knob: a thick ring open at the foot (knobRing), blue from its start to the value,
-    // and a needle from the centre that stops short of the ring (knobNeedle).
+void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, float pos, float, float,
+                                juce::Slider &s) {
+    // The shared ring knob (language.png part C): the value is the ring. A two-sided knob (pan)
+    // fills from its middle; an automated one carries a red dot; the pointer over it lights its dial.
     const auto b = juce::Rectangle<int>(x, y, w, h).toFloat();
-    const float r = std::min(b.getWidth(), b.getHeight()) / 2 - 3.f;
-    const float cx = b.getCentreX(), cy = b.getCentreY();
-    const juce::PathStrokeType stroke(2.5f, juce::PathStrokeType::curved, juce::PathStrokeType::butt);
-    juce::Path ring;
-    ring.addCentredArc(cx, cy, r, r, 0, start, end, true);
-    g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId));
-    g.strokePath(ring, stroke);
-    const float a = start + pos * (end - start);
-    // A two-sided knob, as pan, fills from its middle.
-    const float from = s.getProperties()["live.bipolar"] ? (start + end) / 2 : start;
-    if (std::abs(a - from) > 0.01f) {
-        juce::Path fill;
-        fill.addCentredArc(cx, cy, r, r, 0, std::min(from, a), std::max(from, a), true);
-        g.setColour(value);
-        g.strokePath(fill, stroke);
-    }
-    g.setColour(s.findColour(juce::Slider::rotarySliderOutlineColourId));
-    juce::Path needle;
-    needle.startNewSubPath(cx, cy);
-    needle.lineTo(cx + 0.72f * r * std::sin(a), cy - 0.72f * r * std::cos(a));
-    g.strokePath(needle, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
-                                              juce::PathStrokeType::rounded));
+    controls::KnobLook k;
+    k.fromCentre = s.getProperties()["live.bipolar"];
+    k.automated = s.getProperties()["adi.automated"];
+    k.disabled = !s.isEnabled();
+    k.over = s.isMouseOverOrDragging();
+    if (const auto *second = s.getProperties().getVarPointer("adi.secondColour"))
+        k.colour = juce::Colour(static_cast<juce::uint32>(static_cast<juce::int64>(*second)));
+    const float radius = std::min(b.getWidth(), b.getHeight()) / 2 - 3.f;
+    controls::ringKnob(g, b.getCentre(), radius, pos, k);
 }
 int LiveLook::getSliderThumbRadius(juce::Slider &s) {
     return s.getProperties()["live.meterFader"] ? 0 : juce::LookAndFeel_V4::getSliderThumbRadius(s);
