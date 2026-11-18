@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/ui/fade_edits.hpp"
 #include "adi/edit_plan.hpp"
@@ -2125,6 +2126,9 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
             paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
                           static_cast<float>(y + h - 3));
+            if (!c->audio)
+                paintNotes(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                           static_cast<float>(y + h - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
@@ -2404,6 +2408,76 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
             const float y0 = mid - std::clamp(span->maximum, -1.f, 1.f) * half,
                         y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
             g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
+        }
+    }
+}
+void ArrangementCanvas::paintNotes(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
+                                   float right, float top, float bottom) const {
+    if (bottom - top < 4.f || right <= left)
+        return;
+    // Read once for each generation of the document: any edit moves it, and the next paint reads again.
+    const auto generation = view.root.generation();
+    if (clipNotes_.size() > 4096)
+        clipNotes_.clear();
+    auto &held = clipNotes_[clip.id];
+    if (held.readAt != generation + 1) {
+        held = {};
+        held.readAt = generation + 1;
+        if (auto read = engine::readClipDetails(view.root.editStore(), clip.id); read.clip && read.clip->kind == "midi") {
+            const auto &d = *read.clip;
+            held.midi = true;
+            held.startMarker = d.startMarkerTicks;
+            if (d.loopEnabled && d.loopLengthTicks && *d.loopLengthTicks > 0) {
+                held.loopStart = d.loopStartTicks;
+                held.loopLength = *d.loopLengthTicks;
+            }
+            held.bars.reserve(d.notes.size());
+            for (const auto &n : d.notes) {
+                held.bars.push_back({n.startTicks, n.durationTicks, static_cast<int>(n.key), n.active});
+                held.low = std::min(held.low, static_cast<int>(n.key));
+                held.high = std::max(held.high, static_cast<int>(n.key));
+            }
+        }
+    }
+    if (!held.midi || held.bars.empty())
+        return;
+    const auto &geo = view.geometry;
+    // The keys in use over the body's height, never fewer than an octave so one note is not a slab.
+    const int keys = std::max(12, held.high - held.low + 1);
+    const int lowest = held.low - (keys - (held.high - held.low + 1)) / 2;
+    const float inner = bottom - top - 2.f;
+    const float pitch = inner / static_cast<float>(keys);
+    const float thick = std::clamp(pitch - (pitch >= 3.f ? 1.f : 0.f), 1.f, 4.f);
+    const std::int64_t clipEnd = pos + clip.lengthTicks;
+    auto bar = [&](std::int64_t source, const ClipNotes::Bar &n) {
+        const auto start = pos + (source - held.startMarker);
+        const auto end = std::min(start + n.duration, clipEnd);
+        if (end <= pos || start >= clipEnd)
+            return;
+        const float x0 = std::max(left, static_cast<float>(geo.x(std::max(start, pos)))),
+                    x1 = std::min(right, static_cast<float>(geo.x(end)));
+        if (x1 <= left || x0 >= right)
+            return;
+        const float y = top + 1.f + inner - (static_cast<float>(n.key - lowest) + 1.f) * pitch + (pitch - thick) * .5f;
+        g.setColour(look::ink.withAlpha(clip.muted || !n.active ? 0.3f : 0.75f));
+        g.fillRect(x0, y, std::max(1.f, x1 - x0), thick);
+    };
+    for (const auto &n : held.bars) {
+        if (held.loopLength > 0) {
+            // A looped clip plays to the loop's end once, then the loop again and again: what lies
+            // after the loop is never heard, and what lies in it is drawn at each pass.
+            if (n.start >= held.loopStart + held.loopLength)
+                continue;
+            bar(n.start, n);
+            if (n.start >= held.loopStart)
+                for (std::int64_t pass = 1; pass < 4096; ++pass) {
+                    const auto source = n.start + pass * held.loopLength;
+                    if (pos + (source - held.startMarker) >= clipEnd)
+                        break;
+                    bar(source, n);
+                }
+        } else {
+            bar(n.start, n);
         }
     }
 }
