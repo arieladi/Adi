@@ -99,6 +99,8 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 - **The strip down the outer edge.** The sheet has none. Its two view switches (Arrangement, Session) and Bitwig's Use Large Track Height button stay on it, under the bar; the switches go when the Control Bar's Arrangement | Mix View switch comes (step 2).
 - **Widths.** The sheet's names column is 128 and the track controls 264; the window's are Live's (95 and about 190). The bar's buttons are a little narrower than drawn, and Show takes what is left.
 
+---
+
 ## 2026-11-10, window lane — A4, D1 and C6: Save a Copy and the collects, the browser's samples, Rec-Q and Keep Monitoring Latency; N50
 
 The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 and A5. Each is a `window/<topic>` PR to base main, with its headless checks, its parity rows and its picture beside Live 12's figure. C5 is skipped for now: it is ADI's addition, so its picture goes to the director before it is built. B8 and Mix View stay excluded.
