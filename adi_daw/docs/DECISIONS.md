@@ -18844,3 +18844,98 @@ window as it stands:
 | ADR-0208 (the window lane), ADR-0236, ADR-0237 | the look of every surface waits for its agreed sheet (d1); function work goes on |
 | `collab/window/look-live11.md`, `collab/window/parity-7.6-mixer.md` row 11 | the slots are withdrawn |
 | `docs/DEFERRED.md` | DF-W20 to DF-W23 and DF-M47, DF-M48 added |
+
+## ADR-0244 — The first design round: five sheets agreed; a cloned tool looks like its source, and the scope is s(M)exoscope itself; the Mix View's pages are Stack, Focus and Analysers — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 17 AND 18 NOVEMBER; CARRIES OUT ADR-0243 d1, d3, d4, d5; AMENDS ADR-0209 d11 AND THE TAB LIST OF ADR-0236**
+
+**What this records.** The first round of the review ADR-0243 ordered. Win drew, he answered, win
+redrew: two proposals of the design language, two of the Arrangement, six of the Mix View's Stack,
+two of Focus and one of the Analysers. The agreed pictures and the words that go with them are the
+sheets in `collab/window/design/`; that file is the detail and this entry is the rulings.
+
+**His words on each sheet.**
+- The design language: "design language looks very good".
+- The Arrangement: "as a design guide that seems good enough".
+- The Mix View's Stack: "yha thats good".
+- Focus and the Analysers (18 November): "its hard for me to rap my mind around it so lets take it
+  as approved for now".
+
+**The decisions.**
+
+1. **The five sheets are the look to build from.** A seat builds the look of these surfaces from
+   `collab/window/design/` and shows the result to him against the sheet (ADR-0243 d1). "Approved
+   for now" is his: he may reopen any of them, and a sheet changes only by his word.
+2. **The design language (ADR-0243 d3 made particular).** Live stays the base for the Arrangement,
+   the Browser and the Device View, with its controls in its order. Buttons are drawn in rounded
+   groups as Bitwig draws them; the knob is Bitwig's ring knob, one knob everywhere; the tools of
+   the Mix View follow FabFilter's design language. The default theme is dark, as Live 12's dark.
+   Colours are a matter of settings: "we should support many themes". Density is a setting with two
+   values: Compact, with Live 12's sizes, is the default; Open is the other.
+3. **No device is a box of dials.** "nothing in adi daw can look like a generic design-less
+   device." Every device panel has a display that shows what the device does.
+4. **A cloned tool looks like its source.** "the elements we are cloning (BX_meter, SPAN, VISU,
+   BLUPRINT, s(m)exoscope oscope2 psyscope pro, fuser, trackspacer) ... they should look the same
+   as the plugins we are cloning (about the same at least)". Its layout, its read-outs and the way
+   its display is drawn are the source's; no seat invents another look for it. It is drawn by ADI:
+   no other maker's bitmaps, logos or fonts (the standing rule, ADR-0243 d5). Such a tool needs no
+   sheet of its own: it is shown to him as built, beside its source.
+5. **The scope is s(M)exoscope itself.** "should be literally the exo scope embedded in there as we
+   actually have s(m)exoscope code as it is open code". Its display and controls come from its
+   source, not from a redrawing. ADR-0183 d5 (its own buffer) stands; what that source lacks for
+   the DAW (safe hand-over from the audio thread, a size that follows the window) is added round
+   it, not in place of it.
+6. **The spectrum has three looks:** SPAN's, BluPrint's, and Live's Spectrum device ("we also want
+   the ableton like spectrum option").
+7. **The Info box's analyser** is the spectrogram (the VISU clone) by default, with a switch to
+   the spectrum. A click on it opens the Analysers.
+8. **The Arrangement.** A track inside a group is as wide as its group and is not indented; it
+   carries a line in the group's colour as in Live, and a second line for a group inside a group.
+   Over the track names stand the switch of sides and a chooser that shows only chosen groups.
+9. **The Device View.** The EQ, the compressor and the limiter there "are the Mix View's own
+   panels". The Pd EQ Eight, limiter and compressor "are used as regulars devices like vst or clap
+   and are not part of the mixview solution". The other Pd devices stay, each with a designed panel
+   of its own, "one sheet per device".
+10. **The Mix View's layout (ADR-0243 d4 made particular).** It takes the whole window. From the
+    left: the channel browser (search, the list, the group filters) with the Info box under it; the
+    rows; the meter at the far right. Above them the song strip, an overview with the ruler in
+    which he moves as in the Arrangement. Its pages are **Stack, Focus and Analysers**.
+11. **The Stack's rows are a lens,** as the instance list of FabFilter's Pro-Q 4 behaves: with the
+    pointer in the list, the row under it is the largest, its neighbours are partly grown and the
+    rest stay small; rows push each other and nothing overlaps; the tool under the pointer is wider
+    than its row-mates. With the pointer on the meter or the analyser, every row is small. A slider
+    sets how many channels are seen at once.
+12. **A row** is one channel: its name with its colour, M and S at the row's left, then its tools
+    as cards without title bars. There is no channel block at the right. What else the name tag
+    carries waits for his use of it.
+13. **Every chain ends with a "+"** that adds a Mix View tool (one of each in a channel, ADR-0237)
+    or a device or plug-in.
+14. **A third-party plug-in in a chain** is a chip; a click opens its editor over the Mix View and
+    closing it leaves him there.
+15. **"Sounding now"** is a filter that shows the channels sounding at the moment it is chosen. It
+    is a snapshot: "what i chose at that moment stays" until it is refreshed or another filter is
+    chosen.
+16. **The meter** at the right has bx_meter's layout and readings (d4): "i want it same design and
+    reads".
+17. **Focus.** Two or more channels (A, B, C and on), one of them the main, worked on together with
+    Unmask (the Trackspacer and FUSER class), Match, Align and Scope to begin with: "i want all the
+    tools but need to build around it slowly lets start with this and add as needed". Leaving Focus
+    keeps the solos. Two readings are win's and wait for his word: that the Mix View button opens
+    Focus while tracks are soloed ("when tracks are followed"), and that un-soloing a channel in
+    Focus takes it out and makes the first one still soloed the main.
+18. **The Analysers** are a page of the Mix View: every analyser at once, and a page for each
+    (Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis), on Main, a chosen channel or the
+    selected one followed. The layout is agreed; each analyser's look is its source's (d4).
+
+**What is not settled here.** Each Pd device's panel; the Clip View; the Mixer and the track rows in
+detail; the Browser; menus, dialogs and Settings. They stay under DF-W20 and DF-W23.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0243 d1, d3, d4, d5 | carried out for five surfaces (d1, d2, d10 to d16) |
+| ADR-0209 d11, ADR-0236 (the tab model) | the Mix View's pages are Stack, Focus and Analysers (d10); the earlier tabs' content lives in them |
+| ADR-0183 | its EXO tab is s(M)exoscope's own display and controls (d5); its spectrogram and spectrum look like their sources (d4, d6) |
+| ADR-0167 | the scope's panel takes its look from its sources (d4, d5); what it does is unchanged |
+| ADR-0237 | the analysers' places are the Info box and the Analysers page (d7, d18); one of each tool per channel stands (d13) |
+| `collab/window/design/` | new: the five sheets |
+| `docs/DEFERRED.md` | DF-W24 to DF-W27 and DF-M49 to DF-M55 added; DF-W22, DF-M47 and DF-M48 now build from the sheets |
