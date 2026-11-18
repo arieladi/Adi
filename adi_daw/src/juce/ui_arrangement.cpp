@@ -10,6 +10,7 @@
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "ui_browser.hpp"
+#include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include <limits>
 namespace adi::ui {
@@ -836,8 +837,11 @@ ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
     setMouseClickGrabsKeyboardFocus(false);
 }
 void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
-    // Bitwig's icon: a list with its lower lines indented, and the menu's arrow beside it.
-    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
+    // The shared button (language.png part B) in its state, and on it Bitwig's icon: a list with
+    // its lower lines indented, and the menu's arrow beside it.
+    const auto state = controls::stateOf(getToggleState(), over, down, isEnabled());
+    controls::button(g, getLocalBounds().toFloat(), state);
+    g.setColour(controls::labelColour(state));
     const auto r = getLocalBounds().toFloat().reduced(2.f, 3.f);
     for (int line = 0; line < 3; ++line)
         g.fillRect(r.getX() + (line == 0 ? 0.f : 4.f), r.getY() + static_cast<float>(line) * 4.f,
@@ -1063,37 +1067,37 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.fillAll(look::band);
     // Above the headers: Live's locator buttons ("Set", previous, next) and its two
     // toggles, Automation Mode and Lock Envelopes.
+    // The shared button (language.png part B); none of these tracks the pointer, so each is at rest.
     const auto set = topButton(TopButton::Set);
-    g.setColour(look::button);
-    g.fillRoundedRectangle(set, look::radiusPanel);
-    g.setColour(look::outline);
-    g.drawRoundedRectangle(set.reduced(0.5f), look::radiusPanel, look::hairline);
-    g.setColour(look::text);
-    g.setFont(look::font(look::fontLabel));
-    g.drawText(selectedLocator != 0 ? "Del" : "Set", set, juce::Justification::centred);
+    controls::button(g, set, controls::ButtonState::Rest, selectedLocator != 0 ? "Del" : "Set", look::fontLabel);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
-        g.setColour(look::button);
+        // Live's round locator buttons, in the shared button's colours at rest.
+        g.setColour(look::buttonRest);
         g.fillEllipse(c);
-        g.setColour(look::outline);
-        g.drawEllipse(c.reduced(0.5f), 1.f);
+        g.setColour(look::buttonEdge);
+        g.drawEllipse(c.reduced(look::hairline / 2), look::hairline);
         // Live's arrows: back to the previous locator, on to the next.
         const float dir = i == 0 ? -1.f : 1.f, cy = c.getCentreY(), cx = c.getCentreX();
-        g.setColour(i == 0 ? look::text : look::textDim);
+        g.setColour(i == 0 ? controls::labelColour(controls::ButtonState::Rest) : look::textDim);
         g.drawLine(cx - 3.f * dir, cy, cx + 3.f * dir, cy, 1.5f);
         g.drawLine(cx + 3.f * dir, cy, cx, cy - 3.f, 1.5f);
         g.drawLine(cx + 3.f * dir, cy, cx, cy + 3.f, 1.5f);
     }
     const auto automation = topButton(TopButton::Automation);
     const float ax = automation.getX(), ay = automation.getY();
-    look::box(g, automation, look::button);
-    g.setColour(look::text);
+    controls::button(g, automation, controls::ButtonState::Rest);
+    g.setColour(controls::labelColour(controls::ButtonState::Rest));
     g.drawLine(ax + 6, ay + 9, ax + 16, ay + 3, 1.2f);
     g.fillEllipse(ax + 4.5f, ay + 7.5f, 3, 3);
     g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
+    // Lock Envelopes, lit in its own colour: the shared button's shape in that colour, as LiveLook
+    // draws a button lit in a colour of its own, and its glyph in the ink a lit button's label takes.
     const auto lock = topButton(TopButton::Lock);
     const float lx = lock.getX(), ly = lock.getY();
-    look::box(g, lock, look::lock);
+    g.setColour(look::lock);
+    g.fillRoundedRectangle(lock, std::min(look::radiusControl, lock.getHeight() / 2));
+    g.setColour(controls::labelColour(controls::ButtonState::On));
     g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
     g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
@@ -1696,12 +1700,10 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (isMidiTrack(*t))
             for (const bool record : {true, false})
                 if (const auto box = quantizeBox(row.place.depth, y, h, record); !box.isEmpty()) {
-                    look::box(g, box.toFloat(), look::chooser);
-                    g.setColour(look::text);
-                    g.setFont(look::font(look::fontSmall));
+                    // Each opens a menu: the shared chooser, which draws the arrow.
                     const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
-                    g.drawText(juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value), box.reduced(3, 0),
-                               juce::Justification::centredLeft, true);
+                    controls::chooser(g, box.toFloat(), juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value),
+                                      look::fontSmall);
                 }
         y += h;
     }
