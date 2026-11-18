@@ -114,6 +114,161 @@ public:
 private: ScalarTarget target_;
 };
 
+struct RelativeCaptured final : Origin {
+    struct Entry {
+        ScalarTarget target;
+        std::unique_ptr<const Origin> origin;
+        double native = 0, coordinate = 0;
+    };
+    ScalarControlDomain domain;
+    std::vector<Entry> entries;
+    std::vector<TargetClaim> claims;
+    std::size_t driver = 0;
+};
+void relativeDomain(ScalarKind kind, const ScalarControlDomain &domain) {
+    (void)definition(kind);
+    if (!std::isfinite(domain.minimum) || !std::isfinite(domain.maximum) ||
+        domain.minimum >= domain.maximum || !std::isfinite(domain.maximum - domain.minimum))
+        throw std::runtime_error("relative scalar needs a finite positive control range");
+    const bool gain = kind == ScalarKind::TrackVolume || kind == ScalarKind::TrackInputGain ||
+                      kind == ScalarKind::RoutingGain;
+    if (domain.silence &&
+        (!gain || !std::isfinite(*domain.silence) || *domain.silence >= domain.minimum))
+        throw std::runtime_error("relative scalar silence must be below a gain control's floor");
+    const bool pan = kind == ScalarKind::TrackPan || kind == ScalarKind::TrackPanLeft ||
+                     kind == ScalarKind::TrackPanRight || kind == ScalarKind::RoutingPan;
+    if (pan && (domain.minimum < -1 || domain.maximum > 1))
+        throw std::runtime_error("relative pan domain exceeds native bounds");
+    if (kind == ScalarKind::GroupSummingDrive && (domain.minimum < -12 || domain.maximum > 24))
+        throw std::runtime_error("relative summing drive domain exceeds native bounds");
+}
+double shifted(double from, double change, const ScalarControlDomain &domain) {
+    // Compare distances before adding: even finite caller-declared domains
+    // near the double ceiling cannot overflow an intermediate candidate.
+    if (change >= 0 && change >= domain.maximum - from)
+        return domain.maximum;
+    if (change < 0 && -change >= from - domain.minimum)
+        return domain.minimum;
+    return std::clamp(from + change, domain.minimum, domain.maximum);
+}
+void appendProposal(Proposal &to, Proposal &&from) {
+    for (auto &request : from.requests)
+        to.requests.push_back(std::move(request));
+    for (auto &resource : from.stateBlobs)
+        to.stateBlobs.push_back(std::move(resource));
+    for (auto &row : from.rowGuards)
+        to.rowGuards.push_back(std::move(row));
+    for (auto &rows : from.rowSetGuards)
+        to.rowSetGuards.push_back(std::move(rows));
+    if (from.presentationImage) {
+        if (to.presentationImage && to.presentationImage->image != from.presentationImage->image)
+            throw std::runtime_error("relative scalar child presentation images differ");
+        to.presentationImage = std::move(from.presentationImage);
+    }
+}
+class RelativeScalarProducer final : public Producer {
+  public:
+    explicit RelativeScalarProducer(RelativeScalarSelection selection)
+        : selection_(std::move(selection)) {}
+    OriginResult captureOrigin(const Store &store, const Base &base) override {
+        try {
+            relativeDomain(selection_.kind, selection_.domain);
+            auto selected = selection_.selected;
+            uniqueIds(selected);
+            const bool routing = selection_.kind == ScalarKind::RoutingGain ||
+                                 selection_.kind == ScalarKind::RoutingPan;
+            // Validate the literal selection, even when the unselected driver
+            // acts alone. It is never read again from mutable window state.
+            for (const auto id : selected)
+                (void)required(store, routing ? "routing" : "tracks", "id", id);
+            const auto targets =
+                std::binary_search(selected.begin(), selected.end(), selection_.driver)
+                    ? selected
+                    : std::vector<std::int64_t>{selection_.driver};
+            auto result = std::make_unique<RelativeCaptured>();
+            result->domain = selection_.domain;
+            const auto def = definition(selection_.kind);
+            bool driver = false;
+            for (const auto id : targets) {
+                const ScalarTarget target{selection_.kind, id};
+                ScalarProducer child(target);
+                auto origin = child.captureOrigin(store, base);
+                if (!origin.status.ok())
+                    return {std::move(origin.status), {}};
+                const auto &value = captured(*origin.value).rows.at("value");
+                const double native = value ? value->at(def.column).get<double>()
+                                      : selection_.kind == ScalarKind::TrackPanLeft ? -1
+                                                                                    : 1;
+                if (!std::isfinite(native))
+                    throw std::runtime_error("relative scalar origin must be finite");
+                const auto claims = child.targetClaims(*origin.value);
+                result->claims.insert(result->claims.end(), claims.begin(), claims.end());
+                if (id == selection_.driver) {
+                    result->driver = result->entries.size();
+                    driver = true;
+                }
+                result->entries.push_back(
+                    {target, std::move(origin.value), native,
+                     std::clamp(native, result->domain.minimum, result->domain.maximum)});
+            }
+            if (!driver)
+                throw std::runtime_error("relative scalar driver was not captured");
+            return {{}, std::move(result)};
+        } catch (const std::exception &error) {
+            return {{Error::TargetConflict, error.what()}, {}};
+        }
+    }
+    std::vector<TargetClaim> targetClaims(const Origin &origin) const override {
+        const auto *before = dynamic_cast<const RelativeCaptured *>(&origin);
+        if (!before)
+            throw std::runtime_error("relative scalar origin type differs");
+        return before->claims;
+    }
+    ProposalResult prepare(const Store &store, const Base &base, const Origin &origin,
+                           const Input &input) const override {
+        const auto *before = dynamic_cast<const RelativeCaptured *>(&origin);
+        const auto *value = dynamic_cast<const RelativeScalarInput *>(&input);
+        if (!before || !value || !std::isfinite(value->value))
+            return {{Error::InvalidInput, "relative scalar input or origin type differs"}, {}};
+        const auto &domain = before->domain;
+        if (value->value < domain.minimum || value->value > domain.maximum ||
+            before->driver >= before->entries.size())
+            return {
+                {Error::InvalidInput, "relative scalar coordinate is outside its captured domain"},
+                {}};
+        const double change = value->value - before->entries[before->driver].coordinate;
+        try {
+            Proposal result;
+            for (std::size_t i = 0; i < before->entries.size(); ++i) {
+                const auto &entry = before->entries[i];
+                double wanted = entry.native;
+                // Returning to Begin restores its exact raw native value, even
+                // when its display coordinate was clamped. Other floored gains
+                // stay parked; moving the driver itself may leave silence.
+                if (change != 0 &&
+                    !(i != before->driver && domain.silence && entry.native <= domain.minimum)) {
+                    const auto position = i == before->driver
+                                              ? value->value
+                                              : shifted(entry.coordinate, change, domain);
+                    wanted =
+                        domain.silence && position == domain.minimum ? *domain.silence : position;
+                }
+                ScalarProducer child(entry.target);
+                ScalarInput absolute(wanted);
+                auto prepared = child.prepare(store, base, *entry.origin, absolute);
+                if (!prepared.status.ok())
+                    return {std::move(prepared.status), {}};
+                appendProposal(result, std::move(prepared.value));
+            }
+            return {{}, std::move(result)};
+        } catch (const std::exception &error) {
+            return {{Error::TargetConflict, error.what()}, {}};
+        }
+    }
+
+  private:
+    RelativeScalarSelection selection_;
+};
 class TrackSwitchProducer final : public StandardProducer {
 public:
     explicit TrackSwitchProducer(TrackSwitchTarget target) : target_(std::move(target)) {}
@@ -327,6 +482,7 @@ private: std::int64_t data_, lane_; std::optional<std::int64_t> clip_; std::vect
 };
 } // namespace
 std::unique_ptr<Producer> scalarProducer(ScalarTarget target) { return std::make_unique<ScalarProducer>(target); }
+std::unique_ptr<Producer> relativeScalarProducer(RelativeScalarSelection selection) { return std::make_unique<RelativeScalarProducer>(std::move(selection)); }
 std::unique_ptr<Producer> trackSwitchProducer(TrackSwitchTarget target) { return std::make_unique<TrackSwitchProducer>(std::move(target)); }
 std::unique_ptr<Producer> trackBooleanProducer(TrackBooleanKind kind, std::vector<std::int64_t> targets) { return std::make_unique<BooleanProducer>(kind, std::move(targets)); }
 std::unique_ptr<Producer> clipLoopProducer(std::int64_t clip) { return std::make_unique<ClipLoopProducer>(clip); }
