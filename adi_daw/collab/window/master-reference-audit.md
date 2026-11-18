@@ -98,7 +98,7 @@ MR § is the Master Reference's section.
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
-| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track |
+| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track The import prompt (E5): Warp, Create Fades on Clip Edges and Copy into the project's folder asked on a drop, all off by default, kept as the last ones; with any on, the engine's material import on a worker, one undo step per file. |
 
 ## 5. Devices and the editors (MR 3.4, 4, 5, 9)
 
