@@ -3,6 +3,7 @@
 #include "Filters.hpp"
 #include "Mailbox.hpp"
 #include "Transform.hpp"
+#include "adi/mix/filters/FlushDenormals.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -20,6 +21,7 @@ namespace {
 using Complex = std::complex<double>;
 std::atomic<std::uint64_t> nextPreparationEpoch{1};
 bool within(double x,double lo,double hi) noexcept { return std::isfinite(x)&&x>=lo&&x<=hi; }
+double finiteSample(double sample) noexcept { return std::isfinite(sample) ? sample : 0.; }
 bool phaseActive(const Settings &s) noexcept {
     return (s.phaseMode==PhaseMode::Match && s.matchAmount>0.) ||
         (s.phaseMode==PhaseMode::Rotation && s.rotationDegrees!=0. && std::abs(s.rotationDegrees)!=180.);
@@ -538,6 +540,7 @@ struct Core::Impl {
                 for(std::size_t c=0;c<2;++c) main[c][frame]=static_cast<Sample>(static_cast<double>(main[c][frame])*gain*sign);
             stats.processedFrames+=static_cast<std::uint64_t>(frames);return true;
         }
+        [[maybe_unused]] filters::FlushDenormals flush;
         std::array<double,kNodes> thresholds{},attacks{},releases{},midWeight{},sideWeight{};
         bool anySolo=false;
         for(std::size_t b=0;b<kNodes;++b) {
@@ -554,14 +557,18 @@ struct Core::Impl {
                 iir[c][b].configure(plan.iir[b],plan.settings.nodes[b].frequencyHz,plan.settings.nodes[b].q);
         }
         for(std::int32_t frame=0;frame<frames;++frame) {
-            const double left=static_cast<double>(main[0][frame])*inGain,right=static_cast<double>(main[1][frame])*inGain;
+            const double left=finiteSample(main[0][frame])*inGain;
+            const double right=finiteSample(main[1][frame])*inGain;
             std::array<double,2> x{left+right,left-right},k{};
             const bool present=!s.externalKey||keyChannels>0;
             if(!s.externalKey) k=x;
-            else if(keyChannels==1) k={static_cast<double>(key[0][frame])*keyGain,static_cast<double>(key[0][frame])*keyGain};
-            else if(keyChannels==2) {
-                const double kl=static_cast<double>(key[0][frame])*keyGain,kr=static_cast<double>(key[1][frame])*keyGain;
-                k={kl+kr,kl-kr};
+            else if(keyChannels>0) {
+                const double kl=finiteSample(key[0][frame])*keyGain;
+                if(keyChannels==1) k={kl,kl};
+                else {
+                    const double kr=finiteSample(key[1][frame])*keyGain;
+                    k={kl+kr,kl-kr};
+                }
             }
             std::array<bool,2> keyValid{keyGuard[0].observe(k[0],present),keyGuard[1].observe(k[1],present)};
             if(runPhase) {

@@ -917,6 +917,44 @@ void sourceTaggedFirOracle() {
     check(okay&&maximum<1.e-10,"captured A/B/C blocks retain their actual kernels through both arithmetic partitions");
 }
 
+template<class T> void nonfiniteInputs() {
+    for (const auto engine : {f::Engine::Iir, f::Engine::Fir}) {
+        for (const auto detector : {f::Detector::SideChain, f::Detector::Difference}) {
+            f::Settings settings;
+            settings.engine = engine;
+            settings.detector = detector;
+            settings.externalKey = true;
+            settings.nodes[0].enabled = true;
+            settings.nodes[0].thresholdDb = -36.;
+            settings.nodes[0].differenceDb = -8.;
+            f::Core poisoned, sanitized;
+            poisoned.prepare({48000, 256, 2}, settings);
+            sanitized.prepare({48000, 256, 2}, settings);
+            const auto length = static_cast<std::size_t>(poisoned.latencySamples()) + 4096;
+            std::vector<T> l(length), r(length), kl(length), kr(length);
+            for (std::size_t sample = 0; sample < length; ++sample) {
+                const double angle = static_cast<double>(sample) * 6.283185307179586 / 48.;
+                l[sample] = static_cast<T>(.43 * std::sin(angle));
+                r[sample] = static_cast<T>(.31 * std::cos(angle));
+                kl[sample] = static_cast<T>(.37 * std::sin(angle));
+                kr[sample] = static_cast<T>(.39 * std::cos(angle));
+            }
+            auto badL = l, badR = r, badKl = kl, badKr = kr;
+            const auto damage = [](auto &bad, auto &clean, std::size_t sample, T value) {
+                bad[sample] = value;
+                clean[sample] = T{};
+            };
+            damage(badL, l, 63, std::numeric_limits<T>::quiet_NaN());
+            damage(badR, r, 257, -std::numeric_limits<T>::infinity());
+            damage(badKl, kl, 1022, std::numeric_limits<T>::infinity());
+            damage(badKr, kr, 1025, std::numeric_limits<T>::quiet_NaN());
+            const auto accepted = render(poisoned, badL, badR, badKl, badKr, settings, 2, 193);
+            const auto reference = render(sanitized, l, r, kl, kr, settings, 2, 193);
+            check(accepted && reference && badL == l && badR == r,
+                  "Focus substitutes silence for a poisoned sample without poisoning the following windows");
+        }
+    }
+}
 void latencyAndSafety() {
     const std::size_t count=32768;
     std::vector<double> left(count,0.),right(count,0.),key(count,0.);
@@ -957,4 +995,7 @@ int main(){
     _CrtSetReportMode(_CRT_ERROR,_CRTDBG_MODE_FILE);_CrtSetReportFile(_CRT_ERROR,_CRTDBG_FILE_STDERR);
     _set_abort_behavior(0,_WRITE_ABORT_MSG|_CALL_REPORTFAULT);
 #endif
-    try {sourceTaggedFirOracle();phaseRateOracles();firRateOracles();stagedTransformBudget();firSampleBudget();causalFirGenerations();firCallbackPartitions();fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;} catch(const std::exception &error){std::fprintf(stderr,"Focus exception: %s\n",error.what());return 2;} catch(...){std::fprintf(stderr,"Focus unknown exception\n");return 2;}}
+    try {
+        nonfiniteInputs<float>();
+        nonfiniteInputs<double>();
+        sourceTaggedFirOracle();phaseRateOracles();firRateOracles();stagedTransformBudget();firSampleBudget();causalFirGenerations();firCallbackPartitions();fftChecks();mailboxConcurrency();defaultsAndReadiness();coreConcurrency();coherentFirPolicy();pinnedFrequencyCalibration();invalidCachedLatency();noStaleReactivation();alternatingBankConcurrency();contextOwnership();heldCompositionOffer<float>();heldCompositionOffer<double>();immutableOfferConsumption();configurationIdentityHelpers();scalarOnlyRequests();pinnedCandidateWithMovingScalars();latencyAndSafety();check(allocations==0,"zero C++ callback allocations");check(deallocations==0,"zero C++ callback deallocations");std::printf("{\"checks\":%d,\"failures\":%d,\"callback_allocations\":%llu,\"callback_deallocations\":%llu,\"compared_samples\":%llu}\n",checks,failures,static_cast<unsigned long long>(allocations),static_cast<unsigned long long>(deallocations),static_cast<unsigned long long>(comparedSamples));return failures?1:0;} catch(const std::exception &error){std::fprintf(stderr,"Focus exception: %s\n",error.what());return 2;} catch(...){std::fprintf(stderr,"Focus unknown exception\n");return 2;}}
