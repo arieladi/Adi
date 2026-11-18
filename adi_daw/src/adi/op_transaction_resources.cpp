@@ -123,7 +123,7 @@ Shape shape(const Store& store, const std::string& table) {
     static const std::set<std::string> tables{
         "project", "tracks", "mixer_strip", "mixer_pan_settings", "routing", "group_summing", "clips",
         "audio_data", "note_data", "note_expression", "clip_takes", "clip_fades",
-        "clip_warp", "clip_warp_markers", "automation_lanes", "automation_data",
+        "clip_warp", "clip_warp_markers", "automation_lanes", "automation_data", "automation_segment_ranges",
         "devices", "device_chains", "plugin_refs", "plugin_params", "plugin_state",
         "tempo_map", "time_signature_map", "track_recording_options", "return_send_taps",
         "clip_properties", "clip_loop", "clip_loops", "midi_data", "takes", "layers"};
