@@ -18940,7 +18940,7 @@ detail; the Browser; menus, dialogs and Settings. They stay under DF-W20 and DF-
 | `collab/window/design/` | new: the five sheets |
 | `docs/DEFERRED.md` | DF-W24 to DF-W27 and DF-M49 to DF-M55 added; DF-W22, DF-M47 and DF-M48 now build from the sheets |
 
-## ADR-0245 — The November research taken in: folded into the plan's rows, Windows first, proved after the build; cables only in the Grid; clips drawn as Live 12; a hosted plug-in is told the time of the audio it receives; a return may live inside a group — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 18 NOVEMBER; NARROWS ADR-0113; AMENDS ADR-0220 d4 AND ADR-0244 d4; ADDS TO MX-04, MX-05, MX-25 AND DEV-26**
+## ADR-0245 — The November research taken in: folded into the plan's rows, Windows first, proved after the build; cables only in the Grid; clips drawn as Live 12; a hosted plug-in is told the time of the audio it receives; a return may live inside a group; no look-ahead engine; DEV-23 earlier — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 18 NOVEMBER; NARROWS ADR-0113; AMENDS ADR-0220 d4 AND ADR-0244 d4; ADDS TO MX-04, MX-05, MX-25 AND DEV-26**
 
 **What this records.** The director's research went on after the bundle that `docs/RESEARCH-INTAKE.md`
 took in on 5 November: a measurement seat ran cases in Live 12.4, REAPER 7.79's engine was measured
@@ -19031,6 +19031,23 @@ here too.
     a return inside the group, 1,024 and 512 samples of latency, cancelling to silence) becomes a
     test of d9.
 
+12. **A look-ahead engine is not taken** (REAPER's anticipative processing, Cubase's ASIO-Guard).
+    Win recommended it and he said yes. He works at 2,048 samples with a great many channels and
+    kept ASIO-Guard off in Cubase. The measurements agree with him (`RESEARCH-INTAKE.md` §6.4): at
+    2,048 samples nothing was missed with it on or off and no processor time was saved; it bought
+    headroom that was not needed and made an edit audible up to 1.4 s late; and Cubase ships a
+    message that its guard is disabled when the buffer size is too large for the chosen guard level
+    (the rule behind the message was not traced). ADR-0145 d5 stands as it is. The one case it was
+    measured to help is a small buffer under heavy load; if he comes to play through ADI that way,
+    the question may be opened again.
+13. **DEV-23 moves ahead of its milestone.** Win recommended it and he said yes. What limits a
+    session of many channels at a large buffer is that no hosted plug-in may yet run on a graph
+    worker: only the engine's own sum, gain and source nodes may. With its look-ahead off, REAPER
+    still spread 64 independent tracks about twelve times across 16 logical processors. The engine
+    seat takes it after d8 to d10: first that a hosted plug-in may run on a worker, under the
+    plug-in format's own threading rules; then ADR-0229's gate for workers on by default, measured
+    on Windows first (d2). DF-E23.
+
 **What the evidence shows and does not show** (so that nothing is planned on more than it holds).
 - Outside Live almost nothing was run. Every Cubase, Bitwig and Reason case, and REAPER's beyond the
   engine, is a manual's sentence or a file's content, and the manuals are not the installed
@@ -19040,19 +19057,6 @@ here too.
   figures are process counters on one machine and one driver, and nearly every contrast failed its
   own noise gate. Reputation is not a reading.
 - What is measured and solid is in §6.2 (Live 12.4), §6.4 (REAPER's engine) and §6.5 (the scanner).
-
-**Open with the director** (win's recommendations; nothing here is decided).
-- *A look-ahead engine (REAPER's anticipative processing, Cubase's ASIO-Guard).* He doubts he needs
-  it: he works at 2,048 samples with a great many channels and kept ASIO-Guard off in Cubase. The
-  measurements agree with him (§6.4): at 2,048 samples nothing was missed with it on or off and no
-  processor time was saved; it bought headroom that was not needed and made an edit audible up to
-  1.4 s late; and Cubase ships a message that its guard is disabled when the buffer size is too
-  large for the chosen guard level (the rule behind the message was not traced). Win recommends recording it as not taken, which would also leave
-  ADR-0145 d5 as it stands.
-- *DEV-23 earlier.* What limits a session of many channels at a large buffer is that no hosted
-  plug-in may yet run on a graph worker (only the engine's own sum, gain and source nodes may).
-  With its look-ahead off, REAPER still spread 64 independent tracks about twelve times across 16
-  logical processors. That is DEV-23, at M7. Win recommends moving it earlier for the way he works.
 
 ### Amendments, in one place
 
@@ -19064,5 +19068,7 @@ here too.
 | ADR-0203 d1 | unchanged; d8, d9 and d10 are additions where Live lacks the ability |
 | `docs/PLAN.md` MX-04, MX-05, MX-25, DEV-26 | d8 (MX-04, DEV-26), d9 and d10 (MX-05), d10 (MX-25) noted on the rows; TM-SV-01, AU-03, SC2 and the two "P3" lines for pitch editing corrected from the readings and from ADR-0241 |
 | `docs/RESEARCH-INTAKE.md` | §6 added: the relay of the research's returns |
-| `docs/DEFERRED.md` | DF-E19 to DF-E22, DF-W32 and DF-W33 added |
+| ADR-0145 d5 | stands; a look-ahead engine is not taken (d12) |
+| `docs/PLAN.md` DEV-23 | taken ahead of its milestone (d13) |
+| `docs/DEFERRED.md` | DF-E19 to DF-E23, DF-W32 and DF-W33 added |
 | `collab/prompts/` | the engine seat's prompt for d8 to d10 |

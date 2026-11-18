@@ -2,7 +2,7 @@
 
 You are the **engine** lane of ADI (`adi_daw` in the `arieladi/Adi` monorepo), a Codex work seat.
 Everything in `2026-11-18-engine-lane-codex.md` and the three prompts it names still holds. This
-note adds three pieces of work the director ruled on 18 November (ADR-0245 d8, d9, d10), and it
+note adds four pieces of work the director ruled on 18 November (ADR-0245 d8, d9, d10, d13), and it
 comes **first** in your queue, before what that prompt lists: he asked for the pull requests that
 fill these gaps.
 
@@ -78,6 +78,23 @@ ADR-0245 d10. The return's Pre/Post switch stays exactly as you built it (N42). 
 send may be set to Pre FX, Post FX or Post Mixer, and a return whose sends differ reports mixed,
 which your model already has a state for. Compensation uses the latency at the tap. No tap by
 device number, and no output chooser on a return.
+
+## 4. DEV-23, ahead of its milestone (DF-E23)
+
+ADR-0245 d13, ruled the same evening; d12 beside it says a look-ahead engine is **not** taken, so
+ADR-0145 d5 stands and nothing of the kind is to be designed. The director works at 2,048 samples
+with a great many plug-in channels. On main no hosted plug-in may run on a graph worker
+(`Node::canProcessOnWorker()` is true only for your own sum, gain and source nodes), so his
+sessions run their plug-ins on one thread. After the three pieces above:
+
+- A hosted VST3 or CLAP plug-in may run on a worker, under its format's own threading rules: one
+  instance never on two threads at once, CLAP's thread-check and thread-pool extensions answered
+  truthfully, nothing that the format says belongs to the main thread called from a worker.
+- The tests you have for serial processing run with workers as well: the nulls, the latency change
+  while playing with a dense signal, the transport of piece 1.
+- Then ADR-0229's gate for workers on by default, measured on Windows first. REAPER, with no
+  look-ahead, was measured spreading 64 independent tracks about twelve times across 16 logical
+  processors (`docs/RESEARCH-INTAKE.md` §6.4); a long serial chain stays on one thread in any host.
 
 ## Report
 

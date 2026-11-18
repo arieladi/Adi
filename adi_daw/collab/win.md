@@ -20,7 +20,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 - He brought a proposal for FX channels. Win's reading: the alignment of every path is built; the gaps are the plug-in transport and returns inside groups. He took win's option: both, with Live's three taps on a send, Bitwig's way for the group return.
 - An outside review of five small bundles, in a format a script can check: every quoted line was real. Three findings were in win's `peakSpan` (#639); the rest are DF-M59 and DF-E18.
 
-**Open with the director.** A look-ahead engine recorded as not taken (the measurements at 2,048 agree with his doubt); DEV-23 moved earlier (no hosted plug-in may run on a graph worker yet, which is what limits many channels at a large buffer). Win recommended both; no answer yet.
+**Ruled the same evening.** A look-ahead engine is not taken (ADR-0245 d12): the measurements at 2,048 samples agree with his doubt. DEV-23 moves ahead of its milestone (d13, DF-E23): no hosted plug-in may run on a graph worker yet, which is what limits many channels at a large buffer. Engine seat: it is the fourth piece of your new prompt.
 
 **Owed by win.** The pitch-editing row ADR-0241 still lacks; the registry rows for the theme and density settings.
 

@@ -1445,7 +1445,8 @@ that burns a set amount of arithmetic per sample.
 
 On main no hosted plug-in may run on a graph worker: only the engine's own sum, gain and source
 nodes say they may. That, not the absence of look-ahead, is what limits many channels at a large
-buffer in ADI today. Both questions are open with the director (ADR-0245).
+buffer in ADI today. He ruled on both the same day: no look-ahead engine, and DEV-23 ahead of its
+milestone (ADR-0245 d12, d13).
 
 ### 6.5 The scanner (DEV-25)
 
