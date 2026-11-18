@@ -68,32 +68,36 @@ void LiveLook::setColours() {
     setColour(juce::ToggleButton::tickDisabledColourId, textDim);
 }
 namespace {
-// How a lit button is lit: in the record's red, the value's blue, or the accent (or a colour of its
-// own, a track's, which is drawn as it is).
-controls::Lit litOf(const juce::Colour &on) noexcept {
+// How a lit button is lit: in the record's red, the value's blue, or the accent. A button says so
+// itself (`adi.lit`: "record" or "value"), so a theme changed after it was made does not change its
+// kind; a button that says nothing is read from the on colour it was given, and is the accent
+// otherwise.
+controls::Lit litOf(juce::Button &b) {
+    const auto kind = b.getProperties()["adi.lit"].toString();
+    if (kind == "record")
+        return controls::Lit::Record;
+    if (kind == "value")
+        return controls::Lit::Value;
+    const auto on = b.findColour(juce::TextButton::buttonOnColourId);
     return on == record ? controls::Lit::Record : on == value ? controls::Lit::Value : controls::Lit::Accent;
 }
+juce::Colour litColour(controls::Lit lit) noexcept {
+    return lit == controls::Lit::Record ? record : lit == controls::Lit::Value ? value : accent;
+}
 controls::ButtonState stateOf(juce::Button &b, bool highlighted, bool down) {
-    return controls::stateOf(b.getToggleState(), highlighted, down, b.isEnabled(),
-                             litOf(b.findColour(juce::TextButton::buttonOnColourId)));
+    return controls::stateOf(b.getToggleState(), highlighted, down, b.isEnabled(), litOf(b));
 }
 } // namespace
 void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const juce::Colour &bg,
                                     bool highlighted, bool down) {
     // The shared button (language.png part B): rest, pointer over, pressed, on, on for record, on
-    // for a value, disabled. A transparent button is a bar's text, as a device's title: no box.
+    // for a value, disabled (lit or not). A transparent button is a bar's text, as a device's title:
+    // no box.
     const bool on = b.getToggleState();
-    const auto lit = b.findColour(juce::TextButton::buttonOnColourId);
-    if ((on ? lit : bg).isTransparent())
+    if ((on ? b.findColour(juce::TextButton::buttonOnColourId) : bg).isTransparent())
         return;
     const auto r = b.getLocalBounds().toFloat();
-    if (on && litOf(lit) == controls::Lit::Accent && lit != accent) {
-        // A colour of its own (a track's activator): the same shape in that colour.
-        g.setColour(lit);
-        g.fillRoundedRectangle(r, std::min(radiusControl, r.getHeight() / 2));
-    } else {
-        controls::button(g, r, stateOf(b, highlighted, down));
-    }
+    controls::button(g, r, stateOf(b, highlighted, down));
     // Live's half-coloured Solo on a group holding a soloed track (Live 12 manual 18.3): the box cut
     // corner to corner, its lower right half lit.
     if (!on && b.getProperties()["live.half"]) {
@@ -101,7 +105,7 @@ void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const ju
         juce::Path half;
         half.addTriangle(inner.getRight(), inner.getY(), inner.getRight(), inner.getBottom(), inner.getX(),
                          inner.getBottom());
-        g.setColour(lit);
+        g.setColour(litColour(litOf(b)));
         g.fillPath(half);
     }
     // Live 12's focus ring, on a switch that only the keyboard can focus.
@@ -113,10 +117,16 @@ void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const ju
 void LiveLook::drawButtonText(juce::Graphics &g, juce::TextButton &b, bool highlighted, bool down) {
     g.setFont(getTextButtonFont(b, b.getHeight()));
     const auto state = stateOf(b, highlighted, down);
-    g.setColour(state == controls::ButtonState::Rest || state == controls::ButtonState::Over ||
-                        state == controls::ButtonState::Pressed
-                    ? b.findColour(juce::TextButton::textColourOffId)
-                    : controls::labelColour(state));
+    // The label in the state's colour (the ink on a lit button), unless the button chose its own.
+    const bool disabled = state == controls::ButtonState::Disabled || state == controls::ButtonState::DisabledOn;
+    if (disabled)
+        g.setColour(controls::labelColour(state));
+    else if (b.getToggleState())
+        g.setColour(b.isColourSpecified(juce::TextButton::textColourOnId)
+                        ? b.findColour(juce::TextButton::textColourOnId)
+                        : controls::labelColour(state));
+    else
+        g.setColour(b.findColour(juce::TextButton::textColourOffId));
     const bool left = b.getProperties()["live.left"];
     g.drawFittedText(b.getButtonText(), b.getLocalBounds().reduced(2, 0),
                      left ? juce::Justification::centredLeft : juce::Justification::centred, 1, 1.f);
@@ -131,13 +141,14 @@ juce::Font LiveLook::getTextButtonFont(juce::TextButton &b, int buttonHeight) {
 void LiveLook::drawToggleButton(juce::Graphics &g, juce::ToggleButton &b, bool, bool) {
     // The shared switch (language.png part D): a pill, lit when on, its label at its right.
     const auto r = b.getLocalBounds().toFloat();
-    const float h = std::min(r.getHeight() - 2.f, static_cast<float>(fieldHeight) - 1.f), w = h * 1.78f;
+    // Small enough that the label starts about where the layouts placed it (beside a 14 pt square).
+    const float h = std::min(r.getHeight() - 2.f, static_cast<float>(fieldHeight) * 0.6f), w = h * 1.78f;
     const juce::Rectangle<float> pill(r.getX() + 1, r.getCentreY() - h / 2, w, h);
     controls::toggleSwitch(g, pill, b.getToggleState(), b.isEnabled());
     if (b.getButtonText().isNotEmpty()) {
         g.setColour(b.isEnabled() ? text : textFaint);
         g.setFont(font());
-        g.drawText(b.getButtonText(), r.withTrimmedLeft(w + 6), juce::Justification::centredLeft);
+        g.drawText(b.getButtonText(), r.withTrimmedLeft(w + 5), juce::Justification::centredLeft);
     }
 }
 void LiveLook::drawComboBox(juce::Graphics &g, int w, int h, bool, int, int, int, int, juce::ComboBox &) {

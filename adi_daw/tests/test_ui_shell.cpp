@@ -10968,9 +10968,41 @@ int main(int argc, char **argv) {
                       controls::stateOf(true, true, true, true) == ButtonState::On &&
                       controls::stateOf(true, false, false, true, Lit::Record) == ButtonState::OnRecord &&
                       controls::stateOf(true, false, false, true, Lit::Value) == ButtonState::OnValue &&
-                      controls::stateOf(true, true, true, false) == ButtonState::Disabled,
+                      controls::stateOf(false, true, true, false) == ButtonState::Disabled &&
+                      controls::stateOf(true, true, true, false) == ButtonState::DisabledOn,
                   "a button's state: rest, pointer over, pressed, on (in the accent, the record's red or the value's "
-                  "blue), disabled");
+                  "blue), disabled, and disabled while on");
+            // A disabled switch that is on still reads as on (a Settings switch of another scope).
+            {
+                juce::Image off(juce::Image::ARGB, 40, 20, true, juce::SoftwareImageType{}), on = off.createCopy();
+                {
+                    juce::Graphics g(off);
+                    controls::button(g, {0, 0, 40, 20}, ButtonState::Disabled);
+                }
+                {
+                    juce::Graphics g(on);
+                    controls::button(g, {0, 0, 40, 20}, ButtonState::DisabledOn);
+                }
+                check(off.getPixelAt(20, 3) != on.getPixelAt(20, 3), "a disabled switch on and off look apart");
+            }
+            // A Solo made in one theme is drawn in the next theme's blue: its kind is its own, not its colour.
+            {
+                juce::TextButton solo("S");
+                solo.setLookAndFeel(&look::liveLook());
+                solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+                solo.getProperties().set("adi.lit", "value");
+                solo.setToggleState(true, juce::dontSendNotification);
+                solo.setSize(30, 20);
+                look::apply(ThemeId::Light, DensityId::Compact);
+                juce::Image shot(juce::Image::ARGB, 30, 20, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(shot);
+                    solo.paintEntireComponent(g, true);
+                }
+                check(shot.getPixelAt(15, 3) == look::value, "a lit Solo takes the theme's value blue after a theme change");
+                look::apply(ThemeId::Dark, DensityId::Compact);
+                solo.setLookAndFeel(nullptr);
+            }
             check(controls::labelColour(ButtonState::On) == look::ink && controls::labelColour(ButtonState::OnRecord) == look::ink &&
                       controls::labelColour(ButtonState::Rest) == look::text &&
                       controls::labelColour(ButtonState::Disabled) == look::textFaint,
@@ -11067,6 +11099,8 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat().writeImageToStream(sheet, out);
             }
         }
+        // Back to a density the settings must move, so the check below tests it.
+        look::apply(ThemeId::MixView, DensityId::Open);
         // The settings choose them: the registry's word for the theme, the density's key once it is there.
         std::string why;
         settings.set("lookfeel.theme", std::string("light"), {}, why);

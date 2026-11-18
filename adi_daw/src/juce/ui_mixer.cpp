@@ -48,9 +48,21 @@ void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label,
 }
 // Live's monitoring switch: In, Auto (lit) and Off, one of three (language.png part D) across the
 // span its three boxes took (16, 23 and 19 wide, `gap` apart).
-void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
+const juce::StringArray &monitorLabels() {
     static const juce::StringArray labels{"In", "Auto", "Off"};
-    controls::oneOf(g, {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f}, labels, 1);
+    return labels;
+}
+juce::Rectangle<float> monitorBox(float x, float y, float gap) noexcept {
+    return {x, y, 16.f + 23.f + 19.f + 2 * gap, 13.f};
+}
+void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
+    controls::oneOf(g, monitorBox(x, y, gap), monitorLabels(), 1);
+}
+// Where In and Auto are drawn, together: the cells the one-of gives them.
+bool onInOrAuto(float x, float y, float gap, juce::Point<int> at) {
+    const auto box = monitorBox(x, y, gap);
+    const auto in = controls::oneOfCell(box, monitorLabels(), 0), automatic = controls::oneOfCell(box, monitorLabels(), 1);
+    return in.getUnion(automatic).contains(at.toFloat());
 }
 } // namespace
 double meterDepth(double db) noexcept {
@@ -223,8 +235,10 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     }
     // Live's switches when on: the activator orange, Solo blue, Arm red.
     solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+    solo.getProperties().set("adi.lit", "value");
     solo.getProperties().set(kHalfLit, false);
     arm.setColour(juce::TextButton::buttonOnColourId, look::record);
+    arm.getProperties().set("adi.lit", "record");
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
@@ -652,16 +666,16 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(4, "", false);
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
-    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut)
-    // has In and Auto at x 4 and 23, y kMixerTop + 59; the track controls' column (paintInOut) at x 5
-    // and 27, y 37.
+    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut,
+    // at x 4, y kMixerTop + 59, its boxes 3 apart) and the track controls' column (paintInOut, at x 5,
+    // y 37, 6 apart), each in the cells the one-of gives In and Auto.
     if (kind_ == "master" || kind_ == "return" || kind_ == "group")
         return false;
     if (panel_.vertical())
-        return io_ > 0 && juce::Rectangle<int>(4, kMixerTop + 59, 16 + 3 + 23, 13).contains(at);
+        return io_ > 0 && onInOrAuto(4.f, static_cast<float>(kMixerTop + 59), 3, at);
     if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
         return false;
-    return juce::Rectangle<int>(5, 37, 16 + 6 + 23, 13).contains(at);
+    return onInOrAuto(5.f, 37.f, 6, at);
 }
 juce::PopupMenu MixerStrip::monitorMenu() {
     juce::PopupMenu menu;

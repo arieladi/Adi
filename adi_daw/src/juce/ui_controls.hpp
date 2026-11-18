@@ -11,8 +11,9 @@
 #include <optional>
 #include <utility>
 namespace adi::ui::controls {
-// A button's state, as part B shows them left to right.
-enum class ButtonState { Rest, Over, Pressed, On, OnRecord, OnValue, Disabled };
+// A button's state, as part B shows them left to right; and disabled while on, its lit colour dimmed
+// (a Settings switch of another scope).
+enum class ButtonState { Rest, Over, Pressed, On, OnRecord, OnValue, Disabled, DisabledOn };
 // The state from what JUCE knows: lit (and how), the pointer over it, pressed, enabled.
 enum class Lit { Accent, Record, Value };
 ButtonState stateOf(bool on, bool over, bool down, bool enabled, Lit lit = Lit::Accent) noexcept;

@@ -18,18 +18,25 @@ void stroke(juce::Graphics &g, juce::Point<float> c, float r, float from, float 
     g.strokePath(arc, juce::PathStrokeType(width, juce::PathStrokeType::curved, juce::PathStrokeType::butt));
 }
 void label(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &text, juce::Colour colour, float size,
-           bool strong, juce::Justification where = juce::Justification::centred) {
+           bool strong, juce::Justification where = juce::Justification::centred, bool cut = false) {
     if (text.isEmpty())
         return;
     g.setColour(colour);
     g.setFont(look::font(size, strong));
+    if (cut) {
+        // Cut at the box's edge, as Live cuts "All Channe" (Live 12 manual, Figure 6.1): no ellipsis.
+        juce::Graphics::ScopedSaveState keep(g);
+        g.reduceClipRegion(r.toNearestInt());
+        g.drawText(text, r, where, false);
+        return;
+    }
     g.drawFittedText(text, r.toNearestInt(), where, 1, 1.f);
 }
 constexpr float kKnobStart = -135.f, kKnobEnd = 135.f;
 } // namespace
 ButtonState stateOf(bool on, bool over, bool down, bool enabled, Lit lit) noexcept {
     if (!enabled)
-        return ButtonState::Disabled;
+        return on ? ButtonState::DisabledOn : ButtonState::Disabled;
     if (on)
         return lit == Lit::Record ? ButtonState::OnRecord : lit == Lit::Value ? ButtonState::OnValue : ButtonState::On;
     if (down)
@@ -44,6 +51,8 @@ juce::Colour labelColour(ButtonState state) noexcept {
         return look::ink;
     case ButtonState::Disabled:
         return look::textFaint;
+    case ButtonState::DisabledOn:
+        return look::ink.withMultipliedAlpha(0.6f);
     case ButtonState::Rest:
     case ButtonState::Over:
     case ButtonState::Pressed:
@@ -78,6 +87,10 @@ void button(juce::Graphics &g, juce::Rectangle<float> r, ButtonState state, cons
     case ButtonState::Disabled:
         fill = look::buttonDisabled;
         edge = look::buttonDisabledEdge;
+        break;
+    case ButtonState::DisabledOn:
+        fill = look::accent.withMultipliedAlpha(0.45f);
+        edged = false;
         break;
     case ButtonState::Rest:
         break;
@@ -115,6 +128,9 @@ void roundButton(juce::Graphics &g, juce::Rectangle<float> r, ButtonState state)
     case ButtonState::Disabled:
         fill = look::buttonDisabled;
         edge = look::buttonDisabledEdge;
+        break;
+    case ButtonState::DisabledOn:
+        fill = edge = look::accent.withMultipliedAlpha(0.45f);
         break;
     case ButtonState::Rest:
         break;
@@ -206,7 +222,7 @@ void chooser(juce::Graphics &g, juce::Rectangle<float> r, const juce::String &te
     g.setColour(look::buttonEdge);
     g.drawRoundedRectangle(r.reduced(look::hairline / 2), look::radiusBox, look::hairline);
     label(g, r.withTrimmedLeft(6.f).withTrimmedRight(16.f), text, enabled ? look::text : look::textDim, fontSize, false,
-          juce::Justification::centredLeft);
+          juce::Justification::centredLeft, true);
     juce::Path arrow;
     const float ax = r.getRight() - 12.f, ay = r.getCentreY() - 2.f;
     arrow.startNewSubPath(ax, ay);
