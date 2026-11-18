@@ -32,8 +32,9 @@ class Core {
     // the callback; this is not the currently admitted/reported latency.
     std::int32_t maximumLatencySamples() const noexcept;
     LatencyChange pendingLatencyChange() const noexcept;
-    // Single audio publisher, metadata only. Keep passing the latest settings
-    // when an older offered plan is awaiting admission; that offer is immutable.
+    // Call on the same serialized publisher as beginBlock/process. A return
+    // to the active plan can withdraw an unused latency offer. A serial owner
+    // holding an offer pins the child settings until the graph admits it.
     bool requestConfiguration(const Settings &) noexcept;
     // One audio publisher. physicalBlock=0 starts an independent callback.
     BlockContext beginBlock(std::uint64_t physicalBlock, std::int32_t configuredLatency,
