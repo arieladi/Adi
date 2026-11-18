@@ -346,6 +346,14 @@ std::optional<mix::eq::Settings> publishedMixEqSettings(std::span<const panel::R
     return settings(values);
 }
 
+std::optional<MixEqCompanionEdit> mixEqNodeValue(std::size_t band, EqNodeAxis axis, float value) {
+    if (band >= q::bandCount || !std::isfinite(value)) return {};
+    const auto i = globals + band * legacyBandFields + (axis == EqNodeAxis::Frequency ? Frequency : Gain);
+    const auto &range = spec(i);
+    const auto n = normalized(range, std::clamp(value, range.low, range.high));
+    return MixEqCompanionEdit{std::to_string(i), ParamValue::withReal(n, physical(i, n))};
+}
+
 std::vector<MixEqCompanionEdit> mixEqCompanionEdits(const DeviceInstance& device,const std::string& id,
                                                  const ParamValue& desired) {
     const auto* info=mix::functionForReference(device.identity().format,device.identity().uid);

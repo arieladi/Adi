@@ -111,6 +111,12 @@ class DevicePanelView final : public juce::Component {
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
+    bool pressEqGraph(juce::Point<float>);
+    bool dragEqHandle(juce::Point<float>);
+    void releaseEqHandle();
     void visibilityChanged() override;
     const mix::FunctionInfo *nativeFunction() const noexcept;
     std::uint64_t presentedInstance() const noexcept;
@@ -185,6 +191,8 @@ class DevicePanelView final : public juce::Component {
     std::unique_ptr<EqPreview> eqPreview_;
     void updateEqPreview(const DevicePanelData &);
     juce::Rectangle<float> eqPreviewBounds() const;
+    int eqBandAt(juce::Point<float>) const;
+    void drawEqNodes(juce::Graphics &, juce::Rectangle<float>) const;
     void layoutCompactControls(int top);
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;

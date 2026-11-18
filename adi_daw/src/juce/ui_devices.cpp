@@ -239,11 +239,51 @@ void SampleTile::itemDropped(const SourceDetails &details) {
     if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
         drop(files[0]);
 }
+namespace {
+using NodeAxis = device::EqNodeAxis;
+bool nodeHasGain(mix::eq::Shape shape) {
+    using S = mix::eq::Shape;
+    return shape == S::Bell || shape == S::LowShelf || shape == S::HighShelf ||
+           shape == S::TiltShelf || shape == S::FlatTilt || shape == S::FlatGain;
+}
+constexpr float eqDbSpan = 36.f;
+juce::Point<float> nodePosition(const mix::eq::BandSettings &band, juce::Rectangle<float> graph) {
+    const auto fraction = std::clamp(std::log(band.frequencyHz / 10.f) / std::log(3000.f), 0.f, 1.f);
+    const auto gain = nodeHasGain(band.shape) ? band.gainDb : 0.f;
+    return {graph.getX() + fraction * graph.getWidth(),
+            std::clamp(graph.getCentreY() - gain * graph.getHeight() / eqDbSpan, graph.getY(), graph.getBottom())};
+}
+juce::Rectangle<float> nodeHandle(juce::Point<float> node, juce::Rectangle<float> graph, NodeAxis axis) {
+    constexpr float w = 23.f, h = 13.f;
+    const float x = node.x + ((node.x + w + 8.f <= graph.getRight()) ? 7.f : -w - 7.f);
+    const float y = std::clamp(node.y - h, graph.getY(), graph.getBottom() - 2.f * h);
+    return {x, y + (axis == NodeAxis::Gain ? h : 0.f), w, h};
+}
+}
+
 struct DevicePanelView::EqPreview {
     std::shared_ptr<const std::vector<panel::Record>> records;
     std::optional<mix::eq::Settings> settings;
     double sampleRate = 0;
     std::array<juce::Path, 5> paths;
+    int hovered = -1;
+    struct Edit {
+        std::size_t band;
+        std::uint64_t instance;
+        NodeAxis axis;
+        juce::Point<float> start;
+        juce::Rectangle<float> graph;
+        float origin, current;
+    };
+    std::optional<Edit> edit;
+    mix::eq::BandSettings displayedBand(std::size_t i) const {
+        auto band = settings->bands[i];
+        if (edit && edit->band == i) {
+            if (edit->axis == NodeAxis::Frequency) band.frequencyHz = edit->current;
+            else band.gainDb = edit->current;
+        }
+        return band;
+    }
 };
 void DevicePanelView::updateEqPreview(const DevicePanelData &d) {
     if (!mixCard_ || !eqPresentation(d)) return;
@@ -277,6 +317,135 @@ juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
     const auto remaining = std::max(0, getHeight() - kTitleHeight - 5);
     const int h = getHeight() < 144 ? remaining : std::min(86, remaining / 2);
     return juce::Rectangle<int>(5, kTitleHeight + 1, std::max(0, getWidth() - 10), h).toFloat();
+}
+
+int DevicePanelView::eqBandAt(juce::Point<float> p) const {
+    const auto graph = eqPreviewBounds();
+    if (getHeight() < 144 || graph.isEmpty() || !graph.expanded(4.f).contains(p) || strip.folded(id)) return -1;
+    int hit = -1;
+    float distance = 7.f;
+    const auto &bands = eqPreview_->settings->bands;
+    for (std::size_t i = 0; i < bands.size(); ++i) {
+        if (bands[i].status == mix::eq::Status::Off) continue;
+        const auto d = nodePosition(bands[i], graph).getDistanceFrom(p);
+        if (d < distance || (d == distance && static_cast<int>(i) == selectedBand_)) {
+            distance = d;
+            hit = static_cast<int>(i);
+        }
+    }
+    if (hit < 0 && selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < bands.size()) {
+        const auto &b = bands[static_cast<std::size_t>(selectedBand_)];
+        const auto point = nodePosition(b, graph);
+        if (b.status != mix::eq::Status::Off &&
+            ((b.shape != mix::eq::Shape::FlatGain && nodeHandle(point, graph, NodeAxis::Frequency).contains(p)) ||
+             (nodeHasGain(b.shape) && nodeHandle(point, graph, NodeAxis::Gain).contains(p)))) return selectedBand_;
+    }
+    return hit;
+}
+void DevicePanelView::drawEqNodes(juce::Graphics &g, juce::Rectangle<float> graph) const {
+    if (getHeight() < 144 || strip.folded(id)) return;
+    const auto &preview = *eqPreview_;
+    const auto &bands = preview.settings->bands;
+    for (std::size_t i = 0; i < bands.size(); ++i) {
+        const auto band = preview.displayedBand(i);
+        if (band.status == mix::eq::Status::Off) continue;
+        const auto p = nodePosition(band, graph);
+        const auto route = static_cast<std::size_t>(band.route);
+        const auto colour = route == 0 ? look::accent : look::trackColour(route);
+        auto dot = juce::Rectangle<float>{8.f, 8.f}.withCentre(p);
+        g.setColour(band.status == mix::eq::Status::Bypass ? look::panel : colour);
+        g.fillEllipse(dot);
+        g.setColour(static_cast<int>(i) == selectedBand_ ? look::text : colour);
+        g.drawEllipse(dot, 1.f);
+    }
+    if (selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < bands.size()) {
+        const auto &selected = bands[static_cast<std::size_t>(selectedBand_)];
+        if (selected.status != mix::eq::Status::Off) {
+            const auto node = nodePosition(preview.displayedBand(static_cast<std::size_t>(selectedBand_)), graph);
+            for (const auto axis : {NodeAxis::Frequency, NodeAxis::Gain}) {
+                if ((axis == NodeAxis::Gain && !nodeHasGain(selected.shape)) ||
+                    (axis == NodeAxis::Frequency && selected.shape == mix::eq::Shape::FlatGain)) continue;
+                const auto box = nodeHandle(node, graph, axis);
+                g.setColour(look::button); g.fillRoundedRectangle(box.reduced(.4f), 2.f);
+                g.setColour(look::text); g.setFont(look::font(10.f));
+                g.drawText(axis == NodeAxis::Frequency ? "Hz" : "dB", box, juce::Justification::centred);
+            }
+        }
+    }
+    const int read = preview.edit ? static_cast<int>(preview.edit->band) : preview.hovered;
+    if (read < 0 || static_cast<std::size_t>(read) >= bands.size() || bands[static_cast<std::size_t>(read)].status == mix::eq::Status::Off) return;
+    const auto band = preview.displayedBand(static_cast<std::size_t>(read));
+    const auto p = nodePosition(band, graph);
+    juce::String label = juce::String(band.frequencyHz, band.frequencyHz < 100.f ? 2 : 1) + " Hz";
+    if (nodeHasGain(band.shape)) label += "   " + juce::String(band.gainDb, 2) + " dB";
+    label += "   Q " + juce::String(band.q, 2);
+    const auto width = std::min(173.f, graph.getWidth());
+    const float left = std::clamp(p.x - width * .5f, graph.getX(), graph.getRight() - width);
+    const float top = p.y >= graph.getCentreY() ? graph.getY() : graph.getBottom() - 17.f;
+    juce::Rectangle<float> rect{left, top, width, 17.f};
+    g.setColour(look::panel); g.fillRoundedRectangle(rect, 2.f);
+    g.setColour(look::text); g.setFont(look::font(10.f));
+    g.drawText(label, rect, juce::Justification::centred);
+}
+
+bool DevicePanelView::pressEqGraph(juce::Point<float> point) {
+    const auto graph = eqPreviewBounds();
+    if (getHeight() < 144 || graph.isEmpty() || !graph.expanded(4.f).contains(point) ||
+        strip.folded(id) || !validTarget()) return false;
+    if (selectedBand_ >= 0 && static_cast<std::size_t>(selectedBand_) < mix::eq::bandCount) {
+        const auto bandIndex = static_cast<std::size_t>(selectedBand_);
+        const auto band = eqPreview_->settings->bands[bandIndex];
+        const auto node = nodePosition(band, graph);
+        for (const auto axis : {NodeAxis::Frequency, NodeAxis::Gain}) {
+            if (band.status == mix::eq::Status::Off ||
+                (axis == NodeAxis::Gain && !nodeHasGain(band.shape)) ||
+                (axis == NodeAxis::Frequency && band.shape == mix::eq::Shape::FlatGain) ||
+                !nodeHandle(node, graph, axis).contains(point)) continue;
+            const auto origin = axis == NodeAxis::Frequency ? band.frequencyHz : band.gainDb;
+            const auto mapped = device::mixEqNodeValue(bandIndex, axis, origin);
+            const auto safe = SafePointer<DevicePanelView>(this);
+            if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Begin, mapped->value.normalized) ||
+                !safe || !editingBegan_) return false;
+            eqPreview_->edit.emplace(EqPreview::Edit{bandIndex, presentedInstance(), axis, point, graph, origin, origin});
+            repaint(graph.toNearestInt());
+            return true;
+        }
+    }
+    const auto hit = eqBandAt(point);
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (hit < 0 || !chooseFunctionBand(hit) || !safe) return false;
+    eqPreview_->hovered = hit;
+    repaint(graph.toNearestInt());
+    return true;
+}
+bool DevicePanelView::dragEqHandle(juce::Point<float> point) {
+    if (!eqPreview_ || !eqPreview_->edit) return false;
+    const auto e = *eqPreview_->edit;
+    if (presentedInstance() != e.instance || getHeight() < 144 || eqPreviewBounds().isEmpty() ||
+        strip.folded(id) || eqPreview_->settings->bands[e.band].status == mix::eq::Status::Off) {
+        releaseEqHandle();
+        return false;
+    }
+    const float dx = (point.x - e.start.x) / e.graph.getWidth();
+    const float dy = (point.y - e.start.y) / e.graph.getHeight();
+    const auto value = e.axis == NodeAxis::Frequency ? std::clamp(e.origin * std::pow(3000.f, dx), 10.f, std::max(30000.f, e.origin))
+                                                     : std::clamp(e.origin - dy * eqDbSpan, -30.f, 30.f);
+    const auto mapped = device::mixEqNodeValue(e.band, e.axis, value);
+    const auto safe = SafePointer<DevicePanelView>(this);
+    if (!mapped || !editFunctionParameter(mapped->id, engine::ParamEventKind::Value, mapped->value.normalized)) {
+        if (safe) releaseEqHandle();
+        return false;
+    }
+    if (!safe || !eqPreview_->edit) return false;
+    eqPreview_->edit->current = value;
+    repaint(e.graph.toNearestInt());
+    return true;
+}
+void DevicePanelView::releaseEqHandle() {
+    if (!eqPreview_ || !eqPreview_->edit) return;
+    eqPreview_->edit.reset();
+    repaint(eqPreviewBounds().toNearestInt());
+    endFunctionParameter();
 }
 
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d, bool mixCard)
@@ -370,6 +539,7 @@ void DevicePanelView::cancelInteractions() {
     // and completion must neither mutate this target nor end a newly acquired capture.
     ++menuEpoch_;
     dragTarget_.reset();
+    if (eqPreview_) { eqPreview_->edit.reset(); eqPreview_->hovered = -1; }
     const auto safe = SafePointer<DevicePanelView>(this);
     endFunctionParameter();
     if (!safe) return;
@@ -704,7 +874,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
                                    : juce::String("This device is unavailable."));
     if (nativeFunction()) hint += "\nNative Mix View function; drag the name to move it within this channel.";
     if (mixCard_ && eqPresentation(d))
-        hint += "\nThe curve shows the static EQ design. L/R and Mid/Side bands use separate traces.";
+        hint += "\nSelect a band, then drag its frequency or gain handle.";
     if (title.getTooltip() != hint) title.setTooltip(hint);
     const auto activatorHint = juce::String(nativeFunction() ? "Remove this Mix View function. Undo restores its settings."
                                                           : "Switches the device on or off.");
@@ -916,13 +1086,14 @@ void DevicePanelView::paint(juce::Graphics &g) {
             g.setColour(look::field);
             g.drawHorizontalLine(juce::roundToInt(graph.getCentreY()), graph.getX(), graph.getRight());
             const juce::AffineTransform transform{graph.getWidth(), 0.f, graph.getX(), 0.f,
-                                                  -graph.getHeight() / 36.f, graph.getCentreY()};
+                                                  -graph.getHeight() / eqDbSpan, graph.getCentreY()};
             for (std::size_t r = 0; r < eqPreview_->paths.size(); ++r) {
                 const auto &path = eqPreview_->paths[r];
                 if (path.isEmpty()) continue;
                 g.setColour(r == 0 ? look::accent : look::trackColour(r));
                 g.strokePath(path, juce::PathStrokeType(1.5f), transform);
             }
+            drawEqNodes(g, graph);
         }
     }
     // Live's fold switch beside the activator.
@@ -985,9 +1156,27 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
         contextMenu(e.getScreenPosition());
     else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
         strip.fold(id);
+    else if (e.eventComponent == this && e.mods.isLeftButtonDown())
+        pressEqGraph(e.position);
 }
 juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
+void DevicePanelView::mouseMove(const juce::MouseEvent &e) {
+    if (!eqPreview_ || eqPreview_->edit) return;
+    const auto hovered = eqBandAt(e.position);
+    if (eqPreview_->hovered != hovered) {
+        eqPreview_->hovered = hovered;
+        repaint(eqPreviewBounds().toNearestInt());
+    }
+}
+void DevicePanelView::mouseExit(const juce::MouseEvent &) {
+    if (eqPreview_ && eqPreview_->hovered >= 0) {
+        eqPreview_->hovered = -1;
+        repaint(eqPreviewBounds().toNearestInt());
+    }
+}
+void DevicePanelView::mouseUp(const juce::MouseEvent &) { releaseEqHandle(); }
 void DevicePanelView::mouseDrag(const juce::MouseEvent &e) {
+    if (eqPreview_ && eqPreview_->edit) { dragEqHandle(e.position); return; }
     if (!nativeFunction() || dragTarget_ || e.getDistanceFromDragStart() < 4 || !e.mods.isLeftButtonDown() ||
         !(e.eventComponent == &title || (e.eventComponent == this && e.y < kTitleHeight))) return;
     auto *container = juce::DragAndDropContainer::findParentDragContainerFor(this);
