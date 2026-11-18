@@ -5,7 +5,7 @@
 # merges it. The PRs below N are then closed by close_landed.sh, not here.
 R=arieladi/Adi
 SP="$(cd "$(dirname "$0")" && pwd)"
-n=$1; rerun_done=""
+n=$1; rerun_done=""; cancel_rerun_done=""
 while :; do
   s=$(gh pr view $n --repo $R --json state --jq .state 2>/dev/null)
   [ "$s" = "MERGED" ] && { echo "$n already merged"; exit 0; }
@@ -14,8 +14,20 @@ while :; do
       | ($r | map(select(.conclusion==null or .conclusion=="")) | length) as $pending
       | ($r | map(select(.name!="matrix.name")) | map(select(.conclusion=="FAILURE" or .conclusion=="TIMED_OUT" or .conclusion=="STARTUP_FAILURE")) | map(.detailsUrl) | join(" ")) as $bad
       | ($r | map(select(.name!="matrix.name")) | group_by(.name) | map(select(any(.[]; .conclusion=="SUCCESS" or .conclusion=="SKIPPED"))) | length) as $ok
-      | "\($pending)\t\($bad)\t\($ok)"' 2>/dev/null) || { sleep 120; continue; }
+      | ($r | map(select(.name!="matrix.name")) | map(select(.conclusion=="CANCELLED")) | map(.detailsUrl) | join(" ")) as $cancelled
+      | "\($pending)\t\($bad)\t\($ok)\t\($cancelled)"' 2>/dev/null) || { sleep 120; continue; }
   p=$(printf '%s' "$j" | cut -f1); bad=$(printf '%s' "$j" | cut -f2); ok=$(printf '%s' "$j" | cut -f3)
+  cancelled=$(printf '%s' "$j" | cut -f4)
+  # A cancelled job (its time limit, or a runner taken away) has proved nothing: it is neither a pass
+  # nor a failure of the change. #637 merged on 18 November with its macOS window job cancelled at
+  # 15 minutes, because 20 others had passed. Rerun it once; a second cancellation stops the landing.
+  if [ -n "$cancelled" ] && [ "$p" = "0" ] && [ -z "$bad" ]; then
+    if [ -z "$cancel_rerun_done" ]; then
+      for r in $(echo "$cancelled" | tr ' ' '\n' | grep -oE "runs/[0-9]+" | cut -d/ -f2 | sort -u); do gh run rerun $r --repo $R --failed >/dev/null 2>&1 && echo "$(date -u +%H:%M) rerun $r (cancelled job)"; done
+      cancel_rerun_done=1; sleep 300; continue
+    fi
+    echo "STOP: $n has cancelled checks after a rerun: $cancelled"; exit 1
+  fi
   if [ -n "$bad" ] && [ "$p" = "0" ]; then
     infra=1; runs=""
     for url in $bad; do
