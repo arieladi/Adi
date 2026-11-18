@@ -142,6 +142,7 @@ int main() {
             "identity, actual latency and mixer metadata remain available without parameter materialization");
         int strip = 0, stack = 0;
         document->setParameterDemand(&strip, {10});
+        const auto firstPublication = document->parameterFeed().current();
         const auto first = requiredPanel(730, 730, "first demand");
         check(first.metadata && first.cachedRecords && first.parameters().size() == 730 && first.declarations().size() == 730 &&
             first.declared.empty() && first.records.empty() && first.parameterGroups.empty(),
@@ -152,10 +153,14 @@ int main() {
             "read-only fields and named menus survive without an unused aggregate Configure list");
         clearCounts();
         for (int tick = 20; tick < 25; ++tick) document->tick(tick);
+        check(document->parameterFeed().current() == firstPublication,
+              "idle native EQ and hidden sibling devices keep the same publication");
         check(requiredPanel(0, 0, "published identity").metadata == first.metadata && requiredPanel(0, 0, "published identity").cachedRecords == first.cachedRecords &&
             probes[10]->descriptors == 0 && probes[10]->texts == 0 && probes[10]->values == 5 * 730,
             "steady visible values reuse static metadata, immutable records and all unchanged text");
         probes[10]->normalized[2] = .6; document->tick(25);
+        check(document->parameterFeed().current() != firstPublication,
+              "a new audible parameter value publishes immediately");
         check(requiredPanel(0, 0, "published identity").metadata == first.metadata && requiredPanel(0, 0, "published identity").cachedRecords != first.cachedRecords &&
             probes[10]->texts == 1 && requiredPanel(0, 0, "published identity").parameters().at(2).playing == .6 && first.parameters().at(2).playing == .25,
             "one changed value formats once while retained publications remain immutable");
