@@ -462,6 +462,102 @@ std::vector<History::Branch> History::branches() const {
     return out;
 }
 
+History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t nowUtc,
+                                StoredRestore access) {
+    Result r;
+    if (!mutationAllowed(store_, r.error))
+        return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) {
+        r.error = navigation.status.message;
+        return r;
+    }
+    if (store_.readOnly()) {
+        r.error = "project is open read-only";
+        return r;
+    }
+    auto &db = store_.db();
+    try {
+        SQLite::Transaction txn(db);
+        // NULL is the original pre-edit state. Once roots are materialized its
+        // native address is the origin root, never a new head below a checkpoint.
+        if (!target && history_detail::hasStoredRoots(db)) {
+            target = history_detail::originRoot(db);
+            if (!target)
+                throw std::runtime_error("original history state is no longer retained");
+        }
+        auto boundary = [&](std::optional<std::int64_t> seq) {
+            if (!seq)
+                return;
+            SQLite::Statement row(db, "SELECT txn_id,tags,op_type FROM ops WHERE seq=?");
+            row.bind(1, *seq);
+            if (!row.executeStep() || row.getColumn(1).getString() == "ephemeral")
+                throw std::runtime_error("history target is not a retained edit boundary");
+            if (row.getColumn(2).getString() == "history.root") {
+                if (!history_detail::hasStoredRoots(db) ||
+                    !history_detail::storedRootHash(db, *seq))
+                    throw std::runtime_error("history target has no stored baseline metadata");
+                (void)history_detail::rootForPoint(db, seq);
+                return;
+            }
+            const auto group = txnOps(db, row.getColumn(0).getInt64());
+            if (group.empty() || group.back().seq != *seq)
+                throw std::runtime_error("history target splits an edit transaction");
+        };
+        const auto here = head();
+        boundary(here);
+        boundary(target);
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
+        if (here == target) {
+            r.ok = true;
+            return r;
+        }
+        OpContext ctx{store_, db};
+        detail::AppliedBatchBuilder applied(
+            store_, reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::HistoryMove,
+            here);
+        // Preserve the line beyond the current head too: it may contain undone
+        // work. Following redo from the destination preserves the same line
+        // without new metadata; otherwise keep an unheld departing tip once.
+        const auto tip = tipOf(db, here);
+        if (tip && tip != tipOf(db, target)) {
+            SQLite::Statement held(db,
+                                   "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
+            held.bind(1, *tip);
+            if (!held.executeStep()) {
+                SQLite::Statement keep(
+                    db, "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) "
+                        "VALUES('before history move',?,?,0,'system')");
+                keep.bind(1, *tip);
+                keep.bind(2, nowUtc);
+                keep.exec();
+            }
+        }
+        std::string error;
+        if (!moveBetween(ctx, here, target, r.opsApplied, error, &applied))
+            throw std::runtime_error(error);
+        if (!journal_.writeHeadSeq(target))
+            throw std::runtime_error("could not move the undo head");
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
+        txn.commit();
+        freeze::remember(store_);
+        r.ok = true;
+        delivery.publish();
+        return r;
+    } catch (const std::exception &error) {
+        r.error = error.what();
+        r.opsApplied = 0;
+        return r;
+    }
+}
+
 History::Result History::switchToBranch(std::int64_t branchId, StoredRestore access) {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
