@@ -3883,19 +3883,19 @@ bool AdiRootComponent::ImportPrompt::keyPressed(const juce::KeyPress &key) {
 void AdiRootComponent::ImportPrompt::paint(juce::Graphics &g) {
     // A panel in Live's look: its title bar, then the choices, then a line on where they live.
     g.setColour(look::panel);
-    g.fillRoundedRectangle(getLocalBounds().toFloat(), 5.f);
+    g.fillRoundedRectangle(getLocalBounds().toFloat(), look::radiusControl);
     g.setColour(look::field);
     g.fillRect(getLocalBounds().withHeight(24).reduced(1, 1));
     g.setColour(look::text);
-    g.setFont(look::font(13.f, true));
+    g.setFont(look::font(look::fontHeading, true));
     g.drawText(title_, getLocalBounds().withHeight(24).reduced(8, 0), juce::Justification::centredLeft);
-    g.setFont(look::font(11.f));
+    g.setFont(look::font(look::fontLabel));
     g.drawFittedText("All off by default. The last choices are kept; Settings > Editing > Audio import options "
                      "turns this prompt off.",
                      getLocalBounds().withTrimmedTop(122).withHeight(44).reduced(10, 0), juce::Justification::topLeft, 3,
                      1.0f);
     g.setColour(look::separator);
-    g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.f, 1.f);
+    g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), look::radiusControl, look::hairline);
 }
 void AdiRootComponent::ImportPrompt::resized() {
     auto r = getLocalBounds().withTrimmedTop(32).reduced(10, 0);
