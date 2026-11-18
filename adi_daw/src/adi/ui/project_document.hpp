@@ -30,6 +30,7 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
 // and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
 // a named snapshot instead, a point in the history that copies nothing.
+struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
     ~ProjectDocument() override;
@@ -221,6 +222,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;
     // Last, so its worker stops before anything else goes; it touches nothing of the above.
+    // Where the document's file is now, for the waveform worker: Save As moves it.
+    std::shared_ptr<WaveformSource> waveformSource_;
     WaveformCache waveforms_;
 };
 } // namespace adi::ui

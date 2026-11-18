@@ -10,7 +10,7 @@
 // - Open: the same panel with more room. The sheet's compressor gives the step: its panel 270 x 236
 //   becomes 316 x 290 (about 1.2), its type 9.5 becomes 11, its knob 11 becomes 16. Every other
 //   measure takes the same step of 1.2, rounded to the half point; win's drawing of the full set
-//   is asked for (DF-W28).
+//   is asked for (DF-W31).
 #pragma once
 #include <array>
 #include <string_view>

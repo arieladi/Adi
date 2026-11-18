@@ -3951,6 +3951,28 @@ void clipView(AppCommands &commands, const std::filesystem::path &dir, bool writ
     const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
     const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
 
+    // A MIDI clip shows its notes in the Arrangement (DF-W21): where a note sounds, the clip's body
+    // holds its bar; where none does, and in an empty clip, the body is plain.
+    {
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        const int top = laneTop(root, 1) + 14, bottom = laneTop(root, 1) + 44;
+        const auto marks = [&](std::int64_t tick) {
+            const int column = static_cast<int>(geo.x(tick));
+            int count = 0;
+            for (int y = top + 1; y < bottom; ++y)
+                count += image.getPixelAt(column, y) != image.getPixelAt(column, top) ? 1 : 0;
+            return count;
+        };
+        check(marks(bar + beat / 2) > 0 && marks(bar + beat + beat / 2) > 0 && marks(2 * bar + beat / 2) > 0,
+              "a MIDI clip draws a bar where each of its three notes sounds");
+        check(marks(bar + 3 * beat + beat / 2) == 0, "and nothing where no note sounds");
+        check(marks(4 * bar + beat / 2) == 0, "an empty MIDI clip's body is plain");
+    }
+
     // Hidden until asked for; the Device View is where it was.
     const auto deviceAlone = root.deviceArea();
     check(!root.state().clipView && root.clipArea().isEmpty() && !panel.isVisible() && !root.clipResizer.isVisible(),

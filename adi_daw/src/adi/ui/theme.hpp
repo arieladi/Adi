@@ -12,7 +12,7 @@
 //   the goldens drawn before them.
 // - Light and Mix View (darker, cooler): the sheet gives six swatches of each (window, panel,
 //   control, text, accent, value). Every other grey is placed on the same ramp as Dark's (the
-//   rule is in theme.cpp); they wait for win's drawing of the full set (DF-W28).
+//   rule is in theme.cpp); they wait for win's drawing of the full set (DF-W31).
 #pragma once
 #include <array>
 #include <cstdint>

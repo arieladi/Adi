@@ -9,7 +9,9 @@
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <map>
 #include <optional>
+#include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -326,6 +328,24 @@ class ArrangementCanvas final : public juce::Component,
     // drawn at `pos`.
     void paintWaveform(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                        float bottom) const;
+    // A MIDI clip's notes in its body, as Live draws them (manual 6.1: a clip shows what it holds): a bar for
+    // each note, the keys the clip uses spread over the body's height. Read through
+    // `engine::readClipDetails` on the message thread, once for each clip and document generation.
+    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
+                    float bottom) const;
+    struct ClipNotes {
+        struct Bar {
+            std::int64_t start = 0, duration = 0;
+            int key = 0;
+            bool active = true;
+        };
+        std::uint64_t readAt = 0; // the generation it was read at, plus one; 0 before the first read
+        bool midi = false;
+        std::int64_t startMarker = 0, loopStart = 0, loopLength = 0;
+        int low = 127, high = 0;
+        std::vector<Bar> bars;
+    };
+    mutable std::map<std::int64_t, ClipNotes> clipNotes_;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
