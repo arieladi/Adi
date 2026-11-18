@@ -115,14 +115,20 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     auto real = [&](const std::string &p) { return doc->session().instanceFor(id)->getParam(p).real; };
     check(std::abs(real("39") - 12.f*36.f/86.f) < .001 && std::abs(real("38") - 1000.) < .001 &&
           std::abs(real("14")) < .001, "gain handle edits only its band and axis");
-    check(doc->ops().undo().ok && doc->synchronise() && std::abs(real("39")) < .001 && real("34") == 2,
+    const auto undoGain = doc->ops().undo();
+    const bool gainSynced = doc->synchronise();
+    doc->tick(2);
+    check(undoGain.ok && gainSynced && std::abs(real("39")) < .001 && real("34") == 2,
           "one undo restores the whole dB drag and keeps band enabled");
     check(card.pressEqGraph(frequency) && card.dragEqHandle(frequency.translated(10.f, 10.f)) &&
           card.dragEqHandle(frequency.translated(25.f, 20.f)), "Hz handle accepts a continuous drag");
     card.releaseEqHandle();
     check(std::abs(real("38") - 1000. * std::pow(3000., 25./470.)) < .01 && std::abs(real("39")) < .001,
           "frequency drag follows the display log scale and authored parameter mapping");
-    check(doc->ops().undo().ok && doc->synchronise() && std::abs(real("38") - 1000.) < .01,
+    const auto undoFrequency = doc->ops().undo();
+    const bool frequencySynced = doc->synchronise();
+    doc->tick(3);
+    check(undoFrequency.ok && frequencySynced && std::abs(real("38") - 1000.) < .01,
           "one undo restores the frequency drag");
     check(card.pressEqGraph(gain), "a new gesture acquires the original target");
     valid = false;
