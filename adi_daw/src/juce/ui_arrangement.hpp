@@ -343,7 +343,7 @@ class ProjectViewButton final : public juce::Button {
 class ArrangementPlayhead final : public juce::Component {
   public:
     ArrangementPlayhead() { setInterceptsMouseClicks(false, false); }
-    void paint(juce::Graphics &g) override { g.fillAll(juce::Colour(0xffffd66b)); }
+    void paint(juce::Graphics &g) override { g.fillAll(look::dropTarget); }
 };
 // The Overview is the root's child, not the view's: Live draws it across the track
 // headers as well, up to the H and W buttons.

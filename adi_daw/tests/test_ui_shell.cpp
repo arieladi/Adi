@@ -10720,6 +10720,50 @@ int main(int argc, char **argv) {
               a.transport.play.glyph == BarItem::Glyph::Play,
           "the transport's buttons are Live's glyphs, named for the Info View");
     reference(a, "root-default", write);
+    // The theme and density tables (DF-W24). Dark is the default; Mid grey is the window as built
+    // before the sheets, value for value: a window made in it draws the golden drawn before them,
+    // pixel for pixel (root-default-midgrey.png is that golden, kept). Each other theme and Open
+    // draw a window too.
+    {
+        check(look::themeId() == ThemeId::Dark && look::densityId() == DensityId::Compact &&
+                  look::panel == juce::Colour(themeFor(ThemeId::Dark).panel) && look::controlBarHeight == 35,
+              "the window starts in Dark and Compact");
+        check(look::apply(ThemeId::MidGrey, DensityId::Compact) && look::panel == juce::Colour(0xff8f8f8f) &&
+                  look::liveLook().findColour(juce::ComboBox::backgroundColourId) == look::chooser,
+              "a theme set reaches the look:: colours and the JUCE controls' own");
+        AdiRootComponent grey(view, submitter, mailbox, commands, persistence, session, "grey");
+        grey.setSize(960, 540);
+        grey.frame();
+        reference(grey, "root-default-midgrey", write);
+        for (const auto id : {ThemeId::Light, ThemeId::MixView})
+            for (const auto density : kDensities) {
+                look::apply(id, density);
+                AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "other");
+                other.setSize(960, 540);
+                other.frame();
+                juce::Image image(juce::Image::ARGB, 960, 540, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    other.paintEntireComponent(g, true);
+                }
+                check(image.getPixelAt(2, 300) == look::frame || image.getPixelAt(2, 300) == look::panel ||
+                          image.getPixelAt(2, 300) == look::band,
+                      "another theme and density draw the window in their own colours");
+                check(other.transport.getHeight() == look::controlBarHeight,
+                      "the Control Bar takes the density's height");
+            }
+        check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
+        // The settings choose them: the registry's word for the theme, the density's key once it is there.
+        std::string why;
+        settings.set("lookfeel.theme", std::string("light"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Light && look::densityId() == DensityId::Compact,
+              "lookfeel.theme \"light\" chooses Light; no density key reads as Compact");
+        settings.set("lookfeel.theme", std::string("os"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Dark, "and \"os\", the registry's default, reads as Dark");
+        look::apply(ThemeId::Dark, DensityId::Compact);
+    }
     check(submitter.submit(track(1)).ok, "commit between window frames");
     const auto before = b.generation();
     a.frame();

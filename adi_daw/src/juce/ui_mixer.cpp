@@ -42,7 +42,7 @@ constexpr std::array<std::pair<double, double>, 7> kScale{
 void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
     look::box(g, r, look::chooser);
     g.setColour(enabled ? look::text : look::textDim);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
     if (*label != 0)
         look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
@@ -56,7 +56,7 @@ void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
         const bool on = std::string_view(label) == "Auto";
         look::box(g, r, on ? look::accent : look::button);
         g.setColour(look::text);
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(look::fontBody));
         g.drawText(label, r, juce::Justification::centred);
         x += static_cast<float>(width) + gap;
     }
@@ -95,12 +95,12 @@ PeakHold::PeakHold() : juce::Button("Peak Level") {
 void PeakHold::paintButton(juce::Graphics &g, bool over, bool) {
     // Live's pill: light, red once the track has clipped.
     const auto r = getLocalBounds().toFloat().reduced(0.5f);
-    g.setColour(held >= 1 ? juce::Colour(0xffff3a34) : over ? look::chooser.brighter(0.1f) : look::chooser);
+    g.setColour(held >= 1 ? look::record : over ? look::chooser.brighter(0.1f) : look::chooser);
     g.fillRoundedRectangle(r, r.getHeight() / 2);
     g.setColour(look::outline);
     g.drawRoundedRectangle(r, r.getHeight() / 2, 1.f);
     g.setColour(look::text);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawText(held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1), r,
                juce::Justification::centred);
 }
@@ -115,7 +115,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         addAndMakeVisible(peakHold);
-        active.getProperties().set("live.font", 15.0); // Live's big number in its mixer
+        active.getProperties().set("live.font", static_cast<double>(look::fontTitle)); // Live's big number in its mixer
     } else {
         // Live's value boxes: the number in the box, the volume's filled in blue.
         for (auto *s : {&volume, &pan}) {
@@ -239,7 +239,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // Live's switches when on: the activator orange, Solo blue, Arm red.
     solo.setColour(juce::TextButton::buttonOnColourId, look::value);
     solo.getProperties().set(kHalfLit, false);
-    arm.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffff3a34));
+    arm.setColour(juce::TextButton::buttonOnColourId, look::record);
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
     // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
@@ -259,7 +259,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     prePost.setColour(juce::TextButton::buttonOnColourId, look::accent);
     prePost.setMouseClickGrabsKeyboardFocus(false);
     prePost.getProperties().set("live.focusRing", true);
-    prePost.getProperties().set("live.font", 11.0);
+    prePost.getProperties().set("live.font", static_cast<double>(look::fontLabel));
     prePost.onClick = [this] { throwPrePost(track_); };
     addChildComponent(prePost);
 }
@@ -543,7 +543,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             // section's room, untitled, so the mixers line up.
             g.fillRect(0, mixerTop() - 2, w, 2);
             g.setColour(look::text);
-            g.setFont(look::font(11.5f));
+            g.setFont(look::font(look::fontBody));
             if (!sends_.empty() || !returnSwitches_.empty())
                 g.drawText("Sends", 46, sendsTop() + 6, w - 50, 15, juce::Justification::centredRight);
             for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
@@ -564,7 +564,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             g.setColour(look::separator);
             g.fillRect(0, top, w, 2);
             g.setColour(look::text);
-            g.setFont(look::font(11.5f, true));
+            g.setFont(look::font(look::fontBody, true));
             g.drawText("Track Delay", 5, top + 4, w - 10, 13, juce::Justification::centredLeft);
             paintDelayUnit(g);
         }
@@ -579,7 +579,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             }
             if (const auto *track = panel_.root.reader().findTrack(track_)) {
                 g.setColour(look::text);
-                g.setFont(look::font(11.5f, true));
+                g.setFont(look::font(look::fontBody, true));
                 g.drawText(juce::String::fromUTF8(displayName(track->name, position_).c_str()), 4, 0, w - 8,
                            17, juce::Justification::centredLeft);
             }
@@ -614,7 +614,7 @@ void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
     const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
     look::box(g, r, look::accent);
     g.setColour(look::text);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawText("ms", r, juce::Justification::centred);
 }
 void MixerStrip::commitDelay() {
@@ -709,7 +709,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     const int top = kMixerTop, w = getWidth() - 2;
     auto label = [&](int y, const char *text) {
         g.setColour(look::text);
-        g.setFont(look::font(11.5f, true));
+        g.setFont(look::font(look::fontBody, true));
         g.drawText(text, 5, top + y, w - 10, 13, juce::Justification::centredLeft);
     };
     auto chooser = [&](int y, const char *text, bool enabled) {
@@ -752,9 +752,9 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
     for (const auto &channel : {left, right}) {
         g.setColour(look::display);
         g.fillRect(channel);
-        g.setColour(juce::Colour(0xff4fd84f));
+        g.setColour(look::meterLevel);
         g.fillRect(channel.withTrimmedTop(rmsTop));
-        g.setColour(peak_ >= 1 ? juce::Colour(0xffff3a34) : juce::Colour(0xffdcdcdc));
+        g.setColour(peak_ >= 1 ? look::record : look::meterPeak);
         if (peak_ > 1.e-6f)
             g.fillRect(channel.getX(), channel.getY() + peakTop, channel.getWidth(), 1);
     }
@@ -762,7 +762,7 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
         return;
     // Live's scale beside the fader: 0 to 60 dB every 12, every 6 on a tall strip.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     for (int db = 0; db >= -60; db -= tall ? 6 : 12) {
         const int y = area.getY() + static_cast<int>(height * meterDepth(db));
         g.setColour(look::text);
@@ -875,7 +875,7 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
         button->setColour(juce::TextButton::buttonColourId, look::button);
         button->setColour(juce::TextButton::buttonOnColourId, look::accent);
         button->setMouseClickGrabsKeyboardFocus(false);
-        button->getProperties().set("live.font", 11.0);
+        button->getProperties().set("live.font", static_cast<double>(look::fontLabel));
         button->onClick = [this, index] {
             if (index < returns_.size())
                 throwPrePost(returns_[index]);
@@ -1244,7 +1244,7 @@ void MixerPanel::paintTop(juce::Graphics &g) const {
     g.setColour(look::band);
     g.fillRect(0, 0, getWidth(), rowsBand().getStart());
     // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
-    g.setFont(look::font(12.f));
+    g.setFont(look::font(look::fontField));
     for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
         const juce::Rectangle<float> r(static_cast<float>(x), 4, 18, 15);
         look::box(g, r, look::chooser);
@@ -1285,7 +1285,7 @@ FlipButton::FlipButton() : juce::Button("Flip Sides") {
 }
 void FlipButton::paintButton(juce::Graphics &g, bool over, bool down) {
     // Two small arrows, one each way, as Bitwig draws its own.
-    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
     const auto r = getLocalBounds().toFloat().reduced(3.f, 2.f);
     const float upper = r.getY() + r.getHeight() * .3f, lower = r.getY() + r.getHeight() * .7f;
     juce::Path arrows;
@@ -1302,7 +1302,7 @@ TrackHeightButton::TrackHeightButton() : juce::Button("Use Large Track Height") 
     setMouseClickGrabsKeyboardFocus(false);
 }
 void TrackHeightButton::paintButton(juce::Graphics &g, bool over, bool down) {
-    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
     const auto r = getLocalBounds().toFloat().reduced(3.f, 3.f);
     const float w = (r.getWidth() - 2.f) / 2.f, pitch = r.getHeight() / 3.f;
     for (int column = 0; column < 2; ++column)
@@ -1319,7 +1319,7 @@ SelectorButton::SelectorButton(const juce::String &letters, const juce::String &
 void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
     const auto r = getLocalBounds().toFloat();
     const bool on = getToggleState();
-    g.setColour(on ? look::accent : juce::Colour(0xff0a0a0a));
+    g.setColour(on ? look::accent : look::selectorOff);
     g.fillEllipse(r);
     g.setColour(on ? look::text : look::textOnBand);
     g.setFont(look::font(getButtonText().length() > 1 ? 7.f : 9.f, true));
@@ -1354,7 +1354,7 @@ void SideStrip::paint(juce::Graphics &g) {
     // Arrangement's is lit.
     for (int i = 0; i < 2; ++i) {
         const juce::Rectangle<float> r(4.f, 3.f + 22.f * static_cast<float>(i), 19, 19);
-        g.setColour(juce::Colour(0xff3c3c3c));
+        g.setColour(look::selectorEdge);
         g.fillEllipse(r);
         g.setColour(i == 0 ? look::accent : look::panel);
         for (int line = 0; line < 3; ++line)

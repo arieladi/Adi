@@ -95,8 +95,8 @@ void ArrangementOverview::paint(juce::Graphics &g) {
                        line);
         y += row;
     }
-    g.setColour(juce::Colours::black);
-    g.drawRect(outline(), 2.f);
+    g.setColour(look::overviewFrame);
+    g.drawRect(outline(), look::heavyLine);
 }
 void ArrangementOverview::mouseDown(const juce::MouseEvent &e) { last = e.position; }
 void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
@@ -145,12 +145,12 @@ ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
 juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
     const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
     const float x = static_cast<float>(view.geometry.x(m.start_ticks));
-    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(look::fontBody), text);
     return {x, kBraceHeight, w, 15.f}; // under the loop brace
 }
 juce::Rectangle<float> ScrubArea::locatorBox(const Locator &l) const {
     const float x = static_cast<float>(view.geometry.x(l.pos));
-    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), juce::String::fromUTF8(l.name.c_str()));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(look::fontBody), juce::String::fromUTF8(l.name.c_str()));
     return {x, kBraceHeight, w, 15.f};
 }
 std::int64_t ScrubArea::locatorAt(float x) const {
@@ -226,12 +226,12 @@ void ScrubArea::paint(juce::Graphics &g) {
         if (x1 < 0 || x0 > static_cast<float>(getWidth()))
             return;
         const juce::Rectangle<float> band(x0, kBraceHeight, x1 - x0, 15.f);
-        g.setColour(juce::Colour(0xffb4b4b4));
+        g.setColour(look::loopBand);
         g.fillRect(band);
         {
             juce::Graphics::ScopedSaveState clip(g);
             g.reduceClipRegion(band.getSmallestIntegerContainer());
-            g.setColour(juce::Colour(0xff6e6e6e));
+            g.setColour(look::gridLine);
             for (float x = x0 - band.getHeight(); x < x1; x += 6.f)
                 g.drawLine(x, band.getBottom(), x + band.getHeight(), band.getY(), 1.5f);
         }
@@ -245,7 +245,7 @@ void ScrubArea::paint(juce::Graphics &g) {
         const auto &t = view.reader().transport();
         const auto range = braceMoving().value_or(loopOf(t));
         if (const auto box = braceBox(range); box.getRight() >= 0 && box.getX() <= static_cast<float>(getWidth())) {
-            g.setColour(t.loopEnabled ? juce::Colour(0xff3c3c3c) : juce::Colour(0xff9a9a9a));
+            g.setColour(t.loopEnabled ? look::loopOn : look::loopOff);
             g.fillRect(box);
             juce::Path ends;
             const float h = box.getHeight(), mid = box.getCentreY();
@@ -253,7 +253,7 @@ void ScrubArea::paint(juce::Graphics &g) {
                              box.getX() + h - 1.f, mid);
             ends.addTriangle(box.getRight() - 1.f, box.getY() + 1.f, box.getRight() - 1.f, box.getBottom() - 1.f,
                              box.getRight() - h + 1.f, mid);
-            g.setColour(juce::Colour(0xffe8e8e8));
+            g.setColour(look::markerText);
             g.fillPath(ends);
             if (view.loopSelected) {
                 g.setColour(look::selection);
@@ -261,7 +261,7 @@ void ScrubArea::paint(juce::Graphics &g) {
             }
         }
     }
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     for (std::size_t i = 1; i < meters.size(); ++i) {
         auto m = meters[i];
         if (m.start_ticks == dragged_ && movingTo_ >= 0)
@@ -270,13 +270,13 @@ void ScrubArea::paint(juce::Graphics &g) {
         if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
             continue;
         const float x = box.getX();
-        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
+        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : look::marker);
         g.fillRect(box);
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
         juce::Path notch;
         notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, box.getY() + 2.f, x + 10.f, box.getY() + 2.f);
-        g.setColour(juce::Colour(0xffe8e8e8));
+        g.setColour(look::markerText);
         g.fillPath(notch);
         g.setColour(look::text);
         g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
@@ -292,14 +292,14 @@ void ScrubArea::paint(juce::Graphics &g) {
             if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
                 continue;
             const bool lit = l.id == view.selectedLocator;
-            g.setColour(lit ? look::selection : juce::Colour(0xffb4b4b4));
+            g.setColour(lit ? look::selection : look::marker);
             g.fillRect(box);
             g.setColour(look::separator);
             g.drawRect(box, 1.5f);
             juce::Path mark;
             mark.addTriangle(box.getX() + 2.f, box.getY() + 2.f, box.getX() + 2.f, box.getBottom() - 2.f,
                              box.getX() + 10.f, box.getCentreY());
-            g.setColour(juce::Colour(0xffe8e8e8));
+            g.setColour(look::markerText);
             g.fillPath(mark);
             g.setColour(look::separator);
             g.strokePath(mark, juce::PathStrokeType(1.f));
@@ -734,13 +734,11 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
 namespace {
 // Bitwig's project view menu, as the director's screenshot shows it (28 October 2026): a dark
 // menu with a thin light edge, large rows, the view in use on a light grey row.
-constexpr juce::uint32 kMenuBack = 0xff2b2b2b, kMenuEdge = 0xff5a5a5a, kRowCurrent = 0xffc8c8c8,
-                       kTextCurrent = 0xff2b2b2b, kRowHover = 0xff484848, kText = 0xffe2e2e2;
 class ProjectViewMenuLook final : public juce::LookAndFeel_V4 {
   public:
     void drawPopupMenuBackground(juce::Graphics &g, int width, int height) override {
-        g.fillAll(juce::Colour(kMenuBack));
-        g.setColour(juce::Colour(kMenuEdge));
+        g.fillAll(look::menuBack);
+        g.setColour(look::menuEdge);
         g.drawRect(0, 0, width, height, 1);
     }
     int getPopupMenuBorderSize() override { return 3; }
@@ -763,7 +761,7 @@ class ColourChooser final : public juce::PopupMenu::CustomComponent {
             g.setColour(look::paletteColour(i));
             g.fillRect(r);
             if (i == current_ || i == hover_) {
-                g.setColour(i == current_ ? juce::Colours::white : juce::Colours::white.withAlpha(.6f));
+                g.setColour(i == current_ ? look::textBright : look::textBright.withAlpha(.6f));
                 g.drawRect(r.expanded(1.5f), 1.5f);
             }
         }
@@ -801,12 +799,12 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
     ViewMenuItem(juce::String name, int depth, juce::Colour colour, bool current)
         : name_(std::move(name)), depth_(depth), colour_(colour), current_(current) {}
     void getIdealSize(int &width, int &height) override {
-        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(15.f), name_));
+        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(look::fontTitle), name_));
         height = kRow;
     }
     void paint(juce::Graphics &g) override {
         if (current_ || isItemHighlighted()) {
-            g.setColour(juce::Colour(current_ ? kRowCurrent : kRowHover));
+            g.setColour(current_ ? look::menuRowCurrent : look::menuRowHover);
             g.fillRect(getLocalBounds());
         }
         // A folder: its body and the tab on its top left.
@@ -816,8 +814,8 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
         folder.addRoundedRectangle(x, 6.f, 7.f, 4.f, 1.f);
         g.setColour(colour_);
         g.fillPath(folder);
-        g.setColour(juce::Colour(current_ ? kTextCurrent : kText));
-        g.setFont(look::font(15.f));
+        g.setColour(current_ ? look::menuTextCurrent : look::menuText);
+        g.setFont(look::font(look::fontTitle));
         const int textX = juce::roundToInt(x) + 25;
         g.drawText(name_, textX, 0, std::max(0, getWidth() - textX - 8), getHeight(),
                    juce::Justification::centredLeft);
@@ -839,7 +837,7 @@ ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
 }
 void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
     // Bitwig's icon: a list with its lower lines indented, and the menu's arrow beside it.
-    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    g.setColour(getToggleState() ? look::accent : over || down ? look::textBright : look::textOnBand);
     const auto r = getLocalBounds().toFloat().reduced(2.f, 3.f);
     for (int line = 0; line < 3; ++line)
         g.fillRect(r.getX() + (line == 0 ? 0.f : 4.f), r.getY() + static_cast<float>(line) * 4.f,
@@ -975,7 +973,7 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
     };
     // Project's folder is grey, as Bitwig's; a group's is its track's colour as the window draws
     // it, unless the project gives one. The groups in the arrangement's order.
-    add(0, 0, "Project", juce::Colour(0xff8a8a8a));
+    add(0, 0, "Project", look::neutral);
     for (const auto row : geometry.rows(reader()))
         if (row.place.group) {
             // Its name as its title shows it (a # is its number).
@@ -1067,11 +1065,11 @@ void ArrangementView::paint(juce::Graphics &g) {
     // toggles, Automation Mode and Lock Envelopes.
     const auto set = topButton(TopButton::Set);
     g.setColour(look::button);
-    g.fillRoundedRectangle(set, 6.f);
+    g.fillRoundedRectangle(set, look::radiusPanel);
     g.setColour(look::outline);
-    g.drawRoundedRectangle(set.reduced(0.5f), 6.f, 1.f);
+    g.drawRoundedRectangle(set.reduced(0.5f), look::radiusPanel, look::hairline);
     g.setColour(look::text);
-    g.setFont(look::font(11.f));
+    g.setFont(look::font(look::fontLabel));
     g.drawText(selectedLocator != 0 ? "Del" : "Set", set, juce::Justification::centred);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
@@ -1095,7 +1093,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
     const auto lock = topButton(TopButton::Lock);
     const float lx = lock.getX(), ly = lock.getY();
-    look::box(g, lock, juce::Colour(0xfff0773a));
+    look::box(g, lock, look::lock);
     g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
     g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
@@ -1115,7 +1113,7 @@ void ArrangementView::paint(juce::Graphics &g) {
                 step = s;
                 break;
             }
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(look::fontBody));
         for (double t = std::ceil(from / step) * step; t <= to; t += step) {
             const int x = canvas.getX() + static_cast<int>(geometry.x(tempo->secondsToTicks(t)));
             g.setColour(look::textOnBand);
@@ -1130,7 +1128,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.setColour(look::band);
     g.fillRect(spacing);
     g.setColour(look::textOnBand);
-    g.setFont(look::font(11.5f));
+    g.setFont(look::font(look::fontBody));
     g.drawText(juce::String(gridLabel(geometry.gridQuarters(), geometry.grid.triplet)), spacing,
                juce::Justification::centredRight);
 }
@@ -1576,10 +1574,10 @@ void TimelineRuler::paint(juce::Graphics &g) {
     while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
         barStep *= 2;
     const int foot = getHeight();
-    g.setFont(look::font(12.f, true));
+    g.setFont(look::font(look::fontField, true));
     auto label = [&](std::int64_t tick, const juce::String &text) {
         const int x = static_cast<int>(geo.x(tick));
-        g.setColour(juce::Colour(0xff7d7d7d));
+        g.setColour(look::rulerLabel);
         g.fillRect(x, foot - 11, 1, 8);
         g.fillRect(x, foot - 11, 3, 1);
         g.setColour(look::textOnBand);
@@ -1589,7 +1587,7 @@ void TimelineRuler::paint(juce::Graphics &g) {
     // From a bar before the left edge, so a bar's later beats still show.
     forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
         if (dots) {
-            g.setColour(juce::Colour(0xff7d7d7d));
+            g.setColour(look::rulerLabel);
             g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
         }
         if (!beats) {
@@ -1689,7 +1687,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
             look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, ink);
         if (t->id != renaming_) {
             g.setColour(look::text);
-            g.setFont(look::font(11.5f, true));
+            g.setFont(look::font(look::fontBody, true));
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
@@ -1700,7 +1698,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
                 if (const auto box = quantizeBox(row.place.depth, y, h, record); !box.isEmpty()) {
                     look::box(g, box.toFloat(), look::chooser);
                     g.setColour(look::text);
-                    g.setFont(look::font(10.f));
+                    g.setFont(look::font(look::fontSmall));
                     const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
                     g.drawText(juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value), box.reduced(3, 0),
                                juce::Justification::centredLeft, true);
@@ -1714,14 +1712,14 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         if (drop_.into != 0) {
             const juce::Rectangle<int> box(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
                                            view.geometry.heightFor(drop_.into) - 2);
-            g.setColour(look::text);
+            g.setColour(look::ink);
             g.drawRect(box, 4);
-            g.setColour(juce::Colours::white);
+            g.setColour(look::textBright);
             g.drawRect(box.reduced(1), 2);
         } else {
-            g.setColour(look::text);
+            g.setColour(look::ink);
             g.fillRect(x, drop_.y - 2, getWidth() - x, 4);
-            g.setColour(juce::Colours::white);
+            g.setColour(look::textBright);
             g.fillRect(x, drop_.y - 1, getWidth() - x, 2);
         }
     }
@@ -2072,7 +2070,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             return;
         lanes(top, bottom - top, false);
         g.setColour(look::text);
-        g.setFont(look::font(12.f));
+        g.setFont(look::font(look::fontField));
         g.drawText("Drop Files and Devices Here", 0, top, getWidth(), bottom - top, juce::Justification::centred);
     };
     for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -2120,7 +2118,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             const bool picked = geo.clipSelected(c->id);
             // A clip in its track's colour: a solid title strip, a lighter body. A
             // deactivated clip is grey, as Live's.
-            const auto clipColour = c->muted ? juce::Colour(0xff9a9a9a) : colour;
+            const auto clipColour = c->muted ? look::mutedClip : colour;
             g.setColour(picked ? clipColour.brighter(0.25f) : clipColour.withMultipliedAlpha(0.75f));
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
@@ -2131,7 +2129,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
                 g.setColour(look::text);
-                g.setFont(look::font(10.f));
+                g.setFont(look::font(look::fontSmall));
                 g.drawText(juce::String::fromUTF8(c->name.c_str()),
                            juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,
                                                   static_cast<float>(kClipBarHeight)),
@@ -2185,7 +2183,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 const int bottom = row.position < foot && foot < rows.size()
                                        ? std::min(top + geo.heightFor(id), footY) - 2
                                        : top + geo.heightFor(id) - 2;
-                g.setColour(juce::Colour(0xff5dc9e8));
+                g.setColour(look::handleChosen);
                 g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
             }
             top += geo.heightFor(id);
@@ -2272,9 +2270,9 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
         shade.lineTo(x1, top);
         shade.lineTo(x0, top);
         shade.closeSubPath();
-        g.setColour(juce::Colours::black.withAlpha(0.22f));
+        g.setColour(look::ink.withAlpha(0.22f));
         g.fillPath(shade);
-        g.setColour(juce::Colours::black.withAlpha(0.85f));
+        g.setColour(look::ink.withAlpha(0.85f));
         g.strokePath(line, juce::PathStrokeType(1.f));
     };
     const bool bendingIn = fadeDrag_ && fadeDrag_->curve && fadeDrag_->in && inTension != c.fadeInTension;
@@ -2286,17 +2284,17 @@ void ArrangementCanvas::paintFades(juce::Graphics &g, const engine::ClipNode &c,
         return;
     const auto square = [&](float x, bool chosen) {
         const auto box = juce::Rectangle<float>(x - 3.5f, top, 7.f, 7.f);
-        g.setColour(chosen ? juce::Colour(0xff5dc9e8) : juce::Colour(0xfff4eba0));
+        g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillRect(box);
-        g.setColour(juce::Colours::black);
+        g.setColour(look::ink);
         g.drawRect(box, 1.f);
     };
     const auto diamond = [&](float x, float y, bool chosen) {
         juce::Path d;
         d.addQuadrilateral(x, y - 4.f, x + 4.f, y, x, y + 4.f, x - 4.f, y);
-        g.setColour(chosen ? juce::Colour(0xff5dc9e8) : juce::Colour(0xfff4eba0));
+        g.setColour(chosen ? look::handleChosen : look::handle);
         g.fillPath(d);
-        g.setColour(juce::Colours::black);
+        g.setColour(look::ink);
         g.strokePath(d, juce::PathStrokeType(1.f));
     };
     const auto chosen = [&](bool fadeIn, bool curve) {
@@ -2390,7 +2388,7 @@ void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode 
     const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
                                static_cast<double>(peaks->sampleRate));
     const float band = (bottom - top) / static_cast<float>(peaks->channels);
-    g.setColour(juce::Colours::black.withAlpha(clip.muted ? 0.35f : 0.6f));
+    g.setColour(look::ink.withAlpha(clip.muted ? 0.35f : 0.6f));
     const int from = std::max(0, static_cast<int>(std::floor(left))),
               to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
     for (int x = from; x < to; ++x) {
@@ -2415,7 +2413,7 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
     // the group's colour. Folded or not.
     const auto &geo = view.geometry;
     const auto rows = geo.rows(view.reader());
-    g.setColour(juce::Colours::black.withAlpha(0.16f));
+    g.setColour(look::ink.withAlpha(0.16f));
     g.fillRect(0, y, getWidth(), h - 2);
     const auto depth = rows[at].place.depth;
     std::size_t held = 0;

@@ -30,10 +30,8 @@ bool keyIsDown(int code) {
             (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
              juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
 }
-// Live's measures, in points at 100 % (ui_look.hpp): the control bar, the Status Bar,
-// the AI tab, the Info View's width and the browser's preview strip.
-constexpr int kTransportHeight = look::controlBarHeight, kStatusHeight = look::statusBarHeight,
-              kTabHeight = 20;
+// Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
+constexpr int kTabHeight = 20;
 constexpr int kInfoWidth = 200, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
@@ -67,6 +65,17 @@ void AppCommands::reload() {
     recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     splitAll_ = flag(settings_, "editing.splitAllWithNoSelection", true);
+    // The theme and the density (DF-W24): `lookfeel.theme` ("os" and anything unknown read as Dark,
+    // the default) and `lookfeel.density` (Compact until the registry has the key). A change
+    // repaints every window at once.
+    const auto word = [this](const char *key) {
+        const auto v = settings_.get(key);
+        return v.is_string() ? v.get<std::string>() : std::string{};
+    };
+    if (look::apply(themeFromSetting(word("lookfeel.theme")), densityFromSetting(word("lookfeel.density"))))
+        for (int i = 0; i < juce::Desktop::getInstance().getNumComponents(); ++i)
+            if (auto *c = juce::Desktop::getInstance().getComponent(i))
+                c->repaint();
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -872,13 +881,13 @@ void StatusBar::paint(juce::Graphics &g) {
     }
     const bool error = !root_.error().empty();
     g.setColour(look::text);
-    g.setFont(look::font(12.5f));
+    g.setFont(look::font(look::fontHeading));
     g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
                juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
     const auto rows = root_.arrangement.geometry.rows(root_.reader());
     if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(look::fontBody));
         g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()),
                    track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
     }
@@ -1204,9 +1213,9 @@ double AdiRootComponent::bpm() const noexcept {
 }
 void AdiRootComponent::resized() {
     const int w = getWidth(), h = getHeight(), gap = look::gap;
-    transport.setBounds(0, 0, w, kTransportHeight);
-    status.setBounds(0, h - kStatusHeight, w, kStatusHeight);
-    const int top = kTransportHeight, bottom = h - kStatusHeight;
+    transport.setBounds(0, 0, w, look::controlBarHeight);
+    status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);
+    const int top = look::controlBarHeight, bottom = h - look::statusBarHeight;
     const int body = std::max(0, bottom - top);
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
@@ -1382,7 +1391,7 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     // Live's panels have a dark 4 pt edge with rounded corners.
     auto panel = [&g](juce::Rectangle<int> r) {
         g.setColour(look::band);
-        g.fillRoundedRectangle(r.toFloat(), 5.f);
+        g.fillRoundedRectangle(r.toFloat(), look::radiusControl);
     };
     if (!deviceArea_.isEmpty())
         panel(deviceArea_);
@@ -1401,11 +1410,11 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         const auto title = split < 0 ? infoText_ : infoText_.substring(0, split);
         const auto body = split < 0 ? juce::String() : infoText_.substring(split + 1);
         g.setColour(look::text);
-        g.setFont(look::font(12.f, true));
+        g.setFont(look::font(look::fontField, true));
         g.drawText(title, titleBar.reduced(5, 0), juce::Justification::centredLeft);
         // Live's body text: small, on a 15 pt line.
         juce::AttributedString words(body);
-        words.setFont(look::font(11.f));
+        words.setFont(look::font(look::fontLabel));
         words.setColour(look::text);
         words.setLineSpacing(2.5f);
         juce::TextLayout layout;
@@ -1441,7 +1450,7 @@ bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     return commands_.key(key, *this);
 }
 void AdiRootComponent::resizeMixerView(int height) {
-    const int body = getHeight() - kTransportHeight - kStatusHeight - deviceArea_.getHeight();
+    const int body = getHeight() - look::controlBarHeight - look::statusBarHeight - deviceArea_.getHeight();
     state_.mixerViewHeight =
         std::clamp(height, 120,
                    std::max(120, body - arrangement.topHeight() - state_.laneHeight));
@@ -1464,7 +1473,7 @@ void AdiRootComponent::toggleClipViewFull() {
     resizeClipView(4000);
 }
 void AdiRootComponent::resizeDevices(int height) {
-    const int ceiling = getHeight() - kTransportHeight - kStatusHeight - look::gap -
+    const int ceiling = getHeight() - look::controlBarHeight - look::statusBarHeight - look::gap -
                         arrangement.topHeight() - state_.laneHeight;
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
@@ -3556,7 +3565,7 @@ void ZoomHost::resized() {
 }
 AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &commands,
                      bool onDesktop)
-    : DocumentWindow("ADI", juce::Colour(0xff171a20), DocumentWindow::allButtons, onDesktop),
+    : DocumentWindow("ADI", look::windowBack, DocumentWindow::allButtons, onDesktop),
       root_(root.get()), commands_(commands), clock_(this, [this](double) {
           followSettings();
           root_->frame();
