@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-19, night — the outside review of bundles 36 to 40: nine rows (DF-E50 to DF-E57, DF-W35)
+
+**For the seats — read first.** The review covered automation, MIDI input and MPE, the Pd runtime, built-in devices in the graph, returns and sends, and the project check. Every quoted line was real; each of its 27 findings was checked by a probe against main and a second skeptic. Two touch the 3 December session now:
+- **devices: DF-E50 first.** Automation on a built-in device is bound and silent (a probe: a Utility lane at 0 dB still plays +6 dB, live and rendered). The session's automated parameter needs it. Fix in `BuiltinDevice::process` on the lent value mapping, the engine seat reviewing. Then DF-E57 when a built-in gains parameters.
+- **window (window-fn until Sunday): DF-W35 (a).** A new track's send shows Enable Send ticked and cannot be unticked until its knob moves.
+- **engine:** DF-E51 (a) and (b) before the keyboard reaches the MIDI parser (stuck notes on a retriggered key; zone changes); DF-E54 (a) before Collect and Export is offered; DF-E52, DF-E53, DF-E55, DF-E56 in your order.
+Not entered: 18 findings that are by design (2), not reachable on main (10), false (1: the Pd loader overlay does refuse native code in a subfolder or behind an abstraction), or too narrow to matter (5).
+
+---
+
 ## 2026-11-19, night — the outside review of bundles 31 to 35: six rows (DF-E44 to DF-E49)
 
 **For the seats — read first.** The review covered recording, MIDI capture and OneShot, the snapshot, Freeze and Bounce, and the gesture path. Every quoted line was real; each of its 15 findings was checked by a probe against main and a second skeptic. Six rows hold; none is reachable on main today, and three sit on the 3 December path:
@@ -28,7 +38,7 @@ items already there, and say in your log when it is on a branch, so engine-win c
 **For engine-win.** Your two parked questions are answered (ADR-0250, above). Until #677 lands and the API
 above exists, take DF-E35 (b) on its loan, then the registry and scanner needs of the window-fn work
 (`midi.port.name`, the auto-arm-on-select default "none", a scan state for a helper that could not start,
-N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E50 (DF-E44 to DF-E49 are the outside review's rows below): reserve
+N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E58 (DF-E44 to DF-E57 are the outside reviews' rows below): reserve
 it in your log first.
 
 ---
