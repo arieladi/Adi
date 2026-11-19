@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E13 automation splice boundaries gated and pushed
+
+**PR requested** — branch `engine/df-e13-automation-splice`, head `f3656b3aacd15a5267032d1e8d52de02dbba6b61`, base `origin/main` at `7c96b9d4`. Title **Preserve exact automation splice boundaries**. The remote head matches the gated commit.
+
+A complete unsliced nonlinear segment keeps its native shape without an extra curve-range row. At a quantized start, the guard holds the last original point on the kept side of the native cut after a clock change separates the points. The storage test exercises both tick- and nanosecond-based lanes, two original points on the exact end bound, a retained range with its own identity, and exact Undo and Redo.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58359 checks across 244 suites, all four validators and the layout check. Both focused GCC suites passed. Clang 19 strictly compiled all three changed C++ units and passed 1,316 splice-planner and 216 native-storage checks. Compiled faults for a redundant stored range and the stale first-coincident-point choice failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E14 next.
+
 ## 2026-11-19 — DF-E18 history, marker and true-peak fixes gated and pushed
 
 **PR requested** — branch `engine/df-e18-history-marker-peak`, head `f28eacd0f3c47f577301264454c6a05973fca4a6`, base `origin/main` at `a0a31168`. Title **Harden history replay, marker edits, and true-peak measurement**. Independent of the DF-E21 through DF-E23 stack. The remote head matches the gated commit.
