@@ -969,7 +969,11 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
     stack.model().setAutoZoom(false, 10);
     const auto refresh = [&] {
         doc->tick(10); root.mark(DirtySet::All); root.frame();
-        stack.frameAt(root.reader(), 10000);
+        const auto at = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+        // A lens transition may leave the row intersecting the viewport with its top clipped.
+        // Scroll back before synthesising a click at the visible activator position.
+        stack.model().scrollTo(0, at);
+        stack.frameAt(root.reader(), at);
     };
     const auto clickDot = [&](std::int64_t id) {
         std::optional<stack::ItemGeo> target;
@@ -983,6 +987,7 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
             juce::Point<float>{static_cast<float>(target->x + target->width / 2),
                                static_cast<float>(target->top + look::border) +
                                    look::radiusSmall + static_cast<float>(look::gap) * .5f};
+        if (!stack.listArea().contains(at.roundToInt())) return false;
         const auto now = juce::Time::getCurrentTime();
         const juce::MouseEvent event{juce::Desktop::getInstance().getMainMouseSource(), at,
             juce::ModifierKeys::leftButtonModifier, 1.f, 0.f, 0.f, 0.f, 0.f,
