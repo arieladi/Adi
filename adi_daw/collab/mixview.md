@@ -8,6 +8,19 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M10, Stack state across project reopen
+
+**PR requested.** `mixview/stack-view-state-20261119` at `8bb87bc3`, stacked on `2691319d`. Each window remembers search and base row height. Pins belong to the project and updates from separate windows preserve each other's choices. A restored channel keeps its pin after Undo. Presentation preferences create no project operation or Undo entry.
+
+The Windows x64 Release passed 854 software-peer checks and all three window-state, Stack-model and Mix View function suites. The legacy fixture now supplies the established `docked` field so the gate can isolate invalid optional Stack fields; its other window geometry survives.
+
+Review `ADI-MixView-Stack-View-State-20261119-8bb87bc3ce-win64-Release`.
+- App SHA-256 `796425c81692e74a62bc8d527af38b579ec93525570a8b9c15c8fffd4816cb72`
+- ZIP SHA-256 `abd55388f2cae064ee0718f1e257c362b50fab42dd23e566832f030e7ed3d939`
+- Scanner SHA-256 `f04c1fa640f537360825bc6907d3da4e051c9c788736a94d52bba7979ef5213e`
+- Brief `ADI-Q-MixView-Stack-View-State-20261119-8bb87bc3-CLAUDE-RETEST.txt`
+
+
 ## 19 November 2026 — DF-M4, Main analysis after device format changes
 
 **PR requested.** `mixview/device-analyzer-rate-regression-20261119` at `2691319d`, after Appearance `e44487b8`. The new headless DeviceBridge gate passed 208 checks in the Mix View functions suite. It changes the sample rate from 48 to 44.1 kHz at 256 samples, then stops and starts with the same configuration. Main Scope, Spectrogram and the stereo meter keep their leases and use one physical tap. Old results are invalidated before the first new window, and the retained frozen snapshots stay intact.
