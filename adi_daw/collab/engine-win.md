@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 13:15 — Desktop decode-cache capacity settings
+
+**PR requested** `engine-win/decode-cache-runtime-limits` at `4af5e656bd3305da7acfda572f6d8b04e58023ba`, stacked on DF-E28 `60fa903d`. Apply the two validated decoded-cache limits at desktop startup and on settings change, including updates to the existing cache without replacing it or disturbing pinned readers. Settings alone and plain WAV opens leave the cache directory absent. Off-thread cache configuration leaves normal decode and explicit trimming in charge of disk work, and callback refusal happens before cache initialization.
+
+Native MSVC x64 Debug `/W4 /WX` decode, cache consistency, PCM stream and progressive decode pass 224 checks across four suites. The matching changed sources compile and link the JUCE desktop target with the settings debounce and analysis-file changes in a local verification tree. Native AAC progress checks remain skipped on this host. Desktop UI dispatch was compile/link checked. The root remains the app cache's decoded folder and analysis has its own budget.
+
 ## 2026-11-19 — DF-E28 decoded cache consistency
 
 **PR requested** — `engine-win/decode-cache-consistency`, `60fa903dee31aabb60b6a1dbda7e4164586c7f12`, based on main `1a46048d`. An estimated single-file decode beyond the maximum now refuses before eviction. Malformed usage hints are skipped while real cached PCM is retained and rediscovered. The complete published target is accounted before the final cancellation check, and a cancelled caller acquires no pin. Extreme valid stamps saturate safely. The new native suite reproduced 24 failures before the changes. Strict x64 MSVC passed 218 checks across four suites after the fix. Native AAC runtime checks followed the unavailable codec gate.
