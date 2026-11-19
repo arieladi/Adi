@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 common VST3 and CLAP native search
+
+**PR requested** — `engine-win/vst3-discovery-aliases`, `1fc06d661c61024a1d79db20022e8ffc20e6a599`, stacked on `engine-win/clap-discovery-aliases`. VST3 folder discovery shares canonical, cycle-safe module enumeration with CLAP. Root scans return one sorted canonical path per resolved module and stop at bundle boundaries. The dedicated child still owns all factory probing. Explicit VST3 hints keep their existing identity spelling and the loader's compatibility projection remains available. Strict x64 MSVC passed five suites, including both formats' native junction/cycle checks, 15 native VST3 sequence cases, the actual two-format discovery operation, and saved Session reopen. Windows shell shortcuts and Finder aliases remain open.
+
 ## 2026-11-19 — PD-11 settings persistence scheduling
 
 **PR requested** — `engine-win/settings-debounce`, `ead3d01b3640688fb3785aaae7312112be64606f`, stacked on `engine-win/settings-last-good`. The app applies Preferences, command, device/channel and import-prompt changes immediately. The owner timer saves after 500 ms of quiet. A failed save retains pending edits and retries after 1, 2, 4, 8, 16 and then 30 seconds. An edit cannot bypass backoff. Normal quit flushes pending edits and reports a final failure; the shutdown path covers direct app exit. Existing explicit save remains available. The separate change log still writes on edit. A foreign file refuses in-memory changes as well as publication. Strict x64 MSVC built the desktop app and passed 226 settings and 2,746 UI shell checks, including real backups and reopen after the UI's scheduled write. Merge the adjacent load-status guard additions from the schema migration branch when combining these slices.
