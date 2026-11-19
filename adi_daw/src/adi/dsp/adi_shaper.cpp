@@ -434,7 +434,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             r *= g.right;
         }
     };
-    auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, float& dryL, float& dryR) {
+    auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, [[maybe_unused]] float& dryL, [[maybe_unused]] float& dryR) {
         const auto& band = stage.bands[index];
         const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
         if constexpr (kind >= Stage::Filter) {
