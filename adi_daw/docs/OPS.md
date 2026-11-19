@@ -1723,6 +1723,7 @@ rate conversion, missing-file snapshot and immutable-content publication limit.
 | `return.setSendTap` | e | G | cap | P1 |
 | `routing.connect` | e | G | pair `routing.disconnect` | P0 |
 | `routing.disconnect` | e | G | cap | P0 |
+| `routing.setKeyTap` | e | G | state capture (absent = Post Mixer) | P1 |
 | `routing.setGain` | e | S | sym, coalescable | P0 |
 | `routing.setPan` | e | S | sym, coalescable | P1 |
 | `routing.setPreFader` | e | G | sym | P0 |

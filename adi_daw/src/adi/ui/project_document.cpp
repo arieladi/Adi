@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/device_key_routes.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <chrono>
 #include <mutex>
@@ -103,6 +106,7 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         document->realisedGeneration_ = document->view_.generation();
         document->parameterOps_.attachSession(document->session_);
         document->feed_.publish(document->session_, document->realisedGeneration_);
+        document->persistReportedLatencies();
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -117,6 +121,7 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
         refused.error = "Project is read-only";
         return refused;
     }
+    refreshReportedLatenciesForSave();
     History history(*store_);
     return history.takeSnapshot(name, nowUtc, utcOffsetMinutes);
 }
@@ -136,6 +141,7 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     }
     // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
     // the members hold the Store itself, which keeps its identity across the switch.
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveAs(path);
     if (!result.ok) {
         error_ = "Save As failed: " + result.error;
@@ -178,6 +184,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
     warning_.clear();
     if (refuseExisting(path, "Save a Copy", error_))
         return false;
+    refreshReportedLatenciesForSave();
     const auto result = store_->saveCopy(path);
     if (!result.ok) {
         error_ = "Save a Copy failed: " + result.error;
@@ -189,6 +196,7 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 }
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
+    refreshReportedLatenciesForSave();
     const auto result = store_->collectAllAndSave();
     warning_ = result.warning;
     if (!result.ok) {
@@ -209,6 +217,7 @@ bool ProjectDocument::collectAllAndSave() {
 bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
+    refreshReportedLatenciesForSave();
     out.project = media::projectFolder(*store_) / store_->path().filename();
     out.zip = zip;
     error_.clear();
@@ -224,7 +233,8 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        if (!session_.refresh(*store_)) {
+        const auto keyed = session_.refreshDeviceKeys(*store_, view_.committedImage());
+        if (!(keyed ? *keyed : session_.refresh(*store_))) {
             error_ = session_.error();
             return false;
         }
@@ -300,6 +310,58 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
     feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::refreshReportedLatenciesForSave() {
+    if (realisedGeneration_ != view_.generation()) return;
+    feed_.publish(session_, realisedGeneration_);
+    persistReportedLatencies();
+}
+void ProjectDocument::persistReportedLatencies() {
+    if (store_->readOnly() || realisedGeneration_ != view_.generation()) return;
+    const auto current = feed_.current();
+    const auto sequence = session_.realisedAppliedSequence();
+    const auto rate = session_.spec().sampleRate;
+    if (reportedLatencyFeed_ && sequence == reportedLatencySequence_ && rate == reportedLatencyRate_ &&
+        (current == reportedLatencyFeed_ ||
+         std::equal(current->begin(), current->end(), reportedLatencyFeed_->begin(), reportedLatencyFeed_->end(),
+                    [](const DevicePanelData &a, const DevicePanelData &b) {
+                        return a.id == b.id && a.instance == b.instance && a.available == b.available &&
+                               a.latency == b.latency;
+                    }))) {
+        reportedLatencyFeed_ = current;
+        return;
+    }
+    const auto source = appliedSource(*store_);
+    if (source.sequence() != sequence || !session_.presentationReady(source, sequence) ||
+        !sqlite3_get_autocommit(store_->db().getHandle())) return;
+    // An open edit can preview new latency before those settings enter history.
+    const auto guard = gesture::detail::beginNavigation(*store_);
+    if (!guard.status.ok()) return;
+    try {
+        const auto head = History(*store_).head();
+        Payload report{{"version", 1}, {"sample_rate", rate},
+                       {"history_head", head ? Payload(*head) : Payload(nullptr)}, {"devices", Payload::array()}};
+        auto &devices = report["devices"];
+        for (const auto &device : *current) {
+            if (!device.available) continue;
+            const auto *entry = session_.entryFor(device.id);
+            if (!entry || !entry->resolvedPluginRef) continue;
+            devices.push_back({{"device_id", device.id}, {"plugin_ref_id", *entry->resolvedPluginRef},
+                               {"format", entry->resolvedFormat}, {"uid", entry->resolvedUid},
+                               {"latency_samples", device.latency}});
+        }
+        SQLite::Statement write(store_->db(), "INSERT INTO session_state(key,value) "
+            "VALUES('devices.reported_latency',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value "
+            "WHERE session_state.value<>excluded.value");
+        write.bind(1, report.dump());
+        write.exec();
+        reportedLatencyFeed_ = current;
+        reportedLatencySequence_ = sequence;
+        reportedLatencyRate_ = rate;
+    } catch (const SQLite::Exception &e) {
+        warning_ = std::string("Device latency report could not be saved: ") + e.what();
+    }
 }
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
@@ -319,6 +381,13 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;
     r.payload = std::move(payload);
+    if(op=="device.remove" || op=="device.setEnabled") {
+        const auto id=r.payload.value("id",std::int64_t{});
+        const auto row=std::find_if(session_.model().devices.begin(),session_.model().devices.end(),
+            [id](const auto& device){return device.id==id;});
+        const auto name=row==session_.model().devices.end()?std::string("device"):row->name;
+        r.label=(op=="device.remove"?"Remove ":r.payload.value("enabled",false)?"Enable ":"Disable ")+name;
+    }
     const auto result = ops_.submit(r);
     error_ = result.error;
     if (!result.ok || !synchronise())
@@ -357,10 +426,62 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     feed_.publish(session_, realisedGeneration_);
     return true;
 }
+std::vector<DeviceKeyChoice> ProjectDocument::deviceKeyChoices(const DevicePanelData& target) {
+    std::vector<DeviceKeyChoice> choices;
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance))return choices;
+    auto* instance=session_.instanceFor(target.id);
+    const bool keyAvailable=instance && instance->sidechainInputChannels()>0;
+    const auto& model=session_.model();
+    const rows::Routing* current=nullptr;std::size_t count=0;
+    for(const auto& route:model.routing)if(route.kind=="sidechain" && route.dstKind=="device" && route.dstId==target.id){current=&route;++count;}
+    if(!keyAvailable && count==0)return choices;
+    choices.push_back({{},"post_mixer","None",count==0,view_.generation()});
+    if(!keyAvailable)return choices; // recovery only; never fabricate an input
+    for(const auto& track:model.tracks){
+        if(track.kind=="vca")continue;
+        for(const auto& tap:{"pre_fx","post_fx","post_mixer"})
+            choices.push_back({track.id,tap,track.name,count==1 && current->enabled && current->srcKind=="track" && current->srcId==track.id && current->keyTap==tap});
+    }
+    for(auto& choice:choices)choice.generation=view_.generation();
+    return choices;
+}
+bool ProjectDocument::setDeviceKeyChoice(const DevicePanelData& target,const DeviceKeyChoice& choice) {
+    if(!synchronise())return false;
+    if(!choice.generation || choice.generation!=view_.generation()) {
+        error_="The project changed while choosing a sidechain. Open the menu again.";return false;
+    }
+    return setDeviceKey(target,choice.source,choice.tap);
+}
+bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<std::int64_t> source,const std::string& tap) {
+    if(!deviceTargetCurrent(target.id,target.runtime,target.instance)) {error_="That device changed while choosing its sidechain.";return false;}
+    if(!synchronise())return false;
+    auto* instance=session_.instanceFor(target.id);
+    if(source && (!instance || instance->sidechainInputChannels()<=0)) {error_="That device has no declared auxiliary input.";return false;}
+    for(const auto& held:parameterOps_.pendingGestures())if(held.deviceId==target.id){error_="Finish the device edit before changing its sidechain.";return false;}
+    auto prepared=prepareDeviceKey(*store_,target.id,source,tap);
+    if(!prepared.ok){error_=prepared.error;return false;}
+    // Removing edges cannot introduce feedback or an unavailable tap. Keep
+    // recovery possible when another stored key is already unavailable.
+    if(source && !prepared.requests.empty() && !session_.validateDeviceKey(prepared.candidate,error_)) {
+        error_=error_.find("cycle")!=std::string::npos
+            ? "That sidechain would feed back into its own source. Choose an earlier tap or another channel."
+            : "That sidechain source or input is unavailable. Choose another source or remove the unavailable key.";
+        return false;
+    }
+    const auto result=ops_.commitPrepared(std::move(prepared),[](Store& store,PreparedDeviceKey& p,Actor actor){return commitDeviceKey(store,p,actor);});
+    error_=result.error;if(!result.ok || !synchronise())return false;
+    feed_.publish(session_,realisedGeneration_);return true;
+}
+
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready);
+    // Removed instances stay alive for Undo. A fresh authored row must not
+    // claim an ID that the current session still uses for one of those instances.
+    std::int64_t retainedDeviceId = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);

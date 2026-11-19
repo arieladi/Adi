@@ -384,6 +384,10 @@ Model readModel(const Store& store) {
               m.media.push_back(std::move(f));
           });
 
+    std::map<std::int64_t,std::string> keyTaps;
+    if(db.tableExists("routing_key_taps"))
+        query(m,db,"routing_key_taps","SELECT routing_id,tap FROM routing_key_taps",
+              [&](const SQLite::Statement& st){keyTaps.emplace(st.getColumn(0).getInt64(),st.getColumn(1).getString());});
     query(m, db, "routing",
           "SELECT id, src_kind, src_id, dst_kind, dst_id, kind, ord, gain_db, "
           "       pan, pre_fader, enabled, origin FROM routing",
@@ -401,6 +405,7 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+                if(const auto tap=keyTaps.find(r.id);tap!=keyTaps.end())r.keyTap=tap->second;
               if(r.kind=="send" && r.dstKind=="track")if(const auto tap=returnTaps.find(r.dstId);tap!=returnTaps.end() && tap->second.explicitChoice) {
                   if(r.preFader!=tap->second.preFader)r.storedPreFader=r.preFader;
                   r.preFader=tap->second.preFader;

@@ -149,6 +149,7 @@ std::span<const TableCoverage> coverage() {
         {"marker_details", Coverage::Projected, "inlined on its marker"},
         {"media_files", Coverage::Projected, "peaks excluded: regenerable, never authoritative"},
         {"routing", Coverage::Projected, ""},
+        {"routing_key_taps", Coverage::Projected, "inlined on its key route"},
         {"remarks", Coverage::Projected, "a child of the track or clip it is anchored to; a device's on its track (ADR-0139)"},
 
         // --- excluded by TEXT-PROJECTION 9: Layer 3 is not projected at all,
@@ -686,6 +687,7 @@ Tree buildTree(const rows::Model& m) {
         a.real("pan", r.pan, 0.0);
         a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         a.flag("disabled", !r.enabled);
+        if(r.kind=="sidechain" && r.dstKind=="device" && r.keyTap!="post_mixer")a.text("keyTap",r.keyTap);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it
         // as `!unresolved(hw_in)` would report a healthy project as broken, so

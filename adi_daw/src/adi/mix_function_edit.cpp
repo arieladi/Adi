@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/mix_function_edit.hpp"
 #include "adi/row_capture.hpp"
+#include "adi/row_ids.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -81,7 +82,8 @@ Payload referenceRow(SQLite::Database &db, const Payload &values) {
     return *detail::captureRow(scratch, "plugin_refs", "id", values.at("id").get<std::int64_t>());
 }
 }
-PreparedFunctionEdit prepareFunctionInsert(Store &store, Function kind, std::int64_t track, bool engineAvailable) {
+PreparedFunctionEdit prepareFunctionInsert(Store &store, Function kind, std::int64_t track, bool engineAvailable,
+                                            std::int64_t retainedDeviceId) {
     PreparedFunctionEdit edit;
     try {
         const auto *info = functionInfo(kind);
@@ -124,7 +126,9 @@ PreparedFunctionEdit prepareFunctionInsert(Store &store, Function kind, std::int
             if (next != order[i].ord)
                 append(edit, "device.move", {{"id", order[i].id}, {"chain", edit.chainId}, {"ord", next}}, "device", order[i].id, label);
         }
-        edit.deviceId = nextId(db, "devices");
+        RowIds ids(db);
+        ids.reserve("devices", retainedDeviceId);
+        edit.deviceId = ids.next("devices");
         append(edit, "device.insert", {{"id", edit.deviceId}, {"chain", edit.chainId}, {"ord", ordinal(position)},
             {"ref", edit.referenceId}, {"name", info->name}, {"enabled", true}, {"rack", false}}, "device", edit.deviceId, label);
         edit.ok = true;

@@ -560,6 +560,7 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
             item.name = source.name;
             item.available = source.available;
             item.enabled = source.enabled;
+            item.folded = source.folded;
             out.items.push_back(item);
             ++track.itemCount;
             track.hasMixFunction = track.hasMixFunction || source.mixFunction;
@@ -834,6 +835,7 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
             item.cls = static_cast<unsigned>(src.cls) < kItemClasses ? src.cls : ItemClass::View;
             item.available = src.available;
             item.enabled = src.enabled;
+            item.folded = src.folded;
             for (const auto &old : r.items)
                 if (old.device == src.device && old.identity == src.identity) {
                     item.gen = old.gen;
@@ -847,7 +849,7 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
     for (std::size_t j = 0; itemsSame && j < r.items.size(); ++j) {
         const auto &a = scratchItems_[j], &b = r.items[j];
         itemsSame = a.device == b.device && a.identity == b.identity && a.cls == b.cls && a.gen == b.gen &&
-                    a.available == b.available && a.enabled == b.enabled;
+                    a.available == b.available && a.enabled == b.enabled && a.folded == b.folded;
     }
     if (!itemsSame) {
         r.items.swap(scratchItems_);
@@ -2162,7 +2164,7 @@ double StackModel::itemHeight(const Rec &r, std::size_t index, double h, bool ta
 double StackModel::itemWidth(const Rec &r, std::size_t index, double h, bool target) const noexcept {
     const auto &item = r.items[index];
     const double height = itemHeight(r, index, h, target);
-    if (plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
+    if (item.folded || plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
         return c_.pill;
     return chainItemWidth(item.cls, height, c_);
 }
@@ -4500,7 +4502,7 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         g.height = itemHeight(r, j, h);
         g.targetHeight = itemHeight(r, j, targetHeightAt(shown), true);
         g.tier = tierFor(g.height, false, c_);
-        g.pill = pills || g.tier < c_.foldBelow[classAt(r.items[j].cls)];
+        g.pill = r.items[j].folded || pills || g.tier < c_.foldBelow[classAt(r.items[j].cls)];
         g.clipped = clipped;
         g.focused = focusItem_.place == ItemPlace::Chain && focusItem_.row.track == r.id &&
                     focusItem_.device == g.ref.device;

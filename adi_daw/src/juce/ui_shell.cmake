@@ -94,7 +94,7 @@ if(ADI_WITH_JUCE)
     add_test(NAME adi_ui_shared_spectrum_tests COMMAND adi_ui_shared_spectrum_tests)
     juce_add_console_app(adi_ui_mix_functions_tests PRODUCT_NAME "adi_ui_mix_functions_tests")
     target_sources(adi_ui_mix_functions_tests PRIVATE tests/test_ui_mix_functions.cpp)
-    target_link_libraries(adi_ui_mix_functions_tests PRIVATE adi_ui_shell)
+    target_link_libraries(adi_ui_mix_functions_tests PRIVATE adi_ui_shell juce::juce_audio_devices)
     set_source_files_properties(tests/test_ui_mix_functions.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_mix_functions_tests COMMAND adi_ui_mix_functions_tests)
