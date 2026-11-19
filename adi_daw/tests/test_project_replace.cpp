@@ -248,8 +248,10 @@ void publicationRetries(){
     test::TempDirectory temp{"project_replace","no_native_retry"};const auto source=temp.path()/"Stage",target=temp.path()/"Final";
     write(source,"stage");media::PublishHooks hooks;hooks.rename=refuse;hooks.retryWait=wait;waits.clear();
     check(media::publishFile(source,target,hooks,media::PublishPolicy::AtomicOnly).status==media::PublishStatus::failed && waits.empty() && read(source)=="stage" && !fs::exists(target),"generic rename refusal never sleeps or publishes on any host");
+    hooks.syncDirectory=fail;
     const auto copy=media::publishFile(source,target,hooks,media::PublishPolicy::VerifiedCopyFallback);
     check(copy.status==media::PublishStatus::published && copy.usedFallback && copy.identity && waits.empty() && !fs::exists(source) && read(target)=="stage","explicit verified-copy policy retains its prior private-copy publication behavior");
+    check(!copy.durabilityConfirmed && !copy.warning.empty(),"verified copy reports the post-publication directory sync failure");
     write(source,"next stage");hooks.rename=nullptr;waits.clear();
     check(media::publishFile(source,target,hooks,media::PublishPolicy::AtomicOnly).status==media::PublishStatus::exists && waits.empty() && read(source)=="next stage" && read(target)=="stage","actual existing destination returns exists immediately without a retry");
 #if defined(_WIN32)

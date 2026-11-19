@@ -11,6 +11,9 @@ something else -- but `juce:` is the LAST job in the file, so the step landed in
 built but cannot be found", which is true and useless: nothing in that job had
 built it.
 
+Check 5 guards the `gate` job (2026-11-19): land_top.sh lands a pull request
+on that one check, so the gate must need every other job in the file.
+
 No yaml module: macOS ships python3 without PyYAML and this script IS part of
 the definition of done. Indentation parsing is enough for the questions asked.
 """
@@ -129,6 +132,38 @@ def main() -> int:
             problems.append(f"job '{m.group(1)}' has no runs-on")
     if not any("runs-on" in p for p in problems):
         oks.append("every job names a runner")
+
+    # --- 5. the gate needs every other job ----------------------------------
+    #
+    # Since 2026-11-19 land_top.sh lands a pull request on ONE check, `gate`,
+    # instead of counting green ticks. The gate is only as good as its needs:
+    # a job added to this file and left out of them would run, fail, and the
+    # pull request would land anyway. The gate must also run when a need
+    # failed (always()), or a failure would skip it and look like nothing.
+    print("[5] the gate job needs every other job, and runs when one fails")
+    before = len(problems)
+    gate = next((b for b in blocks if re.match(r"\s*gate:", b)), None)
+    if gate is None:
+        problems.append("no 'gate' job -- land_top.sh lands on its SUCCESS")
+    else:
+        m = re.search(r"^    needs:\s*\[([^\]]*)\]", gate, re.M)
+        if not m:
+            problems.append("the gate's needs: is not a one-line [list] -- "
+                            "this check cannot read it")
+        else:
+            needs = {s.strip() for s in m.group(1).split(",") if s.strip()}
+            missing = sorted(set(jobs) - needs - {"gate"})
+            unknown = sorted(needs - set(jobs))
+            if missing:
+                problems.append(f"the gate does not need {missing} -- a failure "
+                                f"there would not stop a landing")
+            if unknown:
+                problems.append(f"the gate needs jobs that do not exist: {unknown}")
+        if not re.search(r"^    if:.*\balways\(\)", gate, re.M):
+            problems.append("the gate's if: has no always() -- a failed leg "
+                            "would skip the gate instead of failing it")
+    if len(problems) == before:
+        oks.append(f"the gate needs all {len(jobs) - 1} other jobs and runs always()")
 
     for o in oks:
         print(f"  ok    {o}")
