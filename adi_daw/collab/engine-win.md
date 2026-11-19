@@ -10,6 +10,20 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 Windows scanner timing
+
+**MEASURED** — Ten cold and ten warm ADI Debug invocations, five paired runs per state, using the exact worker CLI source `aa26f099` with 24 owned CLAP and 24 owned VST3 modules. All returned the same ordered 96-class catalogue. Cold median changed from 2,409.1 to 1,086.6 ms with four workers, paired difference −1,371.1 ms [−1,490.9, −1,251.2]. Warm median changed from 616.6 to 725.6 ms, paired difference +122.9 ms [+68.0, +177.8]. Every cold CLAP candidate initialized once and warm ones did not initialize. In separate addition cases, the same prewarmed registries each produced one native VST3 factory call for the sole new module and kept all 72 prior VST3 classes. No audio stream was opened. Raw data stays private.
+
+Four workers are a candidate for cold batches. Keep serial warm discovery until the cache-hit path and production startup have their own checks. The timings include player startup and metadata output, and describe this fixture.
+
+## 2026-11-19 — EX-09 application export presets
+
+**PR requested** — `engine-win/user-render-presets`, `ea37af92aaa3ebe13b0c220f0fc378ac41328c14`, stacked on `engine-win/project-saved-render-jobs`. A fixed file in ADI's application data holds a bounded versioned list of names and strict export values. Names remain data. Atomic staged replacement verifies existing content under the lease and preserves damaged, unsupported or unreadable bytes. Save, mask application and rendering are separate operations. Strict Windows x64 MSVC passed 286 checks across four suites using owned files.
+
+## 2026-11-19 — Integration notes for main at 796fe498
+
+The scanner worker/CLI, Windows shortcuts and self-test branches have no content conflicts against one another. The scanner stack and main overlap in two VST3 fixture hunks. Keep both transport observations and the scanner's cumulative processing callbacks. The protected settings read stack and debounce conflict in one `AppSettings::write` hunk. Keep all four load guards. EX-07 and EX-09 overlap at the public job validator and WAV and NI publication. Keep the EX-07 publication checks and expose the shared validator. Extend codec and masks with `Job::collision` when combining them so round trips preserve the output policy. These were read-only merge checks against the specified main head.
+
 ## 2026-11-19 — DEV-25 command-line worker selection
 
 **PR requested** — `engine-win/scanner-worker-cli`, `aa26f09989fe4e425d412ce483379b80663e4d25`, stacked on `engine-win/scanner-parallel-probes`. The scoped `adi_play --list --search-only DIR --scan-workers N` command accepts 1 through 4, rejects use with CacheOnly or project playback, and prints the requested count. The command lists validated metadata through existing discovery. The strict native Windows player build and its integration suite passed. GUI/default-worker policy remains its own slice.
