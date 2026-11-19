@@ -10,6 +10,10 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, combined decode-cache gate (DF-E28 and DF-E34)
+
+**MEASURED.** The requested `engine-win/decode-space-admission` at `1abfcb3c` and `engine-win/progressive-saved-source-mismatch` at `d4ecedb2` merge cleanly. Their combined tree `74f1751979ec67581a20130c478aaf8f123dea74` passed 853 checks across eight suites in strict MSVC x64 `/W4 /WX`. The progressive suite includes 50 warm sources opened through Session without hashing. The space-admission and trim regressions also passed. The existing native AAC and symlink cases lacked codec support and privilege, respectively. Review stays on the two existing branch requests.
+
 ## 2026-11-19, take-lane regressions reproduced (DF-E35)
 
 **MEASURED.** Strict Windows x64 native tests reproduced the main-row overlap fault on main `12aab48a` source. The snapshot omitted the lane and reused the edited clip and track nodes after a lane-only change. Arrangement geometry returned the silent take instead of the overlapping main-lane clip. The targeted probe had 20 checks and 10 expected failures. Controls verified that the playback accessor already excludes takes.
