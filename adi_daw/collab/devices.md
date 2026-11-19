@@ -56,10 +56,41 @@ method); Live's files and renders stay in the director's research.
     edges); Diffusion and Scale; the Density chooser's entries and which is selected; the Size
     Smoothing chooser's entries and which is selected. A fresh Hybrid Reverb, as shown: Routing,
     Predelay, the synced predelay value, Decay and Size.
+16. **Redux's 64 samples (DEV-22).** A fresh Redux, an impulse of 0.5: where it comes out and the
+    first 256 output samples. The research's table says Live reports 64; this shows what the 64
+    buys (a filter's shape), before ADI copies the delay.
+17. **Compressor, the queue's first new effect (DEV-22).** A fresh Compressor: every control as shown
+    (Threshold, Ratio, Attack, Release, Auto Release, Output, Makeup, Knee, Lookahead, the
+    Peak/RMS/Expand mode, Lin/Log envelope, Dry/Wet). At those defaults: a 1 kHz sine in 6 dB steps
+    from -48 to 0 dBFS, 500 ms each, for the static curve; a 1 kHz sine at -6 dBFS switched on for
+    300 ms after silence, then off, for attack and release; an impulse of 0.5 for the delay.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+## 2026-11-19 — for win: DEV-22's built devices are at Live's defaults where Live states them; new effects before 3 December?
+
+The lane's ADR-0248 d8 order is done as far as it can go today. (1) DF-E37 and (3) DF-E36 are in
+PRs, with AR18 under ASan. (2) OneShot is loadable; the Sampler waits on your word on its sample
+path (entry further down: option 1 recommended). DF-E20 (d) and (e) are in a PR. DF-E39 waits for
+DEV-17 and DEV-18. (4) DEV-22: every built device whose default Live ships now takes it (Reverb's
+and EQ Eight's today). The rest of DEV-22's built devices wait on readings 6 to 10, 15 and 16.
+
+**Question.** DEV-22's row next asks for the queued effects in the manual's order, Compressor first.
+None of them is in the session of ADR-0248 d2. The Mix View seat owns the mixer's compressor
+functions (DF-M28), so a Live Compressor device would sit beside its Clean compressor. Neither a
+default preset nor a render exists for Live's Compressor yet (reading 17).
+
+**Recommendation:** hold new effects until after 3 December, or until reading 17 is in. Meanwhile:
+- the Sampler on option 1, the moment you agree it (it is in the session: a keyboard into an
+  instrument);
+- `devices/pd-exact-position` once `clones/shaper-rollup` lands;
+- review hunks for the clones seat (FloatSignals, the count lines).
+
+**What it blocks:** only the order of this lane's next new device. Without your word, this seat
+builds Compressor's DSP core and tests (no catalogue entry, no claim of parity), so the device is
+ready when reading 17 arrives.
 
 ## 2026-11-19 — DEV-22: EQ Eight opens at Live 12.4's default curve
 
