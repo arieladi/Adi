@@ -936,6 +936,14 @@ target_compile_definitions(adi_plugin_scanner_tests PRIVATE
 add_dependencies(adi_plugin_scanner_tests adi_plugin_scanner adi_scan_clap_fixture adi_scan_clap_static_fixture)
 add_test(NAME adi_plugin_scanner_tests COMMAND adi_plugin_scanner_tests)
 
+add_executable(adi_scan_self_test_tests tests/test_scan_self_test.cpp)
+target_link_libraries(adi_scan_self_test_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_scan_self_test_tests PRIVATE
+    ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>"
+    ADI_SCAN_FIXTURE="$<TARGET_FILE:adi_scan_clap_fixture>")
+add_dependencies(adi_scan_self_test_tests adi_plugin_scanner adi_scan_clap_fixture)
+add_test(NAME adi_scan_self_test_tests COMMAND adi_scan_self_test_tests)
+
 add_executable(adi_scan_cache_tests tests/test_scan_cache.cpp)
 target_link_libraries(adi_scan_cache_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_scan_cache_tests COMMAND adi_scan_cache_tests)
@@ -1422,6 +1430,7 @@ if(ADI_WITH_JUCE)
         JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_DISABLE_JUCE_VERSION_PRINTING=1
         JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0 JUCE_PLUGINHOST_AU=0
         JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+    target_compile_definitions(adi_scan_self_test_tests PRIVATE ADI_EXPECT_SCAN_VST3=1)
     get_target_property(_adi_scan_incs juce::juce_audio_processors_headless INTERFACE_INCLUDE_DIRECTORIES)
     if(_adi_scan_incs)
         target_include_directories(adi_plugin_scanner SYSTEM PRIVATE ${_adi_scan_incs})
