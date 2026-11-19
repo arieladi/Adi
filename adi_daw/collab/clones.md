@@ -1,5 +1,53 @@
 # Clones lane log
 
+## 2026-11-19 — Time reference and next device files
+
+The Time increment is on `clones/adi-shaper-time`. The clones seat takes the ADi-SHAPER core, external adapter as needed, canvas, device CMake file and shaper tests from the previous increment. It also takes the large-canvas embedding hunk in `cmake/devices/pd_native.cmake` and the new `adi_shaper_time.*` core and test. Existing parameter indices stay stable. The devices seat retains all other devices and the Pd engine. Mix View owns its Focus surface, sum and alignment-preview integration. Its published Focus review at `2102d4e9` already rejects ambiguous loop windows in its own path. Our separate legacy scope-helper reproductions and rendering measurements remain test evidence for the owner.
+
+### Time stage reference contract
+
+The Time stage plays earlier input from a per-band history. A flat contour at the top passes the current sample. Lowering the contour increases lookback. The host reported zero latency for every tested range, including an intentional 768,000-frame delay. The measurements below used a playing transport, 4/4, both channels enabled and full wet unless stated otherwise.
+
+#### Time range and tempo
+
+At 48 kHz and 120 BPM, a one-bar range delayed an impulse by 96,000, 48,000 and 0 frames at contour heights 0, 0.5 and 1. For a fixed tempo in the measured 4/4 meter, the target offset in frames is `(1 − height) × bars × 4 × 60 × sampleRate / BPM`. In follow mode the selected contour period supplies the bar count.
+
+At 12 kHz and 300 BPM, one bar is 9,600 frames. Fixed ranges of 1, 2, 4 and 8 bars recovered a 0.5 impulse exactly 9,600, 19,200, 38,400 and 76,800 frames late. Follow mode recovered it at these bar fractions and multiples, in control order, with a maximum integer offset error of one sample across those settings.
+
+`1/128, 1/64, 1/32, 1/24, 1/16, 3/32, 1/12, 1/8, 3/16, 1/6, 1/4, 3/8, 1/3, 1/2, 3/4, 1, 3/2, 2, 3, 4, 8, 16, 32`
+
+At 48 kHz, the short fixed ranges labeled 2.5, 10 and 20 ms gave bottom-contour offsets of 239, 959 and 1,919 frames, midpoint offsets of 119, 479 and 959 frames, and top offsets of zero. These values refer to the tested full-height graph and its exported polarity. Other range modes and non-4/4 meter behavior require separate measurements.
+
+A 48 kHz, 64-frame transport render changed from 120 to 60 BPM at sample 48,000. A marker injected at sample 8,192 appeared once at sample 200,192 in both one-bar fixed and one-bar follow modes. The 192,000-frame offset equals one complete bar at the new tempo. Apply current tempo to each read distance and keep previously written input available across tempo changes.
+
+#### Usable history
+
+The evidence bounds history by sample count. Follow at 32 bars, bottom-contour position, successfully recovered a marker 2,000,000 frames late at both 48 and 96 kHz. A requested distance of 2,100,000 frames gave zero throughout at both rates. At 48 kHz the marker returned at 2,096,640 frames with 64-, 256- and 1,024-frame callbacks. At 256-frame callbacks, a request of 2,096,641 rounded to a 2,096,640-frame read. A request of 2,096,656 produced zero. Both 64- and 1,024-frame callbacks produced zero at 2,096,832. Those observations bound the transition and leave its precise fractional threshold open.
+
+At 48 kHz and 120 BPM, the 32-bar range itself spans 3,072,000 frames. In a 65-second render with a continuous 0.0001 input and a 0.5 marker at sample 8,192, contour heights 0 and 0.25 yielded all zero. Heights 0.5, 0.75 and 1 recovered the marker at offsets 1,536,000, 768,000 and 0 and reproduced the steady input after startup. Availability depends on each requested read. A long range remains usable over the part of its contour that reaches valid history.
+
+#### Process memory measurements
+
+Each run started a separate headless process. It prepared the same 65-second 48 kHz stereo source, loaded the device, warmed the disabled state, applied one test state, rendered a short warmup and then rendered the full source. The table gives process memory differences between the disabled warmup and the test warmup. Each tested state ran once. Figures include state deserialization and host activity, so they indicate allocation scale and do not identify a private implementation.
+
+| State | Private commit increase (MiB) | Working set increase (MiB) | Marker offset |
+| --- | ---: | ---: | ---: |
+| Reload disabled | 1.94 | 1.89 | 0 |
+| Fixed 1 bar | 50.43 | 50.28 | 96,000 |
+| Fixed 8 bars | 50.16 | 50.14 | 768,000 |
+| Follow 32 bars | 50.27 | 50.24 | Outside history |
+| Fixed 8 bars, both crossovers active | 50.50 | 50.51 | 768,000 |
+
+Insertion after source preparation added 46.13–46.99 MiB in process private commit and 51.46–52.24 MiB in working set. The enabled configurations added approximately 48.2–48.6 MiB more private commit than the disabled reload. Each subsequent 65-second render added a further 23.85–23.86 MiB across all five configurations, consistent with the host's approximately 23.80 MiB stereo output storage. Three stereo float histories of 2²¹ frames total 48 MiB and are consistent with both the memory observations and the usable tap limit.
+
+#### Recommended ADI implementation
+
+- Use a 2²¹-frame ring per band with two float channels, 16 MiB per stereo band. Support integer read distances from 0 through 2,096,640, corresponding to 43.68 s at 48 kHz and 21.84 s at 96 kHz. Treat the remaining 512 frames as a conservative guard. Track valid history separately from the masked physical index. On startup and reset an unavailable read contributes wet zero. At zero distance read the current input directly. Validate both neighboring positions for a fractional read. The fractional interpolation kernel, seek/reset transients and crossfade response still require calibration.
+- Keep the history fixed when the transport tempo, period or contour changes. Snapshot tempo and beat position at segment boundaries, including tempo-map splits. Read each band's delayed contribution from its own split input, then apply the existing dry/wet rule. Preserve the zero-PDC contract for Time. Check interval extremes, partial wet/dry, every split, seeks, tempo changes and odd callback partitions with independently rendered fixtures.
+- ADI already prepares its Live Delay and Echo histories off the audio thread. Its Liquid stage invalidates old history with counters. For Time, request a prepared history bank on the control or resource thread when an instance first needs Time. Allocate and touch the complete storage there, publish the ready bank at an audio segment boundary and retire it off the audio thread. Allocate during normal off-thread device preparation when restoring an already-enabled project. Keep an available bank through short bypasses, invalidate by counter when a fresh history is needed and release at teardown or on a control-thread cache eviction. This lets never-enabled instances use no Time history memory. If activation can arrive as audio-rate automation, prime a bank before the event where possible. While waiting, retain the exact dry contribution and let unavailable wet reads contribute zero. An implementation promising sample-exact cold automation needs a prewarmed bank available before the event.
+- Virtual address reservation is optional. Windows supports a reserve-only region with no physical or paging-file allocation for the region. Commit and pre-touch pages off the audio thread before publication. POSIX platforms can create an inaccessible anonymous mapping and change its protection before touching it. Commit accounting and residency depend on the operating system. Neither initially reserving addresses nor allowing demand paging guarantees real-time first access. [Windows virtual allocation](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc) · [POSIX memory mapping](https://pubs.opengroup.org/onlinepubs/9799919799/functions/mmap.html) · [POSIX memory protection](https://pubs.opengroup.org/onlinepubs/9799919799/functions/mprotect.html)
+- A portable bank can use two correctly sized float vectors or a vector of stereo frames created on the resource thread. C++ vector capacity growth has no virtual-memory or physical-residency contract. Only constructed elements below `size()` are valid sample storage. Move or publish the bank's owning object without copying its sample storage, and keep final destruction on the resource thread. [C++ vector capacity](https://eel.is/c++draft/vector.capacity) · [C++ vector data](https://eel.is/c++draft/vector.data)
+
 ## 2026-11-19 — ADi-SHAPER Drive and Crush ready for review
 
 **PR requested** — `clones/adi-shaper-drive-crush` at `a3891a36`. Title **Add oversampled Drive and fractional Crush to ADi-SHAPER**. Review after `clones/adi-shaper-modulation`. The seven-stage rack preserves its first 286 parameters. New indices extend the editable Pd patch and its native processing path through 415 parameters. Drive reports 16 samples and keeps the dry signal aligned. Crush reports zero. The three Drive styles and independent Crush contours were tested at 44.1, 48 and 96 kHz. All eight focused MSVC Release tests passed twice with strict warnings, including Pd parameter routing, device registration and delay. The following measurements cover their implemented settings.
