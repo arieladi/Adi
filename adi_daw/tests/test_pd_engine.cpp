@@ -70,6 +70,7 @@ extern "C" {
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1733,6 +1734,45 @@ void testAPatchCannotChangeItsOwnSearchPath() {
           "[; pd-x.pd declare -path dir( is refused, and an object from dir is not made\n          console: " + liveConsole);
 }
 
+// DF-E36 (a), "consider menusave and menusaveas, which write files": the
+// canvas's save methods are a file write any patch can reach by message,
+// past the PD4 walk. `savetofile` writes the patch's text to any name in any
+// folder, `menusave` overwrites the patch's own file with what the patch has
+// made of itself at run time, `write` writes its data. menusaveas only asks
+// a GUI there is none of.
+void testAPatchCannotWriteFiles() {
+    section("DF-E36 (a) -- a patch cannot write files through its canvas's save methods");
+    TempDir tmp("savefence");
+    TempDir elsewhere("savefence-elsewhere");
+    const std::string elsewhereDir = elsewhere.path.generic_string();
+    tmp.write("saveto.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                        "#X msg 10 40 \\; pd-saveto.pd savetofile leaked.pd ") +
+                            elsewhereDir + ";\n#X connect 0 0 1 0;\n").c_str());
+    bool opened = false;
+    const std::string savetoConsole = consoleOf(tmp, "saveto.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "leaked.pd") &&
+              savetoConsole.find("ADI refused [savetofile") != std::string::npos,
+          "savetofile to another folder is refused by name and writes nothing\n          console: " + savetoConsole);
+
+    const std::string original = "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                 "#X msg 10 40 \\; pd-menusave.pd obj 10 100 print added \\; pd-menusave.pd menusave;\n"
+                                 "#X connect 0 0 1 0;\n";
+    tmp.write("menusave.pd", original.c_str());
+    const std::string menusaveConsole = consoleOf(tmp, "menusave.pd", &opened);
+    std::ifstream saved(tmp.path / "menusave.pd", std::ios::binary);
+    const std::string after((std::istreambuf_iterator<char>(saved)), std::istreambuf_iterator<char>());
+    check(opened && after == original && menusaveConsole.find("ADI refused [menusave]") != std::string::npos,
+          "menusave is refused by name and the patch's own file is unchanged\n          console: " + menusaveConsole);
+
+    tmp.write("data.pd", (std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                      "#X msg 10 40 \\; pd-data.pd write ") +
+                          elsewhereDir + "/written.txt;\n#X connect 0 0 1 0;\n").c_str());
+    const std::string writeConsole = consoleOf(tmp, "data.pd", &opened);
+    check(opened && !std::filesystem::exists(elsewhere.path / "written.txt") &&
+              writeConsole.find("ADI refused [write") != std::string::npos,
+          "the canvas's write is refused by name and writes nothing\n          console: " + writeConsole);
+}
+
 // DEV-09 AR8: the audio thread never waits for Pd. A message-thread holder of
 // the instance's lock (an editor, later: DEV-11) makes the audio thread skip
 // its ticks, silent and counted. libpd_process_float took sys_lock and waited
@@ -1994,6 +2034,7 @@ int main() {
     testAPatchCannotOpenAHelpPatch();
     testRefusalsSurviveAFullConsole();
     testAPatchCannotChangeItsOwnSearchPath();
+    testAPatchCannotWriteFiles();
     testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
     testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
     testAShrunkPublishedTableDoesNotDeadlock();

@@ -258,10 +258,48 @@ foreach(adi_pd_call IN ITEMS "canvas_path(x, e, item);" "canvas_stdpath(e, item)
         "            pd_error(0, \"ADI refused [declare %s %s] (DEV-09): a patch cannot change where Pd looks for code\", flag, item);")
 endforeach()
 file(WRITE "${adi_pd_overlay}/g_canvas.c" "${adi_pd_text}")
+# DF-E36 (a)'s "menusave and menusaveas, which write files": a patch cannot
+# write files through its canvas. `savetofile` writes the patch's text to any
+# name in any folder, `menusave` overwrites the patch's own file with what the
+# patch made of itself at run time, `write` writes the canvas's data; each is
+# a message any patch can send, past the PD4 walk, and each is refused by
+# name. ADI saves no patch through Pd. menusaveas only asks a GUI (none here).
+file(READ "${adi_pd_source}/g_readwrite.c" adi_pd_text)
+string(REPLACE "\r\n" "\n" adi_pd_text "${adi_pd_text}")
+adi_pd_replace([=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{]=] [=[static void canvas_savetofile(t_canvas *x, t_symbol *filename, t_symbol *dir,
+    float fdestroy)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [savetofile %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+adi_pd_replace([=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{]=] [=[static void canvas_menusave(t_canvas *x, t_float fdestroy)
+{
+    if (x)
+    {
+        pd_error(0, "ADI refused [menusave] (DEV-09): a patch cannot write files");
+        return;
+    }]=])
+adi_pd_replace([=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{]=] [=[static void glist_write(t_glist *x, t_symbol *filename, t_symbol *format)
+{
+    if (filename)
+    {
+        pd_error(0, "ADI refused [write %s] (DEV-09): a patch cannot write files",
+            filename->s_name);
+        return;
+    }]=])
+file(WRITE "${adi_pd_overlay}/g_readwrite.c" "${adi_pd_text}")
 get_target_property(adi_pd_sources libpd_static SOURCES)
-list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas)\\.c$")
+list(FILTER adi_pd_sources EXCLUDE REGEX "(^|/)(m_class|s_loader|g_io|m_glob|m_pd|g_editor|s_path|g_canvas|g_readwrite)\\.c$")
 set_property(TARGET libpd_static PROPERTY SOURCES "${adi_pd_sources}")
 target_sources(libpd_static PRIVATE "${adi_pd_overlay}/s_loader.c" "${adi_pd_overlay}/m_class.c"
                                     "${adi_pd_overlay}/g_io.c" "${adi_pd_overlay}/m_glob.c"
                                     "${adi_pd_overlay}/m_pd.c" "${adi_pd_overlay}/g_editor.c"
-                                    "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c")
+                                    "${adi_pd_overlay}/s_path.c" "${adi_pd_overlay}/g_canvas.c"
+                                    "${adi_pd_overlay}/g_readwrite.c")
