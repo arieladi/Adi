@@ -202,7 +202,10 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
             stack.focus(id);
     };
     focusPage.onMembersChanged = [this] {
-        if (ownerReady_ && tab() == Tab::Focus) stack.filterChannels(focusPage.channelIds(), true);
+        if (!ownerReady_ || tab() != Tab::Focus) return;
+        const auto ids = focusPage.channelIds();
+        channels.setFocusMembers(ids, focusPage.mainTrack());
+        stack.filterChannels(ids, true);
     };
     channels.onChoose = [this](std::int64_t id) {
         const juce::Component::SafePointer<MixViewPanel> alive(this);
@@ -213,7 +216,9 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
         selection.clip = 0;
         selection.pickedClips.clear();
         root_.publishSelection();
-        if (alive && tab() == Tab::Stack && stack.isVisible()) stack.focus(id);
+        if (!alive) return;
+        if (tab() == Tab::Stack && stack.isVisible()) stack.focus(id);
+        else if (tab() == Tab::Focus) focusPage.select(id);
     };
     channels.onFilter = [this](auto tracks) {
         if (tab() == Tab::Stack) stack.filterChannels(std::move(tracks));
@@ -319,8 +324,14 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         }
         stack.setVisible(editing);
         if (!alive) return;
-        if (tab() == Tab::Focus) stack.filterChannels(focusPage.channelIds(), true);
-        else if (tab() == Tab::Stack) stack.filterChannels(channels.filterMembership());
+        if (tab() == Tab::Focus) {
+            const auto ids = focusPage.channelIds();
+            channels.setFocusMembers(ids, focusPage.mainTrack());
+            stack.filterChannels(ids, true);
+        } else {
+            channels.setFocusMembers({});
+            if (tab() == Tab::Stack) stack.filterChannels(channels.filterMembership());
+        }
         if (!alive) return;
         focusPage.setVisible(tab() == Tab::Focus);
         if (!alive) return;

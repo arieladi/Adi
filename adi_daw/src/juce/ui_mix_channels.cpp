@@ -67,7 +67,31 @@ bool MixChannelBrowser::current() const noexcept {
 int MixChannelBrowser::getNumRows() { return static_cast<int>(rows_.size()); }
 
 juce::String MixChannelBrowser::getNameForRow(int row) {
-    return trackAt(row) != 0 ? entries_[rows_[static_cast<std::size_t>(row)]].name : juce::String{};
+    const auto track = trackAt(row);
+    if (!track) return {};
+    auto name = entries_[rows_[static_cast<std::size_t>(row)]].name;
+    const auto label = focusMemberLabel(track);
+    if (label.isNotEmpty()) {
+        name += ", Focus " + label;
+        if (track == focusMain_) name += ", main";
+    }
+    return name;
+}
+
+void MixChannelBrowser::setFocusMembers(std::vector<std::int64_t> members, std::int64_t main) {
+    if (focusMembers_ == members && focusMain_ == main) return;
+    focusMembers_ = std::move(members);
+    focusMain_ = main;
+    list.repaint();
+}
+
+juce::String MixChannelBrowser::focusMemberLabel(std::int64_t track) const {
+    const auto member = std::find(focusMembers_.begin(), focusMembers_.end(), track);
+    if (member == focusMembers_.end()) return {};
+    juce::String label;
+    for (auto ordinal = member - focusMembers_.begin() + 1; ordinal > 0; ordinal = (ordinal - 1) / 26)
+        label = juce::String::charToString(static_cast<juce::juce_wchar>('A' + (ordinal - 1) % 26)) + label;
+    return label;
 }
 
 std::int64_t MixChannelBrowser::trackAt(int row) const {
@@ -277,6 +301,20 @@ void MixChannelBrowser::paintListBoxItem(int row, juce::Graphics &g, int width, 
     g.setColour(e.colour);
     g.fillEllipse(dot.toFloat());
     line.removeFromLeft(look::border);
+    const auto label = focusMemberLabel(e.id);
+    if (label.isNotEmpty()) {
+        const auto slot = line.removeFromRight(look::mixFocusChipHeight);
+        const auto badge = slot.reduced(look::border, look::border).toFloat();
+        g.setColour(e.colour);
+        g.fillRoundedRectangle(badge, static_cast<float>(look::border));
+        if (e.id == focusMain_) {
+            g.setColour(look::text);
+            g.drawRoundedRectangle(badge, static_cast<float>(look::border), look::hairline);
+        }
+        g.setColour(look::ink);
+        g.setFont(look::font(look::fontBody, true));
+        g.drawFittedText(label, badge.toNearestInt(), juce::Justification::centred, 1);
+    }
     const auto meter = line.removeFromRight(look::mixChannelLevelWidth);
     line.removeFromRight(look::border);
     g.setColour(look::text);

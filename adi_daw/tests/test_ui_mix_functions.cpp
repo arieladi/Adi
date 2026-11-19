@@ -900,6 +900,9 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     const auto initial = std::vector{first, second};
     check(focus.channelIds() == initial && focus.mainTrack() == first && opened == initial && closed.empty(),
           "the initial ordered solo membership attaches both post-fader sources once");
+    check(mix.channels.focusMemberLabel(first) == "A" && mix.channels.focusMemberLabel(second) == "B" &&
+              mix.channels.focusMemberLabel(added).isEmpty(),
+          "the browser labels the Focus membership without labelling other channels");
     check(mix.stack.model().shownIndex(first) && mix.stack.model().shownIndex(second) &&
               !mix.stack.model().shownIndex(added),
           "member chains bypass Stack tool scope without adding an unrelated row");
@@ -914,6 +917,7 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     root.frame();
     check(!focus.isShowing() && closed == std::vector{second} && solo(first) && solo(second),
           "leaving Focus releases its comparison leases and keeps all authored solos");
+    check(mix.channels.focusMemberLabel(first).isEmpty(), "Stack clears Focus-only badges");
     sibling.reset();
     check(closed == std::vector{second, first},
           "the last compatible reader releases the remaining source");
@@ -929,6 +933,9 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
               focus.channelIds() == std::vector{added, second} && focus.mainTrack() == second &&
               !mix.stack.model().shownIndex(first),
           "explicit unsolo removes its row and promotes the first remaining solo over a manual member");
+    check(mix.channels.focusMemberLabel(first).isEmpty() && mix.channels.focusMemberLabel(second) == "B" &&
+              mix.channels.focusMemberLabel(added) == "A",
+          "the browser updates labels to the remaining membership order");
     check(doc->ops().undo().ok && doc->synchronise() && solo(first) && solo(second),
           "Focus unsolo is one ordinary authored undo step");
 

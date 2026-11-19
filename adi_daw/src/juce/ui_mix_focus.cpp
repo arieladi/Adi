@@ -35,6 +35,7 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         refreshControls();
         redraw_ = true;
         repaint();
+        if (onMembersChanged) onMembersChanged();
     };
     mute.onClick = [this] {
         if (active_)

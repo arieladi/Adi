@@ -16,6 +16,7 @@ class MixFocus final : public juce::Component {
     std::int64_t mainTrack() const noexcept { return main_; }
     size_t count() const noexcept { return members_.size(); }
     std::vector<std::int64_t> channelIds() const;
+    void select(std::int64_t);
     [[nodiscard]] bool contains(std::int64_t id) const noexcept;
     void toggleMemberSolo(std::int64_t id);
     void frame(const SnapshotReader &);
@@ -43,7 +44,6 @@ class MixFocus final : public juce::Component {
         bool spectrumChanged{true};
     };
     void setMembers(const std::vector<std::int64_t> &, bool promoteSoloed);
-    void select(std::int64_t);
     void hear(bool group);
     void drop();
     void rebuildPlot();

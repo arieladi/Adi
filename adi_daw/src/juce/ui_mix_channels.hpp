@@ -19,6 +19,8 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     std::int64_t trackAt(int row) const;
+    void setFocusMembers(std::vector<std::int64_t>, std::int64_t main = 0);
+    juce::String focusMemberLabel(std::int64_t track) const;
     [[nodiscard]] std::optional<std::vector<std::int64_t>> filterMembership() const {
         return filterApplied_ ? membership_ : std::nullopt;
     }
@@ -74,6 +76,8 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     std::vector<Entry> entries_;
     std::vector<Group> groups_;
     std::vector<std::size_t> rows_;
+    std::vector<std::int64_t> focusMembers_;
+    std::int64_t focusMain_ = 0;
     std::optional<std::vector<std::int64_t>> membership_;
 };
 } // namespace adi::ui
