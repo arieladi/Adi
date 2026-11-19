@@ -5,6 +5,40 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-09, step 1: a closed Pd engine frees everything it allocated
+
+**`devices/pd-teardown` (`a7a95c58`), from `origin/main` `ae09f638`.** Files: this
+lane's `src/juce/pd_engine.*`, `src/juce/pd_loader_fix.cmake`, `tests/test_pd_engine.cpp`.
+
+- #173's unbind re-applied (MF4): `libpd_bind` returns the receive object; it is now
+  kept and `libpd_unbind`ed while the instance is alive; the transport symbol is
+  dropped with the instance.
+- #173's forty-cycle stress is back, with a measurement: under the MSVC debug heap the
+  live block count across 40 cycles of two engines (the printing one closed first)
+  must not grow. It found more than #173 knew. After the unbind, **36 blocks per cycle**
+  were still left, traced by allocation number and call stack to pinned Pd itself:
+  `pdinstance_free` frees neither the `t_pdinstance` (392 bytes), nor the names of its
+  twelve built-in symbols, nor its two 512-byte sound buffers, nor its path list; and
+  `[inlet~]`/`[outlet~]` never free their reblocker array (72 bytes each, for every
+  signal inlet and outlet of every patch or abstraction closed). Each is freed by an
+  overlay in `pd_loader_fix.cmake`; the multi-line needles are matched after CRLF is
+  folded to LF, since a Windows checkout of the pinned tree is CRLF.
+- Result: **0** blocks over the 40 cycles. Plant: skipping only the unbind gives
+  **80** (one per engine) and fails the check; restored, it passes.
+
+MSVC 19.44 Debug `/W4 /WX`, the whole tree: clean. CTest **242 of 242** at `-j 6`;
+`adi_pd_engine_tests` 601 checks. The leak count is measured on MSVC only (the debug
+heap); elsewhere the cycles run as a stress.
+
+**PR requested** — title "Pd: a closed engine frees all it allocated (DEV-09 step 1,
+MF4)"; head `devices/pd-teardown` at `a7a95c58`; base `main`. Body: the commit
+message, and "DEV-09 step 1 of 5; the native-loading and global-message fence, the
+trylock tick with its print queue, the #A overlay and the 64-bit build follow as
+their own PRs. Files taken under LANES §1 (the devices lane's `src/juce/pd_*`)."
+
+**Next:** DEV-09 step 2, the native loader refused at the source and `[; pd quit /
+exit / open / paths / preferences]` refused (AR7).
+
 ## 2026-11-19 — Queue item 1: #278 brought to main, #208 ported onto it, #207 not landable
 
 **#278 (`devices/oneshot`, now `3892833a`).** `origin/main` (`ae09f638`) merged in
