@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E1 sample-domain End for linear clips
+
+**PR requested** — branch `engine/df-e1-audio-end-samples`, head `9cc16085eaa3f931a073a521363214a6510f838f`, main base `88e2d94e`. Title **DF-E1: Render linear End markers from absolute samples**. Stacks on DF-E27(b) `25ba8fce`. The tempo and displayed-marker changes in `55fd8bbd` are independent.
+
+Native nanosecond endpoints round to samples with integer arithmetic. A legacy tick End on a linear clip takes the difference between its absolute marker sample and the absolute placement sample. An exact match to the displayed default End uses the stored linear endpoint, including any fractional tick. An existing physical source End pin stays in the source clock when the clip is placed off the sample grid.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors relinked the affected units against the frozen headless core. Five focused suites passed, including 494 clip playback checks. Both final-sample losses reproduced against DF-E27(b) before the change. Three compiled faults detected duration rounding, discarding the mirrored native endpoint, and applying arrangement phase to a source pin. Four validators and the layout check passed.
+
 ## 2026-11-19 — DF-E1 exact tick and linear marker conversion
 
 **PR requested** — branch `engine/df-e1-clock-rounding`, head `55fd8bbdcb665e1248bd2380783ddbec071b8ba6`, main base `bedee5ab`. Title **DF-E1: Preserve exact ticks and linear marker endpoints**. This is the tempo and displayed marker step of DF-E1. The sample-domain End fence follows with the DF-E27(b) source-clock path.
