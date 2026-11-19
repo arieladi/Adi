@@ -4,6 +4,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/blake3.hpp"
 #include <algorithm>
+#include <chrono>
 #include <span>
 #include <set>
 #include <stdexcept>
@@ -38,7 +39,10 @@ void appendFile(std::string& into,const std::filesystem::path& path,
     field(into,utf8(relative));
     field(into,utf8(fs::canonical(path)));
     field(into,std::to_string(fs::file_size(path)));
-    field(into,std::to_string(fs::last_write_time(path).time_since_epoch().count()));
+    // In nanoseconds as a long long: the file clock's own count is a 128-bit integer on Apple's
+    // library, which std::to_string has no overload for.
+    field(into,std::to_string(static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        fs::last_write_time(path).time_since_epoch()).count())));
 }
 } // namespace
 
