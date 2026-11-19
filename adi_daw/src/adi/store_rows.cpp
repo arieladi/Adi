@@ -116,6 +116,7 @@ Model readModel(const Store& store) {
     }
 
     const auto returnTaps=readReturnSendTaps(store);
+    const auto individualTaps = readIndividualSendTaps(db);
 
     query(m, db, "project",
           "SELECT name, sample_rate, ppq, length_ticks, author, notes "
@@ -401,6 +402,8 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if (const auto tap = individualTaps.find(r.id); tap != individualTaps.end())
+                  r.sendTap = tap->second;
               if(r.kind=="send" && r.dstKind=="track")if(const auto tap=returnTaps.find(r.dstId);tap!=returnTaps.end() && tap->second.explicitChoice) {
                   if(r.preFader!=tap->second.preFader)r.storedPreFader=r.preFader;
                   r.preFader=tap->second.preFader;

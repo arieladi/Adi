@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1021;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1022;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -372,6 +372,13 @@ CREATE TABLE routing (
 ) STRICT;
 CREATE INDEX idx_routing_src ON routing(src_kind, src_id);
 CREATE INDEX idx_routing_dst ON routing(dst_kind, dst_id);
+
+-- Since 1.22: a send may choose its own tap (ADR-0245 d10).
+-- An absent row inherits the return or legacy pre_fader setting.
+CREATE TABLE routing_send_taps (
+    routing_id INTEGER PRIMARY KEY REFERENCES routing(id) ON DELETE CASCADE,
+    tap TEXT NOT NULL CHECK (tap IN ('pre_fx', 'post_fx', 'post_mixer'))
+) STRICT;
 
 -- ============================================================================
 --  LAYER 1 — CORE: clips and their content

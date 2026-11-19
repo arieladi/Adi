@@ -7,6 +7,7 @@
 #include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
+#include "adi/return_send_tap.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -508,6 +509,22 @@ void checkRemarks(Ctx& c) {
     }
 }
 
+void checkSendScopes(Ctx& c) {
+    c.ran();
+    try {
+        SQLite::Statement sends(c.db,
+            "SELECT id,src_id,dst_id FROM routing WHERE kind='send' AND src_kind='track' AND dst_kind='track'");
+        while (sends.executeStep()) {
+            if (!allowedSendToGroupedReturn(c.db, sends.getColumn(1).getInt64(), sends.getColumn(2).getInt64()))
+                c.add(Severity::Error, "route.groupReturnScope",
+                      "routing#" + std::to_string(sends.getColumn(0).getInt64()),
+                      "send originates outside the group that owns its return");
+        }
+    } catch (const std::exception& exception) {
+        c.add(Severity::Error, "route.groupReturnCheckFailed", "routing", exception.what());
+    }
+}
+
 }  // namespace
 
 CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
@@ -515,6 +532,7 @@ CheckReport checkProject(const Store& s, bool verifyMediaFiles) {
     Ctx c{const_cast<SQLite::Database&>(s.db()), r};
     checkSqlite(c);
     checkPolyRefs(c);
+    checkSendScopes(c);
     checkBlobs(c);
     checkNoteExpressionTargets(c);
     checkHistory(c);

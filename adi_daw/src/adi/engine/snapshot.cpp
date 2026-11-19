@@ -23,7 +23,8 @@ namespace {
 bool same(const SendRoute& a, const SendRoute& b) {
     return a.id==b.id && a.sourceKind==b.sourceKind && a.destinationKind==b.destinationKind &&
         a.sourceId==b.sourceId && a.destinationId==b.destinationId && a.order==b.order &&
-        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled;
+        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled &&
+        a.sendTap==b.sendTap;
 }
 
 constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
@@ -166,6 +167,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     if(sqlite3_get_autocommit(db.getHandle())!=0)
         readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
     const auto returnTaps=readReturnSendTaps(store);
+    const auto individualTaps = readIndividualSendTaps(db);
     std::optional<SQLite::Transaction> transaction;
     if (sqlite3_get_autocommit(db.getHandle()) != 0)
         transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
@@ -432,6 +434,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
             send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
             send.enabled=st.getColumn(9).getInt()!=0;
+            if (const auto tap = individualTaps.find(send.id); tap != individualTaps.end())
+                send.sendTap = tap->second;
             if(send.destinationKind=="track")if(const auto tap=returnTaps.find(send.destinationId);tap!=returnTaps.end() && tap->second.explicitChoice)send.preFader=tap->second.preFader;
 
             const auto prior=prevSends.find(send.id);

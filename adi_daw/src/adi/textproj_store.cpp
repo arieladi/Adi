@@ -138,6 +138,7 @@ std::span<const TableCoverage> coverage() {
         {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"return_send_taps", Coverage::Projected, "inlined on its return track (ADR-0203 d3)"},
+        {"routing_send_taps", Coverage::Projected, "inlined on its send (ADR-0245 d10)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
         {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
@@ -685,6 +686,7 @@ Tree buildTree(const rows::Model& m) {
         a.real("gain", r.gainDb, 0.0);
         a.real("pan", r.pan, 0.0);
         a.flag("preFader", r.storedPreFader.value_or(r.preFader));
+        if (r.sendTap) a.text("sendTap", individualSendTapName(*r.sendTap));
         a.flag("disabled", !r.enabled);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it
