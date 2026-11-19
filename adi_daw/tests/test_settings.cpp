@@ -312,8 +312,18 @@ void testM0Records() {
     // ADR-0203 d9: Bitwig's sync-in chooser and its slider are gone.
     check(!find("sync.clockSource") && !find("sync.tempoResponsiveness"),
           "no sync-in chooser and no responsiveness slider: Link and MIDI sync run together (ADR-0203 d9)");
+    const auto* autoArm = find("record.autoArmOnSelect");
+    check(autoArm && autoArm->type == Type::Choice && autoArm->scope == Scope::App &&
+              autoArm->page == "Record, Warp & Launch" && autoArm->section == "Record" &&
+              autoArm->defaultValue == "none" && autoArm->choices == std::vector<Value>{"none", "instrumentAndMidi", "all"},
+          "new settings keep manual arming and retain both auto-arm options");
     // The plan's SRF-05: midi.port.* has a home, one App record per port.
     const auto* ports = find("midi.ports");
+    const auto* portName = find("midi.port.name");
+    check(portName && portName->type == Type::Text && portName->scope == Scope::Device &&
+              portName->page == "Tempo & MIDI" && portName->section == "MIDI Ports" &&
+              portName->defaultValue == "" && !portName->agentMayChange,
+          "the last known MIDI port name is a Device text value with an empty default");
     check(ports && ports->type == Type::Record && ports->scope == Scope::App && ports->page == "Tempo & MIDI" &&
               ports->section == "MIDI Ports" && ports->defaultValue == Value::object() && !ports->agentMayChange,
           "midi.ports: an App record on Tempo & MIDI's MIDI Ports section, empty by default (SRF-05)");
@@ -324,13 +334,26 @@ void testM0Records() {
     check(ports && !validate(*ports, Value({{"in-1", {{"nonsense", 1}}}}), why),
           "a field that is no midi.port.* row is refused: " + why);
     check(ports && !validate(*ports, Value({{"in-1", true}}), why), "a port must be a record: " + why);
+    check(ports && !validate(*ports, Value({{"in:shared", {{"name", 10}}}}), why),
+          "a saved port name must be text");
     {
         adi::test::TempDirectory temp("settings", "m0");
-        AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
-        check(s.set("midi.ports", Value({{"in-1", {{"remote", true}}}}), kUser, why),
-              "the store writes the home: " + why);
+        const auto file = temp.path() / "settings.json";
+        AppSettings s(appdata::App::Daw, file);
+        const Value records = {{"in-1", {{"remote", true}}},
+                               {"in:shared", {{"name", "Keyboard"}, {"track", true}}},
+                               {"out:shared", {{"name", "MIDI Out"}, {"sync", true}}}};
+        check(s.get("record.autoArmOnSelect") == "none", "a new settings file starts with manual arm");
+        check(s.set("midi.ports", records, kUser, why), "the aggregate stores legacy and directional records: " + why);
         check(!s.set("midi.port.remote", true, kUser, why),
               "and still refuses a per-port row on its own: " + why);
+        check(!s.set("midi.port.name", "Wrong scope", kUser, why), "a port name belongs to the aggregate record");
+        check(!s.set("record.autoArmOnSelect", "unknown", kUser, why), "invalid auto-arm choices are refused");
+        check(s.set("record.autoArmOnSelect", "instrumentAndMidi", kUser, why) && s.save(why),
+              "save named ports and an explicit auto-arm choice: " + why);
+        const AppSettings reopened(appdata::App::Daw, file);
+        check(reopened.get("midi.ports") == records, "input and output retain distinct names across reload");
+        check(reopened.get("record.autoArmOnSelect") == "instrumentAndMidi", "reload preserves the user's explicit choice");
     }
     // The plan's WIN-02 and WIN-04: the window's two records.
     const auto* places = find("window.places");

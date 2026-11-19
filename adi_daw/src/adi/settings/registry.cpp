@@ -513,8 +513,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "When Warp runs, 1.1.1 goes on the first beat or at the sample start (ADR-0132 d7).",
                        {"firstBeat", "sampleStart"}, "firstBeat"));
     r.push_back(choice("record.autoArmOnSelect", "Record, Warp & Launch", "Auto-arm on select",
-                       "Which tracks arm when selected (Bitwig).", {"none", "instrumentAndMidi", "all"},
-                       "instrumentAndMidi"));
+                       "Choose which tracks arm when selected. The default keeps arming manual.",
+                       {"none", "instrumentAndMidi", "all"}, "none"));
     r.push_back(make("record.discardIncompleteTakes", Type::Bool, "Record, Warp & Launch", "Discard incomplete takes",
                      "In loop recording, drop a first or last take shorter than the threshold "
                      "(REAPER). Off, as Live keeps every loop-recording pass (ADR-0203).",
@@ -542,6 +542,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "How the encoder encodes a turn (ADR-0130).",
                        {"absolute", "relativeTwosComplement", "relativeBinaryOffset", "relativeSignBit"},
                        "relativeTwosComplement"));
+    r.push_back(device("midi.port.name", Type::Text, "Tempo & MIDI", "Last known port name",
+                       "Stored with this MIDI port so its settings can be found if the identifier changes.", ""));
     r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
                        "The port feeds tracks. Stored per port.", false));
     r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
@@ -563,7 +565,7 @@ void catalogueSettings(std::vector<Setting>& r) {
         // its identifier (healed by name when the identifier changes), kept with the application
         // as audio.channelConfig keeps Live's channel configuration (N20).
         Setting s = make("midi.ports", Type::Record, "Tempo & MIDI", "MIDI Ports",
-                         "Live's MIDI Ports table: for each port, under its identifier, Track, Sync, "
+                         "Live's MIDI Ports table: for each port, under its identifier, the last known name, Track, Sync, "
                          "Remote and MPE, the MIDI Clock Sync Delay, the Sync Type and the MTC frame "
                          "rate and start offset, each a midi.port.* row. A port with no record uses "
                          "their defaults (the plan's SRF-05).",
