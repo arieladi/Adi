@@ -8,6 +8,12 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M28 Classic Gate key contract
+
+**PR requested.** Existing #572 `mixview/g-complete-request-20261114` is fast-forwarded to `7d3bd050` for re-review, after #566. The added core gate proves that CompleteRequests can retain a single prepared state for internal programme aliases, routed silence and real external keys, including a retarget and removal without reprepare. Fixed internal detection and programme aliases are bit-identical at 44.1/48/96/192 kHz in float and double. The Release suite passed 371 checks and compared 2,670,592 samples with zero callback allocations and frees. The readme now states the generated host-rate admission through 768 kHz.
+
+The future native adapter will take realized key identity from the callback route and feed this existing API. The test introduces no registration or new DSP, so there is no app package. Gate and de-esser registration still follow the preset and key sequence in DF-M28. Evidence stays in `NowWeReverse/ADI-View/mixview-seat/dfm28-gate-key-20261119`.
+
 ## 19 November 2026 — DF-M24 Compare, Average and triggered Scope Release
 
 **PR requested.** Land `mixview/continuous-scope-broker-20261119` at `bf22f99d`, then `mixview/compare-average-20261119` at `44ba613f`, then `mixview/triggered-scope-surface-20261119` at `95a67a31`. All three are pushed. Compare chooses A and B explicitly, fences live transport disagreements and can retain B while releasing its live demand. The one-second exponential Average shares the raw spectrum's transform. Dedicated and detached Scope use the licensed s(M)exoscope face and controls and the continuous broker capture. All keeps its compact latest-window Scope. The same source shares a physical tap, and hiding or freezing releases the view's live lease.
