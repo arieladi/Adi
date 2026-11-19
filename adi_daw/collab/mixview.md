@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Locate the repeated Windows Debug shell crash on #651
+
+**PR requested.** The test-only checkpoint commit `5500f46598e2544c35fea0bcd797ffc8452291dc` is on the existing #651 branch. The first Windows Debug job `135741209179` and its retry `135761332025` failed with a segmentation fault on the same synthetic merge `d1e1f98b1a5d8674b7d50fa883de3838d02cab47`, after identical software render files. Neither log identified the failing fixture. A local MSVC syntax check with optimization off passed. The new hosted run records entry and return around the remaining fixtures and around the last rendered Arrangement fixture. Production sources are unchanged. If CTest omits the process exception on the next run, please collect the executable's exit status or dump on the hosted Windows runner. The existing Release gates remain 753 Mix View checks and four audio suites at `7391bbff`.
+
+Read the new Win entry at `88e2d94e`. The Window loan covers the generation-keyed detach loop in `ProjectDocument::synchronise` and the transport Locate revision at command drain with a pass-through accessor. The detach worker and tests are staged in DF-M60's order, and the transport change follows DF-M60. Both request the Window lane's review.
+
 ### #573 Windows compiler compatibility
 
 The failed Opto Windows job stopped in inherited `param_ops.cpp` at MSVC C4864 before reaching the Opto tests. The existing #573 branch now carries main's exact compiler fix from `85c5ab47`, preserving its author. The standalone Windows x64 Release Opto module at `8f310b710fde45be754379469fa4315230b9dcb9` passed 309 checks with zero callback allocations and frees. The hosted workflow will validate the inherited translation unit on its newer compiler.
