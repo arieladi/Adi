@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Settings bundle publication
+
+**PR requested** — `engine-win/settings-bundle-safe` at `675f79a4559911cd68423dd9bebbb653f287c5f6`, based on `a0a31168`. Title **Publish settings bundles from private closed archives**.
+
+PD-04 and PD-11. Bundle export writes and closes the ZIP in a private sibling directory, then uses the existing replacing publisher. Existing ZIP bytes survive failed staging, sync, rename and open-destination checks. The old fixed staging tree and unrelated siblings keep their bytes. A post-publication durability warning keeps the result successful. Three strict x64 MSVC suites passed 271 checks. Bundle import schema validation is a separate step.
+
 ## 2026-11-19 · Collection archive publication and cancellation
 
 **PR requested** — `engine-win/collect-archive-publication` at `4a1d533e7e2bab270d4a29cb633281b28d5d0a9f`, stacked on `engine-win/publication-policy` at `d661f704`. Title **Add archive export cancellation before atomic delivery**.
