@@ -4,7 +4,7 @@ The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the f
 
 ### 19 November — DF-M55 clipped Compare gate
 
-A translucent or partly visible Compare keeps its subscriptions where the plot remains visible. Moving the plot entirely outside an ancestor now has an exact component gate: both leases go away, further audio reads and transforms stay zero while clipped, and the restored plot waits for fresh publications from both sources. The gate adds coverage to the existing visibility behavior.
+A partly clipped Compare keeps its subscriptions while the plot remains visible. Moving the plot entirely outside an ancestor now has an exact component gate: both leases go away, further audio reads and transforms stay zero while clipped, and the restored plot waits for fresh publications from both sources. The gate adds coverage to the existing visibility behavior.
 
 Author branch `mixview/classic-compare-gates-meter-20261119` at `68d489e433acf0349e004fb2d17f78a0ac76036c`. Exact Release passed 877 Mix View component checks and three targeted CTests. This commit is test-only.
 
