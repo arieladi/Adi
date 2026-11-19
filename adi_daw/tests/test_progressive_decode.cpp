@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <new>
 #include <thread>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
@@ -114,6 +115,20 @@ void poolBounds() {
     }
     check(wait([&]{return entered.load()==2;}) && maximum==2,"exactly two codec workers can run while thirty jobs remain queued");
     check(std::count_if(files.begin(),files.end(),[](const auto& file){return file->snapshot().readyFrames!=0;})==2,"queued jobs do not allocate a decoded prefix or start another codec thread");
+    const auto queuedRoot = cache.folder() / "progressive";
+    const auto stagingCount = [&] {
+        return std::distance(fs::directory_iterator(queuedRoot), fs::directory_iterator{});
+    };
+    const auto beforeRetirement = stagingCount();
+    auto retained = decoder.open(temp.path() / "source-31.wav");
+    files.pop_back();
+    check(stagingCount() == beforeRetirement, "another public lease keeps its queued job alive");
+    retained.reset();
+    check(stagingCount() == beforeRetirement - 1,
+          "last lease of a still-queued job removes its stage while both workers are held");
+    files.push_back(decoder.open(temp.path() / "source-32.wav"));
+    check(active == 2 && files.back()->snapshot().readyFrames == 0,
+          "retired queued job gives its admission slot back without waiting for a worker");
     files.clear();
     const bool initiallyStopped=wait([&]{return stops==2;});
     // Release only after the actual token acknowledgments. On a failed wait it

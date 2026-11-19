@@ -88,11 +88,15 @@ ProgressiveRead ProgressiveFile::read(std::uint64_t first,std::span<float> out) 
     }
 }
 struct ProgressiveDecoder::Impl {
+    struct QueuedDecode {
+        std::weak_ptr<ProgressiveFile::State> state;
+        std::uint64_t bytes;
+    };
     DecodeCache& cache;
     ProgressiveHooks hooks;
     std::mutex mutex;
     std::condition_variable condition;
-    std::deque<std::shared_ptr<ProgressiveFile::State>> queue;
+    std::deque<QueuedDecode> queue;
     std::map<std::string,std::weak_ptr<ProgressiveFile>> files;
     std::vector<std::jthread> workers;
     bool stopping=false;
@@ -108,13 +112,35 @@ struct ProgressiveDecoder::Impl {
         condition.notify_all();workers.clear();
     }
     ~Impl(){shutdown();}
+    // A queued job has no owner except its public lease. Reclaim the
+    // accounting before admission even if every worker is still busy.
+    void reclaimExpired() {
+        std::erase_if(queue, [this](const QueuedDecode& entry) {
+            if (!entry.state.expired()) return false;
+            --admitted;
+            reserved -= entry.bytes;
+            return true;
+        });
+    }
     void work() {
         for(;;) {
             std::shared_ptr<ProgressiveFile::State> state;
-            {std::unique_lock lock(mutex);condition.wait(lock,[&]{return stopping || !queue.empty();});
-                if(queue.empty()){if(stopping)return;continue;}state=std::move(queue.front());queue.pop_front();}
+            std::uint64_t bytes = 0;
+            {
+                std::unique_lock lock(mutex);
+                condition.wait(lock, [&] { return stopping || !queue.empty(); });
+                if (queue.empty()) return;
+                bytes = queue.front().bytes;
+                state = queue.front().state.lock();
+                queue.pop_front();
+                if (!state) {
+                    --admitted;
+                    reserved -= bytes;
+                    continue;
+                }
+            }
             run(state);
-            {std::lock_guard lock(mutex);--admitted;reserved-=*state->info.frames*state->info.channels*4+4096;}
+            {std::lock_guard lock(mutex);--admitted;reserved-=bytes;}
         }
     }
     void finish(ProgressiveFile::State& state) {
@@ -205,6 +231,7 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::open(const fs::path& source
     owner();cancelled(stop);const auto hash=media::blake3File(source,stop);cancelled(stop);
     if(!hash)throw DecodeError(DecodeProblem::Unreadable,"progressive source cannot be hashed");
     std::lock_guard lock(impl_->mutex);cancelled(stop);
+    impl_->reclaimExpired();
     for(auto i=impl_->files.begin();i!=impl_->files.end();) {if(i->second.expired())i=impl_->files.erase(i);else ++i;}
     if(auto i=impl_->files.find(hash.hex);i!=impl_->files.end())if(auto file=i->second.lock()) {
         const auto status=file->snapshot().status;
@@ -244,7 +271,12 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::open(const fs::path& source
     }
     if(state->directory.empty())throw DecodeError(DecodeProblem::CacheWrite,"cannot reserve progressive private directory");
     fs::permissions(state->directory,fs::perms::owner_all,fs::perm_options::replace);
-    cancelled(stop);impl_->files[hash.hex]=file;impl_->queue.push_back(state);++impl_->admitted;impl_->reserved+=*state->info.frames*state->info.channels*4+4096;
+    cancelled(stop);
+    const auto bytes = *state->info.frames * state->info.channels * 4 + 4096;
+    impl_->files[hash.hex] = file;
+    impl_->queue.push_back({state, bytes});
+    ++impl_->admitted;
+    impl_->reserved += bytes;
     impl_->condition.notify_one();return file;
 }
 ProgressiveDecoder& defaultProgressiveDecoder(){static ProgressiveDecoder decoder(defaultDecodeCache());return decoder;}
