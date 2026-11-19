@@ -1,5 +1,11 @@
 # Clones lane log
 
+## 2026-11-19 — Drive and Crush measurement reservation
+
+On `clones/adi-shaper-drive-crush` the clones seat takes `src/adi/dsp/adi_shaper_drive.*`, `src/adi/dsp/adi_shaper_crush.*`, their dedicated tests, and the same ADi-SHAPER canvas, compiled-in external and test module. Existing device-stage IDs remain stable. Additional level, alias, hold-rate and latency measurements precede the audio implementation.
+
+In measured hard clipping, pre-clip gain follows `(1 + height)^8` across nine heights. The hard rectifier follows `(1 + height)^4`; its central transfer follows `clamp(abs(z+1)-1,-1,1)`. Measurements used signed level steps and independent tones. A DC-coupled transfer read directly from a settled constant input would be misleading because of the observed low-frequency rolloff. These are transfer targets for the measured modes only. The distinct minimum/maximum output, mixture and timing fixtures are in the eleven-stage contract.
+
 ## 2026-11-19 — Device curve drawing handoff to Window
 
 The device strip belongs to Window. ADi-SHAPER exposes every curve point to the ordinary parameter model; its parameter count exceeds the automatic 64-control display threshold. For an ADI-drawn editor in the strip, scope it to the internal UID `org.adidaw.builtin.adi-shaper` and the live device identity. The existing Color Cab sample tile is the integration precedent. Keep the existing Configure and fold operations. The Mix View function and EQ page controls have their own owner.
