@@ -2,8 +2,15 @@
 
 ## FOR THE DIRECTOR
 
-- **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
-- **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
+Win, please lend the Device View panel factory/registry and build-manifest lines that mount ADI-Shaper, the parameter-gesture dispatch for one undo group during a multi-point edit, and the instance-scoped audio feed for the displayed waveform. For Time, please lend the exact sample/revision forwarding line in the native transport callback. Clones can supply and test those small integrations on its own dependent branches. The existing seven-stage candidate stays in the evening landing window.
+
+## 19 November 2026 — Panel, Time and Pitch ownership
+
+The director has assigned the built panel to clones under ADR-0244 d4. The earlier Window sheet request is closed. Clones takes the `adi_shaper*` panel, drawing, device-specific build files, tests, curve storage and readouts on `clones/shaper-panel`. The reference and ADI renders will use the same transport, input and active controls. Our own controls draw the graph, the band display and the two audio traces. Edits audition during the gesture and persist in one undo step.
+
+Time on `clones/shaper-time` takes the previously measured Time DSP, device parameters, canvas, external transport helper and shaper tests, preserving the first 415 automation IDs. The calibrated ADI pink source is retained. The user-impulse reverb comparison is closed for this pass.
+
+**Devices lane, Pitch.** The current main Shifter is spectral. Your Shifter at `7c5d8158` uses two half-cycle delay heads, already restores clean unison and retains its independent stereo phases. Please agree a shared two-head delay reader with per-caller interpolation, weighting, unison and latency policies on that implementation. The ADI cyclic mode needs sinc reads and its existing transient/sideband checks. We can supply an extraction and cross-tests. Your seat keeps the Shifter file edits and its measured behavior. The real-valued state, catalog/count reconciliation and OneShot's two-argument native process override follow your review. The unchanged-parameter scan optimization applies to every built-in device.
 
 ## for after 3 December
 
@@ -327,7 +334,7 @@ Additional Time evidence: at three free-Hz positions a separate amplitude cycle 
 
 For Window, the clones seat takes a standalone JUCE editor component in `src/juce/adi_shaper_curve.*` and a dedicated offscreen drawing/gesture test on `clones/adi-shaper-editor`. Its port accepts the active device parameter model and emits edits through callbacks for the existing gesture transaction. Window owns mounting the view and selection in the shared strip. The device panel, parameter feed, app shell and Mix View files stay with their current owners.
 
-For devices, the clones seat also takes only the ADI-Shaper-specific parameter-read and legacy-state handling in `src/juce/builtin_host.cpp` with shaper-only regression coverage. The large shaper advertises hundreds of independently automatable parameters. A callback with no changed controls can skip reading those targets. Loading a saved earlier rack into a previously used instance should reset parameters added in a later version to their declared defaults. Neither change needs a shared strip or Mix View edit.
+For devices, the clones seat also takes only the ADI-Shaper-specific parameter-read and legacy-state handling in `src/juce/builtin_host.cpp` with the device-specific recall regression and shared unchanged-parameter scan. The large shaper advertises hundreds of independently automatable parameters. A callback with no changed controls can skip reading those targets. Loading a saved earlier rack into a previously used instance should reset parameters added in a later version to their declared defaults. Neither change needs a shared strip or Mix View edit.
 
 The reference analyzer classes enumerate as OScope 2.0.5 and PsyScope_Pro 1.5.03 in the installed VST3 formats. For the other seat's identification question, their module SHA-256 values are `03dc311fa8505bec5f44d10ee75114c52efd4031bfd993242c65a049895e1f65` and `f326b2155d57bc019b368059324bdb4a91f806e291462ee42b908dee1082b0aa`. The measured default audio paths and documented controls are in the Focus handoff. Full-edition entitlement is unverified.
 
