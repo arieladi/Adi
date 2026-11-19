@@ -509,6 +509,68 @@ void createAfterHighestRemoval(DeviceCreation creation, const char *caseName) {
               instance->identity().uid == expectedUid,
           "Redo restores the separately authored device instance");
 }
+
+void replaceIdentityInOneJournalStep() {
+    test::TempDirectory temp("mix_document", "legacy-atomic-device-replacement");
+    auto doc = identityFixture(temp.path() / "project.adi");
+    if (!doc || !doc->addMixFunction(mix::Function::Compressor, 3)) {
+        check(false, "the legacy replacement fixture has a native Compressor");
+        return;
+    }
+    doc->tick(0);
+    const auto original = matchingPanel(*doc, compressorUid, 3);
+    const auto* source = doc->session().entryFor(ordinarySource);
+    auto* compressor = original ? doc->session().resolveDevice(original->runtime) : nullptr;
+    if (!compressor || !source || !source->resolvedPluginRef) {
+        check(false, "the original Compressor and the incompatible reference are realised");
+        return;
+    }
+    const auto id = original->id;
+    const auto state = compressor->saveState("state");
+    const auto& devices = doc->session().model().devices;
+    const auto row = std::find_if(devices.begin(), devices.end(), [id](const auto& device) { return device.id == id; });
+    if (row == devices.end() || state.empty()) {
+        check(false, "the fixture can capture the Compressor's authored position and state");
+        return;
+    }
+    const auto before = OpJournal(doc->store()).headSeq();
+
+    OpRequest remove;
+    remove.opType = "device.remove";
+    remove.payload = {{"id", id}};
+    remove.label = "Legacy device replacement";
+    remove.targetKind = "device";
+    remove.targetId = id;
+    OpRequest insert = remove;
+    insert.opType = "device.insert";
+    insert.payload = {{"id", id}, {"chain", row->chainId}, {"ord", row->ord}, {"ref", *source->resolvedPluginRef},
+                      {"name", "Replaced gain"}};
+    // Replay older authored operations as one edit. The session never sees a
+    // generation with this numeric device ID missing.
+    const auto replaced = doc->ops().submit({remove, insert});
+    if (!replaced.ok || !doc->synchronise()) {
+        check(false, "one journal group replaces the row using its existing numeric ID");
+        return;
+    }
+    doc->tick(1);
+    const auto replacement = matchingPanel(*doc, ordinaryUid, 3, id);
+    auto* gain = doc->session().instanceFor(id);
+    check(replacement && replacement->available && gain && gain != compressor &&
+              doc->session().resolveDevice(replacement->runtime) == gain && gain->identity().uid == ordinaryUid &&
+              !doc->deviceTargetCurrent(id, original->runtime, original->instance),
+          "the changed row displaces the still-active Compressor with the correct runtime");
+
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    doc->tick(2);
+    check(undone && OpJournal(doc->store()).headSeq() == before && doc->session().instanceFor(id) == compressor &&
+              compressor->saveState("state") == state,
+          "one Undo restores the retained Compressor and its state at the same ID");
+    const bool redone = doc->ops().redo().ok && doc->synchronise();
+    doc->tick(3);
+    check(redone && gain && gain != compressor && doc->session().instanceFor(id) == gain &&
+              gain->identity().uid == ordinaryUid,
+          "one Redo restores the retained replacement at the same ID");
+}
 }
 int main() {
     replaceHighestFunction();
@@ -519,6 +581,7 @@ int main() {
     createAfterHighestRemoval(DeviceCreation::BrowserBuiltin, "browser-builtin-after-removal");
     createAfterHighestRemoval(DeviceCreation::BrowserPlugin, "browser-plugin-after-removal");
     createAfterHighestRemoval(DeviceCreation::LegacyId, "legacy-device-identity");
+    replaceIdentityInOneJournalStep();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
     check(doc!=nullptr,"native function document opens");if(!doc)return 2;
