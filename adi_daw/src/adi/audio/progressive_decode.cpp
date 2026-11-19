@@ -121,7 +121,8 @@ struct ProgressiveDecoder::Impl {
         const auto stop=state.stop.get_token();cancelled(stop);
         std::lock_guard cacheLock(cache.mutex_);
         const auto target=cache.fileFor(state.hash);
-        const auto published=media::publishFile(state.path,target);
+        const auto published = media::publishFile(state.path, target, {},
+                                                  media::PublishPolicy::VerifiedCopyFallback);
         if(published.status==media::PublishStatus::exists) {
             if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
             WavReader actual(target);

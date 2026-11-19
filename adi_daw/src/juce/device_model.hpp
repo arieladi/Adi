@@ -216,6 +216,8 @@ public:
     // build never shows.
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+    /// Owner side. The requested mode is applied on the next prepare.
+    virtual void setOffline(bool) noexcept {}
 
     /// Explicit mode: CLAP's native floating window follows ADR-0076; Hosted
     /// supplies content for ADR-0180's FloatingHost, never for the device strip.
@@ -227,6 +229,7 @@ public:
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
+    [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -573,6 +576,9 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override {
+        return inst_ && inst_->wantsDeviceTransport();
+    }
 
     [[nodiscard]] bool hasBypass() const noexcept override { return true; }
     void processActive(const engine::NodeIo& io) noexcept override;

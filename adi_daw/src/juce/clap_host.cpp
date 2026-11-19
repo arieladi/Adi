@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <optional>
 // Dynamic loading is the one genuinely platform-specific thing in a CLAP
 // host, and it is three calls. Split here rather than behind a wrapper
@@ -31,6 +32,43 @@
 #include <system_error>
 
 namespace adi::device {
+
+namespace {
+std::int64_t transportFixedPoint(double position, std::int64_t factor) noexcept {
+    const auto scaled = std::round(position * static_cast<double>(factor));
+    constexpr auto maximum = std::numeric_limits<std::int64_t>::max();
+    constexpr auto minimum = std::numeric_limits<std::int64_t>::min();
+    if (scaled >= static_cast<double>(maximum)) return maximum;
+    if (scaled <= static_cast<double>(minimum)) return minimum;
+    return static_cast<std::int64_t>(scaled);
+}
+
+clap_event_transport_t clapTransport(const engine::DeviceTransport& clock, double rate) noexcept {
+    clap_event_transport_t transport{};
+    transport.header.size = sizeof(transport);
+    transport.header.space_id = CLAP_CORE_EVENT_SPACE_ID;
+    transport.header.type = CLAP_EVENT_TRANSPORT;
+    transport.flags = CLAP_TRANSPORT_HAS_TEMPO | CLAP_TRANSPORT_HAS_BEATS_TIMELINE |
+                      CLAP_TRANSPORT_HAS_SECONDS_TIMELINE | CLAP_TRANSPORT_HAS_TIME_SIGNATURE;
+    if (clock.playing) transport.flags |= CLAP_TRANSPORT_IS_PLAYING;
+    transport.tempo = clock.bpm;
+    transport.song_pos_beats = transportFixedPoint(clock.quarterNotes, CLAP_BEATTIME_FACTOR);
+    transport.song_pos_seconds = transportFixedPoint(static_cast<double>(clock.sample) / rate, CLAP_SECTIME_FACTOR);
+    transport.bar_start = transportFixedPoint(clock.barStart, CLAP_BEATTIME_FACTOR);
+    transport.bar_number = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+        clock.bar, std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max()));
+    transport.tsig_num = static_cast<std::uint16_t>(clock.numerator);
+    transport.tsig_denom = static_cast<std::uint16_t>(clock.denominator);
+    if (clock.looping) {
+        transport.flags |= CLAP_TRANSPORT_IS_LOOP_ACTIVE;
+        transport.loop_start_beats = transportFixedPoint(clock.loopBeginQuarterNotes, CLAP_BEATTIME_FACTOR);
+        transport.loop_end_beats = transportFixedPoint(clock.loopEndQuarterNotes, CLAP_BEATTIME_FACTOR);
+        transport.loop_start_seconds = transportFixedPoint(static_cast<double>(clock.loopBegin) / rate, CLAP_SECTIME_FACTOR);
+        transport.loop_end_seconds = transportFixedPoint(static_cast<double>(clock.loopEnd) / rate, CLAP_SECTIME_FACTOR);
+    }
+    return transport;
+}
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // ClapEventList
@@ -994,7 +1032,7 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // for 106.7 ms.
     const std::uint64_t shapeNow = glue_ != nullptr ? glue_->portChanges() : 0;
     if (activated_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        shapeNow == shapeSeen_) {
+        shapeNow == shapeSeen_ && requestedOffline_ == preparedOffline_) {
         return;
     }
     // FROM HERE THE PLUG-IN IS STOPPED, DEACTIVATED AND ITS BUSES REBUILT,
@@ -1010,6 +1048,13 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         processing_ = false;
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
+    if (requestedOffline_ != preparedOffline_ && plugin_->get_extension != nullptr) {
+        const auto* render = static_cast<const clap_plugin_render_t*>(
+            plugin_->get_extension(plugin_, CLAP_EXT_RENDER));
+        if (render && render->set)
+            render->set(plugin_, requestedOffline_ ? CLAP_RENDER_OFFLINE : CLAP_RENDER_REALTIME);
+    }
+    preparedOffline_ = requestedOffline_;
     flushPendingParams();
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
@@ -1411,7 +1456,11 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     clap_process_t pd{};
     pd.steady_time = steadyTime_;
     pd.frames_count = static_cast<std::uint32_t>(n);
-    pd.transport = nullptr;              // free-running; ADR-0050 owns the clock
+    clap_event_transport_t transport{};
+    if (io.deviceTransport) {
+        transport = clapTransport(*io.deviceTransport, sampleRate_);
+        pd.transport = &transport;
+    }
     pd.audio_inputs = inBufs_.empty() ? nullptr : inBufs_.data();
     pd.audio_outputs = outBufs_.data();
     pd.audio_inputs_count = static_cast<std::uint32_t>(inBufs_.size());
