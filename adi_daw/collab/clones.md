@@ -4,6 +4,18 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
+## 19 November 2026 — Weighted curve drawings and editor efficiency
+
+**PR requested** · `clones/shaper-corners` · **Match weighted ADI-Shaper curves and cache the editor drawing** · `afcad928`
+
+Review after the panel. The curve editor and audio processor use the same periodic soft, medium and hard points. Points at the same time retain a hard discontinuity. The old hold, line and bend parameters still recall. The beat clock offers all 23 measured durations, including dotted and triplet choices. A point or clock edit auditions immediately and releases as one undo step. On the matched quarter-note drawing both editors show 43%. The director has the two 1920 × 1080 captures.
+
+In 34 measured contours, the maximum gain discrepancy across 816,000 samples was below 0.00000787. For the mixed-weight Volume drawing on stereo kick and bass at 48 kHz, the worst audio difference across 192,000 frames per channel at each buffer size was below 0.00000482. The maximum RMS difference was 0.000000703. Median and 99th-percentile callback times in microseconds were 9.0 and 19.7 for ADI versus 24.1 and 97.5 for the reference at 256 frames. At 2,048 they were 93.6 and 515.6 versus 64.3 and 228.4. The larger buffer is the next CPU case.
+
+The editor now caches its static drawing and redraws live signal and meters separately. On the same full-band gate, the open editor used 0.117% of the 256-frame audio budget and 0.073% at 2,048. Offscreen paint at 1,300 × 794 pixels fell from 15.15 to 10.47 ms and from 13.76 to 10.35 ms. The open and closed stereo outputs matched.
+
+The registered device recalled all 873 private editable programs, checked 105,984 explicit values, reset every omitted parameter and rendered finite stereo. The alternative compatible drawings recall the same programs. The private catalog covers all 1,048 source programs. The ten Release device and Pd suites passed in each Pd sample precision with warnings as errors. With JUCE and Pd enabled, both the registered panel-widget test and the project editor test passed through their production build targets. On one matched bar of stereo audio, 37 local programs had a stereo RMS error below 0.001. The private catalog includes each program’s result and its missing controls. The existing requests for the window opener, instance waveform feed and transport forwarding remain with Win.
+
 ## 19 November 2026 — ADI-Shaper panel and local preset recall
 
 **PR requested** · `clones/shaper-panel` · **Add the ADI-Shaper curve editor and live waveform** · `afe32533`
