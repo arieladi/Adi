@@ -46,6 +46,8 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
         gesture(engine::ParamEventKind::Begin, v);
         gesture(engine::ParamEventKind::Value, v);
         gesture(engine::ParamEventKind::End, v);
+        // Sent: the next present() shows what plays again, the pick or, refused, the value before it.
+        presentedMenuId_ = 0;
     };
     addChildComponent(slider);
     addChildComponent(toggle);
@@ -104,8 +106,13 @@ void ParameterControl::present(const panel::Record &r, double defaultNormalized)
     if (!slider.isMouseButtonDown())
         slider.setValue(r.playing, juce::dontSendNotification);
     toggle.setToggleState(r.playing >= .5, juce::dontSendNotification);
-    menu.setSelectedId(1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1))),
-                       juce::dontSendNotification);
+    // The playing value, unless a pick the menu shows has not reached onChange yet: JUCE sends a pick
+    // after this has run, and would read the value put back in its place (DF-W19).
+    const int playingId = 1 + static_cast<int>(std::round(r.playing * std::max(1, r.stepCount - 1)));
+    if (presentedMenuId_ == 0 || menu.getSelectedId() == presentedMenuId_) {
+        menu.setSelectedId(playingId, juce::dontSendNotification);
+        presentedMenuId_ = playingId;
+    }
 }
 void ParameterControl::resized() {
     // Live's knob column: the name, the knob, the value under it.

@@ -10839,6 +10839,50 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             check(panelBegins == 1 && panelEnds == 1,
                   "panel End still reaches its original owner after target validation turns stale");
         }
+        // A parameter shown as a menu (DF-W19): every item picked, by the mouse's way and the keyboard's,
+        // reaches the plug-in as one gesture, though a frame shows the panel again before JUCE sends the
+        // pick, as the window's frames do.
+        DevicePanelData menuDevice = expected;
+        adi::panel::Record mode;
+        mode.id = "cutoff";
+        mode.name = "Mode";
+        mode.shape = adi::panel::Shape::Menu;
+        mode.stepCount = 5;
+        mode.choiceLabels = {"Clean", "Warm", "Tape", "Tube", "Fuzz"};
+        mode.playing = mode.stored = 0;
+        menuDevice.records = {mode};
+        DevicePanelView menuPanel(gateway, menuDevice);
+        std::vector<std::pair<engine::ParamEventKind, double>> sent;
+        menuPanel.parameterGesture = [&sent](const std::string &, engine::ParamEventKind kind, double v) {
+            sent.emplace_back(kind, v);
+            return true;
+        };
+        bool everyPick = menuPanel.controls.size() == 1;
+        for (int item = 1; everyPick && item <= 5; ++item) {
+            auto &box = menuPanel.controls.front()->menu;
+            sent.clear();
+            if (item % 2 == 0)
+                box.setSelectedId(item, juce::sendNotificationAsync); // the mouse: a pick from the list
+            else
+                box.setSelectedItemIndex(item - 1, juce::sendNotificationAsync); // the keyboard's step
+            menuPanel.present(menuDevice); // a frame before the pick is sent: the value playing is the old one
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+            const double v = (item - 1) / 4.0;
+            everyPick = sent.size() == 3 && sent[0].first == engine::ParamEventKind::Begin &&
+                        sent[2].first == engine::ParamEventKind::End && std::abs(sent[2].second - v) < 1e-9;
+            // The plug-in takes it; the next frame shows it.
+            menuDevice.records.front().playing = v;
+            menuPanel.present(menuDevice);
+            everyPick = everyPick && box.getSelectedId() == item;
+        }
+        check(everyPick, "every item of a menu parameter, picked by mouse or keyboard, is sent as one gesture");
+        // A pick the plug-in refuses goes back to what plays.
+        menuPanel.parameterGesture = [](const std::string &, engine::ParamEventKind, double) { return false; };
+        menuPanel.controls.front()->menu.setSelectedId(2, juce::sendNotificationAsync);
+        menuPanel.present(menuDevice);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        menuPanel.present(menuDevice);
+        check(menuPanel.controls.front()->menu.getSelectedId() == 5, "a refused pick shows the value playing again");
     }
     adi::uitest::mixSeekChecks(commands, dir, check);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});

@@ -51,6 +51,9 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     double defaultValue = 0;
     juce::Label name, value;
     std::int32_t menuSteps_ = 0;
+    // The item present() last showed: while the menu shows another, a pick is on its way to onChange,
+    // which JUCE calls later; present() leaves it until it is sent (DF-W19). 0: show the playing value.
+    int presentedMenuId_ = 0;
     std::vector<std::string> menuLabels_;
 };
 // The Device Activator: Live's round switch at the left of a device's title bar,
