@@ -189,7 +189,38 @@ class AdiApplication final : public juce::JUCEApplication,
         else
             libraryThread_.detach();
     }
+    void discoverRowPlugins() {
+        if (scanRunning_) { if (root_) root_->say("Plug-in scan in progress."); return; }
+        if (pluginScan_.joinable()) pluginScan_.join();
+        scanRunning_ = true;
+        if (root_) root_->say("Scanning VST3 and CLAP plug-ins...");
+        auto cancel = cancelScan_;
+        pluginScan_ = std::thread([this, cancel] {
+            std::vector<rows::PluginRef> result;
+            std::string detail;
+            try {
+                device::JuceDeviceLoader discovery;
+                scan::Config config;
+                config.process.cancel = cancel.get();
+                discovery.setScanConfig(config);
+                discovery.scan();
+                result = discovery.knownPluginReferences();
+                const auto &report = discovery.lastScanReport();
+                if (!report.failures.empty()) detail = report.failures.front().error;
+                else if (!report.complete) detail = "Scan incomplete.";
+            } catch (const std::exception& error) { detail = error.what(); }
+            if (!cancel->load()) juce::MessageManager::callAsync([this, cancel, found = std::move(result), detail] () mutable {
+                if (cancel->load()) return;
+                scanRunning_ = false;
+                scannedPlugins_ = std::move(found);
+                if (root_) root_->say("Found " + std::to_string(scannedPlugins_.size()) +
+                    " plug-ins. Open + on a channel to choose one." + (detail.empty() ? "" : " " + detail));
+            });
+        });
+    }
     void shutdown() override {
+        cancelScan_->store(true);
+        if (pluginScan_.joinable()) pluginScan_.join();
         // A Collect and Export still running finishes first: its ZIP is not left half written.
         if (export_.joinable())
             export_.join();
@@ -392,6 +423,19 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->loadPlugin = [this](const rows::PluginRef& ref, std::int64_t track) {
+            const bool ok = document_->insertPlugin(ref, track);
+            if (!ok && root_) root_->say(document_->error());
+            return ok;
+        };
+        root->catalogPlugins = [this] {
+            auto refs = document_->session().model().pluginRefs;
+            const auto known = loader_.knownPluginReferences();
+            refs.insert(refs.end(), scannedPlugins_.begin(), scannedPlugins_.end());
+            refs.insert(refs.end(), known.begin(), known.end());
+            return refs;
+        };
+        root->scanPlugins = [this] { discoverRowPlugins(); };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
         root->reenableAutomation = [this] {
@@ -847,6 +891,10 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    std::thread pluginScan_;
+    std::shared_ptr<std::atomic<bool>> cancelScan_ = std::make_shared<std::atomic<bool>>(false);
+    std::vector<rows::PluginRef> scannedPlugins_;
+    bool scanRunning_ = false;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;

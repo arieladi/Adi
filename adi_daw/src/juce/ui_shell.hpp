@@ -412,6 +412,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
     // undo step); `insertDevice` checks there is a track and says why it cannot.
     std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    std::function<std::vector<rows::PluginRef>()> catalogPlugins;
+    std::function<bool(const rows::PluginRef&, std::int64_t)> loadPlugin;
+    std::function<void()> scanPlugins;
     bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ops.hpp"
+#include "adi/store_rows.hpp"
 #include <span>
 #include <string_view>
 namespace adi {
@@ -23,6 +24,8 @@ struct PreparedBuiltinInsert {
 };
 [[nodiscard]] PreparedBuiltinInsert prepareBuiltinInsert(Store&,std::string_view uid,
     std::int64_t track,std::optional<std::int64_t> beforeDevice={});
+[[nodiscard]] PreparedBuiltinInsert preparePluginInsert(Store&,const rows::PluginRef&,std::int64_t track,
+    std::optional<std::int64_t> beforeDevice={});
 [[nodiscard]] CommitResult commitBuiltinInsert(Store&,const PreparedBuiltinInsert&,Actor=Actor::User);
 std::span<const OpDescriptor> builtinReferenceOps();
 }

@@ -101,6 +101,24 @@ void paramsAndState() {
 #endif
 }
 void insertionAndHistory() {
+    {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        rows::PluginRef ref;
+        ref.uid="test.shell";ref.name="Third-party effect";ref.vendor="Test vendor";ref.version="2.1";
+        ref.subtype="effect";ref.pathHint="fixture/shell.vst3";ref.format="vst3";ref.isShell=true;ref.shellId=71;
+        const auto added=preparePluginInsert(store,ref,1);
+        check(added.ok && commitBuiltinInsert(store,added).ok &&
+              db.execAndGet("SELECT shell_id FROM plugin_refs").getInt64()==71 &&
+              db.execAndGet("SELECT path_hint FROM plugin_refs").getString()==ref.pathHint,
+              "third-party insertion commits the exact resolved plugin identity, path and channel");
+        check(History(store).undo().ok && db.execAndGet("SELECT count(*) FROM devices").getInt()==0 &&
+              db.execAndGet("SELECT count(*) FROM plugin_refs").getInt()==0 &&
+              db.execAndGet("SELECT count(*) FROM device_chains").getInt()==0,
+              "one Undo removes only the external insertion and its new ref/chain");
+        check(History(store).redo().ok && preparePluginInsert(store,ref,1).referenceId==added.referenceId,
+              "redo and another insertion reuse the resolved third-party identity");
+        ref.format="au";check(!preparePluginInsert(store,ref,1).ok,"unsupported external formats refuse before mutation");
+    }
 #if ADI_WITH_PD
     Project project;auto& store=*project.store;auto& db=store.db();
     const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);

@@ -81,6 +81,7 @@ public:
     /// One line per plugin the last scan found, both formats: for `--list`,
     /// and for the day a browser row needs the same thing.
     [[nodiscard]] std::vector<std::string> knownPlugins() const;
+    [[nodiscard]] std::vector<rows::PluginRef> knownPluginReferences() const;
 
 private:
     std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err);

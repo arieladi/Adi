@@ -13,6 +13,12 @@
 namespace adi {
 namespace {
 std::int64_t integer(const Payload& value){return detail::signedInteger(value);}
+std::int64_t nextId(SQLite::Database& db,const char* table) {
+    SQLite::Statement value(db,std::string("SELECT IFNULL(MAX(id),0) FROM ")+table);value.executeStep();
+    const auto last=std::max<std::int64_t>(0,value.getColumn(0).getInt64());
+    if(last==std::numeric_limits<std::int64_t>::max())throw std::runtime_error(std::string(table)+" identities are exhausted");
+    return last+1;
+}
 std::string identity(SQLite::Database& db) {
     SQLite::Statement query(db,"PRAGMA database_list");
     while(query.executeStep())if(query.getColumn(1).getString()=="main")return query.getColumn(2).getString();
@@ -69,30 +75,29 @@ const std::array<OpDescriptor,2> ops={{
 }};
 }
 std::span<const OpDescriptor> builtinReferenceOps(){return ops;}
-PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before) {
+static PreparedBuiltinInsert prepareInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,std::optional<std::int64_t> before) {
     PreparedBuiltinInsert result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
-        const auto* info=findBuiltin(uid);
-        if(!info)throw std::runtime_error("unknown built-in device");
-        if(!info->available)throw std::runtime_error(std::string(info->name)+" is not available through this built-in loader");
         auto& db=store.db();RowIds ids(db);std::optional<SQLite::Transaction> read;
         if(sqlite3_get_autocommit(db.getHandle())!=0)read.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         result.sourceFile=identity(db);result.options.expectHead.emplace(OpJournal(store).headSeq());
         SQLite::Statement target(db,"SELECT 1 FROM tracks WHERE id=?");target.bind(1,track);
         if(!target.executeStep())throw std::runtime_error("destination track is missing");
-        const std::string label="Insert "+std::string(info->name);
+        const std::string label="Insert "+ref.name;
         auto append=[&](const char* type,Payload payload,const char* kind,std::int64_t id) {
             OpRequest request;request.opType=type;request.payload=std::move(payload);request.label=label;
             request.targetKind=kind;request.targetId=id;result.requests.push_back(std::move(request));
         };
-        SQLite::Statement reference(db,"SELECT id FROM plugin_refs WHERE format='internal' AND uid=? AND shell_id IS NULL");
-        reference.bind(1,std::string(uid));
+        SQLite::Statement reference(db,"SELECT id FROM plugin_refs WHERE format=? AND uid=? AND shell_id IS ?");
+        reference.bind(1,ref.format);reference.bind(2,ref.uid);
+        if(ref.shellId)reference.bind(3,*ref.shellId);else reference.bind(3);
         if(reference.executeStep())result.referenceId=reference.getColumn(0).getInt64();
         else {
             result.referenceId=ids.next("plugin_refs");
-            auto row=referenceRow(db,{{"id",result.referenceId},{"format","internal"},{"uid",uid},{"vendor","ADI"},
-                {"name",info->name},{"version","1"},{"subtype","effect"},{"path_hint",""},{"is_shell",0},{"shell_id",nullptr}});
+            auto row=referenceRow(db,{{"id",result.referenceId},{"format",ref.format},{"uid",ref.uid},{"vendor",ref.vendor},
+                {"name",ref.name},{"version",ref.version},{"subtype",ref.subtype},{"path_hint",ref.pathHint},{"is_shell",ref.isShell?1:0},
+                {"shell_id",ref.shellId ? Payload(*ref.shellId) : Payload(nullptr)}});
             append("pluginRef.register",{{"id",result.referenceId},{"row",row}},"plugin",result.referenceId);
         }
         if(before) {
@@ -120,10 +125,27 @@ PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std
         }
         result.deviceId=ids.next("devices");
         append("device.insert",{{"id",result.deviceId},{"chain",result.chainId},{"ord",static_cast<std::int64_t>(position)},
-            {"ref",result.referenceId},{"name",info->name},{"enabled",true},{"rack",false}},"device",result.deviceId);
+            {"ref",result.referenceId},{"name",ref.name},{"enabled",true},{"rack",false}},"device",result.deviceId);
         result.ok=true;
     }catch(const std::exception& exception){result.error=exception.what();}
     return result;
+}
+PreparedBuiltinInsert prepareBuiltinInsert(Store& store,std::string_view uid,std::int64_t track,std::optional<std::int64_t> before) {
+    const auto* info=findBuiltin(uid);
+    if(!info || !info->available) {
+        PreparedBuiltinInsert result;
+        result.error=info?std::string(info->name)+" is not available through this built-in loader":"unknown built-in device";
+        return result;
+    }
+    rows::PluginRef ref;
+    ref.format="internal";ref.uid=uid;ref.name=info->name;ref.vendor="ADI";ref.version="1";ref.subtype="effect";
+    return prepareInsert(store,ref,track,before);
+}
+PreparedBuiltinInsert preparePluginInsert(Store& store,const rows::PluginRef& ref,std::int64_t track,std::optional<std::int64_t> before) {
+    if((ref.format!="vst3" && ref.format!="clap") || ref.uid.empty() || ref.name.empty()) {
+        PreparedBuiltinInsert result;result.error="Select a VST3 or CLAP plug-in with a valid identity";return result;
+    }
+    return prepareInsert(store,ref,track,before);
 }
 CommitResult commitBuiltinInsert(Store& store,const PreparedBuiltinInsert& prepared,Actor actor) {
     CommitResult result;if(!prepared.ok){result.error=prepared.error;return result;}

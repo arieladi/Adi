@@ -36,6 +36,23 @@ engine::DeviceLoader JuceDeviceLoader::fn() {
     return [this](const engine::DeviceRequest& rq, std::string& err) { return make(rq, err); };
 }
 
+std::vector<rows::PluginRef> JuceDeviceLoader::knownPluginReferences() const {
+    std::vector<rows::PluginRef> refs;
+    for (const auto& desc : known_.getTypes()) {
+        const auto id = identityOf(desc);
+        rows::PluginRef ref;
+        ref.format=id.format; ref.uid=id.uid; ref.vendor=id.vendor; ref.name=id.name; ref.version=id.version;
+        ref.subtype=desc.isInstrument ? "instrument" : "effect"; ref.pathHint=desc.fileOrIdentifier.toStdString();
+        refs.push_back(std::move(ref));
+    }
+    for (const auto& found : clap_.plugins()) {
+        rows::PluginRef ref;
+        ref.format="clap"; ref.uid=found.id; ref.vendor=found.vendor; ref.name=found.name; ref.version=found.version;
+        ref.subtype=found.isInstrument ? "instrument" : "effect"; ref.pathHint=found.bundlePath;
+        refs.push_back(std::move(ref));
+    }
+    return refs;
+}
 std::vector<std::string> JuceDeviceLoader::knownPlugins() const {
     std::vector<std::string> out;
     for (const juce::PluginDescription& d : known_.getTypes()) {

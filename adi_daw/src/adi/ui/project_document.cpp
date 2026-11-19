@@ -451,7 +451,12 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     return true;
 }
 bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
-    auto prepared = prepareBuiltinInsert(*store_, uid, track, before);
+    return finishInsert(prepareBuiltinInsert(*store_, uid, track, before));
+}
+bool ProjectDocument::insertPlugin(const rows::PluginRef &ref, std::int64_t track) {
+    return finishInsert(preparePluginInsert(*store_, ref, track));
+}
+bool ProjectDocument::finishInsert(PreparedBuiltinInsert prepared) {
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
         return false;
