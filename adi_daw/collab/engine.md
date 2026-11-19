@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E51(c) initial MPE member expression
+
+**PR requested** · `engine/df-e51-mpe-initial-expression` · `418a16b0f3ff9e2443205f7bff1b831ce9fd1641`
+**Title** — Latch an MPE member note's initial bend and timbre.
+
+Idle member bend and timbre stay on their channel until the next attack. The accepted Note On comes first in the native stream and its initial values carry that note ID at its frame. CC74 works on its own and CC106 can complete the full 14-bit value. An initial value refused by the sink can retry on its original accepted note, and a refused note start consumes its own latch. Plain and master routing preserve their original addresses.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Both pass MPE parser 88, capture 41, MIDI memory 32, parser-to-router 25 and MPE output 91. The real note-expression route receives exact initial timbre and the MPE MIDI route emits the exact initial bend before its attack. Callback audit passed. Three compiled faults lost the bend latch, narrowed timbre and discarded a refused value respectively, producing the intended failures. `git diff --check` passed. Hardware Continuum and hosted instruments are pending their own readings.
+
+**Dependency** — Stack after DF-E51(a,b,d) `ba87710e`. Ready before MPE input wiring.
+
 ## 2026-11-19 — DF-E54(b) project structure and timing checks
 
 **PR requested** · `engine/df-e54-project-structure` · `3887a4cbe798cde066c9a76630d75cda92961779`
