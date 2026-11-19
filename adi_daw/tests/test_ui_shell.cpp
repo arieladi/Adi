@@ -9907,8 +9907,15 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
         FloatingHost host(root, commands, persistence, view, [](std::int64_t) { return true; }, false);
         check(root.setMixView(true, false), "open Stack to set up the analyser return fixture");
         root.frame();
-        nav.show.setSelectedId(nav.show.getItemId(0), juce::sendNotificationSync);
+        const auto all = nav.show.getItemId(0);
+        nav.show.setSelectedId(all, juce::sendNotificationSync);
         mix.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+        const auto withTools = [&] {
+            return mix.stack.channelScope.getSelectedId() == 1 &&
+                   mix.stack.model().windowView().channelScope == stack::ChannelScope::WithTools;
+        };
+        check(mix.tab() == MixViewPanel::Tab::Stack && withTools() && !mix.stack.model().shownIndex(13),
+              "the Stack's With tools filter starts with Bass hidden");
         check(root.setMixView(false, false) &&
                   root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Kick") &&
                   root.submitEdit("track.setSolo", {{"id", 13}, {"soloed", true}}, "Solo Bass") &&
@@ -9919,31 +9926,54 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
         auto *pane = dynamic_cast<AnalysisPane *>(host.content("Analysis"));
         check(pane && pane->view.track() == 13, "the detached analyser presents the stable source channel");
         if (pane) {
-            pane->setMode(SharedSpectrumView::Mode::Phase);
+            using Mode = SharedSpectrumView::Mode;
+            const auto resetDestination = [&] {
+                mix.analysis.followSelection(false);
+                mix.analysis.setMode(Mode::Spectrum);
+            };
+            const auto phaseSelected = [&](std::int64_t channel) {
+                return mix.tab() == MixViewPanel::Tab::Analysis && mix.analysis.isVisible() &&
+                       !mix.stack.isVisible() && mix.analysis.page() == MixAnalysers::Page::Phase &&
+                       mix.analysis.detail.mode() == Mode::Phase && session.selection().track == channel;
+            };
+            const auto phaseFor = [&](std::int64_t channel) {
+                return phaseSelected(channel) && mix.analysis.isShowing() && mix.analysis.detail.view.track() == channel;
+            };
+            const auto opCount = [&] { return value(*store, "SELECT count(*) FROM ops"); };
+            pane->setMode(Mode::Phase);
+            resetDestination();
             auto selection = session.selection();
             selection.track = 14;
             std::string reason;
-            check(session.select(selection, reason), "another view changes selection before the analyser's next frame");
-            const auto before = value(*store, "SELECT count(*) FROM ops");
+            check(session.select(selection, reason) && pane->view.track() == 13,
+                  "another view changes selection before the analyser's next frame");
+            const auto before = opCount();
+            const auto undoBefore = root.undoTitle(false);
             pane->expandButton.onClick();
-            check(root.state().mixView && mix.tab() == MixViewPanel::Tab::Stack &&
-                      mix.stack.focused() == 13 && session.selection().track == 13 &&
-                      mix.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels,
-                  "return picks the displayed Bass row over Focus and reveals it when only the tool scope hid it");
-            check(host.shown("Analysis") && host.content("Analysis") == pane &&
-                      pane->mode() == SharedSpectrumView::Mode::Phase &&
-                      value(*store, "SELECT count(*) FROM ops") == before,
-                  "return preserves the detached analyser choice and adds no project edit or Undo");
+            check(root.state().mixView && phaseFor(13),
+                  "return lands on the Analysis page, showing the detached Phase mode and displayed Bass channel");
+            check(withTools() && nav.show.getSelectedId() == all,
+                  "return to Bass leaves the Stack scope and channel group intact");
+            check(host.shown("Analysis") && host.content("Analysis") == pane && pane->mode() == Mode::Phase &&
+                      opCount() == before && root.undoTitle(false) == undoBefore,
+                  "return preserves the detached analyser and adds no project edit or Undo");
 
             nav.show.setSelectedId(rhythm, juce::sendNotificationSync);
             selection.track = 14;
             check(session.select(selection, reason), "the analyser follows a channel outside the selected group");
             host.frame("Analysis");
+            check(pane->view.track() == 14, "the detached view has presented the excluded channel");
+            resetDestination();
             pane->expandButton.onClick();
-            check(session.selection().track == 14 && nav.show.getSelectedId() == rhythm &&
-                      !mix.stack.model().shownIndex(14),
-                  "an explicit group filter is kept just as for the Stack row reveal command");
-            nav.show.setSelectedId(nav.show.getItemId(0), juce::sendNotificationSync);
+            check(phaseFor(14) && nav.show.getSelectedId() == rhythm && withTools(),
+                  "an active group filter does not redirect the Analysis source or reset Stack scope");
+            check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)),
+                  "the user can explicitly switch from Analysis to Stack afterward");
+            root.frame();
+            check(mix.tab() == MixViewPanel::Tab::Stack && mix.stack.isShowing() &&
+                      nav.show.getSelectedId() == rhythm && withTools() && !mix.stack.model().shownIndex(14) &&
+                      opCount() == before && root.undoTitle(false) == undoBefore,
+                  "explicit Stack opening keeps the authored group and scope and still creates no Undo");
 
             check(root.setMixView(false, true) &&
                       root.submitEdit("track.delete", {{"id", 14}}, "Remove the displayed channel"),
@@ -9951,11 +9981,23 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
             selection.track = 11;
             check(session.select(selection, reason), "set a live fallback selection without ticking the analyser");
             check(pane->view.track() == 14, "the detached picture still names the removed channel");
+            resetDestination();
+            const auto beforeFallback = opCount();
+            const auto undoBeforeFallback = root.undoTitle(false);
             pane->expandButton.onClick();
-            check(root.state().mixViewDetached && host.content("Mix View") == &mix &&
-                      mix.tab() == MixViewPanel::Tab::Stack && mix.stack.focused() == 11 &&
-                      session.selection().track == 11 && host.shown("Analysis"),
-                  "a stale source falls back to the current valid channel in the preferred Mix View window");
+            check(root.state().mixViewDetached && host.content("Mix View") == &mix && host.shown("Mix View") &&
+                      phaseSelected(11) && host.shown("Analysis"),
+                  "a stale source selects the current valid channel on Analysis in the preferred Mix View window");
+            if (auto *window = host.window("Mix View")) {
+                // Make the software-only detached host show on the existing fake peer.
+                window->setBounds(fake.getLocalBounds());
+                fake.addAndMakeVisible(*window);
+                host.frame("Mix View");
+            }
+            check(phaseFor(11), "the first visible detached Analysis frame shows the fallback channel in Phase");
+            check(nav.show.getSelectedId() == rhythm && withTools() &&
+                      opCount() == beforeFallback && root.undoTitle(false) == undoBeforeFallback,
+                  "the detached fallback also preserves the Stack settings and adds no edit or Undo");
         }
     }
     fake.removeChildComponent(&root);
