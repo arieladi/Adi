@@ -2,7 +2,7 @@
 
 ## FOR THE DIRECTOR
 
-Win, please lend the Device View panel factory/registry and build-manifest lines that mount ADI-Shaper, the parameter-gesture dispatch for one undo group during a multi-point edit, and the instance-scoped audio feed for the displayed waveform. For Time, please lend the exact sample/revision forwarding line in the native transport callback. Clones can supply and test those small integrations on its own dependent branches. The existing seven-stage candidate stays in the evening landing window.
+Win, please lend the Device View panel factory/registry and build-manifest lines that mount ADI-Shaper, the parameter-gesture dispatch for one undo group during a multi-point edit, and the instance-scoped audio feed for the displayed waveform. For Time, please lend the exact sample/revision forwarding line in the native transport callback. Clones can supply and test those small integrations on its own dependent branches. The exact panel seam is `ui_main.cpp`'s `pluginEditor` factory, plus showing the wrench for this UID in `DevicePanelView::present` and routing its existing click. The new panel uses the existing multi-op submitter for one journal transaction. It needs no new shared gesture operation. To supply real audio, the built-in and native instance each forward their shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`; the audio core owns its capture. Clones supplies the panel sources and tests via its own device build manifest. The existing seven-stage candidate stays in the evening landing window.
 
 ## 19 November 2026 — Panel, Time and Pitch ownership
 
