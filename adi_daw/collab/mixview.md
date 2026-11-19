@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Rehearse the Clean Hold integration and audit panel republishing
+
+Projected #555 `2a39ffb1` onto cumulative `86092dda`. The conflict reconciliation retains the Clean input bounds, denormal scope, unity copies, and make-up ramp alongside the fixed Hold maximum and post-envelope. Hold remains core-only. The existing native control set uses zero Hold. Reset clears both detector and Hold history and rejects incompatible settings before changing the stream.
+
+The test-only projection passed 197 compressor checks in Windows Debug and Release, comparing 643,072 samples with zero callback allocations or frees. The cumulative Release also passed 104 native Clean host checks with zero callback allocations or frees. The tests cover invalid samples during active Hold, a refused reset mid-block with exact continuation, and an accepted reset matching a fresh stream. #555 stays on its existing review branch until its turn.
+
+DF-M60 (d) is already covered in the cumulative candidate. The panel publication test changes sidechain width from 0 to 2 and back on the same attached instance, retains the earlier snapshot and reuses the unchanged publication. The document test changes and clears the processing issue through the provider with availability and gesture identity preserved. The narrower #651 head still needs the cumulative width comparison before the row can close.
+
 ### 2026-11-19 — Windows follow-up for VST3 key shape and retained identity
 
 **For Engine.** Windows Release verified the adapter-only delta from `b1a9cee8` on the 107-check owned VST3 fixture. It clears all four default-active preparation and SDK reactivation failures from the earlier run. Post FX, Pre FX, remove and duplicate receipt on an already active bus preserve programme samples and the existing prepared reader. The four dormant-bus failures remain in the Session route path. They cover first assign, retap, Undo and immediate reopen. The Windows proof used the owner's exact adapter delta in a private variant. The adapter still lands through the Engine branch.
