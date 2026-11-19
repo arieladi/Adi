@@ -1121,12 +1121,132 @@ void mixAnalyserPages() {
           "replacing the project cannot retain a fixed source even if the new project has the same track IDs");
 }
 
+void compareAndAveragePages() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Comparison = AnalysisComparison::Status;
+    constexpr std::int64_t main = 91, guitar = (std::int64_t{1} << 34) + 3;
+    const auto project = [](std::uint64_t sequence, const char *name) {
+        auto snapshot = std::make_shared<adi::engine::Snapshot>();
+        snapshot->seq = sequence;
+        auto master = std::make_shared<adi::engine::TrackNode>();
+        master->id = main; master->kind = "master"; master->name = "Main";
+        snapshot->tracks.push_back(master);
+        if (name) {
+            auto instrument = std::make_shared<adi::engine::TrackNode>();
+            instrument->id = guitar; instrument->kind = "audio"; instrument->name = name;
+            snapshot->tracks.push_back(instrument);
+        }
+        return snapshot;
+    };
+    const SnapshotReader original{project(1, "Guitar")};
+    const SnapshotReader renamed{project(2, "Lead guitar")};
+    const SnapshotReader removed{project(3, nullptr)};
+    auto first = std::make_shared<ScopeTap>(48000., 1.);
+    auto second = std::make_shared<ScopeTap>(48000., 1.);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](std::int64_t track, ScopePoint) { return track == main ? first : second; },
+        [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    const auto write = [](ScopeTap &tap, float level, std::int64_t stamp, std::uint64_t revision) {
+        std::array<float, 1024> samples;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = level * static_cast<float>(std::sin(2. * std::numbers::pi * static_cast<double>(i) / 64.));
+        tap.write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true, revision);
+    };
+
+    Root root;
+    MixAnalysers pages;
+    root.setBounds(0, 0, 740, 660);
+    root.setVisible(true); root.addToDesktop(0);
+    root.addAndMakeVisible(pages);
+    pages.setBounds(root.getLocalBounds());
+    pages.setPage(Page::Compare);
+    pages.frame(broker, original, main, guitar);
+    check(root.getPeer() && !root.getPeer()->getNativeHandle() && broker->stats().consumers == 0 &&
+              pages.compareA.isShowing() && pages.compareB.isShowing() && !pages.detail.isVisible(),
+          "Compare uses a software peer and acquires only an explicitly chosen pair");
+    pages.compareA.setSelectedId(pages.compareA.getItemId(0), juce::sendNotificationSync);
+    pages.compareB.setSelectedId(pages.compareB.getItemId(1), juce::sendNotificationSync);
+    pages.frame(broker, original, main, guitar);
+    check(broker->stats().consumers == 2 && broker->stats().taps == 2, "Compare subscribes to two independent channel taps");
+    write(*first, .64f, 0, 1); write(*second, .32f, 0, 1); broker->pump();
+    pages.frame(broker, original, main, guitar);
+    auto pair = pages.comparisonView();
+    check(pair.status == Comparison::Independent && pair.a.metadata && pair.b.metadata &&
+              pair.a.metadata->endpoint.request.track == main && pair.b.metadata->endpoint.request.track == guitar &&
+              pair.a.binsDbfs[16] > pair.b.binsDbfs[16],
+          "Compare presents the two calibrated broker windows on their explicit channels");
+    write(*first, .4f, 1024, 2); broker->pump();
+    pages.frame(broker, original, main, main);
+    check(pages.comparisonView().status == Comparison::Unavailable,
+          "a live overlay waits when the two tap publications disagree on the audio transport revision");
+    write(*second, .2f, 1024, 2); broker->pump();
+    const int priorBMenu = pages.compareB.getSelectedId();
+    pages.frame(broker, renamed, main, main);
+    pair = pages.comparisonView();
+    check(pair.status == Comparison::Independent && pages.compareB.getSelectedId() == priorBMenu &&
+              pages.compareB.getText() == "Lead guitar" && pair.b.metadata->endpoint.request.track == guitar,
+          "renaming B and moving selection keeps its authored 64-bit channel and publication");
+    const auto reference = pair.b.binsDbfs.empty() ? 0.f : pair.b.binsDbfs[16];
+    pages.holdB.onClick();
+    check(pages.comparisonView().status == Comparison::Held && broker->stats().taps == 1,
+          "holding B retains its actual bins and releases its live tap");
+    write(*first, .1f, 2048, 3); broker->pump();
+    pages.frame(broker, renamed, main, main);
+    pair = pages.comparisonView();
+    check(pair.status == Comparison::Held && pair.b.binsDbfs[16] == reference &&
+              pair.a.metadata->transportRevision == 3,
+          "a deliberately held reference survives a new live transport revision");
+    root.setVisible(false);
+    check(broker->stats().consumers == 0 && !pages.comparisonView().visible && pages.comparisonView().referenceHeld,
+          "ancestor hide releases live Compare demand without a frame and retains the deliberate B reference");
+    root.setVisible(true);
+    pages.frame(broker, renamed, main, main);
+    check(!pages.comparisonView().a.metadata && pages.comparisonView().referenceHeld,
+          "showing Compare waits for a fresh A window");
+    pages.clearCompare.onClick();
+    check(!pages.comparisonView().referenceHeld && !pages.comparisonView().a.metadata &&
+              !pages.comparisonView().b.metadata && broker->stats().consumers == 2,
+          "clearing the reference fences both sources and keeps explicit endpoints");
+    pages.frame(broker, removed, main, main);
+    check(pages.compareB.getSelectedId() == 0 && broker->stats().taps == 0,
+          "deleting B drops the pair without following the next available channel");
+
+    pages.setPage(Page::Average);
+    pages.frame(broker, original, main, guitar);
+    SharedAnalysis::Request rawRequest{main};
+    auto raw = broker->acquire(rawRequest);
+    auto averageRequest = rawRequest;
+    averageRequest.outputs = SharedAnalysis::Average1s;
+    auto publishedAverage = broker->acquire(averageRequest);
+    write(*first, .8f, 3072, 4); broker->pump();
+    pages.frame(broker, original, main, guitar);
+    write(*first, .1f, 4096, 4); broker->pump();
+    pages.frame(broker, original, main, guitar);
+    const auto average = publishedAverage.readAverage();
+    const auto rawWindow = raw.read();
+    const auto bins = pages.detail.view.spectrumBins();
+    check(average && average->status == SharedAnalysis::AverageStatus::Ready && average->binsDbfs &&
+              pages.detail.view.snapshot() == average->window && std::ranges::equal(bins, *average->binsDbfs) &&
+              rawWindow && bins.size() > 16 && bins[16] > rawWindow->binsDbfs[16] &&
+              broker->stats().taps == 1 && broker->stats().spectralPlans == 1,
+          "the visible 1 s Average draws actual smoothed bins and shares a single transform with Raw");
+    pages.detail.view.clear();
+    pages.frame(broker, original, main, guitar);
+    check(pages.detail.view.spectrumBins().empty() && publishedAverage.readAverage() == average,
+          "clearing the display gates its next average without resetting another reader");
+    pages.setPage(Page::Compare);
+    check(broker->stats().consumers == 2, "leaving Average releases only the page's own lease");
+    raw.reset(); publishedAverage.reset();
+    root.removeFromDesktop();
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); mixAnalyserPages(); }
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

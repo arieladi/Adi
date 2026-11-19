@@ -8,6 +8,7 @@
 #include <memory>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace adi::engine { class MainLoudness; }
@@ -45,7 +46,7 @@ class SharedSpectrumView final : public juce::Component,
     SharedSpectrumView();
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
-    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout };
+    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
     void setSource(engine::ScopePoint, std::int64_t device = 0);
@@ -78,6 +79,7 @@ class SharedSpectrumView final : public juce::Component,
     Status status() const noexcept { return status_; }
     bool subscribed() const noexcept { return static_cast<bool>(lease_); }
     std::shared_ptr<const SharedAnalysis::Result> snapshot() const noexcept { return shown_; }
+    std::span<const float> spectrumBins() const noexcept;
     std::int64_t track() const noexcept { return track_; }
   private:
     friend struct SharedSpectrumViewTestAccess;
@@ -94,11 +96,16 @@ class SharedSpectrumView final : public juce::Component,
     struct Raster;
     void updateRaster();
     void updateSpectrumProjection();
+    bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
+    Status pictureStatus() const noexcept;
+    void resetPicture() noexcept;
     void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
+    std::shared_ptr<const std::vector<float>> averageBins_;
+    SharedAnalysis::AverageStatus averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
     std::weak_ptr<const MainMeterSource> mainMeterSource_;
     std::optional<MainMeterSnapshot> mainMeter_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;

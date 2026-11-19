@@ -131,19 +131,20 @@ SharedSpectrumView::SharedSpectrumView() {
 }
 void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage) frozen_ = false;
+    lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; freshRequired_ = false;
     mode_ = mode; updateDemand(); repaint();
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; freshRequired_ = false;
     point_ = point; device_ = device; updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+    lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; freshRequired_ = false;
     channel_ = channel; updateDemand(); repaint();
 }
@@ -167,8 +168,23 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     repaint();
 }
 void SharedSpectrumView::updateSpectrumProjection() {
-    if (mode_ != Mode::Spectrum || !shown_) return;
-    spectrumProjection_.prepare(spectrumSlope_, shown_->sampleRate, shown_->request.fftSize, shown_->binsDbfs.size());
+    if (!spectrumMode() || !shown_) return;
+    spectrumProjection_.prepare(spectrumSlope_, shown_->sampleRate, shown_->request.fftSize, spectrumBins().size());
+}
+std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
+    if (mode_ == Mode::SpectrumAverage)
+        return averageBins_ ? std::span<const float>(*averageBins_) : std::span<const float>{};
+    return mode_ == Mode::Spectrum && shown_ ? std::span<const float>(shown_->binsDbfs) : std::span<const float>{};
+}
+void SharedSpectrumView::resetPicture() noexcept {
+    shown_.reset();
+    averageBins_.reset();
+    averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
+}
+SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
+    if (averageStatus_ == SharedAnalysis::AverageStatus::InvalidInput ||
+        averageStatus_ == SharedAnalysis::AverageStatus::Unavailable) return Status::Unavailable;
+    return shown_ ? Status::Ready : Status::Waiting;
 }
 void SharedSpectrumView::setMainMeterSource(const std::shared_ptr<const MainMeterSource> &source) {
     if (!mainMeterSource_.owner_before(source) && !source.owner_before(mainMeterSource_)) return;
@@ -189,7 +205,7 @@ void SharedSpectrumView::freeze(bool value) {
     else {
         freshRequired_ = true; sourcePosition_ = {};
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-        shown_.reset(); mainMeter_.reset(); raster_.reset(); updateDemand();
+        resetPicture(); mainMeter_.reset(); raster_.reset(); updateDemand();
     }
     repaint();
 }
@@ -201,7 +217,7 @@ void SharedSpectrumView::clear() {
         clearedColumn_ = shown_->historySerial;
     }
     armFreshBoundary();
-    shown_.reset(); mainMeter_.reset(); raster_.reset();
+    resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
 SharedSpectrumView::~SharedSpectrumView() {
@@ -211,7 +227,7 @@ SharedSpectrumView::~SharedSpectrumView() {
 void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::int64_t track) {
     if (broker_ != broker || track_ != track) {
         lease_.reset();
-        shown_.reset();
+        resetPicture();
         mainMeter_.reset();
         raster_.reset();
         broker_ = std::move(broker);
@@ -240,12 +256,12 @@ void SharedSpectrumView::updateDemand() noexcept {
         if (shown_ || lease_) freshRequired_ = true;
         lease_.reset();
         sourcePosition_ = {};
-        shown_.reset();
+        resetPicture();
         raster_.reset();
         mainMeter_.reset();
         status_ = Status::Detached;
     } else if (!broker_->active()) {
-        lease_.reset(); shown_.reset(); raster_.reset(); mainMeter_.reset();
+        lease_.reset(); resetPicture(); raster_.reset(); mainMeter_.reset();
         sourcePosition_ = {}; freshRequired_ = true;
         status_ = Status::Unavailable;
     } else if (frozen_) {
@@ -262,6 +278,7 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
+            case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
             }
             try {
                 lease_ = broker_->acquire(request);
@@ -273,13 +290,13 @@ void SharedSpectrumView::updateDemand() noexcept {
         if (!lease_ || !lease_.available()) {
             if (shown_ || sourcePosition_.generation) freshRequired_ = true;
             sourcePosition_ = {};
-            shown_.reset();
+            resetPicture();
             raster_.reset();
             mainMeter_.reset();
             status_ = Status::Unavailable;
         } else {
             if (!sourcePosition_.generation) sourcePosition_ = lease_.sourcePosition();
-            status_ = shown_ ? Status::Ready : Status::Waiting;
+            status_ = pictureStatus();
         }
     }
     if (previous != status_ || (hadMainMeter && !mainMeter_)) repaint();
@@ -299,7 +316,11 @@ void SharedSpectrumView::frame() noexcept {
     broker_->requestFrame();
     updateDemand(); // owner resolution may have changed pending availability/generation
     if (!lease_.available()) return;
-    auto next = lease_.read();
+    const bool averaging = mode_ == Mode::SpectrumAverage;
+    const auto average = averaging ? lease_.readAverage() : nullptr;
+    const auto averageStatus = average ? average->status : SharedAnalysis::AverageStatus::Waiting;
+    auto next = averaging ? (averageStatus == SharedAnalysis::AverageStatus::Ready && average->binsDbfs
+                                 ? average->window : nullptr) : lease_.read();
     // Invalidation can replace a live source before its next publication. Fence
     // at that activation, rather than accepting buffered replacement-source data.
     if (!next && shown_) armFreshBoundary();
@@ -319,10 +340,13 @@ void SharedSpectrumView::frame() noexcept {
     // cannot leave a raster that later aliases the new domain's first result.
     if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
-    if (next != shown_) {
+    const auto nextBins = next && average ? average->binsDbfs : nullptr;
+    if (next != shown_ || nextBins != averageBins_ || averageStatus != averageStatus_) {
         shown_ = std::move(next);
+        averageBins_ = nextBins;
+        averageStatus_ = averageStatus;
         mainMeter_.reset();
-        status_ = shown_ ? Status::Ready : Status::Waiting;
+        status_ = pictureStatus();
         repaint();
     }
     updateMainMeter();
@@ -436,7 +460,7 @@ void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) 
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
     if (shown_ || lease_) freshRequired_ = true;
     sourcePosition_ = {};
-    lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
+    lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
     unwatchAncestors();
 }
 void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
@@ -473,7 +497,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
     g.setFont(look::font(10.f, true));
-    const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram"};
+    const char *names[]{"Spectrum", "Scope", "Sample peak / RMS", "Phase / L-R correlation", "Spectrogram",
+                        "Channel analysis", "Spectrum / 1 s average"};
     const char *points[]{"Post Mixer", "Post FX", "Pre FX", "Device In", "Device Out"};
     g.drawText(juce::String(names[static_cast<int>(mode_)]) + " / " + points[static_cast<int>(point_)] +
                    (frozen_ ? " / Frozen" : ""), area.withHeight(14.f), juce::Justification::centredLeft, true);
@@ -482,7 +507,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
-    if (mode_ == Mode::Spectrum || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
+    if (spectrumMode() || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
         const float value = static_cast<float>(step) * -24.f;
         const float y = heightFor(value, plot);
         g.setColour(look::outline);
@@ -550,7 +575,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     const auto xFor = [&](double hz) {
         return plot.getX() + plot.getWidth() * static_cast<float>(std::log(hz / 20.0) / std::log(topHz / 20.0));
     };
-    if (mode_ == Mode::Spectrum) for (const double hz : {100., 1000., 10000.}) {
+    if (spectrumMode()) for (const double hz : {100., 1000., 10000.}) {
         if (hz > topHz) continue;
         const auto x = xFor(hz);
         g.setColour(look::outline);
@@ -560,11 +585,12 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     bool started = false;
     const auto offsets = spectrumProjection_.offsets();
     const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
-    const bool projectionReady = !tilted || offsets.size() == shown_->binsDbfs.size();
-    if (mode_ == Mode::Spectrum && projectionReady) for (std::size_t i = 1; i < shown_->binsDbfs.size(); ++i) {
+    const auto bins = spectrumBins();
+    const bool projectionReady = !tilted || offsets.size() == bins.size();
+    if (spectrumMode() && projectionReady) for (std::size_t i = 1; i < bins.size(); ++i) {
         const double hz = static_cast<double>(i) * shown_->sampleRate / shown_->request.fftSize;
         if (hz < 20 || hz > topHz) continue;
-        auto value = std::isfinite(shown_->binsDbfs[i]) ? shown_->binsDbfs[i] : floorDb;
+        auto value = std::isfinite(bins[i]) ? bins[i] : floorDb;
         if (tilted) value += offsets[i];
         const auto x = xFor(hz), y = heightFor(value, plot);
         if (!started) { curve.startNewSubPath(x, y); started = true; }
@@ -572,7 +598,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     }
     g.setColour(look::value);
     g.strokePath(curve, juce::PathStrokeType(1.4f));
-    if (mode_ == Mode::Spectrum && tilted) {
+    if (spectrumMode() && tilted) {
         g.setFont(look::font(9.f));
         g.drawText(projectionReady ? "Display +4.5 dB/oct @ 1 kHz" : "Spectrum display unavailable",
                    plot.withHeight(12.f), juce::Justification::topRight, true);
@@ -614,6 +640,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
 AnalysisPane::AnalysisPane() {
     setTitle("Analysis");
     modeBox.addItemList({"Spectrum", "Scope", "Meters", "Phase", "Spectrogram"}, 1);
+    modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
@@ -645,7 +672,9 @@ AnalysisPane::AnalysisPane() {
     paletteBox.onChange = paletteChanged; reverseButton.onClick = paletteChanged;
     addAndMakeVisible(paletteBox); addAndMakeVisible(reverseButton);
     setPalette("adi");
-    modeBox.onChange = [this] { setMode(static_cast<SharedSpectrumView::Mode>(modeBox.getSelectedId() - 1)); };
+    modeBox.onChange = [this] {
+        if (const auto id = modeBox.getSelectedId(); id > 0) setMode(static_cast<SharedSpectrumView::Mode>(id - 1));
+    };
     sourceBox.onChange = [this] { source_ = sourceBox.getSelectedId() == 2 ? Source::Selected : Source::Main; };
     pointBox.onChange = [this] { setPoint(static_cast<engine::ScopePoint>(pointBox.getSelectedId() - 1)); };
     channelBox.onChange = [this] { view.setChannel(static_cast<SharedAnalysis::Channel>(channelBox.getSelectedId() - 1)); };
@@ -665,10 +694,12 @@ bool AnalysisPane::anyControlsFocused() noexcept {
 }
 void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     view.setMode(mode); modeBox.setSelectedId(static_cast<int>(mode) + 1, juce::dontSendNotification);
-    channelBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::Spectrogram);
+    freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
+    const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage;
+    channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
     paletteBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
     reverseButton.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
-    slopeBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrum);
+    slopeBox.setEnabled(spectral);
 }
 void AnalysisPane::setSource(Source source) {
     source_ = source; sourceBox.setSelectedId(source == Source::Selected ? 2 : 1, juce::dontSendNotification);
