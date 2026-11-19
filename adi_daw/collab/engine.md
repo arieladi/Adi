@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E47(a,b) linear clip and remark snapshots
+
+**PR requested** · `engine/df-e47-linear-clip-snapshot` · `f26b6396a9057b460686ba1350a6f026ac24c330`
+**Title** — Project linear clip snapshots through the tempo map.
+
+Snapshots project each native absolute start and end through the tempo map and sort mixed-clock clips by projected start, then ID. Native nanoseconds participate in sharing even when both displayed ticks stay the same. Existing independent fade handles use that projection and preserve their physical anchors. Remark ownership now checks a per-rebuild track ID set when remarks exist.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Both pass engine 147, snapshot remarks 29, clip edit 408, clip playback 503, MIDI Capture 51, clip details 32, edit plan 610 and Warp playback 125. Three compiled faults removed projection, native-time comparison or mixed sorting and failed their named assertions. Updated the N52 fixture to select authored clips by ID since timeline order now changes. All four validators, SPEC binary layout and `git diff --check` pass.
+
+**Dependencies** — E1 `55fd8bbd` through DF-E45 `5a416811`, and N52 `65c0dd4c` retained in this stack. Land with DF-E17(a), before Bounce gets a Window caller. Combining the older DF-E17 branch `0c30d4ce` with this stack requires reconciling `snapshot.cpp`, `ops_catalog.cpp` and the clip edit fixture. DF-E35(a) remains the later take-lane snapshot change.
+
 ## 2026-11-19 — DF-E51(c) initial MPE member expression
 
 **PR requested** · `engine/df-e51-mpe-initial-expression` · `418a16b0f3ff9e2443205f7bff1b831ce9fd1641`
