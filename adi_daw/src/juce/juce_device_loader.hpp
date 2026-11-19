@@ -11,8 +11,8 @@
 //     descriptor's reverse-DNS id). VST3 checks the in-memory catalogue first.
 //     Discovery at an unknown VST3 path_hint contributes its descriptions to
 //     that catalogue. CLAP uses path_hint to choose between copies of one id.
-//     Unknown modules can still cause lazy discovery until the startup service
-//     owns it.
+//     A hydrated catalogue miss needs explicit discovery. Lazy discovery is
+//     retained for a fresh loader with no registry or a validated v1/v2 schema.
 //   * **An instance that did not load is NOT returned.** Both hosts hand back a
 //     `MissingDevice` rather than null on failure (ADR-0011), which is right
 //     for a probe and wrong here: the SESSION builds the placeholder, because
@@ -44,18 +44,30 @@ class JuceDeviceLoader {
 public:
     JuceDeviceLoader();
 
-    /// A directory searched for both formats, ahead of the defaults. Adding
-    /// one after a scan schedules another scan on the next request.
+    /// A directory searched by explicit discovery, ahead of the defaults.
+    /// Adding a root does not invalidate or bypass a hydrated snapshot.
     void addSearchPath(const juce::File& dir);
 
-    /// Explicit scan; `fn()` also scans lazily on the first row that needs one.
+    /// Explicit owner scan. A fresh loader with no cache-capable registry retains legacy
+    /// lazy discovery; after hydration, misses report NeedsDiscovery instead.
     void scan();
+
+    /// Read-only owner hydration of stored metadata, independent of helper
+    /// deployment. Stages all common/format validation before publication.
+    /// Missing or validated v1/v2 registry on a fresh loader permits legacy discovery;
+    /// only that later owner discovery migrates. Corrupt existing metadata
+    /// fails closed for new external instances until a successful refresh/scan.
+    /// A valid empty catalogue also disables implicit discovery. Publication
+    /// replaces metadata only at this explicit boundary, not on every insert.
+    /// Does not claim current filesystem freshness or runtime readiness.
+    bool hydrateCatalogue(std::string& error);
 
     /// Owner configuration for the dedicated helper/shared quarantine. Empty
     /// paths use app defaults. Changing it invalidates the lazy discovery cache.
     void setScanConfig(const scan::Config& config) {
         if(audio::onAudioThread)return;
-        scanConfig_=config;scanned_=false;known_.clear();
+        scanConfig_=config;scanned_=false;known_->clear();clapCatalogue_.clear();
+        hydrationAttempted_=false;catalogueHydrated_=false;hydrationError_.clear();
     }
     /// Borrowed on the owner between jobs; copy/publish for another thread.
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
@@ -72,6 +84,8 @@ public:
         std::int64_t notFound = 0;   ///< hosted format, no binary matched the uid
         std::int64_t failed = 0;     ///< matched, and did not instantiate
         std::int64_t scans = 0;
+        std::int64_t catalogueReads = 0; ///< persistent metadata reads, never discovery
+        std::int64_t needsDiscovery = 0; ///< cached snapshot misses; no implicit scan
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
@@ -89,10 +103,14 @@ private:
 
     Vst3Host vst3_;
     ClapHost clap_;
-    juce::KnownPluginList known_;
+    std::unique_ptr<juce::KnownPluginList> known_ = std::make_unique<juce::KnownPluginList>();
+    std::vector<ClapPluginRef> clapCatalogue_;
     juce::FileSearchPath vst3Paths_;
     std::vector<std::string> clapPaths_;
     bool scanned_ = false;
+    bool hydrationAttempted_ = false;
+    bool catalogueHydrated_ = false;
+    std::string hydrationError_;
     Stats stats_;
     scan::Config scanConfig_;
     scan::Report scanReport_;

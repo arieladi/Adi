@@ -465,6 +465,8 @@ int main(int argc, char** argv) {
     }
 
     adi::StoreError se = adi::StoreError::Ok;
+    std::string catalogueError;
+    (void)loader.hydrateCatalogue(catalogueError); // metadata only; instance diagnostics retain any error
     auto store = adi::Store::open(o.file, se, /*readOnly=*/!o.saveState);
     if (!store) {
         std::printf("FAILED -- cannot open %s (store error %d)\n", o.file.c_str(), static_cast<int>(se));

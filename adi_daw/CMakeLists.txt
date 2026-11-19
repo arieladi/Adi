@@ -1688,6 +1688,12 @@ if(ADI_WITH_JUCE)
         target_compile_definitions(adi_play_render_tests PRIVATE
             ADI_CATALOGUE_FIXTURE="${_adi_fixture}"
             ADI_CATALOGUE_SCANNER="$<TARGET_FILE:adi_plugin_scanner>")
+        add_library(adi_catalogue_clap_fixture MODULE tests/fixtures/catalogue_clap.cpp)
+        target_include_directories(adi_catalogue_clap_fixture SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+        target_link_libraries(adi_catalogue_clap_fixture PRIVATE adi_warnings)
+        set_target_properties(adi_catalogue_clap_fixture PROPERTIES PREFIX "" SUFFIX ".clap")
+        add_dependencies(adi_play_render_tests adi_catalogue_clap_fixture)
+        target_compile_definitions(adi_play_render_tests PRIVATE ADI_CATALOGUE_CLAP="$<TARGET_FILE:adi_catalogue_clap_fixture>")
     endif()
 
     target_link_libraries(adi_audio_probe PRIVATE

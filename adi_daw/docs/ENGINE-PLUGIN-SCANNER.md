@@ -166,8 +166,14 @@ retry and removes only its owned reparse point, leaving the target intact.
 `scan::readCatalogue(registry,error,limits)` opens a separate SQLite READONLY
 connection and one read transaction. It does not open a Scanner, require/hash
 the helper, create/migrate the registry, write a pending ticket, launch a child,
-resolve/stat candidate paths or enumerate search roots. Missing, foreign,
-pre-v3 and future registries fail explicitly. Both success-only v3 files and
+resolve/stat candidate paths or enumerate search roots. Its optional typed status
+distinguishes `Missing`, `Legacy`, `Ready` and `Invalid`. Missing and validated
+pre-cache v1/v2 schemas return no snapshot without creating or migrating a file.
+Legacy admission verifies the ADI application ID, historical strict table/column
+and primary-key layouts, v2 quarantine identity uniqueness, and absence of newer
+cache/failure tables or unexpected legacy triggers. Foreign, future or malformed
+registries return `Invalid`; a lowered version pragma on a v3 store is not legacy.
+Both success-only v3 files and
 v3 files with the additive failure table can be read without schema changes.
 
 Only positive rows with no matching pending/manual/automatic block and no typed
@@ -179,7 +185,7 @@ A legacy valid empty class list is excluded, not advertised as an installed
 positive. Any corrupt included row or exhausted bound refuses the whole read,
 never a healthy prefix. Bounds are 65,536 modules, 65,536 aggregate descriptors
 and 64 MiB aggregate stored text, with tighter caller limits available; each
-packet still has its 8 MiB bound. No read failure silently falls back to scanning.
+packet still has its 8 MiB bound. An invalid read never silently permits scanning.
 
 The result is a **stored metadata snapshot**, not `State::Ready`, an instantiated
 device or a guarantee that files/helper builds are still current. Each module
@@ -197,18 +203,67 @@ rows, unchanged registry/WAL bytes and unchanged data version after hydration.
 They cover real two-strike exclusion, deliberately seeded stale positive/failure
 overlaps, manual/pending exclusion, packet identity/corruption, empty legacy data,
 bounds, older-v3 compatibility and transactions concurrent with owner updates.
+Historical v1/v2 fixtures verify typed legacy admission, unchanged database bytes,
+no migration, callback status preservation and malformed/foreign/future refusal.
 The registry callback gate also refuses this reader before allocation/file I/O.
 
-This branch does not install the snapshot into JUCE/CLAP hosts, change the
-loader's lazy scans, implement the startup/background discovery service or add
-a CacheOnly loader policy. Those owners still need staged complete catalogue
-publication, VST3 XML validation/path rebinding, CLAP preferred-copy selection,
-staleness/block refresh rules, and a `NeedsDiscovery` miss that never triggers a
-project-open scan. The phase acceptance remains: hydrate at startup, restore or
-reinsert known devices without scanner children/root enumeration, preserve a
-previous complete catalogue on failed refresh, and distinguish found metadata,
-runtime instantiation, state restoration and first audio. None of those runtime
-stages is inferred from a successful stored catalogue read.
+The core reader alone does not install metadata or decide discovery policy;
+the real loader integration below supplies that boundary. Background startup
+discovery, live freshness/block notifications and the manager UI remain later
+work. Found metadata, runtime instantiation, state restoration and first audio
+are still distinct states, not inferred from a stored catalogue read.
+
+## Real loader catalogue hydration
+
+`JuceDeviceLoader::hydrateCatalogue(error)` reads the configured/default registry
+without opening the helper. It decodes **all** VST3 XML using the existing strict
+format validator and stages CLAP refs before replacing either loader catalogue.
+A bad later module therefore cannot publish an earlier healthy prefix. Metadata
+refresh does not unload libraries or disturb existing device instances. Explicit
+discovery also stages its two loader catalogues before replacing a complete one.
+
+The loader attempts hydration once before its first external-format request.
+The GUI and CLI additionally call it at project-open boundaries, so a new project
+gets a fresh stored snapshot without child discovery or search-root enumeration.
+Repeated instance creation does not repeat the SQL read. `setScanConfig` explicitly
+clears staged metadata and resets hydration. A corrupt existing registry fails
+closed for new external requests until an explicit successful refresh/scan.
+
+After a v3 catalogue has been hydrated, including a valid **empty** catalogue, an unknown
+identity returns a null device with a `NeedsDiscovery` diagnostic and increments
+`Stats.needsDiscovery`. It never falls back to a path-hint scan, root walk or child.
+Adding search roots prepares a later explicit `scan()`; it does not bypass this
+policy. A fresh loader with no registry file or a validated historical v1/v2
+schema retains the legacy discovery path. Read-only hydration never migrates;
+only later actual owner discovery opens/migrates the legacy registry, retaining
+route preferences and v2 quarantine rows. Foreign, future and corrupt files are
+not treated as legacy or absence. A missing or validated legacy registry during
+an explicit refresh retains an existing complete in-memory snapshot.
+The existing explicit scan/CLI listing path remains available; automatic background
+discovery and a GUI manager action are not added by this slice.
+
+VST3 lookup retains exact saved JUCE identifiers. For an absolute saved path alias,
+the loader resolves that hint and projects a temporary description onto its original
+absolute spelling **only** when the stored canonical module matches. It then demands
+the exact saved identifier; no class-hash match guesses another installed location,
+and canonical cache/project rows are not rewritten. CLAP keeps stable descriptor id
+and the existing canonical preferred-copy selection. VST3's stored class hashes
+remain hashes, not fabricated native 128-bit CIDs.
+
+The hosted fixture gate populates the persistent cache using real VST3 and CLAP
+modules, removes its private helper, then creates both formats in fresh/reopened
+loaders. It covers known identity without a hint, native same-module alias spelling,
+unknown target/root traps, callback refusal, all-or-nothing VST3 XML validation,
+manual quarantine and zero-strike negative exclusion. Historical v1/v2 fixtures
+exercise the shared GUI/CLI explicit project-open hydration boundary as well as
+lazy loader entry, then real saved-hint discovery and instantiation. They check
+unchanged bytes before discovery and retained route/quarantine rows after migration;
+foreign/newer/malformed controls remain closed even with a working helper and hint.
+The CLAP PID receipt separates
+its initial scanner child from subsequent in-parent runtime instantiation. This
+proves discovery avoidance and instantiation, not state restoration or first audio
+from those fixtures. The independent production render test continues checking
+mono/four/six-channel PCM round trips without a hardware device.
 
 The child reserves a dedicated copy of its stdout pipe before loading any
 plug-in. It redirects ordinary stdout to the null stderr channel, so constructor,

@@ -248,6 +248,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
+        std::string catalogueError;
+        (void)loader_.hydrateCatalogue(catalogueError); // no scanner child or root enumeration
         auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
                                           &commands_->recordingDefaults());
         if (!next) {

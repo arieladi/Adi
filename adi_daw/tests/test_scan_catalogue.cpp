@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/scan_catalogue.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "temp_directory.hpp"
+#include "legacy_plugin_registry.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <atomic>
@@ -140,9 +142,48 @@ void corruptionAndCompatibility(const fs::path& self) {
     db.exec("PRAGMA user_version=4");check(!readCatalogue(f.config.registry,f.error) && db.execAndGet("PRAGMA user_version").getInt()==4,
         "future registry is refused unchanged");
     db.exec("PRAGMA user_version=2");check(!readCatalogue(f.config.registry,f.error) && db.execAndGet("PRAGMA user_version").getInt()==2,
-        "legacy registry is refused without performing an owner migration");
+        "lowered version on a v3 schema is refused without owner migration");
     db.exec("PRAGMA user_version=3; PRAGMA application_id=1");
     check(!readCatalogue(f.config.registry,f.error) && db.execAndGet("PRAGMA application_id").getInt()==1,"foreign registry is refused unchanged");
+}
+void legacyClassification() {
+    test::TempDirectory temp("scan_catalogue","legacy");std::string error;
+    CatalogueReadStatus status=CatalogueReadStatus::Ready;
+    const auto missing=temp.path()/"missing.sqlite";
+    check(!readCatalogue(missing,error,{},&status) && status==CatalogueReadStatus::Missing && !fs::exists(missing),
+        "missing registry is typed distinctly without file creation");
+    for(const int version:{1,2}) {
+        const auto file=temp.path()/("legacy-"+std::to_string(version)+".sqlite");
+        test::createLegacyPluginRegistry(file,version);const auto beforeBytes=read(file);
+        check(!readCatalogue(file,error,{},&status) && status==CatalogueReadStatus::Legacy && read(file)==beforeBytes,
+            "genuine historical v1/v2 schema is typed Legacy with unchanged database bytes");
+        SQLite::Database db(utf8(file),SQLite::OPEN_READWRITE);
+        check(db.execAndGet("PRAGMA user_version").getInt()==version &&
+            db.execAndGet("SELECT count(*) FROM sqlite_master WHERE name='plugin_scan_cache'").getInt()==0,
+            "legacy read creates no cache or schema migration");
+        error="untouched";status=CatalogueReadStatus::Ready;bool refused=false;
+        {audio::CallbackScope callback;refused=!readCatalogue(file,error,{},&status);}
+        check(refused && error=="untouched" && status==CatalogueReadStatus::Ready,
+            "callback refusal leaves typed status and diagnostics untouched");
+        db.exec("PRAGMA application_id=1");
+        check(!readCatalogue(file,error,{},&status) && status==CatalogueReadStatus::Invalid,
+            "foreign legacy-looking schema is Invalid rather than permission to discover");
+        db.exec("PRAGMA application_id="+std::to_string(PluginRegistry::kApplicationId));
+        db.exec("PRAGMA user_version=4");
+        check(!readCatalogue(file,error,{},&status) && status==CatalogueReadStatus::Invalid,
+            "future registry is Invalid even with compatible-looking old columns");
+        db.exec("PRAGMA user_version="+std::to_string(version));
+        db.exec("ALTER TABLE plugin_routes RENAME COLUMN route TO invalid_route");
+        check(!readCatalogue(file,error,{},&status) && status==CatalogueReadStatus::Invalid,
+            "corrupt legacy route schema cannot enable discovery");
+    }
+    const auto missingBlocks=temp.path()/"bad-v2.sqlite";test::createLegacyPluginRegistry(missingBlocks,2);
+    {SQLite::Database db(utf8(missingBlocks),SQLite::OPEN_READWRITE);db.exec("DROP TABLE plugin_scan_blocks");}
+    check(!readCatalogue(missingBlocks,error,{},&status) && status==CatalogueReadStatus::Invalid,
+        "version-two quarantine table is mandatory for legacy discovery admission");
+    const auto invalid=temp.path()/"invalid.sqlite";write(invalid,"not sqlite");
+    check(!readCatalogue(invalid,error,{},&status) && status==CatalogueReadStatus::Invalid,
+        "corrupt existing file is Invalid rather than Missing or Legacy");
 }
 void coherentReads(const fs::path& self) {
     Fixture f(self);const auto a=f.populate("a.clap"),b=f.populate("b.clap");f.removeHelper();
@@ -169,7 +210,7 @@ void coherentReads(const fs::path& self) {
 }
 int entry(const std::vector<std::string>& args){
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try{const auto self=fs::absolute(native(args[0]));snapshotWithoutHelper(self);exclusions(self);corruptionAndCompatibility(self);coherentReads(self);}
+    try{const auto self=fs::absolute(native(args[0]));snapshotWithoutHelper(self);exclusions(self);corruptionAndCompatibility(self);legacyClassification();coherentReads(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }
