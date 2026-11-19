@@ -5,6 +5,35 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-09, step 4: `#A` unbound when its owner is freed (AR18, PD2)
+
+**`devices/pd-hash-a` (`fcf0cc75`), stacked on `devices/pd-audio-thread`.**
+
+- **Reproduced first.** A file load saves and restores `#A` around itself, so opening a
+  whole patch was never the danger. An abstraction made **at run time** binds `#A` when
+  it finishes loading (`canvas_popabstraction`) and nothing unbinds it; cleared, it
+  leaves `#A` pointing at freed memory, which the next array or `[text define]` free
+  dereferences. The test makes a table and an abstraction by dynamic patching in one
+  instance, clears the abstraction, and checks `#A` is bound to nothing: it failed before
+  the overlay, passes after. (The MSVC debug heap does not trap that read; ASan would.)
+- **The fix** is plugdata-pd `bdb30eedee` ("Correct fix for pd bindlist crash (detected
+  by ASAN)", Pd's own BSD-3 licence), as an overlay on the pinned `m_pd.c`: `pd_free`
+  unbinds whatever it frees from `#A` first. Attribution is in the overlay's comment; win,
+  if `docs/EXTERNAL-CODE.md` should name it too, that file is yours.
+
+`adi_pd_engine_tests` **633**; MSVC `/W4 /WX` whole tree clean; CTest **242/242**.
+
+**PR requested** — title "Pd: unbind #A when its owner is freed (DEV-09 step 4, AR18)";
+head `devices/pd-hash-a` at `fcf0cc75`; base `devices/pd-audio-thread` until it lands,
+then `main`. Body: the commit message.
+
+**Machine note.** To check new code under clang's `-Wconversion` locally I started a
+winget install of LLVM; it raised a Windows elevation prompt that nobody could answer,
+so I stopped winget. A UAC prompt for LLVM's installer may still be on the desktop: it is
+safe to decline. CI's GCC and Clang legs stay the check for those warnings.
+
+**Next:** DEV-09 step 5, the `PD_FLOATSIZE=64` build for the 64-bit mode (AR17).
+
 ## 2026-11-19 — DEV-09, step 3: the audio thread never waits for Pd (AR8)
 
 **`devices/pd-audio-thread` (`b86243f3`), stacked on `devices/pd-fence`.** Files: this
