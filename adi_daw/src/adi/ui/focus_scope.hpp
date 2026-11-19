@@ -2,13 +2,15 @@
 #pragma once
 #include "shared_analysis.hpp"
 #include "adi/engine/snapshot.hpp"
-#include "adi/textproj.hpp"
+#include "adi/ui/meters.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
 #include <span>
+#include <utility>
+#include <vector>
 
 namespace adi::ui {
 struct FocusScopeRange {
@@ -21,9 +23,33 @@ struct FocusScopeBar {
     FocusScopeRange range;
 };
 
-inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t, double, const engine::TempoMap &,
-                                                        const std::vector<textproj::Meter> &) noexcept {
-    return {};
+// Use the Arrangement's signature boundaries and the driver's nearest-sample
+// convention. Keep absolute edges so consecutive bars never gain a rounding gap.
+inline std::optional<FocusScopeBar> focusScopeBarAtTick(std::int64_t tick, double sampleRate,
+                                                        const engine::TempoMap &tempo,
+                                                        const std::vector<textproj::Meter> &meters) noexcept {
+    if (tick < 0 || !std::isfinite(sampleRate) || sampleRate <= 0. || tempo.events.empty()) return {};
+    const auto &meter = meterAt(tick, meters);
+    const auto barTicks = meter.barTicks();
+    if (meter.start_ticks < 0 || meter.start_ticks > tick || barTicks <= 0) return {};
+    const auto firstTick = tick - (tick - meter.start_ticks) % barTicks;
+    const auto nextMeter = std::upper_bound(meters.begin(), meters.end(), tick,
+        [](std::int64_t position, const textproj::Meter &signature) { return position < signature.start_ticks; });
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+    if (nextMeter == meters.end() && barTicks > limit - firstTick) return {};
+    const auto untilNextMeter = nextMeter != meters.end() ? nextMeter->start_ticks - firstTick : barTicks;
+    const auto nextTick = firstTick + std::min(barTicks, untilNextMeter);
+
+    const auto sampleAtTick = [&](std::int64_t edge) -> std::optional<std::int64_t> {
+        const auto sample = std::round(static_cast<long double>(tempo.ticksToSeconds(edge)) * sampleRate);
+        const auto sampleLimit = std::ldexp(1.L, std::numeric_limits<std::int64_t>::digits);
+        if (!(sample >= 0. && sample < sampleLimit)) return {};
+        return static_cast<std::int64_t>(sample);
+    };
+    const auto start = sampleAtTick(firstTick);
+    const auto finish = sampleAtTick(nextTick);
+    if (!start || !finish || *finish <= *start || !std::in_range<std::size_t>(*finish - *start)) return {};
+    return FocusScopeBar{firstTick, nextTick, {*start, static_cast<std::size_t>(*finish - *start), sampleRate}};
 }
 struct FocusSumReading {
     std::array<double, 2> peak{}, rms{};
