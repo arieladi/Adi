@@ -1,5 +1,16 @@
 # Clones lane log
 
+## FOR THE DIRECTOR
+
+- **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
+- **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
+
+## 2026-11-19 — Curve editor ready for Window
+
+**PR requested** — `clones/adi-shaper-editor` at `b34eb089`. Title **Add an accessible ADi-SHAPER curve editor for the device strip**. The component was built with MSVC Release strict warnings. Offscreen tests passed for actual stroke placement, eight points plus their wrap, held and linear curves, mouse and keyboard editing, screen-reader values, cancellation and rebinding.
+
+Window can link `adi_shaper_curve` and mount `adi::ui::AdiShaperCurve`. Bind a live device ID, stage, band and contour to the eight normalized point values, unit and display formatter. The synchronous edit callback identifies the point and original target for Begin, Value, End or Cancel. A Cancel restores the original value and closes the gesture. Refresh from the published model and unbind when the owner changes. The strip's stage/band selection and the common Undo transaction remain Window's integration points. The component is available to the owner; the director's desktop was not used for testing.
+
 ## 2026-11-19 — ADi-SHAPER stage-order evidence and file reservation
 
 The clones seat takes the shaper routing loop, its stage-order parameter declarations and the associated shaper tests on `clones/adi-shaper-order`. The branch adds an append-only order control per shaper; it also preserves every prior control ID. Sorting runs at a segment boundary only after a changed order control. It does not require a Mix View or Window change.
