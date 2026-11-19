@@ -669,6 +669,39 @@ void sourceMarkers() {
     check(repeated[150]==loop.media[414] && repeated[250]==loop.media[214] && repeated[500]==0,
           "Loop uses its own source window while the End marker is inactive");
 }
+void endSourceClocks() {
+    Fixture plain(48000, 2, 4000, -1);
+    plain.add(1, 600, 800, 0, 1000);
+    plain.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0);"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,120120);"
+        "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,10416667);"
+        "UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0");
+    plain.load(1024);
+    plain.session.transport().locate(600);
+    const auto pinned = plain.render(1024);
+    check(pinned[249] == 0.5f && pinned[499] == 0.5f && pinned[500] == 0.0f,
+          "a physical End pin keeps 500 samples when the placement tempo doubles");
+
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 600, 800, 0, 2000);
+    auto& db = warped.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(144144,240,0);"
+        "UPDATE clips SET time_base=0,pos_ticks=144144,length_ticks=384384,pos_ns=NULL,length_ns=NULL,"
+        "content_offset_ticks=72072;"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,144144);"
+        "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {2000, 480480}}};
+    const auto map = audio::writeWarpMap(markers, 2000);
+    if (!map) throw std::runtime_error("prepare End clock test Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    warped.load(1024);
+    warped.session.transport().locate(600);
+    const auto retimed = warped.render(1024);
+    check(std::abs(retimed[0]) > 0.1f && std::abs(retimed[149]) > 0.1f && retimed[150] == 0.0f,
+          "Warp End retains the 150-frame tail projected across its source tempo boundary");
+}
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -1054,7 +1087,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
-        if(only=="all" || only=="markers")sourceMarkers();
+        if(only=="all" || only=="markers"){sourceMarkers();endSourceClocks();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();
