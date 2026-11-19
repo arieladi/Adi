@@ -441,6 +441,13 @@ class AdiApplication final : public juce::JUCEApplication,
             why = document_->error();
             return false;
         };
+        // Undo and Redo commit the knob edits still held first (DF-W29).
+        root->settleEdits = [this] {
+            const bool ok = document_->settleParameters();
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());

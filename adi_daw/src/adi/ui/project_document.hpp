@@ -76,6 +76,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Commits every parameter edit still held in the capture, each as the undo step it was going to
+    // be, without waiting for its quiet interval: what Undo, Redo and the Undo History do first, so the
+    // step they undo is the one the user sees last (DF-W29). A held drag (Begin with no End) stays.
+    bool settleParameters();
     void prepare(double rate, std::int32_t frames) override;
     void release() override;
     void process(const engine::AudioIo &) noexcept override;

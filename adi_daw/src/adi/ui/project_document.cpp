@@ -292,6 +292,20 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
     }
     return synchronise();
 }
+bool ProjectDocument::settleParameters() {
+    // ParamOps closes an unbracketed value after 150 ms with no input (param_ops.cpp's drain): a
+    // drain dated that far on closes every one now. Each drain offers one finished gesture.
+    constexpr std::int64_t kQuietMs = 150;
+    std::vector<OpRequest> requests;
+    for (int round = 0; round < 256; ++round) {
+        requests.clear();
+        if (parameterOps_.drain(captureNowMs() + kQuietMs, requests) == 0)
+            return true;
+        if (!commitCaptured(requests))
+            return false;
+    }
+    return true;
+}
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);

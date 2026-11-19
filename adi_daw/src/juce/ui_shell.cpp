@@ -2649,6 +2649,8 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     return true;
 }
 bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    if (settleEdits && !settleEdits())
+        return false;
     const auto result = submitter_.restore(txnId);
     if (!result.ok)
         return fail(result.error.empty() ? "That step could not be restored." : result.error);
@@ -3240,6 +3242,10 @@ bool AdiRootComponent::command(int id) {
     }
     case AppCommands::Undo:
     case AppCommands::Redo: {
+        // A knob's last edit, still held for its quiet interval, is the step the user sees last: it
+        // commits first, so Undo takes it back and nothing commits on top of a Redo (DF-W29).
+        if (settleEdits && !settleEdits())
+            return false;
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);

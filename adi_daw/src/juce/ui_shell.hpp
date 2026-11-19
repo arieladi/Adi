@@ -314,6 +314,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Commits the parameter edits the document still holds before Undo, Redo or a restored step acts
+    // (DF-W29); false, with the document's reason said, when it could not.
+    std::function<bool()> settleEdits;
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
