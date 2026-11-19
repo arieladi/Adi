@@ -12,7 +12,8 @@
 
 namespace adi::edit {
 namespace {
-constexpr std::array<RowSpec,19> specs={{
+constexpr std::array<RowSpec,20> specs={{
+    {"lanes","id"},
     {"clips","id"},{"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
     {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},{"clip_properties","clip_id"},
     {"tempo_map","id"},{"time_signature_map","id"},{"key_map","id"},{"markers","id"},
@@ -178,6 +179,9 @@ bool validateRows(OpContext& context,const Payload& payload,std::string& error) 
 bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
     try {
         const auto changes=decode(context.db,payload.at("changes"));guardReferences(context.db,changes);
+        // A take lane is a parent of clips. Restore it before creating any root.
+        for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="lanes")
+            detail::restoreRow(context.db,"lanes",change.after);
         // Insert every root with links temporarily NULL, so a captured alias
         // forest (even a legacy cycle) need not depend on insertion order.
         for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="clips") {
@@ -234,15 +238,17 @@ bool applyRows(OpContext& context,const Payload& payload,std::string& error) {
         // A tuning binding is a parent of its composite-key degree overrides.
         for(const auto& change:changes)if(change.before.is_null() && std::string(change.spec->table)=="key_map_tunings")detail::restoreRow(context.db,change.spec->table,change.after);
         for(const auto& change:changes)if(change.before.is_null()) {
-            if(std::string(change.spec->table)=="key_map_tunings")continue;
+            if(std::string(change.spec->table)=="key_map_tunings" || std::string(change.spec->table)=="lanes")continue;
             if(std::string(change.spec->table)=="clips")detail::restoreRow(context.db,"clips",change.after,"id");
             else if(!root(change))detail::restoreRow(context.db,change.spec->table,change.after);
         }
         // Children first. Every cascading effect was checked against the same
         // captured transaction state; no REPLACE can destroy a child implicitly.
         for(const auto& change:changes)
-            if(change.after.is_null() && !timeMap(change) && std::string(change.spec->table)!="clips")erase(context.db,change);
+            if(change.after.is_null() && !timeMap(change) && std::string(change.spec->table)!="clips" && std::string(change.spec->table)!="lanes")erase(context.db,change);
         for(const auto& change:changes)if(change.after.is_null() && std::string(change.spec->table)=="clips")erase(context.db,change);
+        // Deleting the lane first would SET NULL on its still-present clips.
+        for(const auto& change:changes)if(change.after.is_null() && std::string(change.spec->table)=="lanes")erase(context.db,change);
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }

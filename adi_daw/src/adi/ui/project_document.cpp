@@ -198,11 +198,12 @@ bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
     refreshReportedLatenciesForSave();
     const auto result = store_->collectAllAndSave();
+    warning_ = result.warning;
     if (!result.ok) {
         error_ = "Collect All and Save failed: " + result.error;
+        if (!warning_.empty())error_ += "; " + warning_;
         return false;
     }
-    warning_ = result.warning;
     // The media rows point at the copies now: the view and the session read them again.
     view_.refresh(*store_);
     if (!synchronise()) {
@@ -225,7 +226,7 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
     try {
         const auto result = media::collectExport(job.project, job.zip);
-        return {result.ok, result.error, {}};
+        return {result.ok, result.error, result.warning};
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
     }
