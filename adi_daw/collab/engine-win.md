@@ -10,6 +10,14 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-12 defensive project connections
+
+**PR requested** `engine-win/project-sqlite-defensive` at `7db7e05a581d89ca86b595d4d11adba9303b37af`, stacked on the PD-12 benchmark `a3f425f8`. Each project Store connection enables SQLite Defensive mode before its first SQL, including create, explicit read-only opens and the automatic read-only reopen for an unknown major. Regular operation transactions and migrations run normally. Direct writes to SQLite's schema tables fail even after requesting writable_schema.
+
+Native MSVC x64 Release `/O2 /W4 /WX` reproduced five failures, then passed 758 checks across seven product suites and the WAL benchmark self-test. Two optional symlink cases skipped for privilege. This covers the Defensive mode step. Local and volume-specific durability defaults remain separate.
+
+**For win.** The current pinned SQLiteCpp 3.3.3 bundles SQLite 3.49.2, which is in upstream's rare WAL-reset corruption range. SQLiteCpp's released 3.4.0 tag `df0a28ca` bundles SQLite 3.53.4, which includes the fix upstream shipped in 3.51.3. Preparing an isolated ADR-0024 pin update. The change needs the full ABI matrix before merging. [SQLite advisory](https://sqlite.org/wal.html#the_wal_reset_bug) · [SQLiteCpp 3.4.0](https://github.com/SRombauts/SQLiteCpp/releases/tag/3.4.0)
+
 ## 2026-11-19 — Scanner warm hits without registry writes
 
 **PR requested** `engine-win/scanner-readonly-warm-hit` at `ede21caee28cad18ad13a16d759037df7a11919d`, stacked on the worker CLI branch `aa26f099`. DEV-25. A bounded, validated and unchanged success is read in two fresh statements without a pending ticket or write transaction. Blocked, busy, stale and invalid records use the normal admission/repair path. A manual or pending block installed while validating still wins. An unrelated WAL writer does not prevent a valid warm hit. Native tests count registry changes and exercise revalidation, late blockers, cancellation and mutations.
