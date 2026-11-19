@@ -14,6 +14,39 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-22: what the research's default-preset corpus says next (no branch)
+
+The research's DV-09 corpus (16 of Live 12.4's effects at their browser defaults, compensated
+offline renders of a sweep, an impulse of 0.5 / -0.25 and six tones at 71, 223, 997, 3001,
+7001 and 11003 Hz; analysed in the director's research on 14 November) gives acceptance numbers
+beyond the latency table. Read privately; the statements:
+
+- **Saturator** (High Quality on, Analog Clip, drive 0): the compensated impulse response is
+  causal from 3 samples before the peak (so Live's reported 3 is its true peak delay), peak
+  0.569 of the input, 99 % of the energy within 25 samples after the peak, above 1e-8 for 169
+  samples after it, DC gain 1.0000. ADI's new minimum-phase filter (`devices/saturator-
+  latency`): causal, peak 4 samples in (one later than Live), 0.669 of the input, energy99 at
+  +7 after its peak, tail 25 samples. Live's resampler is sharper and longer (an IIR, by its
+  tail). **Next step for Saturator:** fit the High Quality filter to that response (peak at 3,
+  0.569, energy99 +25, tail ~170) and add those four numbers to its test.
+- **Redux** (browser default): a real 64-sample delay (the compensated impulse peaks at 0,
+  0.760 of the input, 99 % of the energy within 3 samples), DC gain ~0, and on the six tones
+  gain -0.022 / -0.003 / -0.009 / -0.081 / -0.445 / -1.115 dB with phase +4.24 / +1.95 / +3.28 /
+  +9.10 / +21.04 / +33.03 degrees: a ~5.3 Hz first-order DC blocker plus a ~0.4-sample advance
+  against the 64 and a gentle top-end roll-off; nothing above -124 dBFS outside the tones.
+  ADI's Redux default (48 kHz rate, 16 bits, no filters, no delay) is far from that. Live
+  ships no Redux default preset, and no research set holds one; the ranges are readable from
+  Live's own Redux presets. **Reading to take:** Redux's default control values (one look at
+  a fresh Redux in Live 12.4). Then one branch: Live's ranges, defaults, the 64-sample path,
+  and the six-tone numbers as the test.
+- Overdrive and Saturator above, and Auto Filter, Chorus-Ensemble, Delay, Echo, Hybrid Reverb,
+  Multiband Dynamics, Phaser-Flanger, Resonators, Reverb and Vocoder each have the same three
+  default renders in the corpus; EQ Eight and Utility null exactly against dry. These are the
+  first parity numbers for each built device, one branch each, in the manual's order.
+
+**Next:** queue item 6, DEV-28, the one loudness meter (M4's critical path); DEV-22 resumes
+after it, device by device, from the corpus above.
+
 ## 2026-11-19 — DEV-22: Overdrive shapes at 4× and reports Live's 5 samples
 
 **`devices/overdrive-latency` (`7d89a70c`), from `origin/main`.**
