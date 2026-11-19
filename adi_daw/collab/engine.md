@@ -24,6 +24,10 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — Supplemental clip-admission stress
+
+The revised claim fixture at `fc14ccbb` passed the PCM and claim assertions in all 600 Linux runs at concurrency 12. GCC ThreadSanitizer instrumented the revised fixture and playback translation unit and passed 24 of 24 runs without a race report. Run 223 separately failed “unavailable candidate pages time out instead of claiming readiness.” Its fixture sets the stall flag without observing the worker settle, so an iteration that already passed the flag can still service the next request. That setup gets a separate handshake and forced gate. The timeout and the production admission contract remain as before.
+
 ## 2026-11-19 — Clip-admission worker test handshake
 
 **PR requested** — branch `engine/clip-admission-fixture-order`, head `fc14ccbb9e167bbbd76f6eb60d283cdbd8b38506`, main base `88e2d94e`. Title **Arm the clip admission race fixture before replacing its request**.
