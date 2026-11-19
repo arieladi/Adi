@@ -383,6 +383,25 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
+        // Arm, monitoring and Arrangement Record (MX-09): the session's rows, and the recorder.
+        root->readRecordStates = [this] { return document_->recordStates(); };
+        root->setRecordStates(document_->recordStates());
+        root->startRecording = [this](std::int64_t insertTick, bool playing) {
+            const auto *device = manager_.getCurrentAudioDevice();
+            const int inputs = device != nullptr ? device->getActiveInputChannels().countNumberOfSetBits() : 0;
+            if (device == nullptr) {
+                root_->say("Recording needs an audio device. Choose one in the Settings' Audio page.");
+                return false;
+            }
+            if (!document_->startRecording(insertTick, inputs, playing)) {
+                root_->say(document_->error());
+                return false;
+            }
+            root_->say(playing ? "Recording from the playhead." : "Recording.");
+            return true;
+        };
+        root->stopRecording = [this] { document_->stopRecording(); };
+        root->recording = [this] { return document_->recording(); };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
             // through the session; null until the session has a strip for the track. The strips
@@ -792,6 +811,15 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (root_) {
+            root_->setRecordStates(document_->recordStates());
+            // A take landed (MX-09): its outcome in the Status Bar, its clips selected.
+            if (auto landed = document_->takeLanded()) {
+                root_->say(landed->message);
+                if (landed->ok && !landed->clips.empty())
+                    root_->selectClip(landed->clips.front());
+            }
+        }
         if (floating_) {
             floating_->collect();
             syncMixView(*floating_, *root_);

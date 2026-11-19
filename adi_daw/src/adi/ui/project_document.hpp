@@ -3,6 +3,7 @@
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/sample_slots.hpp"
+#include "adi/engine/audio_recording.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
@@ -10,6 +11,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
+#include "adi/ui/arm_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/op_submitter.hpp"
@@ -116,10 +118,33 @@ class ProjectDocument final : public engine::BlockProcessor {
     // nothing overridden too; false with `error()` when the session's rebuild failed.
     bool reenableAutomation();
     // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
-    // button is on becomes automation. The session's switch, on in a new Set as Live's. The window
-    // does not record yet, so the session is never told that recording is on.
+    // button is on becomes automation. The session's switch, on in a new Set as Live's. Automation
+    // recording is not wired yet (AU-03), so the session is never told that recording is on.
     void setAutomationArmed(bool armed) noexcept;
     bool automationArmed() const noexcept { return session_.automationArmed(); }
+    // Arm and monitoring as the session's rows hold them (MX-09): the snapshot carries neither yet.
+    RecordStates recordStates() const;
+    // Arrangement Record (MX-09; Live 12 manual 21.1): every armed audio track records from the audio
+    // device's inputs 1/2 (1 on a device with one input; the window's In/Out column shows "1/2", and
+    // `tracks.input_ref` has no grammar yet, MX-25). The recorder is prepared here, on the message
+    // thread, before the driver is told; stopped, the driver starts at the song start or the insert
+    // marker after the saved Count-In (`RenderBlock::startPlayback`). Playing, it records from the
+    // playhead on, as Live's punch in. False with `error()` saying why: nothing armed, only MIDI armed
+    // (the engine's live MIDI input is not on main yet), a device with no inputs, the engine's refusal.
+    // `inputs` is the device's input channel count, `insertTick` where a stopped transport starts.
+    bool startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing);
+    // Stops the recorder (the transport is the caller's); the takes land on a later `tick()`.
+    void stopRecording();
+    bool recording() const noexcept { return recording_; }
+    bool landingTake() const noexcept { return landing_; }
+    // What the last take did, once: the clips it added (one undo step for all of them), or nothing and
+    // the reason in `error()`. Empty until a take lands.
+    struct TakeLanded {
+        bool ok = false;
+        std::vector<std::int64_t> clips;
+        std::string message;
+    };
+    std::optional<TakeLanded> takeLanded();
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -214,6 +239,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
+    std::int32_t engineFrames_ = 512; // the block `prepare` last set, for the recorder
+    // Arrangement Record (MX-09): recording, then landing the take on the timer, then its outcome.
+    void landTake(engine::AudioRecordingResult &);
+    bool recording_ = false, landing_ = false;
+    std::optional<TakeLanded> landed_;
     ParameterFeed feed_;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
     std::map<engine::ScopeSource, AnalysisSource> analysisSources_;

@@ -139,7 +139,9 @@ class DirtySet {
 // One UI producer and one driver consumer. No UI ever reads/writes Transport.
 class TransportMailbox {
   public:
-    enum class Command { Play, Stop, Locate };
+    // Record (MX-09) starts playback as a recording start: the saved song start or the insert marker
+    // (`sample` holds the insert marker's tick), after the saved Count-In.
+    enum class Command { Play, Stop, Locate, Record };
     bool hasRoom(std::size_t count = 1) const noexcept {
         return count <= queue_.size() &&
                write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) <=
@@ -154,12 +156,18 @@ class TransportMailbox {
         return true;
     }
     void drain(engine::Transport &transport) noexcept {
+        drain(transport, [&transport](std::int64_t) noexcept { transport.play(true); });
+    }
+    // `record(insertTick)` starts a recording: the driver's `RenderBlock::startPlayback(tick, true)`.
+    template <class Record> void drain(engine::Transport &transport, Record &&record) noexcept {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
         while (r != w) {
             const auto item = queue_[r % queue_.size()];
             if (item.command == Command::Locate)
                 transport.locate(item.sample);
+            else if (item.command == Command::Record)
+                record(item.sample);
             else
                 transport.play(item.command == Command::Play);
             ++r;
@@ -178,7 +186,7 @@ class TransportMailbox {
         for (auto i = w; i != r;) {
             const auto c = queue_[--i % queue_.size()].command;
             if (c != Command::Locate)
-                return c == Command::Play;
+                return c == Command::Play || c == Command::Record;
         }
         return playing();
     }

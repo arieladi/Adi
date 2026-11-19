@@ -3,10 +3,12 @@
 #include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/recording_commands.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 namespace adi::ui {
 // Where the document's file is now. The message thread moves it at Save As; the waveform worker
@@ -296,6 +298,12 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    // A stopped recording's take, once the driver has moved past it and its worker has finished.
+    if (landing_)
+        if (auto result = session_.recording().poll()) {
+            landing_ = false;
+            landTake(*result);
+        }
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
@@ -718,14 +726,147 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     engineRate_ = rate;
+    engineFrames_ = frames;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {
-    mailbox_.drain(session_.transport());
-    session_.process(io);
+    // One render handle for the callback, so a Record start (`startPlayback`, which applies the saved
+    // song start and Count-In) and the block it starts in read the same graph.
+    auto block = session_.beginRender();
+    mailbox_.drain(session_.transport(), [&block, this](std::int64_t insertTick) noexcept {
+        if (!block.startPlayback(insertTick, true))
+            session_.transport().play(true);
+    });
+    (void)block.process(io);
     mailbox_.publish(session_.transport());
+}
+RecordStates ProjectDocument::recordStates() const {
+    RecordStates out;
+    for (const auto &t : session_.model().tracks)
+        out[t.id] = {t.recordArmed, t.monitorMode == 1 ? Monitor::In : t.monitorMode == 2 ? Monitor::Auto : Monitor::Off};
+    return out;
+}
+bool ProjectDocument::startRecording(std::int64_t insertTick, std::int32_t inputs, bool playing) {
+    if (recording_ || landing_) {
+        error_ = recording_ ? "Recording is already running." : "The last take is still being saved.";
+        return false;
+    }
+    const auto current = view_.current();
+    if (!current) {
+        error_ = "Recording needs an open project.";
+        return false;
+    }
+    const auto armed = armedTracks(current->tracks, recordStates());
+    if (armed.audio.empty()) {
+        error_ = armed.midi.empty() ? "Arm a track to record into it."
+                                    : "Recording MIDI waits for the engine's live MIDI input; arm an audio track to record audio.";
+        return false;
+    }
+    if (inputs <= 0) {
+        error_ = "The audio device has no inputs to record from. Choose an input device in the Settings' Audio page.";
+        return false;
+    }
+    engine::AudioRecordingSpec spec;
+    spec.workFolder = media::projectFolder(*store_);
+    spec.sampleRate = static_cast<std::uint32_t>(std::lround(engineRate_));
+    spec.maxFrames = static_cast<std::uint32_t>(std::max<std::int32_t>(1, engineFrames_));
+    // Two seconds of input between the callback and the writer, at least eight blocks.
+    spec.ringFrames = std::max<std::uint32_t>(spec.sampleRate * 2, spec.maxFrames * 8);
+    const std::vector<std::uint32_t> channels = inputs >= 2 ? std::vector<std::uint32_t>{0, 1} : std::vector<std::uint32_t>{0};
+    for (const auto id : armed.audio)
+        spec.targets.push_back({id, channels});
+    std::string why;
+    if (!session_.startRecording(spec, why)) {
+        error_ = "Recording did not start: " + why;
+        return false;
+    }
+    if (!playing && !mailbox_.post(TransportMailbox::Command::Record, insertTick)) {
+        session_.recording().stop(true);
+        if (auto dropped = session_.recording().poll())
+            dropped->discard();
+        else
+            landing_ = true; // the cancelled capture is collected and dropped on the timer
+        error_ = "Transport command queue is full";
+        return false;
+    }
+    recording_ = true;
+    error_.clear();
+    return true;
+}
+void ProjectDocument::stopRecording() {
+    if (!recording_)
+        return;
+    session_.recording().stop();
+    recording_ = false;
+    landing_ = true;
+}
+std::optional<ProjectDocument::TakeLanded> ProjectDocument::takeLanded() {
+    auto out = std::move(landed_);
+    landed_.reset();
+    return out;
+}
+namespace {
+std::string recordingFailure(const engine::AudioRecordingResult &r) {
+    using F = engine::RecordingFailure;
+    switch (r.failure) {
+    case F::None: return {};
+    case F::Overflow: return "the input came faster than it could be written, and the take was stopped";
+    case F::MissingInput: return "the audio device did not deliver the input channels the track records from";
+    case F::BlockSize: return "the audio device changed its block size while recording";
+    case F::Discontinuity: return "the audio stream jumped while recording (a locate, a loop or a device change)";
+    case F::Cancelled: return "the recording was cancelled";
+    case F::Io: return "the take could not be written to disk" + (r.error.empty() ? std::string() : " (" + r.error + ")");
+    case F::NoFrames: return "nothing was recorded";
+    case F::InvalidCapture: return "the capture was not valid" + (r.error.empty() ? std::string() : " (" + r.error + ")");
+    case F::PassLimit: return "the loop recorded more passes than a take can hold";
+    }
+    return r.error;
+}
+} // namespace
+void ProjectDocument::landTake(engine::AudioRecordingResult &result) {
+    TakeLanded outcome;
+    if (result.failure != engine::RecordingFailure::None) {
+        outcome.message = "The take was not kept: " + recordingFailure(result) + ".";
+        // Nothing was captured, or the capture was cancelled: nothing to recover.
+        if (result.failure == engine::RecordingFailure::NoFrames || result.failure == engine::RecordingFailure::Cancelled)
+            result.discard();
+        landed_ = std::move(outcome);
+        return;
+    }
+    // The clips and their media take the next free ids, named after their tracks (Live names a take by
+    // its track).
+    auto &db = store_->db();
+    auto clip = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM clips").getInt64();
+    auto media = db.execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    std::vector<recording::ClipIds> ids;
+    const auto current = view_.current();
+    for (const auto &track : result.tracks) {
+        const auto *t = current ? current->findTrack(track.trackId) : nullptr;
+        ids.push_back({clip++, media++, t != nullptr ? t->name : std::string("Take")});
+        outcome.clips.push_back(ids.back().clip);
+    }
+    auto edit = recording::prepareCommit(*store_, result, ids);
+    if (!edit.ok) {
+        outcome.clips.clear();
+        outcome.message = "The take was recorded but could not be added: " + edit.error +
+                          ". It is kept beside the project for another try.";
+        landed_ = std::move(outcome);
+        return;
+    }
+    const auto committed =
+        ops_.commitPrepared(edit.requests, [&](Store &s, Actor actor) { return recording::commit(s, edit, actor); });
+    if (!committed) {
+        outcome.clips.clear();
+        outcome.message = "The take was recorded but could not be added: " + committed.error + ".";
+        landed_ = std::move(outcome);
+        return;
+    }
+    synchronise();
+    outcome.ok = true;
+    outcome.message = result.tracks.size() == 1 ? "Recorded one take." : "Recorded " + std::to_string(result.tracks.size()) + " takes.";
+    landed_ = std::move(outcome);
 }
 } // namespace adi::ui

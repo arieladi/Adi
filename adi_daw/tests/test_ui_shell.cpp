@@ -9632,6 +9632,162 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+// Arm, monitoring and Arrangement Record (MX-09; Live 12 manual 21.1, 21.4): the strips' Arm and the
+// monitoring switch, and the Control Bar's Record and F9, wired as ui_main.cpp wires them, over a
+// document whose callback the test drives with an input.
+void armAndRecord(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "arm-record.adi", true, {}, error);
+    check(document != nullptr, "a project to arm and record in");
+    if (!document)
+        return;
+    document->prepare(48000, 64);
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "record");
+    UiPeerRoot surfacePeer;
+    surfacePeer.setSize(1600, 1000);
+    surfacePeer.addAndMakeVisible(root);
+    surfacePeer.setVisible(true);
+    surfacePeer.addToDesktop(0);
+    root.afterEdit = [&] { document->synchronise(); };
+    root.readRecordStates = [&] { return document->recordStates(); };
+    root.startRecording = [&](std::int64_t insertTick, bool playing) {
+        const bool ok = document->startRecording(insertTick, 2, playing);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.stopRecording = [&] { document->stopRecording(); };
+    root.recording = [&] { return document->recording(); };
+    root.setSize(1440, 900);
+    // The application's frame: the timer's tick, the rows handed over, the window's frame.
+    std::int64_t now = 0;
+    const auto frame = [&] {
+        document->tick(++now);
+        root.setRecordStates(document->recordStates());
+        root.frame();
+    };
+    frame();
+    const auto stripOf = [&](MixerPanel &panel, std::int64_t id) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->track() == id)
+                return strip.get();
+        return nullptr;
+    };
+    // 3 Audio's row and 2 MIDI's in the side Mixer (4 Audio is below the fold at this size).
+    auto *three = stripOf(root.mixer, 4), *midi = stripOf(root.mixer, 3);
+    check(three != nullptr && midi != nullptr && !three->arm.getToggleState(), "3 Audio and 2 MIDI, unarmed");
+    if (three == nullptr || midi == nullptr) {
+        document->release();
+        return;
+    }
+    const auto states = [&] { return document->recordStates(); };
+    check(states().at(4).monitor == Monitor::Off, "New's tracks store monitoring Off (Live's default is Auto: AWAITING 20)");
+    three->arm.onClick();
+    frame();
+    check(states().at(4).armed && three->arm.getToggleState() && root.error().empty(),
+          "a click on 3 Audio's Arm arms it (track.setArm), lit from the rows");
+    midi->arm.onClick();
+    frame();
+    check(states().at(3).armed && !states().at(4).armed && midi->arm.getToggleState() && !three->arm.getToggleState(),
+          "Exclusive Arm: arming 2 MIDI disarms 3 Audio");
+    check(root.armTrack(4, true) && root.armTrack(5, true), "Ctrl/Cmd adds 3 Audio and 4 Audio");
+    frame();
+    check(states().at(3).armed && states().at(4).armed && states().at(5).armed && three->arm.getToggleState(),
+          "with Ctrl/Cmd all three stay armed");
+    check(!root.armTrack(1, false) && root.error().find("no Arm") != std::string::npos, "Main has no Arm");
+    // The monitoring switch: a click on In, Auto or Off in the Mixer View's In/Out section.
+    root.command(AppCommands::ToggleMixerView);
+    const bool inOutWasOn = root.state().mixerInOut;
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    frame();
+    if (auto *wide = stripOf(root.mixerView, 4)) {
+        const auto keptHeight = wide->getHeight();
+        wide->setSize(wide->getWidth(), 360);
+        check(wide->monitorAt({10, 19 + 65}) == Monitor::In && wide->monitorAt({35, 19 + 65}) == Monitor::Auto &&
+                  wide->monitorAt({58, 19 + 65}) == Monitor::Off && !wide->monitorAt({10, 19 + 20}),
+              "In, Auto and Off each where the switch draws them, Audio From not");
+        wide->setSize(wide->getWidth(), keptHeight);
+    } else
+        check(false, "3 Audio's strip in the Mixer View");
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.command(AppCommands::ToggleMixerView);
+    check(root.setMonitor(4, Monitor::In), "3 Audio's monitoring to In");
+    frame();
+    check(states().at(4).monitor == Monitor::In && states().at(5).monitor == Monitor::Off &&
+              root.recordState(4).monitor == Monitor::In,
+          "track.setMonitorMode In on 3 Audio alone");
+    check(root.setMonitor(4, Monitor::In) && root.error().empty(), "the same choice again changes nothing");
+    check(!root.setMonitor(1, Monitor::In) && root.error().find("no input") != std::string::npos, "Main has no monitoring");
+    // Arrangement Record: F9 records both armed audio tracks; 2 MIDI, armed too, records nothing yet.
+    juce::ApplicationCommandInfo recordInfo(AppCommands::ArrangementRecord);
+    commands.getCommandInfo(AppCommands::ArrangementRecord, recordInfo);
+    check(recordInfo.shortName == "Arrangement Record" &&
+              recordInfo.defaultKeypresses.contains(juce::KeyPress(juce::KeyPress::F9Key)),
+          "Arrangement Record is named as Live's and on F9 (manual 21.1)");
+    auto &record = root.transport.record;
+    check(record.getTitle() == "Arrangement Record" && !record.getToggleState(), "the Record switch, unlit");
+    record.onClick();
+    frame();
+    check(document->recording() && record.getToggleState() && root.error() == "", "Record records; lit");
+    std::array<float, 64> left{}, right{}, outL{}, outR{};
+    const float *inputs[]{left.data(), right.data()};
+    float *outputs[]{outL.data(), outR.data()};
+    engine::AudioIo io;
+    io.in = inputs;
+    io.numIn = 2;
+    io.out = outputs;
+    io.numOut = 2;
+    io.frames = 64;
+    std::int64_t stream = 0;
+    const auto block = [&] {
+        for (std::size_t i = 0; i < 64; ++i) {
+            left[i] = .25f;
+            right[i] = -.25f;
+        }
+        io.streamTimeSamples = stream;
+        document->process(io);
+        stream += 64;
+    };
+    for (int b = 0; b < 16; ++b)
+        block();
+    check(root.command(AppCommands::ArrangementRecord), "F9's command again");
+    frame();
+    check(!document->recording() && !record.getToggleState() && document->mailbox().playing(),
+          "stops the recording; the transport plays on, as Live's");
+    for (int i = 0; i < 5000 && document->landingTake(); ++i) {
+        block();
+        document->tick(++now);
+        if (document->landingTake())
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    auto landed = document->takeLanded();
+    check(landed && landed->ok && landed->clips.size() == 2 && landed->message == "Recorded 2 takes.",
+          "both armed tracks' takes land together");
+    frame();
+    check(root.reader().findTrack(4)->clips.size() == 1 && root.reader().findTrack(5)->clips.size() == 1,
+          "a clip on each armed track");
+    check(root.command(AppCommands::Undo), "one Undo");
+    frame();
+    check(root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(5)->clips.empty(),
+          "takes both takes back");
+    check(root.command(AppCommands::Stop), "Stop");
+    // Without the application's hooks Record says where it runs.
+    root.startRecording = nullptr;
+    check(!root.command(AppCommands::ArrangementRecord) && root.error().find("in the application") != std::string::npos,
+          "outside the application Record says it records there");
+    // MIDI Arrangement Overdub: the window's own switch.
+    auto &overdub = root.transport.overdub;
+    overdub.onClick();
+    frame();
+    check(root.midiOverdub() && overdub.getToggleState(), "Overdub on, lit");
+    overdub.onClick();
+    frame();
+    check(!root.midiOverdub() && !overdub.getToggleState(), "and off");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
@@ -11962,7 +12118,7 @@ int main(int argc, char **argv) {
                       C::CutTime == C::InsertMidiClip + 1 && C::CreateFade == C::InsertSilence + 1 &&
                       C::InvertSelection == C::DeleteFades + 1 && C::ArrangePanelsAutomatically == C::DrawMode + 1 &&
                       C::FocusClipView == C::ArrangePanelsVertically + 1 && C::FitToTimeRange == C::FocusClipView + 1 &&
-                      C::LastId == C::FitToTimeRange,
+                      C::ArrangementRecord == C::FitToTimeRange + 1 && C::LastId == C::ArrangementRecord,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
                   "Show/Hide Plug-In Windows, Split, Clip View, Insert Empty MIDI Clip(s), the …Time commands and "
@@ -14178,6 +14334,7 @@ int main(int argc, char **argv) {
     deviceClipboard(commands, temp.path());
     pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
+    armAndRecord(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     importPrompt(commands, settings, temp.path());

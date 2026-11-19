@@ -265,10 +265,21 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         automationArm.setToggleState(armed, juce::dontSendNotification);
         root_.mark(DirtySet::Transport);
     };
+    // Live 12 manual 21.1: Arrangement Record records every armed track; F9 is the same command.
+    record.onClick = [this] { root_.command(AppCommands::ArrangementRecord); };
+    // Manual 21.2: MIDI Arrangement Overdub, the window's own switch; it decides what a MIDI recording
+    // does to the notes already there, once MIDI records (SRF-05).
+    overdub.onClick = [this] {
+        const bool on = !root_.midiOverdub();
+        root_.setMidiOverdub(on);
+        overdub.setToggleState(on, juce::dontSendNotification);
+        root_.say(on ? "MIDI Arrangement Overdub on: a MIDI recording will add to the notes already there."
+                     : "MIDI Arrangement Overdub off: a MIDI recording will replace the notes it records over.");
+    };
     for (auto *item : items())
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
             item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
-            item != &loop && item != &loopStart && item != &loopLength)
+            item != &loop && item != &loopStart && item != &loopLength && item != &record && item != &overdub)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -363,6 +374,8 @@ void TransportBar::refresh() {
     metronome.setToggleState(transport.metronome, juce::dontSendNotification);
     loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
+    record.setToggleState(root_.isRecording(), juce::dontSendNotification);
+    overdub.setToggleState(root_.midiOverdub(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
     // session, on without one as Live's new Set (manual 25.1).
