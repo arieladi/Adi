@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M39 stale Add menu feedback
+
+**PR requested.** `mixview/add-refused-dfm39-20261119` at `b8c0c5e932ea0b20a66c0f873b379a40abe7be51` after DF-M38's tested ancestry. A stale toolbar, row picker or Device View Add choice says “This Add menu is out of date. Reopen it and try again.” The targeted component tests cover a real intervening rename, stale filtered selection, dismissal, the fresh action, and the absence of stale edits and Undo. Release also passed 870 shell checks.
+
+- ZIP `outputs/ADI-MixView-Stale-Add-Status-b8c0c5e932-win64-Release.zip`, SHA-256 `cb2a4b031a3642b416304f8e9fcb3725c79f1d292104dbf38ed146145b57ddd8`.
+- ADI.exe SHA-256 `0fafcf58bcfda7b3df3e56bd5c86311dc359bedd2c3e0e85ce69f9c095e46741`, scanner `454c0490d65e8d4267ea5f09656ecf61ba0034aaa79552e9aefc6435619fffab`, corresponding source `25e405a40fb6d5d24e83bf8d2a15f585f49ee4cb8c7c9759d0054a0c50e59834`.
+- Claude brief `outputs/ADI-Q-MixView-Stale-Add-Status-b8c0c5e9-CLAUDE-RETEST.txt`.
+
+DF-M40 and DF-M41 already passed the 17 November live route/panel retest on the published native-serial ancestry. The retained/unavailable key case was separately checked live in that round and has a device-key route test. These still await their merge into main.
+
 ### DF-M37 — Clean callback recovery
 
 **PR requested.** `mixview/clean-callback-recovery-20261119` at `a2ff97e5065c4ca5e0c7000100dc22a23a5158b4`.
