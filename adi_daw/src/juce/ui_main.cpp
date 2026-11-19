@@ -253,13 +253,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->browser.setPluginScan(scanService_->state());
         };
     }
-    // The session's loader behind the gate: a VST3 or CLAP waits for a running scan to end, so the loader
-    // never runs on two threads; what the loader scanned on its own for a project is listed after.
+    // The session's loader behind the gate: a VST3 or CLAP waits for a running scan to end and holds the
+    // service until it is made, so the loader never runs on two threads, even when a plug-in runs a
+    // message loop of its own while it is made; what the loader scanned on its own is listed after.
     engine::DeviceLoader gatedLoader() {
         return [this, inner = loader_.fn()](const engine::DeviceRequest &rq, std::string &error) {
             if (rq.ref == nullptr || rq.ref->format == "internal" || !scanService_)
                 return inner(rq, error);
-            scanService_->waitIdle();
+            const PluginScanService::Hold hold(*scanService_);
             applyPluginFolders();
             const auto scans = loader_.stats().scans;
             auto made = inner(rq, error);

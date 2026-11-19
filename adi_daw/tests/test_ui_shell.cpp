@@ -2623,11 +2623,15 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
               "with none found by a complete scan, it says where to add their folders");
         // DF-W34 (b): a scan that stopped early is named, with why, and never worded as "the rest".
         scan.listing.complete = false;
-        scan.listing.stopped = "the plug-in scanner could not run (adi_plugin_scanner was not found)";
+        scan::Report missing;
+        missing.complete = false;
+        missing.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(scan.listing, missing);
         browser.setPluginScan(scan);
         browser.choose(plugIns);
-        check(root.error() == "The plug-in scan stopped early: the plug-in scanner could not run (adi_plugin_scanner "
-                              "was not found). Nothing could be listed. Rescan from the Settings' Plug-Ins page." &&
+        check(root.error() == "The plug-in scan stopped early: the plug-in scanner could not run (its helper, "
+                              "adi_plugin_scanner, is missing or could not start). Nothing could be listed. Rescan "
+                              "from the Settings' Plug-Ins page." &&
                   asked == 1,
               "a scan that stopped early says why and where to rescan, and choosing Plug-Ins does not rescan");
         scan.listing.plugins = found.plugins;
@@ -2648,6 +2652,13 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         applyReport(l, service);
         check(!l.complete && l.failed == 0 && l.stopped == "the plug-in scanner could not run (the registry could not be opened)",
               "a failure with no file is the scanner's own, not a plug-in's");
+        scan::Report helper; // the helper missing or blocked: the probe names the file it was asked to read
+        helper.complete = false;
+        helper.failures.push_back({"/x/Foo.vst3", std::string(kHelperUnavailable), scan::State::Unavailable});
+        applyReport(l, helper);
+        check(!l.complete && l.stopped.find("the plug-in scanner could not run") == 0 &&
+                  l.stopped.find("Foo.vst3") == std::string::npos,
+              "a helper that could not start is the scanner's failure, not the file's");
         scan::Report file;
         file.complete = false;
         file.failures.push_back({"/x/A.vst3", "quarantined", scan::State::Quarantined});
@@ -2691,8 +2702,10 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         auto service = std::make_unique<PluginScanService>(
             [&](const std::atomic<bool> &cancel, const std::function<void(std::size_t)> &counted) {
                 counted(3);
+                // Polled as well as woken: a cancel sets only the flag.
                 std::unique_lock lock(gateMutex);
-                gateWake.wait(lock, [&] { return release || cancel.load(); });
+                while (!gateWake.wait_for(lock, std::chrono::milliseconds(1), [&] { return release || cancel.load(); })) {
+                }
                 ++scans;
                 release = false;
                 if (cancel.load()) {
@@ -2744,35 +2757,61 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             letGo();
         });
-        service->waitIdle();
-        late.join();
-        check(!service->running() && service->state().phase == PluginScan::Phase::Done && scans == 2,
-              "the gate waits for a running scan and adopts it there, with nothing begun again inside it");
-        check(waitPosted(1) && drain() == 1 && !service->running() && service->state().phase == PluginScan::Phase::Done,
-              "the scan's own end, posted before the gate took it, does nothing");
-        service->start();
-        check(waitPosted(1) && drain() == 1, "a third scan counts");
-        service->start(); // another asked for while it runs, as the folders change
-        std::thread later([&] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            letGo();
-        });
-        service->waitIdle();
-        later.join();
-        check(!service->running() && scans == 3,
-              "the gate never begins the scan asked for meanwhile: the caller has the loader to itself");
-        check(waitPosted(2) && drain() == 2 && service->running(), "that scan begins from the owner's queue after the gate");
-        check(waitPosted(1) && drain() == 1, "and counts");
+        {
+            const PluginScanService::Hold hold(*service);
+            late.join();
+            check(!service->running() && service->state().phase == PluginScan::Phase::Done && scans == 2 && service->held(),
+                  "the gate waits for a running scan and adopts it there");
+            service->start(); // Rescan, a folder change or Plug-Ins, while a plug-in is being made
+            check(!service->running(), "no scan begins while the loader is held, whatever asks for one");
+            {
+                const PluginScanService::Hold inner(*service); // a load inside a load
+            }
+            check(service->held() && !service->running(), "a load inside a load releases only its own hold");
+        }
+        check(!service->held() && !service->running(), "released, nothing has begun yet");
+        // The second scan's own end was posted before the gate took it; the scan asked for under the hold
+        // was posted at the release. The old end, dispatched first, does nothing; the new scan begins.
+        check(waitPosted(2) && drain() == 2 && service->running() && service->state().phase == PluginScan::Phase::Scanning,
+              "the old end does nothing, and the scan asked for under the hold begins after the release");
+        check(waitPosted(1) && drain() == 1 && service->state().candidates == 3, "a third scan counts");
+        // A newer scan running when an older scan's end is dispatched: the generation guard ignores it.
         letGo();
-        check(waitPosted(1) && drain() == 1 && !service->running() && scans == 4, "and ends");
-        service->adoptListing(result);
-        check(service->state().listing.complete && changes > 0, "a list the loader made on its own is adopted while idle");
+        check(waitPosted(1), "the third scan ends");
+        // Take the third scan's end out of the queue, and begin a fourth before dispatching it.
+        std::vector<std::function<void()>> stale;
+        {
+            std::lock_guard lock(postedMutex);
+            stale.swap(posted);
+        }
+        {
+            const PluginScanService::Hold hold(*service); // joins the third, adopts it
+            check(scans == 3 && !service->running(), "the gate takes the third scan's end itself");
+        }
+        service->start(); // the release posted nothing: nothing was asked for under the hold
+        check(service->running() && waitPosted(1) && drain() == 1, "a fourth scan begins and counts");
+        for (auto &job : stale)
+            job();
+        check(service->running() && service->state().phase == PluginScan::Phase::Scanning,
+              "the third scan's end, dispatched while the fourth runs, does nothing to it");
+        PluginListing own;
+        own.plugins = {{"vst3", "org.z", "Z", "W", "2", "/z.vst3"}, {"clap", "org.q", "Q", "W", "1", "/q.clap"}};
+        service->adoptListing(own);
+        check(service->state().listing.plugins.size() == 1 && service->state().phase == PluginScan::Phase::Scanning,
+              "a list offered while a scan runs is ignored");
+        letGo();
+        check(waitPosted(1) && drain() == 1 && !service->running() && scans == 4, "the fourth ends");
+        const auto beforeAdopt = changes;
+        service->adoptListing(own);
+        check(service->state().listing.plugins.size() == 2 && service->state().listing.plugins[0].path == "/z.vst3" &&
+                  changes == beforeAdopt + 1 && service->state().phase == PluginScan::Phase::Done,
+              "a list the loader made on its own is adopted while idle, and the owner told");
         service->start();
         service->stop();
         check(!service->running() && sawCancel.load() && scans == 5, "Quit cancels a running scan and waits for it");
         drain();
         check(service->state().phase == PluginScan::Phase::Done && service->state().listing.complete &&
-                  service->state().listing.plugins.size() == 1,
+                  service->state().listing.plugins.size() == 2,
               "a stopped scan's posted jobs are dropped: nothing adopts its result, the list stays");
         service->start();
         const auto before = scans;

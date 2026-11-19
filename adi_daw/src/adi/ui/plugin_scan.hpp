@@ -9,9 +9,9 @@
 // its end to the owner (`Post`, the app's `MessageManager::callAsync`), where the result is adopted.
 //
 // While a scan runs the worker owns the loader. Anything else that needs the loader on the owner thread
-// (a project open, an Undo that brings a plug-in back) calls `waitIdle()` first: it waits for the scan
-// to end and adopts its result there and then, so the loader never runs two scans at once and never
-// scans on two threads (a second scanner would meet the registry's refusal of a pending key and
+// (a project open, an Undo that brings a plug-in back) holds the service for the whole use (`Hold`): the
+// hold waits for the scan to end and adopts its result there and then, and no scan begins until it is
+// released, so the loader never runs two scans at once and never scans on two threads (a second scanner would meet the registry's refusal of a pending key and
 // quarantine good plug-ins). Quit cancels the scan through the helper's cancel flag and waits for it.
 //
 // Until engine-win's catalogue API (N58) is on main this is the window's interim: N58 brings per-file
@@ -81,7 +81,7 @@ class PluginScanService {
     // Begins a scan on the worker. One already running is let finish and another follows it (the folders
     // changed, or Rescan was asked twice); the list stays on screen meanwhile.
     void start() {
-        if (running()) {
+        if (running() || held_ > 0) {
             again_ = true;
             return;
         }
@@ -125,20 +125,36 @@ class PluginScanService {
         });
         changed();
     }
-    // Waits for a running scan to end and adopts its result now (the gate in front of the loader). No
-    // scan begins again inside it, so the caller has the loader to itself until it returns; one asked
-    // for meanwhile (`start` while running) begins later, from the owner's queue.
-    void waitIdle() {
-        if (!running())
-            return;
-        thread_.join();
-        adopt(false);
-        if (again_)
-            post_([shared = shared_] {
-                if (shared->alive && shared->owner != nullptr && !shared->owner->running() && shared->owner->again_)
-                    shared->owner->start();
-            });
+    // The gate in front of the loader: `hold()` waits for a running scan to end and adopts its result
+    // there and then; until the matching `release()` no scan begins (one asked for meanwhile, by Rescan,
+    // a folder change or a choice of Plug-Ins, only marks itself), so the owner has the loader to itself
+    // for the whole load, even if a plug-in runs a message loop of its own while it is made. Held twice
+    // (a load inside a load), it is released twice. The scan asked for begins from the owner's queue
+    // after the last release.
+    void hold() {
+        ++held_;
+        if (running()) {
+            thread_.join();
+            adopt(false);
+        }
     }
+    void release() {
+        if (held_ == 0 || --held_ != 0 || !again_)
+            return;
+        post_([shared = shared_] {
+            if (shared->alive && shared->owner != nullptr)
+                shared->owner->resume();
+        });
+    }
+    bool held() const noexcept { return held_ > 0; }
+    // The RAII form for one load.
+    struct Hold {
+        explicit Hold(PluginScanService &s) : service(s) { service.hold(); }
+        ~Hold() { service.release(); }
+        Hold(const Hold &) = delete;
+        Hold &operator=(const Hold &) = delete;
+        PluginScanService &service;
+    };
     // Quit: cancels a running scan and waits for it; its result is dropped and the list stays as it was.
     void stop() {
         if (!running())
@@ -151,6 +167,7 @@ class PluginScanService {
         state_.candidates = 0;
     }
     // A listing read on the owner while no scan runs: the loader scanned on its own, for a project.
+    // Offered while a scan runs, it is ignored: the scan's own result follows.
     void adoptListing(PluginListing listing) {
         if (running())
             return;
@@ -201,6 +218,11 @@ class PluginScanService {
         if (restart && again_)
             start();
     }
+    // The scan asked for while the loader was held, once the hold is gone.
+    void resume() {
+        if (!running() && held_ == 0 && again_)
+            start();
+    }
     void changed() {
         if (onChange)
             onChange();
@@ -211,6 +233,7 @@ class PluginScanService {
     std::thread thread_;
     std::uint64_t generation_ = 0;
     bool again_ = false;
+    int held_ = 0;
     PluginScan state_;
 };
 } // namespace adi::ui

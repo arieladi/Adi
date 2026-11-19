@@ -30,8 +30,11 @@ struct PluginListing {
     bool complete = true;   // false: the scan stopped early (`stopped` says why); the list may be short
     std::string stopped;    // why the scan stopped early, a sentence's middle ("the plug-in scanner ...")
 };
-// Why a scan stopped early, from the loader's report (DF-W34 b): the failure that ended it, the service
-// when its path is empty (the helper could not start, the registry could not open), else that file. A
+// `Scanner::probe`'s words when its helper could not start or was cancelled (src/adi/plugin_scanner.cpp).
+inline constexpr std::string_view kHelperUnavailable = "scanner helper unavailable or scan cancelled";
+// Why a scan stopped early, from the loader's report (DF-W34 b): the failure that ended it, the scanner
+// itself when its path is empty (the registry could not open) or its helper could not start, else that
+// file. A
 // scan cancelled by the app says so. Empty for a scan that completed.
 inline std::string stoppedReason(const scan::Report &report) {
     if (report.complete && !report.cancelled)
@@ -44,6 +47,12 @@ inline std::string stoppedReason(const scan::Report &report) {
             const auto error = it->error.empty() ? std::string("no reason given") : it->error;
             if (it->path.empty())
                 return "the plug-in scanner could not run (" + error + ")";
+            // The helper that could not start (missing, blocked) is the scanner's failure, though the
+            // probe names the file it was asked to read (`Scanner::probe`'s own words; a scan the app
+            // cancelled is caught above).
+            if (it->state == scan::State::Unavailable && it->error == kHelperUnavailable)
+                return "the plug-in scanner could not run (its helper, adi_plugin_scanner, is missing or could "
+                       "not start)";
             return it->path + " stopped the scan (" + error + ")";
         }
     return "the scan did not finish";
