@@ -465,7 +465,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         };
         timing->loopBegin=sample(image->transport.loopStartTicks);timing->loopEnd=sample(image->transport.loopEndTicks);
         if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())timing->loopEnd=timing->loopBegin+1;
-        timing->signatures=image->model.signatures;out->timing=timing;
+        timing->signatures=image->model.signatures;
+        timing->prepareDeviceClockChanges();
+        out->timing=timing;
         RealizeOptions options;options.channels=owner->spec_.channels;
         options.devicesFor=[owner](std::int64_t id){return owner->trackChain(id);};
         // The GUI publishes both preview and committed generations through here.

@@ -836,10 +836,7 @@ bool Session::rebuild() {
     for (const auto& e : playbackModel_.tempo)
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
-    auto loopSample=[&](std::int64_t ticks){
-        const long double sample=static_cast<long double>(timing->tempo.ticksToSeconds(ticks))*spec_.sampleRate;
-        return sample>=static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(std::llround(sample));
-    };
+    const auto loopSample = [&](std::int64_t ticks) { return timing->sampleForTick(ticks); };
     timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
     timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
     if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
@@ -847,11 +844,7 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
-    for (const auto& event : timing->tempo.events)
-        timing->deviceClockChanges.emplace_back(loopSample(event.posTicks), event.posTicks);
-    for (const auto& meter : timing->signatures)
-        timing->deviceClockChanges.emplace_back(loopSample(meter.posTicks), meter.posTicks);
-    std::sort(timing->deviceClockChanges.begin(), timing->deviceClockChanges.end());
+    timing->prepareDeviceClockChanges();
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
     try {
@@ -1820,13 +1813,33 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     return info;
 }
 
+std::int64_t Session::TimingView::sampleForTick(std::int64_t tick) const noexcept {
+    const long double sample = static_cast<long double>(tempo.ticksToSeconds(tick)) * sampleRate;
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+    if (!std::isfinite(sample) || sample >= static_cast<long double>(limit)) return limit;
+    if (sample <= 0) return 0;
+    return static_cast<std::int64_t>(std::llround(sample));
+}
+
+void Session::TimingView::prepareDeviceClockChanges() {
+    lastTickSeconds = tempo.ticksToSeconds(std::numeric_limits<std::int64_t>::max());
+    deviceClockChanges.clear();
+    deviceClockChanges.reserve(tempo.events.size() + signatures.size());
+    const auto add = [&](std::int64_t tick) {
+        deviceClockChanges.emplace_back(sampleForTick(tick), tick);
+    };
+    for (const auto& event : tempo.events) add(event.posTicks);
+    for (const auto& meter : signatures) add(meter.posTicks);
+    std::sort(deviceClockChanges.begin(), deviceClockChanges.end());
+}
+
 double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
     const double seconds = static_cast<double>(sample) / sampleRate;
     if (sample <= 0)
         return seconds * tempo.bpmAt(0) / 60.0;
     constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
     constexpr double ppq = static_cast<double>(textproj::kPPQ);
-    if (seconds >= tempo.ticksToSeconds(maximumTick))
+    if (seconds >= lastTickSeconds)
         return static_cast<double>(maximumTick) / ppq;
     const auto wholeTick = tempo.secondsToTicks(seconds);
     const double remainder = seconds - tempo.ticksToSeconds(wholeTick);
@@ -1834,14 +1847,21 @@ double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
 }
 
 DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
     DeviceTransport result;
     result.sample = sample;
     result.quarterNotes = quartersAt(sample);
     const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
         [](std::int64_t value, const auto& change) { return value < change.first; });
     if (next != deviceClockChanges.end()) result.nextChange = next->first;
-    auto tick = tempo.secondsToTicks(static_cast<double>(sample) / sampleRate);
-    if (next != deviceClockChanges.begin()) tick = std::max(tick, std::prev(next)->second);
+    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
+    const auto seconds = static_cast<double>(sample) / sampleRate;
+    auto tick = seconds >= lastTickSeconds ? maximumTick : tempo.secondsToTicks(seconds);
+    if (next != deviceClockChanges.begin()) {
+        const auto changeTick = std::prev(next)->second;
+        tick = std::max(tick, changeTick);
+        result.quarterNotes = std::max(result.quarterNotes, static_cast<double>(changeTick) / ppq);
+    }
     result.bpm = tempo.bpmAt(tick);
     const auto& transport = session->transport_;
     result.playing = transport.playing();
@@ -1865,7 +1885,6 @@ DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcep
         result.denominator = static_cast<int>(meter.denominator);
         barTicks = textproj::kWhole * meter.numerator / meter.denominator;
     }
-    constexpr double ppq = static_cast<double>(textproj::kPPQ);
     const double startQuarters = static_cast<double>(start) / ppq;
     const double barQuarters = static_cast<double>(barTicks) / ppq;
     const auto barsIntoMeter = sample < 0
@@ -1993,13 +2012,7 @@ bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t
 }
 std::int64_t Session::RenderBlock::sampleAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
-    if (!timing) return 0;
-    const long double sample = static_cast<long double>(timing->tempo.ticksToSeconds(tick)) *
-                               static_cast<long double>(timing->sampleRate);
-    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
-    if (sample >= static_cast<long double>(limit)) return limit;
-    if (sample <= 0) return 0;
-    return static_cast<std::int64_t>(std::llround(sample));
+    return timing ? timing->sampleForTick(tick) : 0;
 }
 double Session::RenderBlock::bpmAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());

@@ -21,8 +21,12 @@
 #include "temp_directory.hpp"
 
 #include "juce/clap_host.hpp"
+#include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/gesture_presentation.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -2993,6 +2997,7 @@ void testTransportAtDeviceInput() {
         "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES"
         "(1,1,0,1,'Latency',1),(2,1,1,2,'Clock',1);"
+        "INSERT INTO mixer_strip(track_id) VALUES(1);"
         "INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,0),(2,5765760,60,0);"
         "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,7,8),(2,5765760,3,4)");
     Fake delay;
@@ -3011,6 +3016,11 @@ void testTransportAtDeviceInput() {
     private:
         WideConst signal_;
     } source;
+    const auto loader = [&](const engine::DeviceRequest& request, std::string&) {
+        DeviceIdentity identity;
+        identity.format = "clap";
+        return std::make_unique<ClapDevice>(request.device->id == 1 ? &delay.plugin : &probe.plugin, identity);
+    };
     for (const bool offline : {false, true}) {
         engine::Session session;
         engine::SessionSpec spec;
@@ -3019,11 +3029,6 @@ void testTransportAtDeviceInput() {
         session.setSourcesFor([&](std::int64_t id) {
             return id == 1 ? std::vector<engine::Node*>{&source} : std::vector<engine::Node*>{};
         });
-        const auto loader = [&](const engine::DeviceRequest& request, std::string&) {
-            DeviceIdentity identity;
-            identity.format = "clap";
-            return std::make_unique<ClapDevice>(request.device->id == 1 ? &delay.plugin : &probe.plugin, identity);
-        };
         const bool loaded = session.load(*store, loader, spec);
         check(loaded, "load two CLAP devices in a real session");
         if (!loaded) return;
@@ -3107,6 +3112,75 @@ void testTransportAtDeviceInput() {
         check(probe.count == 1 && sampleAt(0) == 4096,
               "with compensation off the device sees the heard time");
         delay.latencyValue = 1024;
+        check(session.setDelayCompensation(true), "restore receiving compensation before testing gesture publications");
+        {
+            namespace g = adi::gesture;
+            engine::ProjectView view;
+            view.refresh(*store);
+            auto coordinator = g::Coordinator::attach(*store, std::make_shared<g::EnginePresentation>(view, session));
+            if (!coordinator.status.ok() || !coordinator.value) {
+                check(false, "attach a real gesture coordinator to the hosted clock fixture");
+                return;
+            }
+            const auto splitAtChange = [&](double followingTempo) {
+                clock.locate(24400);
+                render(1024);
+                return probe.count == 2 && sampleAt(0) == 23376 && sampleAt(1) == 24000 &&
+                       probe.blocks[0].frames == 624 && probe.blocks[1].frames == 400 &&
+                       probe.blocks[0].transport.tempo == 120 && probe.blocks[1].transport.tempo == followingTempo &&
+                       probe.blocks[0].transport.tsig_num == 7 && probe.blocks[0].transport.tsig_denom == 8 &&
+                       probe.blocks[1].transport.tsig_num == 3 && probe.blocks[1].transport.tsig_denom == 4;
+            };
+            OpRequest volume;
+            volume.opType = "mixer.setVolume";
+            volume.payload = {{"id",1},{"db",-3.0}};
+            check(OpJournal(*store).commit(volume).ok && coordinator.value->drain(100).status.ok() &&
+                  splitAtChange(60), "a drain-adopted volume commit keeps both receiving clock segments");
+            g::Spec structural;
+            structural.strategy = g::Strategy::Structural;
+            structural.label = "receiving clock preview";
+            const auto preview = coordinator.value->begin(structural, g::tempoProducer(5765760));
+            if (!preview.status.ok() || !preview.session) {
+                check(false, "begin native receiving clock preview");
+                return;
+            }
+            const auto changed = preview.session->update(std::make_unique<g::TempoInput>(90.0));
+            check(changed.status.ok() && changed.preview && splitAtChange(90),
+                  "a structural tempo preview gives the receiver its own new boundary");
+            check(preview.session->cancel().status.ok() && splitAtChange(60),
+                  "cancelling the preview restores the receiver's original tempo and meter split");
+        }
+    }
+
+    store->db().exec("DELETE FROM tempo_map; DELETE FROM time_signature_map;"
+        "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,117,0);"
+        "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,4)");
+    SQLite::Statement meter(store->db(), "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,3,4)");
+    meter.bind(1, 8 * textproj::kPPQ);
+    meter.exec();
+    for (const double rate : {48000.0, 44100.0}) {
+        engine::Session session;
+        engine::SessionSpec spec;
+        spec.sampleRate = rate;
+        spec.maxFrames = 64;
+        if (!session.load(*store, loader, spec)) {
+            check(false, "load rounded CLAP bar-boundary session");
+            return;
+        }
+        const auto boundary = std::llround(8.0 * 60.0 / 117.0 * rate);
+        session.transport().locate(boundary + 1024 - 32);
+        session.transport().play();
+        probe.count = 0;
+        engine::AudioIo io;
+        io.frames = 64;
+        session.process(io);
+        const auto& before = probe.blocks[0];
+        const auto& after = probe.blocks[1];
+        check(probe.count == 2 && before.frames == 32 && after.frames == 32 &&
+              before.transport.tsig_num == 4 && after.transport.tsig_num == 3 &&
+              after.transport.bar_number == 2 && after.transport.bar_start == 8 * CLAP_BEATTIME_FACTOR &&
+              after.transport.song_pos_beats == after.transport.bar_start,
+              "CLAP's rounded meter boundary splits on time and aligns beat and bar start");
     }
 }
 

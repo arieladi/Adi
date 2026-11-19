@@ -26,6 +26,7 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include "../../tests/temp_directory.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1053,6 +1054,47 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
             }
         } else {
             check(false, "the transport fixture loaded through the raw VST3 processor");
+        }
+
+        adi::test::TempDirectory directory{"vst3_fixture", "rounded_bar"};
+        adi::StoreError error{};
+        const auto project = adi::Store::createEmpty(directory.path() / "transport.adi", error);
+        check(static_cast<bool>(project), "create the native rounded VST3 bar project");
+        if (project) {
+            auto& db = project->db();
+            db.exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Instrument',0),(9,'master','Main',1);"
+                "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','fixture.clock','Clock','instrument');"
+                "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+                "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES(1,1,0,1,'Clock',1);"
+                "INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,117,0);"
+                "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(0,4,4)");
+            SQLite::Statement meter(db, "INSERT INTO time_signature_map(pos_ticks,numerator,denominator) VALUES(?,3,4)");
+            meter.bind(1, 8 * adi::textproj::kPPQ);
+            meter.exec();
+            for (const double rate : {48000.0, 44100.0}) {
+                adi::engine::Session session;
+                adi::engine::SessionSpec spec;
+                spec.sampleRate = rate;
+                spec.maxFrames = 64;
+                const auto load = [&](const adi::engine::DeviceRequest&, std::string& details) {
+                    return host.makeDevice(*d, rate, spec.maxFrames, details);
+                };
+                if (!session.load(*project, load, spec)) {
+                    check(false, "load the rounded VST3 bar session: " + session.error());
+                    continue;
+                }
+                const auto boundary = std::llround(8.0 * 60.0 / 117.0 * rate);
+                session.transport().locate(boundary - 32);
+                session.transport().play();
+                adi::engine::AudioIo io;
+                io.frames = 64;
+                session.process(io);
+                std::array<double, 12> received{};
+                readTransport(received.data());
+                check(received[1] == rate && received[2] == static_cast<double>(boundary) &&
+                          received[3] == 8.0 && received[4] == 8.0 && received[8] == 3.0 && received[9] == 4.0,
+                      "VST3's rounded meter boundary splits on time and aligns musical position with bar start");
+            }
         }
     }
 

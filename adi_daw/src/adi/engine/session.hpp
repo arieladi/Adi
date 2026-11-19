@@ -504,7 +504,10 @@ private:
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
+        double lastTickSeconds = 0.0;
         SessionSpec spec;
+        [[nodiscard]] std::int64_t sampleForTick(std::int64_t tick) const noexcept;
+        void prepareDeviceClockChanges();
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
