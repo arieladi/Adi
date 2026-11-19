@@ -25,6 +25,22 @@ AacTrack aacTrack(const fs::path& source,SourceFormat format) {
     }
 }
 bool aac(SourceFormat f){return f==SourceFormat::Mp4 || f==SourceFormat::Adts;}
+
+bool savedDigest(std::string_view text) {
+    return text.size() == 64 && text.find_first_not_of("0123456789abcdef") == text.npos;
+}
+
+void requireProgressiveInfo(const PcmStreamInfo& info) {
+    if (!info.frames || !*info.frames || info.channels == 0 || info.channels > kMaxDecodeChannels ||
+        info.sampleRate == 0 || info.sampleRate > kMaxDecodeRate)
+        throw DecodeError(DecodeProblem::Unsupported,"progressive playback requires valid dimensions and a nonempty exact header length");
+    if (*info.frames > (std::numeric_limits<std::uint64_t>::max() - 4096) / info.channels / 4)
+        throw DecodeError(DecodeProblem::Unsupported,"progressive dimensions overflow");
+}
+
+bool sameDimensions(const PcmStreamInfo& a, const PcmStreamInfo& b) {
+    return a.frames == b.frames && a.channels == b.channels && a.sampleRate == b.sampleRate;
+}
 }
 PcmStreamInfo inspectPcm(const fs::path& source,std::stop_token stop) {
     owner();cancelled(stop);const auto format=sniff(source);
@@ -88,15 +104,21 @@ ProgressiveRead ProgressiveFile::read(std::uint64_t first,std::span<float> out) 
     }
 }
 struct ProgressiveDecoder::Impl {
+    struct QueuedDecode {
+        std::weak_ptr<ProgressiveFile::State> state;
+        std::uint64_t bytes;
+    };
     DecodeCache& cache;
     ProgressiveHooks hooks;
+    std::atomic<std::uint64_t> sourceHashes{0};
     std::mutex mutex;
     std::condition_variable condition;
-    std::deque<std::shared_ptr<ProgressiveFile::State>> queue;
+    std::deque<QueuedDecode> queue;
     std::map<std::string,std::weak_ptr<ProgressiveFile>> files;
     std::vector<std::jthread> workers;
     bool stopping=false;
     std::size_t admitted=0;
+    unsigned opensSinceFileReclaim=0;
     std::uint64_t reserved=0;
     explicit Impl(DecodeCache& c,ProgressiveHooks h,unsigned count):cache(c),hooks(std::move(h)) {
         if(count<1 || count>8)throw std::invalid_argument("progressive worker count outside 1..8");
@@ -108,13 +130,42 @@ struct ProgressiveDecoder::Impl {
         condition.notify_all();workers.clear();
     }
     ~Impl(){shutdown();}
+    // A queued job has no owner except its public lease. Reclaim the
+    // accounting before admission even if every worker is still busy.
+    void reclaimExpired() {
+        std::erase_if(queue, [this](const QueuedDecode& entry) {
+            if (!entry.state.expired()) return false;
+            --admitted;
+            reserved -= entry.bytes;
+            return true;
+        });
+    }
+    void reclaimExpiredFiles() {
+        // Warm opens need the same cleanup as cold ones. Batch it so opening
+        // many finished clips does not repeatedly scan every active lease.
+        if (++opensSinceFileReclaim < 64) return;
+        opensSinceFileReclaim = 0;
+        std::erase_if(files, [](const auto& entry) { return entry.second.expired(); });
+    }
     void work() {
         for(;;) {
             std::shared_ptr<ProgressiveFile::State> state;
-            {std::unique_lock lock(mutex);condition.wait(lock,[&]{return stopping || !queue.empty();});
-                if(queue.empty()){if(stopping)return;continue;}state=std::move(queue.front());queue.pop_front();}
+            std::uint64_t bytes = 0;
+            {
+                std::unique_lock lock(mutex);
+                condition.wait(lock, [&] { return stopping || !queue.empty(); });
+                if (queue.empty()) return;
+                bytes = queue.front().bytes;
+                state = queue.front().state.lock();
+                queue.pop_front();
+                if (!state) {
+                    --admitted;
+                    reserved -= bytes;
+                    continue;
+                }
+            }
             run(state);
-            {std::lock_guard lock(mutex);--admitted;reserved-=*state->info.frames*state->info.channels*4+4096;}
+            {std::lock_guard lock(mutex);--admitted;reserved-=bytes;}
         }
     }
     void finish(ProgressiveFile::State& state) {
@@ -134,6 +185,44 @@ struct ProgressiveDecoder::Impl {
         // pin, and a complete target remains independently discoverable.
         state.path=target;state.pinned=true;++cache.stats_.decodes;
         cache.evict(0,state.hash);cache.saveIndex();
+    }
+    std::shared_ptr<ProgressiveFile> openComplete(const std::string& hash, const PcmStreamInfo& info,
+                                                 bool allowDimensionMiss = false) {
+        // Admission is already locked. Declare the lease outside the index
+        // lock so a failed pin can release it during unwinding.
+        std::shared_ptr<ProgressiveFile> file;
+        {
+            std::lock_guard cacheLock(cache.mutex_);
+            const auto target = cache.fileFor(hash);
+            if (!fs::exists(target)) return {};
+            if (!fs::is_regular_file(fs::symlink_status(target)))
+                throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
+            WavReader reader(target);
+            if (reader.frames() != *info.frames || reader.sampleRate() != info.sampleRate || reader.channels() != info.channels) {
+                // A saved lookup has only inspected the current source header.
+                // Verify its bytes before attributing this difference to the
+                // cache. The verified path below still refuses damaged PCM.
+                if (allowDimensionMiss) return {};
+                throw DecodeError(DecodeProblem::CacheWrite,"cached progressive dimensions differ");
+            }
+            auto state = std::make_shared<ProgressiveFile::State>();
+            state->info = info;
+            state->hash = hash;
+            state->path = target;
+            state->cache = &cache;
+            file.reset(new ProgressiveFile(state));
+            auto& item = cache.items_[hash];
+            item.bytes = fs::file_size(target);
+            item.lastUse = cache.stamp();
+            ++item.pins;
+            ++cache.stats_.hits;
+            state->pinned = true;
+            state->ready.store(*info.frames);
+            state->status.store(ProgressiveStatus::Complete);
+            cache.saveIndex();
+        }
+        files[hash] = file;
+        return file;
     }
     void run(const std::shared_ptr<ProgressiveFile::State>& state) {
         const auto stop=state->stop.get_token();
@@ -185,6 +274,7 @@ struct ProgressiveDecoder::Impl {
             }
             // The final source pass may be long. Prefix readers keep serving
             // existing pages while it runs; only publication holds their lock.
+            sourceHashes.fetch_add(1, std::memory_order_relaxed);
             const auto hash=media::blake3File(state->source,stop);cancelled(stop);
             if(!hash || hash.hex!=state->hash)throw DecodeError(DecodeProblem::Unreadable,"source changed during progressive decoding");
             {std::lock_guard lock(state->mutex);finish(*state);state->status.store(ProgressiveStatus::Complete,std::memory_order_release);}
@@ -203,31 +293,58 @@ ProgressiveDecoder::ProgressiveDecoder(DecodeCache& cache,ProgressiveHooks hooks
 }
 ProgressiveDecoder::~ProgressiveDecoder()=default;
 std::shared_ptr<ProgressiveFile> ProgressiveDecoder::open(const fs::path& source,std::stop_token stop) {
-    owner();cancelled(stop);const auto hash=media::blake3File(source,stop);cancelled(stop);
+    return openHashed(source, nullptr, {}, stop);
+}
+
+std::uint64_t ProgressiveDecoder::sourceHashReads() const noexcept {
+    return impl_->sourceHashes.load(std::memory_order_relaxed);
+}
+
+std::shared_ptr<ProgressiveFile> ProgressiveDecoder::openSaved(const fs::path& source,
+    const PcmStreamInfo& info, std::string_view digest, std::stop_token stop) {
+    owner();
+    cancelled(stop);
+    requireProgressiveInfo(info);
+    if (!savedDigest(digest)) return openHashed(source, &info, {}, stop);
+    {
+        std::lock_guard lock(impl_->mutex);
+        cancelled(stop);
+        impl_->reclaimExpiredFiles();
+        const std::string hash(digest);
+        if (auto match = impl_->files.find(hash); match != impl_->files.end()) {
+            if (auto file = match->second.lock(); file && file->snapshot().status == ProgressiveStatus::Complete &&
+                sameDimensions(file->info(), info)) return file;
+        }
+        if (auto file = impl_->openComplete(hash, info, true)) return file;
+    }
+    return openHashed(source, &info, digest, stop);
+}
+
+std::shared_ptr<ProgressiveFile> ProgressiveDecoder::openHashed(const fs::path& source,
+    const PcmStreamInfo* inspected, std::string_view expected, std::stop_token stop) {
+    owner();cancelled(stop);
+    impl_->sourceHashes.fetch_add(1, std::memory_order_relaxed);
+    const auto hash=media::blake3File(source,stop);cancelled(stop);
     if(!hash)throw DecodeError(DecodeProblem::Unreadable,"progressive source cannot be hashed");
+    if (!expected.empty() && hash.hex != expected)
+        throw DecodeError(DecodeProblem::Unreadable,"progressive source differs from its saved BLAKE3");
     std::lock_guard lock(impl_->mutex);cancelled(stop);
-    for(auto i=impl_->files.begin();i!=impl_->files.end();) {if(i->second.expired())i=impl_->files.erase(i);else ++i;}
+    impl_->reclaimExpired();
+    impl_->reclaimExpiredFiles();
     if(auto i=impl_->files.find(hash.hex);i!=impl_->files.end())if(auto file=i->second.lock()) {
         const auto status=file->snapshot().status;
         if(status==ProgressiveStatus::Pending || status==ProgressiveStatus::Complete)return file;
     }
+    const auto info = inspected ? *inspected : inspectPcm(source, stop);
+    cancelled(stop);
+    requireProgressiveInfo(info);
+    if (auto file = impl_->openComplete(hash.hex, info)) return file;
     if(impl_->stopping || impl_->admitted>=32)throw DecodeError(DecodeProblem::Unsupported,"progressive job capacity reached");
-    auto state=std::make_shared<ProgressiveFile::State>();state->info=inspectPcm(source,stop);cancelled(stop);
-    if(!state->info.frames || !*state->info.frames)throw DecodeError(DecodeProblem::Unsupported,"progressive playback requires a nonempty exact header length");
-    if(*state->info.frames>(std::numeric_limits<std::uint64_t>::max()-4096)/state->info.channels/4)throw DecodeError(DecodeProblem::Unsupported,"progressive dimensions overflow");
+    auto state=std::make_shared<ProgressiveFile::State>();
+    state->info = info;
     state->source=source;state->hash=hash.hex;state->cache=&impl_->cache;
     auto file=std::shared_ptr<ProgressiveFile>(new ProgressiveFile(state));
     {std::lock_guard cacheLock(impl_->cache.mutex_);
-        const auto target=impl_->cache.fileFor(hash.hex);
-        if(fs::exists(target)) {
-            if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
-            WavReader reader(target);
-            if(reader.frames()!=state->info.frames || reader.sampleRate()!=state->info.sampleRate || reader.channels()!=state->info.channels)
-                throw DecodeError(DecodeProblem::CacheWrite,"cached progressive dimensions differ");
-            auto& item=impl_->cache.items_[hash.hex];item.bytes=fs::file_size(target);item.lastUse=impl_->cache.stamp();++item.pins;++impl_->cache.stats_.hits;
-            state->path=target;state->pinned=true;state->ready.store(*state->info.frames);state->status.store(ProgressiveStatus::Complete);
-            impl_->cache.saveIndex();impl_->files[hash.hex]=file;return file;
-        }
         const auto bytes=*state->info.frames*state->info.channels*4+4096;
         if(bytes>impl_->cache.limits_.maxBytes || impl_->reserved>impl_->cache.limits_.maxBytes-bytes)
             throw DecodeError(DecodeProblem::NoSpace,"progressive jobs exceed cache budget");
@@ -245,7 +362,12 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::open(const fs::path& source
     }
     if(state->directory.empty())throw DecodeError(DecodeProblem::CacheWrite,"cannot reserve progressive private directory");
     fs::permissions(state->directory,fs::perms::owner_all,fs::perm_options::replace);
-    cancelled(stop);impl_->files[hash.hex]=file;impl_->queue.push_back(state);++impl_->admitted;impl_->reserved+=*state->info.frames*state->info.channels*4+4096;
+    cancelled(stop);
+    const auto bytes = *state->info.frames * state->info.channels * 4 + 4096;
+    impl_->files[hash.hex] = file;
+    impl_->queue.push_back({state, bytes});
+    ++impl_->admitted;
+    impl_->reserved += bytes;
     impl_->condition.notify_one();return file;
 }
 ProgressiveDecoder& defaultProgressiveDecoder(){static ProgressiveDecoder decoder(defaultDecodeCache());return decoder;}
