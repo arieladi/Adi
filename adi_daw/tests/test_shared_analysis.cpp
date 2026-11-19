@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/shared_analysis.hpp"
+#include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
 #include <algorithm>
 #include <array>
@@ -53,6 +54,61 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void focusScopeWindows() {
+    const auto tapA = std::make_shared<ScopeTap>(48000., 1.);
+    const auto tapB = std::make_shared<ScopeTap>(48000., 1.);
+    const auto tapC = std::make_shared<ScopeTap>(48000., 1.);
+    int attached = 0;
+    SharedAnalysis broker([&](std::int64_t track, ScopePoint) {
+        ++attached;
+        return track == 1 ? tapA : track == 2 ? tapB : tapC;
+    }, [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    SharedAnalysis::Request request{1};
+    request.outputs = SharedAnalysis::Scope;
+    request.fftSize = 32;
+    request.hopSize = 16;
+    auto a = broker.acquire(request);
+    request.track = 2;
+    auto b = broker.acquire(request);
+    request.track = 3;
+    auto c = broker.acquire(request);
+    std::array<float, 64> left{}, right{};
+    left.fill(.5f); right.fill(.25f);
+    tapA->write(left.data(), right.data(), 64, 100, true, 7);
+    left.fill(-.5f); right.fill(.25f);
+    tapB->write(left.data(), right.data(), 64, 108, true, 7);
+    broker.pump();
+    const auto ra = a.read(), rb = b.read();
+    check(ra && rb && attached == 3 && ra->transportRevision == 7 && rb->transportRevision == 7 &&
+          ra->firstStamp == 132 && rb->firstStamp == 140 && ra->scopeLeft.size() == 32,
+          "only the latest overlapping raw windows publish and retain the tap transport epoch");
+    std::array sources{ra.get(), rb.get()};
+    const auto overlap = adi::ui::focusScopeRange(sources);
+    check(overlap && overlap->first == 140 && overlap->frames == 24 && overlap->sampleRate == 48000.,
+          "Focus aligns different stamped offsets over their exact intersection");
+    if (overlap) {
+        const auto result = adi::ui::focusReadSum(sources, *overlap);
+        check(result.peak == std::array{0., .5} && result.rms == std::array{0., .5} &&
+              broker.stats().transforms == 0,
+              "sample sum cancels antiphase before measuring and scope-only demand needs no FFT");
+    }
+    const auto waiting = c.read();
+    check(!adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), waiting.get()}),
+          "an absent member produces a readout gap rather than a partial sum");
+
+    tapC->write(left.data(), right.data(), 32, 140, true, 8);
+    broker.pump();
+    const auto afterSeek = c.read();
+    check(afterSeek && afterSeek->firstStamp == 140 && afterSeek->transportRevision == 8 &&
+          !adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), afterSeek.get()}),
+          "the same heard stamp cannot mix audio from two transport revisions");
+
+    tapC->write(left.data(), right.data(), 32, 140, false, 7);
+    broker.pump();
+    const auto parked = c.read();
+    check(parked && !parked->advancing && !adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), parked.get()}),
+          "a parked timestamp cannot align separate live monitor callbacks");
+}
 void parkedSilence() {
     Fixture f;
     auto request = SharedAnalysis::Request{1};
@@ -1210,7 +1266,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { focusScopeWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

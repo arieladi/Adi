@@ -61,6 +61,8 @@ class SharedAnalysis final {
     struct Result {
         Request request;
         std::uint64_t revision = 0, sourceEpoch = 0, generation = 0, windowSerial = 0;
+        // The source transport epoch, shared by taps. Domain epochs are local to one source.
+        std::uint64_t transportRevision = 0;
         std::int64_t firstStamp = 0, firstSequence = 0;
         double sampleRate = 0, coherentGain = 0;
         std::int32_t hopSize = 0;

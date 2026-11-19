@@ -48,10 +48,13 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         if (onEdit && contains(active_) && SnapshotReader(root_.current()).findTrack(active_))
             onEdit(active_);
     };
+    scope.setTitle("Synchronous Focus scope");
+    scope.setTooltip("Show the overlapping, untriggered post-fader audio windows from the Focus channels.");
+    scope.onClick = [this] { redraw_ = true; repaint(); };
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
-    for (auto *c : std::array<juce::Component *, 9>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
-                                                    &edit, &scroll_})
+    for (auto *c : std::array<juce::Component *, 10>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
+                                                     &edit, &scope, &scroll_})
         addAndMakeVisible(*c);
     refreshControls();
 }
@@ -195,11 +198,16 @@ void MixFocus::drop() {
     released.reserve(members_.size());
     for (auto &m : members_) {
         released.push_back(std::move(m.lease));
+        m.outputs = 0;
         m.data.reset();
         m.energy.clear();
         m.spectrumChanged = true;
         m.path.clear();
+        for (auto &path : m.scopePaths) path.clear();
     }
+    scopeSources_.clear();
+    scopeRange_.reset();
+    sum_.reset();
     masked_.clear();
     broker_.reset();
     redraw_ = true;
@@ -225,6 +233,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
         density_ = look::densityId();
         resized();
         if (!alive) return;
+    }
+    if (plot_.isEmpty()) {
+        if (!broker_.expired()) drop();
+        return;
     }
     if (generation_ != root_.generation() || snapshot_ != reader.get()) {
         const auto last = available.getSelectedId() - 1;
@@ -256,6 +268,22 @@ void MixFocus::frame(const SnapshotReader &reader) {
         generation_ = root_.generation();
         snapshot_ = reader.get();
     }
+    const bool playing = root_.playing();
+    if (scopePlaying_ != playing) {
+        scopePlaying_ = playing;
+        redraw_ = true;
+    }
+    const bool scopeShown = scope.getToggleState();
+    if (scopeShown && !playing) {
+        if (!broker_.expired()) drop();
+        if (!alive) return;
+        if (redraw_) {
+            rebuildScope();
+            redraw_ = false;
+            repaint(plot_.toNearestInt().getUnion(sumLabel_));
+        }
+        return;
+    }
     const auto broker = root_.sharedAnalysis;
     if (broker != broker_.lock()) {
         const auto nextPose = membershipPose_ + 1;
@@ -271,17 +299,23 @@ void MixFocus::frame(const SnapshotReader &reader) {
     }
     if (broker && broker->active()) {
         const auto pose = membershipPose_;
+        auto outputs = static_cast<std::uint32_t>(scopeShown ? SharedAnalysis::Scope : SharedAnalysis::Spectrum);
+        if (playing && !sumLabel_.isEmpty() && members_.size() >= 2) outputs |= SharedAnalysis::Scope;
         for (std::size_t i = 0; i < members_.size(); ++i) {
-            if (!members_[i].lease) {
+            if (!members_[i].lease || members_[i].outputs != outputs) {
                 SharedAnalysis::Request req;
                 req.track = members_[i].id;
                 req.channel = SharedAnalysis::Channel::StereoPower;
+                req.outputs = outputs;
                 SharedAnalysis::Lease acquired;
                 try { acquired = broker->acquire(req); }
                 catch (...) {}
                 if (!alive || membershipPose_ != pose || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
                     return;
-                members_[i].lease = std::move(acquired);
+                if (acquired) {
+                    members_[i].lease = std::move(acquired);
+                    members_[i].outputs = outputs;
+                }
             }
             auto &member = members_[i];
             auto next = member.lease.read();
@@ -298,9 +332,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
             broker->requestFrame();
     }
     if (redraw_) {
-        rebuildPlot();
+        if (!scope.getToggleState()) rebuildPlot();
+        rebuildScope();
         redraw_ = false;
-        repaint(plot_.toNearestInt());
+        repaint(plot_.toNearestInt().getUnion(sumLabel_));
     }
 }
 void MixFocus::rebuildPlot() {
@@ -362,14 +397,15 @@ void MixFocus::rebuildPlot() {
         if (m.id == main_)
             primary = &m;
     }
-    if (!primary || members_.size() < 2)
+    if (!primary || members_.size() < 2 || !primary->data->advancing)
         return;
     const auto &p = *primary->data;
     std::fill(maskers_.begin(), maskers_.end(), 0.);
     size_t others = 0;
     for (auto &m : members_) {
         if (!m.data || m.data->sampleRate != rate_ || m.data->binsDbfs.size() != bins_ ||
-            m.data->firstStamp != p.firstStamp || m.data->advancing != p.advancing)
+            m.data->firstStamp != p.firstStamp || m.data->advancing != p.advancing ||
+            m.data->transportRevision != p.transportRevision)
             continue;
         if (m.id == main_)
             continue;
@@ -391,6 +427,46 @@ void MixFocus::rebuildPlot() {
         masked_.emplace_back(xAt(left), xAt(right));
     }
 }
+void MixFocus::rebuildScope() {
+    scopeRange_.reset();
+    sum_.reset();
+    const bool scopeShown = scope.getToggleState();
+    if (scopeShown)
+        for (auto &member : members_)
+            for (auto &path : member.scopePaths) path.clear();
+    if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
+
+    scopeSources_.clear();
+    for (const auto &member : members_) scopeSources_.push_back(member.data.get());
+    scopeRange_ = focusScopeRange(scopeSources_);
+    if (!scopeRange_) return;
+
+    const auto &range = *scopeRange_;
+    if (!sumLabel_.isEmpty()) sum_ = focusReadSum(scopeSources_, range);
+    if (!scopeShown) return;
+
+    const auto steps = std::min<std::size_t>(range.frames, static_cast<std::size_t>(std::max(1.f, plot_.getWidth())));
+    for (auto &member : members_) {
+        const auto &data = *member.data;
+        const auto start = static_cast<std::size_t>(range.first - data.firstStamp);
+        for (std::size_t ch = 0; ch < member.scopePaths.size(); ++ch) {
+            auto &path = member.scopePaths[ch];
+            const auto &samples = ch == 0 ? data.scopeLeft : data.scopeRight;
+            for (std::size_t p = 0; p < steps; ++p) {
+                const auto from = start + (p * range.frames) / steps;
+                const auto to = start + ((p + 1) * range.frames) / steps;
+                const auto [low, high] = std::minmax_element(samples.data() + from, samples.data() + to);
+                const auto x = plot_.getX() + static_cast<float>(p) * plot_.getWidth() / static_cast<float>(steps);
+                const auto y = [this](float v) {
+                    return plot_.getCentreY() - std::clamp(v, -1.f, 1.f) * plot_.getHeight() * .5f;
+                };
+                if (p == 0) path.startNewSubPath(x, y(*low));
+                else path.lineTo(x, y(*low));
+                if (*high != *low) path.lineTo(x, y(*high));
+            }
+        }
+    }
+}
 void MixFocus::resized() {
     auto r = getLocalBounds().reduced(look::gap);
     const int hairline = juce::roundToInt(look::hairline);
@@ -408,11 +484,14 @@ void MixFocus::resized() {
         x += chipWidth;
     }
     const int plotInset = look::border + hairline;
-    r.removeFromTop(buttonRow);
+    auto titleRow = r.removeFromTop(buttonRow);
+    sumLabel_ = titleRow.getWidth() >= 4 * look::mixFocusSourceWidth
+                    ? titleRow.removeFromRight(2 * look::mixFocusSourceWidth) : juce::Rectangle<int>{};
     auto actions = r.removeFromBottom(buttonRow);
-    const auto w = std::min(chipWidth, actions.getWidth() / 6);
+    const auto w = std::min(chipWidth, actions.getWidth() / 7);
     for (auto *button : {&star, &mute, &solo, &hearOne, &hearAll, &edit})
         button->setBounds(actions.removeFromLeft(w).reduced(hairline));
+    scope.setBounds(actions.removeFromLeft(w).reduced(hairline));
     plot_ = r.reduced(plotInset).toFloat();
     for (auto &m : members_)
         m.spectrumChanged = true;
@@ -423,8 +502,24 @@ void MixFocus::paint(juce::Graphics &g) {
     g.setColour(look::text);
     g.setFont(look::font(look::fontBody, true));
     const auto plot = plot_.toNearestInt();
-    g.drawText("Together", plot.getX(), scroll_.getBottom(), plot.getWidth(),
+    const bool scopeShown = scope.getToggleState();
+    juce::String title = scopeShown ? "Scope" : "Together";
+    if (scopeShown && scopeRange_)
+        title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
+    const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
+    g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
                std::max(0, plot.getY() - scroll_.getBottom()), juce::Justification::centredLeft);
+    if (!sumLabel_.isEmpty()) {
+        const auto stereoDb = [](const std::array<double, 2> &v) {
+            const auto db = [](double sample) { return sample > 0. ? juce::String(20. * std::log10(sample), 1) : juce::String("-inf"); };
+            return db(v[0]) + " / " + db(v[1]);
+        };
+        g.setColour(look::textDim);
+        g.setFont(look::font());
+        const juce::String summary = sum_ ? "Focus sum   Peak " + stereoDb(sum_->peak) + "   RMS " + stereoDb(sum_->rms) + " dBFS"
+                                          : "Focus sum   --";
+        g.drawFittedText(summary, sumLabel_, juce::Justification::centredRight, 1);
+    }
     g.setColour(look::frame);
     g.fillRect(plot_);
     if (members_.empty()) {
@@ -434,6 +529,21 @@ void MixFocus::paint(juce::Graphics &g) {
         return;
     }
     g.setColour(look::outline);
+    if (scopeShown) {
+        g.drawHorizontalLine(plot.getCentreY(), plot_.getX(), plot_.getRight());
+        for (const auto &member : members_) {
+            g.setColour(member.colour.withMultipliedAlpha(.6f));
+            g.strokePath(member.scopePaths[1], juce::PathStrokeType(look::hairline));
+            g.setColour(member.colour);
+            g.strokePath(member.scopePaths[0], juce::PathStrokeType(look::line));
+        }
+        if (!scopeRange_) {
+            g.setColour(look::textDim);
+            g.setFont(look::font());
+            g.drawText("Waiting for aligned playback", plot_, juce::Justification::centred);
+        }
+        return;
+    }
     for (int i = 1; i < 6; ++i)
         g.drawHorizontalLine(juce::roundToInt(plot_.getY() + plot_.getHeight() * i / 6.f), plot_.getX(),
                              plot_.getRight());

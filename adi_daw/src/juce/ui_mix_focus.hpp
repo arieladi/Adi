@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/dsp/masking.hpp"
-#include "adi/ui/shared_analysis.hpp"
+#include "adi/ui/focus_scope.hpp"
 #include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 namespace adi::ui {
@@ -28,6 +28,7 @@ class MixFocus final : public juce::Component {
     juce::ComboBox available;
     juce::TextButton add{"+"}, star{"Set main"}, mute{"Mute"}, solo{"Solo"}, hearOne{"Hear track"},
         hearAll{"Hear all"}, edit{"Edit chain"};
+    juce::ToggleButton scope{"Scope"};
     std::function<void(std::int64_t)> onEdit;
     std::function<void()> onMembersChanged;
 
@@ -38,8 +39,10 @@ class MixFocus final : public juce::Component {
         juce::Colour colour;
         std::unique_ptr<juce::TextButton> chip;
         SharedAnalysis::Lease lease;
+        std::uint32_t outputs = 0;
         std::shared_ptr<const SharedAnalysis::Result> data;
         juce::Path path;
+        std::array<juce::Path, 2> scopePaths;
         std::vector<double> energy;
         bool spectrumChanged{true};
     };
@@ -47,11 +50,16 @@ class MixFocus final : public juce::Component {
     void hear(bool group);
     void drop();
     void rebuildPlot();
+    void rebuildScope();
     void refreshControls();
     AdiRootComponent &root_;
     juce::Viewport scroll_;
     juce::Component strip_;
     juce::Rectangle<float> plot_;
+    juce::Rectangle<int> sumLabel_;
+    std::vector<const SharedAnalysis::Result *> scopeSources_;
+    std::optional<FocusScopeRange> scopeRange_;
+    std::optional<FocusSumReading> sum_;
     std::vector<Member> members_;
     std::vector<std::int64_t> choices_;
     std::weak_ptr<SharedAnalysis> broker_;
@@ -64,6 +72,6 @@ class MixFocus final : public juce::Component {
     size_t bins_{};
     const void *snapshot_{};
     std::uint64_t generation_{}, membershipPose_{};
-    bool suspended_{}, redraw_{true};
+    bool suspended_{}, redraw_{true}, scopePlaying_{};
 };
 } // namespace adi::ui

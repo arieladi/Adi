@@ -128,7 +128,7 @@ struct SharedAnalysis::Domain {
     std::vector<float> ringLeft, ringRight, left, right, scratch, linear, second;
     const double gain;
     std::size_t position = 0, filled = 0, sinceWindow = 0;
-    std::uint64_t windowSerial = 0, spectralWindow = 0, historyWindow = 0;
+    std::uint64_t windowSerial = 0, spectralWindow = 0, historyWindow = 0, transportRevision = 0;
     std::atomic<std::uint64_t> droppedHistory{0};
     std::int64_t firstStamp = 0, firstSequence = 0;
     bool advancing = false, hasWindow = false, discontinuous = false;
@@ -367,6 +367,7 @@ struct SharedAnalysis::Domain {
         latest->sourceEpoch = sourceEpoch; latest->generation = tap->generation();
         latest->revision = ++revision; latest->sampleRate = tap->sampleRate();
         latest->windowSerial = windowSerial;
+        latest->transportRevision = transportRevision;
         latest->coherentGain = gain; latest->hopSize = request.hopSize;
         latest->firstSequence = firstSequence; latest->advancing = advancing; latest->firstStamp = firstStamp;
         latest->gapCount = gaps; latest->overrunCount = overruns; latest->discontinuity = discontinuous;
@@ -405,7 +406,6 @@ struct SharedAnalysis::Domain {
         latest->rms = {static_cast<float>(std::sqrt(sumL / static_cast<double>(n))),
                        static_cast<float>(std::sqrt(sumR / static_cast<double>(n)))};
         latest->correlation = sumL > 0 && sumR > 0 ? std::clamp(cross / std::sqrt(sumL * sumR), -1., 1.) : 0.;
-        if (bits & (Output::Scope | Output::Phase)) { latest->scopeLeft = left; latest->scopeRight = right; }
         if (needsSpectrum) {
             if (spectralWindow != windowSerial) {
                 const bool stereoPower = request.channel == Channel::StereoPower;
@@ -681,6 +681,7 @@ struct SharedAnalysis::State {
                 d.sinceWindow = 0; ++windows; ++d.windowSerial; d.hasWindow = true;
                 d.firstSequence = d.cursor.next - static_cast<std::int64_t>(n);
                 d.advancing = read.advancing;
+                d.transportRevision = read.transportRevision;
                 d.firstStamp = read.firstStamp + (read.advancing ? read.frames - static_cast<std::int64_t>(n) : 0);
                 d.discontinuous = discontinuity;
                 latest = d.analyse(historyBudget, done);
@@ -693,6 +694,12 @@ struct SharedAnalysis::State {
             const bool historyRetired = d.retireForPending(*historyBudget);
             if (!latest && (historyFlushed || historyRetired)) latest = d.refreshHistoryPublication();
             if (latest) {
+                // Intermediate hops advance the retained audio window without
+                // copying a stereo raw pair that this pass will never publish.
+                if ((latest->outputs & (Output::Scope | Output::Phase)) && latest->scopeLeft.empty()) {
+                    latest->scopeLeft = d.left;
+                    latest->scopeRight = d.right;
+                }
                 // Only the final publication needs the shallow history snapshot;
                 // intermediate hops update the domain, not duplicate metadata.
                 d.setHistory(*latest);

@@ -923,6 +923,14 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
           "the last compatible reader releases the remaining source");
 
     check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Focus)), "return to the retained Focus group");
+    root.frame();
+    const auto sourceCloses = closed.size();
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    check(!root.playing() && closed.size() == sourceCloses + 2,
+          "stopped Focus Scope releases both member taps while waiting for alignable audio");
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
     focus.setMembers({first, added, second});
     root.frame();
     check(focus.channelIds() == std::vector{first, added, second} && mix.stack.model().shownIndex(added),
