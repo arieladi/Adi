@@ -1538,6 +1538,8 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     const auto active = broker->stats();
     check(opens == std::array{1, 1} && active.taps == 2 && active.transforms == 0 && active.spectralPlans == 0,
           "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
+    check(active.consumers == 1,
+          "a complete bar replaces the two short previews with one grouped reader");
     peer.setVisible(false);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,
           "hiding the one-bar Scope releases its sources immediately");

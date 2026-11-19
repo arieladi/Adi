@@ -347,7 +347,8 @@ void MixFocus::frame(const SnapshotReader &reader) {
             drop();
         if (!alive) return;
     }
-    if (broker && broker->active()) {
+    const bool hadCompleteBar = scopeShown && alignment_ == Alignment::Ready && shownBar_;
+    if (broker && broker->active() && !hadCompleteBar) {
         const auto pose = membershipPose_;
         auto outputs = static_cast<std::uint32_t>(scopeShown ? SharedAnalysis::Scope : SharedAnalysis::Spectrum);
         if (playing && alignment_ != Alignment::WaitForStop && !sumLabel_.isEmpty() && members_.size() >= 2)
@@ -399,6 +400,18 @@ void MixFocus::frame(const SnapshotReader &reader) {
     }
     updateBarScope(reader, broker);
     if (!alive || !isShowing() || suspended_) return;
+    std::vector<SharedAnalysis::Lease> shortPreview;
+    if (scopeShown && shownBar_ && !hadCompleteBar) {
+        // The short preview fills the initial wait. Once a complete bar is
+        // visible, only the grouped reader needs the source audio.
+        shortPreview.reserve(members_.size());
+        for (auto &member : members_) {
+            shortPreview.push_back(std::move(member.lease));
+            member.outputs = 0;
+            member.data.reset();
+            member.spectrumChanged = true;
+        }
+    }
     if (broker && !members_.empty()) broker->requestFrame();
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
