@@ -29,10 +29,11 @@ void LiveCompressor::prepare(double sampleRate) noexcept {
 }
 
 void LiveCompressor::set(Param id, double v) noexcept {
-    if (id < 0 || id >= Count || !std::isfinite(v)) return;
-    v = std::clamp(v, ranges[id].low, ranges[id].high);
+    const int n = static_cast<int>(id);
+    if (n < 0 || n >= Count || !std::isfinite(v)) return;
+    v = std::clamp(v, ranges[n].low, ranges[n].high);
     if (id == Lookahead || id == Mode || id == Envelope || id == Makeup) v = std::round(v);
-    p_[static_cast<std::size_t>(id)] = v;
+    p_[static_cast<std::size_t>(n)] = v;
     update();
 }
 

@@ -46,7 +46,7 @@ public:
     LiveCompressor() noexcept;
     void prepare(double sampleRate) noexcept;
     void set(Param, double) noexcept;
-    [[nodiscard]] double value(Param p) const noexcept { return p_[p]; }
+    [[nodiscard]] double value(Param p) const noexcept { return p_[static_cast<std::size_t>(p)]; }
     /// The audio's delay: the lookahead in whole samples at the prepared rate.
     [[nodiscard]] int latency() const noexcept { return lookahead_; }
     /// The static curve: gain change in dB (never positive for Peak and RMS)
