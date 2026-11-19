@@ -12,7 +12,12 @@
 #include <fstream>
 #include <iterator>
 #include <vector>
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -99,6 +104,143 @@ void publication(){
     audio::onAudioThread=true;const auto rt=media::replaceFile(source,target);std::error_code denied;auto refusedLease=media::ProjectFileLease::openShared(source,denied);audio::onAudioThread=false;
     check(rt.status==media::PublishStatus::failed && !refusedLease && !fs::exists(target),"publication and lease acquisition refuse the audio thread");
 }
+#if defined(_WIN32)
+struct PublishRetryFixture {
+    fs::path source,target,parked;
+    std::vector<unsigned> delays;
+    unsigned syncCalls=0,renameCalls=0,syncFailures=0,renameFailures=0;
+    std::error_code error{ERROR_SHARING_VIOLATION,std::system_category()};
+    enum class Change { none, file, directory, otherWriter } change=Change::none;
+    HANDLE held=INVALID_HANDLE_VALUE;
+    bool releaseOnWait=false;
+    explicit PublishRetryFixture(const fs::path& folder):source(folder/"Stage"),target(folder/"Final"),parked(folder/"Parked") {
+        fs::create_directory(folder);write(source,"whole staged payload");
+    }
+    ~PublishRetryFixture(){if(held!=INVALID_HANDLE_VALUE)CloseHandle(held);}
+};
+PublishRetryFixture* publishRetry=nullptr;
+std::error_code testExclusiveRename(const fs::path& source,const fs::path& target){
+    if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_WRITE_THROUGH))return {};
+    const auto error=GetLastError();
+    if(error==ERROR_ALREADY_EXISTS || error==ERROR_FILE_EXISTS)return std::make_error_code(std::errc::file_exists);
+    return {static_cast<int>(error),std::system_category()};
+}
+std::error_code controlledPublishSync(const fs::path&){
+    return ++publishRetry->syncCalls<=publishRetry->syncFailures?publishRetry->error:std::error_code{};
+}
+std::error_code controlledPublishRename(const fs::path& source,const fs::path& target){
+    if(++publishRetry->renameCalls<=publishRetry->renameFailures)return publishRetry->error;
+    return testExclusiveRename(source,target);
+}
+void publishRetryWait(unsigned delay){
+    auto& state=*publishRetry;state.delays.push_back(delay);
+    if(state.releaseOnWait && state.held!=INVALID_HANDLE_VALUE){
+        if(!CloseHandle(state.held))throw std::runtime_error("close retry fixture holder");
+        state.held=INVALID_HANDLE_VALUE;
+    }
+    if(state.change==PublishRetryFixture::Change::otherWriter)write(state.target,"other writer");
+    else if(state.change!=PublishRetryFixture::Change::none){
+        fs::rename(state.source,state.parked);
+        if(state.change==PublishRetryFixture::Change::file)write(state.source,"different file");
+        else fs::create_directory(state.source);
+    }
+    state.change=PublishRetryFixture::Change::none;
+}
+media::FileIdentity fixtureIdentity(const fs::path& path){
+    std::error_code error;auto lease=media::ProjectFileLease::openShared(path,error);
+    if(!lease)throw std::runtime_error("fixture identity: "+error.message());
+    return lease->identity();
+}
+void windowsPublicationRetries(){
+    test::TempDirectory temp{"project_replace","windows_retry"};
+    unsigned next=0;
+    const auto folder=[&]{return temp.path()/std::to_string(++next);};
+    media::PublishHooks hooks;hooks.rename=controlledPublishRename;
+    hooks.syncFile=controlledPublishSync;hooks.retryWait=publishRetryWait;
+    const std::vector<unsigned> budget{10,20,40,80,160,200,200};
+    for(const int code:{ERROR_ACCESS_DENIED,ERROR_SHARING_VIOLATION,ERROR_LOCK_VIOLATION}){
+        PublishRetryFixture state(folder());publishRetry=&state;state.renameFailures=2;
+        state.error={code,std::system_category()};const auto identity=fixtureIdentity(state.source);
+        const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+        check(result.status==media::PublishStatus::published && result.identity==identity && fixtureIdentity(state.target)==identity && !result.usedFallback && !fs::exists(state.source) && read(state.target)=="whole staged payload","each Windows transient rename error publishes complete bytes with original identity");
+        check(state.syncCalls==1 && state.renameCalls==3 && state.delays==std::vector<unsigned>({10,20}),"rename retries do not repeat successful stage sync");
+    }
+    for(const int code:{ERROR_ACCESS_DENIED,ERROR_SHARING_VIOLATION,ERROR_LOCK_VIOLATION}){
+        PublishRetryFixture state(folder());publishRetry=&state;state.syncFailures=2;
+        state.error={code,std::system_category()};
+        const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+        check(result.status==media::PublishStatus::published && state.syncCalls==3 && state.renameCalls==1 && state.delays==std::vector<unsigned>({10,20}) && read(state.target)=="whole staged payload","each Windows transient sync error recovers before exclusive rename");
+    }
+    {
+        PublishRetryFixture state(folder());publishRetry=&state;state.syncFailures=2;state.renameFailures=2;
+        const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+        check(result.status==media::PublishStatus::published && state.syncCalls==3 && state.renameCalls==3 && state.delays==std::vector<unsigned>({10,20,40,80}),"sync and exclusive rename consume one shared retry budget");
+    }
+    for(const unsigned syncFailures:{0u,2u,100u}){
+        PublishRetryFixture state(folder());publishRetry=&state;state.syncFailures=syncFailures;state.renameFailures=100;
+        const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+        const auto syncCalls=syncFailures==100?8u:syncFailures+1;
+        const auto renameCalls=syncFailures==100?0u:8u-syncFailures;
+        check(result.status==media::PublishStatus::failed && !result.usedFallback && state.syncCalls==syncCalls && state.renameCalls==renameCalls && state.delays==budget && read(state.source)=="whole staged payload" && !fs::exists(state.target),"exhausted shared sync/rename budget retains stage and exposes no target");
+    }
+    for(const auto error:{std::error_code(ERROR_NOT_SAME_DEVICE,std::system_category()),std::error_code(ERROR_DISK_FULL,std::system_category()),std::make_error_code(std::errc::permission_denied),std::make_error_code(std::errc::file_exists)}){
+        for(const bool sync:{false,true}){
+            PublishRetryFixture state(folder());publishRetry=&state;state.error=error;
+            state.syncFailures=sync?100u:0u;state.renameFailures=100;
+            const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+            const auto expected=!sync && error==std::errc::file_exists?media::PublishStatus::exists:media::PublishStatus::failed;
+            check(result.status==expected && !result.usedFallback && state.syncCalls==1 && state.renameCalls==(sync?0u:1u) && state.delays.empty() && fs::exists(state.source) && !fs::exists(state.target),"non-transient/native cross-volume/full/generic and exists errors never retry or copy");
+        }
+    }
+    for(const bool duringSync:{false,true}){
+        for(const auto change:{PublishRetryFixture::Change::file,PublishRetryFixture::Change::directory}){
+            PublishRetryFixture state(folder());publishRetry=&state;state.change=change;
+            state.syncFailures=duringSync?1u:0u;state.renameFailures=duringSync?0u:1u;
+            const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+            check(result.status==media::PublishStatus::failed && state.syncCalls==1 && state.renameCalls==(duringSync?0u:1u) && state.delays==std::vector<unsigned>({10}) && read(state.parked)=="whole staged payload" && !fs::exists(state.target) && (change==PublishRetryFixture::Change::file?read(state.source)=="different file":fs::is_directory(state.source)),"changed stage identity/type during retry refuses without touching either file");
+        }
+    }
+    {
+        PublishRetryFixture state(folder());publishRetry=&state;state.renameFailures=1;state.change=PublishRetryFixture::Change::otherWriter;
+        const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);
+        check(result.status==media::PublishStatus::exists && state.renameCalls==2 && state.delays==std::vector<unsigned>({10}) && read(state.target)=="other writer" && read(state.source)=="whole staged payload","exclusive retry preserves a destination claimed by another writer");
+    }
+    for(const DWORD sharing:{DWORD(FILE_SHARE_READ),DWORD(FILE_SHARE_READ|FILE_SHARE_WRITE)}){
+        for(const bool release:{false,true}){
+            PublishRetryFixture state(folder());publishRetry=&state;state.releaseOnWait=release;
+            state.held=CreateFileW(state.source.c_str(),GENERIC_READ,sharing,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+            if(state.held==INVALID_HANDLE_VALUE)throw std::runtime_error("open real retry holder");
+            media::PublishHooks native;native.retryWait=publishRetryWait;
+            const auto result=media::publishFile(state.source,state.target,native,media::PublishPolicy::AtomicOnly);
+            if(release){
+                check(result.status==media::PublishStatus::published && result.identity && !result.usedFallback && state.delays==std::vector<unsigned>({10}) && !fs::exists(state.source) && read(state.target)=="whole staged payload","real sync/rename sharing holder released inside retry window allows publication");
+            }else{
+                check(result.status==media::PublishStatus::failed && !result.usedFallback && state.delays==budget && !fs::exists(state.target) && read(state.source)=="whole staged payload","real permanent sharing holder exhausts bounded retries with original stage intact");
+                CloseHandle(state.held);state.held=INVALID_HANDLE_VALUE;
+                check(fs::remove(state.source) && !fs::exists(state.target),"stage owner can clean failed real-handle fixture after holder closes");
+            }
+        }
+    }
+    {
+        PublishRetryFixture state(folder());publishRetry=&state;
+        audio::onAudioThread=true;const auto result=media::publishFile(state.source,state.target,hooks,media::PublishPolicy::AtomicOnly);audio::onAudioThread=false;
+        check(result.status==media::PublishStatus::failed && state.syncCalls==0 && state.renameCalls==0 && state.delays.empty() && fs::exists(state.source) && !fs::exists(state.target),"audio thread refuses publication before hooks, I/O or waits");
+    }
+    publishRetry=nullptr;
+}
+#endif
+void publicationRetries(){
+    test::TempDirectory temp{"project_replace","no_native_retry"};const auto source=temp.path()/"Stage",target=temp.path()/"Final";
+    write(source,"stage");media::PublishHooks hooks;hooks.rename=refuse;hooks.retryWait=wait;waits.clear();
+    check(media::publishFile(source,target,hooks,media::PublishPolicy::AtomicOnly).status==media::PublishStatus::failed && waits.empty() && read(source)=="stage" && !fs::exists(target),"generic rename refusal never sleeps or publishes on any host");
+    const auto copy=media::publishFile(source,target,hooks,media::PublishPolicy::VerifiedCopyFallback);
+    check(copy.status==media::PublishStatus::published && copy.usedFallback && copy.identity && waits.empty() && !fs::exists(source) && read(target)=="stage","explicit verified-copy policy retains its prior private-copy publication behavior");
+    write(source,"next stage");hooks.rename=nullptr;waits.clear();
+    check(media::publishFile(source,target,hooks,media::PublishPolicy::AtomicOnly).status==media::PublishStatus::exists && waits.empty() && read(source)=="next stage" && read(target)=="stage","actual existing destination returns exists immediately without a retry");
+#if defined(_WIN32)
+    windowsPublicationRetries();
+#endif
+}
 #if !defined(_WIN32)
 bool childStatus(pid_t child,int expected){int status=0;return child>0 && ::waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==expected;}
 int writerResult(const fs::path& path){sqlite3* db=nullptr;if(sqlite3_open(media::pathUtf8(path).c_str(),&db)!=SQLITE_OK)return 99;const int result=sqlite3_exec(db,"BEGIN IMMEDIATE; UPDATE project SET name='Child'; COMMIT",nullptr,nullptr,nullptr);sqlite3_close(db);return result==SQLITE_BUSY?1:result==SQLITE_OK?0:99;}
@@ -137,7 +279,7 @@ int main([[maybe_unused]] int argc,char** argv){
 #if !defined(_WIN32)
 if(argc==3 && std::string(argv[1])=="--writer")return writerResult(media::pathFromUtf8(argv[2]));
 #endif
-executable=fs::absolute(argv[0]);try{stores();publication();
+executable=fs::absolute(argv[0]);try{stores();publication();publicationRetries();
 #if !defined(_WIN32)
 processes();
 #endif
