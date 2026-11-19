@@ -26,6 +26,12 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(border) /* a panel's dark edge */ \
     ADI_DENSITY_INT(fieldHeight) /* a Control Bar field, a chooser's row */ \
     ADI_DENSITY_INT(detailHeight) /* the Info View and the Device View, with their edges */ \
+    ADI_DENSITY_INT(workspaceSegmentWidth) /* Arrangement and Mix View in the Control Bar */ \
+    ADI_DENSITY_INT(workspaceCompactSegmentWidth) /* the abbreviated workspace labels */ \
+    ADI_DENSITY_INT(mixSongHeight) /* the overview and the ruler */ \
+    ADI_DENSITY_INT(mixSongRulerHeight) \
+    ADI_DENSITY_INT(mixSongLabelSpacing) /* minimum space between printed bar numbers */ \
+    ADI_DENSITY_INT(mixSongLoopBraceHeight) \
     /* corners */ \
     ADI_DENSITY_FLOAT(radiusSmall) /* a small mark, a pill's ends at the smallest */ \
     ADI_DENSITY_FLOAT(radiusThumb) /* a scroll bar's thumb */ \

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/mix_view_provider.hpp"
+#include "adi/ui/density.hpp"
+#include "adi/ui/theme.hpp"
 #include "ui_stack.hpp"
 #include "ui_analysis.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -32,10 +34,33 @@ class EyeButton final : public juce::Button {
     EyeButton() : juce::Button("Reference Track") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
-// The Mix View presents actual channel chains and optional native functions (ADR-0236/0237).
-// F4 or the control bar's Mix button opens it, docked in the centre
-// in place of the arrangement and its track controls; the browser, the strip down the edge and the
-// Detail View stay. STACK and the shared analyzer views use the same document/runtime sources.
+// The overview uses the same clips, signatures and transport commands as the Arrangement.
+class MixSongStrip final : public juce::Component {
+  public:
+    explicit MixSongStrip(AdiRootComponent&);
+    void frame(const SnapshotReader&, std::int64_t tick);
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseDrag(const juce::MouseEvent&) override;
+    void mouseUp(const juce::MouseEvent&) override;
+    void cancelSeek() noexcept { seeking_ = false; }
+    std::int64_t tickAt(float x) const noexcept;
+  private:
+    void drawSong(juce::Graphics&, const SnapshotReader&);
+    int headX(std::int64_t tick) const noexcept;
+    void moveHead(int);
+    AdiRootComponent& root_;
+    juce::Image map_;
+    const void* snapshot_ = nullptr;
+    ThemeId theme_ = ThemeId::Dark;
+    DensityId density_ = DensityId::Compact;
+    std::uint64_t generation_{};
+    std::int64_t span_{1}, previewTick_{};
+    int head_{-1};
+    bool seeking_{};
+};
+
+// Docked Mix View occupies the workspace between the Control Bar and Status Bar.
 // Which tab is shown is this window's view state (`WindowState::mixViewTab`, kept in `ui_view`),
 // never the panel's own.
 class MixViewPanel final : public juce::Component {
@@ -60,6 +85,7 @@ class MixViewPanel final : public juce::Component {
     // What the tabs sit above, in the panel's coordinates.
     juce::Rectangle<int> body() const noexcept;
     std::array<std::unique_ptr<juce::TextButton>, kTabCount> tabs;
+    MixSongStrip song;
     // At the band's right end: into a window of its own, onto any display, and back.
     FloatButton floating;
     ReferenceButton ref;

@@ -2,7 +2,9 @@
 #include "ui_mixview.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/meters.hpp"
 #include <algorithm>
+#include <cmath>
 namespace adi::ui {
 void FloatButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto r = getLocalBounds().toFloat();
@@ -50,8 +52,117 @@ void EyeButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setFont(look::font(11.5f));
     g.drawText("Reference Track", r.withTrimmedLeft(24), juce::Justification::centredLeft);
 }
-MixViewPanel::MixViewPanel(AdiRootComponent &root) : ref(root), stack(root), root_(root) {
+MixSongStrip::MixSongStrip(AdiRootComponent& root) : root_(root) {
+    setTitle("Song overview and ruler");
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    setOpaque(true);
+}
+int MixSongStrip::headX(std::int64_t tick) const noexcept {
+    const auto position = static_cast<double>(std::clamp(tick, std::int64_t{}, span_)) / static_cast<double>(span_);
+    return look::gap + juce::roundToInt(position * std::max(0, getWidth() - 2 * look::gap - 1));
+}
+std::int64_t MixSongStrip::tickAt(float x) const noexcept {
+    const auto width = std::max(1, getWidth() - 2 * look::gap - 1);
+    const auto position = std::clamp((static_cast<double>(x) - look::gap) / width, 0., 1.);
+    return position == 1. ? span_ : std::llround(position * static_cast<double>(span_));
+}
+void MixSongStrip::drawSong(juce::Graphics& g, const SnapshotReader& reader) {
+    g.fillAll(look::frame);
+    const int rulerY = std::max(0, getHeight() - look::mixSongRulerHeight);
+    const auto rows = root_.arrangement.geometry.rows(reader);
+    const float lane = static_cast<float>(std::max(0, rulerY - look::border))
+                     / static_cast<float>(std::max<std::size_t>(1, rows.size()));
+    {
+        juce::Graphics::ScopedSaveState clips(g);
+        g.reduceClipRegion(0, 0, getWidth(), rulerY);
+        for (const auto row : rows) {
+            g.setColour(row.track->color ? look::paletteColour(*row.track->color) : look::trackColour(row.position));
+            for (const auto& clip : row.track->clips) {
+                const auto x = headX(clip->posTicks), right = headX(clip->posTicks + clip->lengthTicks);
+                g.fillRect(static_cast<float>(x), look::hairline * 2 + lane * static_cast<float>(row.position),
+                           static_cast<float>(std::max(1, right - x)), std::max(look::hairline, lane - look::hairline));
+            }
+        }
+    }
+    const auto& transport = reader.transport();
+    const int braceHeight = std::min(look::mixSongLoopBraceHeight, getHeight() - rulerY);
+    if (transport.loopEndTicks > transport.loopStartTicks) {
+        const auto left = headX(transport.loopStartTicks), right = headX(transport.loopEndTicks);
+        if (transport.loopEnabled) {
+            g.setColour(look::loopBand);
+            g.fillRect(left, 0, right - left, rulerY);
+        }
+        g.setColour(transport.loopEnabled ? look::loopOn : look::loopOff);
+        g.fillRect(left, rulerY, right - left, braceHeight);
+    }
+    const auto lastBar = barPosition(span_, reader.meters()).bar;
+    const auto slots = std::max(1, getWidth() / look::mixSongLabelSpacing);
+    std::int64_t stride = 1;
+    while (lastBar / stride > slots) stride *= 2;
+    g.setFont(look::font(look::fontSmall));
+    for (std::int64_t bar = 1; bar <= lastBar; bar += stride) {
+        const auto tick = tickOf({bar, 1, 1}, reader.meters());
+        if (!tick) continue;
+        const auto x = headX(*tick);
+        g.setColour(look::gridLine);
+        g.drawVerticalLine(x, static_cast<float>(rulerY + braceHeight), static_cast<float>(getHeight()));
+        g.setColour(look::textDim);
+        g.drawText(juce::String(static_cast<juce::int64>(bar)), x + look::border, rulerY + braceHeight,
+                   look::mixSongLabelSpacing - look::border, getHeight() - rulerY - braceHeight,
+                   juce::Justification::centredLeft);
+    }
+}
+void MixSongStrip::frame(const SnapshotReader& reader, std::int64_t tick) {
+    if (getWidth() <= 0 || getHeight() <= 0) return;
+    if (theme_ != look::themeId() || density_ != look::densityId() || generation_ != root_.generation() ||
+        snapshot_ != reader.get() || map_.getWidth() != getWidth() || map_.getHeight() != getHeight()) {
+        theme_ = look::themeId();
+        density_ = look::densityId();
+        generation_ = root_.generation();
+        snapshot_ = reader.get();
+        span_ = std::max(root_.arrangement.geometry.end(reader), reader.transport().loopEndTicks);
+        map_ = juce::Image(juce::Image::RGB, getWidth(), getHeight(), false, juce::SoftwareImageType{});
+        juce::Graphics g(map_);
+        drawSong(g, reader);
+        repaint();
+    }
+    moveHead(headX(seeking_ ? previewTick_ : tick));
+}
+void MixSongStrip::moveHead(int x) {
+    if (x == head_) return;
+    const int radius = look::border + juce::roundToInt(look::line);
+    if (head_ >= 0) repaint(head_ - radius, 0, 2 * radius + 1, getHeight());
+    head_ = x;
+    repaint(head_ - radius, 0, 2 * radius + 1, getHeight());
+}
+void MixSongStrip::paint(juce::Graphics& g) {
+    if (map_.isValid()) g.drawImageAt(map_, 0, 0);
+    else g.fillAll(look::frame);
+    if (head_ < 0) return;
+    const auto x = static_cast<float>(head_), radius = static_cast<float>(look::border);
+    g.setColour(look::text);
+    g.drawLine(x, 0.f, x, static_cast<float>(getHeight()), look::line);
+    juce::Path marker;
+    marker.addTriangle(x - radius, 0.f, x + radius, 0.f, x, 2.f * radius);
+    g.fillPath(marker);
+}
+void MixSongStrip::mouseDown(const juce::MouseEvent& e) {
+    seeking_ = e.mods.isLeftButtonDown();
+    if (seeking_) mouseDrag(e);
+}
+void MixSongStrip::mouseDrag(const juce::MouseEvent& e) {
+    if (!seeking_) return;
+    previewTick_ = tickAt(e.position.x);
+    moveHead(headX(previewTick_));
+}
+void MixSongStrip::mouseUp(const juce::MouseEvent& e) {
+    if (!seeking_) return;
+    cancelSeek();
+    if (!root_.playFrom(tickAt(e.position.x))) moveHead(headX(root_.timelineTick()));
+}
+MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stack(root), root_(root) {
     setTitle("Mix View");
+    addAndMakeVisible(song);
     setLookAndFeel(&look::liveLook());
     for (int i = 0; i < kTabCount; ++i) {
         auto button = std::make_unique<juce::TextButton>(kTabNames[static_cast<std::size_t>(i)]);
@@ -171,8 +282,10 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         repaint();
     }
     if (layoutPending_ || appliedDock_ != root_.state().mixAnalyzerDock ||
+        song.getHeight() != std::min(look::mixSongHeight, getHeight() / 5) ||
         appliedWidth_ != root_.state().mixAnalyzerWidth) resized();
     if (!alive) return;
+    song.frame(reader, root_.timelineTick());
     // STACK's rows follow the tracks; a frame that changes none of them builds nothing.
     if (stack.isVisible()) {
         stack.frame(reader);
@@ -226,12 +339,14 @@ void MixViewPanel::resized() {
     const auto &state = root_.state();
     appliedDock_ = state.mixAnalyzerDock; appliedWidth_ = state.mixAnalyzerWidth;
     headerHeight_ = getWidth() >= kHeaderSingleRowWidth ? kHeaderHeight : kHeaderHeight * 2;
-    appliedBody_ = getLocalBounds().withTrimmedTop(headerHeight_ + kStripHeight).reduced(look::border);
-    appliedStrip_ = {look::border, headerHeight_, std::max(0, getWidth() - 2 * look::border), kStripHeight - 2};
+    auto remainingArea = getLocalBounds();
+    song.setBounds(remainingArea.removeFromTop(std::min(look::mixSongHeight, getHeight() / 5)));
+    appliedBody_ = remainingArea.withTrimmedTop(headerHeight_ + kStripHeight).reduced(look::border);
+    appliedStrip_ = {look::border, song.getBottom() + headerHeight_, std::max(0, getWidth() - 2 * look::border), kStripHeight - 2};
     analyzerToggle.setToggleState(appliedDock_, juce::dontSendNotification);
     // The tabs along the top, from the left, as Live's view choosers sit on its band.
     int x = look::gap;
-    const int y = (kHeaderHeight - look::fieldHeight) / 2;
+    const int y = song.getBottom() + (kHeaderHeight - look::fieldHeight) / 2;
     const int tabsWidth = std::max(0, getWidth() - look::gap * 2 -
         (headerHeight_ == kHeaderHeight ? 120 : 26));
     int remaining = std::min(500, tabsWidth);

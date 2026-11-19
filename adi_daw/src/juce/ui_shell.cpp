@@ -16,6 +16,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <initializer_list>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -1122,7 +1123,7 @@ void AdiRootComponent::frame() noexcept {
     infoSpectrum.frame();
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
-    if (state_.follow && playing_ && !arrangement.followPaused &&
+    if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&
         arrangement.follow(timelineTick(), commands_.followByPage()))
         dirty_.mark(DirtySet::Content);
     lastDrain_ = dirty_.drain();
@@ -1217,6 +1218,31 @@ void AdiRootComponent::resized() {
     status.setBounds(0, h - look::statusBarHeight, w, look::statusBarHeight);
     const int top = look::controlBarHeight, bottom = h - look::statusBarHeight;
     const int body = std::max(0, bottom - top);
+    // The docked Mix View is a workspace switch. The Arrangement retains
+    // its geometry and panel preferences while the workspace is hidden.
+    mixViewDock_ = {0, top, w, body};
+    const bool fullMix = state_.mixView && !state_.mixViewDetached;
+    mixViewArea_ = fullMix ? mixViewDock_ : juce::Rectangle<int>{};
+    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
+    transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
+    if (fullMix) {
+        for (auto *child : std::initializer_list<juce::Component*>{
+                 &arrangement, &arrangement.overview, &mixer, &strip, &browser, &aiTab,
+                 &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
+            child->setVisible(false);
+        browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
+        clipArea_ = deviceArea_ = infoArea_ = {};
+        if (mixViewPanel.getParentComponent() == this) {
+            mixViewPanel.setBounds(mixViewArea_);
+            if (!mixViewPanel.isVisible() && reader_) mixViewPanel.frame(reader());
+            mixViewPanel.setVisible(true);
+        }
+        dirty_.mark(DirtySet::All);
+        return;
+    }
+    if (mixViewPanel.getParentComponent() == this)
+        mixViewPanel.setVisible(false);
+    arrangement.setVisible(true);
     // The detail row: Live's Info View and Device View. The strip never goes below its
     // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
     // a row when it can.
@@ -1344,27 +1370,6 @@ void AdiRootComponent::resized() {
     strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
     strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
-    // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
-    // View and its track controls, which a lane-less view has no use for. The browser, the strip
-    // down the edge and the Detail View stay.
-    mixViewDock_ = juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_);
-    mixViewArea_ = state_.mixView && !state_.mixViewDetached ? mixViewDock_ : juce::Rectangle<int>();
-    const bool mixing = !mixViewArea_.isEmpty();
-    // In its own window the panel is the window's; docked, it is laid out here. Framed before it shows,
-    // so the switch never shows what it held when it was last open (the director's R3).
-    if (mixViewPanel.getParentComponent() == this) {
-        mixViewPanel.setBounds(mixViewArea_);
-        if (mixing && !mixViewPanel.isVisible() && reader_)
-            mixViewPanel.frame(reader());
-        mixViewPanel.setVisible(mixing);
-    }
-    arrangement.setVisible(!mixing);
-    if (mixing) {
-        mixer.setVisible(false);
-        mixerView.setVisible(false);
-        mixerViewResizer.setVisible(false);
-    }
-    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = browserLeft && !mixerArea_.isEmpty()
@@ -1372,7 +1377,7 @@ void AdiRootComponent::resized() {
                                   : centreX + centreW - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
-    arrangement.overview.setVisible(state_.overview && !mixing);
+    arrangement.overview.setVisible(state_.overview);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -1604,7 +1609,8 @@ bool AdiRootComponent::setMixView(bool open, bool detached) {
         state_.mixViewDetached = wasDetached;
         return fail(error_);
     }
-    if (!open || wasDetached != detached) {
+    if (wasOpen != open || wasDetached != detached) {
+        mixViewPanel.song.cancelSeek();
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
     }
     mixViewPanel.stack.suspendParameters(!open || (!detached && devices.parametersSuspended()));
@@ -3111,6 +3117,13 @@ bool AdiRootComponent::focusView(int id) {
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
+        if (state_.mixView && !state_.mixViewDetached) {
+            if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack))) return false;
+            mixViewPanel.frame(reader());
+            mixViewPanel.stack.search.grabKeyboardFocus();
+            mixViewPanel.stack.search.selectAll();
+            return true;
+        }
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
@@ -3300,12 +3313,7 @@ bool AdiRootComponent::command(int id) {
             referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
         return true;
     case AppCommands::ToggleMixView:
-        state_.mixView = !state_.mixView;
-        if (!persist()) {
-            state_.mixView = !state_.mixView;
-            return fail(error_);
-        }
-        break;
+        return setMixView(!state_.mixView, state_.mixViewDetached);
     case AppCommands::ToggleClipView:
         state_.clipView = !state_.clipView;
         if (!persist()) {

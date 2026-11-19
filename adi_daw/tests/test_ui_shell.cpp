@@ -9439,7 +9439,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     root.frame();
     auto &panel = root.mixViewPanel;
     const auto lanes = root.arrangement.getBounds();
-    const auto controls = root.mixerArea();
+    const auto browserBeforeMix = root.browser.getBounds();
+    const auto devicesBeforeMix = root.devices.getBounds();
+    const auto workspaceBody = root.getLocalBounds().withTrimmedTop(root.transport.getHeight())
+                                                    .withTrimmedBottom(root.status.getHeight());
     check(!panel.isVisible() && root.arrangement.isVisible() && !root.state().mixView,
           "closed by default: the arrangement as Live's");
     commands.activate(root);
@@ -9560,11 +9563,52 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     }
     panel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
     check(root.state().mixView && panel.isVisible() && !root.arrangement.isVisible() && !root.mixer.isVisible() &&
-              panel.getBounds() == lanes.getUnion(controls),
-          "in place of the arrangement and its track controls");
-    check(root.browser.isVisible() && root.strip.isVisible() && root.devices.isVisible(),
-          "the browser, the strip down the edge and the Detail View stay");
-    check(root.transport.mix.getToggleState(), "the control bar's Mix button is lit");
+              panel.getBounds() == workspaceBody,
+          "docked Mix View uses the full area between the Control Bar and Status Bar");
+    check(!root.browser.isVisible() && !root.strip.isVisible() && !root.devices.isVisible() &&
+              !root.arrangement.overview.isVisible() && !root.clipView.isVisible() && !root.dockResizer.isVisible() &&
+              !root.infoSpectrum.isVisible() && root.transport.isVisible() && root.status.isVisible(),
+          "Arrangement panels and their hit targets leave the workspace");
+    check(panel.song.getY() == 0 && panel.song.getBottom() <= panel.tabs[1]->getY() &&
+              panel.song.getWidth() == panel.getWidth() && panel.song.getHeight() == look::mixSongHeight &&
+              panel.song.tickAt(-100.f) == 0 && panel.song.tickAt(static_cast<float>(panel.song.getWidth()) + 100.f) ==
+                  std::max(root.arrangement.geometry.end(root.reader()), root.reader().transport().loopEndTicks),
+          "the song overview uses the full width and clamps seeks to the project span");
+    {
+        auto &song = panel.song;
+        engine::Transport driver;
+        mailbox.setSampleRate(48000.);
+        check(root.setLoopRange({24 * textproj::kPPQ, 48 * textproj::kPPQ}), "extend the loop past the clips");
+        root.frame();
+        const auto y = static_cast<float>(song.getHeight() - 1);
+        const auto left = juce::Point<float>{static_cast<float>(song.getWidth()) * .3f, y};
+        const auto right = juce::Point<float>{static_cast<float>(song.getWidth()) * .7f, y};
+        check(song.tickAt(static_cast<float>(song.getWidth())) == 48 * textproj::kPPQ,
+              "the seekable overview includes an authored loop beyond the clips");
+        const auto from = static_cast<std::int64_t>(root.current()->tempo->ticksToSeconds(song.tickAt(right.x)) *
+                          mailbox.sampleRate());
+        song.mouseDown(pressAt(song, left, juce::ModifierKeys::leftButtonModifier));
+        song.mouseDrag(pressAt(song, right, juce::ModifierKeys::leftButtonModifier));
+        check(!mailbox.desiredPlaying(), "a held song drag previews without starting transport");
+        song.mouseUp(pressAt(song, right));
+        mailbox.drain(driver);
+        check(driver.playing() && driver.position() == from, "song drag release starts playback at the released tick");
+        const auto jump = static_cast<std::int64_t>(root.current()->tempo->ticksToSeconds(song.tickAt(left.x)) *
+                          mailbox.sampleRate());
+        song.mouseDown(pressAt(song, left, juce::ModifierKeys::leftButtonModifier));
+        song.mouseUp(pressAt(song, left));
+        mailbox.drain(driver);
+        check(driver.playing() && driver.position() == jump, "song click seeks and keeps playback running");
+        check(root.command(AppCommands::Stop), "stop the overview fixture transport");
+        mailbox.drain(driver);
+        song.mouseDown(pressAt(song, left, juce::ModifierKeys::leftButtonModifier));
+        song.cancelSeek();
+        song.mouseUp(pressAt(song, left));
+        check(!mailbox.desiredPlaying(), "a cancelled ruler capture does not start playback");
+        root.frame();
+    }
+    check(root.transport.mix.getToggleState() && !root.transport.arrangementPage.getToggleState(),
+          "the Control Bar selects the Mix View segment");
     commands.getCommandInfo(AppCommands::ToggleMixView, info);
     check((info.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's item ticked");
     // The tabs: the draft's five, in its order and names; STACK shown first, P1's only tab.
@@ -9644,7 +9688,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "a click on OVERVIEW shows its shared-analysis view");
     check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
           "the tab and the view are kept with the window's view (ui_view)");
-    check(root.chooseMixViewTab(1), "back to STACK");
+    check(root.command(AppCommands::SearchBrowser) && panel.tab() == MixViewPanel::Tab::Stack && !root.browser.isVisible(),
+          "search reaches STACK in the docked Mix View without revealing the Arrangement Browser");
     root.frame();
     // A steady frame with the Mix View open builds nothing.
     root.frame();
@@ -9842,10 +9887,15 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     other.frame();
     check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
     root.transport.mix.onClick();
+    check(root.state().mixView && !root.transport.arrangementPage.getToggleState(),
+          "clicking the active Mix View segment leaves the workspace open");
+    root.transport.arrangementPage.onClick();
     root.frame();
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
-              root.arrangement.getBounds() == lanes && !root.transport.mix.getToggleState(),
-          "the Mix button closes it: the arrangement and its track controls where they were");
+              root.arrangement.getBounds() == lanes && root.browser.isVisible() && root.devices.isVisible() &&
+              root.browser.getBounds() == browserBeforeMix && root.devices.getBounds() == devicesBeforeMix &&
+              root.transport.arrangementPage.getToggleState() && !root.transport.mix.getToggleState(),
+          "the Arrangement segment restores its panels to their prior bounds");
     // While it is closed the project changes; opened, it shows the change on its first picture, before
     // any frame (the director's R3: no flash of what it held before).
     {
@@ -9861,7 +9911,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(stale && panel.isVisible() && panel.stack.model().shownCount() == before + 1,
               "opened, it is drawn from the project as it is now, before the next frame");
         check(root.command(AppCommands::Undo), "the track undone");
-        root.transport.mix.onClick();
+        root.transport.arrangementPage.onClick();
         root.frame();
     }
     // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
@@ -9962,8 +10012,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.frame();
         check(host.count() == 0 && panel.getParentComponent() == &root && panel.isVisible() &&
                   !root.arrangement.isVisible() && root.state().mixView && !root.state().mixViewDetached &&
-                  panel.getBounds() == lanes.getUnion(controls),
-              "the button again docks it back in the centre");
+                  panel.getBounds() == workspaceBody,
+              "the window button restores the full docked workspace");
         check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
         root.applicationCommand = nullptr;
     }
