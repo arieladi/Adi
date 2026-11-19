@@ -13,6 +13,7 @@ namespace adi { class Store; }
 namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
+struct NoteExpressionsRead;
 struct ClipMediaSource {
     std::int64_t clipId = 0, mediaId = 0;
     std::filesystem::path path;
@@ -20,6 +21,7 @@ struct ClipMediaSource {
 };
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&);
+const NoteExpressionsRead& clipNoteExpressions(const ClipProject&) noexcept;
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,

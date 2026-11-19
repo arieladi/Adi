@@ -809,7 +809,8 @@ bool Session::rebuild() {
         const DeviceChainFn eventPath = eventPathFor(model_);
         nextClips = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
-        nextMidi = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_, eventPath);
+        nextMidi = std::make_unique<MidiClips>(playbackModel_,transport_,spec_.sampleRate,midiState_,
+                                               eventPath,clipNoteExpressions(*clipProject_));
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
     // lane the user overrode. An override of a lane that is gone goes with it.

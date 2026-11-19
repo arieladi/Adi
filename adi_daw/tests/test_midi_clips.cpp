@@ -2,6 +2,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
@@ -592,6 +593,103 @@ void signedOrigins() {
 
 }
 namespace {
+void sessionExpression() {
+    for(const auto width:{Precision::Float32,Precision::Float64})for(int block:{64,257}) {
+        Fixture f(48000,block,width);
+        f.clip();
+        auto& db=f.store->db();
+        const auto put=[&](int dimension,const std::vector<ExpressionPoint>& points) {
+            const auto bytes=writeStream<ExpressionPoint>(FourCC::Expression,points);
+            SQLite::Statement row(db,"INSERT INTO note_expression(clip_id,note_id,dimension,data) VALUES(1,42,?,?)");
+            row.bind(1,dimension);row.bind(2,bytes.data(),static_cast<int>(bytes.size()));row.exec();
+        };
+        ExpressionPoint a{},b{};
+        a.curve=1;b.time_ticks=24024;b.value=12.0f;
+        put(0,{a,b});
+        a.value=-12.0f;put(3,{a});
+        a.value=-0.5f;put(4,{a});
+        if(width==Precision::Float32 && block==64) {
+            Transport transport;
+            transport.play();
+            MidiClips midi(rows::readModel(*f.store),transport,48000,makeMidiClipState(),{},readNoteExpressions(*f.store));
+            const auto source=midi.sourcesFor(1).at(0);
+            std::array<Event,3> shortBuffer{};
+            EventList crowded(shortBuffer.data(),3);
+            source->sourceEvents(crowded,256);
+            check(crowded.size()==2 && shortBuffer[0].type==EventType::NoteOn,
+                  "expression preserves space for the owned note release under pressure");
+            transport.advance(256);
+            std::array<Event,8> availableBuffer{};
+            EventList available(availableBuffer.data(),8);
+            source->sourceEvents(available,256);
+            bool recoveredGain=false;
+            for(std::int32_t i=0;i<available.size();++i) {
+                const auto& event=availableBuffer[static_cast<std::size_t>(i)];
+                if(event.type==EventType::NoteExpression && event.dim==3 && event.frame==0 &&
+                   event.noteId==shortBuffer[0].noteId && event.value==-12)recoveredGain=true;
+            }
+            check(recoveredGain,"the next block delivers the latest expression after a full event buffer");
+        }
+        f.load();
+        while(f.clock<400)f.render();
+        const auto& heard=f.instrument->heard;
+        const auto count=f.instrument->count;
+        const auto pitchOnsets=std::count_if(heard.data(),heard.data()+count,[](const auto& event) {
+            return event.e.type==EventType::NoteExpression && event.e.dim==0 && event.clock==100;
+        });
+        const auto find=[&](std::int64_t sample,ExpressionDim dimension,double value) {
+            for(std::size_t i=0;i<count;++i) {
+                const auto& event=heard[i];
+                if(event.e.type==EventType::NoteExpression && event.e.dim==static_cast<std::uint16_t>(dimension) &&
+                   event.clock==sample && std::abs(event.e.value-value)<1e-7 &&
+                   event.e.noteId==heard[0].e.noteId && event.e.paramId==kNativeNoteExpressionUnits)return true;
+            }
+            return false;
+        };
+        check(count>=6 && heard[0].e.type==EventType::NoteOn && heard[0].clock==100 && pitchOnsets==1 &&
+              find(100,ExpressionDim::Pitch,0.3125) && find(100,ExpressionDim::Gain,-12) && find(100,ExpressionDim::Pan,-.5),
+              "saved AEXP reaches the instrument after Note On with native gain and pan and combined tuning");
+        check(find(192,ExpressionDim::Pitch,11.3525) && find(200,ExpressionDim::Pitch,12.3125),
+              "the 500 Hz grid and off-grid curve knot reach the same note at exact samples");
+        f.session.transport().locate(250);
+        const auto before=f.instrument->count;
+        const auto at=f.clock;
+        f.render();
+        bool chased=false;
+        std::uint64_t voice=0;
+        for(std::size_t i=before;i<f.instrument->count;++i) {
+            const auto& event=heard[i];
+            if(event.e.type==EventType::NoteOn)voice=event.e.noteId;
+            if(event.e.type==EventType::NoteExpression && event.e.dim==0 && event.e.noteId==voice &&
+               event.e.noteId!=heard[0].e.noteId && event.clock==at && event.e.value==12.3125)chased=true;
+        }
+        check(chased,"Locate restores the held expression on the new chased note ID");
+        f.refresh();
+        const auto previousCount=f.instrument->count;
+        f.render();
+        const bool retained=std::none_of(heard.data()+previousCount,heard.data()+f.instrument->count,[](const auto& event) {
+            return event.e.type==EventType::NoteOn || event.e.type==EventType::NoteOff;
+        });
+        check(retained && f.instrument->balance()==1,"unchanged expression keeps the sounding note across a graph refresh");
+
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=36036,loop_len_ticks=48048 WHERE id=1");
+        f.refresh();
+        f.session.transport().locate(0);
+        f.clock=0;
+        f.instrument->count=0;
+        while(f.clock<460)f.render();
+        std::uint64_t repeatedVoice=0;
+        bool repeated=false;
+        for(std::size_t i=0;i<f.instrument->count;++i) {
+            const auto& event=heard[i];
+            if(event.clock!=350)continue;
+            if(event.e.type==EventType::NoteOn) repeatedVoice=event.e.noteId;
+            if(event.e.type==EventType::NoteExpression && event.e.dim==0 && repeatedVoice &&
+               event.e.noteId==repeatedVoice && event.e.value==6.3125)repeated=true;
+        }
+        check(repeated,"a clip loop chases a spanning note's expression from the cycle's source offset");
+    }
+}
 void sessionControllers() {
     Fixture f;
     f.clip(1, 0, 5765760);
@@ -633,6 +731,8 @@ int main(int argc,char** argv){
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
     catch (const std::exception& e) { check(false, e.what()); }
+    try { if(only=="all" || only=="expression")sessionExpression(); }
+    catch(const std::exception& e) {check(false,e.what());}
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;

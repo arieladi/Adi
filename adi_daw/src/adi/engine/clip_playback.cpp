@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
@@ -30,6 +31,7 @@ struct ClipProject {
     rows::Model rows;
     fs::path folder;
     std::unordered_map<std::int64_t, fs::path> hints;
+    NoteExpressionsRead noteExpressions;
 };
 std::shared_ptr<const ClipProject> readClipProject(const Store& store, const rows::Model& rows) {
     auto p = std::make_shared<ClipProject>(); p->rows = rows;
@@ -40,7 +42,11 @@ std::shared_ptr<const ClipProject> readClipProject(const Store& store, const row
         p->folder=utf8Path(location.getColumn(2).getString()).parent_path();
     SQLite::Statement q(store.db(), "SELECT id,abs_path_hint FROM media_files WHERE abs_path_hint IS NOT NULL");
     while (q.executeStep()) p->hints.emplace(q.getColumn(0).getInt64(), utf8Path(q.getColumn(1).getString()));
+    p->noteExpressions=readNoteExpressions(store);
     return p;
+}
+const NoteExpressionsRead& clipNoteExpressions(const ClipProject& project) noexcept {
+    return project.noteExpressions;
 }
 namespace {
 constexpr std::size_t slots = 8;

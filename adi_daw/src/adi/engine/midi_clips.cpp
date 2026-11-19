@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/midi_clips.hpp"
+#include "adi/engine/clip_details.hpp"
+#include "adi/engine/curves.hpp"
 #include "adi/engine/timeline_clips.hpp"
 #include "adi/blob.hpp"
 #include "adi/engine/midi_controllers.hpp"
@@ -7,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -16,6 +19,11 @@ namespace adi::engine {
 namespace {
 constexpr std::size_t maxActive = 128;
 constexpr std::size_t maxOccurrences = 1000000;
+constexpr std::size_t maxExpressionSamples = 1000000;
+constexpr std::size_t expressionDimensions = 5;
+struct ExpressionSample {std::int64_t time;double value;};
+struct ExpressionRange {std::size_t first=0,last=0;};
+using ExpressionCurves = std::array<const NoteExpressionCurve*,expressionDimensions>;
 struct ClipClock {
     std::int64_t id=0,timeBase=0,offset=0,loopStart=0;
     std::optional<std::int64_t> posTicks,posNs,lengthTicks,lengthNs,loopLength,endMarker,alias;
@@ -41,6 +49,7 @@ struct AuthoredNote {
     std::uint16_t flags=0;
     double tuning=0,rate=0;
     std::uint64_t route=0;
+    std::uint64_t expression=0;
     friend bool operator==(const AuthoredNote&,const AuthoredNote&)=default;
 };
 struct RouteVersion {
@@ -64,12 +73,15 @@ struct Occurrence {
     double tuning=0;
     NoteIdentity identity;
     AuthoredNote authored;
+    std::array<ExpressionRange,expressionDimensions> expression;
+    std::uint64_t expressionTiming=0;
 };
 struct Active {
     bool used=false,pending=false,releasing=false,sounding=false,retryOn=false;
     std::uint64_t occurrence=0,generation=0;
     std::uint64_t retainedOn=0,retainedOff=0;
     Occurrence note;
+    std::array<std::size_t,expressionDimensions> expressionAt{};
 };
 struct ControlState {
     double requestedValue = 0, confirmedValue = 0;
@@ -105,6 +117,7 @@ public:
     // Built once on the owner; at most 128 bounded binary searches per swap.
     std::vector<std::size_t> byIdentity;
     std::vector<Scheduled> events;
+    std::vector<ExpressionSample> expressionSamples;
     std::shared_ptr<const MidiControllerProgram> controls;
     bool retainsQueuedSourceEvents()const noexcept override{return true;}
     const Occurrence* replacement(const Active& active)const noexcept {
@@ -131,6 +144,8 @@ public:
         for(const auto& active:state->active)if(active.used && active.note.start.noteId==event.noteId) {
             const auto* next=replacement(active);
             if(!next)return false;
+            if(event.type==EventType::NoteExpression && event.paramId==kNativeNoteExpressionUnits)
+                return next->expressionTiming==active.note.expressionTiming;
             return event.type==EventType::NoteOff?next->off==active.note.off:next->on==active.note.on;
         }
         return false;
@@ -310,7 +325,48 @@ public:
         for(auto& a:state->active)if(a.used)ok=stop(a,out,frame,force)&&ok;
         return ok;
     }
-    void start(const Occurrence& n,EventList& out,std::int32_t frame) noexcept {
+    void chaseExpression(Active& active,std::int64_t time) noexcept {
+        for(std::size_t dimension=0;dimension<expressionDimensions;++dimension) {
+            const auto range=active.note.expression[dimension];
+            if(range.first==range.last) {active.expressionAt[dimension]=range.last;continue;}
+            const auto* begin=expressionSamples.data();
+            const auto* next=std::upper_bound(begin+range.first,begin+range.last,time,
+                [](const auto sample,const auto& point){return sample<point.time;});
+            active.expressionAt[dimension]=next==begin+range.first?range.first:
+                static_cast<std::size_t>(next-begin-1);
+        }
+    }
+    std::int64_t nextExpression(std::int64_t first,std::int64_t limit) const noexcept {
+        for(const auto& active:state->active)if(active.used && !active.releasing && active.generation==generation) {
+            for(std::size_t d=0;d<expressionDimensions;++d) {
+                const auto at=active.expressionAt[d];
+                if(at<active.note.expression[d].last)
+                    limit=std::min(limit,std::max(first,expressionSamples.data()[at].time));
+            }
+        }
+        return limit;
+    }
+    bool emitExpression(EventList& out,std::int32_t frame,std::int64_t time) noexcept {
+        const auto reserve=std::count_if(state->active.begin(),state->active.end(),[](const auto& active){return active.used;});
+        for(auto& active:state->active)if(active.used && !active.releasing && active.generation==generation) {
+            for(std::size_t d=0;d<expressionDimensions;++d) {
+                auto& at=active.expressionAt[d];
+                const auto last=active.note.expression[d].last;
+                if(at>=last || expressionSamples.data()[at].time>time)continue;
+                if(out.capacity()-out.size()<=reserve)return false;
+                // A Locate, resend or delayed generation adopts the latest
+                // value at its actual position, using this voice's runtime ID.
+                while(at+1<last && expressionSamples.data()[at+1].time<=time)++at;
+                auto event=active.note.start;
+                event.type=EventType::NoteExpression;event.frame=frame;
+                event.dim=static_cast<std::uint16_t>(d);event.paramId=kNativeNoteExpressionUnits;
+                event.value=expressionSamples.data()[at++].value;
+                out.push(event);
+            }
+        }
+        return true;
+    }
+    void start(const Occurrence& n,EventList& out,std::int32_t frame,std::int64_t time) noexcept {
         // A generation chase must not retrigger a voice adopted by identity.
         for(const auto& a:state->active)
             if(a.used && !a.releasing && a.generation==generation &&
@@ -327,7 +383,8 @@ public:
             a.retainedOn=0;a.retainedOff=0;
             a.generation=generation;
             a.note.start.noteId=e.noteId;a.note.stop.noteId=e.noteId;
-            if(n.tuning!=0) {
+            chaseExpression(a,time);
+            if(n.tuning!=0 && n.expression[0].first==n.expression[0].last) {
                 e.type=EventType::NoteExpression;e.dim=static_cast<std::uint16_t>(ExpressionDim::Pitch);
                 e.value=n.tuning/100.0;out.push(e);
             }
@@ -339,7 +396,7 @@ public:
         for(std::size_t i=0;i<notes.size();++i) {
             const auto& n=notes[i];
             if(n.on>=time)break;
-            if(n.off>time)start(n,out,frame);
+            if(n.off>time)start(n,out,frame,time);
         }
     }
     void noteOffDelivered(const Event& e) noexcept override {
@@ -370,6 +427,7 @@ public:
                 active.note=*next;
                 active.note.start.noteId=runtimeId;active.note.stop.noteId=runtimeId;
                 active.occurrence=next->start.noteId;active.generation=generation;
+                if(active.note.authored.expression)chaseExpression(active,first);
             } else if(!stop(active,out,0,true))return false;
         }
         return true;
@@ -391,6 +449,7 @@ public:
         bool discontinuity=newGeneration || moved;
         bool controlsReset=false;
         bool controlChase=false;
+        bool expressionBlocked=false;
         if(!transport.playing()) {
             if (releasePedals(out, 0, newGeneration) && flush(out, 0, newGeneration))
                 state->generation = generation;
@@ -426,7 +485,8 @@ public:
             auto event=active.note.start;event.frame=0;
             if(!out.push(event))return;
             active.retryOn=false;
-            if(active.note.tuning!=0) {
+            chaseExpression(active,first);
+            if(active.note.tuning!=0 && active.note.expression[0].first==active.note.expression[0].last) {
                 event.type=EventType::NoteExpression;event.dim=static_cast<std::uint16_t>(ExpressionDim::Pitch);
                 event.value=active.note.tuning/100.0;out.push(event);
             }
@@ -461,6 +521,8 @@ public:
                     if (step <= end - cursor)
                         due = std::min(due, cursor + step);
                 }
+                const auto controllerTime=due;
+                if(!expressionSamples.empty() && !expressionBlocked)due=nextExpression(cursor,due);
                 if (due >= end)
                     break;
                 const auto at = frame + static_cast<std::int32_t>(due - time);
@@ -474,10 +536,11 @@ public:
                             active.generation==generation &&
                             active.occurrence == notes[it->note].start.noteId)
                             stop(active, out, at);
-                evaluateControls(out, at, due);
+                if(due==controllerTime)evaluateControls(out,at,due);
                 for (; it != eventEnd && it->time == due; ++it)
                     if (it->on)
-                        start(notes[it->note], out, at);
+                        start(notes[it->note],out,at,due);
+                if(!expressionSamples.empty() && !expressionBlocked)expressionBlocked=!emitExpression(out,at,due);
                 cursor = due + 1;
             }
             frame += static_cast<std::int32_t>(count);
@@ -492,6 +555,87 @@ std::int64_t checkedSample(double seconds,double rate) {
     const double n=seconds*rate;
     if(!std::isfinite(n)||n<0||n>static_cast<double>(std::int64_t{1}<<50))throw std::runtime_error("MIDI time outside supported range");
     return static_cast<std::int64_t>(std::llround(std::nextafter(n,std::numeric_limits<double>::infinity())));
+}
+void mixExpressionKey(std::uint64_t& key,std::uint64_t value) noexcept {
+    key=(key^value)*1099511628211ULL;
+}
+double expressionValueAt(const std::vector<ExpressionPoint>& points,double tick) noexcept {
+    const auto next=std::upper_bound(points.begin(),points.end(),tick,
+        [](double at,const auto& point){return at<static_cast<double>(point.time_ticks);});
+    if(next==points.begin())return next->value;
+    const auto& before=*(next-1);
+    if(next==points.end())return before.value;
+    const auto x=(tick-static_cast<double>(before.time_ticks))/
+        (static_cast<double>(next->time_ticks)-static_cast<double>(before.time_ticks));
+    return curveValue(before.value,next->value,x,before.curve,before.tension);
+}
+void prepareExpression(Occurrence& note,const ExpressionCurves& curves,std::vector<ExpressionSample>& samples,
+                       const TempoMap& tempo,double rate,double originSeconds,std::int64_t sourceStart,
+                       std::int64_t visibleStart) {
+    constexpr auto tickLimit=std::int64_t{1}<<50;
+    constexpr double ppq=5765760.0;
+    const auto step=static_cast<std::int64_t>(std::floor(rate/500.0));
+    const auto sampleAt=[&](std::int64_t tick) {
+        const double time=originSeconds+tempo.ticksToSeconds(sourceStart+tick);
+        return checkedSample(std::max(0.0,time),rate);
+    };
+    const auto noteTickAt=[&](std::int64_t sample) {
+        const double seconds=static_cast<double>(sample)/rate-originSeconds;
+        const auto tick=tempo.secondsToTicks(seconds);
+        const auto fraction=(seconds-tempo.ticksToSeconds(tick))*tempo.bpmAt(tick)*ppq/60.0;
+        return static_cast<double>(tick-sourceStart)+fraction;
+    };
+    std::uint64_t identity=14695981039346656037ULL,timing=identity;
+    for(std::size_t dimension=0;dimension<expressionDimensions;++dimension) {
+        const auto* curve=curves[dimension];
+        if(!curve || curve->points.empty())continue;
+        const auto& points=curve->points;
+        mixExpressionKey(identity,dimension);
+        mixExpressionKey(identity,points.size());
+        for(const auto& point:points) {
+            if(point.time_ticks < -tickLimit || point.time_ticks > tickLimit)
+                throw std::runtime_error("expression time outside supported musical range");
+            mixExpressionKey(identity,static_cast<std::uint64_t>(point.time_ticks));
+            mixExpressionKey(identity,std::bit_cast<std::uint32_t>(point.value));
+            mixExpressionKey(identity,std::bit_cast<std::uint32_t>(point.tension));
+            mixExpressionKey(identity,point.curve);
+        }
+        const auto first=samples.size();
+        const double tuning=dimension==0?note.tuning/100.0:0.0;
+        const auto append=[&](std::int64_t when,double value) {
+            value+=tuning;
+            if(samples.size()>first) {
+                if(samples.back().time==when) {samples.back().value=value;return;}
+                if(samples.back().value==value)return;
+            }
+            if(samples.size()==maxExpressionSamples)throw std::runtime_error("expression schedule budget exceeded");
+            samples.push_back({when,value});
+        };
+        append(note.on,expressionValueAt(points,static_cast<double>(visibleStart-sourceStart)));
+        for(std::size_t i=0;i<points.size();++i) {
+            const auto& point=points[i];
+            const auto left=sampleAt(point.time_ticks);
+            if(left>=note.off)break;
+            if(left>=note.on && sourceStart+point.time_ticks>=visibleStart)append(left,point.value);
+            if(i+1==points.size() || point.curve==0 || point.value==points[i+1].value)continue;
+            const auto right=std::min(note.off,sampleAt(points[i+1].time_ticks));
+            const auto firstGrid=std::max(note.on,left)/step+1;
+            if(right/step-firstGrid>static_cast<std::int64_t>(maxExpressionSamples))
+                throw std::runtime_error("expression schedule budget exceeded");
+            for(auto sample=firstGrid*step;sample<right;sample+=step)
+                append(sample,expressionValueAt(points,noteTickAt(sample)));
+        }
+        note.expression[dimension]={first,samples.size()};
+        mixExpressionKey(timing,dimension);
+        for(std::size_t i=first;i<samples.size();++i) {
+            mixExpressionKey(timing,static_cast<std::uint64_t>(samples[i].time));
+            mixExpressionKey(timing,std::bit_cast<std::uint64_t>(samples[i].value));
+        }
+    }
+    if(timing!=14695981039346656037ULL) {
+        note.authored.expression=identity;
+        note.expressionTiming=timing;
+    }
 }
 }
 struct MidiClipState {
@@ -510,6 +654,9 @@ struct MidiClips::Impl {
 };
 MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
                      const DeviceChainFn& eventPathFor)
+    :MidiClips(model,transport,rate,std::move(state),eventPathFor,NoteExpressionsRead{}) {}
+MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,std::shared_ptr<MidiClipState> state,
+                     const DeviceChainFn& eventPathFor,const NoteExpressionsRead& expressions)
     :impl_(std::make_shared<Impl>()) {
     if(!std::isfinite(rate)||rate<44100||rate>768000)throw std::runtime_error("MIDI session rate outside 44.1-768 kHz");
     const auto generation=++state->generation;
@@ -572,11 +719,21 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
     std::uint64_t identity=1;
     std::map<std::pair<std::int64_t,std::uint64_t>,std::size_t> identities;
     for(const auto& note:model.notes)if(note.noteId)++identities[{note.clipId,note.noteId}];
+    std::map<std::pair<std::int64_t,std::uint64_t>,ExpressionCurves> noteCurves;
+    impl_->problems.insert(impl_->problems.end(),expressions.problems.begin(),expressions.problems.end());
+    for(const auto& curve:expressions.curves) {
+        const auto key=std::pair{curve.clipId,curve.noteId};
+        const auto count=identities.find(key);
+        if(count==identities.end() || count->second!=1 || curve.dimension<0 ||
+           static_cast<std::uint64_t>(curve.dimension)>=expressionDimensions)continue;
+        noteCurves[key][static_cast<std::size_t>(curve.dimension)]=&curve;
+    }
     for(const auto& clip:timelineClips(model)) {
         if(clip.kind!="midi" || clip.muted)continue;
         const auto found=impl_->tracks.find(clip.trackId);if(found==impl_->tracks.end())continue;
         auto& source=*found->second;
         const auto before=source.notes.size();
+        const auto expressionBefore=source.expressionSamples.size();
         try {
             if(clip.aliasOf)throw std::runtime_error("MIDI alias unsupported; silent");
             const double startSeconds=clip.timeBase==0?tempo.ticksToSeconds(clip.posTicks.value_or(0)):static_cast<double>(clip.posNs.value_or(0))*1e-9;
@@ -592,6 +749,8 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             auto at=[&](std::int64_t local){return checkedSample(startSeconds+tempo.ticksToSeconds(origin+local)-tempo.ticksToSeconds(origin),rate);};
             const auto clipEnd=clip.timeBase==0?at(length):checkedSample(startSeconds+static_cast<double>(clip.lengthNs.value_or(0))*1e-9,rate);
             bool unsupported=false;
+            std::string expressionProblem;
+            const double tempoOrigin=startSeconds-tempo.ticksToSeconds(origin);
             for(const auto& note:model.notes) {
                 if(note.clipId!=clip.id || (note.flags&1u)!=0)continue;
                 // ANOT starts are signed. A note crossing source zero is
@@ -599,7 +758,7 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                 // note is skipped. Keep the same bounded arithmetic domain.
                 if(note.startTicks < -tickLimit||note.startTicks>tickLimit||note.durTicks<=0||note.durTicks>tickLimit||note.key<0||note.key>127||note.channel<0||note.channel>15||note.velOn<1||note.velOn>127||note.velOff<0||note.velOff>127||!std::isfinite(note.tuningCents))throw std::runtime_error("invalid MIDI note; clip silent");
                 unsupported=unsupported || note.probability!=10000 || (note.flags&12u)!=0;
-                auto add=[&](std::int64_t on,std::int64_t off){
+                auto add=[&](std::int64_t on,std::int64_t off,std::int64_t authoredStart){
                     const auto repeat=on;
                     on=std::max<std::int64_t>(on,0);
                     if(off<=on || on>length)return;
@@ -615,30 +774,43 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                     n.identity={clip.id,repeat,stable};
                     n.authored={clipClock(clip),note.startTicks,note.durTicks,note.key,note.channel,
                                 note.velOn,note.velOff,note.probability,note.flags,note.tuningCents,rate,
-                                source.controllerVersion->identity.route->generation};
+                                source.controllerVersion->identity.route->generation,0};
+                    if(const auto foundCurve=noteCurves.find({clip.id,stable});foundCurve!=noteCurves.end()) {
+                        const auto sampleCount=source.expressionSamples.size();
+                        try {prepareExpression(n,foundCurve->second,source.expressionSamples,tempo,rate,tempoOrigin,
+                                               origin+authoredStart,origin+on);}
+                        catch(const std::exception& error) {
+                            source.expressionSamples.resize(sampleCount);n.expression={};
+                            expressionProblem=error.what();
+                        }
+                    }
                     if(source.notes.size()>=maxOccurrences)throw std::runtime_error("MIDI occurrence budget exceeded; clip silent");
                     source.notes.push_back(n);
                 };
                 if (!clip.loopEnabled) {
                     auto off = note.startTicks + note.durTicks;
                     if (clip.endMarkerTicks) off = std::min(off, *clip.endMarkerTicks);
-                    add(note.startTicks-clip.contentOffsetTicks, off-clip.contentOffsetTicks);
+                    const auto start=note.startTicks-clip.contentOffsetTicks;
+                    add(start,off-clip.contentOffsetTicks,start);
                     continue;
                 }
                 // Prefix before the loop plays once. Notes crossing a repeat
                 // boundary are released there, and chased at the next origin.
                 const auto lb=clip.loopStartTicks, le=lb+loop, offset=clip.contentOffsetTicks;
-                if(offset<lb)add(note.startTicks-offset,std::min(note.startTicks+note.durTicks,le)-offset);
+                if(offset<lb)add(note.startTicks-offset,std::min(note.startTicks+note.durTicks,le)-offset,note.startTicks-offset);
                 if(note.startTicks>=le||note.startTicks+note.durTicks<=lb)continue;
                 const auto firstRepeat=offset<lb?le-offset:-(offset-lb)%loop;
                 for(auto base=firstRepeat;base<length;base+=loop) {
-                    add(base+std::max(note.startTicks,lb)-lb,base+std::min(note.startTicks+note.durTicks,le)-lb);
+                    add(base+std::max(note.startTicks,lb)-lb,base+std::min(note.startTicks+note.durTicks,le)-lb,
+                        base+note.startTicks-lb);
                     if(static_cast<std::uint64_t>((length-base)/loop)>maxOccurrences)throw std::runtime_error("MIDI repeat budget exceeded; clip silent");
                 }
             }
-            if(unsupported)impl_->problems.push_back("clips#"+std::to_string(clip.id)+": probability, ties and stored expression curves not rendered; notes play independently at full probability");
+            if(unsupported)impl_->problems.push_back("clips#"+std::to_string(clip.id)+": probability and ties not rendered; notes play independently at full probability");
+            if(!expressionProblem.empty())impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+expressionProblem);
         } catch(const std::exception& e) {
-            source.notes.resize(before);impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+e.what());
+            source.notes.resize(before);source.expressionSamples.resize(expressionBefore);
+            impl_->problems.push_back("clips#"+std::to_string(clip.id)+": "+e.what());
         }
     }
     for(auto& [id,source]:impl_->tracks) {
