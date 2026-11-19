@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E51 (a), (b) and (d) MIDI input note ownership
+
+**PR requested** — branch `engine/df-e51-midi-note-ownership`, head `ba87710e5ecf53ae451a1557a45aabffca32f25e`, main base `8416ed0f`. Title **DF-E51: Keep MIDI note ownership through retriggers and zone changes**. Land before the Window's SRF-05 Track route feeds this parser.
+
+Retriggers release the oldest matching start first on plain and MPE member channels. Zone changes carry all held IDs. Member expression follows the latest accepted note still held. The parser retains a rejected release for retry and skips the matching release of a rejected start. The per-channel fixed queue holds 256 starts. Overflow releases drain in input order before that key admits more starts. Complete poly pressure and program changes have a diagnostic count. DF-E51 (c) follows separately.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed input parser (80), MIDI capture (41), retrospective memory (32), the parser/real router/capture gate (22, including zero callback allocations and file I/O), and MPE output (91). The old capture-input assertion explicitly pinned the previously documented newest-ID behavior. The updated assertion requires both correct releases at the real router. Three compiled faults caught newest-first matching, lost refused releases, and admitting starts before overflow clears. Validators and binary layout passed.
+
 ## 2026-11-19 — MI-08 persisted expression playback
 
 **PR requested** — branch `engine/mi08-expression-playback`, head `cd8d8e6947ffdf15f9b4e8f87a2a8502a79ce166`. Title **MI-08: Schedule saved per-note curves through clip playback**. Stack parents `e5b350cd` (AEXP read) and `0c3d63ea` (host units), both on code from main `88e2d94e`. Latest main `8416ed0f` adds review rows and documentation only.
