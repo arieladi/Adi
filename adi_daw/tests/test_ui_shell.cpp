@@ -9454,10 +9454,13 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "the View menu's Mix View, on F4 (ADR-0209 d9)");
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
     root.frame();
-    check(panel.stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
-              panel.stack.channelScope.getSelectedId() == 1 && panel.stack.model().shownCount() == 0 &&
+    check(panel.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
+              panel.stack.channelScope.getSelectedId() == 2 && panel.stack.model().shownIndex(10),
+          "a fresh Stack shows channels with empty chains");
+    panel.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+    check(panel.stack.model().shownCount() == 0 &&
               panel.stack.emptyMessage().contains("All channels") && panel.stack.emptyMessage().contains("Device View"),
-          "STACK starts with tool channels and explains how to add the first tool");
+          "the With tools filter explains how to add a first tool");
     {
         const auto selectionBefore = root.arrangement.geometry.selection;
         const auto opsBefore = store->db().execAndGet("SELECT count(*) FROM ops").getInt();
@@ -10087,6 +10090,43 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             const auto row = surface.model().shownIndex(2);
             std::vector<std::int64_t> order;
             if (row) surface.model().forEachChainItem(*row, [&](const stack::ItemGeo &i) { order.push_back(i.ref.device); });
+            {
+                const auto target = surface.model().chainRef(2, 30);
+                actual.devices.fold(30);
+                actual.frame();
+                stack::ItemGeo pill;
+                if (const auto at = surface.model().shownIndex(2))
+                    surface.model().forEachChainItem(*at, [&](const auto &item) {
+                        if (item.ref == target) pill = item;
+                    });
+                check(pill.pill && pill.width == surface.model().constants().pill && !findPanel(30),
+                      "folded device in Stack is a compact pill instead of an empty card");
+                const auto point = surface.listArea().getPosition().toFloat() +
+                    juce::Point<float>(static_cast<float>(pill.x + pill.width * .5) + static_cast<float>(look::gap),
+                                      static_cast<float>(pill.top) + static_cast<float>(look::gap));
+                const auto operationCount = value(document->store(), "SELECT count(*) FROM ops");
+                surface.mouseDown(pressAt(surface, point, juce::ModifierKeys::leftButtonModifier));
+                surface.mouseUp(pressAt(surface, point));
+                check(value(document->store(), "SELECT count(*) FROM ops") == operationCount,
+                      "a pill press beside the activator leaves its audio and history alone");
+                surface.model().focusItem(target, static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                check(surface.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) && !actual.devices.folded(30),
+                      "Enter unfolds the focused device in Stack");
+                document->tick(0);
+                actual.frame();
+                actual.devices.fold(31);
+                actual.frame();
+                surface.model().focusItem(surface.model().chainRef(2, 31),
+                    static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                check(surface.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)) &&
+                      value(document->store(), "SELECT count(*) FROM devices WHERE id=31") == 0 &&
+                      value(document->store(), "SELECT count(*) FROM devices WHERE id=30") == 1,
+                      "Delete removes only the focused folded device");
+                check(document->ops().undo().ok && document->synchronise(), "one Undo restores the folded device");
+                if (actual.devices.folded(31)) actual.devices.fold(31);
+                document->tick(0);
+                actual.frame();
+            }
             auto *first = findPanel(30);
             check(row && order == std::vector<std::int64_t>{30, 31} && first && first->controls.size() == 2,
                   "the visible model and generic panels show actual device order and the shared parameter feed");
@@ -10778,6 +10818,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 observed.frame();
                 check(observed.setMixView(true, false), "parameter demand opens the docked Stack");
                 auto &stackSurface = observed.mixViewPanel.stack;
+                stackSurface.channelScope.setSelectedId(1, juce::sendNotificationSync);
                 const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
                 stackSurface.model().setAutoZoom(false, time);stackSurface.model().setBaseHeight(140, time);
                 observed.frame();stackSurface.frameAt(observed.reader(), time + 200);

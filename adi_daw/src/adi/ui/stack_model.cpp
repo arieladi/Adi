@@ -152,6 +152,24 @@ Constants Constants::scaled(double k) const {
     return s;
 }
 
+Constants mixChannelGeometry(DensityId id) noexcept {
+    const auto& density = densityFor(id);
+    const auto compactRow = densityFor(DensityId::Compact).mixStackRow;
+    auto c = Constants{}.scaled(static_cast<double>(density.mixStackRow) / compactRow);
+    c.continuousLens = true;
+    c.anchor = Anchor::PointerRowFraction;
+    c.baseDefault = density.mixStackRow;
+    c.detents = {c.baseMin, c.baseDefault * 4 / 5, c.baseDefault,
+                 density.mixStackOuterRow, density.mixStackNearRow, c.baseMax};
+    const auto ratio = [&](int height) { return (100 * height + c.baseDefault / 2) / c.baseDefault; };
+    c.enlargedPct = ratio(density.mixStackFocusedRow);
+    c.near1Pct = ratio(density.mixStackNearRow);
+    c.near2Pct = ratio(density.mixStackOuterRow);
+    c.gapPct = 6;
+    c.dwellMs = 0;
+    return c;
+}
+
 int fisheyeHeight(int base, std::size_t distance, double listHeight, const Constants &c) noexcept {
     const int enlargedH = (c.enlargedPct * base + 50) / 100;
     const double room = listHeight - static_cast<double>(c.enlargedCapBaseRows * base);
@@ -560,6 +578,7 @@ void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry 
             item.name = source.name;
             item.available = source.available;
             item.enabled = source.enabled;
+            item.folded = source.folded;
             out.items.push_back(item);
             ++track.itemCount;
             track.hasMixFunction = track.hasMixFunction || source.mixFunction;
@@ -584,6 +603,7 @@ constexpr std::size_t kMaxTouched = 8;
 
 StackModel::StackModel(Constants constants) : c_(constants) {
     view_.baseHeight = c_.baseDefault;
+    if (c_.continuousLens) view_.channelScope = ChannelScope::AllChannels;
     shared_.pins.reserve(boundOf(c_.maxPins));
     view_.folded.reserve(boundOf(c_.maxFolded));
     view_.search.reserve(boundOf(c_.searchMaxBytes) + 8);
@@ -834,6 +854,7 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
             item.cls = static_cast<unsigned>(src.cls) < kItemClasses ? src.cls : ItemClass::View;
             item.available = src.available;
             item.enabled = src.enabled;
+            item.folded = src.folded;
             for (const auto &old : r.items)
                 if (old.device == src.device && old.identity == src.identity) {
                     item.gen = old.gen;
@@ -847,7 +868,7 @@ StackModel::Changes StackModel::updateRecord(Rec &r, const TrackInput &t, const 
     for (std::size_t j = 0; itemsSame && j < r.items.size(); ++j) {
         const auto &a = scratchItems_[j], &b = r.items[j];
         itemsSame = a.device == b.device && a.identity == b.identity && a.cls == b.cls && a.gen == b.gen &&
-                    a.available == b.available && a.enabled == b.enabled;
+                    a.available == b.available && a.enabled == b.enabled && a.folded == b.folded;
     }
     if (!itemsSame) {
         r.items.swap(scratchItems_);
@@ -1590,10 +1611,18 @@ std::size_t StackModel::buildTargets(std::array<Entry, kMaxEntries> &out) const 
     if (!at)
         return 0;
     const std::size_t e = *at;
-    const std::size_t lo = e >= 2 ? e - 2 : 0, hi = std::min(count - 1, e + 2);
-    std::array<int, 5> h{};
-    for (std::size_t i = lo; i <= hi; ++i)
-        h[i - lo] = fisheyeHeight(b, i > e ? i - e : e - i, listH_, c_);
+    const std::size_t radius = c_.continuousLens ? 3 : 2;
+    const auto lo = e >= radius ? e - radius : 0, hi = std::min(count - 1, e + radius);
+    std::array<int, 7> h{};
+    for (std::size_t i = lo; i <= hi; ++i) {
+        const double distance = std::abs(static_cast<double>(i) - static_cast<double>(e) - lensOffset_);
+        const auto band = static_cast<std::size_t>(distance);
+        const double t = distance - static_cast<double>(band);
+        const double weight = t * t * (3 - 2 * t);
+        const int center = fisheyeHeight(b, band, listH_, c_);
+        h[i - lo] = center + static_cast<int>(std::round(
+            (fisheyeHeight(b, band + 1, listH_, c_) - center) * weight));
+    }
     std::size_t n = 0;
     for (std::size_t i = lo; i <= hi; ++i) {
         Entry t;
@@ -2088,7 +2117,7 @@ void StackModel::onLeave(TimeMs d) {
         anchorFirstVisible(); // settles any slack the pointer left
     }
     if (view_.autoZoom && maximised_ == 0) {
-        const TrackId target = keyboardFocus_ && focusRow_ != 0 && shownIndex(focusRow_) ? focusRow_ : 0;
+        const TrackId target = keyboardFocus_ && !c_.continuousLens && focusRow_ != 0 && shownIndex(focusRow_) ? focusRow_ : 0;
         setEnlarged(target, d);
         retarget(d);
     }
@@ -2115,6 +2144,7 @@ void StackModel::setEnlarged(TrackId id, TimeMs now) {
     if (id == enlarged_)
         return;
     enlarged_ = id;
+    lensOffset_ = 0;
     enlargedSince_ = now;
     bump();
 }
@@ -2162,7 +2192,7 @@ double StackModel::itemHeight(const Rec &r, std::size_t index, double h, bool ta
 double StackModel::itemWidth(const Rec &r, std::size_t index, double h, bool target) const noexcept {
     const auto &item = r.items[index];
     const double height = itemHeight(r, index, h, target);
-    if (plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
+    if (item.folded || plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
         return c_.pill;
     return chainItemWidth(item.cls, height, c_);
 }
@@ -2604,6 +2634,28 @@ Effects StackModel::mergeFlags(Effects into, const Effects &from) noexcept {
     return into;
 }
 
+void StackModel::updatePointerLens(TimeMs now) {
+    if (!c_.continuousLens || !view_.autoZoom || cap_.active || buttonDown_ || focusOwns_ ||
+        maximised_ != 0 || jump_.active || landed_ != 0 || !pointerOverRows() ||
+        now < lastScrollAt_ + c_.scrollHoldOffMs)
+        return;
+    const auto hit = locate(py_ + scroll_);
+    if (hit.locus != Locus::Gap && hit.locus != Locus::Row) return;
+    const auto index = hit.index;
+    const auto id = rows_[shown_[index]].id;
+    const double fraction = hit.locus == Locus::Gap ? 1.0 :
+        std::clamp((py_ + scroll_ - hit.top) / hit.height, 0.0, 1.0);
+    double offset = fraction - .5;
+    if ((index == 0 && offset < 0) || (index + 1 == shown_.size() && offset > 0)) offset = 0;
+    if (enlarged_ == id && std::abs(lensOffset_ - offset) < .002) return;
+    setEnlarged(id, now);
+    lensOffset_ = offset;
+    anchorPointer();
+    retarget(now);
+    solveScroll();
+    updateNavScroll();
+}
+
 Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
@@ -2653,6 +2705,7 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
     if (moved) {
         rehit(now);
         rehitItem(now);
+        updatePointerLens(now);
     }
     endEvent(fx, before);
     return fx;
@@ -4500,7 +4553,7 @@ void StackModel::layoutLane(std::size_t shown, double top, double h, LaneGeo *ge
         g.height = itemHeight(r, j, h);
         g.targetHeight = itemHeight(r, j, targetHeightAt(shown), true);
         g.tier = tierFor(g.height, false, c_);
-        g.pill = pills || g.tier < c_.foldBelow[classAt(r.items[j].cls)];
+        g.pill = r.items[j].folded || pills || g.tier < c_.foldBelow[classAt(r.items[j].cls)];
         g.clipped = clipped;
         g.focused = focusItem_.place == ItemPlace::Chain && focusItem_.row.track == r.id &&
                     focusItem_.device == g.ref.device;

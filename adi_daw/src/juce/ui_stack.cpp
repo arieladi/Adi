@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 namespace adi::ui {
 namespace {
 stack::TimeMs clockNow() noexcept {
@@ -15,6 +16,12 @@ stack::TimeMs clockNow() noexcept {
 juce::Rectangle<float> rect(stack::Rect r) {
     return {static_cast<float>(r.x), static_cast<float>(r.y),
             static_cast<float>(r.w), static_cast<float>(r.h)};
+}
+juce::Rectangle<float> pillActivator(stack::Rect item) {
+    const auto diameter = static_cast<float>(look::gap);
+    return {static_cast<float>(item.x + item.w * .5) - diameter * .5f,
+            static_cast<float>(item.y) + static_cast<float>(look::border) + look::radiusSmall,
+            diameter, diameter};
 }
 stack::Mods mods(const juce::ModifierKeys &m) {
     return {m.isShiftDown(), m.isCommandDown() || m.isCtrlDown(), m.isAltDown()};
@@ -50,7 +57,9 @@ bool sameStructure(const ParameterPublication *a, const ParameterPublication *b)
 }
 } // namespace
 struct StackTab::State : juce::ScrollBar::Listener {
-    explicit State(StackTab &s) : owner(s) { scrollbar.addListener(this); }
+    explicit State(StackTab &s) : owner(s), model(stack::mixChannelGeometry(look::densityId())) {
+        scrollbar.addListener(this);
+    }
     ~State() override { scrollbar.removeListener(this); }
     void scrollBarMoved(juce::ScrollBar *, double start) override {
         if (!syncing) owner.effects(model.scrollTo(start, clockNow()), false);
@@ -62,6 +71,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     std::vector<std::pair<std::int64_t, std::size_t>> deviceIndex;
     std::vector<stack::RowGeo> wanted;
     std::vector<std::int64_t> hidden;
+    std::set<std::int64_t> folded;
     std::vector<std::int64_t> demanded;
     std::shared_ptr<const ParameterPublication> publication, structure, editPublication;
     std::uint64_t generation = std::numeric_limits<std::uint64_t>::max(), revision = 1;
@@ -261,7 +271,7 @@ void StackRow::paint(juce::Graphics &g) {
                                               static_cast<float>(std::max(0.0, item.height - 6)));
             look::box(g, box, item.focused ? look::field : look::button);
             g.setColour(current && item.enabled && item.available ? look::accent : look::textDim);
-            g.fillEllipse(box.getCentreX() - 4, box.getY() + 3, 8.f, 8.f);
+            g.fillEllipse(pillActivator({item.x, item.top - row.top, item.width, item.height}));
             g.setColour(current && item.available ? look::text : look::textDim);
             g.setFont(look::font(11.5f));
             const juce::String label = current ? juce::String(data->name) : "Device changed";
@@ -312,7 +322,8 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     channelScope.setTooltip("Choose channels containing native Mix View tools, or show every channel. This only changes the list.");
     channelScope.addItem("With tools", 1);
     channelScope.addItem("All channels", 2);
-    channelScope.setSelectedId(1, juce::dontSendNotification);
+    channelScope.setSelectedId(model().windowView().channelScope == stack::ChannelScope::AllChannels ? 2 : 1,
+                              juce::dontSendNotification);
     channelScope.onChange = [this] {
         const auto scope = channelScope.getSelectedId() == 2 ? stack::ChannelScope::AllChannels
                                                            : stack::ChannelScope::WithTools;
@@ -320,7 +331,8 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
         layoutRows();
     };
     addAndMakeVisible(channelScope);
-    rowSize.setTitle("Channel height");
+    rowSize.setTitle("Rows");
+    rowSize.setTooltip("Set the resting channel height and how many rows fit on screen.");
     rowSize.setSliderStyle(juce::Slider::LinearHorizontal);
     rowSize.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     rowSize.setRange(model().constants().baseMin, model().constants().baseMax, 1);
@@ -395,6 +407,13 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
     // additionally notices a fresh current() read by an input event before the next frame.
     const auto generation = root.generation();
     const bool changed = !sameStructure(state_->structure.get(), state_->publication.get());
+    const auto& folded = root.state().foldedDevices;
+    const bool foldsChanged = state_->folded != folded;
+    if (foldsChanged && state_->interaction && folded.contains(state_->interaction->target.device) &&
+        !state_->folded.contains(state_->interaction->target.device)) {
+        cancelInteractions();
+        if (!alive || state_->frame != frame || state_->layout != layout) return;
+    }
     if (changed) {
         state_->deviceIndex.clear();
         if (state_->publication)
@@ -403,14 +422,14 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
         std::sort(state_->deviceIndex.begin(), state_->deviceIndex.end());
     }
     if (state_->generation != generation || state_->snapshot != reader.get() ||
-        state_->provider != &provider() || state_->hidden != hidden || changed) {
+        state_->provider != &provider() || state_->hidden != hidden || changed || foldsChanged) {
         ++state_->revision;
         state_->chain.clear();
         if (state_->publication)
             for (const auto &d : *state_->publication)
                 state_->chain.push_back({d.track, d.id, d.instance,
                     d.plugin ? stack::ItemClass::Plugin : stack::ItemClass::View, d.name, d.available, d.enabled,
-                    !d.plugin && mix::functionForUid(d.uid) != nullptr});
+                    !d.plugin && mix::functionForUid(d.uid) != nullptr, folded.contains(d.id)});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
         if (!alive || state_->frame != frame || state_->layout != layout) return;
@@ -418,6 +437,7 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
         state_->snapshot = reader.get();
         state_->provider = &provider();
         state_->hidden = hidden;
+        state_->folded = folded;
     }
     state_->structure = state_->publication;
 }
@@ -715,13 +735,28 @@ void StackTab::mouseDown(const juce::MouseEvent &e) {
     const auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, clockNow());
     effects(fx, e.eventComponent == &state_->canvas);
     if (!alive) return;
-    if (fx.hit.part == stack::HitPart::ChainPill && button == stack::Button::Left &&
-        p.y >= fx.hit.rect.y && p.y < fx.hit.rect.y + 16 && validTarget(fx.hit.item)) {
-        if (const auto *data = device(fx.hit.item.device); data && data->available)
-            root.devices.action("device.setEnabled", {{"id", data->id}, {"enabled", !data->enabled}});
-        if (!alive) return;
-        layoutRows();
-        return;
+    if (fx.hit.part == stack::HitPart::ChainPill && validTarget(fx.hit.item)) {
+        const auto target = fx.hit.item;
+        const bool folded = root.devices.folded(target.device);
+        if (button == stack::Button::Right && folded) {
+            showFoldedDeviceMenu(target, e.getScreenPosition());
+            return;
+        }
+        if (button == stack::Button::Left && e.getNumberOfClicks() > 1 && folded) {
+            unfoldDevice(target);
+            return;
+        }
+        const auto activator = pillActivator(fx.hit.rect);
+        if (button == stack::Button::Left && p.getDistanceFrom(activator.getCentre()) <= activator.getWidth() * .5f) {
+            if (const auto *data = device(target.device); data && data->available) {
+                if (!data->plugin && mix::functionForUid(data->uid) && data->enabled)
+                    root.devices.action("device.remove", {{"id", target.device}});
+                else
+                    root.devices.action("device.setEnabled", {{"id", target.device}, {"enabled", !data->enabled}});
+            }
+            if (alive) layoutRows();
+            return;
+        }
     }
     if ((fx.hit.part == stack::HitPart::ChainPill || fx.hit.part == stack::HitPart::ChainItem) &&
         e.getNumberOfClicks() > 1 && e.eventComponent == &state_->canvas && validTarget(fx.hit.item)) {
@@ -731,6 +766,29 @@ void StackTab::mouseDown(const juce::MouseEvent &e) {
         if (!alive) return;
     }
     layoutRows();
+}
+bool StackTab::unfoldDevice(const stack::ItemRef& target) {
+    if (!validTarget(target) || !root.devices.folded(target.device)) return false;
+    root.devices.fold(target.device);
+    return true;
+}
+void StackTab::showFoldedDeviceMenu(const stack::ItemRef& target, juce::Point<int> at) {
+    const juce::Component::SafePointer<StackTab> safe(this);
+    if (!beginInteraction(target, stack::CaptureKind::Menu) || !safe) return;
+    const auto token = state_->interaction->token;
+    const auto close = [safe, token] {
+        if (!safe || !safe->state_->interaction || safe->state_->interaction->token != token) return false;
+        safe->endInteraction();
+        return bool(safe);
+    };
+    juce::PopupMenu menu;
+    menu.addItem("Unfold", [safe, target, close] { if (close()) safe->unfoldDevice(target); });
+    menu.addItem("Remove device", [safe, target, close] {
+        if (close() && safe->validTarget(target))
+            safe->root.devices.action("device.remove", {{"id", target.device}});
+    });
+    menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({at.x, at.y, 1, 1}),
+                       [close](int) { close(); });
 }
 void StackTab::mouseDrag(const juce::MouseEvent &e) { mouseMove(e); }
 void StackTab::mouseUp(const juce::MouseEvent &e) {
@@ -792,6 +850,7 @@ bool StackTab::keyPressed(const juce::KeyPress &key) {
     const auto target = model().focus().item;
     if (target.place == stack::ItemPlace::Chain) {
         const auto code = key.getKeyCode();
+        if (code == juce::KeyPress::returnKey && unfoldDevice(target)) return true;
         if (key.getModifiers().isCommandDown()) {
             std::optional<DeviceChainStrip::Clip> clip;
             if (code == 'x' || code == 'X') clip = DeviceChainStrip::Clip::Cut;

@@ -32,6 +32,10 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(mixSongRulerHeight) \
     ADI_DENSITY_INT(mixSongLabelSpacing) /* minimum space between printed bar numbers */ \
     ADI_DENSITY_INT(mixSongLoopBraceHeight) \
+    ADI_DENSITY_INT(mixStackRow) /* a resting channel */ \
+    ADI_DENSITY_INT(mixStackNearRow) /* one row from the centre of the lens */ \
+    ADI_DENSITY_INT(mixStackOuterRow) /* two rows from the centre of the lens */ \
+    ADI_DENSITY_INT(mixStackFocusedRow) /* the centre of the lens */ \
     /* corners */ \
     ADI_DENSITY_FLOAT(radiusSmall) /* a small mark, a pill's ends at the smallest */ \
     ADI_DENSITY_FLOAT(radiusThumb) /* a scroll bar's thumb */ \

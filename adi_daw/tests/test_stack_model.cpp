@@ -305,6 +305,66 @@ std::array<KindScope, 4> fourScope(bool q, bool duck, bool clip, bool l) {
 
 // --- the laws -------------------------------------------------------------------------------------------
 
+void continuousChannelLens() {
+    auto f = uniform(12);
+    f.item(5, 15, ItemClass::Dynamics, "Gate");
+    auto m = model(f, 1100, 700, mixChannelGeometry());
+    check(m.windowView().channelScope == ChannelScope::AllChannels, "fresh Mix channel scope is All");
+    m.setChannelScope(ChannelScope::WithTools, 2);
+    auto reopened = model(f, 1100, 700, mixChannelGeometry());
+    reopened.applyViewState(m.viewState(), 3);
+    check(reopened.windowView().channelScope == ChannelScope::WithTools, "saved With tools restores");
+    m.setChannelScope(ChannelScope::AllChannels, 4);
+    const auto center = m.row(4);
+    m.pointerMove(50, center.top + center.height / 2, false, 1000);
+    m.advance(1300);
+    check(m.row(4).height == 250 && m.row(3).height == 122 && m.row(2).height == 82 && m.row(1).height == 56,
+          "Mix lens: centred row and neighbours use the four intended heights");
+    auto r = m.row(4);
+    m.pointerMove(50, r.top + .75 * r.height, false, 1310);
+    m.advance(1600);
+    check(m.row(4).height > 122 && m.row(4).height < 250 && m.row(5).height > 122 &&
+          m.row(3).height < 122, "Mix lens: moving within the same row shifts weight to the approaching channel");
+    const auto drag = m.beginCapture(CaptureKind::Drag, m.chainRef(5, 15), 1610);
+    const auto held = m.row(4);
+    m.pointerMove(180, 10, true, 1640);
+    m.advance(1900);
+    check(drag.ref.token != 0 && m.row(4).height == held.height && m.row(4).top == held.top,
+          "Mix lens: captured gesture holds the displayed row");
+    if (drag.ref.token != 0) m.endCapture(drag.ref, 1910);
+    m.pointerExit(1950); m.advance(2600);
+    check(m.row(4).height == 56 && m.row(5).height == 56, "Mix lens: outside returns every row to rest");
+    const auto open = mixChannelGeometry(DensityId::Open);
+    check(open.baseDefault == densityFor(DensityId::Open).mixStackRow &&
+          fisheyeHeight(open.baseDefault, 0, 700, open) == densityFor(DensityId::Open).mixStackFocusedRow,
+          "Mix lens reads the Open geometry from the shared density table");
+}
+
+void explicitDeviceFold() {
+    auto f = uniform(2);
+    f.item(1, 15, ItemClass::View, "Meter");
+    f.item(1, 16, ItemClass::View, "Effect");
+    auto m = model(f, 1100, 700, mixChannelGeometry());
+    const auto ref = m.chainRef(1, 15);
+    const auto obtain = [&](DeviceId id) {
+        std::optional<ItemGeo> result;
+        m.forEachChainItem(0, [&](const auto& item) { if (item.ref.device == id) result = item; });
+        return result;
+    };
+    const auto card = obtain(15);
+    check(card && !card->pill, "an unfolded insert uses the ordinary card");
+    f.chains[0][0].folded = true;
+    m.setRows(f.input(), 10);
+    const auto folded = obtain(15);
+    check(m.chainRef(1, 15) == ref && folded && folded->pill && folded->width == m.constants().pill &&
+          obtain(16).has_value(),
+          "explicit fold uses only pill width and keeps device and neighbour identities");
+    f.chains[0][0].folded = false;
+    m.setRows(f.input(), 12);
+    const auto restored = obtain(15);
+    check(m.chainRef(1, 15) == ref && restored && !restored->pill, "unfold returns the same device to its card");
+}
+
 void fisheyeAtBase100() {
     section("T1 the fisheye at base 100");
     Fixture f = uniform(20);
@@ -4160,6 +4220,8 @@ int main() {
     _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
     _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
 #endif
+    continuousChannelLens();
+    explicitDeviceFold();
     fisheyeAtBase100();
     fisheyeAtEveryDetent();
     capsAndFloor();

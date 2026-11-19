@@ -98,6 +98,8 @@ class StackTab final : public juce::Component {
     void syncScroll();
     int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
+    bool unfoldDevice(const stack::ItemRef &);
+    void showFoldedDeviceMenu(const stack::ItemRef &, juce::Point<int> screenPoint);
     stack::Hit presentedHit(double x, double y) const;
     void beginRename(stack::RowRef);
     void endRename(bool commit);

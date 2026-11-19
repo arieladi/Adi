@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/ui/density.hpp"
 // STACK's model (the Mix View's STACK tab, ADR-0209): which tracks are rows and where each row,
 // chain item, module cell, chip, chevron and navigator line is; how tall every row is at this
 // moment; what a point hits; and the interaction states that move them, each kept apart: hover,
@@ -84,6 +85,7 @@ struct Constants {
     std::array<int, 6> detents{28, 44, 68, 100, 136, 184}; // the slider's detents; win's placement, provisional until experiment X1
     int detentSnap = 3; // a slider value this close to a detent lands on it; win's placement, provisional until experiment X1
     // --- the fisheye ---
+    bool continuousLens = false;
     int enlargedPct = 190; // the enlarged row, % of base; measured from the director's video (ADR-0209)
     int near1Pct = 129;    // a row next to it, % of base; measured from the director's video (ADR-0209)
     int near2Pct = 110;    // two rows away, % of base; measured from the director's video (ADR-0209)
@@ -202,6 +204,7 @@ struct ItemInput {
     ItemClass cls = ItemClass::View;
     std::string_view name; // for the search; copied into the haystack
     bool available = true, enabled = true; // availability is distinct from the Device Activator
+    bool folded = false; // the window's explicit device fold
 };
 // One track of the snapshot. The owner passes every track (not only the shown ones) in
 // TrackOrder's order (ArrangementGeometry::rows); the order is never stored.
@@ -540,6 +543,7 @@ struct Focus {
 
 // --- the laws, as pure functions ------------------------------------------------------------------
 
+Constants mixChannelGeometry(DensityId = DensityId::Compact) noexcept;
 int fisheyeHeight(int base, std::size_t distance, double listHeight, const Constants &) noexcept;
 int gapBetween(int above, int below, const Constants &) noexcept;
 int chainItemWidth(ItemClass, double height, const Constants &) noexcept;
@@ -587,6 +591,7 @@ struct ChainDeviceInput {
     std::string_view name;
     bool available = true, enabled = true;
     bool mixFunction = false; // stable native identity, never inferred from name
+    bool folded = false;
 };
 // The actual-chain surface (ADR-0236/0237): every real device, no reserved module columns. Track
 // order/scope/roles still come from the one snapshot. Unknown owners and invalid identities are
@@ -794,6 +799,7 @@ class StackModel {
         stack::ItemClass cls = stack::ItemClass::View;
         std::uint32_t gen = 0;
         bool available = true, enabled = true;
+        bool folded = false;
     };
     struct ModuleRec {
         stack::ModuleState state = stack::ModuleState::Absent;
@@ -963,6 +969,7 @@ class StackModel {
     void onJumpArrive(stack::TimeMs);
     void onLeave(stack::TimeMs);
     void promote(stack::TimeMs);
+    void updatePointerLens(stack::TimeMs);
     void setEnlarged(stack::TrackId, stack::TimeMs now);
 
     // interaction
@@ -1082,6 +1089,7 @@ class StackModel {
     bool pointerKnown_ = false, inside_ = false, buttonDown_ = false;
     stack::TrackId candidate_ = 0;           // the row under the pointer, waiting for its dwell
     stack::TimeMs enteredAt_ = 0, lastScrollAt_ = 0, captureEndAt_ = 0, leaveAt_ = stack::kNever;
+    double lensOffset_ = 0;
     stack::TrackId enlarged_ = 0, maximised_ = 0;
     stack::TimeMs enlargedSince_ = 0;
     bool focusOwns_ = false; // a focus change owns the enlarged row until the pointer moves
