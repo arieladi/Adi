@@ -24,6 +24,12 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — The 11 November late scanner publication sighting
+
+**For engine-win.** The named registry check passed 600 times against current main's Linux scanner at concurrency 12. Forced child scheduling on the historical process code reproduced the precise assertion: the child writes its valid packet and exits after the empty drain but before the exit observation, so the registry validator never runs. Applying the same timing to #509 let the check pass. The prior 200 full post-#509 suites remain in the 11 November entry. Today's additional full-suite stress exceeded the scratch harness's 20-second per-process budget during concurrent builds, so only the targeted current-main stress is counted here.
+
+No scanner code or PR. The original macOS libc++ occurrence had no state or packet trace, so its exact cause remains unverified. If it returns, please retain the helper status and the registry ticket/validator outcome.
+
 ## 2026-11-19 — DF-M60 (b) default-active VST3 shape handoff
 
 **PR requested** — branch `engine/vst3-effective-key-shape`, head `b1a9cee854cc87cc4c7265c7a9b05d7966c15cb8`, #651 parent `5500f46598e2544c35fea0bcd797ffc8452291dc`. Title **Preserve VST3 preparation when an active auxiliary bus is retapped**. Gate after #651 lands. Keep its per-bus adapter when the engine send/worker stack catches up.
