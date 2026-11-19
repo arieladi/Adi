@@ -207,6 +207,7 @@ struct ImageCut {
     std::int64_t first=0,last=0,cut=0,beforeTicks=0,afterTicks=0;
     std::int64_t fadeIn=0,fadeOut=0,rightOffsetTicks=0;
     std::optional<std::int64_t> rightOffsetNs;
+    bool rightBeforeEnd = true;
 };
 ImageCut calculateImageCut(Payload& image,TimePoint point,
                          const edit::TimeMap& time,double referenceRate) {
@@ -230,13 +231,30 @@ ImageCut calculateImageCut(Payload& image,TimePoint point,
     result.fadeOut=detail::signedInteger(old.at("fade_out_ticks"));
     if(result.fadeIn<0 || result.fadeOut<0)throw std::runtime_error("split needs valid existing fades");
     result.rightOffsetTicks=edit::addTime(detail::signedInteger(old.at("content_offset_ticks")),result.beforeTicks);
+    const auto& children = image.at("children");
+    std::optional<bool> beforePhysicalEnd;
     if(kind=="audio") {
         const auto* clock=playback(image);
         if(clock && !clock->at("content_offset_ns").is_null()) {
             const auto offset=sample(static_cast<double>(detail::signedInteger(clock->at("content_offset_ns")))*1e-9,referenceRate);
             const double cutSeconds=base==0?time.seconds(result.cut):static_cast<double>(result.cut)*1e-9;
             const auto passed=sample(cutSeconds,referenceRate)-sample(startSeconds(old,time),referenceRate);
-            result.rightOffsetNs=sampleNanos(edit::addTime(offset,passed),referenceRate);
+            const auto rightSample=edit::addTime(offset,passed);
+            result.rightOffsetNs=sampleNanos(rightSample,referenceRate);
+            const auto& sources=children.at("audio_clips");
+            if (old.at("loop_enabled")==0 && !sources.empty() && sources.front().at("warp_enabled")==0 &&
+                !clock->at("source_end_ns").is_null())
+                beforePhysicalEnd=rightSample < sample(
+                    static_cast<double>(detail::signedInteger(clock->at("source_end_ns")))*1e-9,
+                    referenceRate);
+        }
+    }
+    if (old.at("loop_enabled")==0) {
+        if (beforePhysicalEnd) {
+            result.rightBeforeEnd=*beforePhysicalEnd;
+        } else if (children.contains("clip_properties") && !children.at("clip_properties").empty()) {
+            const auto& marker=children.at("clip_properties").front().at("end_marker_ticks");
+            if (!marker.is_null()) result.rightBeforeEnd=result.rightOffsetTicks < detail::signedInteger(marker);
         }
     }
     return result;
@@ -252,6 +270,7 @@ void keepLeft(Payload& image,const ImageCut& cut) {
     row["fade_in_ticks"]=std::min(cut.fadeIn,cut.beforeTicks);
 }
 void keepRight(Payload& image,const ImageCut& cut) {
+    if (!cut.rightBeforeEnd) throw std::runtime_error("right clip must start before its source End");
     auto& row=image["row"];
     row[cut.position]=cut.cut;row[cut.length]=cut.last-cut.cut;row["fade_in_ticks"]=0;
     row["fade_out_ticks"]=std::min(cut.fadeOut,cut.afterTicks);
@@ -1045,7 +1064,7 @@ void resizeFrozenEnd(Payload& image,std::int64_t end,const edit::TimeMap& time,d
     const char* position=base==0?"pos_ticks":"pos_ns";
     const char* length=base==0?"length_ticks":"length_ns";
     const auto first=adi::detail::signedInteger(row.at(position));
-    if(end<first)throw std::runtime_error("end resize must not precede the anchored start");
+    if(end<=first)throw std::runtime_error("end resize must follow the anchored start");
     const auto origin=clip_edit::originTicks(row,time),lastTick=base==0?end:time.ticks(end);
     if(lastTick<origin)throw std::runtime_error("end resize has an invalid musical span");
     const auto ticks=lastTick-origin;
