@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <optional>
 
@@ -11,8 +13,147 @@ using namespace adi;
 namespace {
 int checks=0,failures=0;
 void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("FAIL %s\n",label);}}
+void observeLimiterReduction() {
+    test::TempDirectory temp("mix_document", "limiter-reduction");
+    std::string error;
+    auto doc = ui::ProjectDocument::open(temp.path() / "project.adi", true, device::withBuiltinDevices(), error);
+    if (!doc || !doc->addMixFunction(mix::Function::Limiter, 2)) {
+        check(false, "insert a real limiter for reduction observation");
+        return;
+    }
+    const auto limiter = [&]() -> std::optional<ui::DevicePanelData> {
+        doc->tick(0);
+        const auto publication = doc->parameterFeed().current();
+        const auto found = std::find_if(publication->begin(), publication->end(),
+            [](const auto& row) { return row.uid == "org.adidaw.mix.limiter"; });
+        if (found != publication->end()) return *found;
+        return std::nullopt;
+    };
+    const auto old = limiter();
+    check(old && old->available, "reduction source device is available");
+    if (!old || !old->available) return;
+    auto* instance = doc->session().instanceFor(old->id);
+    const auto source = instance ? device::limiterReductionSource(*instance) : nullptr;
+    check(source && !source->observed(), "new native limiter has no telemetry demand");
+    if (!source) return;
+    const auto render = [](device::DeviceInstance& target, std::uint64_t block, int offset, int frames,
+                           std::uint64_t revision = 1, bool exporting = false) {
+        std::array<float, 256> left{}, right{};
+        left.fill(1.5f); right.fill(-1.5f);
+        std::array<const float*, 2> input{left.data(), right.data()};
+        std::array<float*, 2> output{left.data(), right.data()};
+        engine::TransportInfo clock;
+        clock.playing = true;
+        clock.timelineSample = 48000;
+        clock.transportRevision = revision;
+        engine::NodeIo io;
+        io.in = input.data(); io.out = output.data();
+        io.channels = 2;
+        io.blockOffset = offset;
+        io.frames = frames;
+        io.transport = &clock;
+        io.renderBlock = block;
+        io.configuredLatency = target.latencySamples();
+        io.exporting = exporting;
+        target.process(io);
+    };
+    for (std::uint64_t block = 1; block <= 8; ++block) render(*instance, block, 0, 256);
+    check(!source->observed(), "ordinary audio keeps the telemetry gate inactive before any viewer");
+
+    auto first = doc->observeLimiterReduction(old->id, old->runtime);
+    const auto epoch = source->observationEpoch();
+    auto second = doc->observeLimiterReduction(old->id, old->runtime);
+    check(first && second && epoch != 0 && epoch == source->observationEpoch() &&
+          !first.read() && !second.read(), "two observers share a fresh capture without inherited audio");
+    render(*instance, 9, 0, 96);
+    const auto early = first.read();
+    render(*instance, 9, 96, 160);
+    const auto a = first.read(), b = second.read();
+    check(early && a && b && early->observedFrames == 96 &&
+          a->renderBlock == 9 && a->observedFrames == 256 && a->firstTimelineSample == 48000 &&
+          a->advancing && a->transportRevision == 1 && a->reduction.available &&
+          a->reduction.peakLoss > 0 && a->reduction.peakLoss >= early->reduction.peakLoss &&
+          a->reduction.peakLoss == b->reduction.peakLoss && b->observedFrames == a->observedFrames,
+          "both readers get the same actual peak accumulated across split callback segments");
+    render(*instance, 9, 160, 96, 2);
+    const auto discontinuity = second.read();
+    check(discontinuity && discontinuity->observedFrames == 96 &&
+          discontinuity->transportRevision == 2 && discontinuity->firstTimelineSample == 48160,
+          "a same-callback transport discontinuity starts a fresh segment group");
+    first.reset();
+    render(*instance, 10, 0, 256);
+    check(source->observationEpoch() == epoch && second.read() && second.read()->renderBlock == 10,
+          "one hidden view leaves the remaining subscription active");
+    second.reset();
+    render(*instance, 11, 0, 256);
+    check(!source->observed(), "the last hidden view turns off capture immediately");
+
+    auto held = doc->observeLimiterReduction(old->id, old->runtime);
+    check(held && source->observationEpoch() != epoch && !held.read(),
+          "reopening after the last hide starts empty");
+    if (a) source->publishSegment(epoch, *a);
+    render(*instance, 12, 0, 256, 1, true);
+    check(!held.read(), "in-flight old epochs and export callbacks cannot repopulate the live mailbox");
+    render(*instance, 13, 0, 256);
+    check(held.read() && held.read()->renderBlock == 13, "live source resumes after export without a stale reading");
+    check(doc->deviceAction("device.setEnabled", {{"id", old->id}, {"enabled", false}}) &&
+          !held && !held.read() && !source->observed() &&
+          !doc->observeLimiterReduction(old->id, old->runtime),
+          "graph bypass revokes held demand and refuses a fresh reader");
+    check(doc->deviceAction("device.setEnabled", {{"id", old->id}, {"enabled", true}}),
+          "graph bypass can be removed through the normal device route");
+    const auto enabled = limiter();
+    if (!enabled) return;
+    held = doc->observeLimiterReduction(enabled->id, enabled->runtime);
+    check(held && !held.read(), "enabling the graph device opens a fresh telemetry epoch");
+
+    check(doc->deviceAction("device.remove", {{"id", old->id}}) &&
+          doc->addMixFunction(mix::Function::Compressor, 3),
+          "remove a limiter and reuse its ID for a genuinely different function");
+    doc->tick(0);
+    const auto publication = doc->parameterFeed().current();
+    const auto foreign = std::find_if(publication->begin(), publication->end(),
+        [old](const auto& row) { return row.id == old->id && row.uid == "org.adidaw.mix.compressor"; });
+    check(foreign != publication->end() && !foreign->runtime.sameInstance(old->runtime) &&
+          !held && !held.read() && !source->observed(),
+          "retirement revokes held readers and reusing the numeric ID cannot revive them");
+    if (foreign == publication->end()) return;
+    check(!doc->observeLimiterReduction(foreign->id, old->runtime) &&
+          !doc->observeLimiterReduction(foreign->id, foreign->runtime),
+          "a reused ID accepts neither a stale runtime nor the non-limiter replacement");
+    check(doc->addMixFunction(mix::Function::Limiter, 3), "another native limiter can be observed independently");
+    const auto replacement = limiter();
+    check(replacement && !replacement->runtime.sameInstance(old->runtime),
+          "the second limiter has a distinct runtime identity");
+    if (!replacement) return;
+    auto fresh = doc->observeLimiterReduction(replacement->id, replacement->runtime);
+    held.reset();
+    auto* next = doc->session().instanceFor(replacement->id);
+    check(fresh && !fresh.read() && next && next != instance,
+          "the replacement owns an independent fresh subscription");
+    if (!next) return;
+    render(*next, 14, 0, 256);
+    check(fresh.read() && fresh.read()->renderBlock == 14,
+          "releasing a held stale lease leaves the replacement reading active");
+
+    const auto secondSource = device::limiterReductionSource(*next);
+    next->release();
+    check(!fresh && !fresh.read() && secondSource && !secondSource->observed(),
+          "driver release invalidates readers of the same retained runtime");
+    next->prepare(48000, 256);
+    auto rearmed = doc->observeLimiterReduction(replacement->id, replacement->runtime);
+    fresh.reset();
+    render(*next, 15, 0, 256);
+    check(rearmed && rearmed.read() && rearmed.read()->renderBlock == 15,
+          "reprepare requires a fresh lease and stale release cannot alter it");
+    doc.reset();
+    check(!rearmed && !rearmed.read() && secondSource && !secondSource->observed(),
+          "closing the document revokes even an externally held view lease");
+}
+
 }
 int main() {
+    observeLimiterReduction();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
     check(doc!=nullptr,"native function document opens");if(!doc)return 2;

@@ -70,7 +70,11 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
             if (!lifetime.expired()) analysisSources_.erase(source);
         });
 }
-ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
+ProjectDocument::~ProjectDocument() {
+    for (const auto& item : limiterReductionSources_)
+        if (const auto mailbox = item.second.mailbox.lock()) mailbox->revokeObservers();
+    analysis_->shutdown();
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {
@@ -223,7 +227,9 @@ StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
-        if (!session_.refresh(*store_)) {
+        const bool refreshed = session_.refresh(*store_);
+        refreshLimiterReductionSources();
+        if (!refreshed) {
             error_ = session_.error();
             return false;
         }
@@ -295,6 +301,9 @@ bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    if (!limiterReductionSources_.empty() &&
+        limiterReductionPublication_ != session_.graph().stats().published)
+        refreshLimiterReductionSources();
     std::vector<OpRequest> requests;
     parameterOps_.drain(captureNowMs(), requests);
     commitCaptured(requests);
@@ -302,6 +311,37 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
 }
 void ProjectDocument::setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices) {
     if (feed_.setDemand(consumer, devices)) feed_.publish(session_, realisedGeneration_);
+}
+device::DeviceInstance* ProjectDocument::limiterReductionTarget(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    const auto* entry = session_.entryFor(id);
+    if (!entry || entry->retired || entry->parked || entry->placeholder ||
+        entry->resolvedUid != "org.adidaw.mix.limiter") return nullptr;
+    auto* instance = session_.resolveDevice(expected);
+    if (!instance || instance != session_.instanceFor(id) || !instance->loaded() ||
+        session_.devices().nodeAt(entry->hostIndex).bypassed()) return nullptr;
+    return instance;
+}
+void ProjectDocument::refreshLimiterReductionSources() {
+    limiterReductionPublication_ = session_.graph().stats().published;
+    std::erase_if(limiterReductionSources_, [this](const auto& item) {
+        const auto& [id, source] = item;
+        const auto mailbox = source.mailbox.lock();
+        if (!mailbox || !mailbox->observed()) return true;
+        if (limiterReductionTarget(id, source.expected)) return false;
+        mailbox->revokeObservers();
+        return true;
+    });
+}
+mix::limiter::ReductionMailbox::Lease ProjectDocument::observeLimiterReduction(
+    std::int64_t id, const engine::DeviceRuntimeToken& expected) {
+    refreshLimiterReductionSources();
+    auto* target = limiterReductionTarget(id, expected);
+    if (!target) return {};
+    auto mailbox = device::limiterReductionSource(*target);
+    auto lease = mix::limiter::ReductionMailbox::observe(mailbox);
+    if (lease) limiterReductionSources_.insert_or_assign(id, ReductionSource{expected, mailbox});
+    return lease;
 }
 bool ProjectDocument::autoGainStage(bool lufs) {
     engine::GainStageOptions options;
@@ -776,6 +816,7 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     engineRate_ = rate;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
+    refreshLimiterReductionSources();
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }

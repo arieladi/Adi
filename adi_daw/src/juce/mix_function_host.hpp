@@ -3,7 +3,11 @@
 #include "adi/engine/session.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/mix/l_processing.hpp"
+namespace adi::mix::limiter { class ReductionMailbox; }
+
 namespace adi::device {
+// Message thread. Optional native Limiter capability, empty for other devices.
+[[nodiscard]] std::shared_ptr<mix::limiter::ReductionMailbox> limiterReductionSource(DeviceInstance&) noexcept;
 // Only a core actually linked into this build is available. Ordinary suite
 // VST3/CLAP instances are never relabelled as built-in function devices.
 [[nodiscard]] mix::Availability mixFunctionAvailability(mix::Function);

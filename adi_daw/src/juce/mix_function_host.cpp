@@ -4,11 +4,13 @@
 #include "adi/mix/eq/Backend.hpp"
 #include "adi/mix/limiter/DspEngine.h"
 #include "adi/mix/limiter/ControlMapping.h"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -226,17 +228,22 @@ public:
                 d.choiceLabels.push_back(paramText(d.id,static_cast<double>(step)/(d.stepCount-1)));
         }
     }
+    ~LimiterDevice() override { reduction_->setPrepared(false); }
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return !unavailable_.load(std::memory_order_acquire);}
+    [[nodiscard]] const std::shared_ptr<l::ReductionMailbox>& reductionSource() const noexcept { return reduction_; }
     void prepare(double rate,std::int32_t maximum) override {
         const ReactivationGate::Hold hold(gate_);
+        reduction_->setPrepared(false);
         refreshValues();
         if(!loaded()){prepared_=false;publishLatency(0);return;}
         backend_->prepare(rate,maximum,channels_,settings(cached_,offline_));
+        reduction_->setPrepared(!offline_);
         prepared_=everPrepared_=true;publishLatency(backend_->advertisedLatency());
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
+        reduction_->setPrepared(false);
         prepared_=false;backend_->release();
     }
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
@@ -273,8 +280,30 @@ public:
             }
             key[static_cast<std::size_t>(c)]=io.sidechain&&io.sidechain[c]?io.sidechain[c]+io.blockOffset:nullptr;
         }
-        backend_->process(audio.data(),io.sidechain?key.data():nullptr,io.frames,settings(cached_,io.exporting),
-                          io.renderBlock,io.configuredLatency);
+        const auto render = [&](l::BlockReduction* measured) {
+            backend_->process(audio.data(), io.sidechain ? key.data() : nullptr, io.frames,
+                              settings(cached_, io.exporting), io.renderBlock, io.configuredLatency, measured);
+        };
+        const auto observation = reduction_->observationEpoch();
+        if (observation == 0 || io.exporting) {
+            render(nullptr);
+            return;
+        }
+        l::ReductionFrame frame;
+        frame.renderBlock = io.renderBlock;
+        frame.observedFrames = static_cast<std::uint32_t>(io.frames);
+        if (io.transport) {
+            frame.transportRevision = io.transport->transportRevision;
+            frame.advancing = io.transport->playing;
+            frame.firstTimelineSample = io.transport->timelineSample;
+            if (frame.advancing) {
+                const auto offset = std::max(0, io.blockOffset);
+                frame.firstTimelineSample =
+                    std::min(frame.firstTimelineSample, std::numeric_limits<std::int64_t>::max() - offset) + offset;
+            }
+        }
+        render(&frame.reduction);
+        reduction_->publishSegment(observation, frame);
     }
     std::int32_t paramCount() const noexcept override {return full_?67:21;}
     const ParamDescriptor* paramAt(std::int32_t i) const noexcept override {
@@ -357,6 +386,7 @@ public:
                 if(continuation.size()!=2||continuation[0]!=1||!c::validContinuationWord(continuation[1]))return false;
                 const ReactivationGate::Hold hold(gate_);
                 unavailableState_=bytes;identity_.name=baseName_+" (Clip processing unavailable)";
+                reduction_->setPrepared(false);
                 prepared_=false;
                 if(!unavailable_.exchange(true,std::memory_order_acq_rel))
                     restartEpoch_.fetch_add(1,std::memory_order_release);
@@ -414,8 +444,13 @@ private:
     std::atomic<std::int32_t> latency_{0}; bool prepared_=false,everPrepared_=false;
     std::atomic<bool> unavailable_{false};std::vector<std::uint8_t> unavailableState_;
     Payload extra_=Payload::object();
+    const std::shared_ptr<l::ReductionMailbox> reduction_ = std::make_shared<l::ReductionMailbox>();
 };
 } // namespace
+std::shared_ptr<mix::limiter::ReductionMailbox> limiterReductionSource(DeviceInstance& instance) noexcept {
+    if (const auto* limiter = dynamic_cast<const LimiterDevice*>(&instance)) return limiter->reductionSource();
+    return {};
+}
 mix::Availability mixFunctionAvailability(mix::Function kind) {
     if(kind==mix::Function::Limiter || kind==mix::Function::Eq)return {true,{}};
     return {false,"This processing core is not integrated in this build yet"};
