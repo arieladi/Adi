@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, take-lane regressions reproduced (DF-E35)
+
+**MEASURED.** Strict Windows x64 native tests reproduced the main-row overlap fault on main `12aab48a` source. The snapshot omitted the lane and reused the edited clip and track nodes after a lane-only change. Arrangement geometry returned the silent take instead of the overlapping main-lane clip. The targeted probe had 20 checks and 10 expected failures. Controls verified that the playback accessor already excludes takes.
+
+The whole-track Freeze and Bounce in Place preparation defect is also confirmed at their native entry points. A render containing 0–6 seconds of exact main-lane PCM and one second of silence was refused after adding a silent take from 8 to 14 seconds. Four take cases reproduced the refusal across time bases and freeze scopes. The main-only controls prepared normally. An isolated two-file candidate made all eight cases prepare, with identical PCM hashes and unchanged project rows. It used the timeline accessor for Freeze and the main-lane filter for the Bounce extent query.
+
+**Waiting.** #677 is still open and the snapshot loan begins after it lands. The Window owns main-row geometry and paint filtering. The probes and range candidate are available as private evidence. CT-02 and CT-03 remain on the engine's transaction and input-clock contracts.
+
 ## 2026-11-19, SQLiteCpp pin ready for ABI validation (ADR-0248 d7)
 
 **PR requested for validation** — `engine-win/sqlitecpp-pin` at `e9af6572e607e62a224c33ecfe5711ea5c4ce041`, on main `12aab48a`. This branch changes only the dependency pin in `fetch_external.sh`. Win can carry the workflow hunk from `8a8f9a00` before running ADR-0024's full ABI matrix. The matrix is still required for landing.
