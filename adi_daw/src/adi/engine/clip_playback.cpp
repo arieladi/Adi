@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/warp_projection.hpp"
@@ -471,7 +472,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     if(tempo.events.empty()) tempo.events.push_back({0,120,0});
     if(!project->rows.audioClips.empty() && std::any_of(tempo.events.begin(),tempo.events.end(),[](const auto& e){return e.curve!=0;}))
         impl_->problems.push_back("tempo_map: TempoMap does not implement ramps; clip timing uses step tempos");
-    for(const auto& row:project->rows.clips) {
+    for(const auto& row:timelineClips(project->rows)) {
         if(row.kind!="audio") continue;
         const auto label="clips#"+std::to_string(row.id)+": ";
         try {

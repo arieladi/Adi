@@ -106,6 +106,8 @@ struct SessionSpec {
     std::optional<double> externalTempoBpm = std::nullopt;
     /// Export quality is independent of monitoring/performance-state suppression.
     bool exporting = false;
+    /// Processing without a realtime deadline, even at the normal quality.
+    bool offline = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -498,12 +500,15 @@ private:
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
+        std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
         SessionSpec spec;
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
+        [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
     MainLoudness mainLoudness_;

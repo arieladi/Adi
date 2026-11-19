@@ -317,7 +317,8 @@ StoreFileResult Store::collectAllAndSave() {
                     const auto staged=stage.path/"media.tmp";
                     fs::copy_file(source,staged);verify(staged);
                     files.owned.push_back(target);
-                    const auto result=media::publishFile(staged,target);
+                    const auto result = media::publishFile(staged, target, {},
+                                                           media::PublishPolicy::VerifiedCopyFallback);
                     if(result.status!=media::PublishStatus::published) {
                         files.owned.pop_back();
                         if(result.status!=media::PublishStatus::exists)throw std::runtime_error("publish media: "+result.error);

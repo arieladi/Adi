@@ -54,6 +54,7 @@ public:
     void add(const AutomationLaneProgram& lane, std::uint32_t paramId);
 
     void emit(EventList& out, std::int32_t frames) noexcept override;
+    void emitAtInput(EventList& out, std::int32_t frames, std::int32_t arrival) noexcept override;
 
     /// Events the list refused, since this binding was made.
     [[nodiscard]] std::uint64_t dropped() const noexcept { return dropped_.load(std::memory_order_relaxed); }

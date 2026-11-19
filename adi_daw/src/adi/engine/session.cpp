@@ -455,6 +455,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         ++stats_.placeholders;
         sessionProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
     } else {
+        inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
         ++stats_.loaded;
         syncRoute(e, *inst);
@@ -846,6 +847,11 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    for (const auto& event : timing->tempo.events)
+        timing->deviceClockChanges.emplace_back(loopSample(event.posTicks), event.posTicks);
+    for (const auto& meter : timing->signatures)
+        timing->deviceClockChanges.emplace_back(loopSample(meter.posTicks), meter.posTicks);
+    std::sort(timing->deviceClockChanges.begin(), timing->deviceClockChanges.end());
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
     try {
@@ -1814,6 +1820,62 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     return info;
 }
 
+double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
+    const double seconds = static_cast<double>(sample) / sampleRate;
+    if (sample <= 0)
+        return seconds * tempo.bpmAt(0) / 60.0;
+    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
+    if (seconds >= tempo.ticksToSeconds(maximumTick))
+        return static_cast<double>(maximumTick) / ppq;
+    const auto wholeTick = tempo.secondsToTicks(seconds);
+    const double remainder = seconds - tempo.ticksToSeconds(wholeTick);
+    return static_cast<double>(wholeTick) / ppq + remainder * tempo.bpmAt(wholeTick) / 60.0;
+}
+
+DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
+    DeviceTransport result;
+    result.sample = sample;
+    result.quarterNotes = quartersAt(sample);
+    const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
+        [](std::int64_t value, const auto& change) { return value < change.first; });
+    if (next != deviceClockChanges.end()) result.nextChange = next->first;
+    auto tick = tempo.secondsToTicks(static_cast<double>(sample) / sampleRate);
+    if (next != deviceClockChanges.begin()) tick = std::max(tick, std::prev(next)->second);
+    result.bpm = tempo.bpmAt(tick);
+    const auto& transport = session->transport_;
+    result.playing = transport.playing();
+    result.looping = transport.looping();
+    if (result.looping) {
+        result.loopBegin = transport.loopBegin();
+        result.loopEnd = transport.loopEnd();
+        result.loopBeginQuarterNotes = quartersAt(result.loopBegin);
+        result.loopEndQuarterNotes = quartersAt(result.loopEnd);
+    }
+
+    std::int64_t start = 0;
+    std::int64_t barsBefore = 0;
+    std::int64_t barTicks = textproj::kWhole;
+    for (const auto& meter : signatures) {
+        if (meter.posTicks > tick) break;
+        const auto span = meter.posTicks - start;
+        barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
+        start = meter.posTicks;
+        result.numerator = static_cast<int>(meter.numerator);
+        result.denominator = static_cast<int>(meter.denominator);
+        barTicks = textproj::kWhole * meter.numerator / meter.denominator;
+    }
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
+    const double startQuarters = static_cast<double>(start) / ppq;
+    const double barQuarters = static_cast<double>(barTicks) / ppq;
+    const auto barsIntoMeter = sample < 0
+        ? static_cast<std::int64_t>(std::floor(result.quarterNotes / barQuarters))
+        : (tick - start) / barTicks;
+    result.bar = barsBefore + barsIntoMeter;
+    result.barStart = startQuarters + static_cast<double>(barsIntoMeter) * barQuarters;
+    return result;
+}
+
 void Session::TimingView::applyLoop() const noexcept {
     const bool sameLoop = session->loopApplied_ && session->loopOn_ == settings.loopEnabled &&
                           session->loopStartTick_ == settings.loopStartTicks && session->loopEndTick_ == settings.loopEndTicks;
@@ -1830,6 +1892,11 @@ const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     const StripLaneBindings* overlay=gestureAudio?gestureAudio->apply(gestureGeneration):nullptr;
     applyLoop();
     blockInfo=at(session->transport_);
+    blockInfo.deviceClock = &session->transport_;
+    blockInfo.deviceClockContext = this;
+    blockInfo.devicePosition = [](const void* context, std::int64_t sample) noexcept {
+        return static_cast<const TimingView*>(context)->deviceAt(sample);
+    };
     if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;
 }
@@ -1906,17 +1973,7 @@ std::int64_t Session::RenderBlock::tickAtSample(std::int64_t sample) const noexc
 }
 double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
-    if (!timing || sample <= 0) return 0;
-    const double seconds = static_cast<double>(sample) / timing->sampleRate;
-    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
-    constexpr double ppq = static_cast<double>(textproj::kPPQ);
-    if (seconds >= timing->tempo.ticksToSeconds(maximumTick))
-        return static_cast<double>(maximumTick) / ppq;
-    const auto wholeTick = timing->tempo.secondsToTicks(seconds);
-    // Reuse the one TempoMap inverse, then retain its sub-tick remainder.
-    // Dividing only the truncated tick accumulates drift over small loop spans.
-    const double remainder = seconds - timing->tempo.ticksToSeconds(wholeTick);
-    return static_cast<double>(wholeTick) / ppq + remainder * timing->tempo.bpmAt(wholeTick) / 60.0;
+    return timing && sample > 0 ? timing->quartersAt(sample) : 0;
 }
 bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
     if (sample < 0) return false;
