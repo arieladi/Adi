@@ -209,6 +209,79 @@ void collisionPublication() {
     check(fs::file_size(validOriginal)==8 && !fs::exists(overflow.output),
           "NI increment overflow leaves the shorter existing delivery untouched");
 }
+void deliveryMediaVerification() {
+    test::TempDirectory dir{"ni_stems", "delivery-media"};
+    const auto wave = dir.path() / "source.wav";
+    const auto writeWave = [&](float sample) {
+        std::array<float, 256> pcm;
+        pcm.fill(sample);
+        audio::WavWriter writer(wave, 48000, 2, audio::WavFormat::Float32);
+        writer.write(pcm.data(), 128);
+        writer.close();
+    };
+    writeWave(0.25f);
+    const auto original = media::blake3File(wave).hex;
+    StoreError error{};
+    auto store = Store::createEmpty(dir.path() / "source.adi", error);
+    if (!store) throw std::runtime_error("cannot create NI media fixture");
+    store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'NI Verify',48000);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Source',0),(9,'master','Main',1);"
+        "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,2666667);");
+    SQLite::Statement mediaRow(store->db(),
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,?,'source.wav','wav')");
+    mediaRow.bind(1, original);
+    mediaRow.exec();
+    store->db().exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,128)");
+
+    render::Job job;
+    job.project = store->path();
+    job.directory = dir.path();
+    job.nameTemplate = "private-main";
+    job.beginSample = 0;
+    job.endSample = 64;
+    job.session = {2, 48000, 32};
+    auto main = render::renderWav(job, {});
+    job.nameTemplate = "private-stem";
+    job.source.trackId = 1;
+    auto stem = render::renderWav(job, {});
+    check(main.state == render::JobState::Completed && stem.state == render::JobState::Completed,
+          "Main and stem capture actual offline WAV input identity");
+    render::Result delivery;
+    delivery.output = dir.path() / "delivery.stem.mp4";
+    render::detail::retainIntermediateMedia(delivery, main);
+    render::detail::retainIntermediateMedia(delivery, stem);
+    const auto& captured = delivery.mediaVerification.value();
+    check(captured.identities.size() == 1 && captured.startComplete && !captured.publicationVerified &&
+              !captured.identities.front().blake3BeforePublication,
+          "the private WAV's check does not mark the final delivery verified");
+
+    // The shared final commit gate is independent of platform AAC support.
+    const auto stage = dir.path() / "encoded.bin";
+    fs::copy_file(stem.output, stage);
+    const auto outputHash = media::blake3File(stage).hex;
+    writeWave(0.125f);
+    const auto altered = media::blake3File(wave).hex;
+    refuses([&] {render::detail::publishVerifiedOutput(stage, delivery, {}, "already exists");},
+            "a same-size input rewrite after all WAV renders refuses the final delivery");
+    check(!fs::exists(delivery.output) && fs::exists(stage) && !delivery.publication &&
+              !captured.publicationVerified && captured.identities.front().blake3BeforePublication == altered,
+          "failed final verification leaves staged and source bytes intact and reports both digests");
+    SQLite::Statement replacement(store->db(), "UPDATE media_files SET hash_blake3=? WHERE id=1");
+    replacement.bind(1, altered);
+    replacement.exec();
+    job.nameTemplate = "changed-stem";
+    auto changed = render::renderWav(job, {});
+    check(changed.state == render::JobState::Completed, "independent WAV can validly read the changed source");
+    refuses([&] {render::detail::retainIntermediateMedia(delivery, changed);},
+            "individually verified stems cannot mix different bytes in one delivery");
+    writeWave(0.25f);
+    render::detail::publishVerifiedOutput(stage, delivery, {}, "already exists");
+    check(delivery.state == render::JobState::Completed && delivery.publication && captured.publicationVerified &&
+              media::blake3File(delivery.output).hex == outputHash && !fs::exists(stage),
+          "unchanged inputs complete the same checked exclusive delivery path");
+}
+
 void integration() {
     if (!audio::aacCodecAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
@@ -501,6 +574,7 @@ int main() {
         metadata();
         normalizationRefusal();
         collisionPublication();
+        deliveryMediaVerification();
         integration();
     } catch (const std::exception &error) {
         check(false, error.what());

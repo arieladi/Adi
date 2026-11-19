@@ -89,6 +89,7 @@ struct MediaReference {
     std::string storedBlake3;
     // Null means the legacy row does not contain a comparable 64-digit digest.
     std::optional<bool> matchesStored{};
+    friend bool operator==(const MediaReference&, const MediaReference&) = default;
 };
 struct MediaIdentity {
     std::filesystem::path path;
@@ -119,8 +120,8 @@ struct Result {
     // NI's actual supplied stems, in stream order; unused silent slots have no
     // project source. Main is snapshot above. All share its revision and range.
     std::vector<RenderSnapshot> stemSnapshots{};
-    // WAV acceptance; absent means no verification report (including NI's final
-    // container). Empty + both flags true means no external clip inputs.
+    // External input verification for the final WAV or NI delivery. Empty
+    // identities plus both flags true means no external clip inputs.
     std::optional<MediaVerification> mediaVerification{};
     // A private staging directory could not be completely removed. Delivery
     // already committed, if any, and the primary state and error still stand.
@@ -146,7 +147,7 @@ struct RunReport {
 // Caller-owned serialization/persistence; no sidecar is written by the queue.
 // May throw (allocation, invalid UTF-8). Never changes queue or output state.
 // Version 1 captures requested values plus available resolved revision/results;
-// external clip-media identities are captured by WAV jobs when available.
+// external clip-media identities are captured when available.
 [[nodiscard]] std::string serializeRunManifest(const RunReport&);
 // Strict brace expansion, {{ / }} for literals; returns one portable filename
 // component without an extension. Unknown/malformed tokens and empty names throw.
@@ -177,7 +178,11 @@ struct Control {
                                     JobId = 0, std::uint64_t counter = 1);
 void validateNiStems(const Job&);
 namespace detail {
+struct Cancelled {};
 void discardStage(std::filesystem::path&&, std::optional<StageCleanupFailure>&) noexcept;
+void retainIntermediateMedia(Result& delivery, Result& intermediate);
+void publishVerifiedOutput(const std::filesystem::path& stage, Result&, const Control&,
+                           const char* collisionMessage);
 // Select once before rendering/encoding the final delivery. Increment inserts
 // " (2)", " (3)", ... before the complete suffix. Never renumbers at publication.
 // The caller sets result.output to its original complete filename first.

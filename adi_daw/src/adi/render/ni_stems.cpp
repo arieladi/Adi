@@ -15,7 +15,7 @@
 namespace adi::render {
 namespace fs = std::filesystem;
 namespace {
-struct Cancelled {};
+using detail::Cancelled;
 void tick(const Control &control) {
     if (control.stop.stop_requested())
         throw Cancelled{};
@@ -146,6 +146,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
             throw std::runtime_error(rendered.error);
         if (!rendered.snapshot)
             throw std::runtime_error("NI Main render has no captured project snapshot");
+        detail::retainIntermediateMedia(result, rendered);
         result.snapshot = std::move(rendered.snapshot);
         result.framesWritten = rendered.framesWritten;
         result.output = stage.path.parent_path() / rendered.output.filename();
@@ -183,6 +184,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
                     rendered.snapshot->sampleRate != result.snapshot->sampleRate ||
                     rendered.snapshot->regionId != result.snapshot->regionId)
                     throw std::runtime_error("NI Stems project snapshots diverged");
+                detail::retainIntermediateMedia(result, rendered);
                 result.stemSnapshots.push_back(std::move(*rendered.snapshot));
                 wave = rendered.output;
                 labels.push_back({ni.stems[index].name.empty() ? "Stem " + std::to_string(index + 1)
@@ -209,7 +211,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         audio::writeAacMovie(output, tracks, audio::makeStemManifest(labels), [&] { tick(control); });
         tick(control);
-        detail::publishOutput(output, result, control.publicationHooks, "NI Stems destination already exists");
+        detail::publishVerifiedOutput(output, result, control, "NI Stems destination already exists");
     } catch (const Cancelled &) {
         result.state = JobState::Cancelled;
     } catch (const std::exception &error) {

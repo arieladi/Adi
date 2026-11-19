@@ -147,7 +147,7 @@ were read, not that a file was published. No project snapshot is made at enqueue
 job values, run membership, per-job revision/names and publication retain their
 four separate ownership moments.
 
-These are the warning/reporting, journal-revision and WAV external-clip input
+These are the warning/reporting, journal-revision and external-clip input
 slices of EX-07/EX-01, not their full provenance or collision contracts. Hashing
 is an endpoint comparison, not a locked byte snapshot: it cannot rule out a
 write-and-restore between checks, a preparation-time source race, or a change
@@ -159,12 +159,13 @@ or unstable identities are not covered by the local filesystem regression tests.
 Plugin-owned samples/impulses and other loader-private external files are outside
 the source view. Embedded clip audio already requires extraction in ClipPlayback.
 
-NI's internal WAV renders receive the same per-render guard, but the final NI
-container does not yet aggregate one shared media baseline or recheck it after
-all AAC work. Its `media_identities` and `media_verification` remain null rather
-than claiming final-container verification. Each internal render currently hashes
-its own unique files; a shared NI-wide baseline/recheck is separate work.
-Rendered-output hashes, codec version, cleanup-failure reporting, run
+NI takes its delivery-wide baseline from the Main render's start hashes. Each
+supplied stem must report the same file identities, bytes and clip references
+from the copied project. The final container checks that baseline again after
+AAC and container assembly, immediately before exclusive publication. The
+reported end hashes belong to that final check. Each intermediate WAV also
+retains its ordinary input checks.
+Rendered-output hashes, codec version, run
 timestamps/identity, and durable manifest storage are also not captured. The
 journal head identifies row history independently of measured media bytes.
 Existing no-clobber publication and volume-native case behavior

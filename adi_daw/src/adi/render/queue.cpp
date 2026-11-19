@@ -104,7 +104,7 @@ void resolveRegion(Job& job, const rows::Model& model, const engine::TempoMap& t
     if (job.endSample<=job.beginSample) throw std::invalid_argument("export region is shorter than one output sample");
     names.region=region->name;
 }
-struct Cancelled {};
+using detail::Cancelled;
 void cancellation(const Control& c) { if (c.stop.stop_requested()) throw Cancelled{}; }
 std::optional<std::string> comparableHash(std::string hash) {
     if(hash.size()!=64)return std::nullopt;
@@ -159,6 +159,7 @@ void captureMedia(const engine::ClipPlayback& playback,MediaVerification& report
     report.startComplete=true;
 }
 void verifyMedia(MediaVerification& report,const Control& control) {
+    report.publicationVerified = false;
     std::map<fs::path,media::FileIdentity> selectedPaths;
     for(auto& identity:report.identities) {
         identity.blake3BeforePublication=hashMedia(identity.path,control);
@@ -271,6 +272,36 @@ void detail::discardStage(fs::path&& directory, std::optional<StageCleanupFailur
         error = std::make_error_code(std::errc::io_error);
     }
     if (error) failure.emplace(StageCleanupFailure{std::move(directory), error});
+}
+
+void detail::retainIntermediateMedia(Result& delivery, Result& intermediate) {
+    if (!intermediate.mediaVerification || !intermediate.mediaVerification->startComplete ||
+        !intermediate.mediaVerification->publicationVerified)
+        throw std::runtime_error("NI intermediate render has no complete media verification");
+    auto& observed = *intermediate.mediaVerification;
+    if (!delivery.mediaVerification) {
+        auto& baseline = delivery.mediaVerification.emplace(std::move(observed));
+        // An intermediate WAV's check is not evidence that the final container
+        // is ready to publish. Keep only the start evidence at this point.
+        baseline.publicationVerified = false;
+        for (auto& identity : baseline.identities) identity.blake3BeforePublication.reset();
+        return;
+    }
+    const auto& baseline = delivery.mediaVerification->identities;
+    const auto sameInput = [](const MediaIdentity& original, const MediaIdentity& current) {
+        return original.path == current.path && original.nativeIdentity == current.nativeIdentity &&
+            original.blake3AtStart == current.blake3AtStart && original.references == current.references;
+    };
+    if (!std::equal(baseline.begin(), baseline.end(), observed.identities.begin(), observed.identities.end(), sameInput))
+        throw std::runtime_error("NI Stems input media changed between renders");
+}
+
+void detail::publishVerifiedOutput(const fs::path& stage, Result& result, const Control& control,
+                                   const char* collisionMessage) {
+    if (!result.mediaVerification || !result.mediaVerification->startComplete)
+        throw std::runtime_error("export has no complete input media capture");
+    verifyMedia(*result.mediaVerification, control);
+    publishOutput(stage, result, control.publicationHooks, collisionMessage);
 }
 
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
@@ -463,8 +494,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         });
         else writer->close();
         cancellation(control);
-        verifyMedia(*result.mediaVerification,control);
-        detail::publishOutput(staged, result, control.publicationHooks, "export destination already exists");
+        detail::publishVerifiedOutput(staged, result, control, "export destination already exists");
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
