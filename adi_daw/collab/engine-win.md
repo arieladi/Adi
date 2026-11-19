@@ -10,6 +10,16 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, Windows publication and cross-volume recording (DF-E32 a/b)
+
+**PR requested** — `engine-win/file-publication-reliability` at `d90479e48fe6165546e2f85eb91af944917af547` on main `12aab48a`. Closed-stage sync and exclusive rename share seven Windows retries for native errors 5, 32 and 33. Both verify the stage identity and ordinary file type before each attempt. One successful flush covers the rename retries. AtomicOnly keeps its existing exclusive-publication policy.
+
+Recording copies the captured bytes into an owned `.adi-media-*` stage beneath the project's audio folder. The same-volume publication then commits one undo step. The actual two-volume case reproduced the cross-volume refusal before the fix. After the fix, the native move control still refused a direct cross-volume rename, and the recording attached, played byte-exact PCM through Session, and survived Undo and Redo.
+
+Final MSVC x64 `/W4 /WX` build ran eight suites and 802 checks, plus 54 checks on the separate physical-volume run. Two optional link fixtures lacked symlink privilege. POSIX execution is pending. The retry rule is in ENGINE-PUBLICATION-RETRIES.md for win to carry beside DF-E19 and EX-07 in PLAN.
+
+The SQLiteCpp 3.4.0 pin is already on `engine-win/sqlitecpp-wal-reset-fix`, with its Windows receipt. The ABI matrix remains pending and win owns the workflow hunk. DF-E35 is waiting for #677 and the snapshot loan.
+
 ## 2026-11-19, background plug-in catalogue service (N58, DF-W34)
 
 **PR requested** — `engine-win/scanner-service` at `93d91ff0b057ccebeff6077eb55f0e960012a2e1`. Queue after the DF-E31 scanner family at `5c2e8423`. Based on main `12aab48a` through that family. Six files in the N58 change, with no Window-owned source edits.
