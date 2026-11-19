@@ -5,7 +5,7 @@
 #include <memory>
 
 namespace adi::mix::eq_chain {
-enum class OwnerMode : std::uint8_t { Threaded, Manual };
+enum class OwnerMode : std::uint8_t { Threaded, Manual, Offline };
 enum class BackendFailure : std::uint8_t { None, WorkerStart, OwnerService };
 struct BackendStatus {
     bool prepared = false, workerStarted = false, ownerBusy = false;
@@ -23,6 +23,8 @@ struct BackendStatus {
 // pumpMainThread and stopped prepare/release/destruction. The lazy worker is the
 // sole serviceConfiguration caller; Manual mode makes that owner pass explicit
 // for deterministic component drivers. Main never reads Core::pendingPlan.
+// Offline mode has no worker: its serialized non-realtime render caller requests
+// and services configuration before beginning each segment. Never use it live.
 class Backend final {
   public:
     explicit Backend(OwnerMode = OwnerMode::Threaded);
