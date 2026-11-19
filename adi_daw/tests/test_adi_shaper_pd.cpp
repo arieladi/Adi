@@ -88,6 +88,20 @@ void modulationPd(bool filterOn, bool liquidOn, bool driveOn = false, bool crush
         for (int j = 0; j < 8; ++j)
             send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)),
                  80.f - 7.f * static_cast<float>(j));
+        if (source == Stage::Width) {
+            send(Shaper::WidthBands, 3);
+            for (const auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::followerParam(band, Shaper::FollowerOn), 1);
+                send(Shaper::followerParam(band, Shaper::FollowerMode), band == mid ? 1.f : 0.f);
+                send(Shaper::followerParam(band, Shaper::FollowerAmount), 70);
+                send(Shaper::followerParam(band, Shaper::FollowerDepth), band == mid ? 2.f : 1.f);
+                send(Shaper::followerParam(band, Shaper::FollowerOffset), 54);
+                send(Shaper::followerParam(band, Shaper::FollowerThreshold), 2);
+                send(Shaper::followerParam(band, Shaper::FollowerAttack), 25);
+                send(Shaper::followerParam(band, Shaper::FollowerHold), 7);
+                send(Shaper::followerParam(band, Shaper::FollowerRelease), 43);
+            }
+        }
         if (source >= Stage::Pitch) {
             const auto start = source == Stage::Pitch ? Shaper::PitchOn : source == Stage::Noise ? Shaper::NoiseOn : Shaper::ReverbOn;
             send(start, 1);
@@ -447,6 +461,20 @@ int main() try {
     check(device->loadState("state", reversed), "open project with stored reverse order");
     for (int i = 0; i < 11; ++i)
         check(device->getParam(std::to_string(716 + i)).real == 108 - 10 * i, "all eleven ranks retain exact integer values");
+    auto oldOrderState = adi::Payload::from_cbor(reversed);
+    for (int id = 727; id <= count; ++id) oldOrderState.at("params").erase(std::to_string(id));
+    set(*device, 727, 1);
+    set(*device, 736, 1);
+    set(*device, 745, 1);
+    set(*device, 753, .83);
+    const auto followerState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", followerState) && device->getParam("727").real == 1 &&
+          device->getParam("736").real == 1 && device->getParam("745").real == 1 &&
+          std::abs(device->getParam("753").real - 83) < 1e-4, "all follower bands and the last control persist");
+    check(device->loadState("state", adi::Payload::to_cbor(oldOrderState)) &&
+          device->getParam("727").real == 0 && device->getParam("736").real == 0 && device->getParam("745").real == 0 &&
+          std::abs(device->getParam("753").real - 20) < 1e-4, "legacy order projects restore disabled follower defaults");
     check(device->loadState("state", legacySourceState), "import legacy project into the already reordered rack");
     for (int i = 0; i < 11; ++i)
         check(device->getParam(std::to_string(716 + i)).real == 8 + 10 * i, "absent rank keys restore the legacy path");
@@ -462,6 +490,7 @@ int main() try {
     using Stage = adi::dsp::AdiShaper::Stage;
     for (auto source : {Stage::Pitch, Stage::Noise, Stage::Reverb})
         modulationPd(false, false, false, false, source);
+    modulationPd(false, false, false, false, Stage::Width);
     timePd();
     orderPd(false);
     orderPd(true);

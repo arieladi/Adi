@@ -2,6 +2,7 @@
 #include "adi/dsp/adi_shaper.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numbers>
 
 namespace adi::dsp {
@@ -90,6 +91,10 @@ void AdiShaper::prepareStages(double sampleRate) noexcept {
     historyQuarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
+    for (auto& follower : widthFollowers_) {
+        follower.updateTimes(sampleRate);
+        follower.reset();
+    }
     for (auto& liquid : liquids_) (void)liquid.prepare(sampleRate);
     for (auto& drive : drives_) drive.prepare(sampleRate);
     for (auto& crusher : crush_) (void)crusher.prepare(sampleRate);
@@ -303,7 +308,72 @@ void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
     const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
     for (std::size_t i = 0; i < band.primary.points.size(); ++i)
         band.heldGains[i] = gain(kind, band.primary.points[i], band.blend);
-    band.active = band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral);
+    band.active = band.followWidth || (band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral));
+}
+
+void AdiShaper::WidthFollower::reset() noexcept {
+    envelope = 0;
+    remaining = 0;
+}
+
+void AdiShaper::WidthFollower::updateTimes(double rate) noexcept {
+    const double a = attack;
+    const double attackSeconds = .000005 + (.1 - .000005) * a * a * a;
+    rise = -std::expm1(-1.0 / (rate * attackSeconds));
+    const double frames = std::round(rate * .5 * hold * hold);
+    holdFrames = static_cast<std::uint32_t>(std::min(frames, static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
+    remaining = std::min(remaining, holdFrames);
+
+    // ADI interpolates log duration between the measured 48 kHz decay constants.
+    struct Anchor { double control, ms; };
+    constexpr std::array<Anchor, 12> anchors{{
+        {0, 5}, {.05, 18.923}, {.1, 36.418}, {.15, 58.360}, {.2, 85.82}, {.25, 120.3},
+        {.375, 249.635}, {.5, 477.44}, {.625, 875.978}, {.75, 1588.7}, {.875, 2818.788}, {1, 5065.3}
+    }};
+    const auto next = std::lower_bound(anchors.begin() + 1, anchors.end(), release,
+        [](const Anchor& anchor, float control) { return anchor.control < control; });
+    const auto& previous = *(next - 1);
+    const double t = (release - previous.control) / (next->control - previous.control);
+    const double ms = previous.ms * std::pow(next->ms / previous.ms, t);
+    fall = std::exp(-1000.0 / (rate * ms));
+}
+
+void AdiShaper::WidthFollower::set(FollowerControl control, float value, double rate) noexcept {
+    const float unit = std::clamp(value, 0.f, 100.f) * .01f;
+    switch (control) {
+    case FollowerMode: multiply = value >= .5f; break;
+    case FollowerAmount: amount = unit; break;
+    case FollowerDepth: depth = static_cast<int>(std::round(std::clamp(value, 0.f, 2.f))); break;
+    case FollowerOffset: offset = 4.f * (unit - .5f); return;
+    case FollowerThreshold: threshold = unit; return;
+    case FollowerAttack: case FollowerHold: case FollowerRelease: {
+        auto& setting = control == FollowerAttack ? attack : control == FollowerHold ? hold : release;
+        if (setting != unit) {
+            setting = unit;
+            updateTimes(rate);
+        }
+        return;
+    }
+    case FollowerOn: return;
+    }
+    scale = static_cast<float>(2 << depth) * (multiply ? amount : 2.f * amount - 1.f);
+}
+
+float AdiShaper::WidthFollower::width(float left, float right, float baseWidth) noexcept {
+    const float peak = std::max(std::abs(left), std::abs(right));
+    const double input = std::isfinite(peak) && peak >= threshold ? peak : 0.0;
+    if (input >= envelope) {
+        envelope += rise * (input - envelope);
+        remaining = holdFrames;
+    } else if (remaining) {
+        --remaining;
+    } else {
+        envelope = std::max(input, envelope * fall);
+        if (envelope < 1.e-30) envelope = 0;
+    }
+    const auto modulation = static_cast<float>(envelope) * scale;
+    const float combined = multiply ? baseWidth * modulation : baseWidth + 2.f * modulation;
+    return std::clamp(combined + offset, 0.f, 2.f);
 }
 
 void AdiShaper::updateActivity(StageData& stage) noexcept {
@@ -497,6 +567,26 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= WidthFollowerLow) {
+        const auto local = id - WidthFollowerLow;
+        const auto index = static_cast<std::size_t>(local / followerParameterCount);
+        const auto control = static_cast<FollowerControl>(local % followerParameterCount);
+        auto& follower = widthFollowers_[index];
+        if (control == FollowerOn) {
+            auto& stage = stages_[static_cast<std::size_t>(Stage::Width)];
+            auto& band = stage.bands[index];
+            const bool enabled = value >= .5f;
+            if (band.followWidth != enabled) {
+                band.followWidth = enabled;
+                follower.reset();
+                updateBand(Stage::Width, band);
+                updateActivity(stage);
+            }
+        } else {
+            follower.set(control, value, sampleRate_);
+        }
+        return;
+    }
     if (id >= VolumeOrder) {
         const auto rank = static_cast<std::uint8_t>(std::round(std::clamp(value, 0.f, 127.f)));
         auto& current = ranks_[static_cast<std::size_t>(id - VolumeOrder)];
@@ -527,7 +617,10 @@ void AdiShaper::set(Param id, float value) noexcept {
     const auto local = index % stageParameterCount;
     if (local < stageHeaderSize) {
         if (local == 0) {
-            layout(stage, static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f))));
+            const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
+            if (kind == Stage::Width && selected != stage.layout)
+                for (auto& follower : widthFollowers_) follower.reset();
+            layout(stage, selected);
             return;
         }
         else if (local == 1) stage.lowHz = std::clamp(value, 20.0f, 20000.0f);
@@ -626,6 +719,13 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             }
         } else {
             Gain g;
+            if constexpr (kind == Stage::Width) {
+                if (band.followWidth) {
+                    const float width = widthFollowers_[index].width(l, r, band.primary.at(p));
+                    applyGain(gain(kind, width, band.blend), l, r);
+                    return;
+                }
+            }
             if (band.primary.constant) g = band.heldGains[0];
             else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
             else g = gain(kind, band.primary.at(p), band.blend);

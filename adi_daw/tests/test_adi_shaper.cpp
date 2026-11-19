@@ -19,12 +19,13 @@ static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == S
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::DriveOn == 286);
 static_assert(Shaper::CrushOn == 340 && Shaper::TimeOn == 415 && Shaper::PitchOn == 463);
-static_assert(Shaper::NoiseOn == 535 && Shaper::ReverbOn == 625 && Shaper::VolumeOrder == 715 && Shaper::Count == 726);
+static_assert(Shaper::NoiseOn == 535 && Shaper::ReverbOn == 625 && Shaper::VolumeOrder == 715 && Shaper::WidthFollowerLow == 726);
 static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::PitchOn);
 static_assert(Shaper::modParam(Stage::Pitch, Band::High, Shaper::Secondary8) + 1 == Shaper::NoiseOn);
 static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::ReverbOn);
 static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::VolumeOrder);
-static_assert(Shaper::orderParam(Stage::Reverb) + 1 == Shaper::Count);
+static_assert(Shaper::orderParam(Stage::Reverb) + 1 == Shaper::WidthFollowerLow);
+static_assert(Shaper::followerParam(Band::High, Shaper::FollowerRelease) + 1 == Shaper::Count && Shaper::Count == 753);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::TimeOn);
 int failures = 0;
@@ -879,6 +880,145 @@ void historyThroughReorder() {
     check(left[239] == .25f && right[239] == -.125f,
           "moving Time retains the marker recorded under the old upstream gain and sends it through the new downstream gain");
 }
+
+void setFollower(Shaper& rack, Band band, Shaper::FollowerControl control, float value) {
+    rack.set(Shaper::followerParam(band, control), value);
+}
+
+void followerLevels() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 50);
+    auto set = [&](Shaper::FollowerControl id, float value) { setFollower(rack, Band::Mid, id, value); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    auto measure = [&](float left, float right) {
+        std::array<float, 4096> l, r;
+        l.fill(left);
+        r.fill(right);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+        return (l.back() - r.back()) / (left - right);
+    };
+    for (const auto& pair : {std::array{-.2f,.02f}, std::array{.02f,-.2f}, std::array{.15f,-.15f},
+                             std::array{-.03f,-.09f}, std::array{.01f,.35f}}) {
+        const float e = std::max(std::abs(pair[0]), std::abs(pair[1]));
+        check(near(measure(pair[0], pair[1]), .5f + 2.f * e), "Width detects the larger absolute channel level");
+    }
+    set(Shaper::FollowerDepth, 1);
+    check(near(measure(.11f,.09f), .94), "second Depth setting doubles the measured positive modulation");
+    set(Shaper::FollowerDepth, 2);
+    check(near(measure(.11f,.09f), 1.38), "third Depth setting quadruples the measured modulation");
+    set(Shaper::FollowerThreshold, 25);
+    check(near(measure(.21f,.19f), .5, 1e-4) && near(measure(.41f,.39f), 2.0, 1e-5),
+          "threshold gates quieter plateaus and larger peaks can saturate the width");
+    set(Shaper::FollowerThreshold, 0);
+    set(Shaper::FollowerDepth, 0);
+    set(Shaper::FollowerAmount, 25);
+    check(near(measure(.21f,.19f), .08, 1e-5), "negative Add amount narrows the stereo signal");
+    set(Shaper::FollowerMode, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerOffset, 75);
+    check(near(measure(-.2f,.02f), 1.15), "Multiply uses a unipolar amount and applies the offset afterwards");
+    rack.set(Shaper::MasterMix, 50);
+    rack.set(Shaper::bandParam(Stage::Width, Band::Mid, Shaper::Mix), 50);
+    check(near(measure(-.2f,.02f), 1.0375), "the follower feeds the existing master and band dry/wet mix");
+    set(Shaper::FollowerOn, 0);
+    check(near(measure(-.2f,.02f), .875), "disabling the detector restores the independent Width contour");
+}
+
+void followerTimeConstants() {
+    Shaper rack;
+    flat(rack, Stage::Width, Band::Mid, 50);
+    auto set = [&](Shaper::FollowerControl id, float value) { setFollower(rack, Band::Mid, id, value); };
+    set(Shaper::FollowerOn, 1);
+    set(Shaper::FollowerAmount, 75);
+    set(Shaper::FollowerAttack, 0);
+    set(Shaper::FollowerRelease, 0);
+    // The side pilot stays at .01 across the common-mode level step.
+    auto baseline = [&] {
+        set(Shaper::FollowerOn, 0);
+        set(Shaper::FollowerOn, 1);
+        std::array<float, 4096> l, r;
+        l.fill(.01f);
+        r.fill(-.01f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    };
+    auto gainAfter = [&](std::size_t frames, float common) {
+        std::vector<float> l(frames, common + .01f), r(frames, common - .01f);
+        rack.process(l.data(), r.data(), l.data(), r.data(), frames);
+        return (l.back() - r.back()) / .02f;
+    };
+    baseline();
+    check(near(gainAfter(1, .18f), .5 + 2 * .18720603, 3e-6), "minimum attack matches the first measured step sample");
+    const std::array attackMs{1.562,12.500,42.188,99.938};
+    for (std::size_t i = 0; i < attackMs.size(); ++i) {
+        set(Shaper::FollowerAttack, 0);
+        baseline();
+        set(Shaper::FollowerAttack, 25.f * static_cast<float>(i + 1));
+        const auto count = static_cast<std::size_t>(std::round(attackMs[i] * 48)) + 1;
+        check(near(gainAfter(count, .18f), .52 + .36 * .63212, .002),
+              "all four measured Attack positions reach their 63.2 percent crossing");
+    }
+    set(Shaper::FollowerAttack, 0);
+    for (const float h : {25.f, 50.f, 75.f, 100.f}) {
+        set(Shaper::FollowerHold, h);
+        baseline();
+        (void)gainAfter(100, .18f);
+        const auto held = static_cast<std::size_t>(std::round(24000 * h * h / 10000));
+        check(near(gainAfter(held, 0), .88, 2e-6) && gainAfter(1, 0) < .879,
+              "hold freezes the plateau for precisely 31.25, 125, 281.25 or 500 ms");
+    }
+    set(Shaper::FollowerHold, 0);
+    constexpr std::array<float, 6> release{0, 20, 25, 50, 75, 100};
+    constexpr std::array<double, 6> measuredHalfMs{3.208, 55.083, 77.208, 306.438, 1019.708, 3251.188};
+    for (std::size_t i = 0; i < release.size(); ++i) {
+        set(Shaper::FollowerRelease, release[i]);
+        baseline();
+        (void)gainAfter(100, .18f);
+        const auto n = static_cast<std::size_t>(std::round(measuredHalfMs[i] * 48)) + 1;
+        check(near(gainAfter(n, 0), .7, .001), "absolute peak decay reproduces the six measured release crossings");
+    }
+}
+
+void followerSplitInputs() {
+    constexpr std::size_t frames = 3072;
+    std::array<float, frames> left{}, right{}, l{}, r{}, sumL{}, sumR{};
+    for (std::size_t i = 0; i < frames; ++i) {
+        const auto t = static_cast<double>(i) / 48000;
+        left[i] = static_cast<float>(.41 * std::sin(2 * std::numbers::pi * 65 * t) + .13 * std::sin(2 * std::numbers::pi * 4100 * t));
+        right[i] = static_cast<float>(.23 * std::cos(2 * std::numbers::pi * 870 * t));
+    }
+    Shaper rack;
+    rack.set(Shaper::WidthBands, 3);
+    for (int k = 0; k < 3; ++k) {
+        const auto band = static_cast<Band>(k);
+        const auto configure = [&](Shaper& processor, Band target) {
+            flat(processor, Stage::Width, target, 70.f);
+            setFollower(processor, target, Shaper::FollowerOn, 1);
+            setFollower(processor, target, Shaper::FollowerMode, k == 0 ? 1.f : 0.f);
+            setFollower(processor, target, Shaper::FollowerAmount, 70.f + static_cast<float>(k) * 10.f);
+            setFollower(processor, target, Shaper::FollowerAttack, static_cast<float>(k) * 14.f);
+            setFollower(processor, target, Shaper::FollowerHold, static_cast<float>(k) * 20.f);
+        };
+        configure(rack, band);
+        Shaper isolate, full;
+        isolate.set(Shaper::VolumeBands, 3);
+        for (int j = 0; j < 3; ++j) flat(isolate, Stage::Volume, static_cast<Band>(j), j == k ? 100.f : 0.f);
+        configure(full, Band::Mid);
+        isolate.process(left.data(), right.data(), l.data(), r.data(), frames);
+        full.process(l.data(), r.data(), l.data(), r.data(), frames);
+        for (std::size_t i = 0; i < frames; ++i) {
+            sumL[i] += l[i];
+            sumR[i] += r[i];
+        }
+    }
+    rack.process(left.data(), right.data(), l.data(), r.data(), frames);
+    bool matches = true;
+    for (std::size_t i = 0; i < frames; ++i)
+        matches &= near(l[i], sumL[i], 2e-6) && near(r[i], sumR[i], 2e-6);
+    check(matches && rack.latency() == 0, "three follower bands independently track their split stereo inputs");
+}
 } // namespace
 
 int main() {
@@ -902,6 +1042,9 @@ int main() {
     stagePermutations();
     nonlinearOrder();
     historyThroughReorder();
+    followerLevels();
+    followerTimeConstants();
+    followerSplitInputs();
     if (failures == 0) std::puts("ADi-SHAPER DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

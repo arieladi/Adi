@@ -26,6 +26,7 @@ class AdiShaper {
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
     static constexpr int timeBandParameterCount = 14;
+    static constexpr int followerParameterCount = 9;
     static constexpr int pitchBandParameterCount = modBandParameterCount - 1;
     static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
     static constexpr int reverbBandParameterCount = pitchBandParameterCount + 6;
@@ -43,7 +44,8 @@ class AdiShaper {
                  NoiseOn = PitchOn + modHeaderSize + 3 * pitchBandParameterCount,
                  ReverbOn = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
                  VolumeOrder = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount,
-                 Count = VolumeOrder + static_cast<int>(stageCount) };
+                 WidthFollowerLow = VolumeOrder + static_cast<int>(stageCount),
+                 Count = WidthFollowerLow + 3 * followerParameterCount };
     using StageRanks = std::array<std::uint8_t, stageCount>;
     using StageOrder = std::array<Stage, stageCount>;
     static constexpr Param orderParam(Stage stage) noexcept {
@@ -52,6 +54,12 @@ class AdiShaper {
     // Lower rank runs first. Equal ranks retain the original ADI stage order.
     [[nodiscard]] static StageOrder orderFor(const StageRanks& ranks) noexcept;
     enum class Band { Low, Mid, High };
+    enum FollowerControl { FollowerOn, FollowerMode, FollowerAmount, FollowerDepth, FollowerOffset,
+                           FollowerThreshold, FollowerAttack, FollowerHold, FollowerRelease };
+    static constexpr Param followerParam(Band band, FollowerControl control) noexcept {
+        return static_cast<Param>(WidthFollowerLow + followerParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
+    }
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
@@ -123,7 +131,7 @@ class AdiShaper {
         double beats = 4.0, hz = 1.0;
         float mix = 1.0f, blend = 1.0f, returnDry = 0.0f, returnWet = 1.0f;
         int type = 0;
-        bool hertz = false, active = false;
+        bool hertz = false, active = false, followWidth = false;
         std::array<Gain, 8> heldGains{};
     };
     struct Split {
@@ -152,6 +160,18 @@ class AdiShaper {
         int layout = 0;
         bool active = false, enabled = true;
     };
+    struct WidthFollower {
+        void reset() noexcept;
+        void updateTimes(double rate) noexcept;
+        void set(FollowerControl control, float value, double rate) noexcept;
+        [[nodiscard]] float width(float left, float right, float baseWidth) noexcept;
+        double envelope = 0, rise = 1, fall = 0;
+        std::uint32_t holdFrames = 0, remaining = 0;
+        float amount = .5f, scale = 0.f, offset = 0.f, threshold = 0.f;
+        float attack = .1f, hold = 0.f, release = .2f;
+        int depth = 0;
+        bool multiply = false;
+    };
     struct DriveDryDelay {
         std::array<std::array<float, 2>, AdiShaperDrive::latencySamples> samples{};
         std::size_t index = 0;
@@ -178,6 +198,7 @@ class AdiShaper {
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
     std::array<StageData, stageCount> stages_;
+    std::array<WidthFollower, 3> widthFollowers_;
     StageRanks ranks_{};
     StageOrder order_{};
     std::array<AdiShaperFilter, 3> filters_;
