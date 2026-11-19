@@ -68,6 +68,7 @@ class OneShot final : public DeviceInstance {
         LfoVolume,
         LfoPan,
         LfoFilter,
+        VelToVol,
         Count
     };
     OneShot();

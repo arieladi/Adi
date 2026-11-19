@@ -11,7 +11,7 @@ Sampler::Sampler() {
                   OneShot::FilterOn,  OneShot::FilterType, OneShot::Slope,    OneShot::Cutoff,
                   OneShot::Resonance, OneShot::LfoOn,      OneShot::LfoShape, OneShot::LfoRate,
                   OneShot::LfoSync,   OneShot::LfoBeat,    OneShot::LfoPitch, OneShot::LfoVolume,
-                  OneShot::LfoPan,    OneShot::LfoFilter}) {
+                  OneShot::LfoPan,    OneShot::LfoFilter, OneShot::VelToVol}) {
         params_.push_back(*source.paramAt(i));
         destinations_.push_back(static_cast<std::uint32_t>(i));
     }
@@ -92,6 +92,7 @@ void Sampler::configure(Layer &l) {
     const auto &z = l.zone;
     l.engine->setRootKey(z.root);
     set(OneShot::Mode, 0);
+    set(OneShot::Snap, 0); // a zone's points are exact; Live's per-zone Snap is unread
     set(OneShot::Start, z.start * 100);
     set(OneShot::End, z.end * 100);
     set(OneShot::Length, 100);
