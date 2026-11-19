@@ -4,11 +4,9 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
-## FOR THE DIRECTOR
+## 2026-11-19, recording recovery and dither rulings (ADR-0250)
 
-PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recovery for ADI-owned takes after a crash, with Stop's normal placement as one Undo step and a recording ID to prevent duplicate placement. This blocks automatic recovery after CT-02 and PD-05 provide the recording plan and session evidence.
-
-EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
+The director approved recovery of interrupted recordings as one Stop-equivalent Undo step with a recording ID to prevent duplicate placement. Shaped 1, 2 and 3 are SoX Lipshitz, improved E-weighted and Shibata. PD-06 and EX-06 remain in their ordered M5 slots.
 
 ## 2026-11-19, MIDI port name and manual-arm default for Window-fn
 
