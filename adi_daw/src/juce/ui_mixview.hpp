@@ -7,6 +7,7 @@
 #include "ui_analysis.hpp"
 #include "ui_mix_channels.hpp"
 #include "ui_mix_meter.hpp"
+#include "ui_mix_analysers.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -101,7 +102,7 @@ class MixViewPanel final : public juce::Component {
     MixOutputMeter mainMeter;
     std::weak_ptr<const MainMeterSource> mainMeterSource;
     SharedSpectrumView spectrum;
-    AnalysisPane analysis;
+    MixAnalysers analysis;
     AnalysisDock analyzerDock;
     juce::ToggleButton analyzerToggle{"Analyzer dock"};
     bool setAnalyzerDock(bool);

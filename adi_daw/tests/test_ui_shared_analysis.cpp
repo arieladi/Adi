@@ -2,8 +2,10 @@
 #include "../src/juce/ui_analysis.hpp"
 #include "../src/juce/ui_look.hpp"
 #include "../src/juce/ui_mix_meter.hpp"
+#include "../src/juce/ui_mix_analysers.hpp"
 #include "ui_fake_peer.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/ui/snapshot_reader.hpp"
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -917,12 +919,138 @@ void spectrumSlopeProjection() {
     }
 }
 
+void mixAnalyserPages() {
+    using namespace adi::ui;
+    using Page = MixAnalysers::Page;
+    using Track = adi::engine::TrackNode;
+    constexpr std::int64_t largeTrackId = 1LL << 42;
+    const auto channel = [](std::int64_t id, std::string name, std::string kind = "audio") {
+        auto node = std::make_shared<Track>();
+        node->id = id;
+        node->name = std::move(name);
+        node->kind = std::move(kind);
+        return node;
+    };
+    const auto main = channel(1, "Main", "master");
+    const auto first = channel(2, "Bass");
+    const auto fixed = channel(largeTrackId, "Guitar");
+    const auto project = [&](std::uint64_t revision, std::shared_ptr<Track> other) {
+        auto state = std::make_shared<adi::engine::Snapshot>();
+        state->seq = revision;
+        state->tracks = {main, first};
+        if (other) state->tracks.push_back(std::move(other));
+        return state;
+    };
+
+    const SnapshotReader reader{project(1, fixed)};
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 1040, 620);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(f.acquired == 0 && f.broker->stats().consumers == 0,
+          "analysers outside a visible window acquire no taps");
+    root.setVisible(true);
+    root.addToDesktop(0);
+
+    auto meter = std::make_shared<MainMeterSource>();
+    meter->track = main->id;
+    int loudnessReads = 0;
+    meter->read = [&] {
+        ++loudnessReads;
+        return MainMeterSnapshot{main->id, 48000., 1, -17.f, -19.f, -20.f, -2.f};
+    };
+    pages.setMainMeterSource(meter);
+    pages.frame(f.broker, reader, main->id, first->id);
+    const auto all = f.broker->stats();
+    check(pages.page() == Page::All && pages.pageBox.getNumItems() == 7 &&
+              pages.sourceBox.getNumItems() == 4 && pages.sourceBox.getSelectedId() == 1,
+          "analysers default to All and Main and offer each non-Main channel once");
+    check(all.taps == 3 && all.domains == 3 && all.consumers == 8 && all.spectralPlans == 1,
+          "All shares one Main FFT across spectral views and leases readout rows without their own FFT");
+    f.write();
+    check(f.broker->pump() == 1, "All uses one transform for the compatible Main spectrum and spectrogram");
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(loudnessReads > 0, "All reads Main loudness through the persistent measurement");
+
+    for (const auto &[page, mode] : std::array{
+         std::pair{Page::Spectrogram, SharedSpectrumView::Mode::Spectrogram},
+         std::pair{Page::Spectrum, SharedSpectrumView::Mode::Spectrum},
+         std::pair{Page::Scope, SharedSpectrumView::Mode::Scope},
+         std::pair{Page::Phase, SharedSpectrumView::Mode::Phase},
+         std::pair{Page::Loudness, SharedSpectrumView::Mode::Meters}}) {
+        pages.pageBox.setSelectedId(static_cast<int>(page) + 1, juce::sendNotificationSync);
+        pages.frame(f.broker, reader, main->id, first->id);
+        const auto individual = f.broker->stats();
+        check(pages.page() == page && pages.detail.mode() == mode && pages.detail.isShowing() &&
+                  !pages.detail.modeBox.isVisible() && !pages.detail.sourceBox.isVisible() &&
+                  pages.detail.view.subscribed() && individual.consumers == 1 && individual.taps == 1,
+              "each individual analyser page keeps only its actual display subscribed");
+    }
+    f.write(1024); f.broker->pump();
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(pages.detail.view.mainMeterSnapshot().has_value(), "the Main Loudness page displays native Main LUFS");
+
+    pages.sourceBox.setSelectedId(2, juce::sendNotificationSync);
+    const auto priorLoudnessReads = loudnessReads;
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(pages.detail.view.track() == first->id, "Follow selection first follows Bass");
+    pages.frame(f.broker, reader, main->id, fixed->id);
+    check(pages.detail.view.track() == fixed->id && f.broker->stats().taps == 1,
+          "Follow selection retargets without retaining the old tap");
+    f.write(2048); f.broker->pump();
+    pages.frame(f.broker, reader, main->id, fixed->id);
+    check(!pages.detail.view.mainMeterSnapshot() && loudnessReads == priorLoudnessReads,
+          "a channel Loudness page never reads or attributes Main loudness");
+
+    const int fixedMenuId = pages.sourceBox.getItemId(3);
+    pages.sourceBox.setSelectedId(fixedMenuId, juce::sendNotificationSync);
+    const SnapshotReader renamed{project(2, channel(largeTrackId, "Lead guitar"))};
+    pages.frame(f.broker, renamed, main->id, first->id);
+    check(pages.detail.view.track() == largeTrackId && pages.sourceBox.getSelectedId() == fixedMenuId &&
+              pages.sourceBox.getText() == "Lead guitar",
+          "fixed channel uses a stable 64-bit track identity through selection changes and renames");
+    const SnapshotReader removed{project(3, {})};
+    pages.frame(f.broker, removed, main->id, first->id);
+    check(pages.detail.view.track() == main->id && pages.sourceBox.getSelectedId() == 1 &&
+              pages.sourceBox.getNumItems() == 3,
+          "removing a fixed channel returns the source chooser to Main and releases the removed tap");
+
+    pages.setPage(Page::Analysis);
+    pages.frame(f.broker, reader, main->id, first->id);
+    const auto table = f.broker->stats();
+    check(!pages.sourceBox.isVisible() && !pages.detail.isVisible() && table.consumers == 3 &&
+              table.taps == 3 && table.spectralPlans == 0,
+          "Analysis shows per-channel readings without a spectrogram or spectrum plan");
+    pages.setVisible(false);
+    check(f.broker->stats().consumers == 0 && f.broker->stats().taps == 0,
+          "hiding Analysers releases the full measurement table without another frame");
+    pages.setVisible(true);
+    pages.frame(f.broker, reader, main->id, first->id);
+    pages.suspend(true);
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(f.broker->stats().consumers == 0, "suspending Analysers stops demand and prevents reacquisition while minimized");
+    pages.suspend(false);
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(f.broker->stats().consumers == 3, "restore reacquires only the visible table");
+
+    pages.setPage(Page::Scope);
+    pages.sourceBox.setSelectedId(pages.sourceBox.getItemId(3), juce::sendNotificationSync);
+    Fixture replacement;
+    pages.frame(replacement.broker, reader, main->id, first->id);
+    check(pages.sourceBox.getSelectedId() == 1 && pages.detail.view.track() == main->id &&
+              f.broker->stats().taps == 0 && replacement.broker->stats().taps == 1,
+          "replacing the project cannot retain a fixed source even if the new project has the same track IDs");
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); }
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); mixAnalyserPages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

@@ -1123,13 +1123,18 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     infoSpectrum.setBounds(infoArea_.reduced(look::border));
     infoSpectrum.setVisible(infoShown_ && !infoArea_.isEmpty() && infoText_.isEmpty());
-    infoSpectrum.setMode(mixViewPanel.analysis.mode());
-    infoSpectrum.setSource(mixViewPanel.analysis.point());
-    infoSpectrum.setChannel(mixViewPanel.analysis.view.channel());
-    infoSpectrum.setPalette(mixViewPanel.analysis.view.palette(), mixViewPanel.analysis.view.paletteReversed());
-    infoSpectrum.setSpectrumSlope(mixViewPanel.analysis.view.spectrumSlope());
-    infoSpectrum.present(sharedAnalysis, analysisTrack(mixViewPanel.analysis.source() == AnalysisPane::Source::Selected));
-    infoSpectrum.frame();
+    if (infoSpectrum.isVisible()) {
+        const auto &analysis = mixViewPanel.analysis;
+        const auto &settings = analysis.detail;
+        infoSpectrum.setMode(settings.mode());
+        infoSpectrum.setSource(settings.point());
+        infoSpectrum.setChannel(settings.view.channel());
+        infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());
+        infoSpectrum.setSpectrumSlope(settings.view.spectrumSlope());
+        const auto &snapshot = reader();
+        infoSpectrum.present(sharedAnalysis, analysis.target(snapshot, analysisTrack(snapshot), analysisTrack(snapshot, true)));
+        infoSpectrum.frame();
+    }
     // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
     // unless an edit, a sideways scroll or a click on the ruler paused it.
     if (arrangement.isVisible() && state_.follow && playing_ && !arrangement.followPaused &&

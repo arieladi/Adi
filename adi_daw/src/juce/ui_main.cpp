@@ -330,7 +330,7 @@ class AdiApplication final : public juce::JUCEApplication,
             if (meterOwner && root_ == meterOwner.getComponent() && document_.get() == auditionDocument)
                 document_->session().setMainAudition(mode);
         });
-        root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
+        root->mixViewPanel.analysis.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.analyzerDock.meters.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;
         root->devices.addFunction = [this](mix::Function kind, std::int64_t track) {

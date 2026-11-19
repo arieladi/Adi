@@ -236,6 +236,7 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Meters: request.outputs = SharedAnalysis::Meters; break;
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
+            case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters | SharedAnalysis::Phase; break;
             }
             try {
                 lease_ = broker_->acquire(request);
@@ -364,7 +365,8 @@ void SharedSpectrumView::updateRaster() {
 }
 void SharedSpectrumView::updateMainMeter() noexcept {
     std::optional<MainMeterSnapshot> next;
-    if (mode_ == Mode::Meters && point_ == engine::ScopePoint::PostFader && device_ == 0 && shown_ &&
+    if ((mode_ == Mode::Meters || mode_ == Mode::ChannelReadout) &&
+        point_ == engine::ScopePoint::PostFader && device_ == 0 && shown_ &&
         !frozen_ && eligible()) {
         if (const auto source = mainMeterSource_.lock(); source && source->track == track_ && source->read) {
             try {
@@ -407,7 +409,38 @@ void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
     lease_.reset(); shown_.reset(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
     unwatchAncestors();
 }
+void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
+    g.setColour(look::text);
+    g.setFont(look::font(look::fontCaption));
+    const auto row = getLocalBounds();
+    if (!shown_) {
+        g.drawText(status_ == Status::Unavailable ? "Unavailable" : "Waiting for audio", row.reduced(look::border, 0),
+                   juce::Justification::centredLeft, true);
+        return;
+    }
+    const auto peak = std::max(shown_->peak[0], shown_->peak[1]);
+    const double left = shown_->rms[0], right = shown_->rms[1];
+    const double energy = left * left + right * right;
+    const double side = energy > 0 ? .5 - left * right * shown_->correlation / energy : 0;
+    const auto fullScale = [](float sample) { return std::abs(sample) >= 1.f; };
+    const auto samplesAtFullScale = std::ranges::count_if(shown_->scopeLeft, fullScale) +
+                                    std::ranges::count_if(shown_->scopeRight, fullScale);
+    const std::array values{
+        peak > 0 ? juce::String(20. * std::log10(peak), 1) : juce::String("-inf"),
+        energy > 0 && peak > 0 ? juce::String(20. * std::log10(peak / std::sqrt(.5 * energy)), 1) : juce::String("-"),
+        juce::String(100. * std::clamp(side, 0., 1.), 0),
+        juce::String(shown_->correlation, 2),
+        juce::String(static_cast<juce::int64>(samplesAtFullScale)),
+        mainMeter_ ? meterNumber(mainMeter_->momentaryLufs) : juce::String("-")
+    };
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const int x = static_cast<int>(i) * row.getWidth() / static_cast<int>(values.size());
+        const int end = static_cast<int>(i + 1) * row.getWidth() / static_cast<int>(values.size());
+        g.drawText(values[i], row.withX(x).withWidth(end - x).reduced(look::border, 0), juce::Justification::centredLeft, true);
+    }
+}
 void SharedSpectrumView::paint(juce::Graphics &g) {
+    if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
     const auto area = getLocalBounds().toFloat().reduced(5.f);
     if (area.isEmpty()) return;
@@ -648,16 +681,26 @@ void AnalysisPane::setSpectrumSlope(SpectrumSlope slope) {
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     view.present(std::move(broker), source_ == Source::Selected ? selected : main); view.frame();
 }
+void AnalysisPane::usePageControls() {
+    modeBox.setVisible(false);
+    sourceBox.setVisible(false);
+    resized();
+}
 void AnalysisPane::resized() {
     const std::array<juce::Component *, 10> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
         &reverseButton, &freezeButton, &resetButton, &expandButton};
-    const int columns = std::clamp(getWidth() / 96, 1, 4);
-    const int rows = (static_cast<int>(controls.size()) + columns - 1) / columns;
-    const int height = std::min(25, std::max(0, getHeight() / rows));
-    for (std::size_t i = 0; i < controls.size(); ++i) {
-        const int column = static_cast<int>(i) % columns, row = static_cast<int>(i) / columns;
+    const bool pageControls = !modeBox.isVisible();
+    const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
+    const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));
+    const int rows = std::max(1, (count + columns - 1) / columns);
+    const int height = std::min(pageControls ? look::fieldHeight : 25, std::max(0, getHeight() / rows));
+    int i = 0;
+    for (auto *control : controls) {
+        if (!control->isVisible()) continue;
+        const int column = i % columns, row = i / columns;
         const int left = column * getWidth() / columns, right = (column + 1) * getWidth() / columns;
-        controls[i]->setBounds(juce::Rectangle<int>(left, row * height, right - left, height).reduced(1));
+        control->setBounds(juce::Rectangle<int>(left, row * height, right - left, height).reduced(pageControls ? look::border : 1));
+        ++i;
     }
     view.setBounds(getLocalBounds().withTrimmedTop(rows * height));
 }

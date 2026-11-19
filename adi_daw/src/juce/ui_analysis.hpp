@@ -44,7 +44,7 @@ class SharedSpectrumView final : public juce::Component,
     SharedSpectrumView();
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
-    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram };
+    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
     void setSource(engine::ScopePoint, std::int64_t device = 0);
@@ -93,6 +93,7 @@ class SharedSpectrumView final : public juce::Component,
     struct Raster;
     void updateRaster();
     void updateSpectrumProjection();
+    void paintChannelReadout(juce::Graphics &) const;
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
@@ -131,6 +132,7 @@ class AnalysisPane final : public juce::Component {
     static bool anyControlsFocused() noexcept;
     void frame(std::shared_ptr<SharedAnalysis>, std::int64_t main, std::int64_t selected);
     void resized() override;
+    void usePageControls();
     void setMode(SharedSpectrumView::Mode);
     SharedSpectrumView::Mode mode() const noexcept { return view.mode(); }
     void setSource(Source);

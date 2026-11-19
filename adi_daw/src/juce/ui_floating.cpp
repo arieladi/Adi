@@ -410,17 +410,18 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     }
     auto pane = std::make_unique<AnalysisPane>();
     pane->setSize(800, 420);
-    pane->setMode(root.mixViewPanel.analysis.mode());
-    pane->setPoint(root.mixViewPanel.analysis.point());
-    pane->view.setChannel(root.mixViewPanel.analysis.view.channel());
+    const auto &settings = root.mixViewPanel.analysis.detail;
+    pane->setMode(settings.mode());
+    pane->setPoint(settings.point());
+    pane->view.setChannel(settings.view.channel());
     pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
-    pane->setPalette(root.mixViewPanel.analysis.view.palette(), root.mixViewPanel.analysis.view.paletteReversed());
-    pane->setSpectrumSlope(root.mixViewPanel.analysis.view.spectrumSlope());
+    pane->setPalette(settings.view.palette(), settings.view.paletteReversed());
+    pane->setSpectrumSlope(settings.view.spectrumSlope());
     pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
     pane->expandButton.setButtonText("Mix View");
     pane->onExpand = [&root](std::int64_t channel) {
         if (root.reader().findTrack(channel)) { root.arrangement.geometry.selection.track = channel; root.publishSelection(); }
-        root.mixViewPanel.analysis.setSource(channel == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
+        root.mixViewPanel.analysis.followSelection(channel != root.analysisTrack());
         root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
         root.setMixView(true, root.state().mixViewDetached);
     };

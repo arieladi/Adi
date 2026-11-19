@@ -217,26 +217,28 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stac
     analyzerToggle.onClick = [this] { setAnalyzerDock(analyzerToggle.getToggleState()); };
     analyzerDock.onChange = [this] { persistAnalyzerSettings(); };
     analyzerDock.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
-    analysis.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
-    analysis.onPaletteChange = [this] {
+    analysis.detail.onExpand = [this](std::int64_t track) { if (root_.openAnalyzer) root_.openAnalyzer(track); };
+    analysis.detail.onPaletteChange = [this] {
+        auto &detail = analysis.detail;
         auto &state = root_.state();
         const auto before = state.analysisPalette; const bool wasReversed = state.analysisPaletteReverse;
-        state.analysisPalette = analysis.requestedPalette(); state.analysisPaletteReverse = analysis.reverseButton.getToggleState();
+        state.analysisPalette = detail.requestedPalette(); state.analysisPaletteReverse = detail.reverseButton.getToggleState();
         if (!root_.persist()) {
             state.analysisPalette = before; state.analysisPaletteReverse = wasReversed;
-            analysis.restorePaletteControls(before, wasReversed); return;
+            detail.restorePaletteControls(before, wasReversed); return;
         }
-        analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
+        detail.setPalette(state.analysisPalette, state.analysisPaletteReverse);
     };
-    analysis.onSpectrumSlopeChange = [this] {
+    analysis.detail.onSpectrumSlopeChange = [this] {
+        auto &detail = analysis.detail;
         auto &state = root_.state();
         const auto before = state.analysisSpectrumSlope;
-        state.analysisSpectrumSlope = spectrumSlopeId(analysis.requestedSpectrumSlope());
+        state.analysisSpectrumSlope = spectrumSlopeId(detail.requestedSpectrumSlope());
         if (!root_.persist()) {
             state.analysisSpectrumSlope = before;
-            analysis.restoreSlopeControls(spectrumSlopeFromId(before)); return;
+            detail.restoreSlopeControls(spectrumSlopeFromId(before)); return;
         }
-        analysis.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+        detail.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
     };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
@@ -245,8 +247,8 @@ void MixViewPanel::adoptViewState() {
     const auto &state = root_.state();
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
                            state.mixAnalyzerWidth);
-    analysis.setPalette(state.analysisPalette, state.analysisPaletteReverse);
-    analysis.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+    analysis.detail.setPalette(state.analysisPalette, state.analysisPaletteReverse);
+    analysis.detail.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
     resized();
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
@@ -326,7 +328,7 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     spectrum.present(root_.sharedAnalysis, root_.analysisTrack(reader));
     spectrum.frame();
     if (!alive) return;
-    analysis.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
+    analysis.frame(root_.sharedAnalysis, reader, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
     if (!alive) return;
     analyzerDock.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
     if (!alive) return;
