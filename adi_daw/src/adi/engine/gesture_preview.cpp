@@ -451,8 +451,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
-        timing->spec=owner->spec_;timing->sourceReadiness=out->clips->readiness();timing->stripLanes=out->controls->lanes;
+        timing->spec=owner->spec_;timing->stripLanes=out->controls->lanes;
         owner->prepareMidiInput(*timing, image->model);
+        owner->prepareInputMonitors(*timing,image->model,*out->clips);
+        timing->sourceReadiness=out->clips->readiness();
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());
@@ -487,8 +489,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         options.sendFor=[owner](std::int64_t id)->Node*{return owner->strips_.sendFor(id);};
         options.sendTailFor=[owner](std::int64_t id){return owner->summing_.sendTailFor(id);};
         options.feedbackFor=[owner](std::int64_t id){auto* loop=owner->strips_.loopFor(id);return loop?FeedbackNodes{&loop->writer(),&loop->reader()}:FeedbackNodes{};};
-        options.sourcesFor=[owner,clips=out->clips,midi=out->midi](std::int64_t id) {
+        options.sourcesFor=[owner,clips=out->clips,midi=out->midi,timing](std::int64_t id) {
             auto nodes=owner->sources_?owner->sources_(id):std::vector<Node*>{};
+            if(auto* monitor=timing->inputMonitorSource(id))nodes.push_back(monitor);
             const auto audio=clips->sourcesFor(id);nodes.insert(nodes.end(),audio.begin(),audio.end());
             const auto notes=midi->sourcesFor(id);nodes.insert(nodes.end(),notes.begin(),notes.end());return nodes;
         };

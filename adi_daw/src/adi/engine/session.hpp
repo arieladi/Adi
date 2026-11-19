@@ -63,6 +63,7 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +87,7 @@ namespace adi::engine {
 class AudioInputRecorder;
 struct AudioRecordingSpec;
 class MidiInputCapture;
+struct RecordingTarget;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -263,6 +265,12 @@ public:
     /// outlive every graph that holds them, which means: until the session is
     /// destroyed or a later rebuild without them has been collected.
     void setSourcesFor(SourceFn fn);
+
+    /// Owner-side physical input selection for audio monitoring. Channels
+    /// are resolved driver indices, as in AudioRecordingSpec. An empty set
+    /// disconnects monitoring inputs. Track Arm and Monitor Mode come from
+    /// the published project generation.
+    bool setAudioMonitorInputs(std::span<const RecordingTarget>);
 
     /// Drain plugin callbacks, answer restart requests, free retired graphs.
     /// Returns true when a latency change was applied.
@@ -475,7 +483,10 @@ private:
     friend struct GestureRuntime;
     friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
     friend class gesture::EnginePresentation;
-    void attach(std::shared_ptr<const GraphTransportState>);
+    struct TimingView;
+    struct InputMonitors;
+    void attach(std::shared_ptr<const TimingView>);
+    void prepareInputMonitors(TimingView&, const rows::Model&, ClipPlayback&);
     bool readPlayback(const Store &);
     // The tempo this Session plays a model at: performed history (with its
     // authored resume), else the external tempo, else the model's map.
@@ -502,6 +513,7 @@ private:
     std::unique_ptr<LiveMidiInput> midiInput_;
     std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
+    std::map<std::int64_t, std::array<std::int32_t, 2>> monitorInputs_;
     std::unique_ptr<AudioInputRecorder> recording_;
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
@@ -525,6 +537,7 @@ private:
         std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
+        std::shared_ptr<InputMonitors> inputMonitors;
         double sampleRate = 48000.0;
         double lastTickSeconds = 0.0;
         SessionSpec spec;
@@ -535,6 +548,7 @@ private:
         [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
+        [[nodiscard]] Node* inputMonitorSource(std::int64_t track) const noexcept;
     };
     void prepareMidiInput(TimingView&, const rows::Model&);
     MainLoudness mainLoudness_;
