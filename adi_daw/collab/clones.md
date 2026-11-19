@@ -4,6 +4,18 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
+## 19 November 2026 — Lower CPU cost for repeating a weighted curve
+
+**PR requested** · `clones/shaper-curve-cpu` · **Reuse calculated curve samples during ADI-Shaper playback** · `f1c0ce15`
+
+Review after point selection. ADI-Shaper reserves two curve pages on preparation and calculates individual grid samples as playback requests them. A changed curve invalidates its own page. Repeated edits use the uncached evaluator. Other active curves continue to play when both pages are occupied. The prepared audio cache takes 67,640 bytes and makes no allocations in the callback. The panel uses the same evaluator without that memory reservation.
+
+With the same full-wet, quarter-note Volume curve at 48 kHz, the final registered ADI and reference median callbacks were 7.0 and 18.3 microseconds at 256 frames, then 54.2 and 98.5 at 2,048. The corresponding 99th percentiles were 10.1 and 52.1, then 273.4 and 672.2. Each warm condition used 30,720 callbacks with the order rotated. ADI missed zero deadlines in those warm runs. Its previous medians under the same conditions were 9.0 and 96.1. Editing one point every 256-frame callback lowered the median from 21.3 to 19.9 but raised the 99th percentile from 117.5 to 127.1. Deadline misses rose from 9 to 15 in 30,720 callbacks. At 2,048 frames continuous edits improved both median and 99th percentile.
+
+All 40 warm, cold, edited and dry channel captures matched the previous implementation byte for byte. The matched 1920 × 1080 registered editor captures before and after optimization also had identical pixels. The director has the separate original editor capture in the same state. Release device tests and both Pd precisions passed with warnings as errors.
+
+The final registered device recalled 873 editable programs and rendered four bars each. The audited second bar matched the preceding ADI build bit for bit for 840 programs. The greatest peak change on that bar was 0.000005663, the largest stereo RMS change 0.000000625. All reported latencies matched. Relative to the original device, 37 of the 873 conversions measured below 0.001 RMS on this input. The private catalog identifies the active source stages and omitted controls for each program. Both production editor tests and all three shell editor translation units passed the strict gate.
+
 ## 19 November 2026 — Move and scale a group of curve points
 
 **PR requested** · `clones/shaper-point-selection` · **Select and transform groups of ADI-Shaper points** · `eeb76d1f`
