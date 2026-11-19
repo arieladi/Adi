@@ -232,6 +232,38 @@ int main(int argc, char **argv) {
         rms = std::sqrt(rms / 4800);
         check(rms > .4 / std::sqrt(2.) * (1 - .3) * .9, "a looping zone sounds through a release longer than its loop");
     }
+    {
+        // DF-E37 (f): the Sampler's layers follow its own idempotent prepare.
+        device::Sampler kept;
+        set(kept, "attack", .1);
+        set(kept, "filter_on", 0);
+        auto kz = z;
+        kz.key = kz.velocity = kz.select = {0, 127, 0, 0};
+        kz.select.fadeLow = kz.select.fadeHigh = 0;
+        kept.publishZones(std::span(&kz, 1));
+        kept.prepare(48000, 64);
+        std::array<float, 64> l{}, r{};
+        float *ch[]{l.data(), r.data()};
+        auto note = on();
+        engine::NodeIo io{};
+        io.out = ch;
+        io.channels = 2;
+        io.frames = 64;
+        io.events = {&note, 1};
+        kept.process(io);
+        kept.prepare(48000, 64);
+        io.events = {};
+        kept.process(io);
+        float peak = 0;
+        for (float v : l) peak = std::max(peak, std::abs(v));
+        check(peak > .1f, "a same-format prepare keeps the Sampler's sounding note");
+        kept.release();
+        kept.prepare(48000, 64);
+        kept.process(io);
+        peak = 0;
+        for (float v : l) peak = std::max(peak, std::abs(v));
+        check(peak == 0, "release then prepare starts its layers silent");
+    }
     auto state = d.saveState("component");
     device::Sampler copy;
     check(copy.loadState("component", state), "multisample state restores");

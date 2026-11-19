@@ -48,7 +48,9 @@ running Pd graph, so it does not automatically reset this external's held
 voices. Until the host integrates lifecycle notification, send a float to
 `$0-oneshot-reset` (via `sendFloat("oneshot-reset", 0)`) or publish an empty
 sample slot before resuming. The explicit reset clears voices and the bounded
-MIDI state without allocating. The native core's own `prepare()` resets voices.
+MIDI state without allocating. The native core's own `prepare()` resets voices
+only when the rate or block size changes, or after `release()` (ADR-0090 d5,
+DF-E37 f); the Pd external's DSP restart resets them explicitly.
 
 Tests cover independent synthetic gain/pitch oracles, event timing,
 state/file round trips, immutable replacement and clearing, sample publication

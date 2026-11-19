@@ -87,6 +87,7 @@ std::vector<float> steady(const std::vector<float> &x) {
     return {x.begin() + 64, x.begin() + 64 + 4096};
 }
 std::vector<float> render(OneShot &d, int block, int count = 4096, int key = 60, int off = -1) {
+    d.release(); // each render starts from silence; prepare() alone is idempotent (DF-E37 f)
     d.prepare(48000, block);
     std::vector<float> out(static_cast<std::size_t>(count));
     std::array<float, 4096> l{}, r{};
@@ -262,9 +263,10 @@ void preparedSamples() {
     process(a.get(), 0, true);
     check(constant(0), "unpublished generation zero cannot play");
     process(a.get(), 6, true);
+    core.release();
     core.prepare(48000, 64);
     process(a.get(), 6, false);
-    check(constant(0), "same-rate reprepare resets borrowed voices");
+    check(constant(0), "release then a same-rate prepare resets borrowed voices (DF-E37 f)");
     check(realtime, "borrowed rendering and replacement neither allocate nor deallocate");
     set(core, OneShot::LoopOn, 1);
     set(core, OneShot::Retrigger, 0);
@@ -549,6 +551,26 @@ int main() {
         set(loop,OneShot::LoopOn,0);
         const auto plain=render(loop,512,off+72000,60,off);
         check(std::all_of(plain.begin()+96000,plain.end(),[](float v){return v==0;}),"Loop off still ends at the sample's end");
+    }
+    {
+        // DF-E37 (f): prepare() at an unchanged rate and block size does
+        // nothing (ADR-0090 d5); a graph rebuild must not cut a sounding note.
+        OneShot held;configure(held);
+        std::vector<float> dc(4800,.5f);held.publishSample(dc,1,48000);
+        held.prepare(48000,64);
+        std::array<float,64> l{},r{};float* out[]{l.data(),r.data()};
+        engine::Event note{0,engine::EventType::NoteOn,0,60,7,0,1};
+        engine::NodeIo io{};io.out=out;io.channels=2;io.frames=64;io.events={&note,1};
+        held.process(io);
+        held.prepare(48000,64);
+        io.events={};held.process(io);
+        check(std::abs(l[10]-.5f)<1e-6f,"a same-format prepare keeps a sounding note (DF-E37 f)");
+        held.prepare(44100,64);
+        held.process(io);
+        check(l[10]==0,"a changed rate still resets the voices");
+        held.prepare(44100,64);held.process(io);
+        held.release();held.prepare(44100,64);held.process(io);
+        check(l[10]==0,"release() then prepare() resets them");
     }
     // One reader renders while the message thread publishes and collects old buffers.
     std::atomic<bool> running{true}, bad{false};

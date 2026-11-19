@@ -55,6 +55,8 @@ t_int* perform(t_int* w) {
 }
 void dsp(Object* x, t_signal** signal) {
     x->state->core.prepare(signal[0]->s_sr, signal[0]->s_n);
+    // prepare() is idempotent now (DF-E37 f); a DSP restart still starts clean.
+    x->state->core.resetVoices();
     x->state->midi.reset();
     t_int args[]{reinterpret_cast<t_int>(x), reinterpret_cast<t_int>(signal[0]->s_vec),
                  reinterpret_cast<t_int>(signal[1]->s_vec), static_cast<t_int>(signal[0]->s_n)};

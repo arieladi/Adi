@@ -131,8 +131,16 @@ std::string OneShot::paramText(const std::string &id, double n) const {
         }
     return {};
 }
-void OneShot::prepare(double rate, std::int32_t) {
-    rate_ = std::isfinite(rate) && rate >= 1000 && rate <= 768000 ? rate : 48000;
+void OneShot::prepare(double rate, std::int32_t frames) {
+    const double accepted = std::isfinite(rate) && rate >= 1000 && rate <= 768000 ? rate : 48000;
+    // DF-E37 (f), ADR-0090 d5: an unchanged rate and block size changes
+    // nothing, so a graph rebuild does not cut sounding notes. release()
+    // makes the next prepare() a fresh start.
+    if (prepared_ && accepted == rate_ && frames == frames_)
+        return;
+    prepared_ = true;
+    frames_ = frames;
+    rate_ = accepted;
     voices_ = {};
     age_ = 0;
     sampleSeq_ = 0;

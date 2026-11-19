@@ -90,6 +90,8 @@ class OneShot final : public DeviceInstance {
     void processPrepared(const engine::NodeIo&, const PreparedSample*,
                          std::uint64_t generation) noexcept;
     void resetVoices() noexcept { voices_ = {}; }
+    /// The next prepare() starts fresh (DF-E37 f).
+    void release() override { prepared_ = false; }
     void pumpMainThread() override;
     std::int32_t paramCount() const noexcept override { return Count; }
     const ParamDescriptor *paramAt(std::int32_t) const noexcept override;
@@ -147,6 +149,8 @@ class OneShot final : public DeviceInstance {
     int rootKey_ = 60;
     bool borrowed_ = false;
     double rate_ = 48000;
+    std::int32_t frames_ = 0;
+    bool prepared_ = false;
     DeviceIdentity identity_{"internal", "adi.oneshot", "OneShot", "ADI", "1"};
 };
 } // namespace adi::device
