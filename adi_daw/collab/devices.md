@@ -14,6 +14,36 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-13: user patches add no delay on the 64-sample grid, one reported block otherwise
+
+**`devices/pd-block-quantum` (`83b40061`), stacked on `devices/pd-double` (the DEV-09 stack).**
+
+- `LibPdEngine::BlockMode::Automatic`, to the director's Q-K2 answer: whole Pd ticks with no
+  added delay while the buffer (at prepare) and every segment are multiples of 64, each event at
+  the start of its tick; a buffer that is not a multiple runs one reported, compensated block;
+  a segment inside a tick arriving later falls back to that block once (counted; the adapter's
+  latency epoch moves, and `PdDevice::latencyEpoch` now includes it, so the graph re-compensates;
+  never silenced). `segmentQuantum()`: 64 for Pd in WholeBlocks/Automatic, 1 otherwise.
+- Tests: the segment contract (buffers 64/128/256, events at 1, 63, 64, 65, 127, kept on the
+  grid) is an exact null with no delay; 511 is the input 64 late from the start; AR5's 1 + 255 on
+  the grid nulls, inside the tick falls back once and runs continuous at 64. Plant: Automatic as
+  Buffered fails all four. Pd engine **641**; CTest **242/242**.
+- The research's own pd-segment-contract specification (tests/research_intake) is not on main
+  yet; when engine-win's PR lands, its numbers become this test's data.
+
+**PR requested** — title "User patches add no delay on the 64-sample grid, one reported block
+otherwise (DEV-13, Q-K2)"; head `devices/pd-block-quantum` at `83b40061`; base `devices/pd-double`
+until the DEV-09 stack lands, then `main`. Body: the commit message.
+
+**Request to the engine (DEV-13's other half, the graph and `pd_patch_host`):** (1) when a
+device's `segmentQuantum()` is above 1 (`PdDevice::segmentQuantum()`; a `DeviceInstance` virtual
+is the engine's call), keep that node's block split only at multiples of it, and hand each
+segment the events falling inside it (they reach Pd at the tick's start, as now); (2) construct
+user patches with `BlockMode::Automatic`. Until then a user patch in Automatic still never goes
+silent: the first off-grid split costs one counted fallback to the reported block.
+
+**Next:** DEV-14 (Pd note output, voices and instrument kinds).
+
 ## 2026-11-19 — DEV-28, step 2: true peak on every channel, from double too; DF-E20 (d) closed
 
 **`devices/true-peak` (`b5ee5aa6`), stacked on `devices/loudness-meter`.**
