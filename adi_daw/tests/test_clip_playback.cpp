@@ -101,6 +101,30 @@ void placement() {
     f.load(4096);f.session.transport().locate(2300);const auto out=f.render(4096);
     check(out[99]==0 && out[100]==f.media[0] && out[101]==f.media[2],"tick placement integrates tempo map");
 }
+void takeLanePlayback() {
+    Fixture f;
+    f.add(1, 0, 500, 11, 1000);
+    f.add(2, 0, 500, 51, 1000);
+    f.store->db().exec("INSERT INTO lanes(id,track_id,name) VALUES(7,1,'Lane');"
+                       "UPDATE clips SET lane_id=7 WHERE id=2");
+    f.load(512);
+    const auto out = f.render(512);
+    bool exact = f.session.model().clips.size() == 2;
+    for (std::size_t channel = 0; channel < 2; ++channel) {
+        for (std::size_t frame = 0; frame < 512; ++frame) {
+            const auto expected = frame < 500 ? f.media[(frame + 11) * 2 + channel] : 0.0f;
+            exact = exact && out[channel * 512 + frame] == expected;
+        }
+    }
+    check(exact, "main comp plays sample-exactly while a stored take overlaps it");
+    f.store->db().exec("DELETE FROM clips WHERE id=1");
+    if (!f.session.refresh(*f.store)) throw std::runtime_error(f.session.error());
+    f.session.transport().locate(0);
+    const auto takeOnly = f.render(512);
+    check(f.session.model().clips.size() == 1 &&
+          std::ranges::all_of(takeOnly, [](float sample) { return sample == 0; }),
+          "refresh with only a stored take delivers silence");
+}
 void properties() {
     Fixture f;f.add(1,0,500,10,1000);f.add(2,0,500,10,1000);f.add(3,0,500,10,1000);
     f.store->db().exec("UPDATE clips SET gain_db=-6.020599913279624 WHERE id=1; UPDATE clips SET muted=1 WHERE id=3; UPDATE audio_clips SET channel_mode=2 WHERE clip_id=2");
@@ -880,6 +904,7 @@ int main(int argc,char** argv) {
     test::TempDirectory home{"clip_playback","home"};setHome(home.path());
     try {
         if(only=="all" || only=="placement")placement();
+        if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}

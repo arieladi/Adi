@@ -13,6 +13,7 @@ public:
           playing_ = enabled;
           if (enabled)
               streamed_ = 0;
+          firstWrap_ = -1;
           ++revision_;
       }
   }
@@ -38,6 +39,10 @@ public:
     /// Timeline heard after a compensated output delay. Negative means the
     /// post-seek/start pipeline has not filled. Accounts for prior loop wraps.
     [[nodiscard]] std::int64_t delayedSample(std::int32_t offset,std::int32_t delay) const noexcept;
+    /// Clock at a device's audio input, including negative preroll before song
+    /// zero. Unlike delayedSample, it describes time even before audio arrives.
+    [[nodiscard]] std::int64_t inputSample(std::int32_t offset, std::int32_t arrival) const noexcept;
+    [[nodiscard]] std::int32_t inputContiguousFrames(std::int64_t sample, std::int32_t count) const noexcept;
     // Number of consecutive timeline samples before the next wrap. Used to
     // request ranges without walking every sample of the read-ahead horizon.
     [[nodiscard]] std::int64_t contiguousFrames(std::int64_t offset, std::int64_t count) const noexcept;
@@ -49,6 +54,7 @@ private:
     bool playing_ = false, looping_ = false;
     bool wrapped_ = false;
     std::int64_t streamed_ = 0;
+    std::int64_t firstWrap_ = -1; ///< stream offset of this run's first wrap
     std::int64_t countInTotal_ = 0, countInLeft_ = 0;
 };
 }

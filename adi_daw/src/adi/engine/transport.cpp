@@ -8,11 +8,13 @@ void Transport::locate(std::int64_t sample) noexcept {
     position_ = std::max<std::int64_t>(0, sample);
     streamed_ = 0;
     wrapped_ = false;
+    firstWrap_ = -1;
     ++revision_;
 }
 void Transport::loop(std::int64_t begin, std::int64_t end, bool enabled) noexcept {
     ++revision_;
     streamed_=0;wrapped_=false;
+    firstWrap_ = -1;
     begin_ = std::max<std::int64_t>(0, begin); end_ = end;
     looping_ = enabled && end_ > begin_;
 }
@@ -20,9 +22,11 @@ void Transport::retimeLoop(std::int64_t begin, std::int64_t end, bool enabled) n
     begin_ = std::max<std::int64_t>(0, begin);
     end_ = end;
     looping_ = enabled && end_ > begin_;
+    firstWrap_ = -1;
     if (looping_ && position_ >= end_) {
         position_ = begin_ + (position_ - begin_) % (end_ - begin_);
         wrapped_ = true;
+        firstWrap_ = streamed_;
     }
 }
 std::int64_t Transport::delayedSample(std::int32_t offset,std::int32_t delay) const noexcept {
@@ -34,6 +38,26 @@ std::int64_t Transport::delayedSample(std::int32_t offset,std::int32_t delay) co
         return begin_+(phase>=back?phase-back:length-(back-phase));
     }
     return position_>=behind?position_-behind:-1;
+}
+std::int64_t Transport::inputSample(std::int32_t offset, std::int32_t arrival) const noexcept {
+    const auto behind = static_cast<std::int64_t>(arrival) - (playing_ ? offset : 0);
+    if (behind <= 0)
+        return sampleAt(-behind);
+    if (!looping_ || firstWrap_ < 0)
+        return sampleAt(0) - behind;
+
+    const auto sinceFirstWrap = streamed_ - firstWrap_;
+    if (behind > sinceFirstWrap)
+        return end_ - (behind - sinceFirstWrap);
+    const auto length = end_ - begin_;
+    const auto phase = sampleAt(0) - begin_;
+    const auto back = behind % length;
+    return begin_ + (phase >= back ? phase - back : length - (back - phase));
+}
+std::int32_t Transport::inputContiguousFrames(std::int64_t sample, std::int32_t count) const noexcept {
+    if (!playing_ || !looping_ || sample < end_ - count)
+        return count;
+    return static_cast<std::int32_t>(end_ - sample);
 }
 std::int64_t Transport::sampleAt(std::int64_t offset) const noexcept {
     offset = std::max<std::int64_t>(0, offset);
@@ -57,6 +81,7 @@ void Transport::countIn(std::int64_t frames) noexcept {
     playing_ = countInLeft_ == 0;
     streamed_ = 0;
     wrapped_ = false;
+    firstWrap_ = -1;
     ++revision_;
 }
 void Transport::advance(std::int32_t frames) noexcept {
@@ -69,10 +94,18 @@ void Transport::advance(std::int32_t frames) noexcept {
         playing_ = true;
         streamed_ = 0;
         wrapped_ = false;
+        firstWrap_ = -1;
         ++revision_;
     }
     if (playing_ && frames > 0) {
-        if(looping_ && (position_>=end_ || frames>=end_-position_))wrapped_=true;
+        if (looping_ && (position_ >= end_ || frames >= end_ - position_)) {
+            wrapped_ = true;
+            if (firstWrap_ < 0) {
+                const auto toWrap = std::max<std::int64_t>(0, end_ - position_);
+                firstWrap_ = streamed_ + std::min(toWrap,
+                                                std::numeric_limits<std::int64_t>::max() - streamed_);
+            }
+        }
         position_ = sampleAt(frames);
         streamed_+=std::min<std::int64_t>(frames,std::numeric_limits<std::int64_t>::max()-streamed_);
     }
