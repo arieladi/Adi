@@ -152,6 +152,7 @@ void run() {
     std::printf("METRIC Saturator Pd peak %.9f far %.12f\n", peak, floor);
     wav(audio);
     engine.sendParameter(18, 1);
+    block(); // DEV-09: a parameter reaches Pd in the next locked tick, before its block
     engine.requestLatencyReport();
     check(latency.latencySamples() == 16, "HQ latency reported through actual external outlet");
     for (int id = 1; id <= 19; ++id)

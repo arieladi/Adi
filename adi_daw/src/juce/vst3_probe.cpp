@@ -33,8 +33,10 @@
 
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivstprocesscontext.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -1008,6 +1010,51 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
     check(live != nullptr && overlaps != nullptr && inProcess != nullptr,
           "the fixture's counters are reachable: " + bin.getFullPathName().toStdString());
     if (live == nullptr || overlaps == nullptr || inProcess == nullptr) return;
+
+    using ReadTransport = void (*)(double*);
+    const auto readTransport = reinterpret_cast<ReadTransport>(lib.getFunction("adiFixtureReadTransport"));
+    check(readTransport != nullptr, "the VST3 fixture exposes what process received");
+    if (readTransport) {
+        auto dev = make(256);
+        if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get()); v3 && v3->usingRawProcessor()) {
+            using namespace Steinberg::Vst;
+            std::array<double, 12> received{};
+            std::array<float, 256> left{}, right{};
+            float* outputs[]{left.data(), right.data()};
+            adi::engine::DeviceTransport clock;
+            clock.sample = -1024;
+            clock.quarterNotes = -0.125;
+            clock.barStart = -3.0;
+            clock.bpm = 75.0;
+            clock.numerator = 3;
+            clock.playing = true;
+            clock.looping = true;
+            clock.loopBeginQuarterNotes = 1.5;
+            clock.loopEndQuarterNotes = 4.5;
+            adi::engine::NodeIo io;
+            io.out = outputs;
+            io.channels = 2;
+            io.frames = 256;
+            io.deviceTransport = &clock;
+            for (const bool offline : {false, true}) {
+                v3->setOffline(offline);
+                v3->prepare(sr, io.frames);
+                v3->process(io);
+                readTransport(received.data());
+                using Context = ProcessContext;
+                const auto flags = Context::kPlaying | Context::kCycleActive | Context::kProjectTimeMusicValid |
+                                   Context::kBarPositionValid | Context::kCycleValid | Context::kTempoValid |
+                                   Context::kTimeSigValid;
+                const auto mode = static_cast<double>(offline ? kOffline : kRealtime);
+                check(received == std::array<double, 12>{static_cast<double>(flags), sr, -1024.0, -0.125,
+                                                        -3.0, 1.5, 4.5, 75.0, 3.0, 4.0, mode, mode},
+                      offline ? "offline setup and process both supply the signed transport"
+                              : "realtime setup and process both supply the signed transport");
+            }
+        } else {
+            check(false, "the transport fixture loaded through the raw VST3 processor");
+        }
+    }
 
     // A new block size on a device still active reaches the plug-in. JUCE's
     // prepareToPlay returns at once on an active instance at the rate and
