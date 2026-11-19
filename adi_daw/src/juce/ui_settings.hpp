@@ -115,6 +115,10 @@ class SettingsPanel final : public juce::Component {
     juce::TextEditor search;
     SettingsPageList pageList{*this};
     juce::TextButton defaults{"Restore Defaults"};
+    // The Tempo & MIDI page's MIDI Ports table (SRF-05), where the application has ports to list: made
+    // the first time the page shows, at the page's head, in place of the `midi.ports` record's row.
+    std::function<std::unique_ptr<juce::Component>()> midiPorts;
+    juce::Component *midiPortsTable() const noexcept { return midi_.get(); }
     // Live's tab column and the page's frame; ADI's help line and buttons at its foot.
     static constexpr int kPageListWidth = 94, kHelpHeight = 58;
 
@@ -125,6 +129,7 @@ class SettingsPanel final : public juce::Component {
     juce::String help_;
     std::function<std::unique_ptr<juce::Component>()> makeAudio_;
     std::unique_ptr<juce::Component> audio_;
+    std::unique_ptr<juce::Component> midi_;
     juce::Viewport scroll_;
     juce::Component content_;
     std::vector<std::unique_ptr<SettingRow>> rows_;

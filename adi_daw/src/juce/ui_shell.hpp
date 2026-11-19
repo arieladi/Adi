@@ -295,6 +295,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
     bool playing() const noexcept { return playing_; }
+    // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
+    // has come in from an open port within the last moment (SRF-05). The application sets it.
+    void setMidiIn(bool on) noexcept { midiIn_ = on; }
+    bool midiIn() const noexcept { return midiIn_; }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
     unsigned lastDrain() const noexcept { return lastDrain_; }
@@ -663,6 +667,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool pluginWindowsShown_ = true;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
+    bool midiIn_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
