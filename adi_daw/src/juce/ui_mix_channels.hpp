@@ -54,6 +54,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     void syncSelection();
     void rebuildList();
+    bool refreshToolMatches();
     bool rebuildGroups(const SnapshotReader &, std::int64_t reference);
     void chooseFilter();
     void updateGroupMembership();
@@ -76,6 +77,9 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     std::vector<Entry> entries_;
     std::vector<Group> groups_;
     std::vector<std::size_t> rows_;
+    juce::String query_;
+    std::vector<std::int64_t> toolMatches_;
+    std::optional<std::uint64_t> toolSearchGeneration_;
     std::vector<std::int64_t> focusMembers_;
     std::int64_t focusMain_ = 0;
     std::optional<std::vector<std::int64_t>> membership_;

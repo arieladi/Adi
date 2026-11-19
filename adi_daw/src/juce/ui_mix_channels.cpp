@@ -18,9 +18,18 @@ constexpr float kFloor = .001f; // -60 dBFS
 
 MixChannelBrowser::MixChannelBrowser(AdiRootComponent &root) : root_(root) {
     setTitle("Mix View channels");
-    search.setTitle("Find channel");
-    search.setTextToShowWhenEmpty("Find channel", look::textDim);
-    search.onTextChange = [this] { rebuildList(); };
+    search.setTitle("Search channels and tools");
+    search.setTextToShowWhenEmpty("Search channels and tools", look::textDim);
+    search.onTextChange = [this] {
+        const auto next = search.getText().trim();
+        if (query_ == next) return;
+        query_ = next;
+        toolMatches_.clear();
+        toolSearchGeneration_.reset();
+        const juce::Component::SafePointer<MixChannelBrowser> alive(this);
+        refreshToolMatches();
+        if (alive) rebuildList();
+    };
     show.setTitle("Show channels");
     show.addItem("All channels", kAllChannels);
     show.addItem("Sounding now", kSoundingNow);
@@ -118,17 +127,42 @@ void MixChannelBrowser::selectedRowsChanged(int row) {
 
 void MixChannelBrowser::rebuildList() {
     rows_.clear();
-    const auto query = search.getText().trim();
     for (std::size_t i = 0; i < entries_.size(); ++i) {
         const auto &e = entries_[i];
         if (membership_ && !std::binary_search(membership_->begin(), membership_->end(), e.id)) continue;
-        if (query.isNotEmpty() && !e.name.containsIgnoreCase(query)) continue;
+        if (query_.isNotEmpty() && !e.name.containsIgnoreCase(query_) &&
+            !std::binary_search(toolMatches_.begin(), toolMatches_.end(), e.id)) continue;
         rows_.push_back(i);
     }
     const juce::ScopedValueSetter<bool> guard(syncing_, true);
     list.updateContent();
     syncSelection();
     list.repaint();
+}
+
+bool MixChannelBrowser::refreshToolMatches() {
+    if (query_.isEmpty() || !isShowing()) return false;
+    const auto generation = root_.projectViewGeneration();
+    if (toolSearchGeneration_ == generation) return false;
+
+    // Read device names from the passive publication. An unchanged project
+    // view does not need another lookup when live parameter values change.
+    const auto query = query_;
+    const juce::Component::SafePointer<MixChannelBrowser> alive(this);
+    const auto devices = root_.devices.publication ? root_.devices.publication() : nullptr;
+    if (!alive || generation != root_.projectViewGeneration() || query != query_ || !isShowing()) return false;
+    toolSearchGeneration_ = generation;
+
+    std::vector<std::int64_t> matches;
+    if (devices)
+        for (const auto &device : *devices)
+            if (juce::String::fromUTF8(device.name.c_str()).containsIgnoreCase(query))
+                matches.push_back(device.track);
+    std::sort(matches.begin(), matches.end());
+    matches.erase(std::unique(matches.begin(), matches.end()), matches.end());
+    if (matches == toolMatches_) return false;
+    toolMatches_ = std::move(matches);
+    return true;
 }
 
 bool MixChannelBrowser::rebuildGroups(const SnapshotReader &reader, std::int64_t reference) {
@@ -262,6 +296,8 @@ void MixChannelBrowser::frame(const SnapshotReader &reader) {
         if (onFilter) onFilter(membership_);
         if (!alive) return;
     }
+    if (refreshToolMatches()) rebuildList();
+    if (!alive) return;
     const auto selected = root_.analysisTrack(reader, true);
     if (selected_ != selected) { selected_ = selected; syncSelection(); }
     if (!isShowing()) return;
