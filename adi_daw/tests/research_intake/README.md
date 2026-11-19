@@ -102,6 +102,12 @@ incomplete declared scope; no cross-DAW ranking is authorized. One logical CPU i
 denominator; process counters cannot establish callback deadlines, physical I/O or audio
 continuity. Calibrate the observer with the receiving workload before performance use.
 
+The statistics are per-app condition analyses. There is no cross-DAW ranking
+helper (ADR-0248 d7). The historical `ranking_allowed` output key is retained for
+format compatibility: it reports within-target analytical gates only and never
+authorizes a DAW ranking. Confidence intervals, A/A controls, frequency and scope
+checks, counters and callback statistics remain available.
+
 ```text
 python -m unittest discover -s performance -p "test_*.py"
 python performance/test_stats_schema.py

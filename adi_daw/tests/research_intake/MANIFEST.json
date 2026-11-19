@@ -75,13 +75,13 @@
     },
     {
       "path": "performance/lean_stats.py",
-      "bytes": 4287,
-      "sha256": "c5b7e00da35560091517b8cd7b82afa9a6e67408873df646efe6e2daef8d4735"
+      "bytes": 4294,
+      "sha256": "db12047de5718ca03e006db2f42207b6c22ae7578aae40e2f4f77fa24df5cf6d"
     },
     {
       "path": "performance/stats_original.py",
-      "bytes": 17628,
-      "sha256": "0f19f47724ccc76e6b52c21457813d10d0240b38ade409909a7815124c2fe2d6"
+      "bytes": 17335,
+      "sha256": "079cf35b263aa9ea609403c75cc6b743ec9e3d5b76842fd04ff62686c323d1bb"
     },
     {
       "path": "performance/test_lean_cpu.py",
@@ -210,8 +210,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 7285,
-      "sha256": "7b0312b38d49ef765b2b6819621f5a507bc87fc132bc6b224d907d66f7f23b3e"
+      "bytes": 7671,
+      "sha256": "08f017a99ee2fe022dbcc33eebaaddab1d6acaaa994139ea4ded3840fdf50ecb"
     },
     {
       "path": "requirements.txt",

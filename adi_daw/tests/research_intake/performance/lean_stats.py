@@ -39,8 +39,9 @@ def compare(path):
     result=original.compare_manifest(path)
     result['scope_complete_operator_claim']=all(r['scope_complete_operator_claim'] for r in seen)
     result['frequency_compatible']=not result['frequency_flags']
+    # Historical output key: within-target gates only, not ranking authorization.
     result['ranking_allowed']=result['frequency_compatible'] and result['scope_complete_operator_claim'] and result['separable']
-    result['ranking_limit']='Even a separable within-target condition effect is not a DAW efficiency ranking; comparing rankings needs separated effect intervals across matched studies.'
+    result['ranking_limit']='Per-app condition statistics only; no cross-DAW efficiency ranking is authorized.'
     result['validated_run_summaries']=seen
     return result
 def main():
