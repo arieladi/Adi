@@ -14,6 +14,32 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-28, step 2: true peak on every channel, from double too; DF-E20 (d) closed
+
+**`devices/true-peak` (`b5ee5aa6`), stacked on `devices/loudness-meter`.**
+
+- `TruePeakMeter::prepare(rate, channels)`: any channel count (default 8, as before); the
+  loudness meter's true peak now covers every channel. A double-input path, reading exactly
+  what the float path reads for float-exact input.
+- **DF-E20 (d), both halves, in this lane's files** (the register names the engine seat; the
+  files are `src/adi/dsp`): the oversampling factor is now the smallest whole number reaching
+  176.4 kHz (6× at 32 kHz, 8× at 22.05 kHz; 44.1-192 kHz unchanged), so `true_peak.hpp`'s
+  promise holds and is tested; `spectrum.hpp` now says a full-scale sine reads 0.00 when centred
+  on a bin and less between bins by the window's scalloping loss. **win:** DF-E20 (d) can move to
+  Done with this PR.
+- Auto Gain Stage: `dsp::AutoGain` is ADR-0166's per-effect auto gain (a 1 s window by design),
+  not an integrated reading, and stays. The Auto Gain Stage's LUFS mode is
+  `src/adi/engine/gain_stage.cpp` (engine): **request to the engine** to read it from
+  `dsp::LoudnessMeter` with N13 and export normalization.
+- dsp **162**, loudness **62**; plant (the old factor rule) fails the new checks; CTest **243/243**.
+
+**PR requested** — title "True peak on any channel count, from double too, and at least
+176.4 kHz at every rate (DEV-28, DF-E20 d)"; head `devices/true-peak` at `b5ee5aa6`; base
+`devices/loudness-meter` until it lands, then `main`. Body: the commit message.
+
+**Next:** queue item 7, the Pd tier for the Grid: DEV-13 (a patch's delay when blocks do not
+divide by 64), on the DEV-09 stack.
+
 ## 2026-11-19 — DEV-28, step 1: the one loudness meter, proved against Tech 3341/3342 and a brute-force reference
 
 **`devices/loudness-meter` (`a3d4dfac`), from `origin/main`.** New: `src/adi/dsp/loudness.*`,
