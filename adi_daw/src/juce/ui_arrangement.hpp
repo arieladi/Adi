@@ -351,13 +351,54 @@ class ArrangementCanvas final : public juce::Component,
     juce::Point<float> last;
     bool panning = false;
 };
-// Bitwig's project view button (Master Reference 10, Figure 32; the director, 28 October 2026):
-// at the top of the track names, a tree with its menu's arrow. Lit while a group is chosen, so a
-// view that leaves tracks out always says so.
+// Bitwig's project view (Master Reference 10, Figure 32; the director, 28 October 2026), drawn as
+// the Arrangement sheet's "Show" chooser over the track names: "Show", then the view chosen ("All
+// groups", or the group's name, in the accent while a group is chosen, so a view that leaves tracks
+// out always says so), and the arrow of its menu.
 class ProjectViewButton final : public juce::Button {
   public:
     ProjectViewButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    static constexpr const char *kAllGroups = "All groups";
+};
+// A button of the bar over the track names (the Arrangement sheet; language.png part B): a box of
+// its own, with its label or its glyph; or a cell of a group, lit in the accent while on.
+class BarButton final : public juce::Button {
+  public:
+    using Glyph = std::function<void(juce::Graphics &, juce::Rectangle<float>, juce::Colour)>;
+    BarButton(const juce::String &name, const juce::String &tooltip, bool cell, Glyph = {});
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    const bool cell;
+
+  private:
+    Glyph glyph_;
+};
+// The bar over the track names and their controls, level with the beat ruler (the Arrangement
+// sheet, arrangement.png; ADR-0244 d8; DF-W25), left to right: Flip Sides (the track names to the
+// window's other side, ADR-0080); Show, the project view; the track row's sections, In/Out, Sends,
+// Returns, Mixer and Track Delay, in one group; Live's Optimize Arrangement Height and Width (H, W)
+// in another; Automation Mode; Lock Envelopes.
+class NamesBar final : public juce::Component {
+  public:
+    NamesBar();
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    BarButton flip;
+    ProjectViewButton show;
+    // Mixer only shows its state: the track controls' mixer has no toggle to switch.
+    BarButton inOut, sends, returns, mixer, delay;
+    BarButton height, width;
+    BarButton automation, lock;
+    // Show's least width: "Show" and a few letters of the view.
+    static constexpr int kShowMin = 80;
+    // What Automation Mode and Lock Envelopes say while they wait.
+    static constexpr const char *kAutomationWaits =
+        "Automation Mode waits for the engine's automation lanes (window log, N26).";
+    static constexpr const char *kLockWaits = "Lock Envelopes waits for the engine's automation lanes (window log, N26).";
+
+  private:
+    // The two groups' boxes, drawn behind their cells.
+    juce::Rectangle<float> sections_, sizes_;
 };
 // One pixel wide, above the canvas, transparent to the mouse (ADR-0050 d2): moving
 // it repaints two thin strips, never the arrangement.
@@ -373,10 +414,9 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // Above the track names, Live's Set Locator, Previous and Next Locator buttons and its Automation
-    // Mode and Lock Envelopes toggles (Live 12 manual 6): where paint draws each, and where a click
-    // finds it. Each waits for the engine (locators N25, automation N26); a click says so.
-    enum class TopButton { Set, Previous, Next, Automation, Lock };
+    // Under the bar over the track names, Live's Set Locator, Previous and Next Locator buttons (Live 12
+    // manual 6.4): where paint draws each, and where a click finds it.
+    enum class TopButton { Set, Previous, Next };
     // What a track's Unfold Track button and U say on a track that is not a group.
     static constexpr const char *kUnfoldWaits =
         "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
@@ -481,9 +521,8 @@ class ArrangementView final : public juce::Component {
     ArrangementCanvas canvas;
     ArrangementPlayhead playhead;
     std::uint64_t canvasPaints = 0;
-    // Bitwig's project view: the button, its menu of the whole project and its groups, and the
-    // view chosen there, which the lanes, the track controls and the Mixer View all follow.
-    ProjectViewButton projectView;
+    // Bitwig's project view: its menu of the whole project and its groups (the bar's Show opens it),
+    // and the view chosen there, which the lanes, the track controls and the Mixer View all follow.
     // What fills in the project's tracks as the view sees them, in place, for each new snapshot
     // and when the menu opens; applied at once. The snapshot's rows by default (rowsFromSnapshot);
     // tests give it a tree.
@@ -500,9 +539,10 @@ class ArrangementView final : public juce::Component {
     void toggleFold(std::int64_t group);
     // Alt+U (§42.16): every group unfolded.
     void unfoldAll();
-    // Where a row's name column begins: past a band in its group's colour for each group it
-    // sits in (Live's).
-    static constexpr int kGroupBand = 6;
+    // Where a row's name column begins: past a line in its group's colour for each group it sits
+    // in, as Live's; the Arrangement sheet's lines, 4 wide at a step of 5, the row itself as wide as
+    // its group's (DF-W25).
+    static constexpr int kGroupBand = 5, kGroupLine = 4;
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);
