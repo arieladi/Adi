@@ -1,5 +1,13 @@
 # Clones lane log
 
+## 2026-11-19 — Editable Pd timing cases for the devices seat
+
+At 48 kHz and 120 BPM, set a four-quarter-note held Volume curve with point 1 muted and point 3 open. In 2/2, QN 0 and QN 1 both produce `(1,120,2,2,1,1,0)` on the seven-field Pd transport. A patch reconstructing the integer quarter from these values replays point 1 at QN 1. After a full 4/4 bar followed by 3/4, the start of bar 2 is QN 4. Reconstruction from the current meter gives QN 3.
+
+For a sub-block case, use a 1/32-quarter cycle with only point 1 muted. Start playback at sample 64 and split a 128-frame block after 64 frames. The expected open transition is at timeline sample 94. A second delivery of the block-start position at sample 128 repeats the first 30 muted frames. Compare after compensating the editable patch's reported adapter latency.
+
+The catalogued ADi-SHAPER requests the graph's exact position per segment. For editable patches, the devices seat owns the pending quantum/MIDI adapter work. An optional exact musical position anchored to the first input sample of each Pd tick would preserve existing patch bindings. Include upstream latency and a partial tick across a seek or stop in the test. The native device's regression covers QN 0/1, the meter change, and writing a segment at a nonzero buffer offset.
+
 ## 2026-11-19 — ADi-SHAPER reference contract
 
 **Target.** The eleven sound-shaping modules in ShaperBox 3.6, each with one to three bands, editable modulation and a reorderable serial signal path. Compressor and Oscilloscope are additional rack tools. ADi-SHAPER uses ADI controls, drawing, names for original sounds and independently generated audio assets.
