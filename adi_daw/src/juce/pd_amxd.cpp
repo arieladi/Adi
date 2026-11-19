@@ -369,6 +369,7 @@ private:
             return obj(b, "metro " + args[0]);
         }
         if (cls == "t" || cls == "trigger") return trigger(b, args);
+        if (cls == "line~") return line(b, args);
         if (cls == "pack" || cls == "unpack") return packing(b, cls, args);
         static const std::set<std::string> twoInlet{"+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "min", "max"};
         if (twoInlet.count(cls) != 0 || cls == "abs") {
@@ -390,6 +391,64 @@ private:
         }
         if (cls == "print") return obj(b, b.text);
         refuse(b, cls, "no translation for this object yet");
+    }
+
+    /// Max's [line~] takes a list of (target, ms) pairs and plays them one
+    /// after another; a lone number jumps. Pd's [vline~] takes ONE segment and
+    /// reads a third number as a delay, so a Max list is walked pair by pair
+    /// here, each pair sent as "target ms delay" with the delay accumulated --
+    /// the first with delay 0, which (in vline~) cancels whatever was still
+    /// scheduled, as a new list does in Max.
+    void line(const Box& b, const std::vector<std::string>& args) {
+        if (!args.empty()) return refuse(b, "line~", "an initial value is not translated yet");
+        if (connected(b, true, 1)) return refuse(b, "line~", "its end-of-ramp bang is not translated yet");
+        if (connected(b, false, 1)) return refuse(b, "line~", "its ramp-time inlet is not translated yet");
+        std::string name = prefix_ + b.id;
+        for (char& c : name)
+            if (c == ' ' || c == '/') c = '_';
+        const std::string acc = "v \\$0-mxline-" + name;
+        const char* body[] = {
+            "#X obj 10 10 inlet",                       // 0
+            "#X obj 10 40 t a b",                       // 1  input: reset, then walk
+            "#X msg 80 70 0",                           // 2
+            "#X obj 80 100 ",                           // 3  acc := 0 (v)
+            "#X obj 10 130 t a b",                      // 4  loop entry: clear the rest
+            "#X obj 160 250 list",                      // 5  the rest, stored
+            "#X obj 10 160 route bang",                 // 6  an empty rest ends the walk
+            "#X obj 10 190 list split 2",               // 7
+            "#X msg 120 220 \\$1 0",                    // 8  a lone number: a jump
+            "#X obj 10 250 t a a",                      // 9  per pair: send, then advance
+            "#X obj 120 280 unpack f f",                // 10
+            "#X obj 120 340 pack f f f",                // 11 target ms delay
+            "#X obj 120 310 t f b",                     // 12
+            "#X obj 200 310 ",                          // 13 acc (read)
+            "#X obj 120 370 vline~",                    // 14
+            "#X obj 120 400 outlet~",                   // 15
+            "#X obj 10 280 t b a",                      // 16
+            "#X obj 10 310 unpack f f",                 // 17
+            "#X obj 10 340 t b f",                      // 18
+            "#X obj 10 400 +",                          // 19
+            "#X obj 10 370 ",                           // 20 acc (read)
+            "#X obj 10 430 ",                           // 21 acc := acc + ms
+        };
+        std::string canvas = "#N canvas 0 50 450 480 max-line~ 0;\n";
+        for (std::size_t i = 0; i < std::size(body); ++i) {
+            std::string r = body[i];
+            if (i == 3 || i == 13 || i == 20 || i == 21) r += acc;
+            canvas += r + ";\n";
+        }
+        static const int wires[][4] = {
+            {0, 0, 1, 0}, {1, 1, 2, 0}, {2, 0, 3, 0}, {1, 0, 4, 0}, {4, 1, 5, 1}, {4, 0, 6, 0},
+            {6, 1, 7, 0}, {7, 1, 5, 1}, {7, 2, 8, 0}, {7, 0, 9, 0}, {8, 0, 9, 0}, {9, 1, 10, 0},
+            {10, 1, 11, 1}, {10, 0, 12, 0}, {12, 1, 13, 0}, {13, 0, 11, 2}, {12, 0, 11, 0},
+            {11, 0, 14, 0}, {14, 0, 15, 0}, {9, 0, 16, 0}, {16, 1, 17, 0}, {16, 0, 5, 0},
+            {5, 0, 4, 0}, {17, 1, 18, 0}, {18, 1, 19, 1}, {18, 0, 20, 0}, {20, 0, 19, 0},
+            {19, 0, 21, 0},
+        };
+        for (const auto& w : wires)
+            canvas += "#X connect " + std::to_string(w[0]) + " " + std::to_string(w[1]) + " " +
+                      std::to_string(w[2]) + " " + std::to_string(w[3]) + ";\n";
+        single(b, canvas + "#X restore " + at(b.x, b.y) + " pd max-line~");
     }
 
     void trigger(const Box& b, const std::vector<std::string>& args) {

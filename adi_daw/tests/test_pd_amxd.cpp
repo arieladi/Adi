@@ -165,15 +165,16 @@ void testWhatIsRefusedIsNamed() {
     section("DEV-16 -- what cannot be translated is refused, box by box");
     const auto r = translateMaxPatcher(
         patcher({box("obj-1", "% 1.", 10, 10, R"("float")"), box("obj-2", "cycle~ 440", 10, 50, kSig),
-                 box("obj-3", "sig~ 0.1", 100, 10, kSig), box("obj-4", "line~", 10, 90, kSig),
+                 box("obj-3", "sig~ 0.1", 100, 10, kSig), box("obj-4", "line~", 10, 90, R"("signal","bang")"),
                  box("obj-5", "zl.group 4", 10, 130, R"("","")"), box("obj-6", "+ 1.", 200, 10, R"("float")")},
-                {line("obj-3", 0, "obj-2", 1)}),
+                {line("obj-3", 0, "obj-2", 1), line("obj-4", 1, "obj-6", 0)}),
         AmxdKind::AudioEffect);
     check(!r.ok() && r.pdPatch.empty(), "nothing is produced when any box is refused");
     std::vector<std::string> ids;
     for (const auto& b : r.refused) ids.push_back(b.id + ":" + b.maxClass);
     check(ids == std::vector<std::string>{"obj-1:%", "obj-2:cycle~", "obj-4:line~", "obj-5:zl.group"},
-          "refused: [% 1.] (float modulo), [cycle~] with its phase inlet in use, [line~], [zl.group]; [+ 1.] and [sig~] pass");
+          "refused: [% 1.] (float modulo), [cycle~] with its phase inlet in use, [line~]'s end bang, [zl.group]; "
+          "[+ 1.] and [sig~] pass");
     if (!r.refused.empty())
         check(r.refused[0].reason.find("modulo") != std::string::npos, "with the reason: " + r.refused[0].reason);
     // Inside a subpatcher, a refusal names the path to it.
@@ -351,6 +352,55 @@ void testSubpatchersCarrySignalsAndControls() {
           "[p inc] (inlet -> [+ 1] -> outlet) fed 1.5 prints 2, through a control inlet and outlet");
 }
 
+/// The left output of a translated device, with silence in.
+std::vector<float> renderOut(const std::string& pdText, int frames, int& latency, std::string& error) {
+    const auto dir = std::filesystem::temp_directory_path() / "adi-amxd-test";
+    std::filesystem::create_directories(dir);
+    { std::ofstream(dir / "ramp.pd", std::ios::binary) << pdText; }
+    LibPdEngine eng(dir.string(), "ramp.pd", 2, 2);
+    PdLatencyReceiver lat;
+    if (!eng.open(lat, error)) return {};
+    constexpr int kBlock = 256;
+    eng.prepare(48000.0, kBlock);
+    latency = eng.adapterLatencySamples();
+    std::vector<float> zeros(kBlock, 0.f), l(kBlock), r(kBlock), out;
+    for (int done = 0; done < frames; done += kBlock) {
+        const float* ip[2] = {zeros.data(), zeros.data()};
+        float* op[2] = {l.data(), r.data()};
+        adi::engine::NodeIo io;
+        io.in = ip;
+        io.out = op;
+        io.channels = 2;
+        io.frames = kBlock;
+        eng.process(io);
+        out.insert(out.end(), l.begin(), l.end());
+    }
+    return out;
+}
+
+void testLineSegmentsAreChained() {
+    section("DEV-16 step 3 -- Max's [line~] list becomes chained [vline~] segments");
+    const std::string json = patcher(
+        {box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "0 0 1 100 0 200", 10, 40, R"("")", "message"),
+         box("obj-3", "line~", 10, 80, R"("signal","bang")"), box("obj-4", "plugout~", 10, 120, "")},
+        {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-3", 0, "obj-4", 0),
+         line("obj-3", 0, "obj-4", 1)});
+    const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+    check(t.ok() && t.pdPatch.find("pd max-line~") != std::string::npos, "translated through [pd max-line~]");
+    int latency = 0;
+    std::string error;
+    const auto out = renderOut(t.pdPatch, 48000 / 2, latency, error);
+    const auto at = [&](double ms) {
+        const auto i = static_cast<std::size_t>(latency) + static_cast<std::size_t>(std::lround(ms * 48.0));
+        return i < out.size() ? static_cast<double>(out[i]) : -99.0;
+    };
+    const std::pair<double, double> expect[] = {{0, 0.0}, {50, 0.5}, {100, 1.0}, {200, 0.5}, {300, 0.0}, {400, 0.0}};
+    for (const auto& [ms, v] : expect)
+        check(error.empty() && std::fabs(at(ms) - v) < 1e-3,
+              "at " + std::to_string(static_cast<int>(ms)) + " ms: " + std::to_string(at(ms)) + " (Max: " +
+                  std::to_string(v) + ")" + error);
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -386,6 +436,7 @@ int main() {
     testTheOrderIsHeard();
     testMaxIntegersAreHeard();
     testSubpatchersCarrySignalsAndControls();
+    testLineSegmentsAreChained();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

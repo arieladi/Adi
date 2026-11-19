@@ -21,8 +21,13 @@
 //     division through [i] after, so [+ 1] fed 2.7 gives 3 as in Max.
 //   * SUBPATCHERS. [p name] becomes [pd name]; an inlet carries a signal
 //     ([inlet~]) when the parent feeds it one, an outlet when it is fed one.
+//   * [line~] (step 3). Max chains a list of (target, ms) pairs; Pd's
+//     [vline~] takes one segment and reads a third number as a delay. So a
+//     [pd max-line~] walks the pairs and schedules each with the delay
+//     accumulated so far.
 // Refused, for later steps: [cycle~]'s phase inlet (an offset in Max, a reset
-// in Pd), [line~], float modulo, bpatchers, MIDI devices and instruments; and
+// in Pd), [line~]'s ramp-time inlet and end bang, float modulo, bpatchers,
+// MIDI devices and instruments; and
 // not read at all: frozen devices (`mx@c`) and Live's own encrypted devices
 // (`ciph`).
 //
