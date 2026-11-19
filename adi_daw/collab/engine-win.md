@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, saved source verification and analysis-cache trim (DF-E34 a/d)
+
+**PR requested** — `engine-win/progressive-saved-source-mismatch` at `d4ecedb2ac066c2eb46ad6eef6ac9112276bf266`, exact #664 plus main `62ad7218` and both confirmed findings. The first fix verifies the current media when a warm cache entry disagrees with its saved source dimensions. An actual source mismatch stays silent before and after eviction. Same-shape verification is still limited by the existing warm-path checks. Trim continues through unreadable and undeletable entries, reports their paths, preserves cancellation, and leaves removable siblings eligible after inventory.
+
+MSVC x64 `/W4 /WX`, 232 checks in the exact combined tree across decode, progressive decode and both analysis-cache suites. The saved-source and trim cases independently failed before the fix. The test host lacked optional symlink privilege and native AAC support.
+
 ## 2026-11-19, settings and bundle publication (DF-E33 a/b)
 
 **PR requested** — `engine-win/settings-portable` at `a99448c4c532e7a2d73e0b25ce829875d69ae1b0`, on main `62ad7218`. This one settings family replaces #673 and #672. Whole-file settings publication revalidates the previous payload before a fallback rename, including a complete read and rejection of embedded NULs. An unsupported exclusive rename for a new settings file or new bundle first tries an exclusive hard link. Existing unsupported bundles report how to choose a new name. Ordinary project publication retains its lease requirement. The settings fallback still has the final OS rename's concurrency window.
