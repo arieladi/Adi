@@ -215,18 +215,18 @@ public:
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
     tresult PLUGIN_API setIoMode(IoMode) override { return kResultOk; }
     int32 PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
-        if (type == kAudio) return 1;                 // one stereo in, one stereo out
+        if (type == kAudio) return variant_ == Variant::NoteExpr && dir == kInput ? 2 : 1;
         if (type == kEvent && dir == kInput) return 1;
         return 0;
     }
     tresult PLUGIN_API getBusInfo(MediaType type, BusDirection dir, int32 index, BusInfo& bus) override {
-        if (index != 0 || getBusCount(type, dir) == 0) return kInvalidArgument;
+        if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
         bus.mediaType = type;
         bus.direction = dir;
         bus.channelCount = type == kAudio ? 2 : 16;
-        copy128(bus.name, type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes");
-        bus.busType = kMain;
-        bus.flags = BusInfo::kDefaultActive;
+        copy128(bus.name, index == 1 ? "Key" : (type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes"));
+        bus.busType = index == 1 ? kAux : kMain;
+        bus.flags = index == 1 ? 0u : static_cast<uint32>(BusInfo::kDefaultActive);
         return kResultOk;
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
@@ -273,8 +273,8 @@ public:
                                           int32 numOuts) override {
         return (numOuts == 1 && outs != nullptr && outs[0] == SpeakerArr::kStereo) ? kResultTrue : kResultFalse;
     }
-    tresult PLUGIN_API getBusArrangement(BusDirection, int32 index, SpeakerArrangement& arr) override {
-        if (index != 0) return kInvalidArgument;
+    tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& arr) override {
+        if (index < 0 || index >= getBusCount(kAudio, dir)) return kInvalidArgument;
         arr = SpeakerArr::kStereo;
         return kResultOk;
     }
@@ -592,10 +592,25 @@ private:
             if (out.channelBuffers64 != nullptr)
                 renderInto(in != nullptr ? in->channelBuffers64 : nullptr, numIn, out.channelBuffers64,
                            out.numChannels, data.numSamples);
+            if (data.numInputs > 1)
+                mixKey(data.inputs[1].channelBuffers64, data.inputs[1].numChannels, out.channelBuffers64,
+                       out.numChannels, data.numSamples);
         } else if (out.channelBuffers32 != nullptr) {
             renderInto(in != nullptr ? in->channelBuffers32 : nullptr, numIn, out.channelBuffers32,
                        out.numChannels, data.numSamples);
+            if (data.numInputs > 1)
+                mixKey(data.inputs[1].channelBuffers32, data.inputs[1].numChannels, out.channelBuffers32,
+                       out.numChannels, data.numSamples);
         }
+    }
+
+    template <typename Sample>
+    void mixKey(Sample** key, int32 keyChannels, Sample** output, int32 channels, int32 frames) {
+        if (!key || !output) return;
+        for (int32 channel = 0; channel < keyChannels && channel < channels; ++channel)
+            if (key[channel] && output[channel])
+                for (int32 frame = 0; frame < frames; ++frame)
+                    output[channel][frame] += key[channel][frame];
     }
 
     /// The input passes through under the voices, as an instrument with an

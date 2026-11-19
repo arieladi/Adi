@@ -1056,6 +1056,44 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
         }
     }
 
+    {
+        auto dev = make(256);
+        if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get()); v3 && v3->usingRawProcessor()) {
+            std::array<float, 256> left{}, right{}, keyLeft{}, keyRight{};
+            keyLeft[40] = 0.25f;
+            keyRight[40] = -0.5f;
+            const float* key[]{keyLeft.data(), keyRight.data()};
+            float* out[]{left.data(), right.data()};
+            adi::engine::NodeIo io;
+            io.out = out;
+            io.channels = 2;
+            io.frames = 64;
+            io.blockOffset = 32;
+            io.sidechain = key;
+            v3->process(io);
+            check(left[40] == 0.25f && right[40] == -0.5f && left[39] == 0.0f,
+                  "the VST3 auxiliary input receives the segment's stereo key at the right offset");
+            io.sidechain = nullptr;
+            v3->process(io);
+            check(left[40] == 0.0f && right[40] == 0.0f, "an unconnected key is silent on the next call");
+
+            std::array<double, 256> wideLeft{}, wideRight{}, wideKeyLeft{}, wideKeyRight{};
+            wideKeyLeft[40] = 0.1;
+            wideKeyRight[40] = -0.2;
+            const double* wideKey[]{wideKeyLeft.data(), wideKeyRight.data()};
+            double* wideOut[]{wideLeft.data(), wideRight.data()};
+            v3->willBeHanded(adi::engine::Precision::Float64);
+            v3->prepare(sr, 256);
+            io.out = nullptr;
+            io.out64 = wideOut;
+            io.sidechain64 = wideKey;
+            v3->process(io);
+            check(v3->processingDouble() && wideLeft[40] == 0.1 && wideRight[40] == -0.2,
+                  "the auxiliary input preserves double precision at both channels");
+        } else {
+            check(false, "the side-chain fixture loaded through the raw VST3 processor");
+        }
+    }
     // A new block size on a device still active reaches the plug-in. JUCE's
     // prepareToPlay returns at once on an active instance at the rate and
     // block it is handed, and prepare handed it them first.

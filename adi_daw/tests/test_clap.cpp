@@ -607,10 +607,13 @@ void testAgainstAFakePlugin() {
         // inside get() when a host does it.
         d.prepare(48000.0, 512);
 
-        // THE MAPPING THE PLANTED DEFECT SLIPPED THROUGH. CLAP spells an
-        // unbounded tail UINT32_MAX; ours is INT64_MAX. A plain cast makes
-        // "never suspend" into 4294967295 samples -- about twenty-four hours,
-        // which is wrong in a way nobody would ever notice.
+        constexpr auto infinite = static_cast<std::uint32_t>(INT32_MAX);
+        f.tailValue = infinite - 1;
+        check(d.tailSamples() == INT32_MAX - 1, "INT32_MAX minus one is still a finite tail");
+        f.tailValue = infinite;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX is an unbounded tail");
+        f.tailValue = infinite + 1;
+        check(d.tailSamples() == engine::kInfiniteTail, "INT32_MAX plus one is an unbounded tail");
         f.tailValue = UINT32_MAX;
         check(d.tailSamples() == engine::kInfiniteTail,
               "UINT32_MAX is MAPPED to kInfiniteTail, not cast");

@@ -951,10 +951,8 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
     // is ADR-0055's default: never suspend something we cannot ask about.
     if (!activated_) return engine::kInfiniteTail;
     const std::uint32_t t = tailExt_->get(plugin_);
-    // CLAP spells an unbounded tail UINT32_MAX; ours is INT64_MAX. Mapped
-    // rather than cast, or "never suspend" becomes 4294967295 samples --
-    // twenty-four hours, which is wrong in a way nobody would ever see.
-    if (t == UINT32_MAX) return engine::kInfiniteTail;
+    // clap.ext.tail defines the entire range from INT32_MAX as unbounded.
+    if (t >= static_cast<std::uint32_t>(INT32_MAX)) return engine::kInfiniteTail;
     return static_cast<std::int64_t>(t);
 }
 
