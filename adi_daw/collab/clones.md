@@ -14,7 +14,7 @@ Dragging changes the audio before release. One project undo restores the whole e
 
 Opening the Volume editor enabled real waveform capture and a 2,048-frame analysis window. Across three alternating passes at 48 kHz the median callbacks closed/open were 1.5/4.5 microseconds at 256 frames and 9.5/34.6 at 2,048 frames. Average callback budget use open was 0.137% and 0.080%, respectively. Software painting at the comparison size took about 15.15 and 13.76 ms per displayed frame. A dependent piece measures the effect of caching the drawing.
 
-The shared opener and instance-feed hunks are with Win for review. The existing click, registered device, actual project state and editor render were exercised in private. The same-position Time transport regression also fails before the proposed forwarding change and passes with it. The core test distinguishes a new transport revision at exactly the same sample and quarter-note position.
+The shared opener and instance-feed hunks are with Win for review. Both shared window translation units passed the strict compiler check. A private headless host exercised the registered device, actual project state and editor render. The ordinary wrench click still requires the shared opener to land. The same-position Time transport regression also fails before the proposed forwarding change and passes with it. The core test distinguishes a new transport revision at exactly the same sample and quarter-note position.
 
 ## 19 November 2026 — Time stage ready for Win
 
