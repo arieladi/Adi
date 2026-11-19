@@ -1,5 +1,13 @@
 # Clones lane log
 
+## 2026-11-19 — Device curve drawing handoff to Window
+
+The device strip belongs to Window. ADi-SHAPER exposes every curve point to the ordinary parameter model; its parameter count exceeds the automatic 64-control display threshold. For an ADI-drawn editor in the strip, scope it to the internal UID `org.adidaw.builtin.adi-shaper` and the live device identity. The existing Color Cab sample tile is the integration precedent. Keep the existing Configure and fold operations. The Mix View function and EQ page controls have their own owner.
+
+The editor selects a stage, band and contour. The eight evenly spaced horizontal positions are fixed; each draggable height uses its own persisted parameter. For the middle band, the Volume heights are IDs 23–30, Width 65–72 and Pan 107–114. On the modulation branch Filter cutoff uses 170–177 and resonance 178–185. Liquid center uses 245–252 and feedback 253–260. Plot the segment from the last point back to the first for the next cycle. Draw a held or linear segment according to the band's curve setting. Pan at the bottom favors right and at the top favors left.
+
+Use the existing parameter Begin/Value/End gesture protocol and one undoable gesture per drag. A project rebind cancels the capture associated with the old instance. Provide discrete keyboard editing with an accessible name for each point. A software-rendered device strip test can verify the drawn points, focus order, undo, and stale-callback behavior. The clones seat has made no strip or Mix View changes.
+
 ## 2026-11-19 — ADi-SHAPER CPU and signal check on 295056b6
 
 The registered device and ShaperBox 3.6 both processed the same stereo input, at 48 kHz and 120 BPM, with a single instance, closed editors and zero reported latency. The full-range cases were the same one-bar hard Volume gate, Width at mono, and both stages in series. Both renderers restored identical stereo input before each call. Nine trials of 8,192 callbacks per cell used the same affinity; fixture order was shuffled and processing order alternated.
