@@ -14,6 +14,8 @@
 #include <stdexcept>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <sqlite3.h>
@@ -39,8 +41,48 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
            a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
-           a.audio == b.audio &&
+           a.audio == b.audio && a.fadeInHandles == b.fadeInHandles && a.fadeOutHandles == b.fadeOutHandles &&
            a.controllers == b.controllers;
+}
+
+void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks,
+                        std::optional<std::int64_t> posNs,std::optional<std::int64_t> lengthNs) {
+    clip.fadeInHandles={0,clip.fadeInTicks};
+    clip.fadeOutHandles={0,clip.fadeOutTicks};
+    if(!clip.audio)return;
+    const auto& domain=clip.audio->warpEnabled?clip.fadeClockTicks:clip.fadeClockNs;
+    if(!domain[0] && !domain[2])return;
+    constexpr auto limit=std::numeric_limits<std::int64_t>::max();
+    auto begin=clip.posTicks;
+    if(begin<0 || clip.lengthTicks<0 || clip.lengthTicks>limit-begin)return;
+    auto end=begin+clip.lengthTicks;
+    double beginSeconds=tempo.ticksToSeconds(begin),endSeconds=tempo.ticksToSeconds(end);
+    if(posNs && lengthNs) {
+        if(*posNs<0 || *lengthNs<0 || *lengthNs>limit-*posNs)return;
+        beginSeconds=static_cast<double>(*posNs)*1e-9;
+        endSeconds=static_cast<double>(*posNs+*lengthNs)*1e-9;
+        begin=tempo.secondsToTicks(beginSeconds);
+        end=tempo.secondsToTicks(endSeconds);
+    }
+    if(end<begin || offsetTicks<0 || offsetTicks>limit-begin ||
+       !std::isfinite(beginSeconds) || !std::isfinite(endSeconds) || endSeconds<beginSeconds)return;
+    const auto span=end-begin;
+    const double offsetSeconds=clip.contentOffsetNs?static_cast<double>(*clip.contentOffsetNs)*1e-9:
+        tempo.ticksToSeconds(begin+offsetTicks)-tempo.ticksToSeconds(begin);
+    const auto fromLeft=[&](std::int64_t bound) {
+        if(clip.audio->warpEnabled)return std::clamp(bound-offsetTicks,std::int64_t{0},span);
+        const double seconds=beginSeconds+(static_cast<double>(bound)*1e-9-offsetSeconds);
+        if(seconds<=beginSeconds)return std::int64_t{0};
+        if(seconds>=endSeconds)return span;
+        auto tick=std::clamp(tempo.secondsToTicks(seconds),begin,end);
+        // The stored nanosecond can round just below its originating tick.
+        if(tick<end && std::abs(tempo.ticksToSeconds(tick+1)-seconds)<
+                        std::abs(tempo.ticksToSeconds(tick)-seconds))++tick;
+        return tick-begin;
+    };
+    if(!clip.audio->warpEnabled && !std::isfinite(offsetSeconds))return;
+    if(domain[0] && domain[1])clip.fadeInHandles={fromLeft(*domain[0]),fromLeft(*domain[1])};
+    if(domain[2] && domain[3])clip.fadeOutHandles={span-fromLeft(*domain[3]),span-fromLeft(*domain[2])};
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
@@ -305,7 +347,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve "
+            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
+            "content_offset_ticks,pos_ns,length_ns "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -324,6 +367,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;c.fadeClockTicks=it->second.warpClock;
             }
             if(const auto source=audioSources.find(c.id);source!=audioSources.end())c.audio=source->second;
+            const auto linear=[&](int column)->std::optional<std::int64_t> {
+                return st.getColumn(column).isNull()?std::nullopt:std::optional{st.getColumn(column).getInt64()};
+            };
+            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64(),linear(12),linear(13));
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 

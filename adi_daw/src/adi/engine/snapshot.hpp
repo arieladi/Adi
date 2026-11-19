@@ -87,6 +87,12 @@ struct AudioClipSource {
     friend bool operator==(const AudioClipSource&,const AudioClipSource&)=default;
 };
 
+struct ClipFadeHandles {
+    // Distances inward from the corresponding clip edge in musical ticks.
+    std::int64_t zeroTicks=0,peakTicks=0;
+    friend bool operator==(const ClipFadeHandles&,const ClipFadeHandles&)=default;
+};
+
 struct ClipNode {
     std::string name;
     std::int64_t id = 0;
@@ -101,6 +107,7 @@ struct ClipNode {
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
     std::optional<AudioClipSource> audio;
     std::vector<controllers::Lane> controllers = {};
+    ClipFadeHandles fadeInHandles,fadeOutHandles;
 };
 
 struct TrackNode {

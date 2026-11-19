@@ -87,6 +87,55 @@ void refusalAndCurves() {
     check(p.fade({{"id",7},{"in",{{"ticks",8000000},{"curve",5},{"tension",0.5}}}}),"linear clip fade bound integrates variable tempo");
     check(!p.fade({{"id",7},{"in",{{"ticks",9000000}}}}),"linear clip fade refuses length beyond integrated span");
 }
+void independentFadeHandles() {
+    constexpr std::int64_t q=5765760;
+    Project p;auto& db=p.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(5765760,60);"
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,'shape','audio.wav','wav');"
+            "INSERT INTO audio_clips(clip_id,media_id,src_len_frames,warp_enabled) VALUES(7,1,96000,0),(9,1,96000,1);"
+            "UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=250000017,length_ns=750000000 WHERE id=7;"
+            "UPDATE clips SET content_offset_ticks=720720 WHERE id=9;"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(7,57000000)");
+    const Payload both={{"in",{{"ticks",q/4},{"startTicks",q/8}}},{"out",{{"ticks",q/4},{"startTicks",q/8}}}};
+    const ClipFadeHandles expected{q/8,q/4};
+    auto linear=both;linear["id"]=7;
+    check(p.fade(linear),"offset fade start and end are one edit on a linear clip");
+    auto snapshot=SnapshotBuilder::fromStore(*p.store);
+    check(p.clip(*snapshot).fadeInHandles==expected && p.clip(*snapshot).fadeOutHandles==expected,
+          "linear snapshot projects both authored handle pairs across a tempo change");
+    check(db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=7 AND "
+          "in_begin_ns=119499983 AND in_end_ns=181999983 AND out_begin_ns=556999983 AND out_end_ns=681999983").getInt()==1,
+          "linear handles pin to the existing physical source offset and exact placement clock");
+    check(p.fade({{"id",7},{"in",{{"startTicks",q/16}}}}),"lower handle can move without restating the peak");
+    auto moved=SnapshotBuilder::fromStore(*p.store,*snapshot);
+    check(p.clip(*moved).fadeInHandles==ClipFadeHandles{q/16,q/4} && p.clip(*moved).fadeOutHandles==expected,
+          "moving the lower handle leaves both peaks and the opposite fade fixed");
+    check(History(*p.store).undo().ok,"undo lower handle by itself");
+    auto restored=SnapshotBuilder::fromStore(*p.store,*moved);
+    check(p.clip(*restored).fadeInHandles==expected && p.clip(*restored).fadeOutHandles==expected,
+          "undo restores the exact lower handle and unchanged opposite fade");
+    const auto head=OpJournal(*p.store).headSeq();
+    check(!p.fade({{"id",7},{"in",{{"startTicks",0}}},{"out",{{"startTicks",q/4}}}}) &&
+          OpJournal(*p.store).headSeq()==head && SnapshotBuilder::fromStore(*p.store,*restored)->tracks[0]==restored->tracks[0],
+          "a lower handle that reaches its peak refuses the whole edit");
+
+    auto warped=both;warped["id"]=9;
+    check(p.fade(warped) && db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=9 AND "
+          "in_begin_ticks=1441440 AND in_end_ticks=2162160 AND out_begin_ticks=5045040 AND out_end_ticks=5765760").getInt()==1,
+          "Warp keeps its handle pairs in the unrolled musical source clock");
+    check(p.fade({{"id",9},{"out",{{"startTicks",0}}}}),"zero offset puts the selected lower handle back at the edge");
+    auto atEdge=SnapshotBuilder::fromStore(*p.store);
+    check(p.clip(*atEdge,2).fadeInHandles==expected && p.clip(*atEdge,2).fadeOutHandles==ClipFadeHandles{0,q/4},
+          "resetting one Warp handle leaves its opposite bound alone");
+    check(History(*p.store).undo().ok && History(*p.store).undo().ok &&
+          db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=9").getInt()==0 &&
+          History(*p.store).redo().ok,"Warp history restores row absence and replays the authored bounds");
+    p.store.reset();StoreError error{};p.store=Store::open(p.temporary.path()/"song.adi",error);
+    if(!p.store)throw std::runtime_error(toString(error));
+    const auto reopened=SnapshotBuilder::fromStore(*p.store);
+    check(p.clip(*reopened,2).fadeInHandles==expected && p.clip(*reopened,2).fadeOutHandles==expected,
+          "reopened Warp clip has both authored handle pairs");
+}
 void clipboardAndSplits() {
     Project p;auto& db=p.store->db();
     db.exec("ALTER TABLE clips ADD COLUMN future_root BLOB NOT NULL DEFAULT X''");
@@ -935,4 +984,4 @@ void twoPointSplitPayloadBounds() {
 }
 } // namespace
 
-int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{stateAndSharing();refusalAndCurves();independentFadeHandles();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();twoPointGeometryAndMute();twoPointOpaqueChildren();twoPointAtomicRefusals();twoPointSplitPayloadBounds();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
