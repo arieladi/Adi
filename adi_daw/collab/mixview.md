@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — verify Classic compression, spectrum histories and Limiter cold silence
+
+The private fixed Classic compressor envelope passed all five saved stereo renders, 4,680,320 frames. The worst error was 1.49e-8 peak and 6.20e-11 RMS. It also matched the direct gain oracle bit for bit, including across 17-frame processing splits, with no callback allocation or free. The fixed settings proof is ready for later integration review.
+
+The private spectrum history proof passed 28 checks with no update, read or reset allocation. It verifies the source-derived realtime maximum's immediate rise and 20 dB fall over one second at three hop sizes, plus the realtime and cumulative average, cumulative maximum and sigma laws. Drawing reads do not advance these histories. Native editor cadence, calibration and mode changes are separate.
+
+The Limiter cold-idle matrix repeated 600 checks across 64 settings. All first programme blocks match exactly, and 61 delayed renders pass the exact gate. Three Adaptive 1x cells differ in 2 to 10 scalar samples after skipping cold silence. The largest difference is 2.384e-7. Retain the exact failure and the dither and pending-PCM exclusions before any broader suspension work. This is a private test result, with no change to native tail declarations.
+
 ## 2026-11-19, night — check the Focus overlap boundary and complete the Mid suite
 
 The updated private FIR replay compares 28 exact float and double arrays across 1,870,828 stereo frames. One case explicitly exercises External, Internal, Internal captures so the shared inverse encounters different preceding programme and key tails. Copying one overlap ring onto the other made that case fail in both precisions. The candidate adds to each ring independently and passes with the same latency and zero missed jobs.
