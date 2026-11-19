@@ -449,7 +449,7 @@ void SettingsPanel::showPage(const std::string &name) {
             for (const auto *s : group.settings) {
                 // What the device chooser shows is not listed twice under it.
                 // The MIDI Ports table stands for the record's own row.
-                if (midi_ && name == "Tempo & MIDI" && s->key == "midi.ports")
+                if (midi_ && name == "Tempo & MIDI" && s->key.rfind("midi.port", 0) == 0) // the record and its rows
                     continue;
                 if (audio_ && name == "Audio" &&
                     (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||

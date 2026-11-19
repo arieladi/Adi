@@ -119,6 +119,9 @@ class SettingsPanel final : public juce::Component {
     // the first time the page shows, at the page's head, in place of the `midi.ports` record's row.
     std::function<std::unique_ptr<juce::Component>()> midiPorts;
     juce::Component *midiPortsTable() const noexcept { return midi_.get(); }
+    // Lays the page out again where it stands (the MIDI Ports table grew or shrank), keeping its rows and
+    // where it is scrolled to.
+    void relayout() { layoutRows(); }
     // Live's tab column and the page's frame; ADI's help line and buttons at its foot.
     static constexpr int kPageListWidth = 94, kHelpHeight = 58;
 

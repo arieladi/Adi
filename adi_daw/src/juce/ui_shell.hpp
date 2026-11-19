@@ -297,7 +297,12 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     bool playing() const noexcept { return playing_; }
     // The Control Bar's MIDI Indicators (Live 12 manual 2.x, the Control Bar's right end): lit while MIDI
     // has come in from an open port within the last moment (SRF-05). The application sets it.
-    void setMidiIn(bool on) noexcept { midiIn_ = on; }
+    void setMidiIn(bool on) noexcept {
+        if (on != midiIn_) {
+            midiIn_ = on;
+            mark(DirtySet::Transport); // the Control Bar redraws while the transport is stopped too
+        }
+    }
     bool midiIn() const noexcept { return midiIn_; }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }

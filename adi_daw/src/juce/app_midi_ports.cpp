@@ -23,7 +23,7 @@ struct MidiPortHost::Input final : ump::Consumer {
             MidiPortEvent event;
             if (view.size() == 0 || !midiFromUmpWord(view[0], event))
                 continue;
-            event.timeMs = time;
+            event.timeMs = time * 1000.0; // JUCE's UMP backends pass seconds
             event.port = slot;
             ring.push(event);
             host.activity_.fetch_add(1, std::memory_order_relaxed);
@@ -115,7 +115,9 @@ void MidiPortHost::refresh() {
         // for an input, its destination identifier for an output.
         if (id.src.isNotEmpty()) {
             Port p;
-            p.id = id.src.toStdString();
+            // Keyed by direction: on ALSA, Android and WinRT a two-way port's source and destination share
+            // one identifier, and Live's table switches each direction on its own.
+            p.id = "in:" + id.src.toStdString();
             p.name = name;
             p.input = true;
             p.switches = midiPortSwitches(record, p.id);
@@ -124,7 +126,7 @@ void MidiPortHost::refresh() {
         }
         if (id.dst.isNotEmpty()) {
             Port p;
-            p.id = id.dst.toStdString();
+            p.id = "out:" + id.dst.toStdString();
             p.name = name;
             p.output = true;
             p.switches = midiPortSwitches(record, p.id);
@@ -157,7 +159,7 @@ void MidiPortHost::refresh() {
         if (!p.switches.track && !p.switches.remote)
             continue;
         const auto source = std::find_if(sources.begin(), sources.end(), [&](const ump::EndpointId &id) {
-            return id.src.toStdString() == p.id;
+            return "in:" + id.src.toStdString() == p.id;
         });
         auto connection = session_->connectInput(*source, ump::PacketProtocol::MIDI_1_0);
         if (!connection.isAlive())
@@ -193,14 +195,17 @@ MidiPortsTable::~MidiPortsTable() = default;
 void MidiPortsTable::set(const std::string &id, const char *field, bool on) {
     std::string why;
     const auto record = withMidiPortSwitch(settings_.get("midi.ports"), id, field, on);
-    if (!settings_.set("midi.ports", record, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, why) ||
-        !settings_.save(why)) {
+    if (!settings_.set("midi.ports", record, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000}, why)) {
         error_ = why;
-        rebuild(); // the switches show what is kept
+        rebuild(); // refused: the switches show what is kept
         return;
     }
+    // In force from here, as every Settings change is; a file that could not be written says so.
     error_.clear();
+    if (std::string unsaved; !settings_.save(unsaved))
+        error_ = "Not saved: " + unsaved;
     host_.refresh();
+    repaint();
 }
 void MidiPortsTable::rebuild() {
     rows_.clear();
@@ -232,7 +237,7 @@ void MidiPortsTable::rebuild() {
         }
         rows_.push_back(std::move(row));
     }
-    setSize(std::max(getWidth(), 320), kHeader + kRow * std::max<int>(1, static_cast<int>(rows_.size())) + 8);
+    setSize(std::max(getWidth(), 320), kHeader + kRow * std::max<int>(1, static_cast<int>(rows_.size())) + 12);
     resized();
     repaint();
 }
@@ -260,5 +265,8 @@ void MidiPortsTable::paint(juce::Graphics &g) {
     if (rows_.empty())
         g.drawText("No MIDI port is connected. A port connected now appears here.", 8, kHeader,
                    getWidth() - 16, kRow, juce::Justification::centredLeft);
+    if (!error_.empty())
+        g.drawText(juce::String::fromUTF8(error_.c_str()), 8, getHeight() - 10, getWidth() - 16, 10,
+                   juce::Justification::centredLeft, true);
 }
 } // namespace adi::ui

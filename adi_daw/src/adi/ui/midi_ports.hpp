@@ -63,6 +63,7 @@ inline settings::Value withMidiPortSwitch(settings::Value ports, const std::stri
 struct MidiPortEvent {
     double timeMs = 0;
     std::uint32_t port = 0;
+    std::uint8_t group = 0; // the UMP group: one of a multi-port device's jacks
     std::array<std::uint8_t, 3> bytes{};
     std::uint8_t size = 0;
 };
@@ -144,6 +145,7 @@ inline bool midiFromUmpWord(std::uint32_t word, MidiPortEvent &out) noexcept {
     for (std::size_t i = size; i < 3; ++i)
         out.bytes[i] = 0;
     out.size = size;
+    out.group = static_cast<std::uint8_t>((word >> 24) & 0x0f);
     return true;
 }
 } // namespace adi::ui

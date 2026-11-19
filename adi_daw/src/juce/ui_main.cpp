@@ -106,15 +106,18 @@ class AdiApplication final : public juce::JUCEApplication,
         if (smokeOutput_ == juce::File{}) {
             midiPorts_ = std::make_unique<MidiPortHost>([this] { return settings_->get("midi.ports"); });
             // A port plugged in or out, or a switch thrown: the Settings' table follows.
+            // Posted: a refresh can run inside a Settings row's own commit, which the page must outlive.
             midiPorts_->onChange = [this] {
-                if (!settingsWindow_)
-                    return;
-                auto &panel = settingsWindow_->panel();
-                if (auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable())) {
-                    table->rebuild();
-                    if (panel.page() == "Tempo & MIDI" && !panel.finding())
-                        panel.showPage(panel.page()); // its height may have changed
-                }
+                juce::MessageManager::callAsync([this] {
+                    if (juce::JUCEApplicationBase::getInstance() != this || !settingsWindow_)
+                        return;
+                    auto &panel = settingsWindow_->panel();
+                    if (auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable())) {
+                        table->rebuild();
+                        if (panel.page() == "Tempo & MIDI" && !panel.finding())
+                            panel.relayout(); // its height may have changed; its rows and scroll stay
+                    }
+                });
             };
         }
         startTimer(20);
@@ -757,8 +760,11 @@ class AdiApplication final : public juce::JUCEApplication,
                     };
                 settingsWindow_->panel().onChange = [this] {
                     commands_->reload();
-                    if (midiPorts_)
-                        midiPorts_->refresh(); // the MIDI Ports' switches open or close inputs
+                    // The MIDI Ports' switches open or close inputs: after the row's commit has unwound.
+                    juce::MessageManager::callAsync([this] {
+                        if (juce::JUCEApplicationBase::getInstance() == this && midiPorts_)
+                            midiPorts_->refresh();
+                    });
                 };
             }
             settingsWindow_->setVisible(true);

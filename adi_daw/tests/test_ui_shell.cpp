@@ -13817,10 +13817,11 @@ int main(int argc, char **argv) {
         panel.midiPorts = [&]() -> std::unique_ptr<juce::Component> { return std::make_unique<MidiPortsTable>(host, settings); };
         panel.showPage("Tempo & MIDI");
         auto *table = dynamic_cast<MidiPortsTable *>(panel.midiPortsTable());
-        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(),
-                                           [](const auto &row) { return row->setting.key == "midi.ports"; });
+        const bool recordRow = std::any_of(panel.rows().begin(), panel.rows().end(), [](const auto &row) {
+            return row->setting.key.rfind("midi.port", 0) == 0;
+        });
         check(table != nullptr && table->isVisible() && !recordRow && table->rows().size() == host.ports().size(),
-              "Tempo & MIDI shows the MIDI Ports table, one row per port the system lists, not the record's text");
+              "Tempo & MIDI shows the MIDI Ports table, one row per port the system lists, not the record's text or the per-port rows");
         std::size_t inputs = 0;
         for (const auto &p : host.ports())
             inputs += p.input ? 1 : 0;
@@ -13834,10 +13835,10 @@ int main(int argc, char **argv) {
         std::string why;
         check(settings.set("midi.ports", settings::Value::object(), {}, why), "no port records");
         MidiPortHost::Port keys, synth;
-        keys.id = "in-1";
+        keys.id = "in:port-1";
         keys.name = "Keystation 61";
         keys.input = true;
-        synth.id = "out-1";
+        synth.id = "out:port-1"; // a two-way port: one identifier, a record per direction
         synth.name = "Synth";
         synth.output = true;
         MidiPortHost host([&settings] { return settings.get("midi.ports"); }, {synth, keys});
@@ -13847,7 +13848,7 @@ int main(int argc, char **argv) {
         std::vector<std::function<void()>> posted;
         table.post = [&posted](std::function<void()> job) { posted.push_back(std::move(job)); };
         table.setSize(520, 200);
-        check(table.rows().size() == 2 && table.rows()[0]->id == "in-1" && table.rows()[0]->input &&
+        check(table.rows().size() == 2 && table.rows()[0]->id == "in:port-1" && table.rows()[0]->input &&
                   table.rows()[0]->name->getText() == "Input: Keystation 61" &&
                   table.rows()[1]->name->getText() == "Output: Synth",
               "a row per port and direction, inputs first, as Live's table");
@@ -13858,7 +13859,8 @@ int main(int argc, char **argv) {
         check(posted.size() == 1, "the write waits for the click to return");
         for (auto &job : posted)
             job();
-        check(midiPortSwitches(settings.get("midi.ports"), "in-1").track != midiPortDefault("track") && changes == 1 &&
+        check(midiPortSwitches(settings.get("midi.ports"), "in:port-1").track != midiPortDefault("track") &&
+                  midiPortSwitches(settings.get("midi.ports"), "out:port-1").track == midiPortDefault("track") && changes == 1 &&
                   host.ports()[0].switches.track != midiPortDefault("track") && table.error().empty(),
               "a click on Track writes the port's record at once, and the host follows");
         table.rebuild();

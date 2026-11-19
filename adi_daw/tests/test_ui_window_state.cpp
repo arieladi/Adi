@@ -137,8 +137,9 @@ void midiPortsCore() {
     MidiPortEvent e;
     check(midiFromUmpWord(0x20903c64u, e) && e.size == 3 && e.bytes == std::array<std::uint8_t, 3>{0x90, 0x3c, 0x64},
           "a MIDI 1.0 note on (type 2) reads as its three bytes");
-    check(midiFromUmpWord(0x21c50500u, e) && e.size == 2 && e.bytes[0] == 0xc5 && e.bytes[1] == 5 && e.bytes[2] == 0,
-          "a program change on group 1 reads as two bytes");
+    check(midiFromUmpWord(0x23c50577u, e) && e.size == 2 && e.bytes[0] == 0xc5 && e.bytes[1] == 5 && e.bytes[2] == 0 &&
+              e.group == 3,
+          "a program change on group 3 reads as two bytes, its stray third byte cleared, its group kept");
     check(midiFromUmpWord(0x10f80000u, e) && e.size == 1 && e.bytes[0] == 0xf8, "the clock (type 1) reads as one byte");
     check(!midiFromUmpWord(0x30160102u, e) && !midiFromUmpWord(0x40903c00u, e) && !midiFromUmpWord(0x00000000u, e) &&
               !midiFromUmpWord(0x10f40000u, e),
