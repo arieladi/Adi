@@ -18,6 +18,12 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E35(b) engine review of Freeze and Bounce extents
+
+**Reviewed for Win** — `engine-win/take-lane-render-extent` at `759014e9e7d79fce4d2cbe609042bbd3b4e4e6de`. The two lent hunks meet the current main-lane playback contract. Freeze applies the timeline accessor before testing group and track extents. Bounce filters the source extent to the same main-lane clips its replacement edits target. The existing placement and overflow validation follows those filters.
+
+GCC 14 reproduced all eight readiness failures against main. GCC 14 and Clang 19 each passed the four focused suites at the submitted head, 303 checks per compiler. A local extension also committed a Bounce whose range overlapped a nonzero take, verified that the take remained and the new main clip was inserted, and verified Undo. All 144 checks in that extended suite passed. The reviewed branch is ready for Win's landing checks.
+
 ## 2026-11-19 — DF-E1 sample-domain End for linear clips
 
 **PR requested** — branch `engine/df-e1-audio-end-samples`, head `9cc16085eaa3f931a073a521363214a6510f838f`, main base `88e2d94e`. Title **DF-E1: Render linear End markers from absolute samples**. Stacks on DF-E27(b) `25ba8fce`. The tempo and displayed-marker changes in `55fd8bbd` are independent.
