@@ -428,13 +428,21 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 }
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
-                                   bool readOnly) {
+                                   bool readOnly, OpenReport* report) {
+    if (report) *report = {};
     if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
     std::shared_ptr<media::ProjectFileLease> lease;
     std::error_code leaseError;
     if(!path.empty() && path!=std::filesystem::path(":memory:")){
         lease=media::ProjectFileLease::openShared(path,leaseError);
         if(!lease){err=StoreError::CannotOpen;return nullptr;}
+    }
+    if (report && lease) {
+        auto wal = lease->path();
+        wal += "-wal";
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(wal, ec);
+        if (!ec) report->walBytesAtOpen = size;
     }
     std::unique_ptr<SQLite::Database> db;
     try {

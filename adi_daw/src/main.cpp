@@ -93,7 +93,8 @@ int cmdCreate(const char* path) {
 
 int cmdInfo(const char* path) {
     adi::StoreError err = adi::StoreError::Ok;
-    auto st = adi::Store::open(path, err, /*readOnly=*/true);
+    adi::OpenReport openReport;
+    auto st = adi::Store::open(path, err, /*readOnly=*/true, &openReport);
     if (!st) {
         std::printf("cannot open: %s\n", adi::toString(err));
         return 1;
@@ -125,16 +126,14 @@ int cmdInfo(const char* path) {
         return 1;
     }
 
-    // SPEC 3.3. A cleanly closed .adi is exactly one file, so a sidecar next to
-    // it means either the project is open elsewhere or the last session died.
-    // Saying so is the whole point of the rule -- the alternative is a project
-    // that opens cleanly and is quietly missing its last hour.
-    if (std::filesystem::exists(std::string(path) + "-wal"))
+    // SPEC 3.3. The observation precedes the SQLite connection because even
+    // a read-only connection may create a sidecar on a database in WAL mode.
+    if (openReport.walBytesAtOpen)
         std::printf(
-            "\nNOTE: a -wal sidecar is present. Either this project is open in\n"
-            "another process, or the last session did not close cleanly. Copying\n"
-            "the .adi alone right now would lose everything since the last\n"
-            "checkpoint.\n");
+            "\nA -wal sidecar was present before opening (%ju bytes).\n"
+            "It can come from an open writer or an earlier unclean close. Copying\n"
+            "the .adi alone can omit changes since the last checkpoint.\n",
+            *openReport.walBytesAtOpen);
     return 0;
 }
 

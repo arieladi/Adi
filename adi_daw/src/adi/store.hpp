@@ -57,6 +57,12 @@ enum class StoreError {
 
 const char* toString(StoreError);
 
+struct OpenReport {
+    // A sidecar seen before SQLite opened the file. A live writer can also
+    // have a sidecar. This observation alone cannot identify a crash.
+    std::optional<std::uintmax_t> walBytesAtOpen;
+};
+
 enum class StoreFileCollision { Fail, ReplaceConfirmed };
 
 struct StoreFileResult {
@@ -114,7 +120,7 @@ public:
     /// never written: each table it lacks is stood in for by an empty TEMP
     /// table on this connection, so every reader sees "no rows".
     static std::unique_ptr<Store> open(const std::filesystem::path&, StoreError&,
-                                       bool readOnly = false);
+                                       bool readOnly = false, OpenReport* = nullptr);
 
     /// SPEC §3.3. Checkpoints the WAL and returns the journal to DELETE mode, so
     /// what is left on disk is exactly one self-contained file. Idempotent; the

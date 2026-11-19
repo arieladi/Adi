@@ -166,6 +166,13 @@ void testWalSidecarRule() {
     const bool sawSidecar =
         std::find(during.begin(), during.end(), "song.adi-wal") != during.end();
     check(sawSidecar, "a -wal sidecar exists while the project is open");
+    if (sawSidecar) {
+        const auto expected = fs::file_size(p.string() + "-wal");
+        OpenReport report;
+        const auto reader = Store::open(p, err, /*readOnly=*/true, &report);
+        check(reader && expected > 0 && report.walBytesAtOpen == expected,
+              "a separate reader reports the real WAL size before open");
+    }
 
     check(st->close(), "close() succeeds");
 
@@ -179,8 +186,11 @@ void testWalSidecarRule() {
 
     // And the data actually landed in the main file rather than being lost
     // with the sidecar -- the failure this rule exists to prevent.
-    auto re = Store::open(p, err);
+    OpenReport report;
+    report.walBytesAtOpen = 42;
+    auto re = Store::open(p, err, /*readOnly=*/false, &report);
     check(re != nullptr, "reopens after close");
+    check(!report.walBytesAtOpen, "a clean file clears stale report data before creating a fresh WAL");
     if (re) {
         const auto name = re->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
         check(name == "WAL test", "data written before close survived the checkpoint");
