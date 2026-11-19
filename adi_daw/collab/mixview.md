@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Reconcile DF-M29 through DF-M42
+
+The cumulative branch carries the EQ precision handoff, deterministic offline plan edits and parked-failure recovery in DF-M29–31. It carries Clean's quiet recovery, native activator recovery, compressor preparation and buffer guards, and the independent native audio and Stack undo tests in DF-M32–33 and M36–39. The live EQ plan still publishes asynchronously. The unchanged-format gate directly tests the EQ hold window. Engine review and a deterministic hold test for the other hosts remain separate. The Clean make-up ramp has numerical coverage and still needs the requested listening check.
+
+DF-M34 has one native function with measured suspension and wake coverage, Clean. Native EQ and the Limiter chain still inherit the infinite tail. Their future declaration needs to preserve delayed samples, key-driven state, active dither and in-flight configuration. DF-M40 waits on DF-M60. The earlier generic gain-panel freeze has its sparse parameter feed gate and Win's saved live pass.
+
+One DF-M42 path remains with the scanner owners. Cold CLAP loading on Project Open can synchronously scan from the real loader, even though the picker discovery uses a different background loader. The scanner's zero-directory-scan Project Open gate also records this under its own plan. Use a fresh loader and persisted owned CLAP ref to test that path independently of the picker. The other DF-M42 UI and unavailable-key recovery checks are present.
+
 ### 2026-11-19 — Measure the existing full refresh on a refused key
 
 The same owned scenario now exercises the existing full Session refresh directly after one committed route change. It attempts key preparation once, reports the intended failure, keeps the prior graph and applied sequence, and calls the original recipient on the next block. The output is exactly the original programme. Retrying applies the same route without a second Undo entry. The single failing assertion out of 212 is that the realised Session model already exposes the new route after the failed rebuild.
