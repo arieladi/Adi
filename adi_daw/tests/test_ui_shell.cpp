@@ -9896,6 +9896,62 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
           "a delayed monitor selector while hidden cannot reacquire audition");
     nav.openInfo.onClick();
     check(!root.state().mixView, "a late Info callback cannot reopen the closed Mix View");
+
+    {
+        FloatingHost host(root, commands, persistence, view, [](std::int64_t) { return true; }, false);
+        check(root.setMixView(true, false), "open Stack to set up the analyser return fixture");
+        root.frame();
+        nav.show.setSelectedId(nav.show.getItemId(0), juce::sendNotificationSync);
+        mix.stack.channelScope.setSelectedId(1, juce::sendNotificationSync);
+        check(root.setMixView(false, false) &&
+                  root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Kick") &&
+                  root.submitEdit("track.setSolo", {{"id", 13}, {"soloed", true}}, "Solo Bass") &&
+                  MixFocus::soloedChannels(SnapshotReader(root.current())).size() == 2,
+              "the next ordinary Mix View open would default to Focus");
+        check(showAnalyzerWindow(host, root, 13), "open the detached analyser for Bass with no native peer");
+        host.frame("Analysis");
+        auto *pane = dynamic_cast<AnalysisPane *>(host.content("Analysis"));
+        check(pane && pane->view.track() == 13, "the detached analyser presents the stable source channel");
+        if (pane) {
+            pane->setMode(SharedSpectrumView::Mode::Phase);
+            auto selection = session.selection();
+            selection.track = 14;
+            std::string reason;
+            check(session.select(selection, reason), "another view changes selection before the analyser's next frame");
+            const auto before = value(*store, "SELECT count(*) FROM ops");
+            pane->expandButton.onClick();
+            check(root.state().mixView && mix.tab() == MixViewPanel::Tab::Stack &&
+                      mix.stack.focused() == 13 && session.selection().track == 13 &&
+                      mix.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels,
+                  "return picks the displayed Bass row over Focus and reveals it when only the tool scope hid it");
+            check(host.shown("Analysis") && host.content("Analysis") == pane &&
+                      pane->mode() == SharedSpectrumView::Mode::Phase &&
+                      value(*store, "SELECT count(*) FROM ops") == before,
+                  "return preserves the detached analyser choice and adds no project edit or Undo");
+
+            nav.show.setSelectedId(rhythm, juce::sendNotificationSync);
+            selection.track = 14;
+            check(session.select(selection, reason), "the analyser follows a channel outside the selected group");
+            host.frame("Analysis");
+            pane->expandButton.onClick();
+            check(session.selection().track == 14 && nav.show.getSelectedId() == rhythm &&
+                      !mix.stack.model().shownIndex(14),
+                  "an explicit group filter is kept just as for the Stack row reveal command");
+            nav.show.setSelectedId(nav.show.getItemId(0), juce::sendNotificationSync);
+
+            check(root.setMixView(false, true) &&
+                      root.submitEdit("track.delete", {{"id", 14}}, "Remove the displayed channel"),
+                  "the displayed channel can disappear before returning and Mix View may prefer a window");
+            selection.track = 11;
+            check(session.select(selection, reason), "set a live fallback selection without ticking the analyser");
+            check(pane->view.track() == 14, "the detached picture still names the removed channel");
+            pane->expandButton.onClick();
+            check(root.state().mixViewDetached && host.content("Mix View") == &mix &&
+                      mix.tab() == MixViewPanel::Tab::Stack && mix.stack.focused() == 11 &&
+                      session.selection().track == 11 && host.shown("Analysis"),
+                  "a stale source falls back to the current valid channel in the preferred Mix View window");
+        }
+    }
     fake.removeChildComponent(&root);
     fake.removeFromDesktop();
 }
