@@ -14,6 +14,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace adi::device {
 namespace {
@@ -161,6 +162,13 @@ public:
         return prepared_&&(stagePending_.load(std::memory_order_acquire)||
             (enabled_.load(std::memory_order_acquire)&&transition_.load(std::memory_order_acquire)!=0));
     }
+    bool needsBypassTransition(std::int32_t configuredTotal) const noexcept override {
+        if (!prepared_ || configuredTotal != advertisedLatency()) return false;
+        if (stagePending_.load(std::memory_order_acquire)) return true;
+        const auto token = transition_.load(std::memory_order_acquire);
+        return enabled_.load(std::memory_order_acquire) && token != 0 &&
+            engine_.latencySamples() != static_cast<std::int32_t>(token & 0xffffffffU);
+    }
     void process(float* const* main,const float* const* key,std::int32_t frames,const Settings& s,
                  std::uint64_t serial,std::int32_t configured,l::BlockReduction* reduction) noexcept override {
         auto enabled=enabled_.load(std::memory_order_acquire);
@@ -237,7 +245,11 @@ public:
         const ReactivationGate::Hold hold(gate_);
         reduction_->setPrepared(false);
         refreshValues();
-        if(!loaded()){prepared_=false;publishLatency(0);return;}
+        prepared_ = false;
+        if (!loaded()) { publishLatency(0); return; }
+        if (maximum <= 0) throw std::invalid_argument("Invalid Limiter block capacity");
+        for (int channel = 0; channel < channels_; ++channel)
+            bypassScratch_[static_cast<std::size_t>(channel)].resize(static_cast<std::size_t>(maximum));
         backend_->prepare(rate,maximum,channels_,settings(cached_,offline_));
         reduction_->setPrepared(!offline_);
         prepared_=everPrepared_=true;publishLatency(backend_->advertisedLatency());
@@ -256,9 +268,21 @@ public:
         backend_->pumpMainThread(settings(readValues(),offline_));publishLatency(backend_->advertisedLatency());
     }
     std::int32_t sidechainInputChannels() const noexcept override {return channels_;}
-    void process(const engine::NodeIo& io) noexcept override {
+    void process(const engine::NodeIo& io) noexcept override { processAudio(io, false); }
+    bool needsBypassTransition(std::int32_t configuredLatency) noexcept override {
         const ReactivationGate::Pass pass(gate_);
-        if(!pass||!prepared_||!loaded()||!io.out||io.channels!=channels_||io.frames<=0) {passThrough(io);return;}
+        return pass && prepared_ && loaded() && backend_->needsBypassTransition(configuredLatency);
+    }
+    void processBypassTransition(const engine::NodeIo& io) noexcept override { processAudio(io, true); }
+
+private:
+    void processAudio(const engine::NodeIo& io, bool bypassTransition) noexcept {
+        const ReactivationGate::Pass pass(gate_);
+        if (!pass || !prepared_ || !loaded() || io.channels != channels_ || io.frames <= 0 ||
+            (bypassTransition ? static_cast<std::size_t>(io.frames) > bypassScratch_[0].size() : !io.out)) {
+            if (!bypassTransition) passThrough(io);
+            return;
+        }
         refreshValues();
         // The graph splits at parameter boundaries. Its numeric ids are this
         // adapter's stable decimal ids; never forward them to another device.
@@ -274,19 +298,20 @@ public:
         std::array<float*,2> audio{};
         std::array<const float*,2> key{};
         for(int c=0;c<channels_;++c) {
-            audio[static_cast<std::size_t>(c)]=io.out[c]+io.blockOffset;
-            const auto* source=io.in&&io.in[c]?io.in[c]+io.blockOffset:nullptr;
-            if(source!=audio[static_cast<std::size_t>(c)]) {
-                if(source)std::copy_n(source,io.frames,audio[static_cast<std::size_t>(c)]);
-                else std::fill_n(audio[static_cast<std::size_t>(c)],io.frames,0.0f);
+            const auto index = static_cast<std::size_t>(c);
+            audio[index] = bypassTransition ? bypassScratch_[index].data() : io.out[c] + io.blockOffset;
+            const auto* source = io.in && io.in[c] ? io.in[c] + io.blockOffset : nullptr;
+            if (source != audio[index]) {
+                if (source) std::copy_n(source, io.frames, audio[index]);
+                else std::fill_n(audio[index], io.frames, 0.0f);
             }
-            key[static_cast<std::size_t>(c)]=io.sidechain&&io.sidechain[c]?io.sidechain[c]+io.blockOffset:nullptr;
+            key[index] = io.sidechain && io.sidechain[c] ? io.sidechain[c] + io.blockOffset : nullptr;
         }
         const auto render = [&](l::BlockReduction* measured) {
             backend_->process(audio.data(), io.sidechain ? key.data() : nullptr, io.frames,
                               settings(cached_, io.exporting), io.renderBlock, io.configuredLatency, measured);
         };
-        const auto observation = reduction_->observationEpoch();
+        const auto observation = bypassTransition ? std::uint64_t{} : reduction_->observationEpoch();
         if (observation == 0 || io.exporting) {
             render(nullptr);
             return;
@@ -307,6 +332,7 @@ public:
         render(&frame.reduction);
         reduction_->publishSegment(observation, frame);
     }
+public:
     std::int32_t paramCount() const noexcept override {return full_?67:21;}
     const ParamDescriptor* paramAt(std::int32_t i) const noexcept override {
         if(i<0||i>=paramCount())return nullptr;
@@ -445,6 +471,7 @@ private:
     std::atomic<std::uint64_t> stateVersion_{0},latencyEpoch_{0},restartEpoch_{0};
     std::atomic<std::int32_t> latency_{0}; bool prepared_=false,everPrepared_=false;
     std::atomic<bool> unavailable_{false};std::vector<std::uint8_t> unavailableState_;
+    std::array<std::vector<float>, 2> bypassScratch_;
     Payload extra_=Payload::object();
     const std::shared_ptr<l::ReductionMailbox> reduction_ = std::make_shared<l::ReductionMailbox>();
 };

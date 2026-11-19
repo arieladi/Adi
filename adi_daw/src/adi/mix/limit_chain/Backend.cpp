@@ -34,6 +34,9 @@ public:
     }
     std::int32_t advertisedLatency() const noexcept override {return latency_.load(std::memory_order_acquire);}
     bool configurationBusy() const noexcept override {return prepared_&&core_.configurationBusy();}
+    bool needsBypassTransition(std::int32_t configuredTotal) const noexcept override {
+        return prepared_ && core_.needsBypassTransition(configuredTotal);
+    }
     std::vector<std::uint8_t> saveContinuation() const override {
         const auto word=restoreQueued_?restoreWord_:core_.clipContinuationWord();
         return {1,static_cast<std::uint8_t>(word)};

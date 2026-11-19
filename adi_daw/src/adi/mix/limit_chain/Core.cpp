@@ -190,6 +190,15 @@ LatencyChange Core::claimPendingLatencyChange(const Settings& settings) noexcept
 bool Core::configurationBusy() const noexcept {
     return (impl_->pending.load(std::memory_order_acquire)&(claimingBit|claimedBit))!=0;
 }
+bool Core::needsBypassTransition(std::int32_t configuredTotal) const noexcept {
+    const auto& d = *impl_;
+    const auto pending = d.pending.load(std::memory_order_acquire);
+    if (pending & claimedBit)
+        return changeFrom(pending).samples == configuredTotal;
+    return configuredTotal == d.appliedLatency.load(std::memory_order_relaxed) &&
+        d.limiterOn && d.limiterToken && d.limiterLatency == d.limiterTarget &&
+        d.limiter.latencySamples() != d.limiterTarget;
+}
 BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configuredTotal,const Settings& settings) noexcept {
     auto& d=*impl_;if(!d.prepared)return {};
     d.request(settings);

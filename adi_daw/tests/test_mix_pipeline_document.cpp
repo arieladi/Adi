@@ -2,6 +2,7 @@
 #include "adi/ui/project_document.hpp"
 #include "adi/mix/clip/Values.hpp"
 #include "juce/builtin_host.hpp"
+#include "juce/mix_function_host.hpp"
 #include "juce/mix_pipeline_host.hpp"
 #include "temp_directory.hpp"
 #include <algorithm>
@@ -89,6 +90,9 @@ void bypassedClaim(bool full) {
         return;
     }
     const auto hostIndex = entry->hostIndex;
+    // Keep a direct test observer while the document would normally revoke UI
+    // demand, so a mistaken publication from scratch processing is detectable.
+    const auto reduction = mix::limiter::ReductionMailbox::observe(device::limiterReductionSource(*instance));
     const auto isBypassed = [&] { return session.devices().nodeAt(hostIndex).bypassed(); };
     const auto trackInput = session.requestScope({{2, engine::ScopePoint::DeviceInput, shown.id}, 1.});
     const auto trackOutput = session.requestScope({{2, engine::ScopePoint::DeviceOutput, shown.id}, 1.});
@@ -114,6 +118,8 @@ void bypassedClaim(bool full) {
     const auto offered = instance->latencySamples();
     check(offered > previousLatency, "owner advertises a positive pending latency before bypass");
     if (offered <= previousLatency) return;
+    const auto lastWetReduction = reduction.read();
+    check(lastWetReduction && lastWetReduction->renderBlock != 0, "active Limiter publishes to the test observer");
     check(doc->deviceAction("device.setEnabled", {{"id", shown.id}, {"enabled", false}}) && isBypassed() &&
           session.instanceFor(shown.id) == instance,
           "graph activator bypass retains the instance that owns the claim");
@@ -141,6 +147,10 @@ void bypassedClaim(bool full) {
     check(session.graph().currentGraph() && session.graph().currentGraph()->latencySamples() == offered,
           "the pinned graph retains the advertised delay while bypassed");
     check(dry && *dry < 2.e-5, "bypassed node actually outputs coherent compensated dry");
+    const auto bypassedReduction = reduction.read();
+    check(lastWetReduction && bypassedReduction &&
+              bypassedReduction->renderBlock == lastWetReduction->renderBlock,
+          "settling a bypassed transition never publishes the private wet reduction");
 
     const auto authored = [&](const std::string &param, double normalized, const char *label) {
         OpRequest op;

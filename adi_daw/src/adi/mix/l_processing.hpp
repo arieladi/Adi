@@ -37,6 +37,8 @@ public:
     /// Manual structural edits must be refused before publishing values while a latency
     /// offer is claimed. Ordinary sound controls remain available.
     [[nodiscard]] virtual bool configurationBusy() const noexcept { return false; }
+    /// Audio side, with the graph's pinned latency and prepared state.
+    [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredTotal*/) const noexcept { return false; }
 
     // Authored mode/DC continuation, never FIR/delay/audio buffers. An owner may
     // queue validated continuation before prepare; no restore may partially apply

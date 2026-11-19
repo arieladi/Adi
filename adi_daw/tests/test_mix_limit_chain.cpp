@@ -369,11 +369,14 @@ void backendOwnerClaim(){
     audio.signal(2);{RT rt;backend->process(audio.pointers.data(),nullptr,128,on,3,0);}
     backend->pumpMainThread(on);const auto target=backend->advertisedLatency();
     check(target>0&&backend->configurationBusy(),"the public provider reports a claimed manual configuration as busy");
+    check(!backend->needsBypassTransition(0) && backend->needsBypassTransition(target),
+          "bypass service waits for the exact pinned PDC of the claimed offer");
     backend->pumpMainThread(off);
     check(backend->advertisedLatency()==target&&backend->configurationBusy(),
           "the provider retains promised PDC even if given a refused newer owner value");
     audio.signal(3);{RT rt;backend->process(audio.pointers.data(),nullptr,128,on,4,target);}
-    check(!backend->configurationBusy(),"audio admission releases the public manual configuration gate");
+    check(!backend->configurationBusy() && !backend->needsBypassTransition(target),
+          "admitting a stage change ends private service when no child fade is pending");
     audio.signal(4);{RT rt;backend->process(audio.pointers.data(),nullptr,128,off,5,target);}
     backend->pumpMainThread(off);
     check(backend->configurationBusy(),"a later accepted disable owns its own explicit latency settlement");
@@ -437,16 +440,21 @@ void backendFadeLatency(){
     limiter::DspEngine reference;s.limiter.oversampling=2;
     reference.prepare(48000,128,limiter::ChannelLayout::stereo(),s.limiter);reference.setBackgroundActive(false);
     const auto target=reference.latencySamples();check(initial!=target,"fade-retention test crosses different quality latencies");
-    int retained=0;bool stayed=true;
+    int retained=0;bool stayed=true, servicedAfterAdmission=false;
     for(int i=0;i<256&&retained<24;++i){
         backend->pumpMainThread(s);const auto configured=backend->advertisedLatency();
         Audio a;a.signal(i);{RT rt;backend->process(a.pointers.data(),nullptr,128,s,static_cast<std::uint64_t>(i+1),configured);}
         backend->pumpMainThread(s);const auto published=backend->advertisedLatency();
-        if(published==target)++retained;
-        else if(retained)stayed=false;
+        if(published==target) {
+            ++retained;
+            servicedAfterAdmission = servicedAfterAdmission ||
+                (!backend->configurationBusy() && backend->needsBypassTransition(target));
+        } else if(retained)stayed=false;
         if(!retained)std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     check(retained==24&&stayed,"owner publication retains the new total through acknowledgment and the full canonical fade");
+    check(servicedAfterAdmission && !backend->needsBypassTransition(target),
+          "bypass service can finish a child fade after admitting the outer claim and then turns off");
     backend->release();
 }
 }

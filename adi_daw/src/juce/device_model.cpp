@@ -175,6 +175,14 @@ void DeviceNode::processActive(const engine::NodeIo& io) noexcept {
     inst_->process(io);
 }
 
+bool DeviceNode::needsBypassTransition(std::int32_t configuredLatency) noexcept {
+    return inst_ != nullptr && inst_->needsBypassTransition(configuredLatency);
+}
+
+void DeviceNode::processBypassTransition(const engine::NodeIo& io) noexcept {
+    if (inst_ != nullptr) inst_->processBypassTransition(io);
+}
+
 std::int64_t DeviceNode::tailSamples() const noexcept {
     // ADR-0043's escape hatch, and it is checked FIRST. `always_process` is
     // set by a user who has heard their reverb cut off, and a device that
@@ -201,7 +209,7 @@ engine::EventFlow DeviceNode::eventFlow() const noexcept {
 
 std::int32_t DeviceNode::latencySamples() const noexcept {
     // ADR-0203 d4: only deleting the device releases its delay. The graph
-    // substitutes a plain delay line while bypassed, without running DSP.
+    // substitutes a plain delay line for the audible output while bypassed.
     if (inst_ == nullptr) return 0;
     return inst_->latencySamples();
 }

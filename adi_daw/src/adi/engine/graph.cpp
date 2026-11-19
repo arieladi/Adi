@@ -1077,6 +1077,8 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         if (!s.explicitEventSource && s.node != nullptr)
             s.eventSource = {s.node->eventSource(), s.node->eventSourceLifetime()};
         s.hasBypass = s.node != nullptr && s.node->hasBypass();
+        s.bypassTransitionBlock = 0;
+        s.serviceBypassTransition = false;
         if (s.hasBypass)
             bypassNodes_.emplace_back(s.node, static_cast<NodeId>(&s - slots_.data()));
         // ADR-0207 d2. At 64 every slot's output is double; a node that does
@@ -1705,6 +1707,11 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     const std::int32_t arrival =
         delayCompensation_ && slotIndex < pdcActiveArrival_.size() ? pdcActiveArrival_[slotIndex] : 0;
     const auto configuredLatency = slotIndex < pdcActiveLatency_.size() ? pdcActiveLatency_[slotIndex] : 0;
+    if (bypass && s.bypassTransitionBlock != renderBlock_) {
+        s.bypassTransitionBlock = renderBlock_;
+        s.serviceBypassTransition = s.node->needsBypassTransition(configuredLatency);
+    }
+    const bool serviceBypass = bypass && s.serviceBypassTransition;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1776,7 +1783,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     // less was never heard at all, and every longer one lost its final partial
     // block -- up to 85 ms at the 4096-frame blocks this engine is built for.
     // The old test accepted "3 to 6 blocks" for a tail that is exactly 4.
-    bool suspend = !infinite && !s.node->alwaysProcess() &&
+    bool suspend = !infinite && !s.node->alwaysProcess() && !serviceBypass &&
                    inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
     if (suspend && s.hasBypass && s.dryDelay.due()) suspend = false;
     // AND NOTHING IS STILL DUE ON AN INPUT LINE (`DelayLine::due`). The tail
@@ -1984,6 +1991,10 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
             if (s.hasBypass) s.node->processActive(nio);
             else s.node->process(nio);
             ++r.stats.nodeCalls;
+        } else if (serviceBypass) {
+            nio.out = nullptr;
+            nio.out64 = nullptr;
+            s.node->processBypassTransition(nio);
         }
         // A float node in a graph at 64: its segment, widened (exact).
         if (wide && !s.doubles && !bypass) {

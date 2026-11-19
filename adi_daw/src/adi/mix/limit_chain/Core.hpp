@@ -41,6 +41,8 @@ public:
     [[nodiscard]] LatencyChange claimPendingLatencyChange(const Settings&) noexcept;
     /// A claimed offer cannot be withdrawn: refuse manual structural edits until admission.
     [[nodiscard]] bool configurationBusy() const noexcept;
+    /// Audio side only. Continue an admitted child fade after the outer claim clears.
+    [[nodiscard]] bool needsBypassTransition(std::int32_t configuredTotal) const noexcept;
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock,
         std::int32_t graphConfiguredTotal,const Settings&) noexcept;
     bool process(float* const* main,const float* const* key,std::int32_t frames,
