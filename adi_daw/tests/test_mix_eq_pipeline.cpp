@@ -109,7 +109,7 @@ void documentAuthority() {
           std::abs(doc->session().instanceFor(shown.id)->getParam("14").real - 6) < 1e-5,
           "placement undo is one transaction and preserves the previous band gain edit");
     check(!doc->addMixFunction(mix::Function::Eq, 2), "second native EQ is refused in same channel");
-    check(!doc->addMixFunction(mix::Function::Compressor, 2), "unlinked functions remain honestly unavailable");
+    check(!doc->addMixFunction(mix::Function::Deesser, 2), "unlinked functions remain honestly unavailable");
 }
 } // namespace
 int main() {

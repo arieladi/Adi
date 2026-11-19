@@ -19,7 +19,7 @@ int main() {
     auto count=[&] {return doc->store().db().execAndGet(
         "SELECT count(*) FROM devices d JOIN plugin_refs p ON p.id=d.plugin_ref_id WHERE p.uid LIKE 'org.adidaw.mix.%'").getInt();};
     check(count()==0,"fresh project has no reserved or silently enabled functions");
-    check(!doc->addMixFunction(mix::Function::Compressor,2)&&count()==0,"unported core has an honest refusal");
+    check(!doc->addMixFunction(mix::Function::Deesser,2)&&count()==0,"unported core has an honest refusal");
     check(doc->addMixFunction(mix::Function::Limiter,2)&&count()==1,"opt-in real native limiter adds in one batch");
     doc->tick(0);
     const auto publication=doc->parameterFeed().current();

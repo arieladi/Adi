@@ -224,7 +224,11 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
     bool editExpected(const DevicePanelData &, const std::string &, engine::ParamEventKind, double);
     bool validExpected(const DevicePanelData &) const;
     bool action(const std::string &, Payload);
+    // Native functions remove with Undo; ordinary plug-ins retain bypass.
+    bool setEnabledExpected(const DevicePanelData &, bool);
     juce::PopupMenu functionMenu();
+    // Explicit target and lifetime for another visible surface, without selecting its channel.
+    juce::PopupMenu functionMenuFor(std::int64_t, std::function<bool()> ownerCurrent);
     bool hasFunction(mix::Function) const;
     bool dropFunction(DevicePanelView &, std::optional<std::int64_t> before);
     void cancelFunctionInteractions();
