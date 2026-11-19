@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Add a device-key preparation refusal gate
+
+The new owned-device fixture runs through ProjectDocument with the transport advancing. A shape-changing recipient can refuse its first key preparation before changing prepared state. The same committed Post FX route is then retried. The gate requires the first rejected callback to keep invoking the old device and produce the identical programme, while the project keeps exactly one stored Undo step. After retry the key must arrive without another history entry.
+
+Windows Release on the prior routing code had three expected failures in 211 checks. The old code skips preparation and its refusal, publishes the receipt immediately and cannot deliver the key on retry. The separate baseline DSP, journal and last-published-state controls distinguish those failures from an initial fixture error. Keep this headless test with DF-M60 (b). A genuine failure can mark a shared device node unready during the full rebuild, so preserving the old graph pointer alone is insufficient evidence of DSP continuation. The engine owner should review that boundary separately from SDK return handling.
+
 ### 2026-11-19 — De-esser and Gate Release output preservation
 
 The cumulative Release libraries repeated 162 saved outputs over 88,333,120 stereo frames. De-esser's 112 outputs are byte-identical to the previous accepted build and each still passes the original native peak and RMS bounds. Gate's 25 incremental and 25 complete requests are byte-identical to the accepted output arrays and retain the same verified reference hashes. This closes the Release replay check for the two reviewed branch pairs. Runtime registration still follows the native function queue.
