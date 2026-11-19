@@ -5,6 +5,53 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — Queue item 1: #278 brought to main, #208 ported onto it, #207 not landable
+
+**#278 (`devices/oneshot`, now `3892833a`).** `origin/main` (`ae09f638`) merged in
+without a conflict. MSVC 19.44 Debug, `ADI_WERROR=ON` (/W4 /WX), the whole tree:
+clean. CTest: 243 of 244 suites pass at `-j 8`; `adi_oneshot_tests` **197** and
+`adi_oneshot_pd_tests` **38**, as on 28 October. The one failure was
+`adi_scan_process_tests` ("timeout terminates child descendants...") under load; it
+passes alone (3.5 s) and is the scanner's, not this branch's. The four validators
+pass. Its draft gates stand as written on 28 October (Live parity, instrument
+dispatch, the Pd instrument's Consume metadata); those are DEV-21's, item 3.
+
+**PR requested** — mark #278 ready for review and land it: head `devices/oneshot`
+at `3892833a`, base `main`. Body unchanged, plus: "Brought to main `ae09f638` on
+19 November; MSVC /W4 /WX clean; 197 + 38 checks."
+
+**#208 → `devices/sampler` (`a5500cc3`), stacked on `devices/oneshot`.** #208's
+Sampler, ported onto #278 instead of the stale #207 stack (PLAN MF2). Changes from
+#208: no Session hook (internal-instrument dispatch is DEV-21's with the engine;
+the test injects the loader as OneShot's does); no `EventOwner` (a #207 type not on
+main); prepare idempotent (ADR-0090 d5), `release()` makes the next one full; stepped
+controls store whole steps; the check that failed on Apple clang in #208's CI
+("modulation preserves base value", an exact `== 0` on `-90 + n*102`, which a fused
+multiply-add does not give) now compares within 1e-9. `adi_sampler_tests` **31**
+checks (#208's 28 and three new), OneShot's 197 unchanged. Plants: re-preparing at
+the same format and unrounded steps fail the two new checks (2 of 31); restored, 0.
+
+**PR requested** — title "Sampler on OneShot's voices, ported from #208 (DEV-21)";
+head `devices/sampler` at `a5500cc3`; base `devices/oneshot` (#278) until #278
+lands, then `main`. Body: the commit message. Then close #208 as superseded by it.
+
+**#207 (`codex/midi-effects`) should not land, and nothing of it can land from this
+lane.** Measured against main: a trial merge conflicts in 30-odd files, the window's
+UI among them (its base is the stale 30 September stack). Its fourteen kernels compile
+only against its own engine changes: `EventType::Control = 5` (main has
+`Controller = 5`), `MappedValue`/`MappedMod`, `Event::owner` with `EventOwner` on every
+`Node`, and `transformsEvents()`/`transformEvents()` added to `DeviceInstance` and run
+from `Graph`. The plan rejects exactly those (DEV-18: "#207's EventType::Control = 5
+and its per-event EventOwner*"; DEV-17: "#207's nextId * 1024") and gives the
+transform phase and note identity to the engine (DEV-18, DEV-17). So the kernels are
+ported (DEV-19, MF1: from `7f421f4d` with its listed fixes) once the engine's
+transform phase is on main, onto that interface; this lane designs no second
+transform path meanwhile. **Request to win:** close #207 as "to be ported (DEV-19 on
+DEV-17/DEV-18)", keeping the branch; LANES §4b item 4 already says so.
+
+**Queue:** item 2, DEV-09, next. Its first step (the latency binding unbound on close,
+MF4) is on `devices/pd-unbind`, building.
+
 ## 2026-11-19 — The lane is taken up again (ADR-0208; ADR-0246 d5, in #641)
 
 A Claude work seat on the director's research machine (Windows, MSVC 19.44,
