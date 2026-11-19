@@ -21,7 +21,8 @@ Prints one tab-separated line, the verdict first:
                SUCCESS beside it)
     LEGACY     the newest adi_daw run has no "gate" check (a run from before
                the gate existed): the old rule, nothing runs, nothing failed and
-               at least 20 checks passed; land_top.sh wants it twice in a row
+               at least 20 checks passed, and the GUI shell's answer is whole
+               by the same rule LAND uses; land_top.sh wants it twice in a row
 
 Pure stdlib and no network, so test_land_checks.py runs it on sample rollups
 without GitHub. It was a jq expression inside land_top.sh until 19 November;
@@ -163,7 +164,9 @@ def decide(rollup: list[dict]) -> list[str]:
     elif cancelled:
         verdict = "CANCELLED"
     elif gate is None:
-        verdict = "LEGACY" if legacy_ok >= LEGACY_MIN_OK else "WAIT"
+        # The old count says nothing about the GUI shell: 20 legs can pass
+        # while Step 7 UI has planned its shells and created none of them.
+        verdict = "LEGACY" if legacy_ok >= LEGACY_MIN_OK and gui_ok else "WAIT"
     elif gate["conclusion"] == "SUCCESS":
         # The GUI shell's whole answer, or wait for it: checks not created yet,
         # one of three, or one that is neither a pass, a failure nor a

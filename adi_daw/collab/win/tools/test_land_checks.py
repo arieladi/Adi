@@ -190,6 +190,12 @@ def cases():
     r = legacy_run(21)
     r[3]["conclusion"] = "FAILURE"
     yield "an old run without a gate, one failed", r, "FAILED"
+    # Review of 19 November: the old count is no answer about the GUI shell.
+    # 21 passed legs, Step 7 UI planned, and not one GUI shell check created
+    # yet: LEGACY landed it with the shell unbuilt.
+    r = [check(n, "SUCCESS", ADI, 300) for n in LEGS + ["extra leg 1", "extra leg 2", "extra leg 3"]]
+    r.append(check(UI_PLAN, "SUCCESS", UI, 301))
+    yield "an old run without a gate, 21 passed, Step 7 UI planned, no GUI shell yet", r, "WAIT"
     yield "no checks at all", [], "WAIT"
 
 
