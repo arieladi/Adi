@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E27(d) keep performance outside history forks
+
+**PR requested** — branch `engine/df-e27-ephemeral-history`, head `2414ac7cda163afed7adbd7df30749c7b6d57132`, main base `bedee5ab`. Title **DF-E27(d): Keep transport audit outside history forks**. Independent of DF-E27(a–c) and #530. When integrating CT-02's grouped journal branch, retain this shared divergence guard and tip deduplication.
+
+Play and Stop remain individual audit rows without a parent or an inverse. An all-ephemeral batch leaves the Undo head, Redo line and branch list untouched. A mixed batch preserves the line it diverges from. A real fork records an abandoned tip only when an existing non-current branch does not already hold that tip.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them with the frozen DEV-23 Debug core. Both passed 111 history, 49 history-move, 130 ops, 282 applied-batch and 73 compaction checks. The current-main journal failed both new assertions first. The two planted faults separately detected ephemeral forks and duplicate tips. Four validators and the format layout check passed.
+
 ## 2026-11-19 — DF-E27(b) clip End uses the source clock
 
 **PR requested** — branch `engine/df-e27-source-end`, head `25ba8fce3596ce97bddde293e69f3e3cad120351`, main base `bedee5ab`. Title **DF-E27(b): Keep clip playback End on its source clock**. This extracts the End-marker fix from `b9773069` as an independent patch on current main. The shortened fade fix is in its independent DF-E27(a) branch. #530's Start/End edit and source-pin synchronization follows on its own branch.
