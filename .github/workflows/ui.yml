@@ -39,7 +39,7 @@ jobs:
   shell:
     name: GUI shell / ${{ matrix.os }}
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code != 'false'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
