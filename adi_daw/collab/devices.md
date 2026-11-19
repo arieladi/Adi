@@ -56,6 +56,23 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E37 (b): Shifter returns to a clean unison after any pitch move
+
+**On #660's branch, `devices/shifter-latency` (`7c5d8158`).**
+
+- **Failing first:** +7 st for 1,926 samples and back, then an impulse of 0.5: four nonzero
+  samples, half copies around 960 and 2880 (the review's case) — a comb for good.
+- **Fix:** at unison with the taps' phase away from rest (0 or 0.5), a 20 ms crossfade
+  (`Pitch::kRestSeconds`) from the two taps where they are to the clean Window/2 read, then the
+  phase rests; a move away from unison cancels it. No glide, no jump.
+- Now: the impulse once, 1920 late, exactly 0.5; a 100 Hz tone through the return steps at most
+  1.04× its own steepest slope. Kept: `liveUnison` (240/1920/8400), latency 0, pitch within 0.04
+  cents, the +7 st figures, no allocation. Live's own return is reading 2 in the list.
+- Plant: no return → fails. Shifter 47; CTest **242/242**.
+
+**PR request #660 stands** with this commit (head now `7c5d8158`). The Shifter question is struck
+(answered: Live's way, ADR-0247 d9).
+
 ## 2026-11-19 — DF-E37 (a): Saturator HQ no longer comb-filters at a partial Dry/Wet
 
 **On #659's branch, `devices/saturator-latency` (`e539f7dc`).**
