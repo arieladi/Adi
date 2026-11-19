@@ -10,6 +10,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/decode.hpp"
+#include "adi/media/zip_writer.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
 #include "adi/settings/channel_config.hpp"
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <set>
@@ -744,6 +746,207 @@ void testBundles() {
           "the absolute-path test knows Windows, UNC and POSIX, and not roles or '1/16'");
 }
 
+void testBundlePublication() {
+    section("bundle export: private staging, atomic replacement and publication warnings");
+    adi::test::TempDirectory temp("settings","bundle-publication");
+    AppSettings from(appdata::App::Daw,temp.path()/"settings.json");
+    std::string why;
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto output=temp.path()/"bundle.zip";
+    auto legacy=output;legacy+=".staging";
+    const auto unrelated=temp.path()/".adi-bundle-existing";
+    writeText(legacy/"keep.txt","legacy path belongs to the user");
+    writeText(unrelated/"keep.txt","unrelated sibling belongs to the user");
+    const auto retained=[&] {
+        return readText(legacy/"keep.txt")=="legacy path belongs to the user" &&
+               readText(unrelated/"keep.txt")=="unrelated sibling belongs to the user";
+    };
+    const auto noPrivateStage=[&] {
+        for(const auto& entry:fs::directory_iterator(temp.path()))
+            if(entry.path()!=unrelated && entry.path().filename().string().starts_with(".adi-bundle-"))return false;
+        return true;
+    };
+    const auto first=exportBundle(from,{},output);
+    check(first.ok && first.publication && retained() && noPrivateStage(),
+          "new export leaves preexisting fixed staging and unrelated sibling trees untouched");
+    const auto original=readText(output);
+    check(!original.empty() && readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light",
+          "success publishes a complete readable settings archive");
+    from.set("lookfeel.theme","dark",kUser,why);
+    std::set<fs::path> stages;
+    for(const auto* blocker:{"manifest.json","bundle.zip"}) {
+        fs::path stage;
+        BundleExportHooks hooks;
+        hooks.stageReady=[&](const fs::path& path) {stage=path;stages.insert(path);fs::create_directory(path/blocker);};
+        const auto failed=exportBundle(from,{},output,hooks);
+        check(!failed.ok && !failed.publication && !failed.why.empty() && readText(output)==original &&
+              !fs::exists(stage) && retained() && noPrivateStage(),
+              "actual JSON/archive staging failure preserves old output and cleans only private staging");
+    }
+    check(stages.size()==2,"each export reserves a different private sibling stage");
+    auto badPreset=makePreset(from,"invalid UTF-8",{"Display & Input","Theme & Colors"});
+    badPreset.name=std::string(1,static_cast<char>(0xff));
+    const auto invalidJson=exportBundle(from,{badPreset},output);
+    check(!invalidJson.ok && !invalidJson.publication && readText(output)==original && retained() && noPrivateStage(),
+          "serialization exception after stage creation leaves existing output intact and is reported");
+    BundleExportHooks hooks;
+    hooks.publication.syncFile=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    const auto unsynced=exportBundle(from,{},output,hooks);
+    check(!unsynced.ok && !unsynced.publication && unsynced.why.find("sync staging file")!=std::string::npos &&
+          readText(output)==original && retained() && noPrivateStage(),
+          "failed staged-file sync never truncates or deletes the existing bundle");
+    hooks={};
+    hooks.publication.rename=[](const fs::path&,const fs::path&) {return std::make_error_code(std::errc::permission_denied);};
+    const auto refused=exportBundle(from,{},output,hooks);
+    check(!refused.ok && !refused.publication && readText(output)==original && retained() && noPrivateStage(),
+          "failed atomic replacement preserves old bytes without a copy fallback");
+    const auto absent=temp.path()/"absent.zip";
+    check(!exportBundle(from,{},absent,hooks).ok && !fs::exists(absent) && noPrivateStage(),
+          "failed publication to an absent path leaves no partial final archive");
+    const auto directory=temp.path()/"directory.zip";fs::create_directory(directory);
+    const auto wrongType=exportBundle(from,{},directory);
+    check(!wrongType.ok && !wrongType.publication && fs::is_directory(directory) && fs::is_empty(directory),
+          "refused directory destination is never removed even when empty");
+    std::error_code error;
+    auto lease=adi::media::ProjectFileLease::openShared(output,error);
+    const auto locked=exportBundle(from,{},output);
+    check(lease && !locked.ok && readText(output)==original && noPrivateStage(),
+          "publisher refuses an in-use destination without damaging its existing archive");
+    lease.reset();
+    const auto replaced=exportBundle(from,{},output);
+    check(replaced.ok && replaced.publication && readText(output)!=original &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="dark" && retained() && noPrivateStage(),
+          "ordinary successful export retains intended replacement semantics with a complete new archive");
+    hooks={};
+    hooks.publication.syncDirectory=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto warning=exportBundle(from,{},output,hooks);
+    check(warning.ok && warning.why.empty() && warning.publication &&
+          !warning.publication->durabilityConfirmed && !warning.publication->warning.empty() &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light" && retained() && noPrivateStage(),
+          "post-publication sync warning retains success and published bytes instead of reporting a failed export");
+    fs::path outerStage,innerStage;
+    bool nestedOk=false,outerStillExists=false;
+    hooks={};
+    hooks.stageReady=[&](const fs::path& path) {
+        outerStage=path;
+        BundleExportHooks nested;
+        nested.stageReady=[&](const fs::path& inner) {innerStage=inner;};
+        nestedOk=exportBundle(from,{},temp.path()/"nested.zip",nested).ok;
+        outerStillExists=fs::is_directory(path);
+    };
+    const auto nested=exportBundle(from,{},output,hooks);
+    check(nested.ok && nestedOk && outerStillExists && outerStage!=innerStage &&
+          !fs::exists(outerStage) && !fs::exists(innerStage) && retained() && noPrivateStage(),
+          "overlapping exports have independent stages and cannot clean up each other's work");
+}
+
+void testBundleSchemas() {
+    section("bundle import envelope gate: versions and application types before mutation");
+    adi::test::TempDirectory temp("settings","bundle-schema");
+    AppSettings source(appdata::App::Daw,temp.path()/"source"/"settings.json");
+    std::string why;
+    source.set("lookfeel.theme","light",kUser,why);
+    source.set("library.userLibrary","/sender/library",kUser,why);
+    source.set("files.recordFolder","/sender/library/Recordings",kUser,why);
+    const auto preset=makePreset(source,"Actual v1 preset",{"Display & Input","Theme & Colors"});
+    const auto exported=temp.path()/"existing-v1.zip";
+    check(exportBundle(source,{preset},exported).ok,"schema cases start with an actual exported v1 archive");
+    const auto originalArchive=readText(exported);
+    const Value manifest=readZipJson(exported,"manifest.json");
+    const Value settings=readZipJson(exported,"settings.json");
+    const Value presetDocument=readZipJson(exported,"presets/1.json");
+    const auto targetFile=temp.path()/"receiver"/"settings.json";
+    {
+        AppSettings target(appdata::App::Daw,targetFile);
+        target.set("lookfeel.theme","dark",kUser,why);
+        target.set("library.userLibrary","/receiver/library",kUser,why);
+        check(target.save(why),"receiver has an existing persisted configuration and change log");
+    }
+    const auto fixture=temp.path()/"candidate.zip";
+    const auto reject=[&](const std::string& label,const std::optional<std::string>& manifestText,
+                          const std::optional<std::string>& settingsText) {
+        const auto documents=temp.path()/"documents";
+        writeText(documents/"preset.json",presetDocument.dump());
+        {
+            adi::media::ZipWriter zip(fixture);
+            bool ok=true;
+            if(manifestText) {writeText(documents/"manifest.json",*manifestText);ok=zip.addFile(documents/"manifest.json","manifest.json");}
+            if(settingsText) {writeText(documents/"settings.json",*settingsText);ok=ok && zip.addFile(documents/"settings.json","settings.json");}
+            if(!ok || !zip.addFile(documents/"preset.json","presets/1.json") || !zip.finish())
+                throw std::runtime_error("schema archive fixture failed");
+        }
+        AppSettings target(appdata::App::Daw,targetFile);
+        const Value before=target.stored();
+        const auto diskBefore=readText(targetFile),logBefore=readText(target.changeLogFile()),inputBefore=readText(fixture);
+        BundleReport report;
+        bool threw=false;
+        try {report=importBundle(fixture,target,kUser);} catch(...) {threw=true;}
+        check(!threw && !report.ok && !report.why.empty() && report.applied==0 && report.presets.empty() &&
+              report.skipped.empty() && report.unresolved.empty() && !report.publication &&
+              target.stored()==before && readText(targetFile)==diskBefore &&
+              readText(target.changeLogFile())==logBefore && readText(fixture)==inputBefore,
+              label+": refuses without target, log, input or preset mutation");
+    };
+    const std::vector<Value> badSchemas={0,-1,2,std::uint64_t{0x100000001ULL},
+        std::numeric_limits<std::uint64_t>::max(),std::numeric_limits<std::int64_t>::min(),
+        1.0,"1",true,nullptr,Value::array(),Value::object()};
+    for(const auto& schema:badSchemas) {
+        auto badManifest=manifest;badManifest["schema"]=schema;
+        reject("manifest schema "+schema.dump(),badManifest.dump(),settings.dump());
+        auto badSettings=settings;badSettings["schema"]=schema;
+        reject("settings schema "+schema.dump(),manifest.dump(),badSettings.dump());
+    }
+    auto missing=manifest;missing.erase("schema");
+    reject("missing manifest schema",missing.dump(),settings.dump());
+    missing=settings;missing.erase("schema");
+    reject("missing settings schema",manifest.dump(),missing.dump());
+    const std::vector<Value> wrongTypes={nullptr,true,7,1.5,Value::array(),Value::object()};
+    for(const auto& value:wrongTypes) {
+        auto bad=manifest;bad["kind"]=value;
+        reject("manifest kind type "+value.dump(),bad.dump(),settings.dump());
+        bad=manifest;bad["app"]=value;
+        reject("manifest app type "+value.dump(),bad.dump(),settings.dump());
+        bad=settings;bad["app"]=value;
+        reject("settings app type "+value.dump(),manifest.dump(),bad.dump());
+    }
+    for(const auto* key:{"kind","app"}) {
+        auto bad=manifest;bad.erase(key);
+        reject(std::string("missing manifest ")+key,bad.dump(),settings.dump());
+    }
+    missing=settings;missing.erase("app");
+    reject("missing settings app",manifest.dump(),missing.dump());
+    auto bad=manifest;bad["kind"]="other-bundle";
+    reject("foreign manifest kind",bad.dump(),settings.dump());
+    bad=manifest;bad["app"]="ADiJ";
+    reject("foreign manifest app",bad.dump(),settings.dump());
+    bad=settings;bad["app"]="ADiJ";
+    reject("manifest/settings application disagreement",manifest.dump(),bad.dump());
+    const std::vector<Value> badRoots={nullptr,true,7,"document",Value::array()};
+    for(const auto& root:badRoots) {
+        reject("nonobject manifest "+root.dump(),root.dump(),settings.dump());
+        reject("nonobject settings "+root.dump(),manifest.dump(),root.dump());
+    }
+    for(const auto& value:badRoots) {
+        bad=settings;bad["values"]=value;
+        reject("nonobject settings values "+value.dump(),manifest.dump(),bad.dump());
+    }
+    missing=settings;missing.erase("values");
+    reject("missing settings values",manifest.dump(),missing.dump());
+    reject("missing manifest entry",std::nullopt,settings.dump());
+    reject("missing settings entry",manifest.dump(),std::nullopt);
+    reject("malformed manifest JSON",std::string("{not json"),settings.dump());
+    reject("malformed settings JSON",manifest.dump(),std::string("{not json"));
+
+    AppSettings target(appdata::App::Daw,targetFile);
+    const auto valid=importBundle(exported,target,kUser);
+    check(valid.ok && valid.why.empty() && valid.applied>0 && !valid.publication &&
+          target.get("lookfeel.theme")=="light" && target.get("library.userLibrary")=="/receiver/library" &&
+          target.get("files.recordFolder")=="/receiver/library/Recordings" &&
+          valid.presets.size()==1 && valid.presets[0].name=="Actual v1 preset" && readText(exported)==originalArchive,
+          "actual exported v1 bundle still imports settings, roles and presets without changing its archive");
+}
+
 
 // --- the catalogue (ADR-0156) ---------------------------------------------------------------
 
@@ -1005,6 +1208,8 @@ int runAll() {
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
+    testBundlePublication();
+    testBundleSchemas();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
