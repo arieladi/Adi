@@ -403,6 +403,13 @@ private:
     /// reason: `gensym` on the audio thread allocates for an unseen name.
     void* transportSymbol_ = nullptr;
 
+    /// What `libpd_bind` handed back for the latency receive name (DEV-09;
+    /// #173 re-applied). **A handle, not a status:** `libpd_bind` returns a
+    /// `libpdreceive` object that only `libpd_unbind` frees. Discarded, every
+    /// engine leaked one object holding a pointer into its instance's symbol
+    /// table, which `pdinstance_free` then freed underneath it.
+    void* latencyBinding_ = nullptr;
+
     /// Engine events -> MIDI, per device and stateful: a member channel is
     /// allocated at note-on and released at note-off.
     engine::MpeRouter midiRouter_;
