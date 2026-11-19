@@ -13858,7 +13858,10 @@ int main(int argc, char **argv) {
                     ++placed;
                     once = once && tabOf(*setting) == tab.name;
                 }
-        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        std::size_t paged = 0;
+        for (const auto &s : settings::registry())
+            paged += s.page.empty() ? 0 : 1; // internal preferences (DEV-23) have no page
+        check(once && placed == paged, "every setting is on one tab, once");
         {
             // Live's sections in Live's order (N14), then ADI's own settings on the tab, in the
             // tab's own group: Live 12 manual 2.3.1 lists neither Zoom on Selection, the tooltips
