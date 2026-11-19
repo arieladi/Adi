@@ -797,6 +797,60 @@ void documentRollbackWarning() {
           "remove document SQL replacement fixture");
 }
 
+void documentArchiveControl() {
+    Fixture fixture;
+    std::string bytes(1024*1024+123,'\0');
+    for(std::size_t i=0;i<bytes.size();++i)bytes[i]=static_cast<char>((i*43+i/7)&255);
+    fixture.add("outside.wav",bytes,10);
+    fixture.store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main')");
+    check(fixture.store->close(),"close actual archive document input");fixture.store.reset();
+    std::string error;
+    auto document=ui::ProjectDocument::open(fixture.temp.path()/"song.adi",false,{},error);
+    check(document!=nullptr,"open disposable document for controlled archive worker");if(!document)return;
+    const auto before=digestProject(document->store()).text;
+    const auto source=fixture.temp.path()/"outside.wav";
+    const auto sourceHash=media::blake3File(source).hex;
+    const auto output=fixture.temp.path()/"document.zip";
+    ui::ProjectDocument::ExportJob job;
+    check(document->prepareCollectAndExport(output,job),"prepare normal document archive job on its owner");
+    std::stop_source stop;
+    const auto owner=std::this_thread::get_id();
+    bool onWorker=true,observed=false,zipSeen=false;
+    std::uint64_t copied=0,total=0;
+    media::FileResult result;
+    const media::ArchiveControl control{stop.get_token(),[&](media::ArchiveProgress progress) {
+        onWorker&=std::this_thread::get_id()!=owner;
+        zipSeen|=progress.phase==media::ArchivePhase::WriteArchive || progress.phase==media::ArchivePhase::Publish;
+        if(progress.mediaFile.empty())return;
+        observed=true;copied=progress.mediaBytesCopied;total=progress.mediaBytesTotal;
+        if(copied>=128*1024)stop.request_stop();
+    }};
+    std::thread worker([&]{result=ui::ProjectDocument::runCollectAndExport(job,control);});worker.join();
+    check(onWorker && observed && copied==128*1024 && total==bytes.size() && copied<total,
+          "document worker forwards real within-copy progress and stop on its own thread");
+    check(!result.ok && result.cancelled && !zipSeen && !fs::exists(output),"controlled document result preserves typed cancellation and publishes no ZIP");
+    check(!archiveStageRemains(fixture.temp.path()) && media::blake3File(source).hex==sourceHash &&
+          digestProject(document->store()).text==before,"document cancellation cleans private work and leaves the live source intact");
+    document.reset();
+    StoreFileResult compatibility;
+    std::thread legacyWorker([&]{compatibility=ui::ProjectDocument::runCollectAndExport(job);});legacyWorker.join();
+    check(compatibility.ok && fs::is_regular_file(output),"unchanged one-argument API runs the same prepared job after its document closes");
+    ZipReader reader(output);const auto extracted=fixture.temp.path()/"document-unpacked";
+    check(reader.extract(extracted),"compatibility document worker writes a valid complete archive");
+    bool exact=false;
+    for(const auto& file:fs::directory_iterator(extracted/"audio"))exact|=media::blake3File(file.path()).hex==sourceHash;
+    check(exact && media::blake3File(source).hex==sourceHash,"compatibility archive contains the exact source media without changing it");
+    const auto archiveHash=media::blake3File(output).hex;
+    const auto collision=ui::ProjectDocument::runCollectAndExport(job,{});
+    check(!collision.ok && !collision.cancelled && media::blake3File(output).hex==archiveHash,
+          "controlled result distinguishes ordinary existing-target failure from cancellation");
+    job.zip=fixture.temp.path()/"observer-failure.zip";
+    media::FileResult observerFailure;
+    std::thread failingWorker([&]{observerFailure=ui::ProjectDocument::runCollectAndExport(job,{{},[](media::ArchiveProgress){throw 17;}});});
+    failingWorker.join();
+    check(!observerFailure.ok && !observerFailure.cancelled && !observerFailure.error.empty() && !fs::exists(job.zip) &&
+          !archiveStageRemains(fixture.temp.path()),"nonstandard phase observer failure becomes a worker result without escaping its thread");
+}
 void partialCheckpointWarning() {
     Fixture f;
     f.add("external/checkpoint.bin", "checkpoint fixture bytes", 1);
@@ -855,7 +909,7 @@ void collectionPublicationWarnings() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); publicationWarnings(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); extractionPublicationWarnings(); archivePrivatePublicationWarnings(); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); partialCheckpointWarning(); collectionPublicationWarnings(); }
+    try { publication(); publicationWarnings(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); extractionPublicationWarnings(); archivePrivatePublicationWarnings(); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); documentArchiveControl(); partialCheckpointWarning(); collectionPublicationWarnings(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

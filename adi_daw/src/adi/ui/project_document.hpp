@@ -8,6 +8,7 @@
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/media/collect_export.hpp"
 #include "adi/store.hpp"
 #include "adi/material_commands.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -73,7 +74,14 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::filesystem::path project, zip;
     };
     bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    // Compatibility entry: same work, without a stop/progress control or typed
+    // cancellation field. Existing application callers retain StoreFileResult.
     static StoreFileResult runCollectAndExport(const ExportJob &);
+    // Worker entry: forwards the archive's existing stop/progress contract and
+    // preserves typed cancellation and warnings. Callbacks run synchronously on
+    // the calling worker; job/control must live until this call returns. This
+    // static operation does not retain or access the preparing document.
+    static media::FileResult runCollectAndExport(const ExportJob &, const media::ArchiveControl &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;

@@ -215,11 +215,17 @@ bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, 
     return true;
 }
 StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+    auto result = runCollectAndExport(job, {});
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+media::FileResult ProjectDocument::runCollectAndExport(const ExportJob &job,
+                                                      const media::ArchiveControl &control) {
     try {
-        const auto result = media::collectExport(job.project, job.zip);
-        return {result.ok, result.error, result.warning};
+        return media::collectExport(job.project, job.zip, control);
     } catch (const std::exception &e) {
         return {false, e.what(), {}};
+    } catch (...) {
+        return {false, "collection export worker failed", {}};
     }
 }
 bool ProjectDocument::synchronise() {
