@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M60 expanded identity and dormant-key red gates
+
+On the current review stack, the expanded Windows Release document gate ran 118 checks with 12 expected failures in Paste, Duplicate and incompatible legacy replacement. Both Browser cases passed. The owned VST3 gate ran 90 checks with four expected failures. It now distinguishes the first post-FX samples from Pre FX, preserves the complete programme comparison, and reproduces Undo and reopen. The fixtures are staged privately for the cumulative correction once #651 lands. The existing phase and monitor paths are outside these fixtures.
+
 ### DF-M25 detached analyser returns to its source in Analysers
 
 The detached analyser's Mix View action opens the matching Analysers page with the displayed channel. It respects the preferred docked or separate workspace and selects a valid fallback if the old source disappeared. Stack keeps its filter and group when opened later. The action adds no project edit or Undo entry.
