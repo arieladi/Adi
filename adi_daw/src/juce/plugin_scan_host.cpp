@@ -88,7 +88,9 @@ int entry(const std::vector<std::string>& arguments) {
         } else return 78;
         std::string error;const auto packet=adi::scan::encodeMetadata(arguments[2],arguments[3],plugins,error);
         if(!packet)return 65;
-        if(std::fwrite(packet->data(),1,packet->size(),channel.file)!=packet->size() || std::fflush(channel.file)!=0)return 74;
+        // 74 is channel setup before opening a module. A completed domain
+        // probe whose output pipe fails has its own infrastructure status.
+        if(std::fwrite(packet->data(),1,packet->size(),channel.file)!=packet->size() || std::fflush(channel.file)!=0)return 75;
         return 0;
     } catch(const std::exception&) {return 65;}
 }
