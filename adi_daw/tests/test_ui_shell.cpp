@@ -9545,6 +9545,25 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
               mix.analysis.detail.mode() == SharedSpectrumView::Mode::Phase &&
               nav.preview.mode() == SharedSpectrumView::Mode::Spectrum,
           "Info opens the functional Analysers page and keeps an independent preview mode");
+    auto &detail = mix.analysis.detail;
+    mix.analysis.setMode(SharedSpectrumView::Mode::Spectrogram);
+    detail.paletteBox.setSelectedId(static_cast<int>(palettes::find("viridis")) + 1, juce::sendNotificationSync);
+    detail.reverseButton.setToggleState(true, juce::dontSendNotification);
+    detail.reverseButton.onClick();
+    mix.analysis.setMode(SharedSpectrumView::Mode::Spectrum);
+    detail.slopeBox.setSelectedId(2, juce::sendNotificationSync);
+    root.frame();
+    check(nav.preview.palette() == "viridis" && nav.preview.paletteReversed() &&
+              nav.preview.spectrumSlope() == SpectrumSlope::Tilt45 &&
+              nav.preview.mode() == SharedSpectrumView::Mode::Spectrum &&
+              nav.preview.point() == engine::ScopePoint::PostFader,
+          "visible Mix View Info shares palette and slope and keeps its own mode and tap");
+    detail.paletteBox.setSelectedId(1, juce::sendNotificationSync);
+    detail.reverseButton.setToggleState(false, juce::dontSendNotification);
+    detail.reverseButton.onClick();
+    detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+    mix.analysis.setMode(SharedSpectrumView::Mode::Phase);
+    root.frame();
     check(mix.mainMeter.getBounds() == meterBounds && mix.mainMeter.subscribed() &&
               !mix.mainMeter.getBounds().intersects(mix.analysis.getBounds()),
           "the same Main meter remains docked when paging to Analysers");
@@ -9901,14 +9920,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.state().analysisPalette == "viridis" && root.state().analysisPaletteReverse &&
                   persistence.load("mix").analysisPalette == "viridis" && persistence.load("mix").analysisPaletteReverse,
               "palette controls save the parent's per-window visual choice");
-        check(root.infoSpectrum.palette() == "viridis" && root.infoSpectrum.paletteReversed() &&
-                  root.infoSpectrum.mode() == panel.analysis.detail.mode() && root.infoSpectrum.point() == panel.analysis.detail.point(),
-              "compact Info follows the parent's analyzer mode, source point and palette");
+        check(!root.infoSpectrum.isVisible() && !root.infoSpectrum.subscribed(),
+              "the full Mix View keeps the Arrangement Info out of the visible analysis path");
         check(value(*store, "SELECT count(*) FROM ops") == operations, "palette choices never create audio edits or undo operations");
         panel.analysis.detail.slopeBox.setSelectedId(2, juce::sendNotificationSync); root.frame();
         check(root.state().analysisSpectrumSlope == "tilt45" && persistence.load("mix").analysisSpectrumSlope == "tilt45" &&
-                  root.infoSpectrum.spectrumSlope() == SpectrumSlope::Tilt45 && value(*store, "SELECT count(*) FROM ops") == operations,
-              "Spectrum slope persists as view state and compact Info follows without audio edits");
+                  panel.analysis.detail.view.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                  value(*store, "SELECT count(*) FROM ops") == operations,
+              "spectrum slope persists in the view without audio edits");
         panel.analysis.detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
         panel.analysis.detail.paletteBox.setSelectedId(1, juce::sendNotificationSync);
         panel.analysis.detail.reverseButton.setToggleState(false, juce::dontSendNotification); panel.analysis.detail.reverseButton.onClick();
