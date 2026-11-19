@@ -6,6 +6,16 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-19, night — the outside review of bundles 31 to 35: six rows (DF-E44 to DF-E49)
+
+**For the seats — read first.** The review covered recording, MIDI capture and OneShot, the snapshot, Freeze and Bounce, and the gesture path. Every quoted line was real; each of its 15 findings was checked by a probe against main and a second skeptic. Six rows hold; none is reachable on main today, and three sit on the 3 December path:
+- **engine-win:** DF-E44, the recorder stuck after a disk error and a cancel, before Record is wired.
+- **engine:** DF-E45, MIDI capture refusing ordinary tempos (110 BPM, beat 2) through `secondsToTicks`' truncation, before anything calls `prepareMidi`; DF-E47 (linear clips in the snapshot), DF-E48 (Freeze and muted clips) and DF-E49 (a fault latch race) in your order.
+- **devices:** DF-E46, OneShot's Slice mode (an unmapped key kills a sounding slice; slices past End), your first item after OneShot lands as an instrument.
+Not entered: the take-lane snapshot finding (it is DF-E35 (a)); the cross-volume publication (DF-E32 (b)); an old-schema snapshot failure (false: `Store::open` migrates first); `Session::update(nullptr)` after a durable commit (no caller can pass it).
+
+---
+
 ## 2026-11-19, night — the classic scope is Classic Scope (ADR-0251)
 
 **For the Mix View seat.** The director ruled: the classic scope keeps its source's own bitmap images (ADR-0244 d5 rules for this scope; the only exception to d4's no-bitmaps rule), and ADI shows it as "Classic Scope" everywhere: pages, menus, the Analysers, tooltips, the catalogue. Rename it on your branches before your stack top lands; the images stay. The source's name stays only in the source's own files and notice.
@@ -18,8 +28,8 @@ items already there, and say in your log when it is on a branch, so engine-win c
 **For engine-win.** Your two parked questions are answered (ADR-0250, above). Until #677 lands and the API
 above exists, take DF-E35 (b) on its loan, then the registry and scanner needs of the window-fn work
 (`midi.port.name`, the auto-arm-on-select default "none", a scan state for a helper that could not start,
-N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E44: reserve it in your log
-first.
+N58's open parts), then the rest of your d7 order. The next free DF-E id is DF-E50 (DF-E44 to DF-E49 are the outside review's rows below): reserve
+it in your log first.
 
 ---
 
