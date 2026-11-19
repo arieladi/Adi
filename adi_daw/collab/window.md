@@ -23,6 +23,33 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## FOR THE DIRECTOR
+
+Questions only the director can answer. Each says what the window lane recommends and what it holds up; the lane works on meanwhile. Newest first.
+
+**1. Take lanes and comping, proposal 1** ([picture](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/take-lanes-comping.png?raw=true), source `collab/window/design/proposals/take-lanes-comping.html` on `window/proposals`; PLAN CT-04 with CT-01). The full Arrangement for "Norway", 1920 x 1080 at real size, with Lead Vocals unfolded: its main lane plays a comp of an eight-bar loop (bars 9 to 17) whose pieces are named after their takes (Take 2, Take 4, Take 1, Take 2, Take 4); under it four take lanes of the same sung phrase, each with its name, its speaker and a "Lane" area; what each take gave the comp is in the track's colour, the rest dimmer; Take 3 is auditioned (its speaker lit) and a selection on it is about to be copied to the main lane with Enter; Keys (MIDI) has its three take lanes folded away. The numbers on the sheet are explained in its own legend. Questions:
+- Does the show/hide switch for the take lanes sit in the track header (as drawn), or on the main lane as in Live? *Recommendation: the header, beside the take count, where the fold switch already is.*
+- A "+ Insert Take Lane" button under the last lane (as drawn), or only Live's Create menu item (Shift+Alt+T)? *Recommendation: both; the button only while the lanes show.*
+- How dim is an unused part of a take? *Recommendation: as drawn, the lane's grey with the waveform at half strength.*
+- Crossfades at a comp's seams (CT-05): off by default, as in Live? *Recommendation: off by default.*
+- Holds up: the take lanes' look. Their commands, keys, model and undo steps go on meanwhile, once the engine's CT-01 is on main.
+
+**2. A return inside a group, proposal 1** ([picture](https://github.com/arieladi/Adi/blob/window/proposals/adi_daw/collab/window/design/proposals/return-inside-group.png?raw=true), source `collab/window/design/proposals/return-inside-group.html`; DF-W33, ADR-0245 d9 and d10). The full Arrangement for "Norway" at real size with Live's Mixer in the lower panel at real size; the Browser and the Info box are closed to make room for the legend. "Drum Room", a reverb, sits inside the Drums group after Kick, Snare and Hats, with the group's line at its left, playing into Drums; it is made from the group's menu, "Insert Return Track in Group"; its send knob "DA" is only on Kick, Snare and Hats; Kick's DA send has its tap menu open (Pre FX, Post FX ticked, Post Mixer); Drum Room's Pre/Post switch shows "mixed" (a dash in an orange edge) because its sends differ. Questions:
+- With a track inside the group selected, does the Create menu's Insert Return Track (Ctrl+Alt+T) put the return in the group or at the foot as in Live? *Recommendation: at the foot, as Live; the group's own menu item is the way into the group.*
+- Is "DA" (the group's first return) the right letter? *Recommendation: yes, so A and B keep theirs everywhere.*
+- Do the tracks of a group inside Drums carry Drum Room's knob too? *Recommendation: yes, every track the group holds at any depth.*
+- Does Drum Room have its own sends to A and B, starting off? *Recommendation: yes, as Live's returns do.*
+- Does a send whose tap differs from its return's switch say so on the knob? *Recommendation: no mark; its menu says it.*
+- A click on a mixed switch: Post first, then Pre (as drawn), or Pre first? *Recommendation: Post first, the safer of the two.*
+- Holds up: DF-W33's look. It waits for the engine seat's snapshot fields too (DF-E22).
+
+**3. Step 4, the Arrangement, where its sheet is silent** (`window/arrangement-sheet`). Built as written here; the director's word changes it:
+- Set and the locator arrows: the sheet's ruler row has none; they stay under the bar over the names, where Live has them.
+- The strip down the window's edge: the sheet has none; its two view switches and the track height button stay on it until the Control Bar's Arrangement | Mix View switch (step 2).
+- The widths: the sheet's names column is 128 and the track controls 264; the window keeps Live's 95 and about 190, so the bar's buttons are a little narrower than drawn. *Recommendation: keep Live's widths; widen them only if he wants the sheet's.*
+
+---
+
 ## Needs from other lanes (open)
 
 | # | Need | Owner | Why the window needs it | What the window does meanwhile |
