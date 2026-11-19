@@ -400,6 +400,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
+    std::fputs("[shell] liveParity render returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     auto render = [&root, folder](const char *name) {
         if (folder.isEmpty())
@@ -441,6 +442,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     root.mark(DirtySet::All);
     root.frame();
     render("adi-parity-mixer.png");
+    std::fputs("[shell] liveParity Mixer View frame returned\n", stderr);
     // Bitwig's project view (the director, 2026-10-28), given a tree as the snapshot will give
     // it once it carries groups (N6): track 2 is a group holding 3, a group holding 4; 1 is Main.
     root.arrangement.setTrackRows([](const SnapshotReader &, std::vector<TrackRow> &rows) {
@@ -474,6 +476,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
         return out;
     };
     const auto before = items();
+    std::fputs("[shell] liveParity project menu read\n", stderr);
     check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.namesBar.show.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
@@ -523,6 +526,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.namesBar.show.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
+    std::fputs("[shell] liveParity before teardown\n", stderr);
 }
 // A menu on one line: its items in order, a disabled one dashed, a ticked one starred when `ticks`
 // is set, a separator a bar, so a check sees Live's groups too.
@@ -11195,6 +11199,19 @@ int main(int argc, char **argv) {
     engine::Transport driver;
     settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
     AppCommands commands(settings);
+    const auto trace = [](const char *name, const auto &fixture) {
+        std::fprintf(stderr, "[shell] begin %s\n", name);
+        fixture();
+        std::fprintf(stderr, "[shell] end %s\n", name);
+    };
+    if (argc == 2 && std::string(argv[1]) == "--arrangement-components-only") {
+        // These fixtures render components in software and do not create a native peer.
+        trace("liveParity", [&] { liveParity(commands, temp.path(), false); });
+        trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+        trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+        std::printf("%d checks, %d failures (Arrangement components)\n", checks, failures);
+        return failures ? 1 : 0;
+    }
     if (argc == 2 && std::string(argv[1]) == "--mixview-only") {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
@@ -14272,40 +14289,40 @@ int main(int argc, char **argv) {
                 juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
-    liveParity(commands, temp.path(), write);
-    groupTracks(commands, temp.path());
-    footRows(commands, temp.path());
-    newProject(commands, temp.path());
-    stripParamUndo(commands, temp.path());
-    deviceClipboard(commands, temp.path());
-    pluginWindows(commands, temp.path());
-    automationArm(commands, temp.path());
-    sendKnobs(commands, temp.path());
-    audioDrop(commands, temp.path());
-    importPrompt(commands, settings, temp.path());
-    browserDevices(commands, temp.path());
-    splitAndRangeEdits(commands, settings, temp.path());
-    clipClipboard(commands, temp.path());
-    timeCommands(commands, temp.path());
-    colorCabTile(commands, temp.path());
-    rangeSelection(commands, temp.path());
-    clipToTrack(commands, temp.path());
-    clipView(commands, temp.path(), write);
-    clipViewNotes(commands, temp.path());
-    clipViewFields(commands, temp.path());
-    clipViewTools(commands, temp.path());
-    clipViewMore(commands, temp.path());
-    clipViewTime(commands, temp.path());
-    clipViewClipTime(commands, temp.path());
-    clipViewMulti(commands, temp.path());
-    mixViewShell(commands, temp.path());
-    recordingOptions(commands, settings, temp.path());
-    undoHistoryWindow(commands, temp.path());
-    clipWaveforms(commands, temp.path());
-    clipFades(commands, temp.path());
-    showcase(commands, temp.path());
-    loopMetronome(commands, settings, temp.path());
-    locators(commands, temp.path());
+    trace("liveParity", [&] { liveParity(commands, temp.path(), write); });
+    trace("groupTracks", [&] { groupTracks(commands, temp.path()); });
+    trace("footRows", [&] { footRows(commands, temp.path()); });
+    trace("newProject", [&] { newProject(commands, temp.path()); });
+    trace("stripParamUndo", [&] { stripParamUndo(commands, temp.path()); });
+    trace("deviceClipboard", [&] { deviceClipboard(commands, temp.path()); });
+    trace("pluginWindows", [&] { pluginWindows(commands, temp.path()); });
+    trace("automationArm", [&] { automationArm(commands, temp.path()); });
+    trace("sendKnobs", [&] { sendKnobs(commands, temp.path()); });
+    trace("audioDrop", [&] { audioDrop(commands, temp.path()); });
+    trace("importPrompt", [&] { importPrompt(commands, settings, temp.path()); });
+    trace("browserDevices", [&] { browserDevices(commands, temp.path()); });
+    trace("splitAndRangeEdits", [&] { splitAndRangeEdits(commands, settings, temp.path()); });
+    trace("clipClipboard", [&] { clipClipboard(commands, temp.path()); });
+    trace("timeCommands", [&] { timeCommands(commands, temp.path()); });
+    trace("colorCabTile", [&] { colorCabTile(commands, temp.path()); });
+    trace("rangeSelection", [&] { rangeSelection(commands, temp.path()); });
+    trace("clipToTrack", [&] { clipToTrack(commands, temp.path()); });
+    trace("clipView", [&] { clipView(commands, temp.path(), write); });
+    trace("clipViewNotes", [&] { clipViewNotes(commands, temp.path()); });
+    trace("clipViewFields", [&] { clipViewFields(commands, temp.path()); });
+    trace("clipViewTools", [&] { clipViewTools(commands, temp.path()); });
+    trace("clipViewMore", [&] { clipViewMore(commands, temp.path()); });
+    trace("clipViewTime", [&] { clipViewTime(commands, temp.path()); });
+    trace("clipViewClipTime", [&] { clipViewClipTime(commands, temp.path()); });
+    trace("clipViewMulti", [&] { clipViewMulti(commands, temp.path()); });
+    trace("mixViewShell", [&] { mixViewShell(commands, temp.path()); });
+    trace("recordingOptions", [&] { recordingOptions(commands, settings, temp.path()); });
+    trace("undoHistoryWindow", [&] { undoHistoryWindow(commands, temp.path()); });
+    trace("clipWaveforms", [&] { clipWaveforms(commands, temp.path()); });
+    trace("clipFades", [&] { clipFades(commands, temp.path()); });
+    trace("showcase", [&] { showcase(commands, temp.path()); });
+    trace("loopMetronome", [&] { loopMetronome(commands, settings, temp.path()); });
+    trace("locators", [&] { locators(commands, temp.path()); });
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
