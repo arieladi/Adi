@@ -69,6 +69,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <set>
 #include <string>
 #include <utility>
 #include <memory>
@@ -119,6 +120,11 @@ public:
     static void forgetInstance(void* instance) noexcept;
     /// Pd's fixed internal block, 64. Read from libpd rather than assumed.
     [[nodiscard]] static std::int32_t blockSize() noexcept;
+    /// PD4: every class name this build can create -- vanilla's and ADI's
+    /// compiled-in externals -- read from Pd's own creator table
+    /// (pd_vocabulary.cpp). Initialises the runtime; empty if that fails.
+    /// Message thread. Feeds `walkPdObjects` (pd_object_walk.hpp).
+    [[nodiscard]] static std::set<std::string, std::less<>> creatableClasses();
 };
 
 /// One patch, in its own Pd instance.

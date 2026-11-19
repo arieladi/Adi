@@ -26,38 +26,18 @@ struct Record {
 /// the check below compares against.
 std::vector<Record> scan(std::string_view text) {
     std::vector<Record> out;
-    std::vector<std::string> atoms;
-    std::string atom;
-    bool escaped = false;
     int boxes = 0;
-
-    const auto endAtom = [&] {
-        if (!atom.empty()) { atoms.push_back(atom); atom.clear(); }
-    };
-    const auto endRecord = [&] {
-        endAtom();
-        if (!atoms.empty()) {
-            // Only object boxes can declare. Everything else -- canvases,
-            // connections, messages, comments -- is skipped here rather than
-            // filtered later, so `box` counts what an author would count.
-            // `#X obj <x> <y> <class> <args...>` -- the class is atom 4, after
-            // the two coordinates, and the arguments start at 5.
-            if (atoms.size() >= 5 && atoms[0] == "#X" && atoms[1] == "obj") {
-                ++boxes;
-                out.push_back(Record{atoms, boxes});
-            }
-            atoms.clear();
+    for (auto& atoms : pdRecords(text)) {
+        // Only object boxes can declare. Everything else -- canvases,
+        // connections, messages, comments -- is skipped here rather than
+        // filtered later, so `box` counts what an author would count.
+        // `#X obj <x> <y> <class> <args...>` -- the class is atom 4, after
+        // the two coordinates, and the arguments start at 5.
+        if (atoms.size() >= 5 && atoms[0] == "#X" && atoms[1] == "obj") {
+            ++boxes;
+            out.push_back(Record{std::move(atoms), boxes});
         }
-    };
-
-    for (const char c : text) {
-        if (escaped) { atom.push_back(c); escaped = false; continue; }
-        if (c == '\\') { escaped = true; continue; }
-        if (c == ';') { endRecord(); continue; }
-        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') { endAtom(); continue; }
-        atom.push_back(c);
     }
-    endRecord();
     return out;
 }
 
@@ -97,6 +77,34 @@ std::string label(const std::string& s) {
 std::string unitOf(const std::string& s) { return s == "-" ? std::string{} : s; }
 
 }  // namespace
+
+std::vector<std::vector<std::string>> pdRecords(std::string_view text) {
+    std::vector<std::vector<std::string>> out;
+    std::vector<std::string> atoms;
+    std::string atom;
+    bool escaped = false;
+
+    const auto endAtom = [&] {
+        if (!atom.empty()) { atoms.push_back(atom); atom.clear(); }
+    };
+    const auto endRecord = [&] {
+        endAtom();
+        if (!atoms.empty()) {
+            out.push_back(std::move(atoms));
+            atoms.clear();
+        }
+    };
+
+    for (const char c : text) {
+        if (escaped) { atom.push_back(c); escaped = false; continue; }
+        if (c == '\\') { escaped = true; continue; }
+        if (c == ';') { endRecord(); continue; }
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') { endAtom(); continue; }
+        atom.push_back(c);
+    }
+    endRecord();
+    return out;
+}
 
 const char* toString(PdDeclProblem p) noexcept {
     switch (p) {

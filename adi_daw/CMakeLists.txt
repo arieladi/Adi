@@ -327,6 +327,8 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    # PD4: the allowed-object walk, static like the parse above.
+    src/juce/pd_object_walk.cpp
     src/adi/cue_settings.cpp
     src/adi/transport_settings.cpp
     src/adi/store.cpp
@@ -660,8 +662,9 @@ endif()
 # because a mismatch is not a link error -- it is a silent layout disagreement.
 target_compile_definitions(adi_core PUBLIC PDINSTANCE=1 PDTHREADS=1)
 # The libpd side of PdPatchEngine (ADR-0183), added to adi_core here rather than
-# in its source list, because it is the one Pd source that includes z_libpd.h.
-target_sources(adi_core PRIVATE src/juce/pd_engine.cpp)
+# in its source list, because these are the Pd sources that include z_libpd.h
+# (pd_vocabulary.cpp reads the creator table for PD4's walk).
+target_sources(adi_core PRIVATE src/juce/pd_engine.cpp src/juce/pd_vocabulary.cpp)
 target_compile_definitions(adi_core PUBLIC ADI_WITH_PD=1)
 
 # Compiled-in externals stay in an OBJECT library so registration constructors
@@ -978,6 +981,13 @@ add_test(NAME adi_masking_tests COMMAND adi_masking_tests)
 add_executable(adi_pd_declaration_tests tests/test_pd_declarations.cpp)
 target_link_libraries(adi_pd_declaration_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_pd_declaration_tests COMMAND adi_pd_declaration_tests)
+
+# PD4: the allowed-object walk; with Pd, also the vocabulary read from the build
+# and every shipped patch walked against it.
+add_executable(adi_pd_object_walk_tests tests/test_pd_object_walk.cpp)
+target_link_libraries(adi_pd_object_walk_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pd_object_walk_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+add_test(NAME adi_pd_object_walk_tests COMMAND adi_pd_object_walk_tests)
 
 # libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
 # patch directory is compiled in rather than found from the working directory,
