@@ -10273,7 +10273,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                                     document->views(), document->sessionState(), "mix-devices");
             // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
             UiPeerRoot fake;
-            fake.setSize(1440, 900);
+            // Keep both test controls visible with the Main meter and channel list docked.
+            // Separate narrow-layout checks cover intentional clipping and paging.
+            fake.setSize(1920, 1000);
             fake.addAndMakeVisible(actual);
             fake.setVisible(true);
             fake.addToDesktop(0);
@@ -10300,7 +10302,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             };
             std::int64_t copiedDevice = 0;
             actual.devices.copy = [&](std::int64_t id, bool) { copiedDevice = id; return true; };
-            actual.setSize(1440, 900);
+            actual.setSize(1920, 1000);
             actual.arrangement.geometry.selection.track = 2;
             document->tick(0);
             actual.frame();
