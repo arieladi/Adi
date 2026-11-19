@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/settings/store.hpp"
+#include "adi/settings/migration.hpp"
 #include "adi/media/publish_file.hpp"
 
 #include <algorithm>
@@ -23,14 +24,6 @@ constexpr const char* kLogChangesKey = "settings.logChanges";
 /// The table of interface zooms, per window and per display (N4).
 constexpr const char* kWindowZoomKey = "window.zoom";
 constexpr const char* kNewerSchemaReadOnly = "settings from a newer build are read-only";
-
-bool newerSchema(const Value& doc) {
-    const auto version = doc.find("schema");
-    if (version == doc.end() || !version->is_number_integer()) return false;
-    if (version->is_number_unsigned())
-        return version->get<std::uint64_t>() > static_cast<std::uint64_t>(kSettingsSchema);
-    return version->get<std::int64_t>() > kSettingsSchema;
-}
 
 bool readText(const std::filesystem::path& p, std::string& out) {
     std::ifstream in(p, std::ios::binary);
@@ -84,14 +77,10 @@ std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& fil
 
 Value readSettingsDocument(const std::optional<std::string>& snapshot, appdata::App app) {
     if (!snapshot) return {{"values", Value::object()}};
-    auto doc = Value::parse(*snapshot, nullptr, false);
-    if (doc.is_object() && newerSchema(doc)) throw std::runtime_error(kNewerSchemaReadOnly);
-    if (!doc.is_object() || !doc.contains("values") || !doc.at("values").is_object() ||
-        (doc.contains("schema") && !doc.at("schema").is_number_integer()))
-        throw std::runtime_error("the settings destination is incomplete or invalid");
-    if (doc.contains("app") && doc.at("app") != appdata::displayName(app))
-        throw std::runtime_error("the settings destination belongs to another application");
-    return doc;
+    auto migrated = migrateSettingsDocument(Value::parse(*snapshot, nullptr, false), app,
+        kSettingsSchema, settingsMigrationSteps());
+    if (!migrated.ok()) throw std::runtime_error(migrated.why);
+    return std::move(migrated.document);
 }
 
 void writeSettingsStage(const SettingsStage& stage, std::string_view bytes) {
@@ -121,6 +110,7 @@ const char* toString(LoadStatus s) {
         case LoadStatus::CorruptKept: return "corrupt, kept aside";
         case LoadStatus::ForeignApp:  return "another application's file";
         case LoadStatus::NewerSchema: return "written by a newer build";
+        case LoadStatus::MigrationFailed: return "settings migration unavailable or failed";
     }
     return "?";
 }
@@ -138,22 +128,19 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
     std::string text;
     Value doc = Value::parse(readText(file_, text) ? text : std::string{}, nullptr,
                              /*allow_exceptions=*/false);
-    const bool object = !doc.is_discarded() && doc.is_object();
-    if (object && doc.contains("app") && doc.at("app") != appdata::displayName(app_)) {
+    auto migrated = migrateSettingsDocument(doc, app_, kSettingsSchema, settingsMigrationSteps());
+    if (migrated.status == MigrationStatus::ForeignApp) {
         status_ = LoadStatus::ForeignApp;
         return;
     }
-    const bool hasValues = object && doc.contains("values") && doc.at("values").is_object();
-    if (object && newerSchema(doc)) {
+    if (migrated.status == MigrationStatus::NewerSchema) {
         // Read familiar values when available. The rest of a newer document
         // may have a different shape and belongs to the writing version.
-        if (hasValues) values_ = doc.at("values");
+        if (doc.contains("values") && doc.at("values").is_object()) values_ = doc.at("values");
         status_ = LoadStatus::NewerSchema;
         return;
     }
-    const bool shaped = hasValues &&
-                        (!doc.contains("schema") || doc.at("schema").is_number_integer());
-    if (!shaped) {
+    if (migrated.status == MigrationStatus::InvalidDocument) {
         // Never overwrite what we could not read: it may be a newer build's
         // format, or a user's hand edit one comma short of valid.
         const auto aside = asideName(file_);
@@ -162,7 +149,12 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
         status_ = LoadStatus::CorruptKept;
         return;
     }
-    values_ = doc.at("values");
+    if (!migrated.ok()) {
+        migrationError_ = std::move(migrated.why);
+        status_ = LoadStatus::MigrationFailed;
+        return;
+    }
+    values_ = std::move(migrated.document.at("values"));
     status_ = LoadStatus::Loaded;
 }
 
@@ -180,6 +172,7 @@ Value AppSettings::get(const std::string& key) const {
 bool AppSettings::write(const std::string& key, const Value& value, const ChangeContext& who,
                         std::string& why, bool removeOverride) {
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
+    if (status_ == LoadStatus::MigrationFailed) { why = migrationError_; return false; }
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
     if (s->scope == Scope::Project) {
@@ -221,6 +214,7 @@ void AppSettings::resetPage(const std::string& page, const ChangeContext& who) {
 bool AppSettings::save(std::string& why) {
     if (file_.empty()) { why = "this machine gives no settings folder"; return false; }
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
+    if (status_ == LoadStatus::MigrationFailed) { why = migrationError_; return false; }
     if (status_ == LoadStatus::ForeignApp) {
         why = file_.string() + " belongs to another application and is not overwritten";
         return false;

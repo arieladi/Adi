@@ -43,6 +43,7 @@ enum class LoadStatus {
     CorruptKept,   // did not parse; moved aside to `keptAside`, defaults in use
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
     NewerSchema,   // written by a newer build: read familiar values, refuse writes
+    MigrationFailed, // unsupported/broken older migration: original untouched, writes refused
 };
 [[nodiscard]] const char* toString(LoadStatus);
 
@@ -68,6 +69,7 @@ public:
     [[nodiscard]] const std::filesystem::path& file() const { return file_; }
     [[nodiscard]] const std::optional<std::filesystem::path>& keptAside() const { return aside_; }
     [[nodiscard]] appdata::App app() const { return app_; }
+    [[nodiscard]] const std::string& migrationError() const { return migrationError_; }
 
     /// The value in force: the stored one if it is legal for this build, the
     /// registry's default otherwise. Unknown keys return null.
@@ -109,6 +111,7 @@ private:
     std::filesystem::path file_;
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
+    std::string migrationError_;
     Value values_ = Value::object();
     std::set<std::string> pendingKeys_;
     bool logUsers_ = true;
