@@ -85,6 +85,9 @@ class AdiApplication final : public juce::JUCEApplication,
         else
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
+        const auto cacheRoot = settings_->get(audio::kCacheFolderKey).get<std::string>();
+        if (!audio::setDefaultDecodeCacheRoot(pathFromUtf8(cacheRoot)))
+            report("Cache Folder must be an absolute path. ADI will use the application cache folder.");
         applyDecodeCacheLimits();
         commands_ = std::make_unique<AppCommands>(*settings_);
         manager_.addChangeListener(this);

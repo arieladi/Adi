@@ -682,6 +682,7 @@ std::vector<std::string> DecodeCache::problems() const {
 namespace {
 struct DefaultDecodeCacheState {
     std::mutex mutex;
+    fs::path root;
     DecodeCacheLimits limits;
     std::unique_ptr<DecodeCache> cache;
 };
@@ -690,6 +691,17 @@ DefaultDecodeCacheState& defaultCacheState() {
     return state;
 }
 } // namespace
+
+bool setDefaultDecodeCacheRoot(fs::path root) {
+    if (onAudioThread) return false;
+    if (!root.empty() && (!root.is_absolute() || root.native().find(fs::path::value_type{}) != fs::path::string_type::npos))
+        return false;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (state.cache) return root == state.root;
+    state.root = std::move(root);
+    return true;
+}
 
 void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
     if (onAudioThread) return;
@@ -704,9 +716,10 @@ void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
 DecodeCache& defaultDecodeCache() {
     auto& state = defaultCacheState();
     std::lock_guard lock(state.mutex);
-    if (!state.cache)
-        state.cache = std::make_unique<DecodeCache>(appdata::pathsFor(appdata::App::Daw).cache / "decoded",
-                                                    state.limits);
+    if (!state.cache) {
+        const auto root = state.root.empty() ? appdata::pathsFor(appdata::App::Daw).cache : state.root;
+        state.cache = std::make_unique<DecodeCache>(root / "decoded", state.limits);
+    }
     return *state.cache;
 }
 

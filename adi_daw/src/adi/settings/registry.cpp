@@ -401,7 +401,8 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "keep it (ADR-0156). In MB.",
                        2048, 0, 16777216));
     r.push_back(make("cache.folder", Type::Path, ff, "Cache Folder",
-                     "Where the decoding cache lives. Empty: the application cache folder (ADR-0149).", ""));
+                     "Absolute path for the decoded subfolder. Empty uses the application cache. "
+                     "Changes take effect on the next launch (ADR-0149).", ""));
     r.push_back(make("files.projectsFolder", Type::Path, ff, "Default projects folder",
                      "Where new projects are saved (REAPER).", ""));
     r.push_back(make("files.renderFolder", Type::Path, ff, "Default render folder",

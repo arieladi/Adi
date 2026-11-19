@@ -337,7 +337,21 @@ void defaultCacheSettings(const fs::path& root) {
 #else
     if (setenv("ADI_HOME", home.c_str(), 1) != 0) throw std::runtime_error("set test ADI home");
 #endif
-    const auto folder = adi::appdata::pathsFor(adi::appdata::App::Daw).cache / "decoded";
+    const auto fallback = adi::appdata::pathsFor(adi::appdata::App::Daw).cache / "decoded";
+    const auto parent = root / fs::path(u8"cache-音");
+    const auto folder = parent / "decoded";
+    fs::create_directories(parent);
+    const auto other = parent / "keep.wav";
+    std::ofstream(other, std::ios::binary) << "User media outside decoded storage";
+    check(!setDefaultDecodeCacheRoot("relative-cache"), "a relative cache folder is refused");
+    auto terminated = parent.native();
+    terminated.push_back(fs::path::value_type{});
+    check(!setDefaultDecodeCacheRoot(fs::path(terminated)), "a NUL in a cache path is refused");
+    {
+        CallbackScope callback;
+        check(!setDefaultDecodeCacheRoot(parent), "an audio callback cannot configure a cache folder");
+    }
+    check(setDefaultDecodeCacheRoot(parent), "an absolute Unicode cache root is accepted");
     setDefaultDecodeCacheLimits({64ULL << 20, 0});
     check(!fs::exists(folder), "setting initial limits leaves the process decode folder lazy");
     check(playableFile(fixture("src16.wav")) == fixture("src16.wav") && !fs::exists(folder),
@@ -352,14 +366,19 @@ void defaultCacheSettings(const fs::path& root) {
     auto& configured = defaultDecodeCache();
     check(configured.folder() == folder && configured.limits().maxBytes == 64ULL << 20 &&
               configured.limits().minFreeBytes == 0,
-          "first decoder use takes the configured process limits");
+          "first decoder use takes the selected folder and configured limits");
     const auto held = configured.playable(fixture("tone16.flac"));
+    const auto next = root / "next-launch";
+    check(held.parent_path() == folder && !fs::exists(fallback) &&
+              !setDefaultDecodeCacheRoot(next) && !fs::exists(next),
+          "live cache use keeps the root until relaunch");
     setDefaultDecodeCacheLimits({0, 0});
     check(&defaultDecodeCache() == &configured && configured.limits().maxBytes == 0 && fs::exists(held),
           "updating active limits keeps the cache object and the owned pinned PCM");
     configured.release(held);
     configured.trim();
-    check(!fs::exists(held), "a later owner trim uses the updated limit");
+    check(!fs::exists(held) && fs::is_regular_file(other),
+          "a later owner trim stays in the decoded child rather than touching neighboring files");
 }
 }  // namespace
 

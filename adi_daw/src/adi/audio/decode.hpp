@@ -77,6 +77,7 @@ inline constexpr std::uint32_t kMaxDecodeChannels = 64;
 /// The registry keys (Settings > File & Folder > Decoding Cache), in MB.
 inline constexpr const char* kCacheMaxSizeKey = "cache.maxSizeMb";
 inline constexpr const char* kCacheMinFreeKey = "cache.minFreeSpaceMb";
+inline constexpr const char* kCacheFolderKey = "cache.folder";
 inline constexpr std::uint64_t kCacheMaxSizeMbDefault = 20480;   // 20 GB (ADR-0203)
 inline constexpr std::uint64_t kCacheMinFreeMbDefault = 2048;    // 2 GB
 
@@ -171,10 +172,14 @@ private:
     std::vector<std::string> problems_;
 };
 
-/// The process's cache: appdata::pathsFor(App::Daw).cache / "decoded" -- the
-/// cache folder all three applications share (ADR-0149). Default limits
-/// apply until the application provides its settings.
+/// The process's cache in the selected root's decoded subfolder. By default
+/// this is the shared app cache from ADR-0149. Default limits apply until
+/// the application provides its settings.
 [[nodiscard]] DecodeCache& defaultDecodeCache();
+/// Selects the parent of the decoded cache before its first use. Empty selects
+/// the app cache root. Relative paths and active-cache relocation are refused.
+/// This sets configuration without creating the directory.
+[[nodiscard]] bool setDefaultDecodeCacheRoot(std::filesystem::path root);
 /// Updates the process cache's limits without creating its folder or trimming.
 /// The next cache operation uses the new limits. Owner thread only.
 void setDefaultDecodeCacheLimits(DecodeCacheLimits);
