@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 dedicated helper self-test protocol
+
+**PR requested** — `engine-win/scanner-helper-self-test`, `7f8ed3f8bfc46bac2e92f11c338a13ee57651578`, stacked on `engine-win/vst3-discovery-aliases`. The dedicated helper accepts exact `--self-test` and emits a versioned structural receipt with its metadata schema and compiled formats. The command reaches no plug-in factory or registry. Strict Windows x64 MSVC passed 133 checks each with JUCE disabled and enabled. Actual CLAP initialization remained once over three ordinary unchanged probes, and a separate controlled case counted one ordinary child. Parent activation remains a separate slice, so the existing warm scan launch count is preserved.
+
 ## 2026-11-19 — EX-09 complete JSON byte validation
 
 **PR requested** — `engine-win/render-job-json-full-bytes`, `cd265a59d80913dbcf2e6b7cd663ae25d6468fda`, stacked on `engine-win/render-job-json`. The pinned JSON lexer treated a literal NUL after an otherwise valid job as end-of-input. Two native tests reproduced accepting the prefix, with and without trailing content. The job decoder now requires the complete byte stream and refuses literal NUL before parsing. Strict x64 MSVC passed 94 codec checks and 211 queue checks.
