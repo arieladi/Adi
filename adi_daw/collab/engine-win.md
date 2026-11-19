@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, scanner and N58 on current main
+
+**PR requested** — `engine-win/scanner-dfe31` at `a5a12cf7c4d7ed0e94e287000378958025275967`, on main `bedee5ab`, then `engine-win/scanner-service` at `bd021052ad154f2a1864346dfa42c6e8d7136720`. The exact stacked tree passed ten scanner and player suites under strict MSVC x64 `/W4 /WX` and linked the Windows desktop app. The async fixture again exercised startup, adoption, invalidation, cancellation, stale work and warm catalogue reuse.
+
+**For Window, #676.** As read at `259a2b90`, the worker holds `loaderMutex_` during `loader_.scan()` and the project device loader takes that same mutex. Instantiating a known device on the message thread can therefore wait for the whole scan. The N58 service above runs discovery on its own worker and adopts typed catalogue data on the owner. The existing N58 handoff gives the startup, Rescan and project-open entry points. Desktop integration remains with Window.
+
 ## 2026-11-19, retain later files when a recording transaction rolls back
 
 **PR requested** — `engine-win/recording-rollback-identity` at `b89d58eec89780aa9b951488605e81b0f7893e22`, after `engine-win/file-publication-reliability` at `b4485df6`. Recording now uses the shared identity-bound rollback. It records only files this attempt published, never deletes a later file at the same name, reports retained paths in the failure and leaves the private source available for fresh preparation. Hosts without atomic identity-bound removal retain and report the file.
