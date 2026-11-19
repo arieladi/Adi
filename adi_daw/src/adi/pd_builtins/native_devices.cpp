@@ -20,6 +20,7 @@
 #include "adi/engine/graph.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "adi/pd_builtins/colorcab_sample.hpp"
+#include "adi/pd_builtins/hybrid_reverb_sample.hpp"
 #include "adi/pd_builtins/oneshot_midi.hpp"
 #include "adi/pd_builtins/oneshot_sample.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
@@ -193,6 +194,26 @@ class ColorCabStereo {
 bool parameter(ColorCabStereo& core, int id, float value) noexcept {
     return core.parameter(id, value);
 }
+
+// DEV-22: Hybrid Reverb's native path. The impulse response is slot 1, read
+// per segment as the Pd external reads it; the core uses it only when it was
+// prepared at the core's own rate, and the partition is its latency.
+class HybridReverbStereo {
+  public:
+    using Param = dsp::HybridReverb::Param;
+    static constexpr int Count = dsp::HybridReverb::Count;
+    void prepare(double rate) { core_.prepare(rate); }
+    void set(Param param, double value) noexcept { core_.set(param, value); }
+    void tempo(double bpm) noexcept { core_.tempo(bpm); }
+    [[nodiscard]] int latency() const noexcept { return dsp::HybridReverb::latency; }
+    void process(const float* left, const float* right, float* outLeft, float* outRight,
+                 std::size_t frames) noexcept {
+        const auto* sample = dynamic_cast<const PdHybridReverbSample*>(PdSampleBlock::get(1));
+        core_.process(left, right, outLeft, outRight, frames, sample ? &sample->impulse : nullptr);
+    }
+  private:
+    dsp::HybridReverb core_;
+};
 
 template <class Core> class NativeDevice final : public NativePdDevice {
   public:
@@ -390,6 +411,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);
+        if (sameCanvas(patchText, canonical::hybridReverb)) return create<HybridReverbStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::delay)) return create<dsp::LiveDelay>(patchText, 2);
         if (sameCanvas(patchText, canonical::eqEight)) return create<dsp::EqEight>(patchText, 2);
         if (sameCanvas(patchText, canonical::echo)) return create<dsp::Echo>(patchText, 2);

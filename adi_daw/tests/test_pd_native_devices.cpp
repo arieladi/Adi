@@ -57,13 +57,14 @@ struct Fixture {
     int inputs;
     std::array<Change, 4> changes;
 };
-constexpr std::array<Fixture, 17> fixtures{{
+constexpr std::array<Fixture, 18> fixtures{{
     {"AutoFilter.pd", 4, {{{3, 2500}, {11, 38}, {33, 1}, {34, 65}}}},
     {"Chord Comb.pd", 2, {{{1, 3}, {3, 0.2f}, {4, 0.4f}, {5, 0.7f}}}},
     {"Chorus-Ensemble.pd", 2, {{{3, 160}, {10, 2.3f}, {11, 70}, {16, 75}}}},
     {"Color Cab.pd", 2, {{{2, 0.7f}, {0, 0}, {0, 0}, {0, 0}}}},
     {"Delay.pd", 2, {{{3, 1}, {5, 1}, {10, 55}, {25, 80}}}},
     {"EQEight.pd", 2, {{{3, 1100}, {4, 6}, {83, 0}, {87, 1}}}},
+    {"Hybrid Reverb.pd", 2, {{{1, 2}, {8, 2.5f}, {13, 120}, {14, 70}}}},
     {"Echo.pd", 2, {{{4, 1}, {6, 0.0625f}, {15, 48}, {0, 0}}}},
     {"MultibandDynamics.pd", 4, {{{17, -32}, {23, 0.6f}, {35, 1}, {37, 70}}}},
     {"Overdrive.pd", 2, {{{1, 700}, {3, 75}, {4, 31}, {6, 60}}}},
