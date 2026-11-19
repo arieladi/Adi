@@ -92,6 +92,146 @@ void focusScopeBarTiming() {
               !focusScopeBarAtTick(std::numeric_limits<std::int64_t>::max(), 48000., constant, {}),
           "negative ticks, missing timing and overflowing bars produce no Focus interval");
 }
+void focusScopeBarProjection() {
+    using adi::ui::FocusScopeBarBlock;
+    using adi::ui::FocusScopeBarProjection;
+    using adi::ui::FocusScopeBarSource;
+    using adi::ui::FocusSumColumn;
+    constexpr std::size_t frames = 96000, columns = 257, slice = 193;
+    constexpr std::uint64_t revision = 17;
+    const adi::engine::TempoMap tempo{{{0, 120., 0}}};
+    const auto bar = adi::ui::focusScopeBarAtTick(4 * adi::textproj::kPPQ, 48000., tempo, {});
+    check(bar && bar->range.first == 96000 && bar->range.frames == frames,
+          "the second 48 kHz 120 BPM bar owns exactly 96000 samples at a nonzero stamp");
+    if (!bar) return;
+    constexpr std::array sources{FocusScopeBarSource{{7}, 11}, FocusScopeBarSource{{8}, 15}};
+    FocusScopeBarProjection projection;
+    const bool prepared = projection.prepare(bar->range, sources, columns, revision);
+    check(prepared && projection.frames() == 0 && !projection.complete() &&
+              projection.memberColumns(0).empty() && projection.sumColumns().empty() && !projection.sumReading(),
+          "one-bar projection is ready before samples arrive and exposes no unfinished bins");
+    if (!prepared) return;
+
+    const auto values = [](std::size_t at) {
+        const auto left = static_cast<float>(static_cast<int>(at % 31) - 15) / 32.f;
+        const auto right = static_cast<float>(static_cast<int>(at % 19) - 9) / 32.f;
+        if (at == frames - 1) return std::array{.875f, .875f, -.875f, .875f};
+        if (at == frames) return std::array{0.f, 99.f, 0.f, 99.f};
+        return std::array{left, right, -left, right * .5f};
+    };
+    std::array<float, slice> aLeft{}, aRight{}, bLeft{}, bRight{};
+    const auto blocksAt = [&](std::size_t offset, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i) {
+            const auto input = values(offset + i);
+            aLeft[i] = input[0]; aRight[i] = input[1];
+            bLeft[i] = input[2]; bRight[i] = input[3];
+        }
+        const auto stamp = bar->range.first + static_cast<std::int64_t>(offset);
+        return std::array{
+            FocusScopeBarBlock{sources[0], stamp, revision, 48000., true,
+                              std::span(aLeft).first(count), std::span(aRight).first(count)},
+            FocusScopeBarBlock{sources[1], stamp, revision, 48000., true,
+                              std::span(bLeft).first(count), std::span(bRight).first(count)}};
+    };
+
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    bool allAccepted = projection.append(blocksAt(0, slice));
+    observeAllocationSizes = false;
+    check(allAccepted && allocationSizeCount == 0 && projection.frames() == slice &&
+              projection.memberColumns(0).size() == 1 && projection.sumColumns().size() == 1,
+          "the first short block populates the current bin without allocating or padding its missing samples");
+    const auto firstReading = projection.sumReading();
+    check(firstReading && firstReading->peak[0] == 0., "signed cancellation works before the bar is complete");
+
+    const auto reject = [&](std::array<FocusScopeBarBlock, 2> invalid) {
+        return !projection.append(invalid) && projection.frames() == slice;
+    };
+    auto gap = blocksAt(slice + 1, 1);
+    auto overlap = blocksAt(slice - 1, 1);
+    bool refused = reject(gap) && reject(overlap);
+    auto bad = blocksAt(slice, 1);
+    bad[1].firstStamp += 1;
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bad[1].transportRevision += 1;
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bad[1].sampleRate = 44100.;
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bad[1].advancing = false;
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bad[1].source.generation += 1;
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    std::swap(bad[0], bad[1]);
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bad[1].right = {};
+    refused = reject(bad) && refused;
+    bad = blocksAt(slice, 1);
+    bRight[0] = std::numeric_limits<float>::quiet_NaN();
+    refused = reject(bad) && refused;
+    check(refused && projection.sumColumns().size() == 1 && firstReading && projection.sumReading() &&
+              projection.sumReading()->peak == firstReading->peak && projection.sumReading()->rms == firstReading->rms,
+          "invalid stamps, lanes, source order, data and timing leave the valid prefix untouched");
+
+    allocationSizeCount = 0;
+    observeAllocationSizes = true;
+    for (std::size_t offset = slice; offset < frames - 1;) {
+        const auto count = std::min(slice, frames - 1 - offset);
+        allAccepted = projection.append(blocksAt(offset, count)) && allAccepted;
+        offset += count;
+    }
+    observeAllocationSizes = false;
+    check(allocationSizeCount == 0 && allAccepted && projection.frames() == frames - 1 && !projection.complete(),
+          "all slices stream to the sample before the terminal edge with no heap work in append");
+    check(!projection.append(blocksAt(frames - 1, 2)) && projection.frames() == frames - 1 &&
+              projection.append(blocksAt(frames - 1, 1)) && projection.complete() && projection.frames() == frames &&
+              !projection.append(blocksAt(frames, 1)),
+          "the half-open terminal edge includes the last transient and refuses the next bar's sample");
+
+    const auto sum = projection.sumColumns();
+    const auto a = projection.memberColumns(0);
+    const auto b = projection.memberColumns(1);
+    double energy = 0.;
+    bool matches = sum.size() == columns && a.size() == columns && b.size() == columns;
+    for (std::size_t column = 0; column < columns && matches; ++column) {
+        constexpr auto inf = std::numeric_limits<double>::infinity();
+        std::array<FocusSumColumn, 3> expected{
+            FocusSumColumn{{inf, inf}, {-inf, -inf}}, FocusSumColumn{{inf, inf}, {-inf, -inf}},
+            FocusSumColumn{{inf, inf}, {-inf, -inf}}};
+        for (std::size_t at = column * frames / columns; at < (column + 1) * frames / columns; ++at) {
+            const auto input = values(at);
+            const auto right = static_cast<double>(input[1]) + input[3];
+            const std::array amps{std::array<double, 2>{input[0], input[1]},
+                                  std::array<double, 2>{input[2], input[3]}, std::array{0., right}};
+            energy += right * right;
+            for (std::size_t lane = 0; lane < amps.size(); ++lane)
+                for (std::size_t ch = 0; ch < 2; ++ch) {
+                    expected[lane].low[ch] = std::min(expected[lane].low[ch], amps[lane][ch]);
+                    expected[lane].high[ch] = std::max(expected[lane].high[ch], amps[lane][ch]);
+                }
+        }
+        const std::array actual{a[column], b[column], sum[column]};
+        for (std::size_t lane = 0; lane < actual.size(); ++lane)
+            matches = matches && actual[lane].low == expected[lane].low && actual[lane].high == expected[lane].high;
+    }
+    const auto reading = projection.sumReading();
+    check(matches && sum.back().high[1] == 1.75 && sum.back().high[0] == 0. &&
+              reading && reading->peak == std::array{0., 1.75} &&
+              reading->rms == std::array{0., std::sqrt(energy / static_cast<double>(frames))},
+          "the scalar oracle confirms every unscaled stereo bin and signed peak/RMS after the 96000-frame bar");
+
+    FocusScopeBarProjection tiny;
+    auto one = bar->range;
+    one.frames = 1;
+    const bool oneReady = tiny.prepare(one, sources, columns, revision);
+    check(oneReady && tiny.append(blocksAt(0, 1)) && tiny.complete() && tiny.sumColumns().size() == 1,
+          "more requested columns than samples clamp to one nonempty bin");
+}
 void focusScopeWindows() {
     const auto tapA = std::make_shared<ScopeTap>(48000., 1.);
     const auto tapB = std::make_shared<ScopeTap>(48000., 1.);
@@ -1673,7 +1813,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -57,6 +57,29 @@ struct FocusSumReading {
 struct FocusSumColumn {
     std::array<double, 2> low{}, high{};
 };
+struct FocusScopeBarSource {
+    engine::ScopeSource source;
+    std::uint64_t generation = 0; // ScopeTap::generation() or SharedAnalysis::Result::generation
+    bool operator==(const FocusScopeBarSource &) const = default;
+};
+struct FocusScopeBarBlock {
+    FocusScopeBarSource source;
+    std::int64_t firstStamp = 0;
+    std::uint64_t transportRevision = 0;
+    double sampleRate = 0.;
+    bool advancing = false;
+    std::span<const float> left, right;
+};
+class FocusScopeBarProjection {
+  public:
+    bool prepare(FocusScopeRange, std::span<const FocusScopeBarSource>, std::size_t, std::uint64_t) { return false; }
+    bool append(std::span<const FocusScopeBarBlock>) noexcept { return false; }
+    [[nodiscard]] std::size_t frames() const noexcept { return 0; }
+    [[nodiscard]] bool complete() const noexcept { return false; }
+    [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t) const noexcept { return {}; }
+    [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return {}; }
+    [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept { return {}; }
+};
 struct FocusScopePoint {
     float x = 0.f, y = 0.f;
     bool operator==(const FocusScopePoint &) const = default;
