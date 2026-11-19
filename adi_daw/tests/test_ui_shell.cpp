@@ -8535,6 +8535,39 @@ void showcase(AppCommands &commands, const std::filesystem::path &dir) {
         root.paintEntireComponent(g, true);
     }
     save(grouped, "adi-arrangement.png");
+    // The Browser's Plug-Ins (DF-W9), as the app lists what its loader found: two formats, their vendors,
+    // instruments, effects and a MIDI effect (invented names), with Melody selected and a synth chosen.
+    {
+        using K = PluginEntry::Kind;
+        PluginListing found;
+        found.plugins = {
+            {"clap", "com.northwind.glass", "Glass Piano", "Northwind Audio", "1.4.2", "/p/Glass Piano.clap", K::Instrument},
+            {"clap", "com.northwind.arc", "Arc Synth", "Northwind Audio", "2.0.1", "/p/Arc Synth.clap", K::Instrument},
+            {"clap", "com.northwind.chordz", "Chord Weaver", "Northwind Audio", "1.1.0", "/p/Chord Weaver.clap", K::MidiEffect},
+            {"clap", "org.tidewater.plate", "Plate Room", "Tidewater DSP", "3.2.0", "/p/Plate Room.clap", K::Effect},
+            {"clap", "org.tidewater.tape", "Tape Echo", "Tidewater DSP", "3.2.0", "/p/Tape Echo.clap", K::Effect},
+            {"vst3", "VST3-Saturator X-5a1c", "Saturator X", "Copperline", "1.8", "/p/Saturator X.vst3", K::Unknown},
+            {"vst3", "VST3-Bus Glue-77e0", "Bus Glue", "Copperline", "1.8", "/p/Bus Glue.vst3", K::Unknown},
+            {"vst3", "VST3-Strings 1-0b3d", "Chamber Strings", "Harbor Instruments", "4.0.3", "/p/Chamber Strings.vst3",
+             K::Unknown},
+            {"vst3", "VST3-Low End-91aa", "Low End", "Harbor Instruments", "4.0.3", "/p/Low End.vst3", K::Unknown}};
+        root.browser.listPlugins = [found] { return found; };
+        for (std::size_t i = 0; i < root.browser.sidebar().size(); ++i)
+            if (root.browser.sidebar()[i].name == "Plug-Ins")
+                root.browser.choose(static_cast<int>(i));
+        for (std::size_t i = 0; i < root.browser.rows().size(); ++i)
+            if (root.browser.rows()[i].plugin != nullptr && root.browser.rows()[i].plugin->name == "Arc Synth")
+                root.browser.list.selectRow(static_cast<int>(i));
+        check(root.browser.rows().size() == 15, "the showcase's Plug-Ins: two formats, four vendors, nine plug-ins");
+        root.frame();
+        root.frame();
+        juce::Image plugIns(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(plugIns);
+            root.paintEntireComponent(g, true);
+        }
+        save(plugIns, "adi-plugins.png");
+    }
     commands.detach(root);
     document->release();
 }
