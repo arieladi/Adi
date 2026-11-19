@@ -14,6 +14,29 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-10: the three starter templates, proved
+
+**`devices/pd-templates` (`17d52dbe`), stacked on `devices/pd-object-walk`.** M7's "Pd templates"
+(the lane table) — DEV-10's "three starter templates".
+
+- `pd/templates/`: **Audio Effect** (`adc~ 1 2` → Gain in dB, smoothed 20 ms → `dac~ 1 2`),
+  **Instrument** (`notein` → `[poly 1 1]` → one sine voice, 5 ms rise to the velocity, Release
+  fall), **MIDI Effect** (`notein` → Transpose → `clip 0 127` → `noteout`). Vanilla plus one
+  `[adi.param]` each, with a comment on where the ports are and what to replace.
+- Tests: each parses with no problem, walks clean (PD4) against the running build, opens with
+  nothing in the console; the audio effect is the input bit for bit at 0 dB (64 late) and plays
+  −6.000 dB when the host sends `$0-adi-1`; the instrument plays A4 at 0.25 peak at full velocity
+  and is silent after Release. Plant: a cyclone object → walk and console both fail. 18 checks;
+  CTest **247/247**.
+
+**PR requested** — title "DEV-10's three starter templates, proved to parse, walk, open and
+play"; head `devices/pd-templates` at `17d52dbe`; base `devices/pd-object-walk` until it lands,
+then `main`. Body: the commit message.
+
+**For the engine/window (DEV-10):** offering them is the new-device flow's (identity
+`org.adidaw.pd.<kind>`, the 'patch' role with the template's text). The MIDI effect's output is
+proved once DEV-14's `midiOut` (`devices/pd-midi-out`) lands.
+
 ## 2026-11-19 — DEV-16, step 3: `[line~]`'s chained segments
 
 **`devices/amxd-translator` (`10fb3b4d`), one more commit on the same PR request.**
