@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M55 Classic scope idle paint
+
+Classic now skips the plot repaint when its visible raster geometry is unchanged. The visible scope still accepts samples so that the first edge after parked silence, as well as a seek, reaches the trigger and display. Hidden Classic releases its existing subscription. The progressive and Sync cases passed with a software peer, alongside the shared analysis and scope engine tests.
+
+Author branch `mixview/classic-compare-gates-meter-20261119` at `ca59b24b24151012c5c220def192faaddfc7d29c`. Exact Release passed 877 Mix View component checks and three targeted CTests. This internal repaint change keeps the display appearance and audio processing unchanged.
+
+**PR requested.** Include this commit after calibrated Compare in the cumulative review.
+
 ### 19 November — DF-M55 calibrated Compare scales
 
 Compare now shows Wide, Detail, Extended and Device on the same axes for A and B. Its scale is independent of ordinary Spectrum. Both sides use the existing calibrated signal data; Hold B survives scale changes, and Resume and Clear wait for fresh measurements. The tests cover shared analysis and absence of demand when hidden.
