@@ -50,7 +50,12 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
     };
     scope.setTitle("Synchronous Focus scope");
     scope.setTooltip("Show the Focus channels' post-fader waveforms and their sum when aligned.");
-    scope.onClick = [this] { redraw_ = true; repaint(); };
+    scope.onClick = [this] {
+        auto retired = scope.getToggleState() ? SharedAnalysis::BarScopeLease{} : std::move(barScope_);
+        if (!scope.getToggleState()) clearBarScopeData();
+        redraw_ = true;
+        repaint();
+    };
     scroll_.setViewedComponent(&strip_, false);
     scroll_.setScrollBarsShown(false, true);
     for (auto *c : std::array<juce::Component *, 10>{&available, &add, &star, &mute, &solo, &hearOne, &hearAll,
@@ -121,8 +126,10 @@ void MixFocus::setMembers(const std::vector<std::int64_t> &ids, bool promoteSolo
     // Retired leases may run a source-detach callback. Publish the new membership
     // and finish its guarded owner callbacks before allowing those releases.
     auto retired = std::move(members_);
+    auto retiredBar = std::move(barScope_);
     members_ = std::move(next);
     ++membershipPose_;
+    clearBarScopeData();
     clearScopeSum();
     const auto exists = [this](auto id) {
         return std::any_of(members_.begin(), members_.end(), [id](auto &m) { return m.id == id; });
@@ -198,6 +205,7 @@ void MixFocus::hear(bool group) {
 }
 void MixFocus::drop() {
     ++membershipPose_;
+    auto retiredBar = std::move(barScope_);
     std::vector<SharedAnalysis::Lease> released;
     released.reserve(members_.size());
     for (auto &m : members_) {
@@ -210,6 +218,7 @@ void MixFocus::drop() {
         for (auto &path : m.scopePaths) path.clear();
     }
     scopeSources_.clear();
+    clearBarScopeData();
     clearScopeSum();
     scopeHasTrace_ = false;
     masked_.clear();
@@ -217,7 +226,7 @@ void MixFocus::drop() {
     redraw_ = true;
 }
 void MixFocus::dropIfActive() {
-    if (!broker_.expired() ||
+    if (barScope_ || shownBar_ || !broker_.expired() ||
         std::any_of(members_.begin(), members_.end(), [](const auto &member) { return member.outputs != 0; }))
         drop();
 }
@@ -372,13 +381,11 @@ void MixFocus::frame(const SnapshotReader &reader) {
                     next = member.data && member.data->sourceEpoch == next->sourceEpoch ? member.data : nullptr;
             }
             if (next != member.data) {
-                redraw_ = true;
+                if (!scopeShown || !shownBar_) redraw_ = true;
                 member.data = std::move(next);
                 member.spectrumChanged = true;
             }
         }
-        if (!members_.empty())
-            broker->requestFrame();
     }
     if (playing && alignment_ == Alignment::WaitForFresh && !members_.empty() &&
         std::all_of(members_.begin(), members_.end(), [](const auto &member) {
@@ -390,12 +397,102 @@ void MixFocus::frame(const SnapshotReader &reader) {
         alignment_ = Alignment::Ready;
         redraw_ = true;
     }
+    updateBarScope(reader, broker);
+    if (!alive || !isShowing() || suspended_) return;
+    if (broker && !members_.empty()) broker->requestFrame();
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
         rebuildScope();
         redraw_ = false;
         repaint(plot_.toNearestInt().getUnion(sumLabel_));
     }
+}
+void MixFocus::clearBarScopeData() {
+    redraw_ |= static_cast<bool>(shownBar_);
+    shownBar_.reset();
+    requestedBar_.reset();
+    barTimeline_.reset();
+}
+void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_ptr<SharedAnalysis> &broker) {
+    const auto *tempo = reader.tempo();
+    if (!scopePlaying_ || !scope.getToggleState() || alignment_ != Alignment::Ready || plot_.isEmpty() ||
+        members_.size() < 2 || !tempo || !broker || !broker->active()) {
+        clearBarScopeData();
+        barScope_.reset();
+        return;
+    }
+    const SafePointer<MixFocus> alive(this);
+    const auto pose = membershipPose_;
+    if (barTimeline_.get() != reader.get()) {
+        const auto sameMeter = [](const auto &a, const auto &b) {
+            return a.start_ticks == b.start_ticks && a.numerator == b.numerator && a.denominator == b.denominator;
+        };
+        if (barTimeline_ && (barTimeline_->tempo.get() != tempo ||
+            !std::ranges::equal(barTimeline_->meters, reader.meters(), sameMeter))) {
+            clearBarScopeData();
+            barScope_.reset();
+            if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
+                return;
+        }
+        barTimeline_ = root_.current();
+    }
+
+    if (!barScope_) {
+        std::vector<engine::ScopeSource> sources;
+        sources.reserve(members_.size());
+        for (const auto &member : members_)
+            sources.push_back({member.id, engine::ScopePoint::PostFader, 0});
+        SharedAnalysis::BarScopeLease acquired;
+        try { acquired = broker->acquireBarScope(sources, static_cast<std::size_t>(plot_.getWidth())); }
+        catch (...) {}
+        if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
+            return;
+        barScope_ = std::move(acquired);
+    }
+    const auto rate = barScope_.sampleRate();
+    if (!(rate > 0.) || (requestedBar_ && requestedBar_->range.sampleRate != rate)) {
+        if (shownBar_) redraw_ = true;
+        shownBar_.reset();
+        requestedBar_.reset();
+        return;
+    }
+
+    const auto heard = root_.renderedSamplePosition();
+    if (shownBar_ && std::any_of(members_.begin(), members_.end(), [&](const auto &member) {
+            return member.data && member.data->advancing &&
+                member.data->transportRevision != shownBar_->transportRevision;
+        })) {
+        shownBar_.reset();
+        redraw_ = true;
+    }
+    std::optional<std::int64_t> tick;
+    bool missed = false;
+    if (requestedBar_) {
+        using Status = SharedAnalysis::BarScopeStatus;
+        const auto status = barScope_.status();
+        if (status == Status::Pending) return;
+        if (status == Status::Ready) {
+            if (const auto current = barScope_.read()) {
+                const auto end = focusWindowEnd(current->firstStamp, static_cast<std::int64_t>(current->frames));
+                if (!end || *end > heard) return;
+                if (shownBar_ != current) {
+                    shownBar_ = current;
+                    redraw_ = true;
+                }
+                tick = requestedBar_->nextTick;
+            }
+        } else if (status == Status::Missed) {
+            if (shownBar_) redraw_ = true;
+            shownBar_.reset();
+            missed = true;
+        }
+    }
+    if (!tick) tick = tempo->secondsToTicks(static_cast<double>(heard) / rate);
+    auto next = focusScopeBarAtTick(*tick, rate, *tempo, reader.meters());
+    if (missed && next && next->firstTick == requestedBar_->firstTick)
+        next = focusScopeBarAtTick(next->nextTick, rate, *tempo, reader.meters());
+    if (next && barScope_.request(next->range))
+        requestedBar_ = next;
 }
 void MixFocus::rebuildPlot() {
     masked_.clear();
@@ -519,6 +616,25 @@ void MixFocus::rebuildScope() {
         if (high != low) trace.add({x, y(high)}, emit);
     };
     const bool aligned = alignment_ == Alignment::Ready;
+    if (scopeShown && aligned && shownBar_ && shownBar_->projection) {
+        const auto &bar = *shownBar_->projection;
+        const auto drawColumns = [&](std::array<juce::Path, 2> &paths, std::span<const FocusSumColumn> columns) {
+            for (std::size_t ch = 0; ch < paths.size(); ++ch) {
+                FocusScopePathReducer trace;
+                const auto emit = pathPoint(paths[ch]);
+                for (std::size_t i = 0; i < columns.size(); ++i)
+                    appendColumn(trace, emit, i, columns.size(), columns[i].low[ch], columns[i].high[ch]);
+                trace.finish(emit);
+            }
+        };
+        scopeRange_ = FocusScopeRange{shownBar_->firstStamp, shownBar_->frames, shownBar_->sampleRate};
+        sum_ = bar.sumReading();
+        drawColumns(scopeSumPaths_, bar.sumColumns());
+        for (std::size_t i = 0; i < members_.size(); ++i)
+            drawColumns(members_[i].scopePaths, bar.memberColumns(i));
+        scopeHasTrace_ = true;
+        return;
+    }
     if (aligned) {
         for (const auto &member : members_) scopeSources_.push_back(member.data.get());
         scopeRange_ = focusScopeRange(scopeSources_);
@@ -610,7 +726,8 @@ void MixFocus::paint(juce::Graphics &g) {
             title = "Sum over 0 dBFS";
             g.setColour(look::record);
         }
-        title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
+        title += shownBar_ ? "   1 bar" :
+            "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
         if (sumShown && !sumOverRange) title += "   Sum overlay";
     }
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());

@@ -58,6 +58,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void componentParentHierarchyChanged(juce::Component &) override;
     void componentBeingDeleted(juce::Component &) override;
     void rebuildPlot();
+    void clearBarScopeData();
+    void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);
     void clearScopeSum();
     void rebuildScope();
     void refreshControls();
@@ -68,6 +70,10 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     juce::Rectangle<int> sumLabel_;
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::optional<FocusScopeRange> scopeRange_;
+    SharedAnalysis::BarScopeLease barScope_;
+    std::shared_ptr<const engine::Snapshot> barTimeline_;
+    std::optional<FocusScopeBar> requestedBar_;
+    std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;
     std::array<juce::Path, 2> scopeSumPaths_;
     std::vector<Member> members_;
