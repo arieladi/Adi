@@ -950,7 +950,11 @@ void followerTimeConstants() {
         return (l.back() - r.back()) / .02f;
     };
     baseline();
-    check(near(gainAfter(1, .18f), .5 + 2 * .18720603, 3e-6), "minimum attack matches the first measured step sample");
+    check(near(gainAfter(1, .18f), .5 + 2 * .18720603, 3e-6), "minimum attack matches the first measured step sample at 48 kHz");
+    rack.prepare(96000);
+    baseline();
+    check(near(gainAfter(1, .18f), .5 + 2 * .16757002, 3e-6), "minimum attack matches the first measured step sample at 96 kHz");
+    rack.prepare(48000);
     const std::array attackMs{1.562,12.500,42.188,99.938};
     for (std::size_t i = 0; i < attackMs.size(); ++i) {
         set(Shaper::FollowerAttack, 0);

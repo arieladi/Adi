@@ -318,7 +318,9 @@ void AdiShaper::WidthFollower::reset() noexcept {
 
 void AdiShaper::WidthFollower::updateTimes(double rate) noexcept {
     const double a = attack;
-    const double attackSeconds = .000005 + (.1 - .000005) * a * a * a;
+    // Fitted to the first step sample at 48 and 96 kHz.
+    constexpr double minimumAttackSeconds = 5.0018e-6;
+    const double attackSeconds = minimumAttackSeconds + (.1 - minimumAttackSeconds) * a * a * a;
     rise = -std::expm1(-1.0 / (rate * attackSeconds));
     const double frames = std::round(rate * .5 * hold * hold);
     holdFrames = static_cast<std::uint32_t>(std::min(frames, static_cast<double>(std::numeric_limits<std::uint32_t>::max())));
