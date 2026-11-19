@@ -2,12 +2,73 @@
 #include "window_state.hpp"
 #include "analysis_palettes.hpp"
 #include "spectrum_slope.hpp"
+#include "stack_model.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <nlohmann/json.hpp>
 namespace adi::ui {
+namespace {
+constexpr stack::Constants stackLimits{};
+std::int64_t integerOr(const nlohmann::json &j, std::int64_t fallback) {
+    if (!j.is_number_integer()) return fallback;
+    if (j.is_number_unsigned() && j.get<std::uint64_t>() >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) return fallback;
+    return j.get<std::int64_t>();
+}
+}
+
+const ViewStateStore::StackPins &ViewStateStore::stackPins() const {
+    if (stackPins_) return *stackPins_;
+    auto &pins = stackPins_.emplace();
+    try {
+        SQLite::Statement q(store_.db(), "SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key='mixview.stack.pins'");
+        if (!q.executeStep()) return pins;
+        const auto j = nlohmann::json::parse(q.getColumn(0).getString());
+        if (!j.is_array()) return pins;
+        std::set<std::int64_t> ordered;
+        for (const auto &id : j) {
+            if (const auto value = integerOr(id, 0); value > 0) ordered.insert(value);
+            if (ordered.size() == static_cast<std::size_t>(stackLimits.maxPins)) break;
+        }
+        pins.ids.assign(ordered.begin(), ordered.end());
+    } catch (const std::exception &) {
+        pins.ids.clear();
+    }
+    return pins;
+}
+
+bool ViewStateStore::saveStackPins(std::span<const std::int64_t> before, std::span<const std::int64_t> after,
+                                   std::string &error) {
+    try {
+        const auto &current = stackPins();
+        std::set<std::int64_t> ids(current.ids.begin(), current.ids.end());
+        for (auto id : before)
+            if (!std::ranges::binary_search(after, id)) ids.erase(id);
+        for (auto id : after)
+            if (id > 0 && !std::ranges::binary_search(before, id)) ids.insert(id);
+        if (ids.size() > static_cast<std::size_t>(stackLimits.maxPins)) {
+            error = "Too many Stack pins";
+            return false;
+        }
+        if (std::ranges::equal(ids, current.ids)) { error.clear(); return true; }
+        if (store_.readOnly()) { error = "Project is read-only"; return false; }
+        std::vector<std::int64_t> next(ids.begin(), ids.end());
+        SQLite::Statement q(store_.db(), "INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES "
+                                         "('project',NULL,'mixview.stack.pins',?) ON CONFLICT DO UPDATE SET value=excluded.value");
+        q.bind(1, nlohmann::json(next).dump());
+        q.exec();
+        stackPins_->ids = std::move(next);
+        ++stackPins_->revision;
+        error.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+}
 FloatingState ViewStateStore::loadFloating(const std::string& key) const {
     FloatingState s;
     SQLite::Statement q(store_.db(),"SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key=?");
@@ -73,6 +134,19 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixView = j.value("mixView", false);
         state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 6);
         state.mixViewDetached = j.value("mixViewDetached", false);
+        if (const auto saved = j.find("mixview.stack.baseHeight"); saved != j.end())
+            if (const auto base = integerOr(*saved, 0); base > 0) {
+                const auto compact = stack::mixChannelGeometry(DensityId::Compact);
+                const auto open = stack::mixChannelGeometry(DensityId::Open);
+                state.mixStackBaseHeight = static_cast<int>(std::clamp(base,
+                    static_cast<std::int64_t>(std::min(compact.baseMin, open.baseMin)),
+                    static_cast<std::int64_t>(std::max(compact.baseMax, open.baseMax))));
+            }
+        if (const auto saved = j.find("mixview.stack.search"); saved != j.end() && saved->is_string()) {
+            stack::ViewState view;
+            view.window.search = saved->get<std::string>();
+            state.mixStackSearch = view.normalised(stackLimits).window.search;
+        }
         state.mixAnalyzerDock = j.value("mixAnalyzerDock", false);
         state.clipView = j.value("clipView", false);
         state.clipViewHeight = std::clamp(j.value("clipViewHeight", 286), 0, 4000);
@@ -183,6 +257,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixView", state.mixView},
                             {"mixViewTab", state.mixViewTab},
                             {"mixViewDetached", state.mixViewDetached},
+                            {"mixview.stack.search", state.mixStackSearch},
                             {"mixAnalyzerDock", state.mixAnalyzerDock},
                             {"clipView", state.clipView},
                             {"clipViewHeight", state.clipViewHeight},
@@ -231,6 +306,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},
                                    {"width", p.width},
                                    {"collapsed", p.collapsed}});
+        if (state.mixStackBaseHeight) j["mixview.stack.baseHeight"] = *state.mixStackBaseHeight;
         j["folded"] = state.foldedDevices;
         j["foldedGroups"] = state.foldedGroups;
         j["laneHeights"] = nlohmann::json::array();

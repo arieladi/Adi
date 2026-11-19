@@ -258,6 +258,7 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
 void MixViewPanel::adoptViewState() {
     ownerReady_ = true;
+    stack.adoptViewState();
     const auto &state = root_.state();
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
                            state.mixAnalyzerWidth);

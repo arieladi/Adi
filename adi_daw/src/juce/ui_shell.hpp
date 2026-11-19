@@ -303,6 +303,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
     bool persist();
+    ViewStateStore &viewStateStore() noexcept { return persistence_; }
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
     // What the Status Bar says when there is no message: Live's line for the insert

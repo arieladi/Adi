@@ -46,6 +46,7 @@ class StackTab final : public juce::Component {
   public:
     explicit StackTab(AdiRootComponent &);
     ~StackTab() override;
+    void adoptViewState();
     void suspendParameters(bool);
     using LimiterObserver = std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>;
     void setLimiterObserver(LimiterObserver);
@@ -96,12 +97,16 @@ class StackTab final : public juce::Component {
     static constexpr int kDisplayHeight = 56, kHeaderHeight = 30;
 
   private:
+    friend class AdiRootComponent;
     friend class StackRow;
     struct State;
     std::unique_ptr<State> state_;
     bool editingPage() const;
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
+    void syncWindowControls();
+    void syncStoredPins(stack::TimeMs time);
+    void persistWindowControls();
     void layoutRows();
     void releaseCardObservations();
     void updateParameterDemand(std::vector<std::int64_t>);

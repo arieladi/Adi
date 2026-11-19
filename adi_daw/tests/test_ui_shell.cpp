@@ -9675,6 +9675,89 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     fake.removeFromDesktop();
 }
 
+void mixStackViewReopen(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto exercise = [&](Store &store, bool author, bool expectSaved) {
+        engine::ProjectView view;
+        view.refresh(store);
+        OpSubmitter submitter(store, view);
+        TransportMailbox mailbox;
+        ViewStateStore persistence(store);
+        SessionState session(store);
+        const auto add = [&](std::int64_t id, const char *name, const char *kind) {
+            OpRequest op;
+            op.opType = "track.create";
+            op.label = "Create channel";
+            op.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", id}};
+            return submitter.submit(std::move(op)).ok;
+        };
+        if (!expectSaved) check(add(1, "Main", "master") && add(10, "Bass", "audio") &&
+                                     add(11, "Kick", "audio"), "Stack persistence fixture creates channels");
+        AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "main");
+        UiPeerRoot fake;
+        fake.setBounds(0, 0, 1200, 760);
+        root.setBounds(fake.getLocalBounds());
+        fake.addAndMakeVisible(root);
+        fake.setVisible(true);
+        fake.addToDesktop(0);
+        check(fake.getPeer() && !fake.getPeer()->getNativeHandle(), "Stack persistence uses only a software peer");
+        check(root.setMixView(true, false), "open the Stack in this project");
+        auto &surface = root.mixViewPanel.stack;
+        surface.channelScope.setSelectedId(2, juce::sendNotificationSync);
+        root.frame();
+        const auto opCount = value(store, "SELECT count(*) FROM ops");
+        const auto undo = root.undoTitle(false);
+        const auto chosenHeight = std::clamp(130, surface.model().constants().baseMin, surface.model().constants().baseMax);
+        if (author) {
+            const auto row = surface.model().shownIndex(10);
+            check(row.has_value(), "Bass is visible before the pin press");
+            if (row) {
+                const auto box = surface.model().chip(*row).pin;
+                const auto at = surface.listArea().getPosition().toFloat() +
+                    juce::Point<float>(static_cast<float>(box.x + box.w / 2), static_cast<float>(box.y + box.h / 2));
+                surface.mouseDown(pressAt(surface, at, juce::ModifierKeys::leftButtonModifier));
+                surface.mouseUp(pressAt(surface, at));
+            }
+            surface.search.setText("Bass", false);
+            surface.search.onTextChange();
+            surface.rowSize.setValue(chosenHeight, juce::sendNotificationSync);
+            const auto disk = persistence.load("main");
+            check(disk.mixStackSearch == "Bass" && disk.mixStackBaseHeight == chosenHeight &&
+                      persistence.stackPins().ids == std::vector<std::int64_t>{10},
+                  "pin press, search and row-size controls save their current project view");
+        } else if (expectSaved) {
+            check(surface.model().pinned(10) && surface.search.getText() == "Bass" &&
+                      surface.rowSize.getValue() == chosenHeight &&
+                      surface.model().shownCount() == 1 && surface.model().shownTrack(0) == 10,
+                  "reopening the project restores pinned Bass, its search and the row size");
+        } else {
+            check(!surface.model().pinned(10) && surface.search.getText().isEmpty() &&
+                      surface.rowSize.getValue() == surface.model().constants().baseDefault,
+                  "another project with the same numeric track IDs starts with its own Stack state");
+        }
+        check(value(store, "SELECT count(*) FROM ops") == opCount && root.undoTitle(false) == undo,
+              "Stack presentation persistence creates no journal or Undo entry");
+        fake.removeChildComponent(&root);
+        fake.removeFromDesktop();
+    };
+    StoreError error{};
+    const auto path = dir / "mixview-reopen.adi";
+    auto store = Store::createEmpty(path, error);
+    check(static_cast<bool>(store), "create Stack persistence project");
+    if (!store) return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Stack persistence')");
+    exercise(*store, true, false);
+    store.reset();
+    store = Store::open(path, error);
+    check(static_cast<bool>(store), "reopen saved Stack project");
+    if (store) exercise(*store, false, true);
+    auto unrelated = Store::createEmpty(dir / "mixview-other-project.adi", error);
+    check(static_cast<bool>(unrelated), "create unrelated project");
+    if (unrelated) {
+        unrelated->db().exec("INSERT INTO project(id,name) VALUES(1,'Another project')");
+        exercise(*unrelated, false, false);
+    }
+}
+
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
@@ -11320,6 +11403,7 @@ int main(int argc, char **argv) {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
         mixChannelNavigation(commands, temp.path());
+        mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
         pluginWindows(commands, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);

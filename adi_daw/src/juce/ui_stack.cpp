@@ -78,6 +78,8 @@ struct StackTab::State : juce::ScrollBar::Listener {
     std::vector<std::int64_t> hidden;
     std::set<std::int64_t> folded;
     std::vector<std::int64_t> demanded;
+    std::vector<std::int64_t> persistedPins;
+    std::uint64_t pinRevision = 0;
     std::shared_ptr<const ParameterPublication> publication, structure, editPublication;
     std::uint64_t generation = std::numeric_limits<std::uint64_t>::max(), revision = 1;
     const engine::Snapshot *snapshot = nullptr; // identity only, never dereferenced after the frame
@@ -449,6 +451,7 @@ StackTab::StackTab(AdiRootComponent &r) : root(r), state_(std::make_unique<State
     rowSize.onValueChange = [this] {
         effects(model().setBaseHeight(static_cast<int>(rowSize.getValue()), clockNow()), false);
     };
+    rowSize.onDragEnd = [this] { persistWindowControls(); };
     addAndMakeVisible(rowSize);
     for (auto *button : {&autoZoom, &pinsOnly, &navigator}) {
         button->setMouseClickGrabsKeyboardFocus(false);
@@ -494,6 +497,41 @@ StackTab::~StackTab() {
 }
 StackModel &StackTab::model() noexcept { return state_->model; }
 const StackModel &StackTab::model() const noexcept { return state_->model; }
+void StackTab::adoptViewState() {
+    auto next = model().viewState();
+    const auto &saved = root.state();
+    next.window.search = saved.mixStackSearch;
+    if (saved.mixStackBaseHeight) next.window.baseHeight = *saved.mixStackBaseHeight;
+    const auto &pins = root.viewStateStore().stackPins();
+    next.shared.pins = pins.ids;
+    state_->persistedPins = pins.ids;
+    state_->pinRevision = pins.revision;
+    effects(model().applyViewState(next, 0), false);
+    syncWindowControls();
+}
+void StackTab::syncStoredPins(stack::TimeMs time) {
+    const auto &saved = root.viewStateStore().stackPins();
+    if (state_->pinRevision == saved.revision || model().capture()) return;
+    state_->pinRevision = saved.revision;
+    state_->persistedPins = saved.ids;
+    if (model().pins() == saved.ids) return;
+    auto next = model().viewState();
+    next.shared.pins = saved.ids;
+    effects(model().applyViewState(next, time), false);
+}
+void StackTab::persistWindowControls() {
+    // Visibility events may run while the root is still creating its children.
+    if (!state_->pinRevision || state_->destroying) return;
+    auto &saved = root.state();
+    const auto &view = model().windowView();
+    const auto base = std::clamp(saved.mixStackBaseHeight.value_or(model().constants().baseDefault),
+                                 model().constants().baseMin, model().constants().baseMax);
+    const bool baseChanged = base != view.baseHeight;
+    if (!baseChanged && saved.mixStackSearch == view.search) return;
+    if (baseChanged) saved.mixStackBaseHeight = view.baseHeight;
+    saved.mixStackSearch = view.search;
+    if (!root.persist()) root.say(root.error());
+}
 const MixViewProvider &StackTab::provider() const noexcept { return root.mixProvider(); }
 int StackTab::toolbarHeight() const noexcept {
     return kHeaderHeight * (getWidth() >= 816 ? 1 : getWidth() >= 370 ? 2 : 3);
@@ -573,6 +611,8 @@ void StackTab::frameAt(const SnapshotReader &reader, stack::TimeMs time) {
         updateParameterDemand({});
         return;
     }
+    syncStoredPins(time);
+    if (!alive) return;
     const auto frame = ++state_->frame, layout = state_->layout;
     const auto current = [&] {
         return alive && state_->frame == frame && state_->layout == layout;
@@ -749,14 +789,26 @@ void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
     if (fx.rename.valid()) beginRename(fx.rename);
     if (fx.repaint) { state_->canvas.repaint(); repaint(); }
     if (fx.windowViewChanged) {
-        rowSize.setValue(model().windowView().baseHeight, juce::dontSendNotification);
-        autoZoom.setToggleState(model().windowView().autoZoom, juce::dontSendNotification);
-        pinsOnly.setToggleState(model().windowView().filterPinned, juce::dontSendNotification);
-        navigator.setToggleState(model().windowView().navigator, juce::dontSendNotification);
-        channelScope.setSelectedId(model().windowView().channelScope == stack::ChannelScope::AllChannels ? 2 : 1,
-                                   juce::dontSendNotification);
-        if (search.getText().toStdString() != model().windowView().search) search.setText(model().windowView().search, false);
+        syncWindowControls();
+        if (rowSize.getThumbBeingDragged() < 0) persistWindowControls();
     }
+    if (fx.sharedViewChanged && model().pins() != state_->persistedPins) {
+        std::string error;
+        if (root.viewStateStore().saveStackPins(state_->persistedPins, model().pins(), error))
+            syncStoredPins(clockNow());
+        else
+            root.say(std::move(error));
+    }
+}
+void StackTab::syncWindowControls() {
+    const auto &view = model().windowView();
+    rowSize.setValue(view.baseHeight, juce::dontSendNotification);
+    autoZoom.setToggleState(view.autoZoom, juce::dontSendNotification);
+    pinsOnly.setToggleState(view.filterPinned, juce::dontSendNotification);
+    navigator.setToggleState(view.navigator, juce::dontSendNotification);
+    channelScope.setSelectedId(view.channelScope == stack::ChannelScope::AllChannels ? 2 : 1,
+                              juce::dontSendNotification);
+    if (search.getText().toStdString() != view.search) search.setText(view.search, false);
 }
 void StackTab::resized() {
     const int available = std::max(0, getWidth() - 2 * look::gap);
@@ -1158,6 +1210,8 @@ void StackTab::focusOfChildComponentChanged(FocusChangeType type) {
 void StackTab::visibilityChanged() {
     if (!isShowing()) {
         const auto safe = SafePointer<StackTab>(this);
+        persistWindowControls();
+        if (!safe) return;
         releaseCardObservations();
         if (!safe) return;
         cancelInteractions();

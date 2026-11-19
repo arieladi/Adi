@@ -960,6 +960,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     frame();
 }
 AdiRootComponent::~AdiRootComponent() {
+    mixViewPanel.stack.persistWindowControls();
     commands_.detach(*this);
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
