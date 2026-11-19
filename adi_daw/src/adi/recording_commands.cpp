@@ -6,6 +6,7 @@
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/media/published_rollback.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -19,7 +20,7 @@
 namespace adi::recording {
 namespace fs=std::filesystem;
 struct RecordingEdit::Files {
-    struct Asset {fs::path source,staged,target;std::string hash;bool published=false;};
+    struct Asset {fs::path source,staged,target;std::string hash;};
     std::vector<Asset> assets;
     engine::AudioRecordingResult source;
     fs::path publicationDirectory;
@@ -108,7 +109,7 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
             const auto hash=media::blake3File(expected);if(!hash)throw std::runtime_error("cannot verify recorded audio");
             std::int64_t mediaId=0;
             if(const auto found=capturedMedia.find(hash.hex);found!=capturedMedia.end()) {
-                mediaId=found->second;files->assets.push_back({expected,{},{},hash.hex,false});
+                mediaId=found->second;files->assets.push_back({expected,{},{},hash.hex});
             }
             else {
                 OpRequest request;const auto imported=media::prepareImport(store,expected,wanted.media,0,request);
@@ -130,7 +131,7 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
                 else {request.opType="media.relink";request.payload={{"id",mediaId},{"hash",hash.hex},{"paths",paths}};}
                 const auto staged=files->publicationDirectory/("asset-"+std::to_string(index)+".wav");fs::copy_file(expected,staged,fs::copy_options::none);
                 const auto stagedHash=media::blake3File(staged);if(!stagedHash || stagedHash.hex!=hash.hex)throw std::runtime_error("recording changed while staging publication");
-                files->assets.push_back({expected,staged,targetFile,hash.hex,false});request.label="Record Audio";result.requests.push_back(std::move(request));
+                files->assets.push_back({expected,staged,targetFile,hash.hex});request.label="Record Audio";result.requests.push_back(std::move(request));
             }
             OpRequest clip;clip.opType="clip.create";clip.payload={{"id",wanted.clip},{"track",target.trackId},{"kind","audio"},{"name",wanted.name.empty()?"Recording":wanted.name},{"pos",first},{"length",last-first}};
             clip.label="Record Audio";clip.targetKind="clip";clip.targetId=wanted.clip;result.requests.push_back(std::move(clip));
@@ -151,32 +152,43 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     catch(const std::exception& exception){refused.error=exception.what();return refused;}
     const auto files=edit.files_;
     if(!files || files->committed){refused.error="recording edit is absent or already committed";return refused;}
+    auto rollback=std::make_shared<media::detail::PublishedRollback>();
+    rollback->files.reserve(files->assets.size());
     auto options=edit.options;const auto previous=options.beforeCommit;
-    options.beforeCommit=[files,previous](SQLite::Database& db,std::int64_t transaction,std::string& error) {
+    options.beforeCommit=[files,previous,rollback](SQLite::Database& db,std::int64_t transaction,std::string& error) {
         if(previous && !previous(db,transaction,error))return false;
-        for(auto& asset:files->assets) {
+        for(const auto& asset:files->assets) {
             if(!fs::is_regular_file(fs::symlink_status(asset.source))){error="recorded take is no longer a regular file";return false;}
             const auto hash=media::blake3File(asset.source);if(!hash || hash.hex!=asset.hash){error="recorded file changed after capture";return false;}
             if(asset.target.empty())continue;
             const auto stagedHash=media::blake3File(asset.staged);
             if(!stagedHash || stagedHash.hex!=asset.hash){error="recording publication staging changed after capture";return false;}
+            rollback->files.push_back({asset.target,{}});
             const auto published = media::publishFile(asset.staged, asset.target, {},
                                                       media::PublishPolicy::AtomicOnly);
+            if(published.status==media::PublishStatus::published) {
+                rollback->files.back().identity=published.identity;
+                continue;
+            }
+            rollback->files.pop_back();
             if(published.status==media::PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
                 const auto existing=media::blake3File(asset.target);if(existing && existing.hex==asset.hash)continue;
             }
-            if(published.status!=media::PublishStatus::published){error="Cannot publish recorded audio "+media::pathUtf8(asset.target)+": "+(published.status==media::PublishStatus::exists?"destination contains different content":published.error);return false;}
-            asset.published=true;
+            error="Cannot publish recorded audio "+media::pathUtf8(asset.target)+": "+(published.status==media::PublishStatus::exists?"destination contains different content":published.error);
+            return false;
         }
         return true;
     };
     auto requests=edit.requests;for(auto& request:requests)request.actor=actor;
     auto result=OpJournal(store).commit(requests,options);
     if(result.ok) {
+        rollback->committed=true;
         files->committed=true;
         try{if(!files->keepPrivate)files->source.discard();}catch(...){/* committed assets remain authoritative */}
+    } else if(auto warning=rollback->rollback();!warning.empty()) {
+        if(!result.error.empty())result.error+='\n';
+        result.error+=warning;
     }
-    else for(auto& asset:files->assets)if(asset.published){std::error_code cleanup;fs::remove(asset.target,cleanup);asset.published=false;}
     return result;
 }
 }
