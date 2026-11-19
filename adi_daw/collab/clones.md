@@ -5,6 +5,74 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 2026-11-19 — Internal envelope and trigger measurements for ADi-SHAPER
+
+The clones seat reserves `clones/adi-shaper-follower` for the Width band's internal follower. It extends only the existing ADi-SHAPER DSP, compiled external bridge if needed, canonical patch, device-specific build file and shaper tests. This topic starts from the eleven-stage order and editor integration at `f820812f`. External key routing, MIDI plumbing and audible trigger lookahead remain separate devices and engine integration topics. No Mix View or shared Window file is reserved.
+
+### Envelope detection and curve combination
+
+The Volume stage provides a triggered level contour. Its initialized band exposes a volume contour and gain. The Width contour provides a separate, directly measurable envelope follower, while the reference offers a separate compressor for automatic level reduction. These distinctions matter when assigning a follower to an ADI control. [Reference manual, pp. 14, 25, 47–55](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf#page=47)
+
+The following Width measurements used a running 120 BPM transport, 48 kHz stereo and 256-frame callbacks. The contour was flat at height 0.25, giving a side gain of 0.5 with the follower off. Side gain was read as the output channel difference divided by the input channel difference. Seven stereo polarity/level pairs gave a steady detector level equal to the larger of the absolute channel amplitudes. For example, either channel at −0.2 paired with +0.02 on the other gave side gain 0.89999 at the tested positive amount. An opposite-polarity pair at ±0.15 gave 0.79999. No measured follower setting reported host latency.
+
+Let `h` be the contour height, `e` the detected peak amplitude, `a` normalized Amount, `o` normalized Offset and `d` Depth index 0, 1 or 2. For Width, clamp the resulting height to [0,1], then multiply by two to get the stereo side gain.
+
+| Mode | Height before clamping |
+| --- | --- |
+| Add | `h + 2(o − 0.5) + e × (2a − 1) × 2^(d+1)` |
+| Multiply | `h × e × 2a × 2^d + 2(o − 0.5)` |
+
+Five Amount settings, three Depth choices, three Offsets and seven input plateaus verified the Add law to within 0.000048 absolute side gain. In Multiply, the same base height and a level of 0.2 gave side gain 0, 0.1000 and 0.2000 at Amount 0, 0.5 and 1. The default Depth corresponds to an Add Amount span of −200% through +200%. Depth indices 1 and 2 double and quadruple this span. The initialized follower was off, in Add mode, with Amount 0.5, Offset 0.5, minimum Threshold, Attack 0.1, Hold 0, Release 0.2, adaptive release off, band detection, external key off and the detector filters fully open.
+
+At normalized Threshold 0.25, input peaks through 0.21 left the base side gain at 0.5, while peaks 0.41 and 0.71 received the same modulation as they did with the gate open. Threshold 0.5 admitted 0.71 and excluded 0.41. These are steady-state gate observations. Threshold-transition hysteresis, adaptive release and detector filter slopes remain open.
+
+### Attack, hold and release
+
+A 0.01-amplitude side pilot remained audible throughout an independent 1.5-second common-mode step of 0.18. This changed the loudest input channel from 0.01 to 0.19. Measurements used the first sample crossing each threshold relative to the input edge.
+
+| Normalized control | Attack time to 63.2% (ms) | Added hold time (ms) | Release time constant (ms) |
+| ---: | ---: | ---: | ---: |
+| 0 | First sample | 0 | 5.0 |
+| 0.25 | 1.562 | 31.25 | 120.3 |
+| 0.50 | 12.500 | 125.00 | 477.4 |
+| 0.75 | 42.188 | 281.25 | 1,588.7 |
+| 1 | 99.938 | 500.00 | approximately 5,065 |
+
+The attack follows a one-pole rise with `100u³` milliseconds as its time constant. Its time to 90% at quarter, half and three-quarter positions was 3.604, 28.792 and 97.125 ms. Hold shifted every measured release crossing by `500u²` milliseconds. Release fits exponential decay of the stored absolute peak down to the live input floor. Its time constant was computed at several fractions using the actual amplitudes 0.19 and 0.01. At the initialized Attack and Release, the fitted times were 0.104 and 85.8 ms respectively. The release control's exact interpolation between measured positions remains open.
+
+A separate 440 Hz, 0.18-peak sine burst confirmed the response on program-like excitation. At minimum Attack/Hold/Release, side gain swung between 0.8163 and 0.8800 near the end of the burst. With Attack and Release both at 0.5 it varied between 0.8450 and 0.8456. With Hold alone at 0.5, the gain remained 0.8800 at 100 ms after the burst stopped.
+
+### Volume contour triggering
+
+A linear ramp from zero to unity lasted 12,000 frames at 48 kHz and 120 BPM. A right-channel pilot exposed the instantaneous gain. Decaying 920 Hz cosine bursts on the left began at samples 14,000, 31,300, 53,500 and 81,400 with peaks 0.7, 0.045, 0.7 and 0.7. Audio detector filters, threshold, detail and shift started at their initialized values. Global timing reservation and optional trigger smoothing were off.
+
+| Mode | Measured phase behavior |
+| --- | --- |
+| Sync | Gain wrapped at 12,000, 24,000 and the following cycle boundaries regardless of burst timing. Reported latency was zero. |
+| Audio retrigger, looping | The louder bursts restarted the curve at 14,671, 54,171 and 82,071. The quiet burst caused no restart. Between triggers it wrapped exactly 12,000 frames after the preceding restart. With no bursts it kept the transport-synced cycle. |
+| Audio retrigger, one-shot | The same three bursts restarted the curve. Before the first burst and after reaching the selected endpoint the gain held there. Endpoints 0.25, 0.5 and 0.75 gave held gains 0.25003, 0.50006 and 0.75009. The initialized stored endpoint 0.984375 reached the graph's top and held gain 1 in this ramp. An otherwise identical render without bursts remained at the endpoint. |
+| MIDI retrigger | Four note-ons commanded at the same four sample positions restarted the curve at exactly 14,000, 31,300, 53,500 and 81,400. The 30 ms note lengths did not truncate the ramp. Both free continuation after restart and holding the one-shot endpoint were verified. Reported latency was zero with smoothing off. |
+
+The flat-unity audio control located the actual dry path 672 frames later at 48 kHz. The two lower-latency audio algorithms timed the strong burst restart one sample before that delayed dry onset. Moving Trigger Shift from its midpoint to its low/high limits moved each restart by −192/+192 samples, or ±4 ms. The higher-latency algorithm reported 1,152 frames and detected these same bursts 1,153 frames after input. The audio detector default was inactive, Threshold 0.0883883, Detail 0.5, Shift 0.5, algorithm index 0, internal main input, HP 0.2 and LP 1. The reference manual describes three algorithms and their intended material. [Reference manual, pp. 42–44](https://downloads.cableguys.com/Cableguys-ShaperBox-3-Manual.pdf#page=42)
+
+With isolated decaying bursts from 0.01 through 0.90 peak, thresholds 0, 0.02 and 0.0883883 at midpoint Detail detected 0.16, 0.32, 0.64 and 0.90. Threshold 0.2 detected the last three and 0.5 detected the last two. Minimum Detail suppressed every test burst. Maximum Detail detected the same four as midpoint. The observed onset decisions depend on transient shape and Detail as well as peak level. Detector equivalence on other sounds remains open.
+
+Separate flat-unity impulse renders measured the following actual audio delay. The value reported to the host matched the observed offset in all twelve cases. Trigger smoothing added approximately 6 ms. Normalized minimum/maximum shift altered the detector decision time independently of this reported delay.
+
+| Rate | Algorithm 0, smoothing off / on | Algorithm 2, smoothing off / on |
+| --- | ---: | ---: |
+| 44.1 kHz | 617 / 882 | 1,058 / 1,323 |
+| 48 kHz | 672 / 961 | 1,152 / 1,441 |
+| 96 kHz | 1,344 / 1,921 | 2,304 / 2,881 |
+
+External sidechain behavior remains unverified. The reference host exposed a two-channel main input, declined the requested four-input/two-output configuration, and still advertised two inputs after enabling all buses. It rejected the two additional key-channel connections. The internal-input, running transport and MIDI controls above all produced positive results in the same environment.
+
+### ADI integration ownership
+
+The existing shaper core can own envelope state and per-band clocks. Internal triggering can derive its detector from the current stereo input. The lookahead changes actual host delay, so enabling it requires aligned dry and wet paths plus a latency notification. The native and editable paths should be tested for all enabling/disabling combinations with Drive's existing 16-sample latency.
+
+The devices seat owns the Pd-tier integration. ADi-SHAPER currently declares two audio inputs and MIDI off in `src/adi/builtin_catalog.cpp`. For external keys, coordinate the four-input catalog declaration and the canonical factory in `src/adi/pd_builtins/native_devices.cpp`, then connect channels 3/4 from the patch and compiled external to the detector. The engine already carries `NodeIo::sidechain` and maps the optional extra planes for four-input built-ins. Auto Filter is a working canvas precedent. For note triggering, coordinate the catalog MIDI flag, a shaper-specific note-on handler in the native factory and a `notein` connection for editable Pd. The existing Shifter device and `src/juce/pd_engine.cpp` demonstrate those paths. Basic note and sidechain delivery fit the existing host interfaces. Changes to event scheduling, transport packet fields or graph-wide routing would also involve the engine owner.
+
 ## 2026-11-19 — Stereo Drive oversampling refinement
 
 **PR requested** — `clones/adi-shaper-performance` at `b8f22f7d`. Title **Reduce idle shaper overhead, calibrate Crush and accelerate stereo Drive**. This update belongs to the existing performance request. All twelve focused MSVC Release tests passed with strict warnings, including both Pd paths. The following comparison isolates the effect of this change inside ADI.
