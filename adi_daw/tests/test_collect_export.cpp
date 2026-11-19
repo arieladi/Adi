@@ -105,6 +105,11 @@ void publication() {
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::exists && read(target) == bytes, "fallback never overwrites existing file");
     fs::remove(target); write(source, bytes);
+    result = media::publishFile(source, target, {refuseRename, concurrentDestination},
+                                media::PublishPolicy::AtomicOnly);
+    check(result.status == media::PublishStatus::failed && !result.usedFallback &&
+          !fs::exists(target) && read(source) == bytes,
+          "atomic-only refusal reports failure without starting the copy");
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::published && result.usedFallback && read(target) == bytes, "refused rename takes verified streaming fallback");
     check(result.identity.has_value(), "verified publication reports destination identity");
