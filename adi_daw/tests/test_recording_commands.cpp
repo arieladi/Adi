@@ -8,6 +8,7 @@
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/publish_file.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
 #include <algorithm>
@@ -30,10 +31,11 @@ struct Fixture {
     Fixture(){StoreError error{};store=Store::createEmpty(temporary.path()/"song.adi",error);if(!store)throw std::runtime_error(toString(error));
         store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','One',1),(22,'audio','Two',1),(9,'master','Main',0)");}
     static float sample(std::size_t frame){return static_cast<float>(frame%17)/32-0.25f;}
-    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300) {
+    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300,
+        const std::filesystem::path& workFolder={}) {
         Session session;SessionSpec format{2,48000,128};format.precision=precision;session.graph().setFadeFrames(0);
         if(!session.load(*store,{},format))throw std::runtime_error(session.error());
-        AudioRecordingSpec request;request.workFolder=temporary.path();request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
+        AudioRecordingSpec request;request.workFolder=workFolder.empty()?temporary.path():workFolder;request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
         if(loop)request.loop=AudioRecordingLoop{512,640,8};
         std::string error;if(!session.startRecording(request,error))throw std::runtime_error(error);
         if(loop)session.transport().loop(512,640);
@@ -58,6 +60,81 @@ struct Fixture {
         return result;
     }
 };
+void publicationStagingOwnership() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto audioFolder=media::projectFolder(*f.store)/"audio";
+    const auto unrelated=audioFolder/".adi-media-unrelated";fs::create_directories(unrelated);
+    const auto sentinel=unrelated/"keep.txt";{std::ofstream out(sentinel);out<<"unowned staging";}
+    const auto sentinelHash=media::blake3File(sentinel),takeHash=media::blake3File(recorded.tracks[0].file);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Staging"}}};
+    std::vector<fs::path> owned;
+    {
+        const auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+        check(prepared.ok && digestProject(*f.store).text==before,"prepare leaves project rows unchanged while staging publication beside project media");
+        for(const auto& entry:fs::directory_iterator(audioFolder))
+            if(entry.is_directory() && entry.path()!=unrelated && entry.path().filename().string().starts_with(".adi-media-"))owned.push_back(entry.path());
+        check(owned.size()==1 && fs::is_regular_file(owned.front()/"asset-0.wav") &&
+            media::blake3File(owned.front()/"asset-0.wav").hex==takeHash.hex,
+            "the verified publication copy lives in one owned .adi-media- directory on the project filesystem");
+        std::size_t captureDirectories=0;
+        for(const auto& entry:fs::directory_iterator(recorded.directory()))if(entry.is_directory())++captureDirectories;
+        check(captureDirectories==0,"preparation adds no publication staging beneath the recoverable capture directory");
+    }
+    bool cleaned=true;for(const auto& path:owned)cleaned=cleaned && !fs::exists(path);
+    check(cleaned && media::blake3File(recorded.tracks[0].file).hex==takeHash.hex &&
+        media::blake3File(sentinel).hex==sentinelHash.hex && digestProject(*f.store).text==before,
+        "abandoning preparation removes only its publication directory and preserves the private take and unrelated stage");
+    const std::array<recording::ClipIds,1> invalid={{{0,8,"Invalid"}}};
+    {const auto refused=recording::prepareCommit(*f.store,recorded,invalid);check(!refused.ok,"invalid recording allocation refuses after reserving its private stage");}
+    std::size_t remaining=0;for(const auto& entry:fs::directory_iterator(audioFolder))if(entry.is_directory())++remaining;
+    check(remaining==1 && fs::exists(sentinel) && media::blake3File(recorded.tracks[0].file).hex==takeHash.hex,
+        "failed preparation cleans its project-side stage without removing foreign directories or the capture");
+    recorded.discard();
+}
+void crossVolumePublication(const std::filesystem::path& workFolder) {
+#if defined(_WIN32)
+    namespace fs=std::filesystem;
+    if(!workFolder.is_absolute() || !fs::is_directory(workFolder))throw std::runtime_error("cross-volume work folder must be an existing absolute directory");
+    Fixture f;auto recorded=f.capture(false,Precision::Float32,false,300,workFolder);
+    const auto source=recorded.tracks[0].file;
+    std::error_code error;
+    auto sourceLease=media::ProjectFileLease::openShared(source,error);
+    auto projectLease=media::ProjectFileLease::openShared(f.temporary.path()/"song.adi",error);
+    if(!sourceLease || !projectLease || sourceLease->identity().volume==projectLease->identity().volume)
+        throw std::runtime_error("cross-volume regression requires distinct native capture and project volumes");
+    std::printf("CROSS_VOLUME capture=%llu project=%llu\n",static_cast<unsigned long long>(sourceLease->identity().volume),
+        static_cast<unsigned long long>(projectLease->identity().volume));
+    sourceLease.reset();projectLease.reset();
+    const auto control=recorded.directory()/"cross-volume-control.wav",target=f.temporary.path()/"control.wav";
+    fs::copy_file(source,control);
+    const auto rejected=media::publishFile(control,target,{},media::PublishPolicy::AtomicOnly);
+    check(rejected.status==media::PublishStatus::failed && !rejected.usedFallback && fs::exists(control) && !fs::exists(target),
+        "real cross-volume AtomicOnly control refuses a direct publication and retains its source");
+    fs::remove(control);
+    const auto hash=media::blake3File(source);const auto before=digestProject(*f.store);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Other volume"}}};
+    auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    check(prepared.ok,"prepare a real recording captured on another native volume");
+    const auto committed=recording::commit(*f.store,prepared);
+    if(!committed.ok)std::printf("cross-volume commit: %s\n",committed.error.c_str());
+    check(committed.ok && committed.seqs.size()==3,"cross-volume capture commits through project-side AtomicOnly publication as one group");
+    if(committed.ok) {
+        const auto owned=media::projectFolder(*f.store)/media::pathFromUtf8(f.store->db().execAndGet("SELECT rel_path FROM media_files").getString());
+        check(owned.parent_path()==media::projectFolder(*f.store)/"audio" && media::blake3File(owned).hex==hash.hex && !fs::exists(recorded.directory()),
+            "cross-volume commit preserves exact captured bytes in project audio and discards its private take");
+        const auto heard=f.play(Precision::Float32);bool exact=true;
+        for(std::size_t frame=0;frame<heard.size();++frame)exact=exact && heard[frame]==(frame>=512 && frame<812?Fixture::sample(frame-512):0);
+        check(exact,"cross-volume recording plays its captured PCM at the original sample positions");
+        const auto after=digestProject(*f.store).text;History history(*f.store);
+        check(history.undo().ok && digestProject(*f.store).text==before.text && fs::exists(owned) &&
+            history.redo().ok && digestProject(*f.store).text==after && f.play(Precision::Float32)==heard,
+            "cross-volume recording has one undo step and restores the same retained audio on redo");
+    } else recorded.discard();
+#else
+    (void)workFolder;throw std::runtime_error("the opt-in cross-volume native identity regression is Windows-only");
+#endif
+}
 void heardPlacementAndHistory() {
     for(const auto precision:{Precision::Float32,Precision::Float64}) {
         Fixture f;auto recorded=f.capture(false,precision);const auto before=digestProject(*f.store).text;
@@ -138,4 +215,8 @@ void loopPublicationRefusesFlattening() {
     }
 }
 }
-int main(){try{heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(int argc,char** argv){try{
+    if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
+    publicationStagingOwnership();heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    if(argc==3)crossVolumePublication(media::pathFromUtf8(argv[2]));
+}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

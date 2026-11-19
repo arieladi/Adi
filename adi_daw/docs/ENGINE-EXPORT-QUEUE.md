@@ -18,6 +18,15 @@ queue.run(deviceLoader, control);
 const auto entries = queue.snapshot();
 ```
 
+For one WAV from the Export page, set `directory` to the folder
+chosen in Save, and `exactWavFilename` to its complete UTF-8 filename,
+including the extension. The engine keeps the spelling and never expands
+braces in this value. It refuses path components, invalid or reserved
+names, and names above the 200-byte limit. Use `Collision::Fail` by default
+and `Collision::Replace` after the user confirms overwriting that path.
+Replace binds the existing file before rendering and verifies it again
+at publication. The manifest records the literal and the delivered path.
+
 The default source is the master. Set `job.source.trackId` to an audio, MIDI,
 instrument, group, return or master track ID for a direct wet stem. Zero selects
 the project's master when rendering starts. `source.tap` defaults to
@@ -72,14 +81,52 @@ and `{counter}` (the stable, one-based enqueue
 ordinal, unchanged by removal or retry). `{{` and `}}` escape braces.
 Unknown or unmatched braces are errors. Expanded values are sanitized into one
 portable filename component; values cannot introduce folders or more tokens.
-The runner adds `.wav`. An empty name or a name over 200 UTF-8 bytes is refused.
+The runner adds `.wav` (or the complete `.stem.mp4` suffix for NI Stems).
+An empty name or a final filename over 200 UTF-8 bytes is refused, including
+the suffix and any collision numbering.
 
-The destination directory must already exist. A job writes into its own staging
-directory, closes the WAV, checks cancellation, and publishes without replacing
-an existing file. Cancellation/failure removes only that private stage. A file
-successfully published is retained even if cancellation arrives afterward.
-Publication uses `media::publishFile`: its fallback verifies a copy, but that copy
-can be visible while in progress. No universal atomic-visibility guarantee is made.
+The destination directory must already exist. `Job::collision` defaults to
+`Fail`; `Increment` selects the first available ` (2)`, ` (3)`, etc. before the
+complete suffix. Comparison uses pinned Unicode composition/case folding and
+native alias lookup. The chosen name is checked again at publication and never
+silently renumbered after rendering. These deliveries use `publishFile` with
+`AtomicOnly`, with no visible-copy fallback.
+
+Explicit `Replace` binds the requested ordinary file's native identity, BLAKE3
+contents and exact folded-collision spellings during preflight. A different
+fold-only spelling with no native alias, multiple colliding entries, a directory,
+or a symlink is refused. A native case/short-name alias is accepted only when it
+identifies the same ordinary file. The requested filename is kept; the parent is
+resolved and frozen so a later working-directory or parent-link change does not
+redirect it. Changing the file, its bytes or the colliding names during rendering
+fails validation without publishing a different name. Replacing one hardlink
+does not change the bytes of another alias to the old inode. Hashing the previous
+output adds an off-audio-thread read at preflight and final validation.
+
+Final replacement goes through `replaceFile` with the expected preflight identity
+checked under its exclusive lease. Contents and folded names are rechecked there,
+including on retries. If the endpoint was absent at preflight, the final operation
+is instead atomic no-clobber: a late arrival is never adopted as an overwrite
+target. NI final-delivery preflight now precedes the first Main audio block;
+private intermediate WAVs always retain `Fail`. The run manifest records requested
+mode and available replacement-preflight evidence separately from publication.
+
+**Concurrency boundary:** the lease excludes cooperating ADI publishers, not all
+other applications. Windows replacement handles share delete and POSIX leases
+are advisory. There is no OS compare-and-swap of an expected destination inode,
+nor a cross-process reservation of the portable folded namespace. A non-cooperating
+writer can still change bytes, rename a destination, or add a fold-only collision
+after the last validation and before native rename. This slice does not claim
+that gap is closed. Windows volumes without the required POSIX-semantics rename
+(for example unsupported SMB/FAT/exFAT configurations) fail with the existing
+choose-a-new-name diagnostic; there is no weakening fallback. Native macOS/Linux
+execution and a stronger namespace reservation remain separate work.
+
+A job writes into its own private staging directory and closes its output before
+publication. Cancellation/failure removes only that stage, with cleanup failures
+reported separately. A published file is retained even if cancellation arrives
+afterward. A post-publication durability warning remains Completed with a warning,
+not a false report that the original file was preserved.
 
 `job.encoding` selects `audio::WavFormat::Pcm16`, `Pcm24` or `Float32` and
 `audio::WavDither::None`, `Triangular` or `Rectangular`. New jobs default to

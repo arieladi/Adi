@@ -39,7 +39,7 @@ struct Read {
 fs::path reservePublication(const fs::path& parent) {
     static std::atomic<std::uint64_t> serial{0};
     for(unsigned attempt=0;attempt<128;++attempt) {
-        const auto path=parent/(".publication-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(serial.fetch_add(1)));
+        const auto path=parent/(".adi-media-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+"-"+std::to_string(serial.fetch_add(1)));
         std::error_code error;if(fs::create_directory(path,error))return path;
         if(error && error!=std::errc::file_exists)throw fs::filesystem_error("stage recording publication",path,error);
     }
@@ -89,10 +89,10 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
         const auto tempo=tempoOf(store);const auto first=tickAt(tempo,recorded.startSample,recorded.sampleRate);
         const auto last=tickAt(tempo,recorded.startSample+static_cast<std::int64_t>(recorded.frames),recorded.sampleRate);
         if(last<=first)throw std::runtime_error("recording has no representable musical extent");
-        auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;files->publicationDirectory=reservePublication(recorded.directory());
         const auto folder=media::projectFolder(store)/"audio";
         if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("recording audio directory must not be a symlink");
         fs::create_directories(folder);
+        auto files=std::make_shared<RecordingEdit::Files>();files->source=recorded;result.files_=files;files->publicationDirectory=reservePublication(folder);
         std::set<std::int64_t> clipIds,mediaIds;std::map<std::string,std::int64_t> capturedMedia;
         for(std::size_t index=0;index<ids.size();++index) {
             const auto& target=recorded.tracks[index];const auto& wanted=ids[index];

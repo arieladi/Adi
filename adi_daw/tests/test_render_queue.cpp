@@ -16,8 +16,10 @@
 #include <cstdio>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -646,6 +648,18 @@ void namesAndValidation() {
           "Windows superscript device names are escaped, including names with extensions");
     for (const auto* reserved : {"CON", "con.txt", "PRN", "AUX", "nul.tar.gz", "COM9", "LPT9", "CONIN$", "CONOUT$"})
         check(resolveName(reserved,c)==std::string("_")+reserved,"reserved filename stem is escaped without changing case or extension");
+    for (const auto* reserved : {"AUX .2", "CON .x", "NUL .wav", "COM1 .2", "LPT9  .tmp",
+            "COM\xC2\xB9 .a", "lpt\xC2\xB2 .a", "CONIN$ .a", "CONOUT$ .a"}) {
+        check(resolveName(reserved,c)==std::string("_")+reserved,
+              "spaces before the first extension do not hide a reserved device stem");
+    }
+    for (const auto* ordinary : {"AUX x", " AUX .2", "COM0 .2", "COM10 .2", "LPT10 .2"}) {
+        check(resolveName(ordinary,c)==ordinary,"ordinary stems keep their original ASCII spaces");
+    }
+    auto projectWithDeviceStem=c;
+    projectWithDeviceStem.project="Aux .v2";projectWithDeviceStem.track="Main";
+    check(resolveName("{project} - {track}",projectWithDeviceStem)=="_Aux .v2 - Main",
+          "the default template escapes the project stem before a spaced dot");
     check(resolveName("COM0",c)=="COM0" && resolveName("COM10",c)=="COM10" && resolveName("LPT10",c)=="LPT10",
           "ordinary names sharing a device prefix remain unchanged");
     check(resolveName("Mix. . ",c)=="Mix" && resolveName("con. ",c)=="_con",
@@ -710,6 +724,49 @@ void finalNamesAndCaseCollisions() {
           "portable preflight refuses a case-only collision independently of native lookup");
     audio::WavReader retained(first.output);
     check(retained.frames()==866 && f.noStage(),"case-only publication leaves the first file intact and no stage");
+}
+void singleWavDestination() {
+    Fixture f;
+    auto job = f.job();
+    job.nameTemplate = "{unused template}";
+    job.exactWavFilename = "Take {final} .WAV";
+    Queue queue;
+    queue.add(job);
+    queue.run();
+    const auto first = queue.snapshot().front().result;
+    check(first.state == JobState::Completed && first.output == job.directory / *job.exactWavFilename &&
+          first.publication && matches(read(first, 866), 137) && f.noStage(),
+          "single WAV keeps the exact save-dialog filename and emits the selected PCM");
+    const auto manifest = nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["exact_wav_filename"] == *job.exactWavFilename &&
+          manifest["members"][0]["result"]["output"] == media::pathUtf8(first.output),
+          "run manifest records the chosen literal and committed path");
+
+    const auto original = media::blake3File(first.output);
+    job.beginSample = 200;
+    const auto refused = renderWav(job, {});
+    check(refused.state == JobState::Failed && refused.framesWritten == 0 &&
+          media::blake3File(first.output).hex == original.hex, "unconfirmed overwrite preserves the existing waveform");
+    job.collision = Collision::Replace;
+    const auto replaced = renderWav(job, {});
+    check(replaced.state == JobState::Completed && replaced.output.filename() == first.output.filename() &&
+          fs::equivalent(replaced.output, first.output) && replaced.replacement && replaced.replacement->existing &&
+          matches(read(replaced, 803), 200) && f.noStage(),
+          "explicit overwrite replaces only the selected ordinary WAV and keeps its literal spelling");
+    job.collision = Collision::Fail;
+    for (const char* invalid : {"../outside.wav", "directory\\mix.wav", "AUX .wav", "Mix", "Mix.wav."}) {
+        job.exactWavFilename = invalid;
+        const auto failure = renderWav(job, {});
+        check(failure.state == JobState::Failed && failure.framesWritten == 0 && !failure.publication && f.noStage(),
+              "a nonportable literal or non-WAV suffix is refused before publication");
+    }
+    job.exactWavFilename = std::string(197, 'x') + ".wav";
+    check(renderWav(job, {}).state == JobState::Failed && f.noStage(),
+          "the literal WAV filename limit counts the complete extension");
+    job.exactWavFilename = "literal.wav";
+    job.collision = Collision::Increment;
+    check(renderWav(job, {}).state == JobState::Failed && !fs::exists(job.directory / "literal.wav"),
+          "a literal save path cannot be silently renumbered");
 }
 void collisionModes() {
     Fixture f;
@@ -881,6 +938,134 @@ void foldedCollisionNames() {
 std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
 std::error_code confirmDirectorySync(const fs::path&) { return {}; }
 std::error_code refuseRename(const fs::path&, const fs::path&) { return std::make_error_code(std::errc::operation_not_supported); }
+void identityBoundReplace() {
+    Fixture f;
+    bool preparedBeforeProgress=false,progressBeforePrepared=false;
+    Control preparedControl;
+    preparedControl.progress=[&](JobId,std::uint64_t,std::uint64_t) {
+        if(!preparedBeforeProgress)progressBeforePrepared=true;
+    };
+    const auto preparedRender=render::detail::renderWavPrepared(f.job("prepared-bridge"),{},preparedControl,0,1,
+        [&](const Result& prepared) {
+            preparedBeforeProgress=prepared.framesWritten==0 && prepared.snapshot.has_value() &&
+                !fs::exists(prepared.output);
+        });
+    check(preparedRender.state==JobState::Completed && preparedBeforeProgress && !progressBeforePrepared &&
+          matches(read(preparedRender,866),137),
+          "NI's reusable prepared-render bridge receives names and revision before Main progress or audio");
+    const auto write=[](const fs::path& path,const char* bytes) {
+        std::ofstream out(path,std::ios::binary);out<<bytes;out.close();
+        if(!out)throw std::runtime_error("Replace fixture write");
+    };
+    const auto text=[](const fs::path& path) {
+        std::ifstream in(path,std::ios::binary);return std::string{std::istreambuf_iterator<char>(in),{}};
+    };
+    auto job=f.job("replace");job.collision=Collision::Replace;
+    const auto target=job.directory/"replace.wav";
+    write(target,"old complete delivery");
+    std::error_code error;const auto oldIdentity=media::readFileIdentity(target,error);
+    const auto oldHash=media::blake3File(target).hex;
+    Queue queue;queue.add(job);queue.run();const auto complete=queue.snapshot().front().result;
+    check(complete.state==JobState::Completed && complete.publication && !complete.publication->usedFallback &&
+          complete.output==target && complete.replacement && complete.replacement->existing==oldIdentity &&
+          complete.replacement->blake3==oldHash && matches(read(complete,866),137) && f.noStage(),
+          "explicit Replace binds old identity and bytes, then publishes real rendered PCM at the same name");
+    check(media::readFileIdentity(target,error)!=oldIdentity,
+          "successful native Replace installs the staged file identity rather than editing old bytes in place");
+    const auto manifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(manifest["members"][0]["job"]["collision"]=="replace" &&
+          manifest["members"][0]["result"]["replacement_preflight"]["blake3"]==oldHash,
+          "run manifest distinguishes requested Replace and its bound preflight target");
+    job.nameTemplate="absent-replace";
+    const auto absent=renderWav(job,{});
+    check(absent.state==JobState::Completed && absent.replacement && !absent.replacement->existing &&
+          !absent.publication->usedFallback && matches(read(absent,866),137),
+          "Replace with absent preflight target uses native no-clobber publication");
+    for(const auto* mutation:{"rebound","removed","in-place"}) {
+        job.nameTemplate=mutation;
+        const auto selected=job.directory/media::pathFromUtf8(job.nameTemplate+".wav");
+        const auto kept=job.directory/media::pathFromUtf8(job.nameTemplate+".kept");
+        write(selected,"old bytes");bool changed=false;Control control;
+        control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+            if(!done || changed)return;changed=true;
+            if(job.nameTemplate=="rebound") {fs::rename(selected,kept);write(selected,"new writer");}
+            else if(job.nameTemplate=="removed")fs::rename(selected,kept);
+            else write(selected,"new bytes"); // Same native identity, same byte count.
+        };
+        const auto failed=renderWav(job,{},control);
+        check(changed && failed.state==JobState::Failed && !failed.publication && failed.framesWritten==866 && f.noStage(),
+              "identity change, disappearance, and in-place edit during render each refuse Replace");
+        check(job.nameTemplate=="removed" ? !fs::exists(selected) && text(kept)=="old bytes" :
+              text(selected)==(job.nameTemplate=="rebound" ? "new writer" : "new bytes"),
+              "Replace refusal leaves another writer's bytes or missing path unchanged");
+        if(job.nameTemplate=="in-place")
+            check(failed.replacement && media::readFileIdentity(selected,error)==failed.replacement->existing && fs::file_size(selected)==9,
+                  "in-place refusal is verified with the same native identity and byte count");
+    }
+    job.nameTemplate="Stra\xC3\x9F" "e-replace";
+    const auto selected=job.directory/media::pathFromUtf8(job.nameTemplate+".wav");
+    const auto folded=job.directory/"STRASSE-REPLACE.WAV";
+    write(selected,"old folded bytes");bool introduced=false;Control foldedRace;
+    foldedRace.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+        if(done && !introduced){introduced=true;write(folded,"new folded occupant");}
+    };
+    const auto collision=renderWav(job,{},foldedRace);
+    check(introduced && collision.state==JobState::Failed && !collision.publication &&
+          text(selected)=="old folded bytes" && text(folded)=="new folded occupant" && f.noStage(),
+          "a new portable-fold collision during render preserves both files");
+    const auto ambiguous=renderWav(job,{});
+    check(ambiguous.state==JobState::Failed && ambiguous.framesWritten==0 && !ambiguous.publication,
+          "Replace refuses an ambiguous preflight collision set before audio processing");
+    fs::remove(folded);job.nameTemplate="STRASSE-REPLACE";
+    const auto foldOnly=renderWav(job,{});
+    check(foldOnly.state==JobState::Failed && foldOnly.framesWritten==0 && text(selected)=="old folded bytes",
+          "Replace does not silently select a different fold-only spelling");
+    job.nameTemplate="directory-replace";fs::create_directory(job.directory/"directory-replace.wav");
+    const auto directory=renderWav(job,{});
+    check(directory.state==JobState::Failed && directory.framesWritten==0 &&
+          fs::is_directory(job.directory/"directory-replace.wav"),"Replace refuses a directory without touching it");
+    job.nameTemplate="hardlink-replace";
+    const auto alias=job.directory/"hardlink-replace.wav";
+    fs::create_hard_link(selected,alias);
+    const auto linked=renderWav(job,{});
+    check(linked.state==JobState::Completed && matches(read(linked,866),137) && text(selected)=="old folded bytes",
+          "replacing one ordinary hardlink leaves the unselected alias's old bytes intact");
+    job.nameTemplate="replace-native-case";
+    const auto cased=job.directory/"REPLACE-NATIVE-CASE.wav";write(cased,"case bytes");
+    const bool nativeAlias=fs::exists(job.directory/"replace-native-case.wav");
+    const auto caseResult=renderWav(job,{});
+    check(nativeAlias ? caseResult.state==JobState::Completed && matches(read(caseResult,866),137) :
+          caseResult.state==JobState::Failed && text(cased)=="case bytes",
+          "case spelling is replaceable only when native identity proves it is the requested file");
+    job.nameTemplate="locked-replace";const auto locked=job.directory/"locked-replace.wav";write(locked,"leased bytes");
+    auto lease=media::ProjectFileLease::openShared(locked,error);
+    const auto inUse=renderWav(job,{});
+    check(lease && inUse.state==JobState::Failed && !inUse.publication && text(locked)=="leased bytes" && f.noStage(),
+          "active shared lease refuses Replace without deleting the old delivery");lease.reset();
+    Control refusal;refusal.publicationHooks.rename=refuseRename;
+    const auto unsupported=renderWav(job,{},refusal);
+    check(unsupported.state==JobState::Failed && !unsupported.publication && text(locked)=="leased bytes" && f.noStage(),
+          "unsupported native replacement fails without copy fallback or renaming the delivery");
+    Control warning;warning.publicationHooks.syncDirectory=failDirectorySync;
+    const auto warned=renderWav(job,{},warning);
+    check(warned.state==JobState::Completed && warned.publication && !warned.publication->durabilityConfirmed &&
+          !warned.publication->warning.empty() && matches(read(warned,866),137),
+          "Replace keeps published-with-durability-warning distinct from failure");
+    job.nameTemplate="absent-replace-race";Control arrival;
+    arrival.publicationHooks.rename=[](const fs::path& source,const fs::path& path) {
+        {std::ofstream file(path,std::ios::binary);file<<"late arrival";}
+        return nativeExclusiveRename(source,path);
+    };
+    const auto raced=renderWav(job,{},arrival);
+    check(raced.state==JobState::Failed && !raced.publication && text(raced.output)=="late arrival" && f.noStage(),
+          "absent Replace never adopts a late native arrival as an overwrite target");
+    job.nameTemplate="cancel-replace";const auto cancelledPath=job.directory/"cancel-replace.wav";
+    write(cancelledPath,"kept on cancel");std::stop_source stop;Control cancel;cancel.stop=stop.get_token();
+    cancel.progress=[&](JobId,std::uint64_t done,std::uint64_t){if(done)stop.request_stop();};
+    const auto cancelled=renderWav(job,{},cancel);
+    check(cancelled.state==JobState::Cancelled && !cancelled.publication && text(cancelledPath)=="kept on cancel" && f.noStage(),
+          "cancelled Replace preserves the preflight target and removes only its private stage");
+}
 void stageCleanupResults() {
 #if defined(_WIN32)
     for (const bool cancel : {false, true}) {
@@ -1040,11 +1225,52 @@ void runManifests() {
 }
 void mediaIdentities() {
     {
+        // Synthetic wide IDs isolate truncation from whichever filesystem the
+        // runner uses. Native aliases are exercised separately below.
+        const media::FileIdentity low{0x100000002ULL,41,0,media::FileIdentityScheme::Windows128};
+        auto high=low;high.fileHigh=0x8000000000000001ULL;
+        auto volume=high;volume.volume+=0x100000000ULL;
+        auto legacy=low;legacy.scheme=media::FileIdentityScheme::WindowsLegacy64;
+        auto posix=low;posix.scheme=media::FileIdentityScheme::Posix;
+        const std::map<media::FileIdentity,unsigned> keys{{low,1},{high,2},{volume,3},{legacy,4},{posix,5}};
+        check(keys.size()==5 && high!=low && keys.at(high)==2 && keys.at(volume)==3,
+              "native identity ordering includes both file halves, full volume and query namespace");
+        RunReport run;run.plannedCount=1;RunMember member;member.result.emplace();
+        member.result->mediaVerification.emplace();MediaIdentity receipt;receipt.nativeIdentity=high;
+        member.result->mediaVerification->identities.push_back(receipt);run.members.push_back(std::move(member));
+        const auto doc=nlohmann::json::parse(serializeRunManifest(run));
+        const auto& saved=doc["members"][0]["media_identities"][0]["native_identity"];
+        check(saved["volume"]==high.volume && saved["file"]==high.file && saved["file_high"]==high.fileHigh &&
+              saved["scheme"]=="windows_file_id_128",
+              "run manifest preserves synthetic nonzero high file bits and upper volume bits");
+    }
+    {
         Fixture f;
         const auto path=f.dir.path()/"audio.wav";
         std::error_code error;
         const auto identity=media::readFileIdentity(path,error);
         check(identity.has_value() && !error,"native source identity reader returns a regular file key");
+        {
+            const auto lease=media::ProjectFileLease::openShared(path,error);
+            check(identity && lease && lease->identity()==*identity,"project lease and export reader use the same complete native identity");
+        }
+#if defined(_WIN32)
+        const HANDLE handle=CreateFileW(path.c_str(),FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+            nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+        if(handle==INVALID_HANDLE_VALUE)throw std::runtime_error("open direct identity fixture");
+        struct CloseIdentityHandle{HANDLE handle;~CloseIdentityHandle(){CloseHandle(handle);}} close{handle};
+        FILE_ID_INFO native{};const bool wide=GetFileInformationByHandleEx(handle,FileIdInfo,&native,sizeof(native))!=0;
+        wchar_t filesystem[32]{};
+        if(GetVolumeInformationByHandleW(handle,nullptr,0,nullptr,nullptr,nullptr,filesystem,32) && std::wstring_view(filesystem)==L"NTFS")
+            check(wide,"actual NTFS fixture exposes FileIdInfo for alias identity checks");
+        if(wide){
+            bool equal=identity && identity->scheme==media::FileIdentityScheme::Windows128 && identity->volume==native.VolumeSerialNumber;
+            for(unsigned i=0;i<8 && equal;++i)
+                equal=static_cast<unsigned char>(identity->file>>(8*i))==native.FileId.Identifier[i] &&
+                    static_cast<unsigned char>(identity->fileHigh>>(8*i))==native.FileId.Identifier[i+8];
+            check(equal,"native reader preserves all sixteen FileIdInfo bytes and its 64-bit volume");
+        }else std::printf("SKIP: direct 128-bit file identity unavailable on fixture volume\n");
+#endif
         const auto missing=media::readFileIdentity(f.dir.path()/"missing.wav",error);
         check(!missing && error,"native source identity reader preserves a missing-path error");
         const auto directory=media::readFileIdentity(f.dir.path(),error);
@@ -1079,6 +1305,8 @@ void mediaIdentities() {
         check(doc["members"][0]["media_identities"][0]["blake3_at_start"]==hash.hex &&
               doc["members"][0]["media_identities"][0]["native_identity"]["volume"]==identity.nativeIdentity.volume &&
               doc["members"][0]["media_identities"][0]["native_identity"]["file"]==identity.nativeIdentity.file &&
+              doc["members"][0]["media_identities"][0]["native_identity"]["file_high"]==identity.nativeIdentity.fileHigh &&
+              doc["members"][0]["media_identities"][0]["native_identity"].contains("scheme") &&
               doc["members"][0]["media_identities"][0]["blake3_before_publication"]==hash.hex &&
               doc["members"][0]["media_identities"][0]["references"][0]["matches_stored"]==true &&
               doc["members"][0]["result"]["media_verification"]["scope"]=="external_audio_clips",
@@ -1214,7 +1442,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); foldedCollisionNames(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); singleWavDestination(); collisionModes(); foldedCollisionNames(); identityBoundReplace(); publicationResults(); stageCleanupResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

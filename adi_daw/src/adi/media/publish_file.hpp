@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <filesystem>
+#include <functional>
 #include <cstdint>
+#include <compare>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,9 +15,14 @@ namespace adi::media {
 [[nodiscard]] std::error_code replaceCacheFile(const std::filesystem::path& source,
                                               const std::filesystem::path& target) noexcept;
 enum class PublishStatus { published, exists, failed };
+enum class FileIdentityScheme { Posix, Windows128, WindowsLegacy64 };
 struct FileIdentity {
-    std::uint64_t volume = 0, file = 0;
-    friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
+    // Windows FileIdInfo: full 64-bit volume and both little-endian halves of
+    // its opaque 16-byte ID. POSIX/legacy use file as the inode/index, high=0.
+    // Separate namespaces prevent a legacy query from impersonating a wide ID.
+    std::uint64_t volume = 0, file = 0, fileHigh = 0;
+    FileIdentityScheme scheme = FileIdentityScheme::Posix;
+    friend auto operator<=>(const FileIdentity&, const FileIdentity&) = default;
 };
 // Off-callback identity of a regular file, following symlinks. Reuses the
 // publisher's native volume/file key; this is not a persistent content hash or
@@ -63,18 +70,23 @@ struct PublishResult {
     bool durabilityConfirmed = false;
 };
 enum class PublishPolicy { VerifiedCopyFallback, AtomicOnly };
-// Test support, off-callback: refuse native rename or disturb a completed
-// private staging copy before verification. Null hooks use the real OS.
+// Test support, off-callback: refuse native rename/sync, replace retry waits,
+// or disturb a completed private copy. Null hooks use the real OS.
 struct PublishHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     void (*afterCopy)(const std::filesystem::path&) = nullptr;
     std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
+    std::error_code (*syncFile)(const std::filesystem::path&) = nullptr;
+    void (*retryWait)(unsigned milliseconds) = nullptr;
 };
 // Source is a private, closed staging file on the destination filesystem.
 // Never replaces a destination. Fallback flushes, closes and verifies a private
 // copy, then links it at the destination exclusively. Filesystems without
 // exclusive rename or hard links report failure with the source retained.
 // Failure cleanup acts only on private copy staging.
+// Windows sync/rename errors 5/32/33 share seven bounded retries (10..200 ms),
+// checking the stage's ordinary-file type and identity before every attempt.
+// A successful sync is not repeated. Other hosts never wait here.
 [[nodiscard]] PublishResult publishFile(const std::filesystem::path& source,
     const std::filesystem::path& target, PublishHooks hooks = {},
     PublishPolicy policy = PublishPolicy::VerifiedCopyFallback) noexcept;
@@ -83,9 +95,13 @@ struct ReplaceHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
     // Runs under the destination's exclusive lease, before any publication.
-    std::error_code (*validateTarget)(const std::filesystem::path&) = nullptr;
+    std::function<std::error_code(const std::filesystem::path&)> validateTarget;
     bool (*retryable)(const std::error_code&) = nullptr;
     void (*retryWait)(unsigned milliseconds) = nullptr;
+    // Optional existing-file binding. When set, a missing or different target
+    // fails under the exclusive lease. Expected-absent callers instead use
+    // publishFile(AtomicOnly). This is not an OS compare-and-swap rename.
+    std::optional<FileIdentity> expectedTarget{};
 };
 // The replacing rename replaceFile uses (test hooks reuse it). On Windows it
 // replaces a destination held open only by handles that share delete -- the
