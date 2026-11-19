@@ -1145,6 +1145,64 @@ jobs:
           echo "ok -- devices loaded and nothing heard is a failure"
 
   # ---------------------------------------------------------------------------
+  # The Pd tier in double: PD_FLOATSIZE=64 (DEV-09 AR17, ADR-0207 d2).
+  #
+  # ADI_PD_FLOATSIZE_64 (src/juce/pd_loader_fix.cmake) is OFF by default, so no
+  # other leg builds the Pd tier this way. At 64 every external's signal
+  # vectors are double, and a change to an external, to FloatSignals or to
+  # pd_engine.cpp that only breaks there would otherwise reach main unseen
+  # until someone built the 64-bit mode by hand -- which is how its 19 failing
+  # suites were found the first time.
+  #
+  # MAIN AND DISPATCH ONLY, never a pull request: one Linux leg after the
+  # merge, the same bargain as the heavy macOS legs (see `plan`), so a pull
+  # request does not pay for it. If it goes red on main, the fix is win's and
+  # goes to the head of the queue. Linux and gcc because it is the cheapest
+  # runner; the configuration is the property under test, and the other
+  # compilers prove the code at 32 on every pull request.
+  # ---------------------------------------------------------------------------
+  pd-double:
+    name: 'Pd tier at PD_FLOATSIZE=64 · ubuntu x86_64 · gcc'
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      # The configure log must say the Pd tier is in double. A leg that built
+      # with the option silently ignored -- the Pd tier off, or the option
+      # renamed -- would pass every suite and prove nothing about 64.
+      - name: Configure with ADI_PD_FLOATSIZE_64, and build
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw -B adi_daw/build-pd64 -DCMAKE_BUILD_TYPE=Debug \
+                -DADI_PD_FLOATSIZE_64=ON | tee pd64-configure.log
+          if ! grep -q 'Pd tier: PD_FLOATSIZE=64' pd64-configure.log; then
+            echo "::error::configured with ADI_PD_FLOATSIZE_64=ON, but CMake never" \
+                 "said the Pd tier is in double: the Pd tier is off, or the option" \
+                 "no longer does what this leg exists to test"
+            exit 1
+          fi
+          # Counted, as the build job's Build step says why.
+          cmake --build adi_daw/build-pd64 --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+
+      # Every suite, not only the Pd ones: PD_FLOATSIZE is PUBLIC on
+      # libpd_static, so adi_core and everything linking it is built at 64.
+      # Bounded and counted as the build job's adi_tests step says why.
+      - name: Every suite, at 64
+        timeout-minutes: 45
+        run: |
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          ctest --test-dir adi_daw/build-pd64 --output-on-failure \
+                --timeout 600 --parallel "$jobs"
+
+  # ---------------------------------------------------------------------------
   # gate -- the one check that says whether this run proved the change.
   #
   # land_top.sh used to count green ticks and land at 20. A count answers the
@@ -1165,7 +1223,7 @@ jobs:
   gate:
     name: gate
     runs-on: ubuntu-latest
-    needs: [plan, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, juce]
+    needs: [plan, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, juce, pd-double]
     if: ${{ always() && !github.event.pull_request.draft }}
     steps:
       - name: Every job passed, or was skipped on purpose
