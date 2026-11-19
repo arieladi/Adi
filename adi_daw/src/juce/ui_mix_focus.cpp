@@ -236,8 +236,17 @@ void MixFocus::suspend(bool v) {
     if (v) dropIfActive();
 }
 void MixFocus::visibilityChanged() {
-    if (!isShowing())
+    if (!plotShowing())
         dropIfActive();
+}
+bool MixFocus::plotShowing() const noexcept {
+    if (!isShowing() || plot_.isEmpty()) return false;
+    auto area = plot_.toNearestInt();
+    for (auto *parent = getParentComponent(); parent; parent = parent->getParentComponent()) {
+        area = area.getIntersection(getLocalArea(parent, parent->getLocalBounds()));
+        if (area.isEmpty()) return false;
+    }
+    return !area.isEmpty();
 }
 void MixFocus::parentHierarchyChanged() {
     watchAncestors();
@@ -256,6 +265,8 @@ void MixFocus::unwatchAncestors() noexcept {
     ancestors_.clear();
 }
 void MixFocus::componentVisibilityChanged(juce::Component &) { visibilityChanged(); }
+void MixFocus::componentMovedOrResized(juce::Component &, bool, bool) { visibilityChanged(); }
+void MixFocus::moved() { visibilityChanged(); }
 void MixFocus::componentParentHierarchyChanged(juce::Component &) { parentHierarchyChanged(); }
 void MixFocus::componentBeingDeleted(juce::Component &) {
     unwatchAncestors();
@@ -322,6 +333,10 @@ void MixFocus::frame(const SnapshotReader &reader) {
     if (scopePlaying_ != playing) {
         scopePlaying_ = playing;
         redraw_ = true;
+    }
+    if (!plotShowing()) {
+        dropIfActive();
+        return;
     }
     const bool scopeShown = scope.getToggleState();
     if (scopeShown && !playing) {
@@ -727,6 +742,7 @@ void MixFocus::resized() {
     for (auto &m : members_)
         m.spectrumChanged = true;
     redraw_ = true;
+    visibilityChanged();
 }
 void MixFocus::paint(juce::Graphics &g) {
     g.fillAll(look::panel);

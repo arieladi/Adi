@@ -24,6 +24,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void visibilityChanged() override;
     void parentHierarchyChanged() override;
     void resized() override;
+    void moved() override;
     void paint(juce::Graphics &) override;
     juce::ComboBox available;
     juce::TextButton add{"+"}, star{"Set main"}, mute{"Mute"}, solo{"Solo"}, hearOne{"Hear track"},
@@ -55,8 +56,10 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     void watchAncestors();
     void unwatchAncestors() noexcept;
     void componentVisibilityChanged(juce::Component &) override;
+    void componentMovedOrResized(juce::Component &, bool, bool) override;
     void componentParentHierarchyChanged(juce::Component &) override;
     void componentBeingDeleted(juce::Component &) override;
+    bool plotShowing() const noexcept;
     void rebuildPlot();
     void clearBarScopeData();
     void updateBarScope(const SnapshotReader &, const std::shared_ptr<SharedAnalysis> &);

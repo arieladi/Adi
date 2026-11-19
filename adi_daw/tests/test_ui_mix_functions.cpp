@@ -1540,6 +1540,14 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
           "one-bar Scope keeps the same two physical taps without a spectrum transform or plan");
     check(active.consumers == 1,
           "a complete bar replaces the two short previews with one grouped reader");
+    const auto visibleBounds = focus.getBounds();
+    focus.setTopLeftPosition(peer.getWidth(), 0);
+    check(broker->stats().taps == 0 && broker->stats().consumers == 0,
+          "moving the plot fully out of view releases Focus demand before its next frame");
+    focus.setBounds(visibleBounds);
+    focus.frame(initial);
+    check(broker->stats().taps == 2 && !MixFocusTestAccess::aligned(focus),
+          "a restored plot waits for new source data instead of reusing the old bar");
     peer.setVisible(false);
     check(broker->stats().taps == 0 && broker->stats().consumers == 0,
           "hiding the one-bar Scope releases its sources immediately");
