@@ -73,6 +73,7 @@
 #include <pluginterfaces/vst/ivstnoteexpression.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
+#include <pluginterfaces/vst/ivstprocesscontext.h>
 #include <pluginterfaces/vst/ivstunits.h>
 #include <pluginterfaces/vst/vsttypes.h>
 
@@ -123,6 +124,7 @@ std::atomic<int> g_liveSynths{0};
 std::atomic<int> g_overlaps{0};
 /// Process calls inside a plugin now, across every plugin object.
 std::atomic<int> g_inProcess{0};
+std::array<std::atomic<double>, 12> g_transport{};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -287,6 +289,7 @@ public:
         sampleRate_ = setup.sampleRate > 0.0 ? setup.sampleRate : 48000.0;
         maxBlock_ = setup.maxSamplesPerBlock;
         sampleSize_ = setup.symbolicSampleSize;
+        processMode_ = setup.processMode;
         return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
@@ -300,6 +303,19 @@ public:
         } inside(inProcess_);
         if (data.numSamples > maxBlock_) return kInvalidArgument;
         if (data.symbolicSampleSize != sampleSize_) return kInvalidArgument;
+        if (const auto* context = data.processContext) {
+            const std::array<double, 12> fields{
+                static_cast<double>(context->state), context->sampleRate,
+                static_cast<double>(context->projectTimeSamples), context->projectTimeMusic,
+                context->barPositionMusic, context->cycleStartMusic, context->cycleEndMusic,
+                context->tempo, static_cast<double>(context->timeSigNumerator),
+                static_cast<double>(context->timeSigDenominator),
+                static_cast<double>(data.processMode), static_cast<double>(processMode_)};
+            for (std::size_t i = 0; i < fields.size(); ++i)
+                g_transport[i].store(fields[i], std::memory_order_relaxed);
+        } else {
+            g_transport.front().store(-1.0, std::memory_order_relaxed);
+        }
         applyParameters(data.inputParameterChanges);
         if (refuse_) { refuse_ = false; return kResultFalse; }
         if (slow_) {
@@ -631,6 +647,7 @@ private:
     double sampleRate_ = 48000.0;
     int32 maxBlock_ = 0;                     ///< setupProcessing's maxSamplesPerBlock
     int32 sampleSize_ = kSample32;           ///< ADR-0207: what setupProcessing was given
+    int32 processMode_ = kRealtime;
     bool refuse_ = false;                    ///< ADR-0207: fail this process call
     bool slow_ = false;                      ///< ADR-0089 d4: hold this process call
     std::atomic<bool> inProcess_{false};     ///< a process call is inside
@@ -718,6 +735,10 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
+extern "C" SMTG_EXPORT_SYMBOL void adiFixtureReadTransport(double* output) {
+    for (std::size_t i = 0; i < g_transport.size(); ++i)
+        output[i] = g_transport[i].load(std::memory_order_relaxed);
+}
 
 #if defined(__APPLE__)
 // A macOS VST3 is a BUNDLE, and a host opens it through CFBundle rather than
