@@ -7,11 +7,40 @@
 
 namespace adi::dsp {
 
+// Prepared coefficients can be reused across channels with independent histories.
+class StereoMeterWeighting {
+  public:
+    enum class Weighting { Standard, A, C, K };
+    struct State { double first = 0, second = 0; };
+    using History = std::array<State, 4>;
+
+    bool prepare(double sampleRate, Weighting) noexcept;
+    bool flat() const noexcept { return sectionCount_ == 0; }
+    double process(double sample, History &history) const noexcept {
+        for (std::size_t section = 0; section < sectionCount_; ++section) {
+            const auto &c = coefficients_[section];
+            auto &state = history[section];
+            const auto result = c.b0 * sample + state.first;
+            state.first = c.b1 * sample - c.a1 * result + state.second;
+            state.second = c.b2 * sample - c.a2 * result;
+            sample = result;
+        }
+        return sample;
+    }
+
+  private:
+    struct Biquad {
+        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    };
+    std::array<Biquad, 4> coefficients_{};
+    std::size_t sectionCount_ = 0;
+};
+
 // Passive analysis of contiguous stereo samples. One owner supplies new
 // samples exactly once and may read the most recent result at any display cadence.
 class StereoEnvelopeMeter {
   public:
-    enum class Weighting { Standard, A, C, K };
+    using Weighting = StereoMeterWeighting::Weighting;
     struct Settings {
         double sampleRate;
         double peakDecaySeconds;       // amplitude time constant after a peak
@@ -40,12 +69,6 @@ class StereoEnvelopeMeter {
     Reading reading() const noexcept;
 
   private:
-    struct Biquad {
-        double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-    };
-    struct FilterState {
-        double first = 0, second = 0;
-    };
     template <bool weighted>
     bool update(std::span<const float>, std::span<const float>) noexcept;
     struct Lane {
@@ -56,9 +79,8 @@ class StereoEnvelopeMeter {
     double peakDecay_ = 0, powerStep_ = 0, coincidenceStep_ = 0, floor_ = 0, drStep_ = 0, floatStep_ = 0;
     std::int64_t holdSamples_ = 0;
     std::array<Lane, 2> lanes_{};
-    std::array<Biquad, 4> weighting_{};
-    std::array<std::array<FilterState, 4>, 2> filterState_{};
-    std::size_t sectionCount_ = 0;
+    StereoMeterWeighting weighting_;
+    std::array<StereoMeterWeighting::History, 2> filterState_{};
     double coincidence_ = 0, balance_ = 0;
 };
 

@@ -27,6 +27,7 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     juce::TextButton resetButton{"Reset"};
 
   private:
+    void chooseAudition(Audition mode);
     void stopAudition();
     void resetProfile();
     void release();

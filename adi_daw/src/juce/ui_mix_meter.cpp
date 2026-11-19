@@ -11,6 +11,17 @@ namespace adi::ui {
 namespace {
 using Reading = dsp::StereoEnvelopeMeter::Reading;
 using Weighting = dsp::StereoEnvelopeMeter::Weighting;
+using Audition = MixOutputMeter::Audition;
+constexpr int filterListenItem = 6;
+constexpr Audition filterAudition(Weighting weighting) noexcept {
+    switch (weighting) {
+    case Weighting::A: return Audition::FilterA;
+    case Weighting::C: return Audition::FilterC;
+    case Weighting::K: return Audition::FilterK;
+    case Weighting::Standard: return Audition::FilterFlat;
+    }
+    return Audition::FilterFlat;
+}
 double db(double amplitude) {
     return amplitude > 0. ? 20. * std::log10(amplitude) : -std::numeric_limits<double>::infinity();
 }
@@ -49,18 +60,16 @@ MixOutputMeter::MixOutputMeter() {
     setOpaque(true);
     listenBox.setTitle("Audition Main output");
     listenBox.addItemList({"Listen: Stereo", "Solo Left", "Solo Right", "Solo Mid", "Solo Side"}, 1);
+    listenBox.addItem("Filter Listen", filterListenItem);
     listenBox.setSelectedId(1, juce::dontSendNotification);
     listenBox.onChange = [this] {
         const int item = listenBox.getSelectedId();
-        if (!audition_ || !eligible() || item < 1 || item > 5) {
-            listenBox.setSelectedId(static_cast<int>(listening_) + 1, juce::dontSendNotification);
+        if (!audition_ || !eligible() || item < 1 || item > filterListenItem) {
+            const int current = engine::isFilterListen(listening_) ? filterListenItem : static_cast<int>(listening_) + 1;
+            listenBox.setSelectedId(current, juce::dontSendNotification);
             return;
         }
-        const auto selected = static_cast<Audition>(item - 1);
-        if (selected != listening_) {
-            listening_ = selected;
-            audition_(selected);
-        }
+        chooseAudition(item == filterListenItem ? filterAudition(profile_.weighting) : static_cast<Audition>(item - 1));
     };
     addChildComponent(listenBox);
     scaleBox.setTitle("Meter scale");
@@ -76,6 +85,7 @@ MixOutputMeter::MixOutputMeter() {
         if (const auto next = index < weights.size() ? weights[index] : Weighting::Standard; next != profile_.weighting) {
             profile_.weighting = next;
             resetProfile();
+            if (engine::isFilterListen(listening_)) chooseAudition(filterAudition(next));
         }
     };
     channelBox.setTitle("Meter channels");
@@ -105,6 +115,12 @@ MixOutputMeter::MixOutputMeter() {
 MixOutputMeter::~MixOutputMeter() {
     stopWatching();
     stopAudition();
+}
+void MixOutputMeter::chooseAudition(Audition mode) {
+    if (mode != listening_ && audition_ && eligible()) {
+        listening_ = mode;
+        audition_(mode);
+    }
 }
 void MixOutputMeter::stopAudition() {
     if (std::exchange(listening_, Audition::Stereo) == Audition::Stereo) return;

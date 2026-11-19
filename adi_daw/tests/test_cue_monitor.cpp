@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/cue_settings.hpp"
+#include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
@@ -130,6 +131,11 @@ void soloAndCue() {
     check(b.wide[0][511] == 0. && b.wide[1][511] == 0. &&
               near(b.wide[2][511], .25) && near(b.wide[3][511], .25),
           "Main Side affects its speaker pair while an audible separate stereo Cue pair is unchanged");
+    f.session.setMainAudition(MainAudition::FilterFlat);
+    f.process(b);
+    check(near(b.wide[0][511], .045) && near(b.wide[1][511], .045) &&
+              near(b.wide[2][511], .25) && near(b.wide[3][511], .25),
+          "Main Filter Listen leaves the separately routed Cue pair unchanged");
     f.session.setMainAudition(MainAudition::Stereo);
     check(f.op("track.setMute",{{"id",1},{"muted",true}}) && f.op("mixer.setVolume",{{"id",1},{"db",-60.0}}),"mute/fader change on a cued track");f.process(b);
     check(near(b.wide[0][511],0.05) && near(b.wide[2][511],0.25),"PFL cue remains audible despite track mute and fader");
@@ -240,6 +246,89 @@ void mainListening(Precision precision, bool exporting) {
                   std::all_of(storedRight.begin(), storedRight.end(), [&](float x) { return x == static_cast<float>(r); }),
               "Main post-fader capture is identical in every monitor mode");
     }
+    using Filter = dsp::StereoMeterWeighting;
+    using Weighting = Filter::Weighting;
+    constexpr std::array modes{MainAudition::FilterFlat, MainAudition::FilterA,
+                               MainAudition::FilterC, MainAudition::FilterK};
+    constexpr std::array weights{Weighting::Standard, Weighting::A, Weighting::C, Weighting::K};
+    for (std::size_t m = 0; m < modes.size(); ++m) {
+        f.session.setMainAudition(modes[m]);
+        allocations.store(0); countAllocations.store(true);
+        f.process(block);
+        countAllocations.store(false);
+        Filter filter;
+        std::array<Filter::History, 2> history{};
+        check(filter.prepare(48000., weights[m]), "Main listen reference coefficients prepare at the session rate");
+        const auto matches = [&](double actual, double original, Filter::History &state) {
+            const auto expected = exporting ? original : .45 * filter.process(original, state);
+            return exporting ? actual == original : near(actual, expected, 5e-8);
+        };
+        bool match = true;
+        for (int i = 0; i < 128; ++i)
+            match = matches(sample(0,i), l, history[0]) && matches(sample(1,i), r, history[1]) &&
+                    sample(2,i) == 0. && sample(3,i) == 0. && match;
+        check(match && !allocations.load(), "Main Filter Listen applies its selected profile allocation-free to physical stereo only");
+        std::array<float, 128> storedLeft{}, storedRight{};
+        std::int64_t stamp = 0;
+        check(tap->read(storedLeft, storedRight, stamp) &&
+                  std::all_of(storedLeft.begin(), storedLeft.end(), [&](float x) { return x == static_cast<float>(l); }) &&
+                  std::all_of(storedRight.begin(), storedRight.end(), [&](float x) { return x == static_cast<float>(r); }),
+              "Main Filter Listen has no effect on the post-fader tap");
+    }
+}
+void filterListenLifecycle() {
+    CueMonitor monitor;
+    const CueSettings settings;
+    GraphHost graph;
+    Block block(64);
+    using Filter = dsp::StereoMeterWeighting;
+    Filter reference;
+    std::array<Filter::History, 4> referenceHistory{};
+    const auto prepare = [&](double rate) {
+        check(monitor.publish(settings, rate, 64, 2, true) &&
+                  reference.prepare(rate, Filter::Weighting::C),
+              "monitor filters prepare before audio");
+        referenceHistory = {};
+    };
+    const auto run = [&](bool enabled, bool exporting = false) {
+        constexpr std::array narrow{.91f, -.328f, .125f, -.18f};
+        constexpr std::array wide{.1023, .7512, -.001, .375};
+        for (std::size_t channel = 0; channel < narrow.size(); ++channel) {
+            block.narrow[channel].fill(narrow[channel]);
+            block.wide[channel].fill(wide[channel]);
+        }
+        block.io.exporting = exporting;
+        monitor.process(graph, block.io, {});
+        bool match = true;
+        for (std::size_t channel = 0; channel < narrow.size(); ++channel)
+            for (std::size_t i = 0; i < 64; ++i) {
+                if (enabled && channel < 2) {
+                    match = near(block.narrow[channel][i], .45 * reference.process(narrow[channel], referenceHistory[channel]), 5e-8) &&
+                            near(block.wide[channel][i], .45 * reference.process(wide[channel], referenceHistory[channel + 2]), 1e-10) && match;
+                } else {
+                    match = block.narrow[channel][i] == narrow[channel] && block.wide[channel][i] == wide[channel] && match;
+                }
+            }
+        return match;
+    };
+    prepare(48000.);
+    monitor.setMainAudition(MainAudition::FilterC);
+    check(run(true) && run(true), "four independent histories continue across callbacks");
+    check(run(false, true) && run(true), "export neither hears nor advances the active monitor filter");
+    check(monitor.publish(settings, 48000., 64, 2, true) && run(true),
+          "same-format publication preserves the active monitor stream");
+    monitor.setMainAudition(MainAudition::Stereo);
+    check(run(false), "leaving Filter Listen returns bit-exact direct audio");
+    monitor.setMainAudition(MainAudition::FilterC);
+    referenceHistory = {};
+    check(run(true), "reentering Filter Listen starts with clean state");
+    prepare(44100.);
+    check(run(true), "rate-only change uses the new coefficients and clean histories");
+    monitor.release();
+    prepare(44100.);
+    check(run(true), "same-format device restart resets monitor histories");
+    prepare(96000.);
+    check(run(true), "96 kHz monitor follows its prepared weighting");
 }
 void inactiveBits() {
     CueMonitor monitor;CueSettings settings;monitor.publish(settings,48000,64,2,true);GraphHost graph;Block b(64);
@@ -264,5 +353,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }filterListenLifecycle();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

@@ -33,6 +33,8 @@ public:
     [[nodiscard]] std::shared_ptr<const CueControlBatch> prepareControls(const rows::Model&,const CueSettings&,
         const std::shared_ptr<StripAutomation>&,bool enabled) const;
     void collect();
+    /// Device stopped. Retire the format's monitor history before restart.
+    void release() noexcept;
     void setMainAudition(MainAudition mode) noexcept;
     struct Click {
         void* context=nullptr;

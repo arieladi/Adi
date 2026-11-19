@@ -54,39 +54,28 @@ std::array<double, 5> upperSection(double rate, bool shelf) noexcept {
 }
 }
 
-bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
-    if (!positiveFinite(s.sampleRate) || !positiveFinite(s.peakDecaySeconds) ||
-        !positiveFinite(s.meanSquareSeconds) || !positiveFinite(s.coincidenceSeconds) ||
-        !std::isfinite(s.coincidenceFloor) || s.coincidenceFloor < 0)
-        return false;
-    const double interval = 1.0 / s.sampleRate;
-    const double decay = std::exp(-interval / s.peakDecaySeconds);
-    const double powerStep = -std::expm1(-interval / s.meanSquareSeconds);
-    const double coincidenceStep = -std::expm1(-interval / s.coincidenceSeconds);
-    if (!std::isfinite(interval) || !(decay < 1) || !(powerStep > 0) || !(coincidenceStep > 0))
-        return false;
-    if (s.sampleRate >= static_cast<double>(std::numeric_limits<std::int64_t>::max()) * .5) return false;
-    if (s.weighting < Weighting::Standard || s.weighting > Weighting::K ||
-        (s.weighting != Weighting::Standard && s.sampleRate <= 2000.)) return false;
+bool StereoMeterWeighting::prepare(double sampleRate, Weighting weighting) noexcept {
+    if (!positiveFinite(sampleRate) || weighting < Weighting::Standard || weighting > Weighting::K ||
+        (weighting != Weighting::Standard && sampleRate <= 2000.)) return false;
     std::array<Biquad, 4> filter{};
     std::size_t count = 0;
-    if (s.weighting != Weighting::Standard) {
-        const bool k = s.weighting == Weighting::K;
-        const auto pole = [rate = s.sampleRate](double corner) {
-            const auto warped = std::tan(std::numbers::pi * corner / rate);
+    if (weighting != Weighting::Standard) {
+        const bool k = weighting == Weighting::K;
+        const auto pole = [sampleRate](double corner) {
+            const auto warped = std::tan(std::numbers::pi * corner / sampleRate);
             return (1. - warped) / (1. + warped);
         };
         const auto hp = pole(k ? 38.1 : 20.6);
-        const auto upper = upperSection(s.sampleRate, k);
+        const auto upper = upperSection(sampleRate, k);
         filter[0] = {1., -2., 1., -2. * hp, hp * hp};
         filter[1] = {upper[0], upper[1], upper[2], upper[3], upper[4]};
         count = 2;
-        if (s.weighting == Weighting::A) {
+        if (weighting == Weighting::A) {
             filter[2] = {1., -1., 0., -pole(107.7), 0.};
             filter[3] = {1., -1., 0., -pole(737.9), 0.};
             count = 4;
         }
-        const auto z = std::polar(1., -2. * std::numbers::pi * 1000. / s.sampleRate);
+        const auto z = std::polar(1., -2. * std::numbers::pi * 1000. / sampleRate);
         const auto z2 = z * z;
         double gain = 1.;
         for (std::size_t i = 0; i < count; ++i) {
@@ -98,8 +87,24 @@ bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
         filter[0].b1 /= gain;
         filter[0].b2 /= gain;
     }
-    weighting_ = filter;
+    coefficients_ = filter;
     sectionCount_ = count;
+    return true;
+}
+
+bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
+    if (!positiveFinite(s.sampleRate) || !positiveFinite(s.peakDecaySeconds) ||
+        !positiveFinite(s.meanSquareSeconds) || !positiveFinite(s.coincidenceSeconds) ||
+        !std::isfinite(s.coincidenceFloor) || s.coincidenceFloor < 0)
+        return false;
+    const double interval = 1.0 / s.sampleRate;
+    const double decay = std::exp(-interval / s.peakDecaySeconds);
+    const double powerStep = -std::expm1(-interval / s.meanSquareSeconds);
+    const double coincidenceStep = -std::expm1(-interval / s.coincidenceSeconds);
+    if (!std::isfinite(interval) || !(decay < 1) || !(powerStep > 0) || !(coincidenceStep > 0))
+        return false;
+    if (s.sampleRate >= static_cast<double>(std::numeric_limits<std::int64_t>::max()) * .5 ||
+        !weighting_.prepare(s.sampleRate, s.weighting)) return false;
     peakDecay_ = decay;
     powerStep_ = powerStep;
     coincidenceStep_ = coincidenceStep;
@@ -121,7 +126,7 @@ void StereoEnvelopeMeter::reset() noexcept {
 
 bool StereoEnvelopeMeter::process(std::span<const float> left, std::span<const float> right) noexcept {
     if (!prepared_ || left.size() != right.size()) return false;
-    if (sectionCount_ == 0) return update<false>(left, right);
+    if (weighting_.flat()) return update<false>(left, right);
     [[maybe_unused]] mix::filters::FlushDenormals flush;
     return update<true>(left, right);
 }
@@ -146,15 +151,7 @@ bool StereoEnvelopeMeter::update(std::span<const float> left, std::span<const fl
             auto &m = lanes[lane];
             const double x = std::abs(samples[lane]);
             double measured = samples[lane];
-            if constexpr (weighted)
-                for (std::size_t section = 0; section < sectionCount_; ++section) {
-                    const auto &c = weighting_[section];
-                    auto &state = filterState[lane][section];
-                    const auto result = c.b0 * measured + state.first;
-                    state.first = c.b1 * measured - c.a1 * result + state.second;
-                    state.second = c.b2 * measured - c.a2 * result;
-                    measured = result;
-                }
+            if constexpr (weighted) measured = weighting_.process(measured, filterState[lane]);
             m.maximum = std::max(m.maximum, x);
             m.peak = std::max(x, m.peak * peakDecay_);
             m.power += powerStep_ * (measured * measured - m.power);

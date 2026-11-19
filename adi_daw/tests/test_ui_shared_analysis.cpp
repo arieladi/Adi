@@ -488,10 +488,21 @@ void permanentMainMeter() {
     check(!meter.reading() && !meter.loudness(), "Reset drops only the meter interval and its compact readout");
     meter.setAuditionSink([&](auto mode) { calls.push_back(mode); });
     meter.listenBox.setSelectedId(5, juce::sendNotificationSync);
+    meter.weightingBox.setSelectedId(3, juce::sendNotificationSync);
+    check(calls == std::vector{MixOutputMeter::Audition::Side}, "passive weighting leaves other monitor modes alone");
+    meter.listenBox.setSelectedId(6, juce::sendNotificationSync);
+    meter.weightingBox.setSelectedId(4, juce::sendNotificationSync);
+    meter.weightingBox.setSelectedId(1, juce::sendNotificationSync);
+    check(meter.listenBox.getSelectedId() == 6 &&
+              calls == std::vector{MixOutputMeter::Audition::Side, MixOutputMeter::Audition::FilterC,
+                                   MixOutputMeter::Audition::FilterK, MixOutputMeter::Audition::FilterFlat},
+          "Filter Listen follows the active weighting while keeping one selected Listen item");
+    meter.frame(f.broker, 1, source);
+    check(meter.subscribed(), "the changed weighting acquires a meter lease before its owner hides");
     owner.setVisible(false);
     check(!meter.subscribed() && f.broker->stats().consumers == 0 &&
-              calls == std::vector{MixOutputMeter::Audition::Side, MixOutputMeter::Audition::Stereo},
-          "an ancestor hide releases the meter and returns an owner-provided listen to Stereo");
+              calls.size() == 5 && calls.back() == MixOutputMeter::Audition::Stereo && meter.listenBox.getSelectedId() == 1,
+          "an ancestor hide releases the meter and ends Filter Listen");
     const auto hiddenReads = reads;
     f.write(2048); f.broker->pump(); meter.frame(f.broker, 1, source);
     check(!meter.reading() && reads == hiddenReads && f.broker->stats().consumers == 0,
