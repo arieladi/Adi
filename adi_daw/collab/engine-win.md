@@ -4,6 +4,21 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19 · Publication policy and the take-lane readings
+
+**PR requested** — `engine-win/publication-policy` at `d661f704cc423434dc80770e6a14f81598e3f857`, stacked on `engine-win/publication-owned-copy` at `629a9f3de471b6d38857c25342f8962221178380`. Title **Set publication policies at their callers**.
+
+DF-E19(c). The EX-07 detail records the policy by caller. User deliveries and authoritative project media require exclusive rename. Completed decode caches and collected media may use verified copy with an exclusive final link. A refused rename in AtomicOnly mode starts no copy and leaves the source intact. Twelve strict x64 MSVC Debug suites passed through export, collect, project files, decode, recording, stems, freeze, bounce and the library. Native AAC coverage was skipped by the existing codec gate.
+
+**For win to relay into CT-01 to CT-03.** The director's Live 12.4 readings already contain the following. The available original Sets were read again without changing them.
+
+- New empty take lanes use the name `Lane` and insert at the top. The insert is undoable. Show Take Lanes is outside undo and the Set stores the folded flag on each track. Saved tracks with folded and unfolded states were observed. A controlled two-populated-track toggle and reopen were not run.
+- Lane audition greyed the main lane. The contemporaneous reading records unchanged Undo wording and a saved on-state. The final retained Set has audition off after cleanup. An independent audio isolation test was not run.
+- The main lane retains the take clip's name on its copied pieces. In the linked comp, a different take replaced the center piece while the two outside pieces kept their original take name. The audio loop recording used one file for four takes, including the incomplete final pass. One Undo removed the last pass and restored the previous comp.
+- Arrangement MIDI Overdub merged the old notes with each pass while on, accumulating them through loops. With it off the recorded range was replaced. Undo was per take pass and Record Quantization was separately undoable. The held note ended at the boundary in the first lane and could continue into the following cycle in the cumulative overdub clip.
+
+No new Live playback was run. The computer-use runtime is unavailable to this seat. The original readings establish the lane and journal behavior above. The narrower audio and two-track reopen checks remain open.
+
 ## 2026-11-19 · Hosted acceptance gate and owned publication staging
 
 **PR requested** — `engine-win/acceptance-ci` at `4c25144068552da347f5bfe23dbeb3fa89d89e0a`, stacked on `engine-win/acceptance-assets` at `a60371a84436bcbb4c5cb50bdacc8e62abd94343`. Title **Run research fixtures and gate ADI hosted transport acceptance**.
