@@ -10,6 +10,7 @@
 namespace adi {class Store;namespace audio {class DecodeCache;}}
 namespace adi::media {
 class AnalysisCache;
+enum class AnalysisFileWrites { Enabled, Disabled };
 inline constexpr std::size_t kMaxPeakValues=1024*1024;
 struct PeakBin {
     float minimum=0,maximum=0;
@@ -46,8 +47,8 @@ PeakResult readMediaPeaks(const Store&,std::int64_t mediaId);
 // not interruptible; cancellation is checked before/after it and per hash/read.
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel=4096,
     std::stop_token={},audio::DecodeCache* = nullptr);
-// Explicit shared analysis cache, or nullptr to disable it. The legacy
-// overload uses the process analysed folder. Cache write failure is nonfatal.
+// Explicit shared analysis cache, or nullptr to disable it. Write-disabled
+// requests can still read existing analysis and build in-memory waveforms.
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel,
-    std::stop_token,audio::DecodeCache*,AnalysisCache*);
+    std::stop_token,audio::DecodeCache*,AnalysisCache*,AnalysisFileWrites = AnalysisFileWrites::Enabled);
 }

@@ -177,6 +177,7 @@ void liveSections(std::vector<Setting>& r) {
         // File & Folder
         {"files.sampleEditor", "Sample Editor"},
         {"files.sampleEditorOpens", "Sample Editor"},
+        {kCreateAnalysisFilesKey, "Analysis"},
         {"cache.maxSizeMb", "Decoding Cache"},
         {"cache.minFreeSpaceMb", "Decoding Cache"},
         {"cache.folder", "Decoding Cache"},
@@ -391,6 +392,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "The external editor Edit opens a sample in.", ""));
     r.push_back(choice("files.sampleEditorOpens", ff, "Sample editor opens",
                        "Open a copy of the sample, or the file in place.", {"copy", "inPlace"}, "copy"));
+    r.push_back(make(kCreateAnalysisFilesKey, Type::Bool, ff, "Create Analysis Files",
+                     "Save derived waveforms for reuse in ADI's analysis cache. Off still draws waveforms "
+                     "and reads existing analysis files.", true));
     r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum Cache Size",
                        "Decoding cache: decoded audio, analysis and peaks. The least recently "
                        "used goes first, never a file in use (ADR-0156). In MB; default 20 GB "

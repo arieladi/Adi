@@ -5,6 +5,7 @@
 // "<section> / <setting up to its first ' ('>".
 
 #include "adi/settings/catalogue.hpp"
+#include "adi/settings/registry.hpp"
 
 namespace adi::settings {
 
@@ -154,6 +155,8 @@ const std::vector<AnsweredRow>& answeredRows() {
          {"midi.recordFilter", "midi.thruFilter"}},
         {"6. File & Folder / Sample Editor",
          {"files.sampleEditor", "files.sampleEditorOpens"}},
+        {"6. File & Folder / Create Analysis Files",
+         {kCreateAnalysisFilesKey}},
         {"6. File & Folder / Decoding Cache: Minimum Free Space, Maximum Cache Size, Cache Folder, Cleanup",
          {"cache.maxSizeMb", "cache.minFreeSpaceMb", "cache.folder"}},
         {"6. File & Folder / Default projects folder, default render folder, default record folder",
@@ -387,8 +390,6 @@ const std::vector<AbsentRow>& absentRows() {
          "property exchange from the parameter feed (P3, ADR-0185); JUCE runs MIDI-CI over MIDI 1.0 SysEx on plain ports, so it waits only on its priority (the plan's SRF-11)"},
         {"5. Tempo & MIDI / MIDI file import/export options", Absence::Backlog,
          "MIDI file options belong to the export dialog (P2)"},
-        {"6. File & Folder / Create Analysis Files", Absence::NotASetting,
-         "analysis is always cached; the cache is on this page"},
         {"6. File & Folder / Temporary Folder", Absence::NotASetting,
          "a new project is a file from its first op (ADR-0003); the default projects folder takes the slot"},
         {"6. File & Folder / Max Application", Absence::Rejected,

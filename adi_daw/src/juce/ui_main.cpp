@@ -254,6 +254,7 @@ class AdiApplication final : public juce::JUCEApplication,
             report(error);
             return false;
         }
+        next->setCreateAnalysisFiles(settings_->get(settings::kCreateAnalysisFilesKey) == true);
         // A worker preparing for the document going is stopped; its result is dropped.
         ++installGeneration_;
         importStop_.request_stop();
@@ -733,7 +734,11 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    if (document_)
+                        document_->setCreateAnalysisFiles(settings_->get(settings::kCreateAnalysisFilesKey) == true);
+                };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);

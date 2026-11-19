@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
 #include "juce/mix_function_host.hpp"
@@ -15,6 +16,7 @@ struct WaveformSource {
     explicit WaveformSource(std::filesystem::path file) : path(std::move(file)) {}
     std::mutex mutex;
     std::filesystem::path path;
+    media::AnalysisFileWrites analysisFileWrites = media::AnalysisFileWrites::Enabled;
 };
 namespace {
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
@@ -26,9 +28,11 @@ WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
     auto opened = std::make_shared<std::filesystem::path>();
     return [source = std::move(source), reader, opened](std::int64_t mediaId, std::stop_token stop) {
         std::filesystem::path path;
+        media::AnalysisFileWrites writes;
         {
             std::lock_guard lock(source->mutex);
             path = source->path;
+            writes = source->analysisFileWrites;
         }
         if (!*reader || *opened != path) {
             reader->reset();
@@ -42,7 +46,8 @@ WaveformCache::Build peaksFrom(std::shared_ptr<WaveformSource> source) {
                 return refused;
             }
         }
-        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop));
+        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop), nullptr,
+                                     &media::defaultAnalysisCache(), writes);
     };
 }
 } // namespace
@@ -71,6 +76,11 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
         });
 }
 ProjectDocument::~ProjectDocument() { analysis_->shutdown(); }
+void ProjectDocument::setCreateAnalysisFiles(bool enabled) {
+    std::lock_guard lock(waveformSource_->mutex);
+    waveformSource_->analysisFileWrites = enabled ? media::AnalysisFileWrites::Enabled
+                                                  : media::AnalysisFileWrites::Disabled;
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error, const RecordingDefaults *defaults) {

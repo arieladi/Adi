@@ -181,6 +181,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
     // project through its own read-only store (`Store::open(path, error, true)`), never this one.
     WaveformCache &waveforms() noexcept { return waveforms_; }
+    void setCreateAnalysisFiles(bool enabled);
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);

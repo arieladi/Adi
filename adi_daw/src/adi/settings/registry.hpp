@@ -27,6 +27,7 @@
 namespace adi::settings {
 
 using Value = nlohmann::json;
+inline constexpr char kCreateAnalysisFilesKey[] = "files.createAnalysisFiles";
 
 /// Table: numbers keyed by text, each within the row's range when it has one
 /// (`window.zoom`: a window's interface zoom per display, N4). Record: an object

@@ -174,8 +174,12 @@ void waveform() {
     test::TempDirectory temp{"analysis","waveform"};AnalysisCache analysis(temp.path()/"analysed");audio::DecodeCache decode(temp.path()/"decoded",{1ULL<<30,0});StoreError error{};auto store=Store::createEmpty(temp.path()/"project.adi",error);if(!store)throw std::runtime_error("create project");
     const auto source=temp.path()/"source.wav";{audio::WavWriter writer(source,48000,1,audio::WavFormat::Float32);std::array<float,8> samples{-.5f,.5f,-.25f,.75f,0,1,-1,0};writer.write(samples.data(),8);writer.close();}
     OpRequest request;const auto imported=prepareImport(*store,source,1,123,request,&decode);if(!imported.ok || !OpJournal(*store).commit(request).ok)throw std::runtime_error("import source");
+    const auto uncached=buildMediaPeaks(*store,1,4,{},&decode,&analysis,AnalysisFileWrites::Disabled);
+    check(uncached && !fs::exists(analysis.folder()),
+          "with file creation off an uncached source still draws without creating an analysis folder");
     const auto ops=store->db().execAndGet("SELECT count(*) FROM ops").getInt64();const auto built=buildMediaPeaks(*store,1,4,{},&decode,&analysis);
     check(built && built.data->bins==std::vector<PeakBin>{{-.5f,.5f},{-.25f,.75f},{0,1},{-1,0}},"normal waveform construction persists exact per-sample extrema centrally");
+    check(uncached && built && *uncached.data==*built.data,"creation off yields the same waveform bins as creation on");
     check(store->db().execAndGet("SELECT peaks IS NULL FROM media_files WHERE id=1").getInt()==1 && store->db().execAndGet("SELECT count(*) FROM ops").getInt64()==ops,"shared cache publication changes neither project pool data nor native history");
     const auto hash=blake3File(source).hex;const auto cacheFile=analysis.folder()/(hash+".adia");check(fs::exists(cacheFile) && !fs::exists(fs::path(source).concat(".asd")),"waveform analysis lives under analysed, never beside the source sample");
     std::string cacheError;if(analysis.remove(hash,cacheError)!=AnalysisCacheProblem::None)throw std::runtime_error("remove prior analysis");
@@ -183,8 +187,9 @@ void waveform() {
     failedAllocation=false;sized=0;failAt=encoderAt.load();const auto lowMemory=buildMediaPeaks(*store,1,4,{},&decode,&analysis);failSize=0;
     check(failedAllocation && lowMemory && *lowMemory.data==*built.data && !fs::exists(cacheFile),"optional cache serialization allocation failure retains every successfully built waveform bin");
     check(buildMediaPeaks(*store,1,4,{},&decode,&analysis) && fs::exists(cacheFile),"a later waveform build can persist after optional cache memory pressure clears");
-    fs::remove(source);auto readonly=Store::open(store->path(),error,true);if(!readonly)throw std::runtime_error("read-only project");const auto cached=buildMediaPeaks(*readonly,1,1024,{},&decode,&analysis);
-    check(cached && *cached.data==*built.data,"a read-only owner can draw authenticated cached content with missing source audio");
+    fs::remove(source);auto readonly=Store::open(store->path(),error,true);if(!readonly)throw std::runtime_error("read-only project");
+    const auto cached=buildMediaPeaks(*readonly,1,1024,{},&decode,&analysis,AnalysisFileWrites::Disabled);
+    check(cached && *cached.data==*built.data,"with creation off a read-only owner still uses authenticated cached peaks");
     std::string why;check(analysis.remove(hash,why)==AnalysisCacheProblem::None && buildMediaPeaks(*readonly,1,4,{},&decode,&analysis).problem==PeakProblem::missingMedia,"cleanup makes analysis a rebuildable cache miss, never source data");
     const auto cost=emptyResultCost<PeakResult>();
     const auto io=audio::callbackFileIo.load(),allocated=allocations.load(),freed=frees.load();PeakProblem refused{};
