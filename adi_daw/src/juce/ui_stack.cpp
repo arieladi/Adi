@@ -101,6 +101,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
     };
     std::optional<PairEdit> pairEdit;
     LimiterObserver limiterObserver;
+    bool focusGroup = false;
 };
 struct StackRow::State {
     stack::RowGeo geo;
@@ -137,12 +138,16 @@ StackRow::StackRow(StackTab &s, std::int64_t track)
         addChildComponent(*button);
     }
     const auto valid = [this] {
-        return state_->presentedRow.ref.valid() && stack_.model().rowRef(track_) == state_->presentedRow.ref &&
-            stack_.root.reader().findTrack(track_) != nullptr;
+        return stack_.editingPage() && state_->presentedRow.ref.valid() &&
+            stack_.model().rowRef(track_) == state_->presentedRow.ref &&
+            stack_.root.reader().findTrack(track_) != nullptr &&
+            (!stack_.state_->focusGroup || stack_.root.mixViewPanel.focusPage.contains(track_));
     };
     state_->mute.onClick = [this, valid] { if (valid()) stack_.root.activateTrack(track_, false); };
     state_->solo.onClick = [this, valid] {
-        if (valid()) stack_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
+        if (!valid()) return;
+        if (stack_.state_->focusGroup) stack_.root.mixViewPanel.focusPage.toggleMemberSolo(track_);
+        else stack_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
     };
     state_->add.setTitle("Add device to channel");
     state_->add.setTooltip("Add a Mix View function, device or plug-in to this channel.");
@@ -497,7 +502,7 @@ juce::Rectangle<int> StackTab::display() const noexcept {
     return {look::gap, toolbarHeight(), std::max(0, getWidth() - 2 * look::gap), kDisplayHeight};
 }
 juce::Rectangle<int> StackTab::listArea() const noexcept {
-    const int top = toolbarHeight() + kDisplayHeight + look::gap;
+    const int top = state_->focusGroup ? look::gap : toolbarHeight() + kDisplayHeight + look::gap;
     return {look::gap, top, std::max(0, getWidth() - 2 * look::gap - 8),
              std::max(0, getHeight() - top - look::gap)};
 }
@@ -855,6 +860,7 @@ juce::String StackTab::emptyMessage() const {
 }
 void StackTab::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
+    if (state_->focusGroup) return;
     const auto area = display();
     g.setColour(look::display);
     g.fillRect(area);
@@ -1192,11 +1198,30 @@ void StackTab::focus(std::int64_t track) {
     if (!alive) return;
     layoutRows();
 }
-void StackTab::filterChannels(std::optional<std::vector<std::int64_t>> tracks) {
+bool StackTab::editingPage() const {
+    const auto tab = static_cast<MixViewPanel::Tab>(root.state().mixViewTab);
+    return tab == MixViewPanel::Tab::Stack || (tab == MixViewPanel::Tab::Focus && state_->focusGroup);
+}
+void StackTab::filterChannels(std::optional<std::vector<std::int64_t>> tracks, bool focusGroup) {
     const juce::Component::SafePointer<StackTab> alive(this);
-    const auto fx = model().setChannelSubset(std::move(tracks), clockNow());
+    const bool changedPage = focusGroup != state_->focusGroup;
+    if (const auto capture = model().capture(); capture && (changedPage ||
+        (focusGroup && tracks && std::find(tracks->begin(), tracks->end(), capture->target.row.track) == tracks->end()))) {
+        cancelInteractions();
+        if (!alive) return;
+    }
+    state_->focusGroup = focusGroup;
+    const auto fx = model().setChannelSubset(std::move(tracks), clockNow(), focusGroup);
     effects(fx, false);
-    if (alive && fx.repaint && isVisible()) layoutRows();
+    if (!alive) return;
+    if (changedPage) {
+        for (auto* control : std::array<juce::Component*, 7>{&channelScope, &addFunction, &search, &rowSize,
+                                                          &autoZoom, &pinsOnly, &navigator})
+            control->setVisible(!focusGroup);
+        resized();
+        return;
+    }
+    if (fx.repaint && isVisible()) layoutRows();
 }
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {
@@ -1208,8 +1233,9 @@ void StackTab::hover(std::int64_t track) {
 }
 std::int64_t StackTab::hovered() const noexcept { return model().enlarged().track; }
 bool StackTab::validTarget(const stack::ItemRef &target) const {
-    if (!isShowing() || !root.state().mixView || root.state().mixViewTab != 1)
-        return false; // a late menu/key must not edit through a closed surface
+    if (!isShowing() || !root.state().mixView || !editingPage() ||
+        (state_->focusGroup && !root.mixViewPanel.focusPage.contains(target.row.track)))
+        return false; // a late menu/key must not edit through a closed or removed surface
     const auto resolved = model().resolve(target);
     const auto *data = device(target.device);
     if (!resolved || !data || resolved->identity != data->instance) return false;

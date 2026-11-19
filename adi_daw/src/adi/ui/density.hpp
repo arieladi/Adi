@@ -37,6 +37,10 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(mixStackOuterRow) /* two rows from the centre of the lens */ \
     ADI_DENSITY_INT(mixStackFocusedRow) /* the centre of the lens */ \
     ADI_DENSITY_INT(mixPageWidth) /* a Mix View page tab */ \
+    ADI_DENSITY_INT(mixFocusChipWidth) \
+    ADI_DENSITY_INT(mixFocusChipHeight) \
+    ADI_DENSITY_INT(mixFocusSourceWidth) \
+    ADI_DENSITY_INT(mixFocusAddWidth) \
     ADI_DENSITY_INT(mixChannelMinWidth) /* left channel column */ \
     ADI_DENSITY_INT(mixChannelMaxWidth) \
     ADI_DENSITY_INT(mixChannelRowHeight) \

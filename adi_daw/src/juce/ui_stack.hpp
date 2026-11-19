@@ -68,7 +68,7 @@ class StackTab final : public juce::Component {
     void focusLost(FocusChangeType) override;
     void focusOfChildComponentChanged(FocusChangeType) override;
     void focus(std::int64_t track);
-    void filterChannels(std::optional<std::vector<std::int64_t>>);
+    void filterChannels(std::optional<std::vector<std::int64_t>> ids, bool focusGroup = false);
     std::int64_t focused() const noexcept;
     void hover(std::int64_t track);
     std::int64_t hovered() const noexcept;
@@ -99,6 +99,7 @@ class StackTab final : public juce::Component {
     friend class StackRow;
     struct State;
     std::unique_ptr<State> state_;
+    bool editingPage() const;
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
     void layoutRows();

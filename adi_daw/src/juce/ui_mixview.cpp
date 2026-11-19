@@ -160,7 +160,9 @@ void MixSongStrip::mouseUp(const juce::MouseEvent& e) {
     cancelSeek();
     if (!root_.playFrom(tickAt(e.position.x))) moveHead(headX(root_.timelineTick()));
 }
-MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stack(root), channels(root), root_(root) {
+MixViewPanel::MixViewPanel(AdiRootComponent &root)
+    : song(root), ref(root), stack(root), channels(root), focusOwner_(std::make_unique<MixFocus>(root)),
+      focusPage(*focusOwner_), root_(root) {
     setTitle("Mix View");
     addAndMakeVisible(song);
     setLookAndFeel(&look::liveLook());
@@ -175,7 +177,7 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stac
         button->setMouseClickGrabsKeyboardFocus(false);
         button->onClick = [this, i] { root_.chooseMixViewTab(i); };
         addChildComponent(*button);
-        button->setVisible(i == static_cast<int>(Tab::Stack) || i == static_cast<int>(Tab::Analysis));
+        button->setVisible(std::any_of(pages.begin(), pages.end(), [i](Tab page) { return static_cast<int>(page) == i; }));
         tabs[static_cast<std::size_t>(i)] = std::move(button);
     }
     floating.setTooltip("Mix View in a Window. Moves the Mix View to a window of its own, onto any display; "
@@ -194,6 +196,14 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stac
     addChildComponent(stack);
     addChildComponent(channels);
     addChildComponent(mainMeter);
+    addChildComponent(focusPage);
+    focusPage.onEdit = [this](std::int64_t id) {
+        if (tab() == Tab::Focus && stack.isShowing() && focusPage.contains(id) && stack.model().shownIndex(id))
+            stack.focus(id);
+    };
+    focusPage.onMembersChanged = [this] {
+        if (ownerReady_ && tab() == Tab::Focus) stack.filterChannels(focusPage.channelIds(), true);
+    };
     channels.onChoose = [this](std::int64_t id) {
         const juce::Component::SafePointer<MixViewPanel> alive(this);
         auto &selection = root_.arrangement.geometry.selection;
@@ -203,9 +213,11 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : song(root), ref(root), stac
         selection.clip = 0;
         selection.pickedClips.clear();
         root_.publishSelection();
-        if (alive && stack.isVisible()) stack.focus(id);
+        if (alive && tab() == Tab::Stack && stack.isVisible()) stack.focus(id);
     };
-    channels.onFilter = [this](auto tracks) { stack.filterChannels(std::move(tracks)); };
+    channels.onFilter = [this](auto tracks) {
+        if (tab() == Tab::Stack) stack.filterChannels(std::move(tracks));
+    };
     channels.onOpenInfo = [this] {
         if (!stack.model().capture()) root_.chooseMixViewTab(static_cast<int>(Tab::Analysis));
     };
@@ -300,9 +312,17 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     const int shown = static_cast<int>(tab());
     if (shown != shownTab_) {
         shownTab_ = shown;
-        tabs[static_cast<std::size_t>(Tab::Stack)]->setToggleState(tab() == Tab::Stack, juce::dontSendNotification);
-        tabs[static_cast<std::size_t>(Tab::Analysis)]->setToggleState(tab() != Tab::Stack, juce::dontSendNotification);
-        stack.setVisible(tab() == Tab::Stack);
+        const bool editing = tab() == Tab::Stack || tab() == Tab::Focus;
+        for (const auto page : pages) {
+            const bool selected = page == tab() || (page == Tab::Analysis && !editing);
+            tabs[static_cast<std::size_t>(page)]->setToggleState(selected, juce::dontSendNotification);
+        }
+        stack.setVisible(editing);
+        if (!alive) return;
+        if (tab() == Tab::Focus) stack.filterChannels(focusPage.channelIds(), true);
+        else if (tab() == Tab::Stack) stack.filterChannels(channels.filterMembership());
+        if (!alive) return;
+        focusPage.setVisible(tab() == Tab::Focus);
         if (!alive) return;
         spectrum.setVisible(tab() == Tab::Overview);
         if (!alive) return;
@@ -320,6 +340,10 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     song.frame(reader, root_.timelineTick());
     channels.frame(reader);
     if (!alive) return;
+    if (focusPage.isVisible()) {
+        focusPage.frame(reader);
+        if (!alive) return;
+    }
     // STACK's rows follow the tracks; a frame that changes none of them builds nothing.
     if (stack.isVisible()) {
         stack.frame(reader);
@@ -385,8 +409,8 @@ void MixViewPanel::resized() {
     const int y = song.getBottom() + (kHeaderHeight - look::fieldHeight) / 2;
     const int tabsWidth = std::max(0, getWidth() - look::gap * 3 -
         (headerHeight_ == kHeaderHeight ? 120 : 26));
-    const int pageWidth = std::min(look::mixPageWidth, tabsWidth / 2);
-    for (const auto page : {Tab::Stack, Tab::Analysis}) {
+    const int pageWidth = std::min(look::mixPageWidth, tabsWidth / static_cast<int>(pages.size()));
+    for (const auto page : pages) {
         tabs[static_cast<std::size_t>(page)]->setBounds(x, y, pageWidth, look::fieldHeight);
         x += pageWidth + look::border;
     }
@@ -432,7 +456,14 @@ void MixViewPanel::resized() {
         content.removeFromLeft(look::gap);
         if (!alive) return;
     }
-    stack.setBounds(content);
+    if (tab() == Tab::Focus) {
+        auto chains = content;
+        focusPage.setBounds(chains.removeFromTop(chains.getHeight() * 3 / 5));
+        if (!alive) return;
+        stack.setBounds(chains.withTrimmedTop(look::gap));
+    } else {
+        stack.setBounds(content);
+    }
     if (!alive) return;
     spectrum.setBounds(content);
     if (!alive) return;

@@ -1022,6 +1022,7 @@ bool StackModel::memberPlain(std::uint32_t rec) const noexcept {
     const Rec &r = rows_[rec];
     if (!inScope(r) || !inChannelSubset(r.id))
         return false;
+    if (focusGroup_) return true;
     if (view_.channelScope == ChannelScope::WithTools && !r.hasMixFunction)
         return false;
     const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
@@ -3238,7 +3239,7 @@ void StackModel::membershipChanged(TimeMs now, bool toTop) {
     bump();
 }
 
-Effects StackModel::setChannelSubset(std::optional<std::vector<TrackId>> ids, TimeMs now) {
+Effects StackModel::setChannelSubset(std::optional<std::vector<TrackId>> ids, TimeMs now, bool focusGroup) {
     Effects fx;
     const auto before = beginEvent();
     now = advanceTo(now);
@@ -3246,7 +3247,8 @@ Effects StackModel::setChannelSubset(std::optional<std::vector<TrackId>> ids, Ti
         std::sort(ids->begin(), ids->end());
         ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
     }
-    if (ids != channelSubset_) {
+    if (ids != channelSubset_ || focusGroup_ != focusGroup) {
+        focusGroup_ = focusGroup;
         const auto cursor = jumpTarget().track;
         channelSubset_ = std::move(ids);
         ++stats_.fullPasses;

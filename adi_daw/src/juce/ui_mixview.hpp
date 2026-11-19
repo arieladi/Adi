@@ -8,6 +8,7 @@
 #include "ui_mix_channels.hpp"
 #include "ui_mix_meter.hpp"
 #include "ui_mix_analysers.hpp"
+#include "ui_mix_focus.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -68,10 +69,11 @@ class MixSongStrip final : public juce::Component {
 // never the panel's own.
 class MixViewPanel final : public juce::Component {
   public:
-    enum class Tab { Overview, Stack, ScopePhase, Spectrogram, Cascade, Analysis };
-    static constexpr int kTabCount = 6;
+    enum class Tab { Overview, Stack, ScopePhase, Spectrogram, Cascade, Analysis, Focus };
+    static constexpr int kTabCount = 7;
     static constexpr std::array<const char *, kTabCount> kTabNames{"Overview", "Stack", "Scope & Phase",
-                                                                   "Spectrogram", "", "Analysers"};
+                                                                   "Spectrogram", "", "Analysers", "Focus"};
+    static constexpr std::array<Tab, 3> pages{Tab::Stack, Tab::Focus, Tab::Analysis};
     static constexpr int kHeaderHeight = 25;
     // The ★ Reference strip under the tabs (ADR-0209 d11): the track against the arrangement's
     // length, [REF] and [Reference Track].
@@ -101,6 +103,10 @@ class MixViewPanel final : public juce::Component {
     MixChannelBrowser channels;
     MixOutputMeter mainMeter;
     std::weak_ptr<const MainMeterSource> mainMeterSource;
+  private:
+    std::unique_ptr<MixFocus> focusOwner_;
+  public:
+    MixFocus &focusPage;
     SharedSpectrumView spectrum;
     MixAnalysers analysis;
     AnalysisDock analyzerDock;
@@ -120,6 +126,7 @@ class MixViewPanel final : public juce::Component {
         analyzerDock.suspend(value);
         channels.preview.suspend(value);
         mainMeter.suspend(value);
+        focusPage.suspend(value);
     }
 
   private:

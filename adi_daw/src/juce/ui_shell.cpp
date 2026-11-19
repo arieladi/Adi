@@ -1616,14 +1616,26 @@ std::int64_t AdiRootComponent::analysisTrack(const SnapshotReader &snapshot, boo
 }
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
+    const int oldTab = state_.mixViewTab;
+    const auto focusMembers = open && !wasOpen ? MixFocus::soloedChannels(SnapshotReader(current()))
+                                               : std::vector<std::int64_t>{};
+    if (open && !wasOpen)
+        state_.mixViewTab = static_cast<int>(focusMembers.size() >= 2 ? MixViewPanel::Tab::Focus : MixViewPanel::Tab::Stack);
     state_.mixView = open;
     state_.mixViewDetached = detached;
     if (!persist()) {
         state_.mixView = wasOpen;
         state_.mixViewDetached = wasDetached;
+        state_.mixViewTab = oldTab;
         return fail(error_);
     }
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if (open && !wasOpen) mixViewPanel.focusPage.setMembers(focusMembers);
+    if (!alive) return false;
+    mixViewPanel.focusPage.suspend(!open);
+    if (!alive) return false;
     if (wasOpen != open) mixViewPanel.mainMeter.suspend(!open);
+    if (!alive) return false;
     if (wasOpen != open || wasDetached != detached) {
         mixViewPanel.song.cancelSeek();
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();
@@ -1639,9 +1651,16 @@ bool AdiRootComponent::chooseMixViewTab(int tab) {
         state_.mixViewTab = was;
         return fail(error_);
     }
-    if (was == static_cast<int>(MixViewPanel::Tab::Stack) && state_.mixViewTab != was) {
+    const juce::Component::SafePointer<AdiRootComponent> alive(this);
+    if ((was == static_cast<int>(MixViewPanel::Tab::Stack) || was == static_cast<int>(MixViewPanel::Tab::Focus)) &&
+        state_.mixViewTab != was) {
         mixViewPanel.stack.cancelInteractions();
+        if (!alive) return false;
         devices.cancelFunctionInteractions();
+        if (!alive) return false;
+        if (was == static_cast<int>(MixViewPanel::Tab::Focus))
+            mixViewPanel.focusPage.setVisible(false);
+        if (!alive) return false;
     }
     dirty_.mark(DirtySet::Layout);
     return true;
@@ -3298,13 +3317,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ShowChannelEq:
         // ADR-0204 d1's one window is the Mix View's STACK (ADR-0209 d11): opened there, wherever
         // it opens, on the selected track's row.
-        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
-            return false;
         if (!state_.mixView) {
             if (state_.mixViewDetached ? !(applicationCommand && applicationCommand(AppCommands::ToggleMixView))
                                        : !setMixView(true, false))
                 return false;
         }
+        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return false;
         mixViewPanel.frame(reader());
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;

@@ -835,6 +835,112 @@ void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &d
     peer.removeChildComponent(&surface); peer.removeFromDesktop();
 }
 
+void focusWorkspace(AppCommands &commands, const std::filesystem::path &directory) {
+    std::string error;
+    auto doc = ProjectDocument::open(directory / "focus-workspace.adi", true, device::withBuiltinDevices(), error);
+    check(doc != nullptr, "Focus opens a project fixture");
+    if (!doc) return;
+
+    constexpr std::int64_t first = 71, second = 72, added = 73;
+    auto rootOwner = std::make_unique<AdiRootComponent>(doc->view(), doc->ops(), doc->mailbox(), commands,
+                                                        doc->views(), doc->sessionState(), "focus-workspace");
+    auto &root = *rootOwner;
+    root.afterEdit = [&] { doc->synchronise(); };
+    bool created = true;
+    for (auto id : {first, second, added})
+        created = root.submitEdit("track.create", {{"id", id}, {"kind", "audio"}, {"name", "Focus track"}},
+                                  "Create Focus track") && created;
+    check(created, "Focus fixture creates three authored channels");
+    if (!created) return;
+    root.arrangement.geometry.selection.track = 2;
+    root.publishSelection();
+
+    const auto ownSource = [](engine::ScopeSource source) {
+        return source.point == engine::ScopePoint::PostFader &&
+               (source.track == first || source.track == second || source.track == added);
+    };
+    std::vector<std::int64_t> opened, closed;
+    auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
+            if (ownSource(source)) opened.push_back(source.track);
+            return tap;
+        },
+        [&](engine::ScopeSource source) { if (ownSource(source)) closed.push_back(source.track); },
+        SharedAnalysis::Mode::Manual);
+    root.sharedAnalysis = broker;
+
+    UiPeerRoot peer;
+    peer.setSize(1200, 800);
+    peer.setVisible(true);
+    peer.addToDesktop(0);
+    peer.addAndMakeVisible(root);
+    root.setBounds(peer.getLocalBounds());
+    const auto solo = [&](std::int64_t id) {
+        const auto current = root.current();
+        const auto *track = current ? current->findTrack(id) : nullptr;
+        return track && track->soloed;
+    };
+    const auto toggleMix = [&] {
+        const auto ok = root.command(AppCommands::ToggleMixView);
+        root.frame();
+        return ok;
+    };
+    auto &mix = root.mixViewPanel;
+    auto &focus = mix.focusPage;
+    check(root.submitEdit("track.setSolo", {{"id", first}, {"soloed", true}}, "Solo first") && solo(first) &&
+              toggleMix() && mix.tab() == MixViewPanel::Tab::Stack && opened.empty(),
+          "one solo opens Stack and attaches no Focus comparison source");
+    mix.stack.model().setChannelScope(stack::ChannelScope::WithTools, 0);
+    check(toggleMix() && !root.state().mixView, "return to Arrangement before changing the solo group");
+    check(root.submitEdit("track.setSolo", {{"id", second}, {"soloed", true}}, "Solo second") && solo(second) &&
+              toggleMix() && mix.tab() == MixViewPanel::Tab::Focus && focus.isShowing(),
+          "two authored solos open the Focus workspace");
+
+    const auto initial = std::vector{first, second};
+    check(focus.channelIds() == initial && focus.mainTrack() == first && opened == initial && closed.empty(),
+          "the initial ordered solo membership attaches both post-fader sources once");
+    check(mix.stack.model().shownIndex(first) && mix.stack.model().shownIndex(second) &&
+              !mix.stack.model().shownIndex(added),
+          "member chains bypass Stack tool scope without adding an unrelated row");
+
+    SharedAnalysis::Request same;
+    same.track = first;
+    same.channel = SharedAnalysis::Channel::StereoPower;
+    auto sibling = broker->acquire(same);
+    check(sibling.available() && opened == initial,
+          "a compatible comparison consumer shares the existing source");
+    check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)), "Stack can be chosen explicitly");
+    root.frame();
+    check(!focus.isShowing() && closed == std::vector{second} && solo(first) && solo(second),
+          "leaving Focus releases its comparison leases and keeps all authored solos");
+    sibling.reset();
+    check(closed == std::vector{second, first},
+          "the last compatible reader releases the remaining source");
+
+    check(root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Focus)), "return to the retained Focus group");
+    focus.setMembers({first, added, second});
+    root.frame();
+    check(focus.channelIds() == std::vector{first, added, second} && mix.stack.model().shownIndex(added),
+          "manual membership is retained without writing a solo");
+    focus.toggleMemberSolo(first);
+    root.frame();
+    check(!solo(first) && solo(second) && !solo(added) &&
+              focus.channelIds() == std::vector{added, second} && focus.mainTrack() == second &&
+              !mix.stack.model().shownIndex(first),
+          "explicit unsolo removes its row and promotes the first remaining solo over a manual member");
+    check(doc->ops().undo().ok && doc->synchronise() && solo(first) && solo(second),
+          "Focus unsolo is one ordinary authored undo step");
+
+    check(toggleMix() && !root.state().mixView && solo(first) && solo(second),
+          "closing Focus returns to Arrangement without modifying solos");
+    check(root.command(AppCommands::ShowChannelEq) && mix.tab() == MixViewPanel::Tab::Stack,
+          "the explicit Channel EQ command still opens Stack with two solos");
+    peer.removeChildComponent(&root);
+    peer.removeFromDesktop();
+    rootOwner.reset();
+}
+
 void cleanCompressor(AppCommands &commands, const std::filesystem::path &directory) {
     std::string error;
     auto doc =
@@ -1066,6 +1172,7 @@ int main() {
     parameterPages(commands, temporary.path());
     stackEqSpectrum(commands, temporary.path());
     stackLimiterReduction(commands, temporary.path());
+    focusWorkspace(commands, temporary.path());
     cleanCompressor(commands, temporary.path());
     keyMenus(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);

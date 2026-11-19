@@ -19,6 +19,9 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
     void mouseDown(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     std::int64_t trackAt(int row) const;
+    [[nodiscard]] std::optional<std::vector<std::int64_t>> filterMembership() const {
+        return filterApplied_ ? membership_ : std::nullopt;
+    }
 
     juce::TextEditor search;
     juce::ComboBox show, infoMode;
