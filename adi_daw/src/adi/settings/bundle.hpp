@@ -16,8 +16,10 @@
 #pragma once
 
 #include "adi/settings/store.hpp"
+#include "adi/media/publish_file.hpp"
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -39,6 +41,10 @@ using Roles = std::map<std::string, std::filesystem::path>;
 /// machine has no such role. A string that is not a role is refused too.
 [[nodiscard]] std::optional<std::filesystem::path> fromRole(const std::string&, const Roles&);
 
+struct BundlePublication {
+    bool durabilityConfirmed = false;
+    std::string warning;
+};
 struct BundleReport {
     bool ok = false;
     std::string why;
@@ -47,13 +53,27 @@ struct BundleReport {
     std::vector<std::string> skipped;    // keys refused on import
     std::vector<Preset> presets;         // import: the presets it carried
     int applied = 0;                     // import: settings changed
+    // Export only, present after publication. A durability warning does not
+    // turn a published bundle into a failed export or request an automatic retry.
+    std::optional<BundlePublication> publication{};
+};
+
+// Per-call, off-callback diagnostic injection. The stage callback runs only
+// after reserving a new private directory, before any JSON/archive is written.
+// Normal exports leave both hooks empty; no global test state is consulted.
+struct BundleExportHooks {
+    std::function<void(const std::filesystem::path&)> stageReady;
+    media::ReplaceHooks publication{};
 };
 
 /// Writes the bundle. Only App-scope settings the registry knows go in: a key
 /// a newer build wrote stays in settings.json and does not travel, because
 /// this build cannot tell whether it holds a path.
+/// Builds a closed archive in private sibling staging, then replaces the final
+/// destination through the authoritative publisher. Pre-publication failures
+/// leave an existing destination intact; no copy fallback or fixed .staging path.
 BundleReport exportBundle(const AppSettings&, const std::vector<Preset>&,
-                          const std::filesystem::path& zipFile);
+                          const std::filesystem::path& zipFile, BundleExportHooks = {});
 
 /// Reads a bundle into `target`, resolving roles against `target`'s own
 /// folders. A bundle from another application is refused (ADR-0145 d10).

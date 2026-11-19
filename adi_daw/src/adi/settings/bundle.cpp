@@ -7,12 +7,18 @@
 #include <miniz.h>
 
 #include <cctype>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#include <stdexcept>
+#include <type_traits>
 
 namespace adi::settings {
+static_assert(std::is_nothrow_move_assignable_v<std::string>);
+static_assert(std::is_nothrow_move_constructible_v<BundleReport>);
 namespace {
 
 constexpr const char* kRolePrefix = "role:";
@@ -32,8 +38,32 @@ bool looksAbsolute(const std::string& s) {
 bool writeJson(const std::filesystem::path& p, const Value& v) {
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
     out << v.dump(2) << '\n';
+    out.close(); // report flush/close errors before ZipWriter reads this source
     return static_cast<bool>(out);
 }
+
+struct BundleStage {
+    std::filesystem::path path;
+    explicit BundleStage(const std::filesystem::path& parent) {
+        static std::atomic<std::uint64_t> serial{0};
+        const auto tick=std::chrono::steady_clock::now().time_since_epoch().count();
+        for(unsigned attempt=0;attempt<128;++attempt) {
+            auto candidate=parent/(".adi-bundle-"+std::to_string(tick)+"-"+std::to_string(serial.fetch_add(1)));
+            std::error_code error;
+            if(std::filesystem::create_directory(candidate,error)) {path=std::move(candidate);return;}
+            if(error && error!=std::errc::file_exists)
+                throw std::filesystem::filesystem_error("reserve bundle stage",candidate,error);
+        }
+        throw std::runtime_error("cannot reserve a private settings-bundle stage");
+    }
+    BundleStage(const BundleStage&)=delete;
+    BundleStage& operator=(const BundleStage&)=delete;
+    ~BundleStage() {
+        // Only the directory this invocation created. Never a path derived
+        // from the user's filename, and never the final destination.
+        try {std::error_code ignored;std::filesystem::remove_all(path,ignored);} catch(...) {}
+    }
+};
 
 /// A whole small archive, in memory: bundles are kilobytes. miniz is built
 /// without stdio here (ADR-0127), so the file is read by a stream first.
@@ -148,8 +178,9 @@ bool containsAbsolutePath(const Value& v) {
 }
 
 BundleReport exportBundle(const AppSettings& store, const std::vector<Preset>& presets,
-                          const std::filesystem::path& zipFile) {
+                          const std::filesystem::path& zipFile, BundleExportHooks hooks) {
     BundleReport rep;
+    try {
     const Roles roles = rolesOf(store);
 
     // A path value: every path as a role, or left out and reported.
@@ -205,36 +236,45 @@ BundleReport exportBundle(const AppSettings& store, const std::vector<Preset>& p
         return rep;
     }
 
-    std::error_code ec;
-    auto stage = zipFile;
-    stage += ".staging";
-    std::filesystem::remove_all(stage, ec);
-    std::filesystem::create_directories(stage / "presets", ec);
+    const auto target=std::filesystem::absolute(zipFile);
+    std::filesystem::create_directories(target.parent_path());
+    BundleStage stage(target.parent_path());
+    if(hooks.stageReady)hooks.stageReady(stage.path);
+    std::filesystem::create_directory(stage.path/"presets");
     const Value manifest = {{"kind", kKind},
                             {"schema", kSettingsSchema},
                             {"app", appdata::displayName(store.app())}};
-    bool ok = writeJson(stage / "manifest.json", manifest) &&
-              writeJson(stage / "settings.json", settingsDoc);
+    bool ok = writeJson(stage.path / "manifest.json", manifest) &&
+              writeJson(stage.path / "settings.json", settingsDoc);
     for (std::size_t i = 0; ok && i < presetDocs.size(); ++i)
-        ok = writeJson(stage / "presets" / (std::to_string(i + 1) + ".json"), presetDocs[i]);
+        ok = writeJson(stage.path / "presets" / (std::to_string(i + 1) + ".json"), presetDocs[i]);
 
+    const auto archive=stage.path/"bundle.zip";
     if (ok) {
-        media::ZipWriter zip(zipFile);
-        ok = zip.addFile(stage / "manifest.json", "manifest.json") &&
-             zip.addFile(stage / "settings.json", "settings.json");
+        media::ZipWriter zip(archive);
+        ok = zip.addFile(stage.path / "manifest.json", "manifest.json") &&
+             zip.addFile(stage.path / "settings.json", "settings.json");
         for (std::size_t i = 0; ok && i < presetDocs.size(); ++i) {
             const std::string name = std::to_string(i + 1) + ".json";
-            ok = zip.addFile(stage / "presets" / name, "presets/" + name);
+            ok = zip.addFile(stage.path / "presets" / name, "presets/" + name);
         }
         ok = ok && zip.finish();
     }
-    std::filesystem::remove_all(stage, ec);
     if (!ok) {
-        std::filesystem::remove(zipFile, ec);
-        rep.why = "could not write " + zipFile.string();
+        rep.why = "could not stage settings bundle";
         return rep;
     }
+    // Reserve any fallback warning before the irreversible publication point.
+    rep.publication.emplace(BundlePublication{false,"bundle published; directory durability could not be confirmed"});
+    auto published=media::replaceFile(archive,target,hooks.publication);
+    if(published.status!=media::PublishStatus::published) {
+        rep.publication.reset();rep.why=std::move(published.error);return rep;
+    }
     rep.ok = true;
+    rep.publication->durabilityConfirmed=published.durabilityConfirmed;
+    if(!published.warning.empty())rep.publication->warning=std::move(published.warning);
+    else if(published.durabilityConfirmed)rep.publication->warning.clear();
+    } catch(const std::exception& error) {rep.why=error.what();}
     return rep;
 }
 

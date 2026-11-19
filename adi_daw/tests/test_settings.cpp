@@ -655,6 +655,101 @@ void testBundles() {
           "the absolute-path test knows Windows, UNC and POSIX, and not roles or '1/16'");
 }
 
+void testBundlePublication() {
+    section("bundle export: private staging, atomic replacement and publication warnings");
+    adi::test::TempDirectory temp("settings","bundle-publication");
+    AppSettings from(appdata::App::Daw,temp.path()/"settings.json");
+    std::string why;
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto output=temp.path()/"bundle.zip";
+    auto legacy=output;legacy+=".staging";
+    const auto unrelated=temp.path()/".adi-bundle-existing";
+    writeText(legacy/"keep.txt","legacy path belongs to the user");
+    writeText(unrelated/"keep.txt","unrelated sibling belongs to the user");
+    const auto retained=[&] {
+        return readText(legacy/"keep.txt")=="legacy path belongs to the user" &&
+               readText(unrelated/"keep.txt")=="unrelated sibling belongs to the user";
+    };
+    const auto noPrivateStage=[&] {
+        for(const auto& entry:fs::directory_iterator(temp.path()))
+            if(entry.path()!=unrelated && entry.path().filename().string().starts_with(".adi-bundle-"))return false;
+        return true;
+    };
+    const auto first=exportBundle(from,{},output);
+    check(first.ok && first.publication && retained() && noPrivateStage(),
+          "new export leaves preexisting fixed staging and unrelated sibling trees untouched");
+    const auto original=readText(output);
+    check(!original.empty() && readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light",
+          "success publishes a complete readable settings archive");
+    from.set("lookfeel.theme","dark",kUser,why);
+    std::set<fs::path> stages;
+    for(const auto* blocker:{"manifest.json","bundle.zip"}) {
+        fs::path stage;
+        BundleExportHooks hooks;
+        hooks.stageReady=[&](const fs::path& path) {stage=path;stages.insert(path);fs::create_directory(path/blocker);};
+        const auto failed=exportBundle(from,{},output,hooks);
+        check(!failed.ok && !failed.publication && !failed.why.empty() && readText(output)==original &&
+              !fs::exists(stage) && retained() && noPrivateStage(),
+              "actual JSON/archive staging failure preserves old output and cleans only private staging");
+    }
+    check(stages.size()==2,"each export reserves a different private sibling stage");
+    auto badPreset=makePreset(from,"invalid UTF-8",{"Display & Input","Theme & Colors"});
+    badPreset.name=std::string(1,static_cast<char>(0xff));
+    const auto invalidJson=exportBundle(from,{badPreset},output);
+    check(!invalidJson.ok && !invalidJson.publication && readText(output)==original && retained() && noPrivateStage(),
+          "serialization exception after stage creation leaves existing output intact and is reported");
+    BundleExportHooks hooks;
+    hooks.publication.syncFile=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    const auto unsynced=exportBundle(from,{},output,hooks);
+    check(!unsynced.ok && !unsynced.publication && unsynced.why.find("sync staging file")!=std::string::npos &&
+          readText(output)==original && retained() && noPrivateStage(),
+          "failed staged-file sync never truncates or deletes the existing bundle");
+    hooks={};
+    hooks.publication.rename=[](const fs::path&,const fs::path&) {return std::make_error_code(std::errc::permission_denied);};
+    const auto refused=exportBundle(from,{},output,hooks);
+    check(!refused.ok && !refused.publication && readText(output)==original && retained() && noPrivateStage(),
+          "failed atomic replacement preserves old bytes without a copy fallback");
+    const auto absent=temp.path()/"absent.zip";
+    check(!exportBundle(from,{},absent,hooks).ok && !fs::exists(absent) && noPrivateStage(),
+          "failed publication to an absent path leaves no partial final archive");
+    const auto directory=temp.path()/"directory.zip";fs::create_directory(directory);
+    const auto wrongType=exportBundle(from,{},directory);
+    check(!wrongType.ok && !wrongType.publication && fs::is_directory(directory) && fs::is_empty(directory),
+          "refused directory destination is never removed even when empty");
+    std::error_code error;
+    auto lease=adi::media::ProjectFileLease::openShared(output,error);
+    const auto locked=exportBundle(from,{},output);
+    check(lease && !locked.ok && readText(output)==original && noPrivateStage(),
+          "publisher refuses an in-use destination without damaging its existing archive");
+    lease.reset();
+    const auto replaced=exportBundle(from,{},output);
+    check(replaced.ok && replaced.publication && readText(output)!=original &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="dark" && retained() && noPrivateStage(),
+          "ordinary successful export retains intended replacement semantics with a complete new archive");
+    hooks={};
+    hooks.publication.syncDirectory=[](const fs::path&) {return std::make_error_code(std::errc::io_error);};
+    from.set("lookfeel.theme","light",kUser,why);
+    const auto warning=exportBundle(from,{},output,hooks);
+    check(warning.ok && warning.why.empty() && warning.publication &&
+          !warning.publication->durabilityConfirmed && !warning.publication->warning.empty() &&
+          readZipJson(output,"settings.json")["values"]["lookfeel.theme"]=="light" && retained() && noPrivateStage(),
+          "post-publication sync warning retains success and published bytes instead of reporting a failed export");
+    fs::path outerStage,innerStage;
+    bool nestedOk=false,outerStillExists=false;
+    hooks={};
+    hooks.stageReady=[&](const fs::path& path) {
+        outerStage=path;
+        BundleExportHooks nested;
+        nested.stageReady=[&](const fs::path& inner) {innerStage=inner;};
+        nestedOk=exportBundle(from,{},temp.path()/"nested.zip",nested).ok;
+        outerStillExists=fs::is_directory(path);
+    };
+    const auto nested=exportBundle(from,{},output,hooks);
+    check(nested.ok && nestedOk && outerStillExists && outerStage!=innerStage &&
+          !fs::exists(outerStage) && !fs::exists(innerStage) && retained() && noPrivateStage(),
+          "overlapping exports have independent stages and cannot clean up each other's work");
+}
+
 
 // --- the catalogue (ADR-0156) ---------------------------------------------------------------
 
@@ -914,6 +1009,7 @@ int runAll() {
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
+    testBundlePublication();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
