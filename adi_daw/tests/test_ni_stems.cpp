@@ -156,6 +156,59 @@ void normalizationRefusal() {
         }
     }
 }
+void collisionPublication() {
+    // NI's real shared naming/publication path with opaque staged bytes. This
+    // runs without AAC; it is not a claim of codec integration.
+    test::TempDirectory dir{"ni_stems","collision-publication"};
+    const auto stage=dir.path()/"stage.bin", original=dir.path()/"delivery.stem.mp4";
+    const auto write=[](const fs::path& path,const char* text) {
+        std::ofstream file(path,std::ios::binary);file<<text;file.close();
+        if(!file)throw std::runtime_error("NI collision fixture write");
+    };
+    write(original,"original delivery");write(stage,"replacement candidate");
+    const auto before=media::blake3File(original).hex;
+    render::Result fail;fail.output=original;
+    refuses([&] {render::detail::prepareOutput(fail,render::Collision::Fail,".stem.mp4","NI destination exists");},
+            "NI Fail refuses an existing complete delivery path");
+    check(media::blake3File(original).hex==before && fs::exists(stage),
+          "NI Fail leaves original and private staged bytes intact");
+    render::Result increment;increment.output=original;
+    render::detail::prepareOutput(increment,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(increment.output.filename()=="delivery (2).stem.mp4",
+          "NI Increment inserts numbering before its entire compound suffix");
+    const auto stageHash=media::blake3File(stage).hex;
+    render::detail::publishOutput(stage,increment,{},"NI destination exists");
+    check(increment.state==render::JobState::Completed && increment.publication &&
+          !increment.publication->usedFallback && media::blake3File(increment.output).hex==stageHash &&
+          media::blake3File(original).hex==before && !fs::exists(stage),
+          "NI shared publisher atomically publishes selected bytes and preserves the original");
+    render::Result late;late.output=original;
+    render::detail::prepareOutput(late,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(late.output.filename()=="delivery (3).stem.mp4","NI repeated preflight selects the next available delivery name");
+    write(stage,"private staged again");write(late.output,"external late arrival");
+    const auto lateHash=media::blake3File(late.output).hex;
+    refuses([&] {render::detail::publishOutput(stage,late,{},"NI destination exists");},
+            "NI publisher refuses a collision introduced after numbered preflight");
+    check(!late.publication && media::blake3File(late.output).hex==lateHash && fs::exists(stage) &&
+          !fs::exists(dir.path()/"delivery (4).stem.mp4"),
+          "NI late-arrival refusal neither replaces external bytes nor renumbers");
+    std::string stem;
+    for(unsigned i=0;i<93;++i)stem+="\xC3\xA9";
+    stem+='x'; // 187+4 increment+9 suffix = 200 bytes
+    render::Result boundary;boundary.output=dir.path()/media::pathFromUtf8(stem+".stem.mp4");
+    write(boundary.output,"occupied");
+    render::detail::prepareOutput(boundary,render::Collision::Increment,".stem.mp4","NI destination exists");
+    render::detail::publishOutput(stage,boundary,{},"NI destination exists");
+    check(boundary.state==render::JobState::Completed && media::pathUtf8(boundary.output.filename()).size()==200,
+          "NI actual publication accepts 200 UTF-8 bytes including increment and compound suffix");
+    stem+='y';
+    render::Result overflow;overflow.output=dir.path()/media::pathFromUtf8(stem+".stem.mp4");
+    const auto validOriginal=overflow.output;write(validOriginal,"retained");
+    refuses([&] {render::detail::prepareOutput(overflow,render::Collision::Increment,".stem.mp4","NI destination exists");},
+            "NI increment refuses a 201-byte final compound filename");
+    check(fs::file_size(validOriginal)==8 && !fs::exists(overflow.output),
+          "NI increment overflow leaves the shorter existing delivery untouched");
+}
 void integration() {
     if (!audio::aacCodecAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
@@ -420,6 +473,15 @@ void integration() {
     const auto collided = collision.snapshot().front().result;
     check(collided.state == render::JobState::Failed && fs::exists(result.output) && clean(dir.path()),
           "collision never replaces existing NI export");
+    const auto retainedContainerHash=media::blake3File(result.output).hex;
+    auto numbered=job;numbered.collision=render::Collision::Increment;
+    const auto incremented=render::renderNiStems(numbered,{});
+    check(incremented.state==render::JobState::Completed && incremented.output.filename()=="NI Export (2).stem.mp4" &&
+          media::blake3File(result.output).hex==retainedContainerHash && clean(dir.path()),
+          "explicit NI Increment publishes a separate real encoded delivery with private intermediates unchanged");
+    if(incremented.state==render::JobState::Completed)
+        check(audio::readAacMovie(incremented.output).tracks.at(0).frames==10876,
+              "numbered NI delivery contains the requested encoded range");
     job.nameTemplate = "Cancelled";
     std::stop_source stop;
     render::Control cancel;
@@ -438,6 +500,7 @@ int main() {
     try {
         metadata();
         normalizationRefusal();
+        collisionPublication();
         integration();
     } catch (const std::exception &error) {
         check(false, error.what());

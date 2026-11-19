@@ -124,9 +124,11 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         Stage stage(job.directory);
         const auto project = captureProject(job, stage);
         const auto ni = *job.niStems;
+        const auto collision = job.collision;
         job.project = project;
         job.directory = stage.path;
         job.niStems.reset();
+        job.collision = Collision::Fail; // private intermediates never inherit delivery renumbering
         job.encoding.format = audio::WavFormat::Float32;
         job.encoding.dither = audio::WavDither::None;
         Control renderControl = control;
@@ -148,9 +150,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         result.framesWritten = rendered.framesWritten;
         result.output = stage.path.parent_path() / rendered.output.filename();
         result.output.replace_extension(".stem.mp4");
-        validateOutputName(result.output);
-        if (fs::exists(result.output))
-            throw std::runtime_error("NI Stems destination already exists");
+        detail::prepareOutput(result,collision,".stem.mp4","NI Stems destination already exists");
         std::vector<audio::AacTrack> tracks;
         std::vector<audio::StemLabel> labels;
         auto encode = [&](const fs::path &wave, unsigned ordinal) {

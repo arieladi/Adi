@@ -15,6 +15,9 @@
 namespace adi::render {
 using JobId = std::uint64_t;
 enum class JobState { Pending, Running, Completed, Failed, Cancelled };
+// Single-delivery policies. Replace needs a separate identity-bound opt-in
+// contract and is not available through this API yet.
+enum class Collision { Fail, Increment };
 
 // ADR-0071/0205: application job state, never project operations. This first
 // runner exports direct wet sources as WAV, or NI Stems through niStems. Noise
@@ -54,6 +57,7 @@ struct Job {
     Encoding encoding;
     std::optional<NiStems> niStems = {};
     Normalization normalization{};
+    Collision collision = Collision::Fail;
 };
 struct PublicationReport {
     bool durabilityConfirmed = false;
@@ -166,6 +170,10 @@ struct Control {
                                     JobId = 0, std::uint64_t counter = 1);
 void validateNiStems(const Job&);
 namespace detail {
+// Select once before rendering/encoding the final delivery. Increment inserts
+// " (2)", " (3)", ... before the complete suffix. Never renumbers at publication.
+// The caller sets result.output to its original complete filename first.
+void prepareOutput(Result&, Collision, const char* suffix, const char* collisionMessage);
 // Shared WAV/NI commit point. Allocate warning storage before publication;
 // nothing after successful publication can throw and turn it into Failed.
 void publishOutput(const std::filesystem::path& stage, Result&, media::PublishHooks,

@@ -709,6 +709,102 @@ void finalNamesAndCaseCollisions() {
     audio::WavReader retained(first.output);
     check(retained.frames()==866 && f.noStage(),"case-only publication leaves the first file intact and no stage");
 }
+void collisionModes() {
+    Fixture f;
+    check(f.job().collision==Collision::Fail,"collision policy defaults to Fail");
+    const auto original=renderWav(f.job("delivery"),{});
+    const auto originalHash=media::blake3File(original.output).hex;
+    auto changed=f.job("delivery");changed.beginSample=200;
+    const auto refused=renderWav(changed,{});
+    check(refused.state==JobState::Failed && refused.framesWritten==0 && !refused.publication &&
+          media::blake3File(original.output).hex==originalHash,
+          "default collision refuses before audio and preserves the existing output bytes");
+    changed.collision=Collision::Increment;
+    Queue queue;queue.add(changed);queue.run();
+    const auto numbered=queue.snapshot().front().result;
+    check(numbered.output.filename()=="delivery (2).wav" && numbered.state==JobState::Completed &&
+          media::blake3File(original.output).hex==originalHash && matches(read(numbered,803),200),
+          "explicit Increment publishes actual selected audio under the first free numbered filename");
+    const auto doc=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    check(doc["members"][0]["job"]["collision"]=="increment" &&
+          doc["members"][0]["result"]["output"]==media::pathUtf8(numbered.output),
+          "run manifest records requested collision mode separately from the chosen delivery path");
+    fs::create_directory(changed.directory/"delivery (3).wav");
+    const auto fourth=renderWav(changed,{});
+    check(fourth.state==JobState::Completed && fourth.output.filename()=="delivery (4).wav" &&
+          fs::is_directory(changed.directory/"delivery (3).wav"),
+          "Increment treats a directory as occupied and never removes it");
+    auto race=f.job("late-increment");race.collision=Collision::Increment;
+    {std::ofstream sentinel(race.directory/"late-increment.wav");sentinel<<"original";}
+    bool arrived=false;
+    Control control;
+    control.progress=[&](JobId,std::uint64_t done,std::uint64_t) {
+        if(arrived || done==0)return;
+        std::ofstream sentinel(race.directory/"late-increment (2).wav");sentinel<<"late arrival";
+        sentinel.close();arrived=true;
+    };
+    const auto collided=renderWav(race,{},control);
+    check(arrived && collided.state==JobState::Failed && !collided.publication &&
+          collided.output.filename()=="late-increment (2).wav" && collided.framesWritten==866 &&
+          fs::file_size(collided.output)==12 && !fs::exists(race.directory/"late-increment (3).wav") && f.noStage(),
+          "a late collision fails the frozen numbered delivery instead of renumbering or replacing it");
+    {
+        std::ifstream file(collided.output);std::string value;std::getline(file,value);
+        check(value=="late arrival","late arriving output retains its exact external bytes");
+    }
+    auto boundary=f.job();boundary.nameTemplate.clear();boundary.collision=Collision::Increment;
+    for(unsigned i=0;i<96;++i)boundary.nameTemplate+="\xC3\xA9"; // 192+4 increment+4 WAV suffix
+    check(renderWav(boundary,{}).state==JobState::Completed,"increment boundary has a real occupied original");
+    const auto exact=renderWav(boundary,{});
+    check(exact.state==JobState::Completed && media::pathUtf8(exact.output.filename()).size()==200 &&
+          exact.output.filename()==media::pathFromUtf8(boundary.nameTemplate+" (2).wav"),
+          "final 200-byte budget includes both increment and complete WAV suffix");
+    for(unsigned i=3;i<=9;++i) {
+        std::ofstream occupied(boundary.directory/media::pathFromUtf8(boundary.nameTemplate+" ("+std::to_string(i)+").wav"));
+        occupied<<"preserved";
+    }
+    const auto twoDigits=renderWav(boundary,{});
+    check(twoDigits.state==JobState::Failed && media::pathUtf8(twoDigits.output.filename()).size()==201 &&
+          twoDigits.output.filename()==media::pathFromUtf8(boundary.nameTemplate+" (10).wav") &&
+          !fs::exists(twoDigits.output) && fs::file_size(boundary.directory/media::pathFromUtf8(boundary.nameTemplate+" (9).wav"))==9,
+          "increment digit growth is revalidated without truncation or clobbering lower numbers");
+    boundary.nameTemplate+='x';
+    const auto longerOriginal=renderWav(boundary,{});
+    const auto longerHash=media::blake3File(longerOriginal.output).hex;
+    const auto tooLong=renderWav(boundary,{});
+    check(longerOriginal.state==JobState::Completed && tooLong.state==JobState::Failed &&
+          tooLong.framesWritten==0 && media::pathUtf8(tooLong.output.filename()).size()==201 &&
+          tooLong.error=="final export name exceeds 200 UTF-8 bytes" &&
+          !fs::exists(tooLong.output) && media::blake3File(longerOriginal.output).hex==longerHash,
+          "increment overflow refuses without truncating or replacing a valid shorter original");
+    const auto cased=renderWav(f.job("NativeCase"),{});
+    auto lower=f.job("nativecase");lower.collision=Collision::Increment;
+    const bool aliases=fs::exists(lower.directory/"nativecase.wav");
+    const auto next=renderWav(lower,{});
+    check(next.state==JobState::Completed && next.output.filename()==(aliases?"nativecase (2).wav":"nativecase.wav") &&
+          !fs::equivalent(cased.output,next.output),
+          "Increment respects case-only aliases according to the actual destination directory");
+    const auto unicodeUpper=renderWav(f.job("\xC3\x89tude"),{});
+    auto unicodeLower=f.job("\xC3\xA9tude");unicodeLower.collision=Collision::Increment;
+    const bool unicodeAliases=fs::exists(unicodeLower.directory/media::pathFromUtf8("\xC3\xA9tude.wav"));
+    const auto unicodeNext=renderWav(unicodeLower,{});
+    check(unicodeNext.state==JobState::Completed &&
+          unicodeNext.output.filename()==media::pathFromUtf8(unicodeAliases?"\xC3\xA9tude (2).wav":"\xC3\xA9tude.wav") &&
+          !fs::equivalent(unicodeUpper.output,unicodeNext.output),
+          "non-ASCII case-only aliases use native filesystem lookup rather than ASCII folding");
+    auto reserved=f.job("CON.song");reserved.collision=Collision::Increment;
+    check(renderWav(reserved,{}).state==JobState::Completed,"reserved stem is escaped before collision resolution");
+    check(renderWav(reserved,{}).output.filename()=="_CON.song (2).wav",
+          "reserved prefix escape and dotted stem survive numbered final naming");
+    auto trailing=f.job("trailing. ");trailing.collision=Collision::Increment;
+    check(renderWav(trailing,{}).state==JobState::Completed &&
+          renderWav(trailing,{}).output.filename()=="trailing (2).wav",
+          "trailing dot and space removal happens before suffix-aware Increment");
+    auto invalid=f.job("invalid-policy");invalid.collision=static_cast<Collision>(99);
+    check(renderWav(invalid,{}).state==JobState::Failed &&
+          !fs::exists(invalid.directory/"invalid-policy.wav") && f.noStage(),
+          "unknown collision policies are refused before publication");
+}
 std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
 std::error_code confirmDirectorySync(const fs::path&) { return {}; }
 std::error_code refuseRename(const fs::path&, const fs::path&) { return std::make_error_code(std::errc::operation_not_supported); }
@@ -999,7 +1095,7 @@ void mediaIdentities() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests(); mediaIdentities();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); queuedRevisionRegions(); revisionAfterUndo(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); collisionModes(); publicationResults(); runManifests(); mediaIdentities();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

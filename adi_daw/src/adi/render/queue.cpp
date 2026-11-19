@@ -26,6 +26,8 @@ static_assert(std::is_nothrow_move_assignable_v<std::string>);
 namespace {
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
+    if (j.collision != Collision::Fail && j.collision != Collision::Increment)
+        throw std::invalid_argument("unsupported export collision policy");
     if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
     if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
         std::floor(j.session.sampleRate) != j.session.sampleRate)
@@ -215,6 +217,47 @@ void validateOutputName(const fs::path& output) {
         throw std::invalid_argument("final export name exceeds 200 UTF-8 bytes");
 }
 
+void detail::prepareOutput(Result& result,Collision collision,const char* suffix,const char* collisionMessage) {
+    if(collision!=Collision::Fail && collision!=Collision::Increment)
+        throw std::invalid_argument("unsupported export collision policy");
+    validateOutputName(result.output);
+    const auto directory=result.output.parent_path();
+    if(!fs::is_directory(directory))throw std::runtime_error("export directory does not exist");
+    const auto occupied=[](const fs::path& path) {
+        std::error_code error;
+        const auto status=fs::symlink_status(path,error);
+        if(error==std::errc::no_such_file_or_directory)return false;
+        if(error)throw fs::filesystem_error("inspect export destination",path,error);
+        // A dangling symlink or directory is occupied too. Native lookup keeps
+        // the actual directory's case semantics; never use ASCII-only folding.
+        return status.type()!=fs::file_type::not_found;
+    };
+    if(!occupied(result.output))return;
+    if(collision==Collision::Fail)throw std::runtime_error(collisionMessage);
+    const auto filename=media::pathUtf8(result.output.filename());
+    const std::string_view extension(suffix);
+    if(extension.empty() || !filename.ends_with(extension))throw std::invalid_argument("invalid export suffix");
+    const auto stem=filename.substr(0,filename.size()-extension.size());
+    // With N directory entries, one of N+1 numbered names must be free unless
+    // the directory changes while being inspected. Do not count the original:
+    // it might be a native short-name alias of one numbered long filename.
+    // Bound by the snapshot instead of an arbitrary maximum delivery number.
+    std::uint64_t entries=0;
+    for(const auto& entry:fs::directory_iterator(directory)) {
+        (void)entry;
+        if(entries==std::numeric_limits<std::uint64_t>::max()-2)
+            throw std::runtime_error("export directory has too many entries");
+        ++entries;
+    }
+    for(std::uint64_t offset=0;offset<=entries;++offset) {
+        const auto ordinal=offset+2;
+        result.output=directory/media::pathFromUtf8(stem+" ("+std::to_string(ordinal)+")"+std::string(extension));
+        validateOutputName(result.output); // includes both increment and entire suffix
+        if(!occupied(result.output))return;
+    }
+    throw std::runtime_error("export collision set changed during preflight; retry");
+}
+
 void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
                           const char* collisionMessage) {
     // Reserve the fallback message before the irreversible commit point.
@@ -295,9 +338,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         }
         const auto filename = resolveName(job.nameTemplate, names) + ".wav";
         result.output = job.directory / media::pathFromUtf8(filename);
-        validateOutputName(result.output);
-        if (!fs::is_directory(job.directory)) throw std::runtime_error("export directory does not exist");
-        if (fs::exists(result.output)) throw std::runtime_error("export destination already exists");
+        detail::prepareOutput(result,job.collision,".wav","export destination already exists");
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
         const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
@@ -516,6 +557,7 @@ std::string serializeRunManifest(const RunReport& run) {
             }
             item["job"] = {{"project", media::pathUtf8(job.project)}, {"directory", media::pathUtf8(job.directory)},
                 {"name_template", job.nameTemplate}, {"source", sourceValue(job.source)},
+                {"collision",job.collision==Collision::Fail ? "fail" : "increment"},
                 {"requested_range", {{"begin_sample", job.beginSample}, {"end_sample", job.endSample},
                     {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
                 {"requested_profile", std::move(profile)}};

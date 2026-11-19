@@ -16,6 +16,30 @@ Authoritative WAV/NI publication uses `PublishPolicy::AtomicOnly`: a rename
 refusal fails without publishing a copy. Successful outputs therefore report
 `usedFallback=false`; retaining the publisher flag does not opt into fallback.
 
+`Job::collision` supports `Fail` (the default) and explicit `Increment` for one
+WAV or NI delivery. The original complete filename is tried first. If occupied,
+Increment selects `name (2).wav`, `name (3).wav`, and so on, or
+`name (2).stem.mp4` for NI. Files, directories and dangling symlinks all occupy
+a name. After the original, the search tries at most the observed directory-entry
+count plus one numbered candidate, and fails if concurrent changes prevent
+finding a free name within that bound. This places no arbitrary small limit on
+existing numbered exports. Filesystem enumeration/lookup is synchronous; a stop
+requested during preflight is observed at the next ordinary render/encode
+cancellation checkpoint, not between each directory entry.
+The 200-byte UTF-8 limit includes the reserved-name prefix, increment text and
+the complete format suffix; names are never truncated to fit.
+
+Selection occurs once at delivery preflight. The selected path is then fixed:
+an arrival at that path before atomic publication fails the attempt and preserves
+the arriving file, rather than silently incrementing again. NI's internal WAVs
+always use Fail; delivery numbering does not alter the private Main/stem names.
+Case-only collisions follow the actual destination directory's native lookup
+semantics, including Unicode names. A case-sensitive directory may retain two
+case-only names; this slice does not implement EX-07's broader case-folded
+delivery-set policy. There is no multi-format/group renumbering, save-dialog
+confirmation or batch policy selection. Replace remains unavailable pending a
+separate explicit opt-in and destination-identity contract inside `replaceFile`.
+
 `Queue::lastRun()` describes the pending membership frozen at the beginning of
 the latest `run()`. Callback-added jobs belong to a later run. Removed pending
 members remain listed as **unstarted**. A stop request leaves unattempted members
@@ -51,6 +75,9 @@ Version 1 records:
   stem metadata. These are explicitly **requested** values. For example, NI
   uses Float32 intermediate WAVs, while its requested profile may still contain
   the ordinary job's WAV encoding. Float32 ignores requested dither.
+- The requested `job.collision` (`fail` or `increment`); `result.output` is the
+  actual selected path, including any preflight increment. A failed preflight
+  can retain its rejected candidate path without having published it.
 - Actual output path, written-frame count, error, publication flags/warning,
   and available normalization measurements. The stable job ID is also the
   runner's dither-seed mixing ordinal.
@@ -134,7 +161,7 @@ Rendered-output hashes, codec version, cleanup-failure reporting, run
 timestamps/identity, and durable manifest storage are also not captured. The
 journal head identifies row history independently of measured media bytes.
 Existing no-clobber publication and volume-native case behavior
-remain; Fail/Increment/Replace selection and folded-name delivery preflight need
+remain; Replace and folded-name/multi-format delivery preflight need
 their separate policy/implementation. The caller still owns naming and storage of
 the JSON report. No new project operations, schema, Undo behavior, or sidecar
 scope are introduced.
