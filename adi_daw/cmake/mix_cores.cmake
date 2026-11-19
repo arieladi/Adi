@@ -56,6 +56,4 @@ add_executable(adi_mix_compressor_tests tests/test_mix_compressor.cpp)
 target_link_libraries(adi_mix_compressor_tests PRIVATE adi_mix_compressor adi_warnings)
 add_test(NAME adi_mix_compressor_tests COMMAND adi_mix_compressor_tests)
 
-add_executable(adi_mix_opto_gain_tests tests/test_mix_opto_gain.cpp)
-target_link_libraries(adi_mix_opto_gain_tests PRIVATE adi_mix_opto adi_warnings)
-add_test(NAME adi_mix_opto_gain_tests COMMAND adi_mix_opto_gain_tests)
+adi_add_opto_gain_tests()

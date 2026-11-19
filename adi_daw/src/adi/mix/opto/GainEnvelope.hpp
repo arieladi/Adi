@@ -32,7 +32,7 @@ enum class Status {
     AllocationFailed
 };
 // Unregistered fixed Opto target/envelope: one selected key waveform lane to
-// linear gain. Ratio4/knee0/range60 are fixed. The caller owns channel selection,
+// linear gain. The 4:1 ratio, 0 dB knee and 60 dB range are fixed. The caller owns channel selection,
 // linking, programme multiplication, routing, controls and source lifetime.
 // One serialized owner; prepare/reset/destruction require stopped processing.
 class GainEnvelope final {
@@ -43,8 +43,9 @@ class GainEnvelope final {
     GainEnvelope &operator=(const GainEnvelope &) = delete;
     GainEnvelope(GainEnvelope &&) = delete;
     GainEnvelope &operator=(GainEnvelope &&) = delete;
-    // Rates44.1..768kHz use the float-rounded processing rate; maximumFrames1..4096.
-    // Normalized A/R must be finite in[0,1], threshold finite in[-60,0]dB.
+    // Rates from 44.1 to 768 kHz use the float-rounded processing rate.
+    // maximumFrames is in [1, 4096]. Normalized attack/release must be finite
+    // in [0, 1], and threshold must be finite in [-60, 0] dB.
     // Nearest rounding is required before shared-table initialization and must
     // remain stable during processing. The caller retains its FTZ/DAZ policy.
     // Failure preserves all previous settings, histories and cache state.

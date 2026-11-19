@@ -5,13 +5,13 @@ component. It is not a stereo audio processor, native device, route provider,
 controller or complete compressor product. A caller selects the finite key lane
 and owns linking, EQ, programme multiplication, channels and source lifetime.
 
-Ratio4, knee0 and range60dB are fixed. Threshold and typed normalized Attack and
+A 4:1 ratio, 0 dB knee and 60 dB range are fixed. Threshold and typed normalized Attack and
 Release values are prepared controls. A normalized value is not a displayed
 millisecond time: the time law couples Attack and Release. The two double
 envelope histories, attack table, nonlinear release branch and float detector/
 gain boundaries are preserved. Controls do not change while running.
 
-Preparation accepts44.1..768kHz and1..4096 maximum samples per span. The internal
+Preparation accepts 44.1–768 kHz and 1–4,096 maximum samples per span. The internal
 rate rounds to float. Selected verification rates do not establish every rate
 and control combination. Nearest rounding is required during setup and must
 remain stable while processing; the caller retains its FTZ/DAZ policy.
