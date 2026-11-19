@@ -468,14 +468,16 @@ bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &bro
 
 juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
     if (!eqPreview_ || !eqPreview_->settings || (!selectedPage_.empty() && selectedPage_ != "eq")) return {};
-    const auto remaining = std::max(0, getHeight() - kTitleHeight - 5);
-    const int h = getHeight() < 144 ? remaining : std::min(86, remaining / 2);
-    return juce::Rectangle<int>(5, kTitleHeight + 1, std::max(0, getWidth() - 10), h).toFloat();
+    auto area = getLocalBounds().reduced(look::border);
+    area.removeFromLeft(look::fieldHeight);
+    if (getHeight() >= look::mixStackNearRow + look::fieldHeight)
+        area.setHeight(std::min(look::mixStackOuterRow, area.getHeight() / 2));
+    return area.toFloat();
 }
 
 int DevicePanelView::eqBandAt(juce::Point<float> p) const {
     const auto graph = eqPreviewBounds();
-    if (getHeight() < 144 || graph.isEmpty() || !graph.expanded(4.f).contains(p) || strip.folded(id)) return -1;
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || graph.isEmpty() || !graph.expanded(4.f).contains(p) || strip.folded(id)) return -1;
     int hit = -1;
     float distance = 7.f;
     const auto &bands = eqPreview_->settings->bands;
@@ -497,7 +499,7 @@ int DevicePanelView::eqBandAt(juce::Point<float> p) const {
     return hit;
 }
 void DevicePanelView::drawEqNodes(juce::Graphics &g, juce::Rectangle<float> graph) const {
-    if (getHeight() < 144 || strip.folded(id)) return;
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || strip.folded(id)) return;
     const auto &preview = *eqPreview_;
     const auto &bands = preview.settings->bands;
     for (std::size_t i = 0; i < bands.size(); ++i) {
@@ -556,7 +558,7 @@ void DevicePanelView::drawEqNodes(juce::Graphics &g, juce::Rectangle<float> grap
 
 bool DevicePanelView::pressEqGraph(juce::Point<float> point) {
     const auto graph = eqPreviewBounds();
-    if (getHeight() < 144 || graph.isEmpty() || !graph.expanded(4.f).contains(point) ||
+    if (getHeight() < look::mixStackNearRow + look::fieldHeight || graph.isEmpty() || !graph.expanded(4.f).contains(point) ||
         strip.folded(id) || !validTarget()) return false;
     const auto safe = SafePointer<DevicePanelView>(this);
     const auto beginSingle = [&](std::size_t band, NodeAxis axis, juce::Point<float> origin) {
@@ -602,7 +604,7 @@ bool DevicePanelView::pressEqGraph(juce::Point<float> point) {
 bool DevicePanelView::dragEqHandle(juce::Point<float> point) {
     if (!eqPreview_ || !eqPreview_->edit) return false;
     const auto e = *eqPreview_->edit;
-    if (presentedInstance() != e.instance || !validTarget() || getHeight() < 144 || eqPreviewBounds().isEmpty() ||
+    if (presentedInstance() != e.instance || !validTarget() || getHeight() < look::mixStackNearRow + look::fieldHeight || eqPreviewBounds().isEmpty() ||
         strip.folded(id) || eqPreview_->settings->bands[e.band].status == mix::eq::Status::Off) {
         finishEqEdit(true);
         return false;
@@ -1195,8 +1197,10 @@ int DevicePanelView::widthFor(int height) const noexcept {
 }
 void DevicePanelView::layoutCompactControls(int top) {
     const int h = std::min(ParameterControl::kHeight, getHeight() - top - 2);
-    const auto columns = h >= 18 ? std::clamp((getWidth() - 8) / 68, 1, 4) : 0;
-    const int w = (getWidth() - 8) / std::max(1, columns);
+    const auto left = look::fieldHeight + look::border;
+    const auto width = std::max(0, getWidth() - left - look::border);
+    const auto columns = h >= look::fieldHeight ? std::clamp(width / (4 * look::fieldHeight), 1, 4) : 0;
+    const int w = width / std::max(1, columns);
     std::array<ParameterControl *, 4> selected{};
     int placed = 0;
     const auto take = [&](ParameterControl &control) {
@@ -1213,8 +1217,8 @@ void DevicePanelView::layoutCompactControls(int top) {
     for (auto &control : controls) {
         const auto at = std::find(selected.begin(), selected.end(), control.get());
         control->setVisible(at != selected.end());
-        if (at != selected.end()) control->setBounds(4 + static_cast<int>(at - selected.begin()) * w, top,
-                                                     std::max(0, w - 2), h);
+        if (at != selected.end()) control->setBounds(left + static_cast<int>(at - selected.begin()) * w, top,
+                                                     std::max(0, w - look::border), h);
     }
 }
 void DevicePanelView::resized() {
@@ -1228,6 +1232,13 @@ void DevicePanelView::resized() {
     wrench.setBounds(32, 1, 16, 15);
     title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - (eqPresentation() || mixCard_ ? 4 : 58)), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
+    if (mixCard_ && !isFolded) {
+        const auto rail = look::fieldHeight;
+        enabled.setBounds(0, 0, rail, rail);
+        title.setBounds(0, 0, std::max(0, getHeight() - rail), rail);
+        title.setTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi)
+                               .translated(0.f, static_cast<float>(getHeight())));
+    }
     if (sample) {
         sample->setVisible(!isFolded);
         const int tileTop = kTitleHeight + (configuring ? 26 : 4) + (parameterPages.empty() ? 0 : kPageHeight);
@@ -1235,11 +1246,12 @@ void DevicePanelView::resized() {
     }
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
-    int top = kTitleHeight + (configuring ? 26 : 2);
+    const int rail = mixCard_ ? look::fieldHeight : 0;
+    int top = mixCard_ ? look::border : kTitleHeight + (configuring ? 26 : 2);
     if (mixCard_ && !isFolded) {
         const auto graph = eqPreviewBounds();
         if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
-        if (getHeight() < 144) {
+        if (getHeight() < look::mixStackNearRow + look::fieldHeight) {
             for (auto &page : parameterPages) {
                 page.selector->setVisible(false);
                 page.enabled->setVisible(false);
@@ -1250,7 +1262,7 @@ void DevicePanelView::resized() {
             return;
         }
     }
-    int pageX = 6;
+    int pageX = 6 + rail;
     for (auto &page : parameterPages) {
         page.selector->setVisible(!isFolded);
         page.enabled->setVisible(!isFolded && !page.enableParameter.empty());
@@ -1267,8 +1279,8 @@ void DevicePanelView::resized() {
                             std::find(functionBandSections_.begin(), functionBandSections_.end(), selectedSection_) != functionBandSections_.end();
     functionBand.setEnabled(bandApplies && validTarget());
     functionSection.setEnabled(validTarget());
-    functionBand.setBounds(6, top + 1, 98, kPageHeight - 3);
-    functionSection.setBounds(108, top + 1, std::max(0, std::min(150, getWidth() - 114)), kPageHeight - 3);
+    functionBand.setBounds(6 + rail, top + 1, 98, kPageHeight - 3);
+    functionSection.setBounds(108 + rail, top + 1, std::max(0, std::min(150, getWidth() - 114 - rail)), kPageHeight - 3);
     if (functionControls) top += kPageHeight;
     const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
     int visible = 0;
@@ -1277,7 +1289,7 @@ void DevicePanelView::resized() {
         control->setVisible(shown);
         if (!shown) continue;
         const int column = visible / rows, row = visible++ % rows;
-        control->setBounds(6 + column * ParameterControl::kWidth,
+        control->setBounds(6 + rail + column * ParameterControl::kWidth,
                                top + row * ParameterControl::kHeight, ParameterControl::kWidth - 4,
                                ParameterControl::kHeight);
     }
@@ -1285,11 +1297,11 @@ void DevicePanelView::resized() {
 void DevicePanelView::paint(juce::Graphics &g) {
     // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
     // device has the focus, as Live marks the selected device.
-    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
+    const auto edge = nativeFunction() ? look::accent : hasKeyboardFocus(true) ? look::focus : look::field;
     g.fillAll(look::panel);
     g.setColour(edge);
     if (!mixCard_) g.fillRect(0, 0, getWidth(), kTitleHeight);
-    g.drawRect(getLocalBounds(), mixCard_ ? 1 : 2);
+    g.drawRect(getLocalBounds().toFloat(), mixCard_ ? look::hairline : look::heavyLine);
     if (mixCard_ && eqPreview_) {
         const auto graph = eqPreviewBounds();
         if (!graph.isEmpty()) {
@@ -1319,12 +1331,14 @@ void DevicePanelView::paint(juce::Graphics &g) {
     }
     // Live's fold switch beside the activator.
     const auto fold = foldSwitch().toFloat();
-    g.setColour(look::button);
-    g.fillEllipse(fold);
-    g.setColour(look::text);
-    g.drawEllipse(fold.reduced(0.5f), 1.f);
-    look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
-                   strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
+    if (!fold.isEmpty()) {
+        g.setColour(look::button);
+        g.fillEllipse(fold);
+        g.setColour(look::text);
+        g.drawEllipse(fold.reduced(0.5f), 1.f);
+        look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
+                       strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
+    }
     if (strip.folded(id) && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
         g.setColour(look::text);
@@ -1380,7 +1394,9 @@ void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
     else if (e.eventComponent == this && e.mods.isLeftButtonDown())
         pressEqGraph(e.position);
 }
-juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
+juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept {
+    return mixCard_ ? juce::Rectangle<int>{} : juce::Rectangle<int>{19, 3, 11, 11};
+}
 void DevicePanelView::mouseMove(const juce::MouseEvent &e) {
     if (!eqPreview_ || eqPreview_->edit) return;
     const auto hovered = eqBandAt(e.position);

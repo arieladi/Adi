@@ -133,6 +133,7 @@ class DevicePanelView final : public juce::Component {
     int widthFor(int height) const noexcept;
     // Live's round fold switch in the title bar, beside the activator.
     juce::Rectangle<int> foldSwitch() const noexcept;
+    juce::Rectangle<float> eqPreviewBounds() const;
     void configure();
     // The title bar's menu, in Live's order: the editing commands, then the device's own.
     juce::PopupMenu commands();
@@ -195,7 +196,6 @@ class DevicePanelView final : public juce::Component {
     struct EqPreview;
     std::unique_ptr<EqPreview> eqPreview_;
     void updateEqPreview(const DevicePanelData &);
-    juce::Rectangle<float> eqPreviewBounds() const;
     int eqBandAt(juce::Point<float>) const;
     void drawEqNodes(juce::Graphics &, juce::Rectangle<float>) const;
     void layoutCompactControls(int top);

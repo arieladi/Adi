@@ -105,8 +105,11 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     card.targetValid = [&] { return valid; };
     card.parameterGesture = apply;
     card.setSize(480, 246);
-    const float x = 5.f + 470.f * std::log(100.f) / std::log(3000.f);
-    const juce::Point<float> point{x, 61.f};
+    const auto graph = card.eqPreviewBounds();
+    const float x = graph.getX() + graph.getWidth() * std::log(100.f) / std::log(3000.f);
+    const juce::Point<float> point{x, graph.getCentreY()};
+    check(card.title.isTransformed() && graph.getX() > static_cast<float>(card.enabled.getRight()),
+          "the turned title and activator share a rail beside the EQ graph");
     juce::Image grid(juce::Image::RGB, card.getWidth(), card.getHeight(), true,
                      juce::SoftwareImageType{});
     juce::Graphics graphics(grid);
@@ -120,7 +123,7 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
           card.dragEqHandle(gain.translated(30.f, -12.f)), "dB handle accepts a continuous drag");
     card.releaseEqHandle();
     auto real = [&](const std::string &p) { return doc->session().instanceFor(id)->getParam(p).real; };
-    check(std::abs(real("39") - 12.f*36.f/86.f) < .001 && std::abs(real("38") - 1000.) < .001 &&
+    check(std::abs(real("39") - 12.f * 36.f / graph.getHeight()) < .001 && std::abs(real("38") - 1000.) < .001 &&
           std::abs(real("14")) < .001, "gain handle edits only its band and axis");
     const auto undoGain = doc->ops().undo();
     const bool gainSynced = doc->synchronise();
@@ -130,7 +133,7 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     check(card.pressEqGraph(frequency) && card.dragEqHandle(frequency.translated(10.f, 10.f)) &&
           card.dragEqHandle(frequency.translated(25.f, 20.f)), "Hz handle accepts a continuous drag");
     card.releaseEqHandle();
-    check(std::abs(real("38") - 1000. * std::pow(3000., 25./470.)) < .01 && std::abs(real("39")) < .001,
+    check(std::abs(real("38") - 1000. * std::pow(3000., 25. / graph.getWidth())) < .01 && std::abs(real("39")) < .001,
           "frequency drag follows the display log scale and authored parameter mapping");
     const auto undoFrequency = doc->ops().undo();
     const bool frequencySynced = doc->synchronise();
@@ -153,8 +156,8 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     check(card.pressEqGraph(point) && pairOwner &&
               card.dragEqHandle(point.translated(20.f, -12.f)),
           "dragging the band itself previews Frequency and Gain under one owner");
-    check(std::abs(real("38") - 1000. * std::pow(3000., 20./470.)) < .01 &&
-              std::abs(real("39") - 12.f*36.f/86.f) < .001 && std::abs(real("14")) < .001,
+    check(std::abs(real("38") - 1000. * std::pow(3000., 20. / graph.getWidth())) < .01 &&
+              std::abs(real("39") - 12.f * 36.f / graph.getHeight()) < .001 && std::abs(real("14")) < .001,
           "a diagonal drag edits both coordinates of the selected band only");
     card.releaseEqHandle();
     const bool committed = !pairOwner && doc->synchronise();

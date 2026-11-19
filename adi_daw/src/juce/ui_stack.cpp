@@ -5,9 +5,11 @@
 #include "ui_shell.hpp"
 #include "adi/mix_functions.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <set>
+#include <utility>
 namespace adi::ui {
 namespace {
 stack::TimeMs clockNow() noexcept {
@@ -102,6 +104,7 @@ struct StackRow::State {
     std::uint64_t presentation = 0;
     bool destroying = false;
     bool spectrumDemand = false;
+    std::array<int,2> levelPixels{};
     juce::Component lane;
     juce::TextButton mute{"M"}, solo{"S"};
     struct Tile {
@@ -271,6 +274,18 @@ void StackRow::present(const stack::RowGeo &input) {
     if (!alive || state_->presentation != presentation) return;
     state_->presentedRow = geo;
     state_->presentedChip = chip;
+    const auto *meter = stack_.root.mixer.meter ? stack_.root.mixer.meter(track_) : nullptr;
+    const auto meterHeight = std::max(0, getHeight() - 2 * look::border);
+    const auto pixels = [meterHeight](float amplitude) {
+        return amplitude > .001f
+            ? juce::roundToInt(static_cast<float>(meterHeight) * std::clamp(1.f + std::log10(amplitude) / 3.f, 0.f, 1.f))
+            : 0;
+    };
+    const std::array<int,2> levels = meter ? std::array{
+        pixels(meter->peak.load(std::memory_order_relaxed)), pixels(meter->rms.load(std::memory_order_relaxed))
+    } : std::array<int,2>{};
+    if (std::exchange(state_->levelPixels, levels) != levels)
+        repaint(0, 0, look::gap, getHeight());
     const int buttonY = juce::roundToInt(chip.chip.y - geo.top + chip.chip.h) + look::border;
     const auto *track = stack_.root.reader().findTrack(track_);
     const auto small = look::fieldHeight;
@@ -292,17 +307,30 @@ void StackRow::paint(juce::Graphics &g) {
     const auto &m = stack_.model();
     const auto local = [&](stack::Rect r) { r.y -= row.top; return rect(r); };
     g.fillAll(row.selected ? look::laneSelectedAlt : look::panel);
-    g.setColour(row.colour >= 0 ? look::paletteColour(row.colour) : look::trackColour(row.shown));
-    g.fillRect(2, 2, 3, std::max(0, getHeight() - 4));
+    auto meter = getLocalBounds().reduced(0, look::border).removeFromLeft(look::border);
+    g.setColour(look::display);
+    g.fillRect(meter);
+    auto peak = meter.removeFromLeft(meter.getWidth() / 2);
+    g.setColour(look::meterPeak);
+    g.fillRect(peak.withTop(peak.getBottom() - state_->levelPixels[0]));
+    g.setColour(look::meterLevel);
+    g.fillRect(meter.withTop(meter.getBottom() - state_->levelPixels[1]));
+
     const auto chip = state_->presentedChip;
     const auto name = local(chip.chip);
     g.setColour(row.focused ? look::field : look::panel);
-    g.fillRoundedRectangle(name, 2.f);
+    g.fillRoundedRectangle(name, look::radiusSmall);
+    auto nameText = name.reduced(static_cast<float>(look::border), look::hairline);
+    const auto diameter = static_cast<float>(look::border);
+    const auto dot = nameText.removeFromLeft(diameter).withSizeKeepingCentre(diameter, diameter);
+    nameText.removeFromLeft(diameter);
+    g.setColour(row.colour >= 0 ? look::paletteColour(row.colour) : look::trackColour(row.shown));
+    g.fillEllipse(dot);
     g.setColour(look::text);
-    g.setFont(look::font(12.f, true));
+    g.setFont(look::font(look::fontField, true));
     const auto text = m.trackName(track_);
     g.drawFittedText(juce::String::fromUTF8(text.data(), static_cast<int>(text.size())),
-                    name.reduced(5, 1).toNearestInt(), juce::Justification::centredLeft, 2);
+                    nameText.toNearestInt(), juce::Justification::centredLeft, 2);
     if (row.group)
         look::triangle(g, local(chip.fold), row.folded ? 0.f : juce::MathConstants<float>::halfPi, look::text);
     g.setFont(look::font(11.f, true));

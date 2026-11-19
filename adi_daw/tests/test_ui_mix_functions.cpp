@@ -414,11 +414,12 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
     const auto result = sibling.read();
     int changedPixels = 0;
     bool withinGraph = true;
+    const auto graph = card->eqPreviewBounds().toNearestInt();
     for (int y = 0; y < silent.getHeight(); ++y)
         for (int x = 0; x < silent.getWidth(); ++x)
             if (silent.getPixelAt(x, y) != audible.getPixelAt(x, y)) {
                 ++changedPixels;
-                withinGraph = withinGraph && y > DevicePanelView::kTitleHeight && x > 0 && x < silent.getWidth() - 1;
+                withinGraph = withinGraph && graph.contains(x, y);
             }
     if (!result || std::abs(result->binsDbfs[16] + 6.0206f) >= .002f || changedPixels == 0 || !withinGraph)
         std::cout << "Stack spectrum fixture: bin16=" << (result ? result->binsDbfs[16] : -999.f)
