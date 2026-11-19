@@ -9,6 +9,8 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -330,6 +332,122 @@ inline void clapHintAndMove() {
         stored->modules.size()==1 && pids(currentPath).child==1,
         "a complete owner walk retires the stale row and reuses the live module");
 }
+struct DiscoveryGate {
+    std::atomic<bool> entered{false}, arrived{false}, released{false}, ranOnCaller{false};
+    std::thread::id caller=std::this_thread::get_id();
+    static inline DiscoveryGate* active=nullptr;
+
+    DiscoveryGate(){active=this;}
+    ~DiscoveryGate(){active=nullptr;}
+    void reset(){entered=false;arrived=false;released=false;ranOnCaller=false;}
+
+    static std::int64_t clock() noexcept {
+        using namespace std::chrono_literals;
+        auto& gate=*active;
+        if(!gate.entered.exchange(true)) {
+            gate.ranOnCaller=std::this_thread::get_id()==gate.caller;
+            gate.arrived=true;
+            const auto deadline=std::chrono::steady_clock::now()+5s;
+            while(!gate.released.load() && std::chrono::steady_clock::now()<deadline)
+                std::this_thread::sleep_for(1ms);
+        }
+        return scan::systemUtcMicros();
+    }
+};
+
+inline void asynchronousDiscovery() {
+    using namespace std::chrono_literals;
+    using namespace device;
+    TempDirectory scratch("discovery_operation","async_startup");
+    const auto root=scratch.path()/"modules";fs::create_directory(root);
+    const auto clap=root/"owned.clap";copyClap(clap);
+    const auto original=media::pathFromUtf8(ADI_CATALOGUE_FIXTURE);
+    fs::copy(original,root/original.filename(),fs::copy_options::recursive);
+    const auto wait=[&](auto done,const char* message) {
+        const auto deadline=std::chrono::steady_clock::now()+15s;
+        while(!done() && std::chrono::steady_clock::now()<deadline)
+            std::this_thread::sleep_for(1ms);
+        require(done(),message);
+    };
+    DiscoveryGate gate;
+    scan::Config config;config.registry=scratch.path()/"registry.sqlite";
+    config.executable=scratch.path()/"async-owned-scanner.exe";config.clock=DiscoveryGate::clock;
+    fs::copy_file(media::pathFromUtf8(ADI_CATALOGUE_SCANNER),config.executable);
+    JuceDeviceLoader loader(false);loader.setScanConfig(config);
+    loader.addSearchPath(juce::File(juce::String::fromUTF8(text(root).c_str())));
+    std::string error;
+    const auto hydrate=loader.startDiscovery(DiscoveryMode::CacheOnly);
+    require(hydrate.status==DiscoveryStart::Started,"start read-only startup hydration");
+    wait([&]{return loader.discoveryProgress().phase==DiscoveryPhase::Ready;},"startup hydration completes");
+    const auto hydrated=loader.adoptDiscovery(hydrate.job);
+    require(hydrated && hydrated->outcome==DiscoveryOutcome::Missing && !fs::exists(config.registry),
+        "read-only startup hydration reports missing storage without creating it");
+    const auto startup=loader.startDiscovery(DiscoveryMode::Incremental);
+    require(startup.status==DiscoveryStart::Started && startup.job!=0,"start the automatic worker count scan");
+    wait([&]{return gate.arrived.load();},"worker reaches the held VST3 admission");
+    const auto progress=loader.discoveryProgress();
+    require(!gate.ranOnCaller && progress.job==startup.job && progress.phase==DiscoveryPhase::Vst3 &&
+        progress.hasCandidateTotal && progress.total==1 && progress.completed==0 &&
+        !loader.adoptDiscovery(startup.job) && !loader.catalogue(),"startup progress is visible while the worker is held");
+    require(loader.startDiscovery(DiscoveryMode::Refresh).status==DiscoveryStart::Busy,
+        "startup and Rescan share one worker owner");
+    rows::PluginRef ref;ref.format="clap";ref.uid="org.adi.catalogue.runtime";ref.pathHint=text(clap);
+    engine::DeviceRequest request;request.ref=&ref;request.sampleRate=48000;request.maxFrames=64;
+    require(!loader.fn()(request,error) && error.find("NeedsDiscovery")!=error.npos &&
+        pids(clap).child==0 && pids(clap).parent==0 && loader.stats().catalogueReads==1,
+        "a runtime hint cannot start a competing probe or reread SQL");
+    const auto finish=[&](std::uint64_t id) {
+        gate.released=true;
+        wait([&]{return loader.discoveryProgress().phase==DiscoveryPhase::Ready;},"worker reaches adoption");
+        return loader.adoptDiscovery(id);
+    };
+    const auto first=finish(startup.job);
+    require(first && first->outcome==DiscoveryOutcome::Published && loader.catalogue()==first->catalogue &&
+        first->catalogue->clap.size()==1 && first->catalogue->vst3.size()==3 &&
+        std::any_of(first->catalogue->vst3.begin(),first->catalogue->vst3.end(),
+            [](const auto& description){return description.isInstrument;}) &&
+        pids(clap).child==1 && pids(clap).parent==0,"startup adopts typed metadata without loading plug-ins in the owner");
+    require(loader.hydrateCatalogue(error) && loader.catalogue()==first->catalogue &&
+        loader.stats().catalogueReads==1,"managed project open keeps the adopted catalogue without synchronous SQL");
+    const auto instance=loader.fn()(request,error);
+    require(instance && instance->loaded() && pids(clap).child==1 && pids(clap).parent==1,
+        "the adopted catalogue serves an ordinary device request without another helper");
+    const auto warmStart=loader.startDiscovery(DiscoveryMode::Incremental,1);
+    require(warmStart.status==DiscoveryStart::Started,"start an explicit one-worker Incremental");
+    const auto warm=finish(warmStart.job);
+    require(warm && warm->outcome==DiscoveryOutcome::Published && pids(clap).child==1,
+        "warm asynchronous Incremental reuses unchanged plugins");
+    gate.reset();
+    const auto rescan=loader.startDiscovery(DiscoveryMode::Refresh,1);
+    require(rescan.status==DiscoveryStart::Started,"start explicit Rescan");
+    wait([&]{return gate.arrived.load();},"Rescan reaches its held admission");
+    require(loader.cancelDiscovery(rescan.job),"cancel the current scan job");
+    const auto cancelled=finish(rescan.job);
+    require(cancelled && cancelled->outcome==DiscoveryOutcome::Cancelled && loader.catalogue()==warm->catalogue &&
+        pids(clap).child==1,"cancelled Rescan retains the previous catalogue");
+    const auto freshStart=loader.startDiscovery(DiscoveryMode::Refresh,1);
+    require(freshStart.status==DiscoveryStart::Started,"start a complete Rescan");
+    const auto fresh=finish(freshStart.job);
+    require(fresh && fresh->outcome==DiscoveryOutcome::Published && loader.catalogue()==fresh->catalogue &&
+        pids(clap).child==2,"Rescan performs a new probe and adopts its catalogue");
+    gate.reset();
+    const auto obsolete=loader.startDiscovery(DiscoveryMode::Refresh,1);
+    require(obsolete.status==DiscoveryStart::Started,"start a Rescan before a settings change");
+    wait([&]{return gate.arrived.load();},"obsolete scan reaches its held admission");
+    loader.setSearchPaths({});
+    const auto stale=finish(obsolete.job);
+    require(stale && stale->outcome==DiscoveryOutcome::Stale && loader.catalogue()==fresh->catalogue,
+        "a settings change cancels and invalidates the older job without replacing the catalogue");
+    loader.addSearchPath(juce::File(juce::String::fromUTF8(text(root).c_str())));
+    require(fs::remove(config.executable),"remove only the private helper");
+    const auto failed=loader.startDiscovery(DiscoveryMode::Incremental,1);
+    require(failed.status==DiscoveryStart::Started,"start owner job with unavailable helper");
+    const auto refused=finish(failed.job);
+    require(refused && refused->outcome==DiscoveryOutcome::Failed && !refused->report.complete &&
+        !refused->error.empty() && loader.catalogue()==fresh->catalogue,
+        "helper deployment failure reports the cause and preserves adopted metadata");
+    std::printf("DISCOVERY_ASYNC startup, reuse, refresh, cancellation, stale adoption and deployment refusal passed\n");
+}
 struct ScopedHome {
 #if defined(_WIN32)
     std::wstring saved;
@@ -378,7 +496,7 @@ inline bool scannerDiscoveryContracts() {
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
         auto receipt=discovery_test_detail::modes();discovery_test_detail::refreshModes();discovery_test_detail::parallelDiscovery();
         discovery_test_detail::cacheStates();discovery_test_detail::command();
-        discovery_test_detail::clapHintAndMove();
+        discovery_test_detail::clapHintAndMove();discovery_test_detail::asynchronousDiscovery();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
         receipt["serial_parallel_catalogue_equal"]=true;
         std::printf("DISCOVERY_OPERATION %s\n",receipt.dump().c_str());return true;

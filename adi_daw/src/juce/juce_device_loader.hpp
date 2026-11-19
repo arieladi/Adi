@@ -33,6 +33,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -48,7 +49,24 @@ struct PluginSearchPaths {
 };
 
 enum class DiscoveryMode { Incremental, CacheOnly, Refresh };
-enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled };
+enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled, Stale };
+
+enum class DiscoveryPhase { Idle, Queued, ReadingCache, Vst3, Clap, Reconciling, Ready };
+struct DiscoveryProgress {
+    std::uint64_t job = 0;
+    DiscoveryPhase phase = DiscoveryPhase::Idle;
+    bool cancellationRequested = false;
+    bool hasCandidateTotal = false;
+    std::size_t completed = 0;
+    std::size_t total = 0;
+};
+
+enum class DiscoveryStart { Started, Busy, Invalid, Unavailable, CallbackRefused };
+struct DiscoveryAdmission {
+    DiscoveryStart status = DiscoveryStart::Invalid;
+    std::uint64_t job = 0;
+    std::string error;
+};
 
 /// Owned format-validated metadata, not instantiated/restored/audio readiness.
 /// Reuses the actual host metadata types; no second registry/wire schema.
@@ -69,6 +87,7 @@ struct DiscoveryResult {
 class JuceDeviceLoader {
 public:
     explicit JuceDeviceLoader(bool includeDefaultSearchPaths = true);
+    ~JuceDeviceLoader();
 
     /// Format conventions only; no directory enumeration or module loading.
     [[nodiscard]] PluginSearchPaths defaultSearchPaths() const;
@@ -109,13 +128,25 @@ public:
     bool hydrateCatalogue(std::string& error);
 
     /// Owner configuration for the dedicated helper/shared quarantine. Empty
-    /// paths use app defaults. Changing it invalidates the lazy discovery cache.
-    void setScanConfig(const scan::Config& config) {
-        if(audio::onAudioThread)return;
-        scanConfig_=config;scanned_=false;known_->clear();clapCatalogue_.clear();
-        hydrationAttempted_=false;cacheOnly_=false;hydrationError_.clear();
-        publishedCatalogue_.reset();
-    }
+    /// paths use app defaults. A change invalidates admission and metadata.
+    void setScanConfig(const scan::Config&);
+
+    /// Use one owner worker for read-only startup hydration, Incremental
+    /// discovery or explicit Refresh. A zero worker override uses half the
+    /// reported hardware threads, bounded to 1..4. The job owns cancellation
+    /// through cancelDiscovery.
+    /// After this API admits a job, runtime misses report NeedsDiscovery until
+    /// the owner supplies catalogue metadata. Existing hits stay available.
+    [[nodiscard]] DiscoveryAdmission startDiscovery(DiscoveryMode, unsigned workers = 0);
+    [[nodiscard]] DiscoveryProgress discoveryProgress() const;
+    bool cancelDiscovery(std::uint64_t job) noexcept;
+
+    /// Nonblocking. Returns a result only when the matching job has finished.
+    /// Successful results replace both format catalogues after staging. A job
+    /// invalidated by a settings change reports Stale and keeps the current catalogue.
+    [[nodiscard]] std::shared_ptr<const DiscoveryResult> adoptDiscovery(std::uint64_t job);
+    [[nodiscard]] std::shared_ptr<const DiscoveryCatalogue> catalogue() const noexcept;
+
     /// Borrowed on the owner between jobs; copy/publish for another thread.
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
 
@@ -144,7 +175,10 @@ public:
     [[nodiscard]] std::vector<std::string> knownPlugins() const;
 
 private:
-    std::shared_ptr<const DiscoveryResult> discoverOwned(DiscoveryMode, bool allowLegacyFallback);
+    struct DiscoveryJob;
+    std::shared_ptr<const DiscoveryResult> discoverOwned(DiscoveryMode, bool allowLegacyFallback,
+        DiscoveryJob* job = nullptr);
+    void invalidateDiscovery() noexcept;
     std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeVst3(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeClap(const engine::DeviceRequest& rq, std::string& err);
@@ -162,6 +196,10 @@ private:
     scan::Config scanConfig_;
     scan::Report scanReport_;
     std::shared_ptr<const DiscoveryCatalogue> publishedCatalogue_;
+    std::uint64_t discoveryGeneration_ = 0;
+    std::uint64_t nextDiscoveryJob_ = 1;
+    bool managedDiscovery_ = false;
+    std::unique_ptr<DiscoveryJob> discoveryJob_;
 };
 
 }  // namespace adi::device

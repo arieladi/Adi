@@ -13,6 +13,10 @@
 #include "juce/vst3_scan_host.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <future>
+#include <thread>
 #include <string>
 #include <utility>
 
@@ -36,8 +40,146 @@ void appendClapMetadata(std::vector<ClapPluginRef>& catalogue,
 
 } // namespace
 
+struct JuceDeviceLoader::DiscoveryJob {
+    struct Output {
+        std::shared_ptr<const DiscoveryResult> receipt;
+        std::unique_ptr<juce::KnownPluginList> vst3;
+        std::vector<ClapPluginRef> clap;
+        scan::Report report;
+    };
+    std::uint64_t id = 0;
+    std::uint64_t generation = 0;
+    DiscoveryMode mode = DiscoveryMode::Incremental;
+    std::atomic<bool> cancelled{false};
+    std::atomic<DiscoveryPhase> phase{DiscoveryPhase::Queued};
+    scan::BatchProgress vst3Progress, clapProgress;
+    std::future<Output> result;
+
+    // The future joins the worker before its borrowed atomics are destroyed.
+    ~DiscoveryJob(){cancelled.store(true,std::memory_order_relaxed);}
+};
+
 JuceDeviceLoader::JuceDeviceLoader(bool includeDefaultSearchPaths) {
     if(includeDefaultSearchPaths)setSearchPaths(defaultSearchPaths());
+}
+
+JuceDeviceLoader::~JuceDeviceLoader() = default;
+
+void JuceDeviceLoader::invalidateDiscovery() noexcept {
+    ++discoveryGeneration_;
+    if(discoveryJob_)discoveryJob_->cancelled.store(true,std::memory_order_relaxed);
+}
+
+void JuceDeviceLoader::setScanConfig(const scan::Config& config) {
+    if(audio::onAudioThread)return;
+    invalidateDiscovery();
+    scanConfig_=config;scanned_=false;known_->clear();clapCatalogue_.clear();
+    hydrationAttempted_=false;cacheOnly_=false;hydrationError_.clear();
+    publishedCatalogue_.reset();
+}
+
+DiscoveryAdmission JuceDeviceLoader::startDiscovery(DiscoveryMode mode,unsigned workers) {
+    if(audio::onAudioThread)return {DiscoveryStart::CallbackRefused,0,{}};
+    if(discoveryJob_)return {DiscoveryStart::Busy,discoveryJob_->id,"a discovery job is awaiting adoption"};
+    if((mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::Refresh && mode!=DiscoveryMode::CacheOnly) ||
+        workers>scan::kMaximumProbeWorkers || nextDiscoveryJob_==0)
+        return {DiscoveryStart::Invalid,0,"invalid discovery mode or worker count"};
+    try {
+        auto job=std::make_unique<DiscoveryJob>();
+        job->id=nextDiscoveryJob_;job->generation=discoveryGeneration_;job->mode=mode;
+        auto* state=job.get();
+        auto config=scanConfig_;
+        config.process.cancel=&state->cancelled;
+        config.progress=nullptr;
+        config.workers=workers==0 ?
+            std::clamp(std::thread::hardware_concurrency()/2U,1U,scan::kMaximumProbeWorkers):workers;
+        job->result=std::async(std::launch::async,[config,paths=searchPaths_,state,mode] {
+            JuceDeviceLoader worker(false);
+            worker.setScanConfig(config);
+            worker.searchPaths_=paths;
+            auto receipt=worker.discoverOwned(mode,false,state);
+            return DiscoveryJob::Output{std::move(receipt),std::move(worker.known_),
+                std::move(worker.clapCatalogue_),std::move(worker.scanReport_)};
+        });
+        const auto id=nextDiscoveryJob_++;
+        discoveryJob_=std::move(job);
+        managedDiscovery_=true;
+        return {DiscoveryStart::Started,id,{}};
+    } catch(const std::exception& error) {
+        return {DiscoveryStart::Unavailable,0,error.what()};
+    }
+}
+
+DiscoveryProgress JuceDeviceLoader::discoveryProgress() const {
+    if(audio::onAudioThread || !discoveryJob_)return {};
+    const auto& job=*discoveryJob_;
+    const auto phase=job.result.wait_for(std::chrono::seconds(0))==std::future_status::ready
+        ? DiscoveryPhase::Ready : job.phase.load(std::memory_order_relaxed);
+    DiscoveryProgress result{job.id,phase,job.cancelled.load(std::memory_order_relaxed)};
+    const auto* batch=phase==DiscoveryPhase::Vst3 ? &job.vst3Progress :
+        (phase==DiscoveryPhase::Clap ? &job.clapProgress : nullptr);
+    if(batch && batch->enumerated.load(std::memory_order_acquire)) {
+        result.hasCandidateTotal=true;
+        result.total=batch->total.load(std::memory_order_relaxed);
+        result.completed=batch->completed.load(std::memory_order_relaxed);
+    }
+    return result;
+}
+
+bool JuceDeviceLoader::cancelDiscovery(std::uint64_t id) noexcept {
+    if(audio::onAudioThread || !discoveryJob_ || discoveryJob_->id!=id ||
+        discoveryProgress().phase==DiscoveryPhase::Ready)return false;
+    discoveryJob_->cancelled.store(true,std::memory_order_relaxed);
+    return true;
+}
+
+std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::adoptDiscovery(std::uint64_t id) {
+    if(audio::onAudioThread)return {};
+    const auto progress=discoveryProgress();
+    if(progress.job!=id || progress.phase!=DiscoveryPhase::Ready)return {};
+    auto job=std::move(discoveryJob_);
+    const auto refuse=[&](DiscoveryOutcome outcome,const std::string& error) {
+        auto failure=std::make_shared<DiscoveryResult>();
+        failure->mode=job->mode;failure->catalogue=publishedCatalogue_;
+        failure->outcome=outcome;failure->error=error;failure->report.complete=false;
+        failure->report.cancelled=outcome==DiscoveryOutcome::Cancelled;
+        const auto state=failure->report.cancelled?scan::State::Cancelled:scan::State::Unavailable;
+        failure->report.failures.push_back({"",error,state});
+        scanReport_=failure->report;
+        return failure;
+    };
+    if(job->mode==DiscoveryMode::CacheOnly)++stats_.catalogueReads;
+    else ++stats_.scans;
+    if(job->generation!=discoveryGeneration_)
+        return refuse(DiscoveryOutcome::Stale,"discovery settings changed during the job");
+    if(job->cancelled.load(std::memory_order_relaxed))
+        return refuse(DiscoveryOutcome::Cancelled,"discovery cancelled");
+    try {
+        auto output=job->result.get();
+        if(output.receipt->outcome==DiscoveryOutcome::Published) {
+            known_.swap(output.vst3);clapCatalogue_.swap(output.clap);
+            publishedCatalogue_=output.receipt->catalogue;
+            scanned_=true;cacheOnly_=job->mode==DiscoveryMode::CacheOnly;
+            hydrationAttempted_=true;hydrationError_.clear();
+            scanReport_=std::move(output.report);
+            return output.receipt;
+        }
+        auto failure=std::make_shared<DiscoveryResult>(*output.receipt);
+        failure->catalogue=publishedCatalogue_;
+        if(job->mode==DiscoveryMode::CacheOnly) {
+            hydrationAttempted_=true;
+            hydrationError_=failure->outcome==DiscoveryOutcome::Failed?failure->error:std::string{};
+        }
+        scanReport_=std::move(output.report);
+        return failure;
+    } catch(const std::exception& error) {
+        return refuse(DiscoveryOutcome::Failed,error.what());
+    }
+}
+
+std::shared_ptr<const DiscoveryCatalogue> JuceDeviceLoader::catalogue() const noexcept {
+    if(audio::onAudioThread)return {};
+    return publishedCatalogue_;
 }
 
 PluginSearchPaths JuceDeviceLoader::defaultSearchPaths() const {
@@ -52,6 +194,7 @@ void JuceDeviceLoader::setSearchPaths(const PluginSearchPaths& paths) {
         same=searchPaths_->vst3.getRawString(i)==paths.vst3.getRawString(i);
     if(same)return;
     auto next=std::make_shared<PluginSearchPaths>(paths);
+    invalidateDiscovery();
     searchPaths_=std::move(next);
     scanned_=false;
 }
@@ -70,6 +213,10 @@ void JuceDeviceLoader::scan() {
 
 bool JuceDeviceLoader::hydrateCatalogue(std::string& error) {
     if(audio::onAudioThread)return false;
+    if(managedDiscovery_) {
+        error=hydrationError_;
+        return error.empty();
+    }
     const auto result=discoverOwned(DiscoveryMode::CacheOnly,true);
     const bool accepted=result->outcome==DiscoveryOutcome::Published ||
         result->outcome==DiscoveryOutcome::Missing || result->outcome==DiscoveryOutcome::Legacy;
@@ -78,10 +225,17 @@ bool JuceDeviceLoader::hydrateCatalogue(std::string& error) {
 
 std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discover(DiscoveryMode mode) {
     if(audio::onAudioThread)return {};
+    if(discoveryJob_) {
+        auto busy=std::make_shared<DiscoveryResult>();busy->mode=mode;
+        busy->catalogue=publishedCatalogue_;busy->report.complete=false;
+        busy->error="an asynchronous discovery job is awaiting adoption";
+        return busy;
+    }
     return discoverOwned(mode,false);
 }
 
-std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(DiscoveryMode mode,bool allowLegacyFallback) {
+std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(DiscoveryMode mode,bool allowLegacyFallback,
+                                                               DiscoveryJob* job) {
     const auto searchPaths=searchPaths_; // Keep both formats on one admitted configuration.
     auto result=std::make_shared<DiscoveryResult>();result->mode=mode;result->catalogue=publishedCatalogue_;
     const auto failed=[&](const std::string& message,scan::State state) {
@@ -129,8 +283,16 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 const auto bound=scan::bindScanPruneRoots(prune);
                 if(!bound){maintenanceFailed(bound);return result;}
             }
+            if(job) {
+                config.progress=&job->vst3Progress;
+                job->phase.store(DiscoveryPhase::Vst3,std::memory_order_relaxed);
+            }
             result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
             if(result->report.complete && !result->report.cancelled) {
+                if(job) {
+                    config.progress=&job->clapProgress;
+                    job->phase.store(DiscoveryPhase::Clap,std::memory_order_relaxed);
+                }
                 auto clapReport=clap_.scan(searchPaths->clap,config);
                 result->report.complete=clapReport.complete;result->report.cancelled=clapReport.cancelled;
                 for(auto& failure:clapReport.failures)result->report.failures.push_back(std::move(failure));
@@ -153,6 +315,7 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                 return result;
             }
         } else {
+            if(job)job->phase.store(DiscoveryPhase::ReadingCache,std::memory_order_relaxed);
             const auto file=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
             ++stats_.catalogueReads;
             scan::CatalogueReadStatus status{};std::string error;
@@ -187,6 +350,7 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         });
         auto report=result->report;
         if(mode==DiscoveryMode::Incremental) {
+            if(job)job->phase.store(DiscoveryPhase::Reconciling,std::memory_order_relaxed);
             prune.discoveryComplete=true;
             const auto registry=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
             const auto pruned=scan::pruneMissingScans(registry,prune);
@@ -282,7 +446,7 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
             }
         }
     }
-    if(!found && cacheOnly_) {
+    if(!found && (cacheOnly_ || managedDiscovery_)) {
         ++stats_.notFound;++stats_.needsDiscovery;
         err="NeedsDiscovery: VST3 identity is not in the validated catalogue";return nullptr;
     }
@@ -369,7 +533,7 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeClap(const engine::DeviceR
         return first;
     };
     auto* pick=find();
-    if(pick==nullptr && !cacheOnly_ && !installedHint.empty()) {
+    if(pick==nullptr && !cacheOnly_ && !managedDiscovery_ && !installedHint.empty()) {
         auto scanner=scan::Scanner::open(scanConfig_,err);
         if(!scanner) {
             ++stats_.notFound;++stats_.needsDiscovery;err="NeedsDiscovery: "+err;
@@ -390,14 +554,14 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeClap(const engine::DeviceR
         appendClapMetadata(clapCatalogue_,result.path,result.plugins);
         pick=find();
     }
-    if(pick==nullptr && !cacheOnly_ && !scanned_ && !publishedCatalogue_) {
+    if(pick==nullptr && !cacheOnly_ && !managedDiscovery_ && !scanned_ && !publishedCatalogue_) {
         scan();
         if(!scanned_){++stats_.failed;err="CLAP discovery unavailable or cancelled";return nullptr;}
         pick=find();
     }
     if(pick==nullptr) {
         ++stats_.notFound;
-        if(cacheOnly_ || publishedCatalogue_) {
+        if(cacheOnly_ || managedDiscovery_ || publishedCatalogue_) {
             ++stats_.needsDiscovery;
             err="NeedsDiscovery: CLAP identity is not in the validated catalogue";
             return nullptr;

@@ -22,14 +22,25 @@ bool visitProbes(std::size_t count, const Config& config, Probe probe, Visit vis
         error = "scanner worker count must be 1 to 4";
         return false;
     }
+    const auto progress = config.progress;
+    if (progress) {
+        progress->completed.store(0, std::memory_order_relaxed);
+        progress->total.store(count, std::memory_order_relaxed);
+        progress->enumerated.store(true, std::memory_order_release);
+    }
     if (count == 0) return true;
+    const auto deliver = [&](std::size_t index, auto&& row) {
+        const bool accepted = visit(index, std::forward<decltype(row)>(row));
+        if (progress) progress->completed.store(index + 1, std::memory_order_relaxed);
+        return accepted;
+    };
     try {
         const auto active = std::min(count, static_cast<std::size_t>(config.workers));
         auto first = Scanner::open(config, error);
         if (!first) return false;
         if (active == 1) {
             for (std::size_t i = 0; i < count; ++i)
-                if (!visit(i, probe(*first, i))) return false;
+                if (!deliver(i, probe(*first, i))) return false;
             return true;
         }
         std::array<std::unique_ptr<Scanner>, kMaximumProbeWorkers> scanners;
@@ -50,7 +61,7 @@ bool visitProbes(std::size_t count, const Config& config, Probe probe, Visit vis
         };
         for (std::size_t slot = 0; slot < active; ++slot) launch(slot);
         for (std::size_t i = 0; i < count; ++i) {
-            if (!visit(i, pending[i % active].get())) return false;
+            if (!deliver(i, pending[i % active].get())) return false;
             if (count - i > active) launch(i + active);
         }
         return true;

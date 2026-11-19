@@ -28,6 +28,11 @@ std::filesystem::path defaultScannerExecutable(); // sibling of current executab
 std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
                                         std::string_view extension);
 std::int64_t systemUtcMicros() noexcept;
+struct BatchProgress {
+    std::atomic<std::size_t> total{0};
+    std::atomic<std::size_t> completed{0};
+    std::atomic<bool> enumerated{false};
+};
 struct Config {
     std::filesystem::path executable; // empty => sibling adi_plugin_scanner[.exe]
     std::filesystem::path registry;   // empty => appdata::pluginRegistryFile()
@@ -38,6 +43,7 @@ struct Config {
     // Explicit Refresh bypasses successful/rejected cache metadata, not blocks.
     // It neither purges other candidates nor changes the persisted schema.
     ScanCacheMode cacheMode = ScanCacheMode::Reuse;
+    BatchProgress* progress = nullptr; // borrowed by one ordered batch through return
 };
 inline constexpr unsigned kMaximumProbeWorkers = 4;
 enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };

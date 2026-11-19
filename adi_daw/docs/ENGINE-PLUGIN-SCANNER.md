@@ -547,7 +547,30 @@ the actual headless command modes. Its CLAP entry log distinguishes scanner
 children from parent runtime loading. The prior Session-reopen and legacy
 compatibility gates remain in the same executable.
 
-Startup scheduling and an explicit clean rebuild, persistent application scan logs beyond command output,
+The owner can start a discovery job through `JuceDeviceLoader::startDiscovery`.
+`CacheOnly` is the read-only startup catalogue, `Incremental` discovers
+installed changes, and `Refresh` runs the same configured roots with fresh
+eligible probes. The default worker count is half the reported hardware threads,
+bounded to one through four. A caller can choose an explicit count in that range.
+
+`discoveryProgress` reports the active phase and candidate progress as soon as
+that format's enumeration has produced a total. The worker owns its discovery
+state and prepares both runtime metadata lists. `adoptDiscovery` transfers
+the prepared lists on the owner once the matching job is ready. It keeps the
+previous accepted catalogue if the job fails, is cancelled or used stale
+settings. A retained snapshot includes typed VST3 descriptions with
+`isInstrument` and typed CLAP references. Once the owner starts the service,
+project hydration reuses the adopted catalogue and a runtime miss reports
+`NeedsDiscovery`. Catalogue hits can still instantiate their devices while
+a job runs.
+
+The window owns when startup and Rescan are requested, when a ready catalogue
+is adopted, and how it retries a project open waiting on discovery. Cancellation
+does not wait in the caller. Destruction cancels and joins the job, so it can
+wait for an in-progress filesystem operation to return. Cancellation preserves
+the runtime catalogue. Individual cache writes may already have completed.
+
+An explicit clean rebuild, persistent application scan logs beyond command output,
 native VST3 class-ID indexing, expanded alias traversal, expiry/retry service
 integration and Settings UI remain separate DEV-25 work. Stored metadata is
 neither proof of current filesystem freshness nor instantiated/audio readiness.
