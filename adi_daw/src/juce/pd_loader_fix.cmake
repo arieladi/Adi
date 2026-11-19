@@ -1,5 +1,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Narrow overlay for libpd 0.16.1 / Pd f009fd8d. Never edit the fetched tree.
+
+# DEV-09 (ADR-0207 d2, ON11): the Pd tier built in double precision for the
+# 64-bit Processing Precision mode. PD_FLOATSIZE changes t_float, t_sample and
+# t_word in m_pd.h, so it is PUBLIC on libpd_static: every translation unit that
+# includes Pd (adi_core, the compiled-in externals) sees the same layout.
+option(ADI_PD_FLOATSIZE_64 "Build the Pure Data tier with PD_FLOATSIZE=64" OFF)
+if(ADI_PD_FLOATSIZE_64)
+    target_compile_definitions(libpd_static PUBLIC PD_FLOATSIZE=64)
+    message(STATUS "Pd tier: PD_FLOATSIZE=64 (double-precision t_float and t_sample)")
+endif()
 function(adi_pd_replace needle replacement)
     string(FIND "${adi_pd_text}" "${needle}" found)
     if(found EQUAL -1)

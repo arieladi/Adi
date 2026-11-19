@@ -41,6 +41,7 @@
 // something that would otherwise have happened.
 extern "C" {
 #include "z_libpd.h"
+#include "s_stuff.h"   // sys_get_dllextensions: the names Pd itself looks for
 }
 
 #include <cmath>
@@ -1211,6 +1212,11 @@ void testPdWouldReachAnExternalBesideThePatch() {
     for (const auto& ext : device::pdLoadableCodeExtensions())
         tmp.write(("adi_probe_external" + ext).c_str(),
                   "not a library, and it does not have to be\n");
+    // And every name Pd itself tries: a PD_FLOATSIZE=64 Pd looks for deken
+    // names such as .windows-amd64-64.dll and never for a bare .dll.
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        tmp.write(("adi_probe_external" + std::string(*ext)).c_str(),
+                  "not a library, and it does not have to be\n");
 
     std::string err;
     check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
@@ -1485,6 +1491,8 @@ void testNativeCodeIsRefusedWhateverNamesIt() {
     TempDir lib("planted-lib");
     for (const auto& ext : device::pdLoadableCodeExtensions())
         lib.write(("adi_probe_external" + ext).c_str(), "not a library\n");
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        lib.write(("adi_probe_external" + std::string(*ext)).c_str(), "not a library\n");
     std::string where = lib.str();
     std::replace(where.begin(), where.end(), '\\', '/');
     const std::string absolute = where + "/adi_probe_external";
@@ -1693,6 +1701,16 @@ void testAShrunkPublishedTableDoesNotDeadlock() {
     watchdog.join();
 }
 
+// DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
+// builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
+// (ADR-0207 d2); every suite runs in both configurations.
+void testThePdTierHasTheBuildsPrecision() {
+    section("DEV-09 AR17 -- t_float and t_sample have the width PD_FLOATSIZE names");
+    eqi(static_cast<long long>(sizeof(t_float) * 8), PD_FLOATSIZE, "t_float");
+    eqi(static_cast<long long>(sizeof(t_sample) * 8), PD_FLOATSIZE, "t_sample");
+    std::printf("  Pd tier built with PD_FLOATSIZE=%d\n", PD_FLOATSIZE);
+}
+
 // DEV-09 AR18 (PD2: plugdata-pd bdb30eed, BSD-3 like Pd). An abstraction's
 // canvas binds itself to the symbol #A when it finishes loading
 // (canvas_popabstraction) and nothing ever unbinds it. A file load saves and
@@ -1791,6 +1809,7 @@ int main() {
     testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
     testAShrunkPublishedTableDoesNotDeadlock();
     testAnAbstractionFreedLeavesNoDanglingHashA();
+    testThePdTierHasTheBuildsPrecision();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
