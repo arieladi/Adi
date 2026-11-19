@@ -1946,6 +1946,22 @@ released when metadata capture ends.
   file's BLAKE3. Captures the old three location fields as a symmetric inverse.
   Moving/renaming content does not allocate a new media id.
 
+`media::relinkMediaBatch` accepts an owner-side selection of media ids and
+candidate paths. It verifies every candidate's BLAKE3 before submitting the
+ordinary `media.relink` requests in one journal transaction. A mismatch,
+unreadable file, unknown or embedded media id, duplicate id, empty selection,
+read-only project or journal failure changes no selected media location. One
+Undo restores every old location; Redo replays the captured locations without
+filesystem reads. The existing single-file `relinkMedia` uses the same path.
+Clip attachments, content identities and source metadata remain unchanged.
+
+This is the atomic publication part of TM-MD-03 for caller-selected exact
+matches. Automatic discovery/ranking, `resolveSession`, `searchMissing`,
+playback hash verification and its metadata memo, explicit Offline state and
+different-content Replace remain separate work. Verification does not lock
+external files against changes after capture; it is not a playback integrity
+guarantee.
+
 `adi_tool extract-media` is legacy maintenance, not the retired embedding op.
 `collect-export` snapshots and relocates a copy, never the original. These
 commands do not invent schema migrations or rewrite historical op payloads.
