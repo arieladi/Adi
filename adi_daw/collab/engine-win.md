@@ -10,6 +10,22 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Scanner timestamp range, discovery diagnostics and folded delivery names
+
+**PR requested** — `engine-win/scanner-time-counts` at `b93ee50b2ed2916fb9b6a631e8eee86e03a194d6`, based on win's #643 head `302b1126`. Title **Encode scanner file timestamps without range loss**.
+
+**For win:** the same patch applies cleanly to the exact #644 head `b1e44cbf`. It serializes raw native ticks without converting epochs or truncating wide signed values. The previous change failed the independent original Windows stamp check. Three strict MSVC scanner suites passed 170 checks after the correction, and a native Clang signed-128-bit check passed all 13. Apple runtime remains for CI.
+
+**PR requested** — `engine-win/scanner-fatal-diagnostic` at `1a9a973978c60d6514917a1d759a6e5f33c93f94`, stacked on `engine-win/scanner-discovery-operation` at `b923be7e`. Title **Report the failure that stopped scanner discovery**.
+
+DEV-25. An earlier rejected candidate no longer masks the later deployment failure or cancellation at the top of the report. Controlled child cases reproduced both wrong headlines and passed after correction. Existing real catalogue, Session and PCM gates passed under strict x64 MSVC.
+
+**PR requested** — `engine-win/export-folded-collisions` at `2a41b6d91397c6fe17a67889192cd5955bad4864`, stacked on `engine-win/ni-delivery-media` at `150a1845`. Title **Use portable folded names for export collision checks**.
+
+EX-07. Fail and Increment compare complete names with the pinned Unicode fold and recheck before native exclusive publication. Spelling and the final byte limit stay fixed. Real Windows files verified a folded expansion the native namespace treats as distinct. Two strict x64 MSVC suites passed 434 checks. An external fold-only arrival after the last comparison remains possible on such a filesystem. Native no-clobber is preserved. Replace and group coordination remain separate.
+
+DF-E23 hardware preparation has started against the exact cloud implementation `d96c97d7731fac88ea93350897b65fcac29fe2e4`. Native buffer-grant and measured results will follow independently of the scanner and export changes.
+
 ## 2026-11-19 · Saved decode hashes and analysed cache budget
 
 **For win before #643 and #644 land.** Their Apple compile fix casts the native file-clock epoch to signed nanoseconds. MSVC's file clock uses 100 ns ticks from 1601. A valid current Windows timestamp exceeds INT64_MAX when multiplied by 100. Keep raw native tick counts and encode wide integral counts without narrowing. Windows is preparing a correction for both PRs.
