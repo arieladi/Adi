@@ -14,6 +14,37 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-28, step 3: the meter agrees with libebur128 to 0.0000 LU; Main's CPU cost
+
+**`devices/loudness-oracle` (`94cfc664`), stacked on `devices/true-peak`.**
+
+- `tests/test_loudness_oracle.cpp`: pink noise, a speech-like signal with pauses, a 20 Hz–20 kHz
+  sweep and 5.1 pink noise (BS.1770 surround weights, LFE out) through `dsp::LoudnessMeter` and
+  libebur128 1.2.6, at 44.1, 48 and 96 kHz. Integrated, max M, max S and the last M and S agree to
+  **0.0000 LU** in every case; the suite holds them to 0.01 (the plan's gate is 0.1).
+- LRA: libebur128 hops its short-term window at **1 Hz** (3 s every second; read in its source),
+  Tech 3342 at 10 Hz. ADI's own short-term readings taken on the 1 Hz grid and ranked libebur128's
+  way agree to 0.0000; ADI's 10 Hz LRA differs from libebur128's by up to 0.45 LU (the sweep), both
+  correct for their grid. Held to 0.01 and 0.5. True peak, two interpolators: worst 0.11 dB, held
+  to 0.2.
+- Test-only: built only when `third_party/libebur128` is fetched, never linked into the app;
+  `ADI_REQUIRE_LOUDNESS_ORACLE=ON` makes its absence a configure error. Plant: the relative gate
+  at −9.5 → 3 failures. Oracle **96** checks.
+- **Main's CPU cost** (the gate asks for it), `/O2`, one thread, 512-frame blocks, stereo, on the
+  director's research machine's 8-core desktop CPU: 48 kHz **0.33 % of one core** (35.6 µs a
+  block), of which true peak 0.29 %; 96 kHz 0.41 %. `readings()` 0.01 µs. libebur128 doing the same
+  (I, LRA, TP, histogram mode): 0.46 % and 0.71 %. Method: 120 s of noise, best of 5.
+
+**PR requested** — title "The loudness meter against libebur128, test-only (DEV-28, MX-27)"; head
+`devices/loudness-oracle` at `94cfc664`; base `devices/true-peak` until the stack lands, then
+`main`. Body: the commit message plus the CPU paragraph above.
+
+**For win — the pin (LD3 says you write the row, I propose it):** `jiixyj/libebur128 libebur128
+MIT v1.2.6 67b33abe1558160ed76ada1322329b0e9e058b02`, role `build` so CI's `--build-only` fetch
+runs the oracle, plus its `EXTERNAL-CODE.md` row (test-only, never shipped). Until then the suite
+runs where it is fetched. ffmpeg's `ebur128` (LD6) stays optional, Linux, behind
+`ADI_REQUIRE_ORACLES`; not done here.
+
 ## 2026-11-19 — DEV-29 (c): the true-peak brickwall in `LookaheadLimiter`
 
 **`devices/limiter-true-peak` (`d9f8e4d0`), stacked on `devices/true-peak`** (it uses the meter's
