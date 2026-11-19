@@ -198,14 +198,8 @@ public:
     /// Set by the same notification. A change of parameters, programs or
     /// anything else the plugin declares dirty (SPEC 7.3's boundary list).
     /// Not moved by our own `loadState` or `setParam` (ADR-0142).
-    /// Exact owner-side channel-shape stamp. Equality preserves prepare's
-    /// existing total-channel guard without disturbing an already live node.
-    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
-        if(!inst_)return 0;
-        const auto input=static_cast<std::uint32_t>(inst_->getTotalNumInputChannels());
-        const auto output=static_cast<std::uint32_t>(inst_->getTotalNumOutputChannels());
-        return (static_cast<std::uint64_t>(input)<<32)|output;
-    }
+    /// Owner-side stamp includes each bus's negotiated width, in SDK order.
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override;
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
     }
@@ -360,10 +354,13 @@ private:
     Vst3ParamChanges outParams_;
     std::vector<engine::Event> injected_;
     std::size_t injectedUsed_ = 0;
+    std::vector<Steinberg::Vst::AudioBusBuffers> inputBuses_, outputBuses_;
     std::vector<float*> rawIn_, rawOut_;
     std::vector<double*> rawIn64_, rawOut64_;
-    std::vector<float*> rawKey_;
-    std::vector<double*> rawKey64_;
+    int mainInputs_ = 0;
+    int mainOutputs_ = 0;
+    int inputOffset_ = 0;
+    int outputOffset_ = 0;
     int keyChannels_ = 0;
     int keyOffset_ = 0;
     int wrapperChannels_ = 0;
@@ -384,8 +381,8 @@ private:
     std::atomic<std::uint64_t> stateEpoch_{0};
     std::atomic<std::uint64_t> mutedStateSignals_{0};
     std::int32_t maxFrames_ = 0;
-    std::int32_t channels_ = 2;
     double sampleRate_ = 0.0;
+    std::uint64_t preparedShape_ = 0;
     bool prepared_ = false;
     bool requestedOffline_ = false;
     std::int64_t activations_ = 0;

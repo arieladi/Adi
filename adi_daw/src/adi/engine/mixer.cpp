@@ -608,7 +608,6 @@ StripControlImage StripNode::captureControls() const {
 void StripNode::applyPublishedControls(const StripControlImage& value) noexcept {
     setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible);
     setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
-    usePublishedLanes(value.config.lanes);
 }
 void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
     for(const auto& value:strips_)captured.add(*value.node,value.image.config.lanes,value.image.config.keepAlive);

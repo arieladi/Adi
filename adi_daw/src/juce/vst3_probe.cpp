@@ -1122,7 +1122,7 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
             io.sidechain = key;
             v3->process(io);
             check(left[40] == 0.25f && right[40] == -0.5f && left[39] == 0.0f,
-                  "the VST3 auxiliary input receives the segment's stereo key at the right offset");
+                  "all VST3 buses are supplied, with the stereo key at its segment offset");
             io.sidechain = nullptr;
             v3->process(io);
             check(left[40] == 0.0f && right[40] == 0.0f, "an unconnected key is silent on the next call");
@@ -1139,7 +1139,12 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
             io.sidechain64 = wideKey;
             v3->process(io);
             check(v3->processingDouble() && wideLeft[40] == 0.1 && wideRight[40] == -0.2,
-                  "the auxiliary input preserves double precision at both channels");
+                  "double-precision key reaches the full layout without the auxiliary output leaking");
+            wideRight[40] = 42.0;
+            io.channels = 1;
+            v3->process(io);
+            check(wideLeft[40] == 0.1 && wideRight[40] == 42.0,
+                  "a mono graph still supplies the plugin's negotiated stereo buses");
         } else {
             check(false, "the side-chain fixture loaded through the raw VST3 processor");
         }

@@ -183,10 +183,28 @@ Payload readValue(const SQLite::Column& c, FieldType t) {
     }
 }
 
+bool otherMainOutput(SQLite::Database& db, std::int64_t track, std::int64_t route) {
+    SQLite::Statement other(db, "SELECT 1 FROM routing WHERE src_kind='track' AND src_id=? "
+                                "AND dst_kind='track' AND kind='main' AND enabled<>0 AND id<>? LIMIT 1");
+    other.bind(1, track);
+    other.bind(2, route);
+    return other.executeStep();
+}
+
 template <std::size_t I>
 bool scalarApply(OpContext& c, const Payload& p, std::string& err) {
     constexpr auto& S = kScalars[I];
     try {
+        if constexpr (std::string_view(S.op) == "routing.setEnabled") {
+            if (!c.replay && p.at("enabled").get<bool>()) {
+                const auto id = p.at("id").get<std::int64_t>();
+                SQLite::Statement track(c.db, "SELECT src_id FROM routing WHERE id=? AND "
+                    "src_kind='track' AND dst_kind='track' AND kind='main' AND enabled=0");
+                track.bind(1, id);
+                if (track.executeStep() && otherMainOutput(c.db, track.getColumn(0).getInt64(), id))
+                    throw std::runtime_error("track already has an enabled main output");
+            }
+        }
         SQLite::Statement st(c.db, std::string("UPDATE ") + S.table + " SET " + S.col +
                                        " = ? WHERE " + S.idCol + " = ?");
         bindValue(st, 1, p.at(S.key), S.type);
@@ -731,6 +749,11 @@ bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
                 err = "a grouped return's main output goes to its group";
                 return false;
             }
+            const bool enabled = !p.contains("row") ||
+                                 detail::signedInteger(p.at("row").at("enabled")) != 0;
+            if (!c.replay && p.at("dstKind") == "track" && enabled &&
+                otherMainOutput(c.db, detail::signedInteger(p.at("src")), detail::signedInteger(p.at("id"))))
+                throw std::runtime_error("track already has an enabled main output");
         }
         if(p.contains("row")) {
             const auto& row=p.at("row");

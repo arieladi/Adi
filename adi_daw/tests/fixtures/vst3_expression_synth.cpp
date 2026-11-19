@@ -84,6 +84,7 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <type_traits>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -216,7 +217,7 @@ public:
     tresult PLUGIN_API getControllerClassId(TUID) override { return kResultFalse; }   // we ARE it
     tresult PLUGIN_API setIoMode(IoMode) override { return kResultOk; }
     int32 PLUGIN_API getBusCount(MediaType type, BusDirection dir) override {
-        if (type == kAudio) return variant_ == Variant::NoteExpr && dir == kInput ? 2 : 1;
+        if (type == kAudio) return variant_ == Variant::NoteExpr ? (dir == kInput ? 4 : 3) : 1;
         if (type == kEvent && dir == kInput) return 1;
         return 0;
     }
@@ -224,14 +225,23 @@ public:
         if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
         bus.mediaType = type;
         bus.direction = dir;
-        bus.channelCount = type == kAudio ? 2 : 16;
-        copy128(bus.name, index == 1 ? "Key" : (type == kAudio ? (dir == kInput ? "In" : "Out") : "Notes"));
-        bus.busType = index == 1 ? kAux : kMain;
-        bus.flags = index == 1 ? 0u : static_cast<uint32>(BusInfo::kDefaultActive);
+        bus.channelCount = type == kAudio ? width(dir, index) : 16;
+        copy128(bus.name, type == kEvent ? "Notes" : index == 0 ? (dir == kInput ? "In" : "Out")
+                : dir == kInput && index == 1 ? "Key" : "Additional");
+        bus.busType = index == 0 ? kMain : kAux;
+        const bool defaultActive = index == 0 || (dir == kInput ? index == 3 : index == 2);
+        bus.flags = defaultActive ? static_cast<uint32>(BusInfo::kDefaultActive) : 0u;
         return kResultOk;
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
-    tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
+    tresult PLUGIN_API activateBus(MediaType type, BusDirection dir, int32 index, TBool enabled) override {
+        if (index < 0 || index >= getBusCount(type, dir)) return kInvalidArgument;
+        if (type == kAudio) {
+            auto& buses = dir == kInput ? inputsActive_ : outputsActive_;
+            buses[static_cast<size_t>(index)] = enabled != 0;
+        }
+        return kResultOk;
+    }
     /// Deactivated, it forgets its voices, as real plugins do: a host that
     /// reactivates one (a new rate, or a new sample size) starts it silent.
     tresult PLUGIN_API setActive(TBool state) override {
@@ -270,13 +280,20 @@ public:
     }
 
     // --- IAudioProcessor -----------------------------------------------------
-    tresult PLUGIN_API setBusArrangements(SpeakerArrangement*, int32, SpeakerArrangement* outs,
-                                          int32 numOuts) override {
-        return (numOuts == 1 && outs != nullptr && outs[0] == SpeakerArr::kStereo) ? kResultTrue : kResultFalse;
+    tresult PLUGIN_API setBusArrangements(SpeakerArrangement* ins, int32 numIns,
+                                         SpeakerArrangement* outs, int32 numOuts) override {
+        const auto matches = [&](BusDirection dir, SpeakerArrangement* buses, int32 count) {
+            if (!buses || count != getBusCount(kAudio, dir)) return false;
+            for (int32 index = 0; index < count; ++index)
+                if (buses[index] != (width(dir, index) == 2 ? SpeakerArr::kStereo : SpeakerArr::kMono))
+                    return false;
+            return true;
+        };
+        return matches(kInput, ins, numIns) && matches(kOutput, outs, numOuts) ? kResultTrue : kResultFalse;
     }
     tresult PLUGIN_API getBusArrangement(BusDirection dir, int32 index, SpeakerArrangement& arr) override {
         if (index < 0 || index >= getBusCount(kAudio, dir)) return kInvalidArgument;
-        arr = SpeakerArr::kStereo;
+        arr = width(dir, index) == 2 ? SpeakerArr::kStereo : SpeakerArr::kMono;
         return kResultOk;
     }
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
@@ -305,6 +322,9 @@ public:
         } inside(inProcess_);
         if (data.numSamples > maxBlock_) return kInvalidArgument;
         if (data.symbolicSampleSize != sampleSize_) return kInvalidArgument;
+        if (variant_ == Variant::NoteExpr && data.numSamples > 0 &&
+            !(sampleSize_ == kSample64 ? extraBuses<double>(data) : extraBuses<float>(data)))
+            return kInvalidArgument;
         if (const auto* context = data.processContext) {
             const std::array<double, 12> fields{
                 static_cast<double>(context->state), context->sampleRate,
@@ -585,6 +605,48 @@ private:
         }
     }
 
+    static int32 width(BusDirection dir, int32 index) noexcept {
+        return index == 0 || (dir == kInput && index == 1) ? 2 : 1;
+    }
+
+    template <typename Sample>
+    static Sample** channels(AudioBusBuffers& bus) {
+        if constexpr (std::is_same_v<Sample, double>) return bus.channelBuffers64;
+        else return bus.channelBuffers32;
+    }
+
+    template <typename Sample>
+    bool extraBuses(ProcessData& data) {
+        if (data.numInputs != 4 || data.numOutputs != 3 || !data.inputs || !data.outputs ||
+            inputsActive_ != std::array<bool, 4>{true, true, false, true} ||
+            outputsActive_ != std::array<bool, 4>{true, false, true, false})
+            return false;
+        for (const auto dir : {kInput, kOutput}) {
+            auto* buses = dir == kInput ? data.inputs : data.outputs;
+            const auto& active = dir == kInput ? inputsActive_ : outputsActive_;
+            for (int32 index = 0; index < getBusCount(kAudio, dir); ++index) {
+                const int32 count = active[static_cast<size_t>(index)] ? width(dir, index) : 0;
+                if (buses[index].numChannels != count) return false;
+                auto** pointers = channels<Sample>(buses[index]);
+                if (count == 0 && pointers != nullptr) return false;
+                for (int32 c = 0; c < count; ++c)
+                    if (!pointers || !pointers[c]) return false;
+            }
+        }
+        auto** in = channels<Sample>(data.inputs[0]);
+        auto** out = channels<Sample>(data.outputs[0]);
+        const auto* extra = channels<Sample>(data.inputs[3])[0];
+        auto* sink = channels<Sample>(data.outputs[2])[0];
+        if (in[0] != out[0] || in[1] != out[1] ||
+            sink == in[0] || sink == in[1] || sink == extra)
+            return false;
+        for (int32 frame = 0; frame < data.numSamples; ++frame) {
+            if (extra[frame] != Sample{} || sink[frame] != Sample{}) return false;
+            sink[frame] = static_cast<Sample>(0.75);
+        }
+        return true;
+    }
+
     void render(ProcessData& data) {
         if (data.numOutputs < 1 || data.outputs == nullptr) return;
         AudioBusBuffers& out = data.outputs[0];
@@ -654,6 +716,7 @@ private:
     }
 
     Variant variant_;
+    std::array<bool, 4> inputsActive_{}, outputsActive_{};
     const std::thread::id ownerThread_ = std::this_thread::get_id();
     std::atomic<uint32> refs_{1};
     IComponentHandler* handler_ = nullptr;   ///< the host's, held with a reference
