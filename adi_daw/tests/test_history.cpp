@@ -9,16 +9,24 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/applied_batches.hpp"
+#include "adi/audio/wav_file.hpp"
 #include "adi/history.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/take_lane_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <array>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -132,6 +140,146 @@ void testTransactionUndoesAsOne() {
 
     check(h.redo().ok, "one redo brings them all back");
     check(trackCount(*s) == 3, "three again");
+}
+
+void testLoopPassUndoGroups() {
+    section("CT-02 loop passes share one commit and undo separately");
+    Scratch sc("loop_pass_groups");
+    const auto path = sc / "p.adi";
+    auto s = project(path);
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    auto request = [](const char* type, Payload payload) {
+        OpRequest op;
+        op.opType = type;
+        op.payload = std::move(payload);
+        return op;
+    };
+    const auto clip = [&](int id, const char* name) {
+        return request("clip.create", {{"id",id},{"track",1},{"kind","audio"},{"name",name},{"pos",0},{"length",960}});
+    };
+    auto track = mkTrack(1,"Recorded");
+    track.payload["kind"] = "audio";
+    const std::array initial{track, clip(1,"Before recording")};
+    check(j.commit(initial).ok, "the track and its original main clip commit");
+    const auto baseline = h.head();
+    const auto baselineCount = j.count();
+    const auto laneCount = [&] { return s->db().execAndGet("SELECT COUNT(*) FROM lanes").getInt(); };
+    const auto mediaCount = [&] { return s->db().execAndGet("SELECT COUNT(*) FROM media_files").getInt(); };
+    const auto mainName = [&] { return s->db().execAndGet("SELECT name FROM clips WHERE id=1").getString(); };
+
+    const auto audioPath = sc / "capture.wav";
+    {
+        std::array<float,64> silence{};
+        audio::WavWriter wave(audioPath,48000,1,audio::WavFormat::Float32);
+        wave.write(silence.data(),static_cast<std::uint32_t>(silence.size()));
+        wave.close();
+    }
+    OpRequest mediaRequest;
+    const auto imported = media::prepareImport(*s,audioPath,7,0,mediaRequest);
+    check(imported.ok && !imported.existing, "prepare one recorded media row for all four takes");
+    if (!imported.ok) return;
+    std::vector<OpRequest> passes;
+    std::array<std::size_t,4> ends{};
+    for (int pass = 1; pass <= 4; ++pass) {
+        const auto name = "Pass " + std::to_string(pass);
+        if (pass == 1) {
+            mediaRequest.label = "Record " + name;
+            mediaRequest.selBefore = Payload{{"clips", {pass}}};
+            passes.push_back(std::move(mediaRequest));
+        }
+        auto lane = createTakeLane(*s, pass+10, 1, name);
+        lane.label = "Record " + name;
+        lane.selBefore = Payload{{"clips", {pass}}};
+        passes.push_back(std::move(lane));
+        passes.push_back(clip(pass+20, name.c_str()));
+        passes.push_back(request("clip.attachAudio", {{"id",pass+20},{"media",imported.mediaId},{"frames",64}}));
+        passes.push_back(request("clip.setLane", {{"id",pass+20},{"lane",pass+10}}));
+        passes.push_back(request("clip.setName", {{"id",1},{"name",name}}));
+        ends[static_cast<std::size_t>(pass-1)] = passes.size();
+    }
+
+    struct Recorder final : AppliedObserver {
+        std::vector<std::shared_ptr<const AppliedBatch>> batches;
+        void committed(std::shared_ptr<const AppliedBatch> batch) override { batches.push_back(std::move(batch)); }
+        void sourceInvalidated(const AppliedSource&, AppliedSourceInvalidation) override {}
+    };
+    auto recorder = std::make_shared<Recorder>();
+    const auto subscription = appliedSource(*s).observe(recorder);
+    check(subscription.ok, "observe durable applied batches");
+    SQLite::Database outside(path.string(), SQLite::OPEN_READONLY);
+    check(!j.commitGrouped(passes, {}).ok &&
+          !j.commitGrouped(passes, std::array<std::size_t,2>{passes.size(),passes.size()}).ok &&
+          !j.commitGrouped(passes, std::array<std::size_t,1>{passes.size()-1}).ok &&
+          h.head() == baseline && recorder->batches.empty(),
+          "empty, repeated or incomplete group ends cannot change the project");
+
+    s->db().exec("CREATE TRIGGER refuse_last_pass BEFORE UPDATE OF name ON clips "
+                 "WHEN NEW.name='Pass 4' BEGIN SELECT RAISE(ABORT,'last pass refused'); END;");
+    const auto late = j.commitGrouped(passes, ends);
+    check(!late.ok && late.seqs.empty() && late.groupTxnIds.empty() && late.txnId == 0 &&
+          laneCount() == 0 && mediaCount() == 0 && mainName() == "Before recording" && h.head() == baseline &&
+          j.count() == baselineCount && recorder->batches.empty(),
+          "a handler failure in the last pass rolls back every preceding pass and publishes nothing");
+    s->db().exec("DROP TRIGGER refuse_last_pass");
+    CommitOptions refusal;
+    refusal.beforeCommit = [](SQLite::Database& db, std::int64_t, std::string& error) {
+        db.exec("UPDATE project SET name='Uncommitted recorder metadata'");
+        error = "publication refused";
+        return false;
+    };
+    check(!j.commitGrouped(passes, ends, refusal).ok && laneCount() == 0 && mediaCount() == 0 &&
+          s->db().execAndGet("SELECT name FROM project").getString() == "Untitled" &&
+          recorder->batches.empty(), "a refused publication rolls back its metadata and all pass operations");
+
+    int hooks = 0;
+    std::int64_t firstHookTxn = 0;
+    CommitOptions options;
+    options.expectHead = baseline;
+    options.beforeCommit = [&](SQLite::Database& db, std::int64_t txnId, std::string&) {
+        ++hooks;
+        firstHookTxn = txnId;
+        return db.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 4 &&
+               db.execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 1 &&
+               db.execAndGet("SELECT COUNT(DISTINCT txn_id) FROM ops").getInt() == 5 &&
+               outside.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 0 &&
+               outside.execAndGet("SELECT COUNT(*) FROM media_files").getInt() == 0;
+    };
+    const auto result = j.commitGrouped(passes, ends, options);
+    check(result.ok && hooks == 1 && result.txnId == firstHookTxn && result.groupTxnIds.size() == ends.size() &&
+          result.seqs.size() == passes.size() && outside.execAndGet("SELECT COUNT(*) FROM lanes").getInt() == 4,
+          "one SQL commit publishes all pass groups together to an independent reader");
+    if (!result.ok || result.groupTxnIds.size() != ends.size()) return;
+    const auto batch = recorder->batches.empty() ? nullptr : recorder->batches.front();
+    bool notice = recorder->batches.size() == 1 && batch && batch->beforeHead() == baseline &&
+                  batch->afterHead() == h.head() && batch->operations().size() == passes.size();
+    if (notice) {
+        std::size_t index = 0;
+        for (std::size_t group = 0; group < ends.size(); ++group)
+            for (; index < ends[group]; ++index)
+                notice = notice && batch->operations()[index].txnId == result.groupTxnIds[group];
+    }
+    check(notice, "one applied-batch notice carries each operation's actual Undo ID");
+
+    for (int pass = 4; pass > 0; --pass) {
+        const auto step = h.nextUndo();
+        check(step && step->txnId == result.groupTxnIds[static_cast<std::size_t>(pass-1)] &&
+              step->opCount == (pass == 1 ? 6 : 5) && step->label == "Record Pass " + std::to_string(pass),
+              "Undo names the last completed pass and its operations");
+        const auto undone = h.undo();
+        check(undone.ok && undone.selBefore == Payload{{"clips",{pass}}} && laneCount() == pass-1 &&
+              mediaCount() == (pass == 1 ? 0 : 1) &&
+              mainName() == (pass == 1 ? "Before recording" : "Pass " + std::to_string(pass-1)),
+              "one Undo removes just its take and restores the preceding main clip");
+    }
+    check(h.head() == baseline, "all passes undo back to the original head");
+    for (int pass = 1; pass <= 4; ++pass)
+        check(h.redo().ok && laneCount() == pass && mediaCount() == 1 &&
+              mainName() == "Pass " + std::to_string(pass),
+              "redo restores one take and its main clip at a time");
+    check(h.head() == result.seqs.back() && j.count() == baselineCount + static_cast<std::int64_t>(passes.size()),
+          "Undo and Redo preserve the durable pass journal");
 }
 
 void testSurvivesRestart() {
@@ -356,6 +504,7 @@ int runAll() {
     std::printf("adi_history_tests -- SPEC 8.2, ADR-0003/0021/0030\n\n");
     testUndoRedoRoundTrip();
     testTransactionUndoesAsOne();
+    testLoopPassUndoGroups();
     testSurvivesRestart();
     testForkPreservesTheAbandonedLine();
     testUndoRedoStack();
