@@ -418,6 +418,8 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/live_midi_input.cpp
+    src/adi/engine/midi_input_capture.cpp
     src/adi/engine/session_runtime.cpp
     src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp

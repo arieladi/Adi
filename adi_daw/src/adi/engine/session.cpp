@@ -15,6 +15,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/gesture_capture_detail.hpp"
 
 #include <algorithm>
@@ -165,7 +166,10 @@ struct Session::ScopeRuntime {
     }
 };
 
-Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
+Session::Session()
+    : midiInput_(std::make_unique<LiveMidiInput>()), midiInputCapture_(std::make_unique<MidiInputCapture>()),
+      recording_(std::make_unique<AudioInputRecorder>()), gestureAudio_(makeGestureAudio()),
+      endpoint_(std::make_shared<SessionEndpoint>()) {
     scopeRuntime_ = std::make_unique<ScopeRuntime>();
     endpoint_->owner_=this;
 }
@@ -812,6 +816,40 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model) {
     };
 }
 
+void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
+    if (!timing.spec.performanceState || timing.spec.exporting) return;
+    std::map<const Node*, std::int64_t> armed;
+    for (const auto& track : model.tracks) {
+        if (!track.recordArmed ||
+            (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
+            continue;
+        for (const auto* node : chainFor(track.id)) {
+            if (node->eventFlow() == EventFlow::Consume) {
+                armed.emplace(node, track.id);
+                break;
+            }
+        }
+    }
+    for (const auto& entry : entries_) {
+        if (entry.retired || entry.placeholder) {
+            midiInputVoices_.erase(entry.hostIndex);
+            continue;
+        }
+        auto& instance = devices_.deviceAt(entry.hostIndex);
+        if (instance.eventFlow() != EventFlow::Consume) continue;
+        auto& node = devices_.nodeAt(entry.hostIndex);
+        const auto target = armed.find(&node);
+        // Keep a disarmed or parked instrument's state until it can render
+        // its releases. A retired instance's last graph still owns its state.
+        auto voices = midiInputVoices_.find(entry.hostIndex);
+        if (target == armed.end() && voices == midiInputVoices_.end()) continue;
+        if (voices == midiInputVoices_.end())
+            voices = midiInputVoices_.emplace(entry.hostIndex, std::make_shared<LiveMidiInput::Voices>()).first;
+        timing.midiInputRoutes.push_back({&node, voices->second, target == armed.end() ? 0 : target->second,
+                                          node.eventFlow() == EventFlow::Consume});
+    }
+}
+
 bool Session::rebuild() {
     if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
@@ -941,6 +979,7 @@ bool Session::rebuild() {
     cueMonitor_.captureLanes(*laneBindings);
     timing->stripLanes = std::move(laneBindings);
     timing->generationControls=nativeGestureControls(*this);
+    prepareMidiInput(*timing, model_);
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -1737,6 +1776,8 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
     if (changed) {
         recording_->stop();
+        midiInputCapture_->deviceStopped();
+        resetMidiInput();
         if (transport_.countInRemaining() > 0)
             transport_.play(false);
     }
@@ -2109,6 +2150,9 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     if (timing) {
         block.transport = &timing->blockInfo;
         block.exporting = timing->spec.exporting;
+        auto* capture = timing->spec.performanceState && !timing->spec.exporting
+            ? session_.midiInputCapture_.get() : nullptr;
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes, session_.transport_, capture);
     }
     if (!graph_.process(block)) return false;
     session_.mainLoudness_.process(block);
@@ -2135,6 +2179,35 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
 void Session::process(const AudioIo& io) noexcept {
     auto block = beginRender();
     (void)block.process(io);
+}
+
+bool Session::enqueueMidiInput(std::int64_t sample, const Event& event) noexcept {
+    return midiInput_->push(sample, event);
+}
+void Session::resetMidiInput() noexcept {
+    midiInput_->reset();
+}
+bool Session::startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error) {
+    if (!loaded_ || !spec_.performanceState || spec_.exporting || tracks.empty() || tracks.size() > 256) {
+        error = "MIDI capture needs a live project and between 1 and 256 armed tracks";
+        return false;
+    }
+    std::set<std::int64_t> seen;
+    for (const auto id : tracks) {
+        const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
+            [id](const rows::Track& t) { return t.id == id; });
+        if (id <= 0 || track == model_.tracks.end() || !track->recordArmed ||
+            (track->kind != "midi" && track->kind != "instrument") || !seen.insert(id).second) {
+            error = "MIDI capture needs distinct armed MIDI or instrument tracks";
+            return false;
+        }
+    }
+    if (!midiInputCapture_->start({tracks.begin(), tracks.end()}, spec_.sampleRate)) {
+        error = "finish and drain the previous MIDI capture first";
+        return false;
+    }
+    error.clear();
+    return true;
 }
 
 void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {
@@ -2202,6 +2275,8 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
 void Session::release() {
     ++runtimeEpoch_;
     recording_->stop();
+    midiInputCapture_->deviceStopped();
+    resetMidiInput();
     // A device stop cancels a pending lead-in, as a format change does in
     // prepare(): the recorder it was counting in for has just stopped, so a
     // same-format restart must not resume clicking and then start the

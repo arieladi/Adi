@@ -47,6 +47,7 @@
 #include "adi/applied_batches.hpp"
 #include "adi/engine/gain_stage.hpp"
 #include "adi/engine/main_loudness.hpp"
+#include "adi/engine/live_midi_input.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
@@ -70,6 +71,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -83,6 +85,7 @@ namespace adi::engine {
 
 class AudioInputRecorder;
 struct AudioRecordingSpec;
+class MidiInputCapture;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -325,6 +328,21 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Track input from one serialized MIDI producer. Submit in ascending
+    /// physical stream samples (AudioIo::streamTimeSamples), preserving wire
+    /// order at equal samples. Use zero-based channels for all events. Note
+    /// on/off IDs must be nonzero and unique across ports. An unaddressed
+    /// expression event may use ID zero.
+    /// Returns false for invalid events or a full queue. Rebind the producer
+    /// when the driver restarts its sample clock.
+    bool enqueueMidiInput(std::int64_t streamSample, const Event&) noexcept;
+    /// Discard queued events and release held live notes on the next callback.
+    /// Call when the producer disconnects or replaces its port configuration.
+    void resetMidiInput() noexcept;
+    /// Owner only. Start a new capture with the listed armed MIDI tracks.
+    bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
+    [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
+
     /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
     /// precision is a new graph, built and published as a format change is
     /// (decision 3), and swapped in as any graph is: the handover carries
@@ -481,6 +499,9 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<LiveMidiInput> midiInput_;
+    std::unique_ptr<MidiInputCapture> midiInputCapture_;
+    std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::unique_ptr<AudioInputRecorder> recording_;
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
@@ -501,6 +522,7 @@ private:
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
+        std::vector<LiveMidiInput::Route> midiInputRoutes;
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
@@ -514,6 +536,7 @@ private:
         [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
+    void prepareMidiInput(TimingView&, const rows::Model&);
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;

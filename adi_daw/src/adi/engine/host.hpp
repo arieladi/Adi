@@ -255,6 +255,8 @@ public:
         [[nodiscard]] std::uint64_t generation() const noexcept;
         [[nodiscard]] std::int32_t latencySamples() const noexcept;
         [[nodiscard]] const GraphTransportState* transportState() const noexcept;
+        [[nodiscard]] NodeId find(const Node&) const noexcept;
+        bool pushInputEvent(NodeId, const Event&) const noexcept;
         /// False writes silence at both widths and never dereferences an expired
         /// publication. A successful slice applies its clock exactly once.
         bool process(const AudioIo&) noexcept;

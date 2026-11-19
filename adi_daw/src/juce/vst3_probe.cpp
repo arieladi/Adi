@@ -1466,7 +1466,8 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
         for (const auto& t : types) if (t.name == name) return &t;
         return nullptr;
     };
-    auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev) {
+    auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev,
+                      const std::vector<Event>& later = {}) {
         std::string err;
         auto dev = host.makeDevice(d, sr, 512, err);
         auto* v3 = dynamic_cast<adi::device::Vst3Device*>(dev.get());
@@ -1474,6 +1475,10 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
         v3->setExpressionRoute(choice);
         v3->prepare(sr, 512);
         auto a = pr::render(*v3, ev, 64, 512, sr);
+        if (!later.empty()) {
+            const auto tail = pr::render(*v3, later, 64, 512, sr);
+            a.insert(a.end(), tail.begin(), tail.end());
+        }
         check(v3->eventsDropped() == 0 && v3->paramsDropped() == 0 && v3->eventsOutOfRange() == 0,
               "nothing dropped: events, parameter points or offsets");
         return a;
@@ -1565,9 +1570,20 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     if (const auto* mpe = find("ADI Test MPE"))
         check(octave(render(*mpe, RouteChoice::NoteExpression, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test MPE on NoteExpression: unbent -- it reads MIDI as parameters, not note expression");
-    if (const auto* ne = find("ADI Test NoteExpr"))
+    if (const auto* ne = find("ADI Test NoteExpr")) {
         check(octave(render(*ne, RouteChoice::MpeMidi, {note(1, 60, 2), bend(1, 12.0, 2)})) == "unbent",
               "ADI Test NoteExpr on MpeMidi: unbent -- no mapping, and it ignores legacy MIDI events");
+        const auto clip = (std::uint64_t{1} << 32) | 1;
+        const auto live = adi::engine::kLiveNoteIdPrefix | 1;
+        const auto audio = render(*ne, RouteChoice::NoteExpression,
+                                  {note(clip, 60, 2), note(live, 60, 2), bend(live, 12.0, 2)},
+                                  {off(live, 60, 0)});
+        const double c4 = pr::toneLevel(audio, 2048, 4096, sr, pr::midiHz(60));
+        const double c5 = pr::toneLevel(audio, 2048, 4096, sr, pr::midiHz(72));
+        const double remaining = pr::estimateHz(audio, 32768 + from, n, sr, 80.0, 1200.0);
+        check(c4 > 1e-3 && c5 > 1e-3 && std::abs(pr::centsBetween(remaining, pr::midiHz(60))) < 15,
+              "VST3 bends just the live same-pitch voice and releases it without stopping the clip");
+    }
 
     fixtureGesture(host);
     fixtureState(host);
