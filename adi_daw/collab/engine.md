@@ -12,6 +12,17 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E20(a) and (b) plug-in host fixes gated and pushed
+
+**PR requested** — `engine/df-e20-plugin-host-inputs`, head `44fd27da7f1db0b05dc86e85da79a0e020bba27a`, base `engine/df-e21-plugin-transport` at `3c9961f8`. Title **Honor CLAP unbounded tails and route VST3 side-chain keys**. Land DF-E21 first. The remote head matches the gated commit.
+
+CLAP maps the entire unbounded tail range from INT32_MAX through UINT32_MAX. The VST3 host enables the first auxiliary input at prepare and feeds it from the graph key. The Linux fixture receives the stereo key at the correct offset at both sample widths and receives silence on the next call when the key is disconnected. Other auxiliary buses retain their original scope.
+
+**Gate** — Linux x86-64 GCC 14 Debug with Pure Data and warnings as errors, 58,082 checks in 241 suites plus all four validators and the layout check. The Linux VST3 fixture passed 214 checks. Clang 19 passed strict compilation on the five changed C++ units and the CLAP suite passed 526 checks with the host and test built by Clang. Restoring the old CLAP limit failed the two boundary assertions. Omitting the second VST3 input failed both key-delivery assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Next is DF-E22, grouped returns and individually selectable send taps. DF-E20(c) remains with engine-win.
+
+
 ## 2026-11-19 — DF-E21 plug-in input transport gated and pushed
 
 **PR requested** — branch `engine/df-e21-plugin-transport`, head `3c9961f861f3828240b197a6eb3bdb147e5a4d15`, base `origin/main` at `ae09f638`. Title **Send hosted plug-ins the transport at their audio input**. The remote head matches the gated commit.
