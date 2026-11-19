@@ -1029,6 +1029,47 @@ void actualRateHistory() {
     }
 }
 
+void stereoMeterSharingAndIntervals() {
+    using Meter = adi::dsp::StereoEnvelopeMeter;
+    Fixture f;
+    auto meter = f.broker.acquireStereoMeter(1, {});
+    auto mirror = f.broker.acquireStereoMeter(1, {});
+    auto midSide = f.broker.acquireStereoMeter(1, {true, Meter::Weighting::C});
+    const auto start = f.broker.stats();
+    check(start.consumers == 3 && start.domains == 2 && start.taps == 1 && start.spectralPlans == 0 && f.acquireCalls == 1,
+          "equal meter settings share one reading, and both profiles share one physical tap without FFT");
+    std::array<float, 641> left{}, right{};
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        left[i] = .6f * static_cast<float>(std::sin(.17 * static_cast<double>(i)));
+        right[i] = -.5f * left[i];
+    }
+    Meter scalar;
+    check(scalar.prepare({48000., .6, .5, .5, 1.e-6}) && scalar.process(left, right),
+          "scalar reference accepts one interval");
+    const auto feed = [&](std::size_t offset, std::size_t count) {
+        f.tap->write(left.data() + offset, right.data() + offset, static_cast<std::int32_t>(count),
+                     static_cast<std::int64_t>(offset), true);
+        f.broker.pump();
+    };
+    feed(0, 97);
+    feed(97, left.size() - 97);
+    const auto lr = meter.readStereoMeter(), ms = midSide.readStereoMeter();
+    check(lr && lr == mirror.readStereoMeter() && lr->reading == scalar.reading() && lr->reading.signCoincidence < 0 &&
+              ms && ms->reading.maximumPeak[0] < ms->reading.maximumPeak[1] && f.broker.stats().transforms == 0,
+          "meter uses each new sample once and publishes identical readings across split callbacks");
+    check(meter.restartStereoMeter() && !mirror.readStereoMeter() && midSide.readStereoMeter() == ms,
+          "reset invalidates the common LR interval and leaves the other profile untouched");
+    check(f.broker.pump() == 0 && !meter.readStereoMeter(), "discarded interval never replays old samples");
+    tone(*f.tap, 1024, .08f, 1.f, static_cast<std::int64_t>(left.size()));
+    f.broker.pump();
+    const auto after = meter.readStereoMeter();
+    check(after && lr && after->epoch > lr->epoch && near(after->reading.maximumPeak[0], .08),
+          "the new interval holds only newly captured peaks");
+    meter.reset(); mirror.reset(); midSide.reset();
+    check(f.broker.stats().consumers == 0 && f.broker.stats().taps == 0 && f.releaseCalls == 1,
+          "last meter consumer releases the physical tap");
+}
+
 void lateRateAndFailedNegotiation() {
     std::shared_ptr<ScopeTap> tap;
     bool sourceExists = false;
@@ -1086,7 +1127,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); }
+          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

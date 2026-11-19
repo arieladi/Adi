@@ -2034,6 +2034,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+include(cmake/stereo_envelope_meter.cmake)
 include(cmake/triggered_scope.cmake)
 
 add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)

@@ -23,6 +23,9 @@ constexpr float spectralSampleLimit = 1.e12f;
 bool valid(const SharedAnalysis::Request &r) {
     if (r.track <= 0 || r.fftSize < 32 || r.fftSize > SharedAnalysis::kMaxFftSize || r.fftSize % 32 ||
         r.hopSize < 0 || r.hopSize > r.fftSize || !r.outputs || (r.outputs & ~allOutputs)) return false;
+    using Weighting = dsp::StereoEnvelopeMeter::Weighting;
+    if (r.stereoMeter && (r.outputs != SharedAnalysis::Meters || r.stereoMeter->weighting < Weighting::Standard ||
+                          r.stereoMeter->weighting > Weighting::K)) return false;
     auto n = r.fftSize;
     for (const auto factor : {2, 3, 5}) while (n % factor == 0) n /= factor;
     const bool device = r.point == engine::ScopePoint::DeviceInput || r.point == engine::ScopePoint::DeviceOutput;
@@ -108,10 +111,14 @@ struct SharedAnalysis::Domain {
             for (const float value : left) sum += static_cast<double>(value);
             std::fill(left.begin(), left.end(), 0.f);
             return sum / static_cast<double>(r.fftSize);
-        }()) {}
+        }()) {
+        if (request.stereoMeter) meter = std::make_unique<dsp::StereoEnvelopeMeter>();
+    }
     Request request;
     std::unique_ptr<dsp::Spectrum> spectrum;
     std::unique_ptr<dsp::LinearMagnitudeAverage> average;
+    std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
+    bool meterPrepared = false;
     bool averageConfigured = false;
     AverageStatus averageStatus = AverageStatus::Unavailable;
     std::uint64_t averageEpoch = 0, averageWindows = 0, averageWindow = 0, averageBinsWindow = 0;
@@ -139,15 +146,22 @@ struct SharedAnalysis::Domain {
     mutable std::mutex resultMutex;
     std::shared_ptr<const Result> result;
     std::shared_ptr<const AverageResult> averageResult;
+    std::shared_ptr<const StereoMeterResult> meterResult;
     std::shared_ptr<const Result> readResult() const { std::lock_guard lock(resultMutex); return result; }
     std::shared_ptr<const AverageResult> readAverageResult() const { std::lock_guard lock(resultMutex); return averageResult; }
+    std::shared_ptr<const StereoMeterResult> readMeterResult() const { std::lock_guard lock(resultMutex); return meterResult; }
+    void publishMeter(std::shared_ptr<const StereoMeterResult> next) {
+        std::lock_guard lock(resultMutex);
+        meterResult.swap(next);
+    }
     void publishResult(std::shared_ptr<const Result> next, std::shared_ptr<const AverageResult> nextAverage = {}) {
         { std::lock_guard lock(resultMutex); result.swap(next); averageResult.swap(nextAverage); }
     }
     void updateAvailability() noexcept {
         const auto bits = outputs.load(std::memory_order_acquire);
         const bool averageOnlyUnavailable = (bits & Average1s) && !(bits & ~std::uint32_t{Average1s}) && !averageConfigured;
-        available.store(usable(tap, request.fftSize) && !averageOnlyUnavailable, std::memory_order_release);
+        available.store(usable(tap, request.fftSize) && !averageOnlyUnavailable && (!meter || meterPrepared),
+                        std::memory_order_release);
     }
     void resetAverageForGap() noexcept {
         if (!averageConfigured) return;
@@ -190,7 +204,13 @@ struct SharedAnalysis::Domain {
         tap = std::move(next);
         cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
-        available.store(usable(tap, request.fftSize), std::memory_order_release);
+        if (meter) {
+            publishMeter({});
+            const auto profile = *request.stereoMeter;
+            meterPrepared = usable(tap, request.fftSize) &&
+                meter->prepare({tap->sampleRate(), .6, .5, .5, 1.e-6, profile.midSide, profile.weighting});
+        }
+        updateAvailability();
         resetWindow(false);
         consumedSequence.store(cursor.next, std::memory_order_release);
         dirty.store(true, std::memory_order_release);
@@ -443,6 +463,48 @@ struct SharedAnalysis::Domain {
         latest->revision = ++revision;
         return latest;
     }
+    void resetMeter() {
+        meter->reset();
+        ++sourceEpoch;
+        publishMeter({});
+    }
+    bool feedMeter(std::span<const float> l, std::span<const float> r) {
+        if (meter->process(l, r)) return true;
+        // Discard the invalid part and restart at the valid suffix. The suffix is
+        // defined by samples, regardless of their audio callback/read boundaries.
+        resetMeter();
+        auto first = l.size();
+        while (first > 0 && std::isfinite(l[first - 1]) && std::isfinite(r[first - 1])) --first;
+        return first < l.size() && meter->process(l.subspan(first), r.subspan(first));
+    }
+    bool pumpMeter(std::span<float> l, std::span<float> r, std::size_t &samples, std::size_t &reads) {
+        const auto end = tap->written();
+        bool advanced = false;
+        while (cursor.next < end && reads < kMaxReadsPerFrame && samples < kMaxSamplesPerFrame) {
+            const auto count = std::min({static_cast<std::size_t>(end - cursor.next), l.size(),
+                                         kMaxSamplesPerFrame - samples});
+            ++reads;
+            const auto read = tap->read(cursor, l.first(count), r.first(count));
+            if (read.status == engine::ScopeTap::ReadStatus::Overrun ||
+                read.status == engine::ScopeTap::ReadStatus::GenerationChanged ||
+                read.status == engine::ScopeTap::ReadStatus::Discontinuity) {
+                resetMeter();
+                advanced = false;
+                if (read.status != engine::ScopeTap::ReadStatus::Discontinuity) continue;
+            }
+            if (!read.frames) break;
+            const auto frames = static_cast<std::size_t>(read.frames);
+            samples += frames;
+            advanced = feedMeter(l.first(frames), r.first(frames));
+        }
+        consumedSequence.store(cursor.next, std::memory_order_release);
+        if (!advanced || !active.load(std::memory_order_acquire)) return false;
+        const auto reading = meter->reading();
+        if (const auto prior = readMeterResult(); prior && prior->reading == reading) return false;
+        publishMeter(std::make_shared<StereoMeterResult>(StereoMeterResult{
+            reading, tap->sampleRate(), tap->generation(), sourceEpoch}));
+        return true;
+    }
 };
 struct SharedAnalysis::State {
     struct Tap {
@@ -552,6 +614,10 @@ struct SharedAnalysis::State {
             std::lock_guard lock(d.mutex);
             if (!d.needsWork(*historyBudget)) continue;
             const bool changed = d.dirty.exchange(false, std::memory_order_acq_rel);
+            if (d.meter) {
+                if (d.pumpMeter(readLeft, readRight, samples, reads)) publications.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
             std::shared_ptr<Result> latest;
             // Make space released since the preceding publication available to
             // its staged columns before this pass can offer new ones.
@@ -697,6 +763,19 @@ std::shared_ptr<const SharedAnalysis::AverageResult> SharedAnalysis::Lease::read
     const auto publication = (outputs_ & Average1s) && available() ? domain_->readAverageResult() : nullptr;
     return publication && publication->window && (publication->window->outputs & outputs_) == outputs_ ? publication : nullptr;
 }
+std::shared_ptr<const SharedAnalysis::StereoMeterResult> SharedAnalysis::Lease::readStereoMeter() const noexcept {
+    return available() && domain_->meter ? domain_->readMeterResult() : nullptr;
+}
+bool SharedAnalysis::Lease::restartStereoMeter() noexcept {
+    const auto state = state_.lock();
+    if (!state || !available() || !domain_->meter) return false;
+    state->ownerOnly();
+    std::lock_guard lock(domain_->mutex);
+    domain_->cursor = domain_->tap->cursorAtEnd();
+    domain_->consumedSequence.store(domain_->cursor.next, std::memory_order_release);
+    domain_->resetMeter();
+    return true;
+}
 SharedAnalysis::Lease::SourcePosition SharedAnalysis::Lease::sourcePosition() const noexcept {
     const auto state = state_.lock();
     if (!state || !domain_) return {};
@@ -772,13 +851,19 @@ SharedAnalysis::Lease SharedAnalysis::acquire(const Request &request) {
     }
     ++t.domains; domain->bind(t.value, true);
     if (t.value) domain->startAt(inserted ? t.freshSequence :
-        std::max({t.value->oldest(), t.value->written() - key.fftSize, t.freshSequence}));
+        key.stereoMeter ? t.value->written() : std::max({t.value->oldest(), t.value->written() - key.fftSize, t.freshSequence}));
     domain->consumers = 1;
     domain->changeOutputs(request.outputs, true);
     if (request.outputs & Average1s)
         domain->activateAverage(inserted || t.value != previousTap ? t.freshSequence : (t.value ? t.value->written() : 0));
     state_->domains.emplace(key, domain); ++state_->consumers;
     return Lease(state_, std::move(domain), request.outputs);
+}
+SharedAnalysis::Lease SharedAnalysis::acquireStereoMeter(std::int64_t track, StereoMeterProfile profile) {
+    Request request{track, engine::ScopePoint::PostFader, 32};
+    request.outputs = Meters;
+    request.stereoMeter = profile;
+    return acquire(request);
 }
 void SharedAnalysis::refreshSources(bool forceEpoch) {
     state_->ownerOnly();

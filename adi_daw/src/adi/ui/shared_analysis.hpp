@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/dsp/spectrum.hpp"
+#include "adi/dsp/stereo_envelope_meter.hpp"
 #include "adi/engine/scope.hpp"
 #include <array>
 #include <compare>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace adi::ui {
@@ -31,6 +33,11 @@ class SharedAnalysis final {
     enum class Channel : std::uint8_t { Mid, Side, Left, Right, StereoPower };
     enum class Mode { Worker, Manual };
     enum Output : std::uint32_t { Spectrum = 1, Scope = 2, Meters = 4, Phase = 8, Spectrogram = 16, Average1s = 32 };
+    struct StereoMeterProfile {
+        bool midSide = false;
+        dsp::StereoEnvelopeMeter::Weighting weighting = dsp::StereoEnvelopeMeter::Weighting::Standard;
+        auto operator<=>(const StereoMeterProfile &) const = default;
+    };
     struct Request {
         std::int64_t track = 0;
         engine::ScopePoint point = engine::ScopePoint::PostFader;
@@ -40,6 +47,9 @@ class SharedAnalysis final {
         std::int64_t device = 0;
         std::int32_t hopSize = 0; // zero resolves to N/4
         std::uint32_t outputs = Output::Spectrum;
+        // A separate contiguous measurement incompatible with a windowed analysis domain.
+        // Meter profiles on the same source still share the physical tap and worker.
+        std::optional<StereoMeterProfile> stereoMeter = std::nullopt;
         auto operator<=>(const Request &) const = default;
         engine::ScopeSource source() const noexcept { return {track, point, device}; }
     };
@@ -77,6 +87,11 @@ class SharedAnalysis final {
         AverageStatus status = AverageStatus::Waiting;
         std::uint64_t epoch = 0, processedWindows = 0, windowSerial = 0;
     };
+    struct StereoMeterResult {
+        dsp::StereoEnvelopeMeter::Reading reading;
+        double sampleRate = 0;
+        std::uint64_t generation = 0, epoch = 0;
+    };
     struct Stats {
         std::size_t consumers = 0, domains = 0, taps = 0;
         std::uint64_t transforms = 0, publications = 0, frameRequests = 0, workerPasses = 0;
@@ -105,6 +120,8 @@ class SharedAnalysis final {
         // Only Average1s leases: same immutable sidecar/window for compatible
         // consumers. Missing/refused publication returns null; inspect status.
         std::shared_ptr<const AverageResult> readAverage() const noexcept;
+        std::shared_ptr<const StereoMeterResult> readStereoMeter() const noexcept;
+        bool restartStereoMeter() noexcept;
         // Owner-only activation barrier, not a paint/audio query. A nonzero
         // generation identifies the currently usable tap; written is its completed
         // sample count, independent of analysis backlog or publication revisions.
@@ -130,6 +147,7 @@ class SharedAnalysis final {
     SharedAnalysis(const SharedAnalysis &) = delete;
     SharedAnalysis &operator=(const SharedAnalysis &) = delete;
     Lease acquire(const Request &);
+    Lease acquireStereoMeter(std::int64_t track, StereoMeterProfile);
     void shutdown() noexcept;
     // Owner-only lifecycle query, including consumers which released all leases
     // to hold local pictures. False after explicit shutdown.
