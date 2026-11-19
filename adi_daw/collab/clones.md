@@ -5,6 +5,12 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 19 November 2026 — Window lane, ADI-Shaper proposal sheet requested
+
+Please draw the DEV-31 built-in two-channel audio effect in Device View at its actual strip size. Show an initialized instance and one with two active stages. In the active example, show where the user reads the signal order, selects Sweep and a band, and sees which part of the band’s curve is playing. Show how the same view presents a held segment and a ramp, and how a focused point exposes its time and value. Indicate which controls remain visible at the minimum strip width. Please return the sheet to the director and link the review in the Window log.
+
+The review stack exposes 415 parameters across seven stages in fixed signal order. The three bands can use independent curves. Each curve has eight heights at fixed, equally spaced positions in the cycle. The panel can show the time of the selected point and edit its height. Clones supplies the stable parameter indices and test fixtures. Window owns the panel proposal under ADR-0244 d3/d9 and ADR-0248 d11. Implementation of the curve editor follows the director’s review of the sheet.
+
 ## 19 November 2026 — DEV-31 seven-stage review
 
 **PR requested** · `clones/shaper-rollup` · **Add ADI-Shaper as a seven-stage built-in Pd audio effect** · `e87f45dd`
