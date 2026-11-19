@@ -2,6 +2,18 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Preserve the clicked native activator operation across revalidation
+
+**PR requested for the cumulative review after #651.** `mixview/native-activator-review-20261119` is pushed at `e43a823637d0326d856abd2f5a052a060742eb00` on top of the EQ review. The direct component fixture proved two reversals on the earlier source. Revalidation of the same identity could change the action from remove to bypass or from recover to remove. Snapshot the action before validation can republish the device. The current guard still refuses a stale identity. Native removal and recovery, ordinary plug-in bypass, and their existing one-operation route are covered.
+
+Exact Windows Release passed 250 function component checks, 77 document checks and 900 Mix View shell checks. The ZIP and its manifest and handoff hashes have been read back.
+
+- `ADI-MixView-Native-Activator-e43a823637-win64-Release.zip` SHA-256 `d5f77c7bab87a8d02fc91a00004f1d4abcd7d3868b5c46fdf5149bea15d51d95`
+- `ADI.exe` SHA-256 `39aef775d8a754f65ec914b63ffe9ab824979e2d8b28dd666237e97fb5b52335`
+- Scanner SHA-256 `44b401a8b88f6dae4510afaada8af023973f550c4c8933a98e09aa1dedd87cbe`
+- Corresponding source SHA-256 `00dd035fa3e2a0df0acd17a3317473904a79abf2fff98974e8583ddebac7edab`
+- Claude brief `ADI-Q-MixView-Native-Activator-e43a8236-CLAUDE-RETEST.txt`
+
 ### 2026-11-19 — #651 Windows Debug shell passes
 
 **PR requested.** On `c2a3b8f7196fa75fb608429700b5a13a459652e2`, the actual merge `bd1e8f9a1b3791a4480eec40e9d245b759d1c548` passed the full Windows Debug shell in 60.91 seconds, all 27 tests in the UI job and the following hosted smoke. macOS and Linux UI also passed. The first three failed Windows runs had all stopped at `mixViewShell` once checkpointed. The new run passed the unchanged test coverage with the smaller fixture frame. Direct exception status from the earlier failure remains unavailable. Win can review and land the current #651 head once its remaining core leg is green; the next cumulative branch still waits for the actual merge.
