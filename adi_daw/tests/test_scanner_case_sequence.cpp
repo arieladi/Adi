@@ -2,6 +2,7 @@
 // Exact DEV-25 cases 1..15 on Windows, through the production scanner helper.
 // Case 16 is in the hosted readiness test; no scan success means audio Ready.
 #include "juce/vst3_scan_host.hpp"
+#include "juce/clap_host.hpp"
 #include "adi/scan_stamp.hpp"
 #include "adi/scan_catalogue.hpp"
 #include "adi/media/blake3.hpp"
@@ -55,6 +56,28 @@ bool junction(const fs::path& link,const fs::path& target) {
         static_cast<DWORD>(8+data.bytes),nullptr,0,&returned,nullptr)!=FALSE;
     CloseHandle(handle);return ok;
 }
+
+bool clapSearchLinks(const fs::path& parent) {
+    const auto search = parent / "clap-search";
+    const auto vendor = parent / "clap-vendor";
+    fs::create_directory(search);
+    fs::create_directory(vendor);
+    const auto module = vendor / "Original.clap";
+    std::ofstream(module) << "discovery fixture";
+    const auto one = search / "first";
+    const auto two = search / "second";
+    const auto cycle = vendor / "cycle";
+    if (!junction(one, vendor) || !junction(two, vendor) || !junction(cycle, search))
+        throw std::runtime_error("CLAP discovery fixture junction unavailable");
+    const auto throughAlias = device::ClapHost::findBundles({text(search)});
+    const auto overlapping = device::ClapHost::findBundles({text(search), text(vendor), text(one)});
+    const std::vector<std::string> expected{text(fs::canonical(module))};
+    if (!RemoveDirectoryW(cycle.c_str()) || !RemoveDirectoryW(two.c_str()) ||
+        !RemoveDirectoryW(one.c_str()) || !fs::exists(module))
+        throw std::runtime_error("CLAP discovery fixture junction cleanup failed");
+    return throughAlias == expected && overlapping == expected;
+}
+
 struct Receipt {
     std::map<std::string,unsigned> calls;std::set<unsigned> pids;
     explicit Receipt(const fs::path& file){std::ifstream in(file);std::string line;
@@ -198,8 +221,11 @@ bool run() {
     const auto link=s.temp.path()/"directory-link";if(!junction(link,s.temp.path()))throw std::runtime_error("native directory junction unavailable");
     retry(15,link/a.filename(),"explicit retry through actual directory junction clears same canonical block");
     if(!RemoveDirectoryW(link.c_str()) || !fs::exists(a))throw std::runtime_error("junction cleanup failed");
+    const bool clapAliases = clapSearchLinks(s.temp.path());
+    std::printf("CLAP discovery junctions, overlapping roots and directory cycle: %s\n",
+                clapAliases ? "PASS" : "FAIL");
     s.save();std::printf("SCANNER CASES: %d passed, %d failed; actual VST3 factory callbacks, case16 separate\n",s.passed,s.failed);
-    return s.passed==15 && s.failed==0;
+    return s.passed==15 && s.failed==0 && clapAliases;
 }
 } // namespace
 int main(int argc,char** argv){

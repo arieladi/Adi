@@ -28,6 +28,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 #include <system_error>
 
 namespace adi::device {
@@ -1915,27 +1916,33 @@ ClapLibrary* ClapHost::libraryFor(const std::string& path, std::string& error) {
 std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& paths) {
     if(audio::onAudioThread)return {};
     namespace fs = std::filesystem;
-    std::vector<std::string> out;
-    for (const auto& bytes : paths) {
-        const fs::path dir(std::u8string(bytes.begin(),bytes.end()));
+    std::vector<fs::path> pending;
+    for (const auto& bytes : paths)
+        pending.emplace_back(std::u8string(bytes.begin(), bytes.end()));
+    std::set<fs::path> visited;
+    std::set<std::string> bundles;
+    const fs::directory_iterator end;
+    while (!pending.empty()) {
         std::error_code ec;
-        if (!fs::is_directory(dir, ec)) continue;
-        // skip_permission_denied: one unreadable vendor folder must not end
-        // the walk for everything after it.
-        fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
-        const fs::recursive_directory_iterator end;
+        const auto dir = fs::canonical(pending.back(), ec);
+        pending.pop_back();
+        if (ec || !visited.insert(dir).second) continue;
+        // Resolve native directory links before walking. Each physical path is
+        // visited once, including links between independent search roots.
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
         for (; !ec && it != end; it.increment(ec)) {
             std::string ext = pathBytes(it->path().extension());
             for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-            if (ext != ".clap") continue;
-            out.push_back(pathBytes(it->path()));
-            std::error_code dirEc;
-            if (it->is_directory(dirEc)) it.disable_recursion_pending();   // a macOS bundle
+            std::error_code entryError;
+            if (ext == ".clap") {
+                const auto module = fs::canonical(it->path(), entryError);
+                if (!entryError) bundles.insert(pathBytes(module));
+                continue; // A bundle is a candidate, not another search directory.
+            }
+            if (it->is_directory(entryError)) pending.push_back(it->path());
         }
     }
-    std::sort(out.begin(), out.end());
-    out.erase(std::unique(out.begin(), out.end()), out.end());
-    return out;
+    return {bundles.begin(), bundles.end()};
 }
 
 scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Config& config) {
