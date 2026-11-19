@@ -82,9 +82,11 @@ public:
     bool reset(const std::string& key, const ChangeContext& who, std::string& why);
     void resetPage(const std::string& page, const ChangeContext& who);
 
-    /// Writes the file atomically (a temporary beside it, then a rename).
+    /// Saves through the shared publisher using a private sibling stage.
     /// Keys this build does not know are written back exactly as read.
-    /// Refused for a file that names another application or uses a newer schema.
+    /// Refused for a file that names another application or uses a newer schema,
+    /// including if it appeared after loading. A successful save can put a
+    /// directory-durability warning in why.
     bool save(std::string& why) const;
 
     /// The raw stored values, unknown keys included -- what save writes.

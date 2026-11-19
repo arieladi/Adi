@@ -445,6 +445,37 @@ void testUnknownKeysSurvive() {
           "a newer schema with a different shape is kept in place without narrowing its version");
 }
 
+void testAtomicSave() {
+    section("atomic saves own their stage and protect a late destination");
+    adi::test::TempDirectory temp("settings", "atomic-save");
+    const auto file = temp.path() / "settings.json";
+    const auto oldStage = temp.path() / "settings.json.tmp";
+    writeText(oldStage, "another writer's temporary file");
+    AppSettings settings(appdata::App::Daw, file);
+    std::string why;
+    check(settings.set("lookfeel.theme", "light", kUser, why) && settings.save(why),
+          "save through a private stage: " + why);
+    check(readText(oldStage) == "another writer's temporary file" &&
+              Value::parse(readText(file)).at("values").at("lookfeel.theme") == "light",
+          "the public document changes and the unrelated temporary file survives");
+
+    const std::string replacements[] = {
+        R"({"schema": 3, "app": "ADI", "values": {"future.key": 3}})",
+        R"({"schema": 1, "app": "ADiJ", "values": {}})",
+        "incomplete external write",
+    };
+    for (const auto& replacement : replacements) {
+        writeText(file, replacement);
+        check(!settings.save(why) && !why.empty() && readText(file) == replacement,
+              "reject a late incompatible destination without changing its bytes");
+    }
+    bool residue = false;
+    for (const auto& entry : fs::directory_iterator(temp.path())) {
+        residue = residue || entry.path().filename().string().starts_with(".adi-settings-");
+    }
+    check(!residue, "successful and refused saves both clean their private stages");
+}
+
 void testCorruptKeptAside() {
     section("a corrupt file is kept aside, never overwritten silently");
     adi::test::TempDirectory temp("settings", "corrupt");
@@ -931,6 +962,7 @@ int runAll() {
     testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();
+    testAtomicSave();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();

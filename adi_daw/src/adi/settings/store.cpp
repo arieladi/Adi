@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/settings/store.hpp"
+#include "adi/media/publish_file.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <exception>
 #include <fstream>
 #include <iterator>
+#include <stdexcept>
 #include <system_error>
 
 namespace adi::settings {
@@ -33,6 +37,51 @@ bool readText(const std::filesystem::path& p, std::string& out) {
     if (!in) return false;
     out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     return true;
+}
+
+// Each save owns its staging name even when two instances write side by side.
+class SettingsStage {
+public:
+    explicit SettingsStage(const std::filesystem::path& parent) {
+        static std::atomic<std::uint64_t> sequence{0};
+        const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            auto folder = parent / (".adi-settings-" + std::to_string(tick) + "-" +
+                                     std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            auto file = folder / "settings.json";
+            if (std::filesystem::create_directory(folder)) {
+                folder_ = std::move(folder);
+                file_ = std::move(file);
+                return;
+            }
+        }
+        throw std::runtime_error("cannot reserve a private settings stage");
+    }
+    ~SettingsStage() {
+        std::error_code ignored;
+        std::filesystem::remove(file_, ignored);
+        std::filesystem::remove(folder_, ignored);
+    }
+    SettingsStage(const SettingsStage&) = delete;
+    SettingsStage& operator=(const SettingsStage&) = delete;
+    const std::filesystem::path& file() const { return file_; }
+private:
+    std::filesystem::path folder_, file_;
+};
+
+template<appdata::App App>
+std::error_code validateSettingsDestination(const std::filesystem::path& file) {
+    std::error_code error;
+    if (!std::filesystem::exists(file, error)) return error;
+    std::string text;
+    if (!readText(file, text)) return std::make_error_code(std::errc::io_error);
+    const auto doc = Value::parse(text, nullptr, false);
+    if (!doc.is_object() || !doc.contains("values") || !doc.at("values").is_object() ||
+        (doc.contains("schema") && !doc.at("schema").is_number_integer()))
+        return std::make_error_code(std::errc::invalid_argument);
+    if (newerSchema(doc) || (doc.contains("app") && doc.at("app") != appdata::displayName(App)))
+        return std::make_error_code(std::errc::operation_not_permitted);
+    return {};
 }
 
 /// settings.json.corrupt-1, -2, ...: the first name not already taken.
@@ -157,28 +206,32 @@ bool AppSettings::save(std::string& why) const {
         why = file_.string() + " belongs to another application and is not overwritten";
         return false;
     }
-    Value doc = Value::object();
-    doc["schema"] = kSettingsSchema;
-    doc["app"] = appdata::displayName(app_);
-    doc["values"] = values_;                              // unknown keys ride along
-
-    std::error_code ec;
-    std::filesystem::create_directories(file_.parent_path(), ec);
-    auto tmp = file_;
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) { why = "cannot write " + tmp.string(); return false; }
+    try {
+        Value doc = {{"schema", kSettingsSchema}, {"app", appdata::displayName(app_)},
+                     {"values", values_}};
+        const auto destination = std::filesystem::absolute(file_);
+        std::filesystem::create_directories(destination.parent_path());
+        SettingsStage stage(destination.parent_path());
+        std::ofstream out(stage.file(), std::ios::binary | std::ios::trunc);
+        if (!out) throw std::runtime_error("cannot write the settings stage");
         out << doc.dump(2) << '\n';
-        if (!out) { why = "writing " + tmp.string() + " failed"; return false; }
-    }
-    std::filesystem::rename(tmp, file_, ec);
-    if (ec) {
-        why = "cannot replace " + file_.string() + ": " + ec.message();
-        std::filesystem::remove(tmp, ec);
+        out.close();
+        if (!out) throw std::runtime_error("cannot finish the settings stage");
+        media::ReplaceHooks hooks;
+        hooks.validateTarget = app_ == appdata::App::Daw
+            ? validateSettingsDestination<appdata::App::Daw>
+            : validateSettingsDestination<appdata::App::DJ>;
+        auto published = media::replaceFile(stage.file(), destination, hooks);
+        if (published.status == media::PublishStatus::published) {
+            why = std::move(published.warning);
+            return true;
+        }
+        why = std::move(published.error);
+        return false;
+    } catch (const std::exception& error) {
+        why = error.what();
         return false;
     }
-    return true;
 }
 
 std::filesystem::path AppSettings::changeLogFile() const {
