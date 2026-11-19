@@ -14,6 +14,8 @@
 #include <stdexcept>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <sqlite3.h>
@@ -95,26 +97,36 @@ double TempoMap::ticksToSeconds(std::int64_t ticks) const noexcept {
 }
 
 std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
-    if (seconds <= 0.0 || events.empty()) return 0;
+    if (!(seconds > 0.0) || !std::isfinite(seconds) || events.empty()) return 0;
 
     double elapsed = 0.0;
     std::int64_t at = 0;
     double bpm = events.front().bpm;
+    const auto tickAt = [&] {
+        const double offset = (seconds - elapsed) * bpm / 60.0 * kTicksPerQuarter;
+        if (!(offset > 0.0)) return at;
+        const auto maximum = std::numeric_limits<std::int64_t>::max();
+        if (offset >= static_cast<double>(maximum - at)) return maximum;
+        const auto whole = static_cast<std::int64_t>(offset);
+        // Subtraction after a tempo step inherits the precision of the
+        // absolute clock. Allow a few ulps of that clock in the current
+        // segment, while keeping a genuinely fractional tick on the floor.
+        const double noise = std::min(0.125,
+            (4.0 * std::numeric_limits<double>::epsilon()) * seconds * bpm / 60.0 * kTicksPerQuarter);
+        const auto next = whole + 1;
+        return at + (static_cast<double>(next) - offset <= noise ? next : whole);
+    };
 
     for (const auto& e : events) {
         if (e.posTicks <= at) { bpm = e.bpm; continue; }
         const double quarters = static_cast<double>(e.posTicks - at) / kTicksPerQuarter;
         const double segment = quarters * 60.0 / bpm;
-        if (elapsed + segment >= seconds) {
-            const double into = (seconds - elapsed) * bpm / 60.0;
-            return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
-        }
+        if (elapsed + segment >= seconds) return std::min(e.posTicks, tickAt());
         elapsed += segment;
         at = e.posTicks;
         bpm = e.bpm;
     }
-    const double into = (seconds - elapsed) * bpm / 60.0;
-    return at + static_cast<std::int64_t>(into * kTicksPerQuarter);
+    return tickAt();
 }
 
 // --- snapshot -------------------------------------------------------------------

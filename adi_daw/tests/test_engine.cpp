@@ -476,10 +476,27 @@ void testTempoConversion() {
     for (std::int64_t t : {0LL, 5765760LL, 4LL * 5765760, 10LL * 5765760}) {
         const auto sec = m.ticksToSeconds(t);
         const auto back = m.secondsToTicks(sec);
-        check(std::abs(back - t) <= 2,
+        check(back == t,
               "tick " + std::to_string(t) + " round-trips through seconds, got " +
                   std::to_string(back));
     }
+    constexpr std::int64_t first = 2 * 5765760 + 53;
+    constexpr std::int64_t second = 1920LL * 5765760 + 17;
+    m.events = {{0,113.0,0}, {first,89.75,0}, {second,139.25,0}};
+    bool exact = true, fractional = true;
+    for (const std::int64_t start : {std::int64_t{1}, first - 512, second - 512}) {
+        for (std::int64_t tick = start; tick < start + 1024; ++tick) {
+            const auto previous = m.ticksToSeconds(tick - 1);
+            const auto boundary = m.ticksToSeconds(tick);
+            const auto upcoming = m.ticksToSeconds(tick + 1);
+            exact = exact && m.secondsToTicks(boundary) == tick;
+            fractional = fractional &&
+                m.secondsToTicks(std::lerp(previous, boundary, .75)) == tick - 1 &&
+                m.secondsToTicks(std::lerp(boundary, upcoming, .25)) == tick;
+        }
+    }
+    check(exact, "exact tick boundaries round-trip across tempo steps and a long elapsed segment");
+    check(fractional, "a genuinely fractional time still maps to its preceding tick");
 }
 
 void testSnapshotFromRealProject() {
