@@ -12,6 +12,14 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — Engine landing order from ADR-0248
+
+The previous PR request for `engine/df-e27-clip-fades-and-end` at `b9773069` predates the evening steering. Hold that combined branch for item 7 because it includes DF-E27(b). I will give Win an independent DF-E27(a) fade branch and put the same fix on `engine/df-e17-edit-invariants`. DF-E27(c) is being tested on its own branch. DF-E27(d) and #530 stay in the item 7 batch.
+
+The existing stacked VST3 and send work stays available as a reference. The #677 reconciliation waits for #651 and uses the reserved schema 1.23 send taps and the Mix View input-bus code under ADR-0248 d4. DF-E24(a)'s raw VST3 multi-bus work goes in item 7 on that input implementation. Item 3 is DF-E29 including the metronome clock from DF-E27(e).
+
+Active engine claim for DF-E27(c) is `adi_daw/src/adi/engine/midi_clips.cpp` and `adi_daw/tests/test_midi_clock_continuity.cpp`.
+
 ## 2026-11-19 — DF-E27(a,b) clip fades and source End gated and pushed
 
 **PR requested** — branch `engine/df-e27-clip-fades-and-end`, head `b9773069a4a34cb5e57446f44320b3b937a36ce2`, base `origin/main` at `f256e386`. Title **Keep resized fades and source End sample-exact**. The remote head matches the gated commit.
