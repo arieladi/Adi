@@ -14,6 +14,36 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-14, step 1: a patch's MIDI output comes back on its frame; the host's reset bang
+
+**`devices/pd-midi-out` (`b046391d`), stacked on `devices/pd-block-quantum`.**
+
+- libpd's per-instance MIDI-out hooks fill a fixed array inside the locked tick; each message is
+  stamped with where its tick's audio comes out plus Pd's logical time within the tick, and
+  `process()` hands out those due in its segment (`LibPdEngine::midiOut()`, block-relative
+  frames). MIDI 1 by construction. Overflow (512 a call) is flagged for the host to release
+  everything, and counted.
+- `hostReset()`: a bang to `$0-adi-reset` before the next tick; `PdDevice::prepare` sends it;
+  `PdDevice::hostReset()` is there for stop, bypass and panic.
+- Tests (AR9's timing half): `[notein] -> [+ 12] -> [noteout]` at the input's frames; 64 later
+  through the one-block adapter; `[pipe 101]` exactly +4,848, 48 samples into a tick; 600 at once
+  -> 512 back, flagged, 88 counted; the reset arrives. Plant: no logical offset fails the pipe
+  case. Pd engine **648**; CTest **242/242**.
+
+**PR requested** — title "A patch's MIDI output comes back on its frame; the host's reset bang
+(DEV-14 step 1)"; head `devices/pd-midi-out` at `b046391d`; base `devices/pd-block-quantum` until
+the stack lands, then `main`. Body: the commit message.
+
+**What DEV-14 still needs from others:** win's ADR (R4, the row says one comes first: kinds,
+Consume, `[clone]` voices with the MPE member channel as the voice index, precision); the engine's
+DEV-17 (decode `midiOut()` under the device's note prefix, unique ids) and DEV-18 (MIDI-effect
+patches in the transform phase); the engine calling `PdDevice::hostReset()` on stop, bypass and
+panic. AR9's unique-id half and AR10 (voices, Consume) wait for those.
+
+**Next:** DEV-10 and DEV-15 both wait on the engine and on ADRs (DEV-15: "an ADR answers the gap
+review's eight decisions before any Grid-style work"). So queue item 8, this lane's other rows in
+milestone order; first the ones that need nobody else.
+
 ## 2026-11-19 — DEV-13: user patches add no delay on the 64-sample grid, one reported block otherwise
 
 **`devices/pd-block-quantum` (`83b40061`), stacked on `devices/pd-double` (the DEV-09 stack).**
