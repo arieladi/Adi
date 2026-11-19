@@ -117,7 +117,7 @@ struct SharedAnalysis::Domain {
     bool pendingHistory = false, retiredForPending = false;
     std::int64_t pendingStamp = 0;
     std::vector<float> pendingColumn;
-    std::atomic<std::int64_t> consumedSequence{0};
+    std::atomic<std::int64_t> consumedSequence{0}, completedWindowEnd{-1};
     std::atomic<bool> dirty{true}, historyBlocked{false};
     engine::ScopeTap::Cursor cursor;
     std::mutex mutex;
@@ -164,6 +164,7 @@ struct SharedAnalysis::Domain {
     }
     void resetWindow(bool epoch) {
         position = filled = sinceWindow = 0;
+        completedWindowEnd.store(-1, std::memory_order_release);
         hasWindow = pendingHistory = retiredForPending = false; spectralWindow = historyWindow = 0;
         historyBlocked.store(false, std::memory_order_release);
         columns.clear();
@@ -217,10 +218,21 @@ struct SharedAnalysis::Domain {
         }
         updateAvailability();
     }
+    bool settledParkedSilence(engine::ScopeTap::ParkedSilence quiet) const noexcept {
+        // Windowed readings settle once a complete quiet window has appeared.
+        // The one-second Average still has a sample-clock decay to run.
+        const auto windowEnd = completedWindowEnd.load(std::memory_order_acquire);
+        return windowEnd <= quiet.end && windowEnd - quiet.begin >= request.fftSize &&
+               !(outputs.load(std::memory_order_acquire) & Average1s);
+    }
     bool needsWork() const noexcept {
-        return active.load(std::memory_order_acquire) && available.load(std::memory_order_acquire) && tap &&
-               (dirty.load(std::memory_order_acquire) || historyBlocked.load(std::memory_order_acquire) ||
-                tap->written() != consumedSequence.load(std::memory_order_acquire));
+        if (!active.load(std::memory_order_acquire) || !available.load(std::memory_order_acquire) || !tap) return false;
+        if (dirty.load(std::memory_order_acquire) || historyBlocked.load(std::memory_order_acquire)) return true;
+        const auto end = tap->written();
+        const auto consumed = consumedSequence.load(std::memory_order_acquire);
+        if (end == consumed) return false;
+        const auto quiet = tap->lastParkedSilence();
+        return !(quiet.end >= end && settledParkedSilence(quiet));
     }
     std::atomic<bool> active{true}, available{false};
     std::atomic<std::uint32_t> outputs{0};
@@ -488,9 +500,18 @@ struct SharedAnalysis::State {
             std::shared_ptr<Result> latest;
             bool discontinuity = false;
             const auto n = d.left.size(), hop = static_cast<std::size_t>(d.request.hopSize);
-            while (d.tap->written() != d.cursor.next && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
+            const auto end = d.tap->written();
+            const auto quiet = d.tap->lastParkedSilence();
+            // Resume at the end of a previously parked range. Its omitted samples
+            // are identical to those in the retained window. The regular cursor
+            // still detects a seek, playback start, or another stamp at the join.
+            if (quiet.end < end && quiet.end > d.cursor.next && d.settledParkedSilence(quiet))
+                d.cursor.next = quiet.end;
+            while (d.cursor.next < end && windows < kMaxWindowsPerFrame && samples < kMaxSamplesPerFrame && reads < kMaxReadsPerFrame) {
+                if (quiet.end >= end && d.settledParkedSilence(quiet)) break;
                 const auto need = d.filled < n ? n - d.filled : hop - d.sinceWindow;
-                const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size()});
+                const auto length = std::min({need, kMaxSamplesPerFrame - samples, readLeft.size(),
+                                               static_cast<std::size_t>(end - d.cursor.next)});
                 ++reads;
                 auto read = d.tap->read(d.cursor, std::span<float>(readLeft.data(), length),
                                        std::span<float>(readRight.data(), length));
@@ -520,6 +541,7 @@ struct SharedAnalysis::State {
                 d.firstStamp = read.firstStamp + (read.advancing ? read.frames - static_cast<std::int64_t>(n) : 0);
                 d.discontinuous = discontinuity;
                 latest = d.analyse(historyBudget, done);
+                if (latest) d.completedWindowEnd.store(d.cursor.next, std::memory_order_release);
             }
             d.consumedSequence.store(d.cursor.next, std::memory_order_release);
             // New output demand can reuse the retained completed window even at idle.
@@ -530,7 +552,8 @@ struct SharedAnalysis::State {
                 // Only the final publication needs the shallow history snapshot;
                 // intermediate hops update the domain, not duplicate metadata.
                 d.setHistory(*latest);
-                latest->pendingFrames = std::max<std::int64_t>(0, d.tap->written() - d.cursor.next);
+                latest->pendingFrames = quiet.end >= end && d.settledParkedSilence(quiet)
+                    ? 0 : std::max<std::int64_t>(0, d.tap->written() - d.cursor.next);
                 latest->budgetLimited = latest->pendingFrames > 0 &&
                     (windows == kMaxWindowsPerFrame || samples == kMaxSamplesPerFrame || reads == kMaxReadsPerFrame);
                 if (d.active.load(std::memory_order_acquire)) {

@@ -53,6 +53,49 @@ struct Fixture {
         [this](std::int64_t, ScopePoint) { ++acquireCalls; return tap; },
         [this](std::int64_t, ScopePoint) { ++releaseCalls; }, SharedAnalysis::Mode::Manual};
 };
+void parkedSilence() {
+    Fixture f;
+    auto request = SharedAnalysis::Request{1};
+    request.outputs = SharedAnalysis::Spectrogram;
+    const auto view = f.broker.acquire(request);
+    const auto quiet = [&](std::uint64_t revision) {
+        f.tap->write(static_cast<const float *>(nullptr), nullptr, 480, 0, false, revision);
+        f.broker.pump();
+    };
+    tone(*f.tap);
+    f.broker.pump();
+    const auto playing = view.read();
+    check(playing && playing->advancing, "playing signal seeds the spectrogram");
+    quiet(1); quiet(1); quiet(1);
+    const auto parked = view.read();
+    const auto stable = f.broker.stats();
+    check(parked && !parked->advancing && parked->peak[0] == 0 && parked->sourceEpoch > playing->sourceEpoch,
+          "a complete quiet window replaces the playing picture after Stop");
+    // Silence extends beyond the entire ring to also test resuming without a false overrun.
+    for (int block = 0; block < 1100; ++block) quiet(1);
+    const auto idle = f.broker.stats();
+    check(idle.workerPasses == stable.workerPasses && idle.cursorReads == stable.cursorReads &&
+              idle.publications == stable.publications && view.read() == parked,
+          "unchanged stopped silence has no analysis work or scrolling publications");
+    const std::vector<float> monitor(1024, .25f);
+    f.tap->write(monitor.data(), monitor.data(), 1024, 0, false, 1);
+    f.broker.pump();
+    const auto audible = view.read();
+    check(audible && audible->peak[0] == .25f && !audible->advancing &&
+              audible->sourceEpoch == parked->sourceEpoch && audible->overrunCount == parked->overrunCount,
+          "input monitoring wakes while parked, without misreporting a skipped silent interval as an overrun");
+    quiet(1); quiet(1); quiet(1);
+    const auto beforeSeek = view.read();
+    quiet(2); quiet(2); quiet(2);
+    const auto afterSeek = view.read();
+    check(beforeSeek && afterSeek && !afterSeek->advancing && afterSeek->peak[0] == 0 &&
+              afterSeek->sourceEpoch > beforeSeek->sourceEpoch,
+          "an idle same-stamp seek invalidates the old parked publication");
+    tone(*f.tap, 1024, .5f, 1.f, 0);
+    f.broker.pump();
+    check(view.read() && view.read()->advancing && view.read()->peak[0] == .5f,
+          "playback resumes with the first complete window");
+}
 void sharing() {
     Fixture f;
     f.broker.requestFrame();
@@ -972,7 +1015,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); actualRateHistory(); lateRateAndFailedNegotiation(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
