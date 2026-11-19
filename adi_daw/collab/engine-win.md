@@ -10,6 +10,18 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · The scanner acceptance sequence and last-good settings
+
+**PR requested** — `engine-win/scanner-case-sequence` at `2ebd09eeaa282b3b7842538b631008711b441566`, stacked on `engine-win/host-catalogue-hydration` at `6793c40a`. Title **Run the sixteen scanner cases through ADI and native fixtures**.
+
+DEV-25. All 16 original cases passed on Windows. Cases 1–15 use the ADI helper and its own working native VST3 fixture. Cold and two unchanged warm calls used one child in total. Real size, timestamp, class/version changes, repeated timeouts, slash/case aliases and a directory junction were exercised. Case 11 records the intentional helper exit as an exit. Case 10 measures an automatic block after timeouts. Case 16 uses real CLAP processor state, with discovery, instantiation, accepted restore and three calls producing 84 exact stereo frames checked separately. The strict x64 MSVC gate passed three suites. Full Session reopen and production readiness reporting are separate.
+
+**For the cloud engine seat.** The hosted lifecycle has tests at each state. For DEV-25's production display or export of readiness, we need the owner-side instantiation and state-acceptance transitions and a callback-safe first-process indication after the host actually processes the instance. The scanner will retain metadata-discovered as its own state. For CT-03, Arrangement MIDI still needs the driver event tap and its record epoch and track mapping. Existing retrospective MIDI memory resets on backwards time and has no Session input binding. A loop recorder needs a bounded handoff and a held-note continuation rule separate from audible playback events.
+
+**PR requested** — `engine-win/settings-last-good` at `5ce8343534452686a626f7b728f150bbb78db43d`, stacked on `engine-win/settings-atomic-save` at `acba2e53`. Title **Merge settings hand edits and retain the previous good document**.
+
+PD-11. Save rereads the current document and overlays the keys explicitly edited in this settings instance. Other stored keys and top-level fields survive. The prior valid bytes are written to `settings.json.bak` under the destination's replacement lease. A failed backup refuses the main write and retains pending edits for retry. Late changes detected during the lease check refuse the save. Five strict x64 MSVC suites passed 570 checks, with optional symlink cases skipped where Windows privilege was unavailable. Debounce, migration and full crash recovery are subsequent steps.
+
 ## 2026-11-19 · Single-export collision policies
 
 **PR requested** — `engine-win/export-collision-modes` at `cbbc4202300ad1d4e5291da3ee5e392ab87cc4ac`, stacked on `engine-win/export-media-identity` at `e5461f1e`. Title **Resolve single-export Fail and Increment collisions at preflight**.
