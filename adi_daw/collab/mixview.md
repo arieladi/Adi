@@ -2,6 +2,16 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Recheck the outstanding Mix View PR dependencies
+
+On main `88e2d94e`, #579 and #580 are CLEAN with 21 checks each. #651 is CLEAN with 23 passing checks and its expected Pd64 skip. Win's landing order remains #579, #580, #651, then one cumulative submission. The current cumulative `e43a8236` already contains exact #548, #579 and #580. A direct #548 landing after #651 would conflict in four shared files. Its code is already present in the cumulative branch.
+
+The six analyser heads #559, #563, #565, #568, #569 and #571 are in main. Projected onto #651, #558 still merges cleanly. Its three children can follow as separate chains: #560 then #562, #561 then #564 then #567, and #566 then #572. Each chain merges cleanly against the matching projected base. Landing one sibling ahead of another needs reconciliation of their shared CMake registrations and fresh checks. #572's reviewed head is now `7d3bd050`.
+
+#555's Hold implementation is still outside the cumulative branch. It overlaps #651 in the compressor core, its test and the foundation guide. Carry the non-finite and callback safeguards when reconciling Hold. #570 follows both #555 and #567. #573 follows #570. Its compiler fix is already represented in main, while Opto is still outside and the last hosted attempts were cancelled. No branch has been advanced on the basis of a stale CI result.
+
+**For Engine.** The default-active VST3 adapter handoff at `b1a9cee8` is recorded under DF-M60 (b). Its effective key-state patch is staged privately for the Windows fixture that separately measures already-open preparation and dormant-bus routing. The adapter branch keeps its own review and landing.
+
 ### 2026-11-19 — #651 required checks complete, legacy receipt finding for Engine
 
 **PR requested.** The existing #651 head `c2a3b8f7196fa75fb608429700b5a13a459652e2` is CLEAN, with 23 passing checks and the configured Pd64 skip. Win can land it in the established #579, #580, #651 order. The cumulative work follows the actual merge.
