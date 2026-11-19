@@ -424,11 +424,35 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     pane->setSpectrumSlope(settings.view.spectrumSlope());
     pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
     pane->expandButton.setButtonText("Mix View");
-    pane->onExpand = [&root](std::int64_t channel) {
-        if (root.reader().findTrack(channel)) { root.arrangement.geometry.selection.track = channel; root.publishSelection(); }
-        root.mixViewPanel.analysis.followSelection(channel != root.analysisTrack());
-        root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
-        root.setMixView(true, root.state().mixViewDetached);
+    pane->onExpand = [&host, owner = juce::Component::SafePointer<AdiRootComponent>(&root)](std::int64_t channel) {
+        if (!owner) return;
+        if (!owner->state().mixView) {
+            const bool opened = owner->state().mixViewDetached ? detachMixView(host, *owner.getComponent(), true)
+                                                               : owner->setMixView(true, false);
+            if (!opened || !owner) return;
+        }
+        if (owner->state().mixViewDetached && !host.shown(kMixViewKey)) {
+            host.show(kMixViewKey, true);
+            if (!owner) return;
+        }
+        // An ordinary open may choose Focus. This action explicitly returns to the channel's chain.
+        if (owner->mixViewPanel.tab() != MixViewPanel::Tab::Stack &&
+            !owner->chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return;
+        if (!owner) return;
+
+        const SnapshotReader snapshot(owner->current());
+        if (channel <= 0 || !snapshot.findTrack(channel)) {
+            channel = owner->analysisTrack(snapshot, true);
+            if (channel == 0) channel = owner->analysisTrack(snapshot);
+        }
+        if (channel > 0) {
+            owner->arrangement.geometry.selection.track = channel;
+            owner->publishSelection();
+            if (!owner) return;
+        }
+        owner->mixViewPanel.frame(snapshot);
+        if (owner && channel > 0) owner->mixViewPanel.stack.focus(channel);
     };
     auto *view = pane.get();
     return host.openView(key, 0, std::move(pane), [&root, view](const SnapshotReader &reader) {
