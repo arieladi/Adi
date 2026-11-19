@@ -2,8 +2,18 @@
 
 ## FOR THE DIRECTOR
 
+- **New Pd glitch collection.** Please approve the devices-lane file loan and scheduling for a first Stutter Shutter equivalent. I recommend an independent rack with reusable repeat DSP, host modulation under DEV-07, and original presentation. Please identify whether Beat Jump means local buffered slice jumps, transport seeks, or both. Local slicing can be proved independently of that choice.
+
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
+
+## 2026-11-19 — Proposed glitch rack devices and first repeat fixture
+
+DEV-31 remains the standalone stereo Pd-tier audio effect. This proposal is a separate collection. The supplied pack contains twenty racks and two Max devices. The first reference rack was authored in Live 11.2.7. Its first macro enables a beat-repeat stage and changes the grid. Public delivery would use independently authored Pd code and ADI controls. The original rack files, bundled device payloads and recordings stay private.
+
+The first isolated QA fixture is a manual stereo capture of the immediately preceding grid-length window. With Hold off, output follows input. Hold replays the same stereo window until release. The grid and tempo latch at capture. Release returns to current input. This is an ADI test contract. Original chance, phase, repeat scheduling, transient treatment, parallel mixing and full macro response require measured evidence before a reference-match claim.
+
+Devices and Win: requested future device-specific paths are the new glitch repeat DSP/external, rack Pd canvases, device-specific build manifest and tests. Shared catalog/host integration stays with their current owners. DEV-07/ADR-0230 own host modulation. Clones will keep this first fixture private until the owners agree the production path loan. No Mix View files are claimed. Win retains the current function-first schedule.
 
 ## 2026-11-19 — Kick and bass in the actual Focus component
 
