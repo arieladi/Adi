@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E24 VST3 buses and mixer routing gated and pushed
+
+**PR requested** — branch `engine/df-e24-vst3-routing`, head `a4023a80f4dab03589df723bed984e8b69d0c95d`. Title **Negotiate VST3 buses and preserve mixer routing**. Base `engine/df-e23-plugin-workers` at `d96c97d7` merged with `origin/main` at `796fe498`. Includes the DF-E20(b) key-input dependency through that stack. The remote head matches the gated commit.
+
+The raw VST3 host now supplies an audio descriptor for every negotiated bus in each direction. Main channels remain in place. Inactive buses have zero channels, the first auxiliary input receives the graph key, and other active auxiliary buses get separately zeroed inputs and sinks. Preparation holds the buffers and their pointers across callbacks. The real plug-in fixture exercises both sample widths and a mono graph with a negotiated stereo plug-in.
+
+A damaged project with duplicate enabled track main routes reports the duplicates and uses the first valid route. New control submissions refuse duplicate main routes, including re-enabling an old disabled route. Undo can still restore legacy duplicate rows, and hardware fallback remains in force. Scalar gesture controls no longer replace a strip's lane pointer. The graph generation and preview bindings carry lane pointers with their owners, and the regression forces an older overlay between owner sync and lane capture. The existing MIDI fan-out fixture now builds its internal graph through the GraphHost plan transform and keeps all 109 continuity assertions.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58453 checks across 244 suites, all four validators and the layout check. The headless gate used a workspace-local decoder cache. Five focused suites passed and the JUCE VST3 fixture passed 219 checks under Xvfb. Clang 19 compiled eleven changed C++ units with warnings as errors and passed 77 plan, 110 catalog, 26 strip-binding and 109 MIDI continuity checks. Four compiled faults lost auxiliary output descriptors, planned a duplicate route, accepted a duplicate control submission, or restored the overlay pointer write. Each failed its regression. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E26 next. DF-E25 remains with the Windows engine seat.
+
 ## 2026-11-19 — DF-E17 native edit invariants gated and pushed
 
 **PR requested** — branch `engine/df-e17-edit-invariants`, head `c0269d2d7b43eb98d495922cbafb069e9fbb5e28`, base `origin/main` at `796fe498`. Title **Preserve native clip and rack edits through undo**. The remote head matches the gated commit.
