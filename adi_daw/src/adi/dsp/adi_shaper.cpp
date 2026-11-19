@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <new>
 
 namespace adi::dsp {
 namespace {
@@ -58,6 +59,7 @@ AdiShaper::AdiShaper() noexcept {
 
 void AdiShaper::prepare(double sampleRate) noexcept {
     if (!std::isfinite(sampleRate) || sampleRate < 1.0) return;
+    if (!audioWaveMemo_) audioWaveMemo_.reset(new (std::nothrow) AdiShaperWaveBank::AudioMemo);
     for (auto& time : times_) (void)time.prepare();
     prepareStages(sampleRate);
 }
@@ -512,8 +514,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     constexpr int stageIndex = static_cast<int>(kind);
     std::array<AdiShaperWaveBank::View, 3> primaryWaves, secondaryWaves;
     for (int b = 0; b < 3; ++b) {
-        primaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 0));
-        secondaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 1));
+        primaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 0), audioWaveMemo_.get());
+        secondaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 1), audioWaveMemo_.get());
     }
     [[maybe_unused]] auto timeDistance = [&](std::size_t bandIndex, float height) {
         const double framesBack = (1.0 - static_cast<double>(height)) * timeSpans_[bandIndex];
@@ -651,7 +653,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         const auto& band = stages_[key / 3].bands[key % 3];
         scope->begin(key, inL, inR, frames, band.phase, band.step, sampleRate_);
     }
-    freeWaves_.prepareBlock();
+    freeWaves_.prepareBlock(audioWaveMemo_.get());
     // A full-range neutral rack takes only a stereo copy. Configured split
     // filters still follow the input while dry so automation reopens them warm.
     auto run = [&]<Stage kind>() {

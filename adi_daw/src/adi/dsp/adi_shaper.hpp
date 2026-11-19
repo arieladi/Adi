@@ -8,6 +8,7 @@
 #include "adi/dsp/adi_shaper_scope.hpp"
 #include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
+#include <memory>
 #include <cstddef>
 #include <cstdint>
 
@@ -67,6 +68,7 @@ class AdiShaper {
     AdiShaper() noexcept;
     // Off the audio thread. Three stereo Time histories require 48 MiB per
     // prepared rack, including bypassed racks ready for immediate automation.
+    // The two editable-curve pages use about 66 KiB in total.
     void prepare(double sampleRate) noexcept;
     void set(Param id, float value) noexcept;
     void tempo(double bpm) noexcept;
@@ -146,6 +148,7 @@ class AdiShaper {
                                      float* outL, float* outR, std::size_t frames) noexcept;
     AdiShaperScope editorScope_;
     AdiShaperWaveBank freeWaves_;
+    std::unique_ptr<AdiShaperWaveBank::AudioMemo> audioWaveMemo_;
     std::array<StageData, 8> stages_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;

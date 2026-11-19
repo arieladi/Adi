@@ -28,6 +28,53 @@ public:
         std::array<std::uint16_t,4> controls;
     };
     static_assert(sizeof(CornerRange) == 16);
+    // Only the audio processor owns these pages. They cache the two contours
+    // actually being read. Other contours and editor-only banks use the same
+    // interpolator without a persistent page.
+    struct AudioMemo {
+        struct Page {
+            int key = -1;
+            bool stale = false;
+            std::uint64_t lastBlock = 0, changedAt = 0;
+            std::array<std::uint64_t,128> valid{};
+            std::array<float,8192> heights{}; // touch pages during off-thread preparation
+        };
+        std::array<Page,2> pages;
+        std::uint64_t block = 0;
+        void beginBlock(const std::array<bool,curves>* changed) noexcept {
+            ++block;
+            if (!changed) return;
+            for (auto& page : pages) {
+                if (page.key >= 0 && (*changed)[page.key]) {
+                    page.stale = true;
+                    page.changedAt = block;
+                }
+            }
+        }
+        Page* acquire(int key) noexcept {
+            Page* free = nullptr;
+            for (auto& page : pages) {
+                if (page.key == key) {
+                    page.lastBlock = block;
+                    // While a point is being automated its page would be
+                    // discarded before the next pass. Read the curve directly.
+                    if (page.stale) {
+                        if (page.changedAt == block) return nullptr;
+                        page.valid.fill(0);
+                        page.stale = false;
+                    }
+                    return &page;
+                }
+                if (!free && (page.key < 0 || block-page.lastBlock > 1)) free = &page;
+            }
+            if (!free) return nullptr;
+            free->key = key;
+            free->stale = false;
+            free->lastBlock = block;
+            free->valid.fill(0);
+            return free;
+        }
+    };
     struct View {
         std::span<const Node> nodes;
         std::span<const CornerRange> spans;
@@ -38,7 +85,10 @@ public:
         mutable bool ready = false;
         mutable int cell = -8192;
         mutable std::array<float,4> heights{};
-        mutable std::uint8_t limits = 12; // two packed indices, initially [0,3]
+        AudioMemo* memo = nullptr;
+        mutable AudioMemo::Page* page = nullptr;
+        mutable std::array<double,4> coefficients{};
+        mutable bool varying = false;
         bool empty() const noexcept { return nodes.empty(); }
     };
     static constexpr int key(int stage, int band, int lane) { return (stage * 3 + band) * 2 + lane; }
@@ -64,10 +114,21 @@ public:
         if (hostId < firstId || hostId > lastId || !std::isfinite(input)) return;
         auto& dest = words_[static_cast<std::size_t>(hostId - firstId)];
         const int next = static_cast<int>(std::lround(std::clamp(input, 0.f, static_cast<float>(wordMax))));
-        if (next != dest) { dest = next; dirty_ = true; }
+        if (next == dest) return;
+        const auto addressSlot = static_cast<std::size_t>((hostId-firstId) & ~1);
+        auto changed = [&](int word) {
+            const int k = curveOf(word);
+            if (k >= 0 && k < curves) changed_[k] = true;
+        };
+        changed(words_[addressSlot]);
+        dest = next;
+        if ((hostId-firstId) % 2 == 0) changed(next);
+        dirty_ = true;
     }
-    void prepareBlock() noexcept {
+    void prepareBlock(AudioMemo* memo = nullptr) noexcept {
+        if (memo) memo->beginBlock(dirty_ ? &changed_ : nullptr);
         if (!dirty_) return;
+        changed_.fill(false);
         dirty_ = false;
         starts_.fill(0);
         std::size_t count = 0;
@@ -105,10 +166,12 @@ public:
         spanStarts_[curves] = used;
         jumpStarts_[curves] = jumpCount;
     }
-    View view(int k) const noexcept {
-        return {{nodes_.data() + starts_[k], starts_[k + 1] - starts_[k]},
+    View view(int k, AudioMemo* memo = nullptr) const noexcept {
+        View result{{nodes_.data() + starts_[k], starts_[k + 1] - starts_[k]},
                 {spans_.data() + spanStarts_[k], spanStarts_[k+1] - spanStarts_[k]},
                 {jumps_.data() + jumpStarts_[k], jumpStarts_[k+1] - jumpStarts_[k]}, onlyCorners_[k], constants_[k]};
+        result.memo = memo;
+        return result;
     }
     bool hasStage(int stage) const noexcept { return starts_[6 * stage] != starts_[6 * stage + 6]; }
     static float at(const View& curve, std::uint64_t phase, bool* moving = nullptr) noexcept {
@@ -184,24 +247,39 @@ private:
     }
     static float sampled(const View& curve, double x, bool* moving) noexcept {
         const int cell = static_cast<int>(x);
-        auto& values = curve.heights;
         if (cell != curve.cell) {
-            const bool reuse = curve.cell >= 0 && ((curve.cell+1)&8191) == cell;
-            curve.limits = tapLimits(curve,cell);
-            if (reuse) {
-                values[0] = values[1]; values[1] = values[2]; values[2] = values[3];
-                values[3] = geometry(curve,(cell+2)&8191);
+            if (curve.memo && (curve.cell < 0 || (curve.page && curve.page->key != curve.nodes.front().key)))
+                curve.page = curve.memo->acquire(curve.nodes.front().key);
+            auto read = [&](int xIndex) {
+                if (!curve.page) return geometry(curve,xIndex);
+                auto& valid = curve.page->valid[static_cast<unsigned>(xIndex) >> 6];
+                const std::uint64_t mask = std::uint64_t{1} << (xIndex & 63);
+                auto& gain = curve.page->heights[xIndex];
+                if (!(valid & mask)) {
+                    gain = geometry(curve,xIndex);
+                    valid |= mask;
+                }
+                return gain;
+            };
+            auto& heights = curve.heights;
+            if (curve.cell >= 0 && ((curve.cell+1)&8191) == cell) {
+                heights[0] = heights[1]; heights[1] = heights[2]; heights[2] = heights[3];
+                heights[3] = read((cell+2)&8191);
             } else {
-                for (int i=0; i<4; ++i) values[i] = geometry(curve,(cell+i-1)&8191);
+                for (int i=0; i<4; ++i) heights[i] = read((cell+i-1)&8191);
             }
+            const auto limits = tapLimits(curve,cell);
+            const int low = limits & 3, high = limits >> 2;
+            const double a = heights[low], b = heights[1], c = heights[std::min(2,high)], d = heights[high];
+            const double first = .5*(c-a), second = .5*(d-b);
+            curve.coefficients = {b,first,3*(c-b)-2*first-second,2*(b-c)+first+second};
+            curve.varying = a != b || b != c || c != d;
             curve.cell = cell;
         }
-        const int low = curve.limits & 3, high = curve.limits >> 2;
-        const double a = values[low], b = values[1], c = values[std::min(2,high)], d = values[high];
-        if (moving) *moving = a != b || b != c || c != d;
+        if (moving) *moving = curve.varying;
+        const auto& coeff = curve.coefficients;
         const double t = x-cell;
-        const double first = .5*(c-a), second = .5*(d-b);
-        return static_cast<float>(b+t*(first+t*(3*(c-b)-2*first-second+t*(2*(b-c)+first+second))));
+        return static_cast<float>(coeff[0]+t*(coeff[1]+t*(coeff[2]+t*coeff[3])));
     }
     static float segment(const Node& left, const Node& right, double x, double x0, double x1, bool* moving) noexcept {
         const bool varies = left.shape != Shape::Hold && left.y != right.y;
@@ -259,6 +337,7 @@ private:
     std::array<int, 2 * slots> words_{};
     std::array<Node, slots> nodes_{};
     std::array<std::size_t, curves + 1> starts_{};
+    std::array<bool,curves> changed_{};
     bool dirty_ = false;
 };
 } // namespace adi::dsp

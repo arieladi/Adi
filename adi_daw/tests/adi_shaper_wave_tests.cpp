@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
+#include <memory>
 #include <stdexcept>
 namespace {
 using Core = adi::dsp::AdiShaper;
@@ -146,6 +147,49 @@ void sourceCorners() {
     require(Bank::at(mixed,std::uint64_t{1} << 62,&moving) == 0 && !moving,
             "a legacy hold keeps its outgoing segment next to a source corner");
 }
+void audioMemoSurvivesCurveEdits() {
+    Bank bank;
+    auto memo = std::make_unique<Bank::AudioMemo>();
+    auto write = [&](int slot, int key, Bank::Point p) {
+        bank.set(Bank::firstId+2*slot,static_cast<float>(Bank::address(key,p)));
+        bank.set(Bank::firstId+2*slot+1,static_cast<float>(Bank::value(p)));
+    };
+    for (int key = 0; key < 4; ++key) {
+        write(3*key,key,{.07f,.11f+.05f*static_cast<float>(key),1,Bank::Shape::SourceCorner});
+        write(3*key+1,key,{.23f,.94f,0,Bank::Shape::SourceCorner});
+        write(3*key+2,key,{.79f,.37f,-1,Bank::Shape::SourceCorner});
+    }
+    auto compare = [&](std::array<int,3> keys, std::uint64_t phase, std::uint64_t step, int frames) {
+        bank.prepareBlock(memo.get());
+        for (const auto key : keys) {
+            const auto actual = bank.view(key,memo.get());
+            const auto oracle = bank.view(key);
+            auto at = phase;
+            for (int i = 0; i < frames; ++i, at += step) {
+                bool varies = false, expectedVaries = false;
+                const auto value = Bank::at(actual,at,&varies);
+                const auto expected = Bank::at(oracle,at,&expectedVaries);
+                require(value == expected && varies == expectedVaries,
+                        "reused and uncached grid values agree after edits and transport jumps");
+            }
+        }
+    };
+    constexpr auto grid = std::uint64_t{1} << 51;
+    compare({0,1,2},0,grid/4,32768); // fill both pages; the third contour uses the solver
+    compare({0,1,3},~std::uint64_t{0},0-grid/3,38401);
+    write(1,0,{.23f,.1f,0,Bank::Shape::SourceCorner});
+    bank.prepareBlock(memo.get());
+    const auto edit = bank.view(0,memo.get()), sibling = bank.view(1,memo.get());
+    (void)Bank::at(edit,0);
+    (void)Bank::at(sibling,0);
+    require(!edit.page && sibling.page && sibling.page->valid[64] == ~std::uint64_t{0},
+            "an edited contour uses the solver while an unchanged contour retains its computed heights");
+    compare({1,0,2},17,grid/2,16384);
+    write(1,2,{.23f,.86f,0,Bank::Shape::SourceCorner}); // both source and destination changed
+    compare({0,2,3},511*grid,7*grid,1901);
+    compare({2,3,2},111,grid/8,443);
+    compare({2,3,1},~std::uint64_t{0},0-grid/7,16463);
+}
 void timeUsesFreeContour() {
     Core core;
     core.prepare(48000);
@@ -169,5 +213,5 @@ void timeUsesFreeContour() {
 }
 
 }
-int main() try { ringAndCurve(); sourceCorners(); timeUsesFreeContour(); return 0; }
+int main() try { ringAndCurve(); sourceCorners(); audioMemoSurvivesCurveEdits(); timeUsesFreeContour(); return 0; }
 catch (const std::exception& e) { std::fprintf(stderr,"%s\n", e.what()); return 1; }
