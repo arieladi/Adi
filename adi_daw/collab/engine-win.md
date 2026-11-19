@@ -10,11 +10,13 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
-PD-12 needs a network project policy. SQLite WAL's shared index supports connections on one host. FULL sync alone does not give safe active editing across networked hosts. Recommend an active local .adi and a closed Save a Copy or backup on the share. If active editing on network storage is needed, rule on a separate rollback-journal mode and its reader/writer restrictions, then test it on the supported share. This blocks the network part of PD-12. [SQLite WAL](https://sqlite.org/wal.html#overview) · [SQLite over a network](https://www.sqlite.org/useovernet.html)
+## 2026-11-19 — ADR-0248 queue checkpoint
 
-DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
+The confirmed settings and cache findings now lead the Windows queue, followed by the scanner family and N58. The next landing requests will point to validator-first family tips against current main. The existing review tips and measurements below remain available as evidence. [ADR-0248](https://github.com/arieladi/Adi/blob/main/adi_daw/docs/DECISIONS.md)
 
-Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
+The prior three director items have answers. New VST3 records carry the exact class ID alongside readable legacy identifiers. Take lanes retire the legacy comp-target operation. Network projects use one host at a time under an exclusive lock. The Windows worker setting follows the 1,024-sample boundary ruled for DEV-23.
+
+The PD-07 naming step passed its in-flight native gate with 257 checks, including concurrent requests and same-name collision handling. Its staged source is held behind the confirmed findings. The snapshot worker remains the earlier review branch.
 
 ## 2026-11-19 — TM-MD-05 FFmpeg PCM stream
 
