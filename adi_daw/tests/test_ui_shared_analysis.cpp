@@ -2035,6 +2035,82 @@ void compareAndAveragePages() {
     root.removeFromDesktop();
 }
 
+void compareHoldSurvivesInvalidA() {
+    using namespace adi::ui;
+    constexpr std::int64_t primary = 11, reference = 12;
+    auto project = std::make_shared<adi::engine::Snapshot>();
+    for (const auto id : {primary, reference}) {
+        auto track = std::make_shared<adi::engine::TrackNode>();
+        track->id = id;
+        track->name = id == primary ? "Programme" : "Reference";
+        track->kind = "audio";
+        project->tracks.push_back(std::move(track));
+    }
+    const SnapshotReader snapshot{project};
+    auto a = std::make_shared<ScopeTap>(48000., 1.);
+    auto b = std::make_shared<ScopeTap>(48000., 1.);
+    auto broker = std::make_shared<SharedAnalysis>(
+        [&](std::int64_t track, ScopePoint) { return track == primary ? a : b; },
+        [](std::int64_t, ScopePoint) {}, SharedAnalysis::Mode::Manual);
+    const auto write = [](ScopeTap &tap, float value, std::int64_t stamp) {
+        std::array<float, 1024> samples;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = value * static_cast<float>(std::sin(2. * std::numbers::pi * static_cast<double>(i) / 64.));
+        tap.write(samples.data(), samples.data(), static_cast<std::int32_t>(samples.size()), stamp, true, 1);
+    };
+    Root root;
+    MixAnalysers pages;
+    root.setSize(640, 360); root.setVisible(true); root.addToDesktop(0);
+    root.addAndMakeVisible(pages); pages.setBounds(root.getLocalBounds());
+    pages.setPage(MixAnalysers::Page::Compare);
+    const auto frame = [&] { pages.frame(broker, snapshot, primary, primary); };
+    frame();
+    const auto aMenu = pages.compareA.getItemId(0), bMenu = pages.compareB.getItemId(1);
+    const auto selectA = [&](int menu) { pages.compareA.setSelectedId(menu, juce::sendNotificationSync); };
+    selectA(aMenu);
+    pages.compareB.setSelectedId(bMenu, juce::sendNotificationSync);
+    write(*a, .3f, 0); write(*b, .6f, 0); broker->pump(); frame();
+    pages.holdB.onClick();
+    auto pair = pages.comparisonView();
+    const std::vector<float> captured(pair.b.binsDbfs.begin(), pair.b.binsDbfs.end());
+    const auto capturedWindow = pair.b.metadata ? pair.b.metadata->windowSerial : 0;
+    check(pair.referenceHeld && capturedWindow && broker->stats().consumers == 1,
+          "the invalid-A test starts with a captured B and only A consuming analysis");
+
+    selectA(bMenu);
+    const auto equal = broker->stats();
+    pair = pages.comparisonView();
+    check(pair.referenceHeld && !pair.visible && !pair.a.metadata && !pair.b.metadata &&
+              equal.consumers == 0 && equal.taps == 0,
+          "choosing B in the A picker leaves the reference held and releases the former A tap");
+    selectA(0);
+    write(*a, .1f, 1024); write(*b, .2f, 1024); frame(); broker->pump();
+    const auto idle = broker->stats();
+    check(pages.comparisonView().referenceHeld && idle.consumers == 0 && idle.taps == 0 &&
+              idle.cursorReads == equal.cursorReads && idle.transforms == equal.transforms &&
+              idle.publications == equal.publications && idle.frameRequests == equal.frameRequests,
+          "an unavailable A keeps the reference without reading buffered samples or scheduling analysis");
+
+    selectA(aMenu);
+    broker->pump(); frame();
+    pair = pages.comparisonView();
+    check(pair.referenceHeld && !pair.a.metadata && pair.b.metadata &&
+              pair.b.metadata->windowSerial == capturedWindow && broker->stats().consumers == 1 &&
+              broker->stats().taps == 1,
+          "choosing A again reacquires only A and fences its older buffered audio");
+    write(*a, .4f, 2048); broker->pump(); frame();
+    pair = pages.comparisonView();
+    check(pair.status == AnalysisComparison::Status::Held && pair.a.metadata && pair.b.metadata &&
+              pair.a.metadata->firstSequence == 2048 && pair.b.metadata->windowSerial == capturedWindow &&
+              std::ranges::equal(pair.b.binsDbfs, captured),
+          "a fresh A pairs with the original B, including every immutable reference bin");
+
+    pages.compareB.setSelectedId(aMenu, juce::sendNotificationSync);
+    check(!pages.comparisonView().referenceHeld && broker->stats().consumers == 0,
+          "changing B explicitly discards its hold even if the new pair is invalid");
+    root.removeFromDesktop();
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
@@ -2043,7 +2119,7 @@ int main() {
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
-          classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); }
+          classicScopeUnchangedTrace(); mixAnalyserPages(); compareAndAveragePages(); compareHoldSurvivesInvalidA(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
