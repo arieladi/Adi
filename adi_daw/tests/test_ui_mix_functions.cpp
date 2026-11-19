@@ -1500,7 +1500,7 @@ void focusOneBarScope(AppCommands &commands, const std::filesystem::path &direct
     frame();
     const SnapshotReader initial(root->current());
     const auto &meters = initial.meters();
-    check(root->playing() && root->bpm() == 120. && initial.sampleRate() == rate &&
+    check(root->playing() && root->bpm() == 120. && doc->mailbox().sampleRate() == rate &&
               (meters.empty() || (meters[0].numerator == 4 && meters[0].denominator == 4)) &&
               a->capacity() == 12000 && b->capacity() == 12000 && broker->stats().taps == 2,
           "one-bar Scope runs at 48 kHz, 120 BPM and 4/4 on two quarter-second rings");
