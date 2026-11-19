@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — DF-E12 replay fixture creation diagnostic
+
+**PR requested** — branch `engine/df-e12-store-create-diagnostic`, head `678f2e32c747f4387c1d631a4a9c504dc5c1fa31`, main base `88e2d94e`. Title **DF-E12: Report the StoreError from replay fixture creation**.
+
+The fixture reports which replay file failed and includes the Store error. The existing creation fault seam produces `cached replay fixture (Cached.adi): could not create the database` in a targeted build.
+
+**Gate** — GCC 14 and Clang 19 each passed the 53-check project-files suite with warnings as errors. The Linux x86-64 build ran it 320 times at concurrency 12 with no failures. Four validators and the layout check passed. This captures the next occurrence of #587's error without assuming the original ARM64 cause.
+
 ## 2026-11-19 — DF-E10 Link stopped-transport intermittent
 
 The #548 assertion is in the local SDK test, with networking disabled. The peer fixture requires an explicit argument. Main's CTest configuration already holds the same Link resource lock for both Link suites.
