@@ -10,6 +10,16 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, scanner discovery and registry family (DF-E31)
+
+**PR requested** — `engine-win/scanner-dfe31` at `5c2e84233387057945bdfd7a4866f64c1324c53f`, on main `12aab48a`. One branch replaces #643, #644, #669 and #670. It includes 0f7289b2, 79db43b6, win's native tick encoding and the Windows canonical-bundle test fix. Owner admission and schema checks use immediate transactions.
+
+An ordinary project miss can use one installed saved hint after read-only hydration. An exact catalogue hit still needs no helper or SQL reread, and explicit CacheOnly stays scan-free. Installed CLAP catalogue copies take precedence over deleted copies. A completed Incremental job binds roots before discovery, then verifies them in a strict maintenance walk before bounded cleanup of missing rows. It retains manual and pending blocks, excludes missing optional roots, and refuses a retargeted root. The extra warm traversal and read-only inventory were not timed here. Filesystem changes between operations remain possible.
+
+The helper now marks entry to module opening without adding bytes to successful packets. Owned CLAP modules exiting 74 and 75 no longer stop a healthy sibling and their results are reused. Pre-open failures and parent I/O or cancellation retain the infrastructure policy.
+
+MSVC x64 `/W4 /WX`: all ten scanner/player suites passed on the merge with current main, including 357 counted assertions, the owned VST3 case sequence and the real project-reopen checks. The Windows app linked. No desktop UI run or new cross-DAW benchmark. The Window's N58 adoption and Rescan wiring follow on the typed metadata service.
+
 ## 2026-11-19, saved source verification and analysis-cache trim (DF-E34 a/d)
 
 **PR requested** — `engine-win/progressive-saved-source-mismatch` at `d4ecedb2ac066c2eb46ad6eef6ac9112276bf266`, exact #664 plus main `62ad7218` and both confirmed findings. The first fix verifies the current media when a warm cache entry disagrees with its saved source dimensions. An actual source mismatch stays silent before and after eviction. Same-shape verification is still limited by the existing warm-path checks. Trim continues through unreadable and undeletable entries, reports their paths, preserves cancellation, and leaves removable siblings eligible after inventory.
