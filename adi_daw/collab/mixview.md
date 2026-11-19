@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M29–31, native serial EQ Release and #548 re-review
+
+**PR requested.** #548 `mixview/eq-serial-native-20261113` is fast-forwarded from `770bf1b0` to `eb5c68b8` for re-review. Its merge tree is clean against current main. The cumulative `mixview/native-serial-eq-assembly-20261119` at `f7fab268` is pushed and includes the key route and paired EQ surfaces after DF-M26. It preserves active EQ through float → double → float at the same stream format, renders the requested plan deterministically offline, and tells users to reopen the project after a parked failure. Rolling real-time plan publication still uses the existing safe owner/ready-plan path.
+
+The Release passed 870 software-peer checks and eight targeted CTests. Native serial EQ passed 72 checks with 248,832 compared sample pairs and no audio allocations or frees. Device keys passed 200 checks; a real DeviceCore fixture reduced the recipient's 1 kHz programme by over 10 dB, Undo restored the unrouted level, Redo restored reduction and a silent routed key settled to the same level as the absent route. All logs are in `NowWeReverse/ADI-View/mixview-seat/dfm29-31-built-20261119`. DF-M32 and DF-M33 remain covered by the current #579 and #580 heads.
+
+- ZIP `outputs/ADI-MixView-Native-Serial-EQ-f7fab268b5-win64-Release.zip`, SHA-256 `7a1443f4e3f50e8b7baafef5672bd4e807cfd3ef47adb69537dc40e14d2892f4`.
+- ADI.exe SHA-256 `10806afff72afd47e76aec2a44f8e7b7c33650ee24d60884209d4c19f96efbfa`, scanner SHA-256 `042ee50ce5987e841d065814b67bea611da2a2d6211b67b970c3cbdd2b55b2dd`, corresponding source SHA-256 `2e81b79a4e2e10430c230efe3227e8adae82d62196bca7ccaf0ecb89d5f71ac3`.
+- Claude brief `outputs/ADI-Q-MixView-Native-Serial-EQ-f7fab268-CLAUDE-RETEST.txt` includes the passing EQ setup, three key taps and the Limiter control's detector-threshold effect.
+
 ## 19 November 2026 — DF-M26 actual Stack chains without reserved slots
 
 **PR requested.** `mixview/no-reserved-slots-1119` is pushed at `6679713e` after DF-M25. Snapshot projection builds real device-chain items directly, with no previous reserve-and-clear for hidden EQ, Ducking or Limiter slots. Active device IDs, retained gestures, channel hierarchy and order still use the actual chain. Model consumers can still supply their own explicit generic items.
