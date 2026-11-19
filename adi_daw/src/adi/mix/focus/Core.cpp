@@ -175,10 +175,11 @@ struct Core::Impl {
     };
     FirTag captureTag,jobTag,previousTag;
     enum class FirStage { Idle, ForwardStart, Forward, Node, CurrentProduct, PreviousProduct, Sum,
-                          InverseStart, Inverse, Overlap, Finish };
+                          InverseStart, Inverse, Overlap, OverlapKey, Finish };
     FirStage firStage=FirStage::Idle;
     static constexpr std::uint64_t firEdgeWork = 16;
-    std::uint64_t firBaseWork = 0, firNodeWork = 0, firForwardStreamWork = 0;
+    std::uint64_t firForwardStreamWork = 0, firBandStreamWork = 0;
+    bool jobSharesKeyResult = false;
     std::uint64_t jobWorkPerSample = 0, jobRemainder = 0, jobRemainderCarry = 0;
     std::size_t captureBank=0,jobTimeBank=0,previousSpectrumBank=0,jobSpectrumBank=1;
     std::size_t jobStream=0,jobNode=0,jobIndex=0;
@@ -266,13 +267,12 @@ struct Core::Impl {
         const auto fftCursorWork = stages * (p / 2) + stages + 5;
         const auto forwardWork = 3 * p + fftCursorWork;
         const auto inverseWork = 4 * p + fftCursorWork;
-        // Always visit four streams and every node. Each live node adds three
-        // bin operations, an inverse and its two outer transitions, and h
-        // overlap charges including the cursor transition.
+        // Each job pays per forwarding stream and per rendered stream.
+        // A rendered band adds the products, inverse and h overlap charges.
         firForwardStreamWork = forwardWork + 2;
-        firBaseWork = 4 * (firForwardStreamWork + kNodes + 1) + 1 + 2 * firEdgeWork;
-        firNodeWork = 4 * (inverseWork + 3 * (p + 1) + 2 + h);
-        stats.firWorkQuota = (firBaseWork + kNodes * firNodeWork + p - 1) / p;
+        firBandStreamWork = inverseWork + 3 * (p + 1) + 2 + h;
+        const auto maximumWork = firWork(4, 4, kNodes, 0);
+        stats.firWorkQuota = (maximumWork + p - 1) / p;
         phaseBlendStep=1./std::max(1.,spec.sampleRate*.01);prepared=true;
     }
     // Owner-only, while the relevant bank/stage is dormant. Re-entering after
@@ -451,7 +451,7 @@ struct Core::Impl {
         case FirStage::Node:
             if(jobNode==kNodes) {
                 jobNode=0;
-                if(++jobStream==4)firStage=FirStage::Finish;
+                if(++jobStream == (jobSharesKeyResult ? 2U : 4U))firStage=FirStage::Finish;
             } else if(((jobTag.mask|previousTag.mask)&(1U<<jobNode))==0)++jobNode;
             else {
                 jobFirstKernel=(jobTag.mask&(1U<<jobNode))!=0?
@@ -501,15 +501,29 @@ struct Core::Impl {
             else {jobIndex=0;firStage=FirStage::Overlap;}
             break;
         case FirStage::Overlap:
-            if(jobIndex==h-1) {++jobNode;firStage=FirStage::Node;}
-            else {
-                auto &output=jobStream<2?bandMain[jobStream][jobNode]:bandKey[jobStream-2][jobNode];
-                const auto position=static_cast<std::size_t>(jobOutput+jobIndex)&(4*h-1);
-                const auto count=std::min({static_cast<std::size_t>(budget),h-1-jobIndex,4*h-position});
-                for(std::size_t i=0;i<count;++i)output[position+i]+=transformTime[jobIndex+i];
-                jobIndex+=count;used=count;
+        case FirStage::OverlapKey: {
+            const bool programme = firStage == FirStage::Overlap && jobStream < 2;
+            if (jobIndex == h - 1) {
+                if (programme && jobSharesKeyResult) {
+                    // Retain the inverse result for a second bounded pass.
+                    // The key ring can still hold a different preceding tail.
+                    jobIndex = 0;
+                    firStage = FirStage::OverlapKey;
+                } else {
+                    ++jobNode;
+                    firStage = FirStage::Node;
+                }
+            } else {
+                auto &output = programme ? bandMain[jobStream][jobNode] : bandKey[jobStream % 2][jobNode];
+                const auto position = static_cast<std::size_t>(jobOutput + jobIndex) & (4 * h - 1);
+                const auto count = std::min({static_cast<std::size_t>(budget), h - 1 - jobIndex, 4 * h - position});
+                for (std::size_t i = 0; i < count; ++i)
+                    output[position + i] += transformTime[jobIndex + i];
+                jobIndex += count;
+                used = count;
             }
             break;
+        }
         case FirStage::Finish:
             releaseFirTag(previousTag);previousTag=jobTag;jobTag={};
             previousSpectrumBank=jobSpectrumBank;firStage=FirStage::Idle;++stats.firJobsCompleted;break;
@@ -544,6 +558,11 @@ struct Core::Impl {
         stats.firWorkUnits+=used;stats.firMaxSampleWork=std::max(stats.firMaxSampleWork,used);
         return used;
     }
+    std::uint64_t firWork(std::uint64_t forwards, std::uint64_t renders,
+                          std::uint64_t bands, std::uint64_t additionalOverlap) const noexcept {
+        return forwards * firForwardStreamWork + renders * (kNodes + 1) + 1 + 2 * firEdgeWork
+            + bands * (renders * firBandStreamWork + additionalOverlap);
+    }
     void launchFir() noexcept {
         if(firStage!=FirStage::Idle) {
             ++stats.firDeadlineMisses;
@@ -556,8 +575,11 @@ struct Core::Impl {
         }
         jobTag=captureTag;captureTag={};jobTimeBank=captureBank;captureBank=1-captureBank;
         const auto activeNodes = std::popcount(static_cast<unsigned>(jobTag.mask | previousTag.mask));
-        const auto reusedWork = jobTag.keyIsProgramme ? 2 * firForwardStreamWork : 0;
-        const auto work = firBaseWork - reusedWork + static_cast<std::uint64_t>(activeNodes) * firNodeWork;
+        const auto forwardStreams = jobTag.keyIsProgramme ? 2U : 4U;
+        jobSharesKeyResult = jobTag.keyIsProgramme && (previousTag.mask == 0 || previousTag.keyIsProgramme);
+        const auto renderStreams = jobSharesKeyResult ? 2U : 4U;
+        const auto work = firWork(forwardStreams, renderStreams, static_cast<std::uint64_t>(activeNodes),
+                                  jobSharesKeyResult ? 2 * h : 0);
         jobWorkPerSample = work / p;
         jobRemainder = work % p;
         jobRemainderCarry = 0;
