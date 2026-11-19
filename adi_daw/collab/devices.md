@@ -56,6 +56,36 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DEV-21: OneShot is a loadable instrument, so a MIDI clip sounds
+
+**`devices/oneshot-instrument` (`0d309d4d`), stacked on #656 (`devices/oneshot-live-params`),
+on win's loan of `builtin_catalog.cpp` and `makeBuiltinDevice`'s instrument dispatch.**
+
+- Catalogue: `BuiltinInfo::instrument`; OneShot (`org.adidaw.builtin.oneshot`, Instruments, no
+  audio in, MIDI in). **19 entries** with it; **the clones seat's ADI-Shaper makes 20** — whichever
+  of us lands second updates the array sizes and `test_builtin_devices`' counts (19→20 entries,
+  18→19 available). Clones: please confirm in your log.
+- The insert writes subtype `instrument` (`builtin_insert.cpp`); `BuiltinDevice` reports
+  `EventFlow::Consume` for an instrument.
+- OneShot's canonical canvas is embedded with a native factory (`native_devices.cpp`): canvas
+  parameter N → core index N−1 in its units, notes at their block-relative frames, sample from
+  slot 1 (#414's slot ops), idempotent prepare.
+- **Beyond the named loan, for win's review:** `builtin_samples.cpp` gains OneShot's sample
+  (source kept, stereo from the first two channels, at the source's rate, restored through
+  `prepareOneShotSample`) — the slot path a OneShot sample needs; `builtin_insert.cpp`'s subtype
+  line. Both are small and named in the commit.
+- **Test, through the product's calls:** insert on a MIDI track (subtype instrument), assign a
+  1 kHz sine to slot 1 (one undo step), ordinary Session, a MIDI clip's C3: sound from frame 1 at
+  **0.1256** = 0.5 × OneShot's default −12 dB (Live's). Plant: not marked instrument → 3
+  failures. Builtin devices 110; CTest **245/245**.
+
+**PR requested** — title "OneShot is a loadable instrument, so a MIDI clip sounds (DEV-21)";
+head `devices/oneshot-instrument` at `0d309d4d`; base `devices/oneshot-live-params` (#656) until it
+lands, then `main`. Body: the commit message.
+
+**Next:** the Sampler's loadability — its zones are not a canvas, so it needs its own sample path
+(a zone list built from slot assignments); then DF-E36.
+
 ## 2026-11-19 — DF-E37 (d) and (f): the looped release; an idempotent OneShot prepare — DF-E37 done
 
 **Both on #656's branch, `devices/oneshot-live-params` (`c8363f0b`, `14181dfb`).**
