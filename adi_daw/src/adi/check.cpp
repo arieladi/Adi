@@ -51,6 +51,8 @@ struct PolyRef {
     bool idNullable;
 };
 
+// Journal targets describe the edit at its historical position. Only live
+// references belong here. The journal itself is checked in checkHistory.
 const PolyRef kPolyRefs[] = {
     {"routing", "id", "src_kind", "src_id", false},
     {"routing", "id", "dst_kind", "dst_id", false},
@@ -58,7 +60,6 @@ const PolyRef kPolyRefs[] = {
     {"ui_view", "id", "scope_kind", "scope_id", true},
     {"extensions", "id", "scope_kind", "scope_id", true},
     {"controller_maps", "id", "target_kind", "target_id", true},
-    {"ops", "seq", "target_kind", "target_id", true},
 };
 
 /// kind -> table. Anything not here is either external hardware or a scope name
@@ -75,7 +76,7 @@ const std::set<std::string> kNotRows = {
     "hw_in", "hw_out",   // hardware port indices on the current audio device
     "project",           // the singleton; id is meaningless
     "editor",            // a UI surface, not a row
-    "",                  // ops.target_kind defaults to empty
+    "",                  // no target kind
 };
 
 // --- 1. what SQLite can tell us itself -----------------------------------------

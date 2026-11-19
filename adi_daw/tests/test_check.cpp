@@ -12,6 +12,8 @@
 
 #include "adi/blob.hpp"
 #include "adi/check.hpp"
+#include "adi/clip_commands.hpp"
+#include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
@@ -21,6 +23,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 namespace {
@@ -91,6 +94,31 @@ void testCleanProject() {
     check(r.errors == 0, "no errors: " + describe(r));
     check(r.warnings == 0, "no warnings: " + describe(r));
     check(r.clean(), "clean() agrees");
+}
+
+void testHistoricalTargets() {
+    Fixture f("historical_targets");
+    if(!f.store)throw std::runtime_error("create historical target project");
+    const auto cut=clip_edit::prepareCutClip(*f.store,5,48000);
+    check(cut.copy.ok && clip_edit::commitPrepared(*f.store,cut.edit).ok &&
+          f.db().execAndGet("SELECT count(*) FROM ops WHERE target_kind='clip' AND target_id=5").getInt()>0,
+          "Cut records a historical target after deleting its clip");
+    check(checkProject(*f.store).clean(),"checking a Cut does not require its historical target to be live");
+    const auto cutZip=f.dir/"cut.zip";
+    const auto exported=f.store->collectAndExport(cutZip);
+    check(exported.ok && fs::is_regular_file(cutZip),"Collect and Export publishes a ZIP after Cut: "+exported.error);
+    check(History(*f.store).undo().ok && f.db().execAndGet("SELECT count(*) FROM clips WHERE id=5").getInt()==1,
+          "Undo still uses the retained Cut history to restore the clip");
+
+    OpRequest create;create.opType="clip.create";create.targetKind="clip";create.targetId=7;
+    create.payload={{"id",7},{"track",1},{"kind","midi"},{"pos",23063040},{"length",5765760}};
+    check(OpJournal(*f.store).commit(create).ok && History(*f.store).undo().ok &&
+          f.db().execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==0,
+          "Undo leaves the named clip behind the current history head");
+    check(checkProject(*f.store).clean(),"a retained operation beyond the current head passes the project check");
+    const auto undoZip=f.dir/"undo.zip";
+    const auto written=f.store->collectAndExport(undoZip);
+    check(written.ok && fs::is_regular_file(undoZip),"Collect and Export publishes a ZIP after Undo: "+written.error);
 }
 
 // --- the polymorphic references, which SQLite cannot enforce -------------------
@@ -379,6 +407,7 @@ int main() {
     std::printf("adi_check_tests -- ADR-0029/0033, what SQLite cannot enforce\n\n");
     try {
         testCleanProject();
+        testHistoricalTargets();
         testDanglingPolyRef();
         testExternalKindsAreNotErrors();
         testUnknownKindIsAWarning();
