@@ -29,6 +29,15 @@ device PRs do not conflict on one shared log file.
 
 **PR requested** — as step 1's entry (head `devices/amxd-translator`, now `10fb3b4d`).
 
+**The one real device in reach** is the director's own, in this repository: `adi-m4l-analyzer`'s
+`AVC Spectrum Meter.amxd` (plain `ptch`, 541 boxes). It is an analyser on Jitter, `js` and the Live
+Object Model (`jit.*`, `js`, `jsui`, `live.object`/`path`/`observer`), so it is the AI path's case,
+not the translator's. Its most used boxes set the order for later steps: `prepend` (63), `sel`
+(14), `live.menu` (14), `snapshot~` (13), `expr` (12), `biquad~` (10), `live.text` (10), `atodb`,
+`change`, `route`, `slide~`, `gate`, `maximum`, `average~`, `selector~`, `delay`, `!-`. Several
+need Max's own behaviour read first (int or float in `sel`/`change`, `atodb` at 0, `biquad~`'s
+coefficient order) — Max, not Live.
+
 ## 2026-11-19 — DEV-16, step 2: Max's integers and subpatchers, made explicit
 
 **`devices/amxd-translator` (`fe9fa8af`), one commit on top of step 1** — the same PR request now
