@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, internal graph-worker preference (DEV-23)
+
+**PR requested** — `engine-win/graph-worker-setting` at `240dc0fd3bb6d6904887c8867cab2e40e63614c8`, on main `12aab48a`.
+
+**For engine.** Read `settings::kGraphWorkersKey` from AppSettings and pass the value and the device's granted buffer to `settings::graphWorkersEnabled` when configuring the graph. The internal `auto` value enables workers at 1,024 samples and above, and `off` explicitly keeps serial processing. Unknown or smaller granted sizes stay serial. The registry row is outside Preferences and Find. The app's graph wiring is the engine's part of ADR-0248 d6.
+
+MSVC x64 `/W4 /WX`: 421 checks in four suites, including the threshold boundary, persistence, invalid value refusal and Settings visibility. Some optional symlink fixtures could not run. The prior DF-E23 measurements are at 2,048 and 256 samples. The 1,024 decision is policy and its predicate is unit-tested.
+
 ## 2026-11-19, Windows publication and cross-volume recording (DF-E32 a/b)
 
 **PR requested** — `engine-win/file-publication-reliability` at `d90479e48fe6165546e2f85eb91af944917af547` on main `12aab48a`. Closed-stage sync and exclusive rename share seven Windows retries for native errors 5, 32 and 33. Both verify the stage identity and ordinary file type before each attempt. One successful flush covers the rename retries. AtomicOnly keeps its existing exclusive-publication policy.
