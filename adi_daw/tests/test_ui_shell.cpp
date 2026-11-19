@@ -9962,6 +9962,97 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     fake.removeFromDesktop();
 }
 
+void mixChannelToolSearch(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "mixview-tool-search.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "tool search test document opens");
+    if (!document) return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(30,'internal','") +
+                                test::kKnobsUid + "','Fixture controls')");
+    std::vector<OpRequest> make(6);
+    make[0].opType = "track.create";
+    make[0].payload = {{"id", 10}, {"kind", "group"}, {"name", "Percussion"}, {"index", 10}};
+    make[1].opType = "track.create";
+    make[1].payload = {{"id", 11}, {"kind", "audio"}, {"name", "Drums"}, {"index", 0}, {"parent", 10}};
+    make[2].opType = make[3].opType = "chain.create";
+    make[2].payload = {{"id", 30}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[3].payload = {{"id", 31}, {"track", 11}, {"ord", 0}, {"name", "Devices"}};
+    make[4].opType = make[5].opType = "device.insert";
+    make[4].payload = {{"id", 30}, {"chain", 30}, {"ord", 0}, {"ref", 30}, {"name", "Scope Delay"}, {"latency", 0}};
+    make[5].payload = {{"id", 31}, {"chain", 31}, {"ord", 0}, {"ref", 30}, {"name", "Transient Filter"}, {"latency", 0}};
+    const bool inserted = document->ops().submit(std::move(make)).ok && document->synchronise();
+    check(inserted, "two named tools are authored on different channels");
+    if (!inserted) return;
+    document->tick(0); // Publish the authored device names before the first owner frame.
+    const auto authored = document->parameterFeed().current();
+    check(authored && std::ranges::any_of(*authored, [](const DevicePanelData &device) {
+              return device.track == 2 && device.id == 30 && device.name == "Scope Delay";
+          }), "the normal passive publication carries the searched tool name");
+
+    UiPeerRoot fake;
+    int publicationReads = 0;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "mix-tool-search");
+    root.devices.publication = [&] {
+        ++publicationReads;
+        return document->parameterFeed().current();
+    };
+    fake.setSize(1200, 760);
+    fake.addAndMakeVisible(root);
+    root.setBounds(fake.getLocalBounds());
+    fake.setVisible(true);
+    fake.addToDesktop(0);
+    check(fake.getPeer() && !fake.getPeer()->getNativeHandle() && root.setMixView(true, false),
+          "tool search is exercised through the normal Mix View on a software peer");
+    root.frame();
+    auto &mix = root.mixViewPanel;
+    auto &nav = mix.channels;
+    mix.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
+    root.arrangement.geometry.selection.track = 11;
+    root.publishSelection();
+    root.frame();
+    commands.activate(root);
+    check(root.command(AppCommands::SearchBrowser) && nav.search.hasKeyboardFocus(true),
+          "the channel-and-tool search is the Mix View search shortcut target");
+    const auto undo = root.undoTitle(false);
+    const auto ops = value(document->store(), "SELECT count(*) FROM ops");
+    nav.search.setText("  scOpE dELay  ", false);
+    nav.search.onTextChange();
+    check(nav.trackAt(0) == 2 && nav.trackAt(1) == 0 && document->sessionState().selection().track == 11,
+          "a trimmed case-insensitive tool name finds its differently named channel");
+    const int readsAfterQuery = publicationReads;
+    nav.frame(root.reader());
+    nav.frame(root.reader());
+    check(publicationReads == readsAfterQuery,
+          "unchanged browser frames do not reread the device publication with a query active");
+    nav.list.selectRow(0);
+    root.frame();
+    check(document->sessionState().selection().track == 2 && mix.stack.focused() == 2,
+          "choosing a tool match reveals its actual Stack channel");
+    const int group = nav.show.getItemId(2);
+    nav.show.setSelectedId(group, juce::sendNotificationSync);
+    check(group > 2 && nav.show.getSelectedId() == group && nav.trackAt(0) == 0,
+          "a tool match cannot bypass the selected group");
+    nav.show.setSelectedId(1, juce::sendNotificationSync);
+    check(nav.trackAt(0) == 2 && nav.trackAt(1) == 0 && root.undoTitle(false) == undo &&
+              value(document->store(), "SELECT count(*) FROM ops") == ops,
+          "clearing the group restores the tool match without authoring edits");
+
+    check(document->deviceAction("device.rename", {{"id", 30}, {"name", "Old Tool"}}),
+          "rename the matching tool through the document");
+    root.frame();
+    check(nav.trackAt(0) == 0, "the retained query drops a renamed tool without any track edit");
+    check(document->deviceAction("device.rename", {{"id", 31}, {"name", "Scope Delay"}}),
+          "put the searched name on the second channel's tool");
+    root.frame();
+    check(nav.trackAt(0) == 11 && nav.trackAt(1) == 0 && document->sessionState().selection().track == 2,
+          "tool names refresh through an authored device update without moving track selection");
+    check(document->deviceAction("device.remove", {{"id", 31}}), "remove the second tool");
+    root.frame();
+    check(nav.trackAt(0) == 0, "the retained query drops a removed tool");
+    document->release();
+}
+
 void mixStackViewReopen(AppCommands &commands, const std::filesystem::path &dir) {
     const auto exercise = [&](Store &store, bool author, bool expectSaved) {
         engine::ProjectView view;
@@ -11768,6 +11859,7 @@ int main(int argc, char **argv) {
         // Deliberately before every UiPeerRoot/addToDesktop/reference() branch below.
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
         mixChannelNavigation(commands, temp.path());
+        mixChannelToolSearch(commands, temp.path());
         mixStackViewReopen(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
         pluginWindows(commands, temp.path());
@@ -14854,6 +14946,7 @@ int main(int argc, char **argv) {
     clipViewClipTime(commands, temp.path());
     clipViewMulti(commands, temp.path());
     mixChannelNavigation(commands, temp.path());
+    mixChannelToolSearch(commands, temp.path());
     mixViewShell(commands, temp.path());
     recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
