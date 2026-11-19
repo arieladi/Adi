@@ -12,6 +12,335 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## FOR THE DIRECTOR — DF-E29(e), MIDI timing with Delay Compensation off
+
+Should MIDI keep the upstream plug-in's physical latency when Delay Compensation is off, or follow the same heard-time clock as the addressed automation? On current main the setting is reachable through the engine API. The app registry declares the setting, and its production switch has no Session binding yet. A real graph with a 1,024-sample reporting delay put the note and automation at sample 4,116 when compensation was on. With compensation off the note arrived at 5,140 and automation still arrived at 4,116.
+
+My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
+
+## 2026-11-19 — DEV-23 native Linux gate follow-up
+
+The GCC 14 JUCE app and shell linked at the unchanged DEV-23 head `3dd8c605`. The native ADI window and Audio Settings page each opened, painted and wrote their expected PNG under Xvfb. Both used ADI's no-audio smoke entry point. The driver preparation checks remain the headless tests recorded on the PR request.
+
+**For Window** — the optional Linux `adi_ui_shell_tests` aborts under Xvfb on a JUCE native cursor call in `juce_XWindowSystem_linux.cpp:2703`. The cursor call has window ID zero and X11 returns `BadWindow`. A second attempt on an isolated X display reported the same error. The test starts without the desktop application's worker configuration. The failure output is retained in `dev23-juce-shell-no-wm.log` and `dev23-juce-shell.log` in the cloud validation folder.
+
+## 2026-11-19 — DF-E27(d) keep performance outside history forks
+
+**PR requested** — branch `engine/df-e27-ephemeral-history`, head `2414ac7cda163afed7adbd7df30749c7b6d57132`, main base `bedee5ab`. Title **DF-E27(d): Keep transport audit outside history forks**. Independent of DF-E27(a–c) and #530. When integrating CT-02's grouped journal branch, retain this shared divergence guard and tip deduplication.
+
+Play and Stop remain individual audit rows without a parent or an inverse. An all-ephemeral batch leaves the Undo head, Redo line and branch list untouched. A mixed batch preserves the line it diverges from. A real fork records an abandoned tip only when an existing non-current branch does not already hold that tip.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them with the frozen DEV-23 Debug core. Both passed 111 history, 49 history-move, 130 ops, 282 applied-batch and 73 compaction checks. The current-main journal failed both new assertions first. The two planted faults separately detected ephemeral forks and duplicate tips. Four validators and the format layout check passed.
+
+## 2026-11-19 — DF-E27(b) clip End uses the source clock
+
+**PR requested** — branch `engine/df-e27-source-end`, head `25ba8fce3596ce97bddde293e69f3e3cad120351`, main base `bedee5ab`. Title **DF-E27(b): Keep clip playback End on its source clock**. This extracts the End-marker fix from `b9773069` as an independent patch on current main. The shortened fade fix is in its independent DF-E27(a) branch. #530's Start/End edit and source-pin synchronization follows on its own branch.
+
+An unwarped clip's physical End pin survives a placement or tempo change. Warped and unpinned clips derive End in the same source coordinate system as their offset. Playback and page readiness share that one bound. The native sample defaults capture preserves the effective pinned End and keeps the existing legacy-tick projection when the file has only that clock. An active loop still takes its own interval.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units from main and relinked them with the frozen DEV-23 Debug core. The run passed the clip playback, candidate readiness, sample defaults, warp playback and clip edit suites. The new physical-pin and warped-End checks failed first. The physical-pin sample defaults fixture round trips captured audio with a nonzero offset at double tempo. Both compiled faults failed their intended checks. The four validators and format layout check passed.
+
+## 2026-11-19 — DEV-23 graph workers in the desktop app
+
+**PR requested** — branch `engine/dev23-app-workers`, head `3dd8c6056e13e6e2a89c5173a054360fd2768683`, main base `bedee5ab`. Title **DEV-23: Configure app graph workers from the granted audio buffer**. Includes engine-win's internal preference `240dc0fd3bb6d6904887c8867cab2e40e63614c8`. Hosted CLAP/VST3 worker admission follows the independent DF-E23 integration in #677.
+
+Each desktop audio start and reconfiguration passes the driver grant to the internal preference from AppSettings. Auto permits workers at 1,024 frames and up. Off, smaller buffers and machines reporting at most one logical CPU use serial processing. The callback can participate in rendering. The worker count is bounded by logical CPUs, the graph's limit and available independent nodes. A callback shorter than 1,024 frames renders serially. The grant and worker policy prepare a single candidate. An identical live policy and format preserve the existing graph. A failed parallel preparation retries serially.
+
+**Gate** — GCC 14 Debug with Pd and warnings as errors covered 246 CTest suites, six focused suites, the four validators and the layout check. The initial run passed 245 suites. The existing Pd lock test exceeded its wall-clock threshold under load and passed its isolated rerun. GCC and Clang 19 each passed 257 document checks, including mismatched request and grant in both directions, the 1,023/1,024 boundary, actual worker dispatch, byte-identical output, reconfiguration, explicit Off at the same format and device restart. Four planted request, policy and dispatch faults failed as intended, and injected thread creation failure produced serial audio. GCC and Clang also compiled the native JUCE app translation unit with warnings as errors. The full native app and shell smoke is running separately. This cloud environment has no physical audio device.
+
+## 2026-11-19 — N57 third-party plug-in insertion
+
+**PR requested** — branch `engine/n57-plugin-insertion`, head `2b67a9acb4719979ceab4e45ca837f25f6e2ce32`, base `af13cf5a`. Title **Insert third-party plug-ins with ordered placement and one Undo**. The remote head matches the gated commit. The reserved N57 engine and document core and its fixture are taken from Mix View commit `668e05c99cad906099e75c6573d98e6f138a3a1a`, with main's existing `RowIds` allocator.
+
+`preparePluginInsert` captures the resolved VST3 or CLAP format, reference identity, shell, and path hint before any project write. MIDI effects are placed before the first instrument and audio effects after the last. Placement uses the chain's device roles and an optional anchor. An explicit replacement occupies the selected instrument's existing slot, and a chain with several instruments needs an unambiguous target. An instrument rack can be a placement boundary, and a replacement targets a particular instrument in its child chain so the rack is retained. Registration, chain creation or replacement, order, the instance and its expression route commit together with one Undo. A planted insert failure after removal leaves the previous instrument, state and journal intact.
+
+**For Window / DF-W9** — `ProjectDocument::insertPlugin(ref, track, before, options)` is the common document entry point. Pass the resolved catalogue reference, with an optional before-device anchor and explicit replacement or expression-route choice. The real document fixture exercises Session realization and Undo. N58 supplies installed catalogue details and Window owns the Browser hookup.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, five focused suites, four validators and the format layout check. GCC and Clang 19 each passed 111 device and 248 document checks. Clang also compiled the four changed units with Pd disabled. Five compiled faults detected wrong MIDI and audio placement, retaining the replaced instrument, losing the selected route and accepting replacement of an instrument rack. Logs are in `/workspace/adi-engine-validation`.
+
+## 2026-11-19 — CT-02 atomic loop-pass Undo groups
+
+**PR requested** — branch `engine/ct02-loop-undo-groups`, head `a0a42ebd62c6b90abf9af4fc08c69f5ec0bde84c`, base `12aab48a`. Title **Commit loop passes atomically with separate Undo groups**. The remote head matches the gated commit. ADR-0248 d6 item 4, the journal contract for engine-win.
+
+`OpJournal::commitGrouped(requests, groupEnds, options)` commits the complete batch in one SQLite transaction. Each nonempty pass has one existing journal transaction ID and one Undo step. Each operation carries that ID into a single applied-batch notification after durable success. A failed handler or veto rolls back every pass, resource row and journal entry. The result exposes sequence numbers and group IDs only on success.
+
+**For engine-win / CT-02** — prepare the normal flat list of native requests and an exclusive end offset after each pass. Put the shared media import in the first pass and the main-lane edit with each pass so Undo restores its predecessor. Put each pass's label and selection metadata on its first request. Keep the existing expected-head and publication callback in `CommitOptions`; the callback runs once with the first ID and sees the complete transaction. `CommitResult::groupTxnIds` identifies each pass in order. The ordinary commit entry point keeps one Undo step and sealed gesture admission uses that entry point.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, eight focused suites, four Python validators and the format layout check. GCC and Clang 19 each passed 117 history checks. The regression uses a real WAV imported once, four native take lanes and takes, and group-specific main-clip edits. A separate SQLite connection observes the old state until all four passes commit. Undo and Redo walk the four passes individually and preserve the shared media until the first pass is undone. Four compiled faults detected merged Undo IDs, a mislabelled applied notification, lost per-pass selection, and rolled-back sequence numbers escaping. Logs are in `/workspace/adi-engine-validation`. The first full run exposed the independent recorder finalization race documented in the separate report. The isolated recorder rerun passed before the successful full rerun.
+
+## 2026-11-19 — For engine-win and Win, AudioInputRecorder can finalize a short WAV
+
+The first full CT-02 gate exposed three failures in the direct AudioInputRecorder fixture: the stereo and mono WAV lengths and exact PCM. The grouped journal candidate changes only the ops journal and its history fixture. The isolated recorder suite passed on retry.
+
+A deterministic probe compiled the recorder from main at `12aab48a`. It parks the worker just after it observes an empty ring, records eight real samples, runs `stop()`, acknowledges the empty driver publication, calls `poll()` to signal the writer, then resumes it. It reports eight recorded frames and zero finalized WAV frames with a success status. The worker reads `written` before acquiring `stopWriter`, then exits on that stale empty observation. A scratch-only change that reloads `written` after acquiring the stop flag returned eight finalized frames with the same schedule.
+
+Engine-win owns the recorder fix. The schedule above gives a deterministic regression alongside the real WAV acceptance. Win can assign a register number. The CT-02 grouped-history candidate continues through its independent full gate.
+
+## 2026-11-19 — CT-03 driver MIDI capture tap
+
+**PR requested** — branch `engine/ct03-midi-driver-tap`, head `ae4cebf453fba727742b60ce7fb50d0061834c2f`, stacked on `engine/live-midi-armed-instrument` at `ad54266b`. Title **Tap timestamped MIDI before audible instrument routing**. The remote head matches the gated commit. ADR-0248 d6 item 4, CT-03's driver seam.
+
+The owner starts an epoch with an ordered list of distinct armed MIDI or instrument tracks. The tap records the common typed Track stream before audition selection or note-ID conversion, including armed tracks that have no instrument. The first playable slice starts capture after count-in. Each span reports a half-open driver and timeline range with a pass ordinal, even across silent passes and successive callbacks in one pass. Events keep their original MIDI note IDs, the producer timestamp and the sample accepted by the driver. The epoch excludes earlier input, and applies late events at the earliest sample still available.
+
+**For engine-win** — from `Session::startMidiInputCapture`, get the frozen track mapping, rate and epoch from `Session::midiInputCapture`. Drain packets off the callback. A new pass is visible in the next span even when no MIDI happened. Close held notes at the old pass's last span end and carry voice ownership by the original IDs under the take materializer's policy. Input reset, device stop, seek, a clock gap, a loop reconfiguration and overrun report explicit capture outcomes. The queue publishes each complete logical slice as one unit, so an overrun leaves the preceding complete prefix. A stopped epoch can be drained before a new one starts. Take-lane editing and quantize remain with engine-win.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, eight focused suites, the four validators and the format layout check. GCC and Clang 19 each passed 26 driver capture checks, and GCC repeated all 40 live-instrument checks. The oracle exercises two wraps in one callback, a silent pass, a late event, count-in, input reset, a missing driver frame, device close, and a one-sample loop that fills 4,095 packet slots and then rejects the next whole slice. Four compiled faults detected a missing tap, a linearized loop clock, partial publication and stale pre-epoch input. Logs are under `/workspace/adi-engine-validation`.
+
+## 2026-11-19 — MX-09 audio input monitor node
+
+**PR requested** — branch `engine/mx09-input-monitor`, head `26706036ac2b5c50337dcbd396016c82cf0347a9`, base `12aab48a`. Title **Monitor resolved hardware input through the audio track**. The remote head matches the gated commit. ADR-0248 d6 item 4, audio monitor node.
+
+A prepared source feeds the configured audio track's existing junction. In plays the hardware input with or without Arm and suppresses the track's Arrangement audio. Auto plays hardware for an armed track while stopped or outside the prepared Arrangement clips, with half-open boundaries and the driver transport's loop wraps. Off plays the Arrangement. Float and double use the same resolved mono or stereo inputs, and a missing channel is silent. Regular and gesture publications carry the corresponding clip clock and input binding with their graph. Input buffers are borrowed for the render slice and released after the graph completes.
+
+**For Window / MX-09** — `Session::setAudioMonitorInputs` takes the same zero-based driver channel selections as `AudioRecordingSpec::targets`. Submit the complete list of audio-track targets after loading and on a device or routing change, and the committed project values select Off, In or Auto and Arm. Invalid selections preserve the previous binding. Persistence and track-to-track inputs still depend on Win's MX-25 grammar. Meter behavior, Reduced Latency When Monitoring, recording placement latency and calibration remain the later MX-09 work. This branch exercises the Session seam with driver-format buffers and leaves the Window and engine-win recording integration to those owners.
+
+**For Win / MX-25** — the hardware graph seam needs one zero-based input channel or two ordered, distinct channels per audio track. Please provide the persisted hardware-input grammar so the selection can be restored through the Window host.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 246 CTest suites, six focused suites, four Python validators and the format layout check. The initial fixture reproduced 16 failures. The final GCC and Clang 19 fixtures each passed 24 checks. The tests use real Arrangement PCM, non-adjacent hardware channels, two graph precisions, a loop that wraps twice inside 64 frames and real Arm/Monitor Mode operations. Four compiled faults reproduced missing Arm gating, clip bleed, absent input-only clip suppression and missed intra-buffer wraps. Logs are in `/workspace/adi-engine-validation`.
+
+## 2026-11-19 — Live MIDI to armed instruments
+
+**PR requested** — branch `engine/live-midi-armed-instrument`, head `ad54266b955a5791fdbf63d8cb5f2ec41254be7e`, base `12aab48a`. Title **Route timestamped live MIDI to armed instruments**. The remote head matches the gated commit. ADR-0248 d6 item 4, first step.
+
+One bounded Track producer sends typed events through `Session::enqueueMidiInput` in ascending physical stream time. Stopped or relocated song transport does not affect live scheduling. The first instrument on each armed track receives the events through the pinned graph. A due event at a block's end belongs to the next block, and late events go to the first available sample. Disarming releases owned notes and pedals on publication. A producer reset or queue overflow releases them and discards events from the old input configuration. The graph's existing audio compensation runs downstream of the instrument.
+
+CLAP and VST3 share a note ID conversion that keeps live and Arrangement voices disjoint. The old conversion mapped the first live voice and a clip voice to the same plug-in ID. The tests hold two notes with the same key and channel, bend just the live voice and release it while the clip voice keeps playing.
+
+**For Window / SRF-05** — hand the Track route to `Session::enqueueMidiInput(streamSample,event)` from one serialized producer, after Remote consumption. Translate port times to the `AudioIo::streamTimeSamples` clock, preserve packet order at equal timestamps and normalize every event channel to zero-based and make decoded note IDs unique across ports. Quiesce the old port dispatch, then call `resetMidiInput` before the new producer starts, and rebind timestamps after the hardware clock restarts. Arm is the audible selector in this step; MX-09 supplies monitoring policy. Native OneShot/Sampler dispatch and the port host are separate seat dependencies for the hardware walkthrough.
+
+**For engine-win / CT-03** — the typed physical stream now reaches Session. The assigned driver recording tap will carry the record epoch and routing before the audible instrument filter. Loop and held-note capture stay independent of monitored voices.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 246 CTest suites, all four validators and the format layout check. GCC and Clang 19 each passed 40 live-Session checks at both widths, including actual Main PCM with the onset at sample 31, and 525 CLAP checks. The JUCE VST3 fixture under Xvfb passed 213 checks with the live/clip separation heard in its PCM. The MIDI and plug-in translation units compiled with Clang warnings as errors. Four planted faults detected missing input, wrong arm routing, stale source epochs and an aliased plug-in note ID. Logs are in `/workspace/adi-engine-validation`.
+
+## 2026-11-19 — DF-E29(a–d) receiving clocks gated and pushed
+
+**PR requested** — branch `engine/df-e29-receiving-clock`, head `dfab28afe48be4e26a1e5c744f0d51f1e1d6e202`, base `origin/main` at `62ad7218`. Title **Keep receiving clock continuity through loops and gestures**. The remote head matches the gated commit. Contains DF-E27(e) as DF-E29(b).
+
+The synthetic startup fold at or beyond Loop End no longer counts as crossing a lap. The plug-in and metronome share projected transport history, with the click waiting for its output pipeline and the plug-in reporting signed preroll. Retime keeps the preceding laps and respects a newly introduced linear approach through Begin to the next real wrap. The tests cover loops shorter and longer than arrival latency.
+
+Owner-prepared device clock boundaries are shared by the regular Session and gesture generations, including the adopted non-topology base and the preview restore. Tempo and meter split the receiving plug-in at the same sample before a commit, after the drain, during the structural preview and after cancel. A beat at a rounded-down change is snapped to the effective boundary tick, keeping it aligned with the reported bar start. Actual CLAP and VST3 fixtures prove the rounded bar at 48 and 44.1 kHz.
+
+A diagnostic that put a latency retap immediately after a gesture rebuild measured the old 1,024-sample arrival for one callback and the new 1,536-sample arrival from the next. The original immediate retap fixture runs in its original preparation context, and the new gesture checks run after it.
+
+DF-E29(e) is parked in the FOR THE DIRECTOR note above. The test reproduced sample 4,116 for both events with compensation on, and sample 5,140 for the note versus 4,116 for automation with compensation off. The transport fixes leave that policy decision independent.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, five focused suites, four validators and the layout check. The JUCE VST3 fixture under Xvfb passed 214 checks. Clang 19 passed 195 transport and 529 CLAP checks with warnings as errors, including the VST3 probe compile. The original transport fixture failed six checks. Four compiled faults reproduced the startup false lap, retimed lead-in jump, lost gesture boundaries, and fractional beat behind its reported bar. Logs are under `/workspace/adi-engine-validation`.
+
+Taking the next available ADR-0248 d6 item after fetching main and checking #651.
+
+## 2026-11-19 — DF-E27(a) backported to DF-E17 and gated
+
+**PR requested** — update the existing `engine/df-e17-edit-invariants` branch to `0c30d4ce713ece414a65b4c92be37a38ed10d15a`. The preceding remote head was `c0269d2d`. Title **Preserve native clip and rack edits through undo**. This adds the DF-E27(a) fix from `2accc015` and retains DF-E17's checked linear endpoint arithmetic. The remote head matches the gated commit. DF-E17 remains in the landing slot that follows agreement with DF-E35's lane semantics.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Five focused suites passed, including native clip edits and material commands. The fade fixture passed 30 checks and the Split fixture passed 380. The standalone branch also has the failing-first fixture and the GCC and Clang fault gates. Logs are under `/workspace/adi-engine-validation`.
+
+The reserved 1.23 send-tap and #677 reconciliation remains parked on #651 and DF-M60(c) if #651 has yet to land. Taking the independent DF-E29 transport work in that case.
+
+## 2026-11-19 — DF-E27(a) shortened clip fades ready for the first landing batch
+
+**PR requested** — branch `engine/df-e27-shortened-fades`, head `2accc0159e1fe4ddd9e61f431e0bf48acf45745f`, base `origin/main` at `62ad7218`. Title **Preserve the fade of a shortened audio clip**. This is the independent item 1 branch under ADR-0248 d6. The remote head matches the gated commit.
+
+An unpinned fade-out wider than the visible placement now uses the visible span. Split captures that effective fade in the unwarped or Warp source clock. Tests resize both at tick zero and later on the timeline, compare the audible fade through Split, and Undo through the original resize. The combined `b9773069` branch carries End-marker changes for the later batch.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Four focused suites passed. GCC and Clang 19 both passed 30 fade checks and 380 Split checks. The pre-fix fixture failed five checks. Compiled playback and Split fault builds each failed their expected regression. Logs are under `/workspace/adi-engine-validation`.
+
+Taking the requested DF-E17 backport next.
+
+## 2026-11-19 — DF-E27(c) MIDI swap boundary gated and pushed
+
+**PR requested** — branch `engine/df-e27-midi-swap-boundary`, head `4f7815a3e4881b4ac5f51e121b24dbc000fe3a1e`, base `origin/main` at `62ad7218`. Title **Preserve a queued MIDI onset at the swap boundary**. The remote head matches the gated commit. This is item 1 in ADR-0248 d6.
+
+An unchanged voice with a retained note-on can be adopted at the exact sample of its release. The source emits the normal release at frame zero, and both events reach the instrument at their original compensated positions. The test uses 512-sample blocks and a 512-sample delay, and checks one matching on/off pair at the exact boundary and one sample to either side, in both precisions. The existing callback allocation, free and file I/O audit stays green.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Four focused suites passed. The MIDI continuity executable passed all 121 checks on GCC and Clang 19. The failing-first GCC fixture and the compiled Clang fault each failed the two exact-boundary checks, one per precision. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27(a) on its own branch and on DF-E17 next. The #651 dependency remains on ADR-0248 item 2.
+
+## 2026-11-19 — Engine landing order from ADR-0248
+
+The previous PR request for `engine/df-e27-clip-fades-and-end` at `b9773069` predates the evening steering. Hold that combined branch for item 7 because it includes DF-E27(b). I will give Win an independent DF-E27(a) fade branch and put the same fix on `engine/df-e17-edit-invariants`. DF-E27(c) is being tested on its own branch. DF-E27(d) and #530 stay in the item 7 batch.
+
+The existing stacked VST3 and send work stays available as a reference. The #677 reconciliation waits for #651 and uses the reserved schema 1.23 send taps and the Mix View input-bus code under ADR-0248 d4. DF-E24(a)'s raw VST3 multi-bus work goes in item 7 on that input implementation. Item 3 is DF-E29 including the metronome clock from DF-E27(e).
+
+Active engine claim for DF-E27(c) is `adi_daw/src/adi/engine/midi_clips.cpp` and `adi_daw/tests/test_midi_clock_continuity.cpp`.
+
+## 2026-11-19 — DF-E27(a,b) clip fades and source End gated and pushed
+
+**PR requested** — branch `engine/df-e27-clip-fades-and-end`, head `b9773069a4a34cb5e57446f44320b3b937a36ce2`, base `origin/main` at `f256e386`. Title **Keep resized fades and source End sample-exact**. The remote head matches the gated commit.
+
+Playback confines the fallback fade-out to the clip's visible span. Split captures that same envelope for a shortened clip in either clock. Resize, Split and Undo tests compare the actual audio, and 380 existing split checks passed. The effective source End governs both rendering and page demand. An unwarped clip with a physical pin keeps that endpoint across the new placement tempo. A Warp End uses the same unrolled source clock as its prepared audio. Tests prove the full 500-frame physical End and a 150-frame Warp tail at a tempo boundary.
+
+`silentAfterEnd` now uses a pin and marker for the same 40,000-frame End, while still testing both processing precisions, page readiness, exact silence and zero underruns. The newer precedence test intentionally supplies conflicting projections and verifies the physical pin wins for unwarped playback. Sample defaults capture follows the same precedence. The legacy unpinned End and the conflicting-pin case each keep their audio across recall at a different tempo, including a nonzero source offset. Marker-write synchronization remains in the #530 and DF-E2 queue.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Five focused suites passed. Clang 19 compiled all six changed C++ units with warnings as errors and passed the fade, marker, Split, candidate-readiness and sample-default checks. Four compiled faults reproduced the oversize fade, early End in both source clocks, Split refusal, and shorter recall. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27(c,d) next.
+
+## 2026-11-19 — DF-E26 compaction at an undone head gated and pushed
+
+**PR requested** — branch `engine/df-e26-compaction-branches`, head `a548544d3c6254dace1f5c7a971537258dd37d6e`. Title **Preserve only severed redo tips during compaction**. Base `origin/main` `e8b67c77` with DF-E18 `f28eacd0`. The remote head matches the gated commit.
+
+Compaction follows the highest surviving child from the current head, which is the same choice Redo makes after pruning. A tip that can still be reached that way needs no branch. A severed unheld tip gets a system branch before compaction. If a previous compaction branch was opened and undone, the tip gets a distinct name and the existing branch keeps its head. The budget and its all-lines accounting remain with Win's DF-E26(c) handoff when the retention setting is discussed.
+
+The regression runs explicit compaction after 12 edits and 11 undos at a budget of 8. The original stored head has no Redo. Switching to the saved tip restores the state with precisely seven undo steps. The fixture also tests a second cut and a retry, plus the still-connected redo paths at and above the cut.
+
+**Gate** — GCC 14 Debug and Pure Data with warnings as errors, 245 CTest suites, four validators and the layout check. The focused history compaction suite passed 85 checks on GCC and Clang 19. Three compiled faults kept a pruned edge, added a redundant live-tip branch, or reused a system branch name. Each failed its regression. One separated-stems assertion failed in the first parallel CTest run and passed when run alone. The full gate was rerun with one retry allowed per suite. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27 next. DF-E28 remains with the Windows engine seat.
+
+## 2026-11-19 — DF-E24 VST3 buses and mixer routing gated and pushed
+
+**PR requested** — branch `engine/df-e24-vst3-routing`, head `a4023a80f4dab03589df723bed984e8b69d0c95d`. Title **Negotiate VST3 buses and preserve mixer routing**. Base `engine/df-e23-plugin-workers` at `d96c97d7` merged with `origin/main` at `796fe498`. Includes the DF-E20(b) key-input dependency through that stack. The remote head matches the gated commit.
+
+The raw VST3 host now supplies an audio descriptor for every negotiated bus in each direction. Main channels remain in place. Inactive buses have zero channels, the first auxiliary input receives the graph key, and other active auxiliary buses get separately zeroed inputs and sinks. Preparation holds the buffers and their pointers across callbacks. The real plug-in fixture exercises both sample widths and a mono graph with a negotiated stereo plug-in.
+
+A damaged project with duplicate enabled track main routes reports the duplicates and uses the first valid route. New control submissions refuse duplicate main routes, including re-enabling an old disabled route. Undo can still restore legacy duplicate rows, and hardware fallback remains in force. Scalar gesture controls no longer replace a strip's lane pointer. The graph generation and preview bindings carry lane pointers with their owners, and the regression forces an older overlay between owner sync and lane capture. The existing MIDI fan-out fixture now builds its internal graph through the GraphHost plan transform and keeps all 109 continuity assertions.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58453 checks across 244 suites, all four validators and the layout check. The headless gate used a workspace-local decoder cache. Five focused suites passed and the JUCE VST3 fixture passed 219 checks under Xvfb. Clang 19 compiled eleven changed C++ units with warnings as errors and passed 77 plan, 110 catalog, 26 strip-binding and 109 MIDI continuity checks. Four compiled faults lost auxiliary output descriptors, planned a duplicate route, accepted a duplicate control submission, or restored the overlay pointer write. Each failed its regression. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E26 next. DF-E25 remains with the Windows engine seat.
+
+## 2026-11-19 — DF-E17 native edit invariants gated and pushed
+
+**PR requested** — branch `engine/df-e17-edit-invariants`, head `c0269d2d7b43eb98d495922cbafb069e9fbb5e28`, base `origin/main` at `796fe498`. Title **Preserve native clip and rack edits through undo**. The remote head matches the gated commit.
+
+Clip relocation and resize accept arrangement ticks and store a linear clip's physical nanoseconds. Resizing integrates the tempo map at both endpoints. Cross-track move clears the old track's lane and Undo restores the full native placement. The arrangement snapshot projects linear clips from their physical positions. Historical scalar move and resize packets retain their recorded effects. DF-W28's overlap behavior awaits the window's Live parity measurement. The existing `edit_plan::prepareMove` provides the owner-prepared atomic replacement path for that handoff.
+
+Rack removal captures its full physical cascade, including nested chains and devices, macro mappings in both directions, typed extension data and child plug-in state. Clipboard reads still expose the rack's root metadata. New writes and moves validate each automation value against the lane bounds. Historical values replay unchanged. Fade capture checks the linear endpoint before addition. The reported bounce ID mismatch did not reproduce. Import uses the caller's literal ID throughout, and the stronger fixture verifies that the bounce and the two surviving pieces have distinct IDs.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58401 checks across 244 suites, all four validators and the layout check. Seven focused suites passed. Clang 19 compiled all ten changed C++ units with warnings as errors and passed 405 clip-edit, 143 device-op, 52 automation-edit and 30 material-command checks. Compiled faults for the inactive tick write, incomplete rack inverse, ignored lane bounds and dropping the existing bounce reservation each failed their required assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E24 next.
+
+## 2026-11-19 — DF-E16 weak remark anchors and window allocator gated and pushed
+
+**PR requested** — branch `engine/df-e16-row-id-handoff`, head `ab09e120dabb57532acc6ff539ca87c0d88c29f5`, base `origin/main` at `796fe498`. Title **Keep orphaned remark target IDs reserved**. The remote head matches the gated commit.
+
+The live-only maximum reuses the deleted track and clip IDs and the surviving weak remarks resolve to the replacement rows. The same fixture confirms ordered inverses first remove the replacement, then restore the original. Compacted snapshots restore material and remarks together. A stale command using the old head is refused even if its numeric target has reappeared. Note IDs are scoped to their clip stream. Automation `record_index` is a position within one data stream.
+
+**Window handoff** — In the owner read snapshot, use one `adi::RowIds ids(store.db())` per prepared edit and call `ids.next("tracks")` or `ids.next("clips")` as needed. Submit the literal IDs with the expected head from that same snapshot. The allocator skips live and remark-held IDs, including orphans, and maintains its own reservations within the batch. The control projection supplies the same reservation through `nextIds`. For asynchronous note commands, the existing `notes::captureNotes`, `notes::prepareDiff`, and `notes::commitDiff` path scopes IDs to the clip and checks the source, head and stream.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58390 checks across 244 suites, all four validators and the layout check. Six focused suites passed, covering remark replay, note diffs, curve storage and both allocation entry points. Clang 19 compiled all four changed C++ units with warnings as errors and passed 42 row-ID and 59 projection checks. The two compiled live-only allocator faults failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E17 next.
+
+## 2026-11-19 — DF-E15 quiet gesture states gated and pushed
+
+**PR requested** — branch `engine/df-e15-quiet-gesture-states`, head `f60f7f53a56a3186d831a71ddd95cacf94321445`, base `origin/main` at `4e11edd9`. Title **Report quiet gesture commit and cancellation states**. The remote head matches the gated commit.
+
+Quiet gesture update and poll now recognize pending cancellation and an in-progress commit before evaluating the quiet deadline. Pending cancellation returns Closed with its own message. In-progress commit returns Reentrant. A transitional poll produces no End and a timed retry still works after a genuine commit failure. The fixtures hold engine restoration open, then restore the original PCM without a journal write, and probe reentry from SQLite while the original commit writes exactly one op.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58369 checks across 244 suites, all four validators and the layout check. All three focused gesture suites passed. Clang 19 compiled both changed C++ units with warnings as errors and passed 185 checks in the quiet gesture suite. Separately removing either transition check failed its intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E16 next.
+
+## 2026-11-19 — DF-E14 stored history origins gated and pushed
+
+**PR requested** — branch `engine/df-e14-history-origin`, head `9aa23bec6a692a117bc1567eca90fb0b96be69fc`, base `origin/main` at `4e11edd9` merged with DF-E18 at `f28eacd0`. Title **Preserve stored history origins and refuse missing legacy origins**. Land DF-E18 first. The remote head matches the gated commit.
+
+A childless stored root held by a named snapshot already survives compaction. Leaving it adds no branch. If it would otherwise lose its last branch or named snapshot, History preserves it on a system branch. The fixture removes the snapshot from a current root, moves away, compacts again and restores that root through the same branch. Legacy checkpoint files refuse an unavailable pre-edit origin before executing any replay writes. The checkpoint and its retained edits remain navigable.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58417 checks across 244 suites, all four validators and the layout check. All three focused history suites passed. Clang 19 compiled both changed C++ units with warnings as errors and passed 54 checks in the navigation suite. Compiled faults restored the duplicate named-root branch and late legacy-origin refusal and each failed its intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E15 next.
+
+## 2026-11-19 — DF-E13 automation splice boundaries gated and pushed
+
+**PR requested** — branch `engine/df-e13-automation-splice`, head `f3656b3aacd15a5267032d1e8d52de02dbba6b61`, base `origin/main` at `7c96b9d4`. Title **Preserve exact automation splice boundaries**. The remote head matches the gated commit.
+
+A complete unsliced nonlinear segment keeps its native shape without an extra curve-range row. At a quantized start, the guard holds the last original point on the kept side of the native cut after a clock change separates the points. The storage test exercises both tick- and nanosecond-based lanes, two original points on the exact end bound, a retained range with its own identity, and exact Undo and Redo.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58359 checks across 244 suites, all four validators and the layout check. Both focused GCC suites passed. Clang 19 strictly compiled all three changed C++ units and passed 1,316 splice-planner and 216 native-storage checks. Compiled faults for a redundant stored range and the stale first-coincident-point choice failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E14 next.
+
+## 2026-11-19 — DF-E18 history, marker and true-peak fixes gated and pushed
+
+**PR requested** — branch `engine/df-e18-history-marker-peak`, head `f28eacd0f3c47f577301264454c6a05973fca4a6`, base `origin/main` at `a0a31168`. Title **Harden history replay, marker edits, and true-peak measurement**. Independent of the DF-E21 through DF-E23 stack. The remote head matches the gated commit.
+
+A branch switch preserves an otherwise unheld departing redo tip on a system branch. The test navigates back to that same tip after compaction prunes the old bridge. A damaged redo cycle returns an error and leaves the head and material intact. Undo/Redo report only committed operations. Tests cover a missing inverse, failed replay and a blocked head update. The true-peak meter substitutes silence for NaN and either infinity before its sample peak and interpolator. Marker edits check nonnegative positions and the full cycle end in their own units. Undo/Redo keep the behavior of existing marker logs. The unused clip-property delete image was removed in favor of the existing clip delete handler.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58109 checks across 241 suites, all four validators and the layout check. The four focused GCC suites passed. Clang 19 strictly compiled the seven changed C++ units and passed 110 history, 155 marker and 159 DSP checks. Compiled faults for lost branch retention, negative marker positions and non-finite true peak all failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E13 next.
+
+## 2026-11-19 — DF-E23 hosted graph workers gated and pushed
+
+**PR requested** — branch `engine/df-e23-plugin-workers`, head `d96c97d7731fac88ea93350897b65fcac29fe2e4`, base `engine/df-e22-group-returns` at `4ad2f55d`. Title **Run compatible hosted plug-ins on graph workers**. The remote head matches the gated commit. Land after the DF-E21, DF-E20(a)(b) and DF-E22 stack.
+
+CLAP and VST3 audio processing can use the existing graph workers. Aliased graph adapters share the device's affinity, so two adapters cannot call one instance concurrently. CLAP reports its owner and symbolic audio threads truthfully, including owner-thread fallback and lifecycle calls. Plug-ins can use their own fallback for optional nested CLAP voice tasks.
+
+**Gate** — Linux x86-64 GCC 14 Debug with Pure Data and warnings as errors. The project runner passed 58,144 checks across 241 suites, all four validators and the layout check. The Linux VST3 fixture passed 218 checks and observed four loaded instances off the owner with identical serial and parallel output. Clang 19 compiled the six changed C++ units with warnings as errors and the CLAP fixture passed 552 checks. It verified actual worker execution, single-instance serialization, symbolic thread checks, exact serial/worker output and a sample-exact null. Both compiled affinity faults failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Engine-win owns the Windows measured performance gate on this branch. Taking DF-E18 next.
+
+## 2026-11-19 — DF-E22 grouped returns and send taps gated and pushed
+
+**PR requested** — `engine/df-e22-group-returns`, head `4ad2f55d4a623b1c2ffce916678ea998bb76f36b`, base `engine/df-e20-plugin-host-inputs` at `44fd27da`. Title **Add scoped group returns and individual send taps**. Includes the latest main handoff at `a0a31168`. The remote head matches the gated commit.
+
+Grouped returns sum before the group's devices. Only descendants can send in, including returns in that scope. Moving a subgroup out removes its now-out-of-scope sends, and Undo restores each route and tap. Deleting and undoing a group keep route ownership intact. The engine group-copy helper `copyGroupSendRequests` remaps a copied route using the copy producer's track and routing IDs and goes in the transaction with the cloned tracks.
+
+**Window handoff for DF-W33** — The track snapshot already holds the return's parent. Read `SendRoute::sendTap` for the optional individual choice and `ReturnSendTap::legacyMixed` for unequal effective taps even when a return default exists. Use `routing.setSendTap` with `pre_fx`, `post_fx`, or `post_mixer`, or omit the tap to inherit. `prepareSendToReturn` rejects destinations outside scope. The 1.22 migration adds only the optional tap table and preserves legacy tap audio.
+
+**Gate** — GCC 14 Debug, Linux x86-64, warnings as errors and Pure Data. Final CTest passed 242 of 242. The earlier repository runner passed all validators and the layout check and isolated a migration-fixture failure, which was corrected by constructing an actual 1.20 catalog before upgrading. Clang 19 passed 87 grouped-return checks. They include the 1,024 plus 512 sample dry/wet null before the group clipper, a clipped return tail, the three taps, scoped move/delete Undo, and copied-return routing. The wrong Pre FX tap and disabled scope faults failed their intended assertions. Evidence is under `/workspace/adi-engine-validation`.
+
+Next is DF-E23 worker admission and serial/parallel proof. The measured Windows gate is engine-win's.
+
+
+## 2026-11-19 — DF-E20(a) and (b) plug-in host fixes gated and pushed
+
+**PR requested** — `engine/df-e20-plugin-host-inputs`, head `44fd27da7f1db0b05dc86e85da79a0e020bba27a`, base `engine/df-e21-plugin-transport` at `3c9961f8`. Title **Honor CLAP unbounded tails and route VST3 side-chain keys**. Land DF-E21 first. The remote head matches the gated commit.
+
+CLAP maps the entire unbounded tail range from INT32_MAX through UINT32_MAX. The VST3 host enables the first auxiliary input at prepare and feeds it from the graph key. The Linux fixture receives the stereo key at the correct offset at both sample widths and receives silence on the next call when the key is disconnected. Other auxiliary buses retain their original scope.
+
+**Gate** — Linux x86-64 GCC 14 Debug with Pure Data and warnings as errors, 58,082 checks in 241 suites plus all four validators and the layout check. The Linux VST3 fixture passed 214 checks. Clang 19 passed strict compilation on the five changed C++ units and the CLAP suite passed 526 checks with the host and test built by Clang. Restoring the old CLAP limit failed the two boundary assertions. Omitting the second VST3 input failed both key-delivery assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Next is DF-E22, grouped returns and individually selectable send taps. DF-E20(c) remains with engine-win.
+
+
+## 2026-11-19 — DF-E21 plug-in input transport gated and pushed
+
+**PR requested** — branch `engine/df-e21-plugin-transport`, head `3c9961f861f3828240b197a6eb3bdb147e5a4d15`, base `origin/main` at `ae09f638`. Title **Send hosted plug-ins the transport at their audio input**. The remote head matches the gated commit.
+
+CLAP and VST3 receive signed transport at their graph-owned input arrival. The receiving device splits at its own loop wrap and at tempo and meter changes. Addressed parameter automation uses the same clock, and the note test verifies delivery at the original musical sample behind 1,024 samples of latency. Compensation off uses the global transport. Offline export, bounce, freeze and CLI render select plug-in offline mode.
+
+**Gate** — Debian Linux x86-64, GCC 14 Debug with Pure Data and warnings as errors, 58,079 checks across 241 suites. The four validators and spec-layout check passed. The Linux VST3 fixture passed 211 checks, including signed transport and matching setup and processing modes. Clang 19 compiled all changed translation units with warnings as errors. The six changed headless production objects and two changed test objects built by Clang passed 658 checks when linked with the remaining GCC objects. The missing CLAP transport and missing receiving loop-split faults failed their intended checks. Raw logs are under `/workspace/adi-engine-validation`.
+
+Next is DF-E20(a) and (b), stacked on DF-E21. The scanner and its catalogue remain engine-win's work under DF-E20(c).
+
+
+
+## 2026-11-12 — M2 history fuzz gated and pushed; taking the seeded note-diff gate
+
+**PR requested:** head **`engine/history-retention-fuzz` `500c5ed411bf7279aad688ef1590da7b50e7189f`**, independent base **engine/log `06df30bf0f994854d90094e670732dada23f7f13`**. Title: **Gate history retention with 3000 edits and seeded navigation**. Three owned files, **zero production edits**, remote verified; win opens/merges and runs MSVC. All six control fences byte-identical to base, #512 absent/held, N45 win501bc849 preserved, main never checked out/committed. SDK Link4.1.1/Asio1.38.2 unchanged.
+
+**M2 gate closed by this corpus:** default2000/1GB, two names on day-one origin,3000 two-op steps with per-step admission/independent retained-transaction count/current whole group and21-table typed material comparisons. Periodic full timeline/public Undo, default90% minimum retained depth, alias material hash, original restore and departing final-tip reachability. Three xorshift64 seeds0x4849324300112026/0x4849324300222026/0x4849324300332026,416 decisions each atcap31:1..3-op edits, Undo/Redo/forks/named states/known branch switches. Independent oracle changes only submitted name/volume, tags every SQL kind/REAL bits/full BLOB bytes; future project column and ANOT uint64 identity remain literal. No checkpoint/digest code computes expected material. Every saved point revisited and forest integrity checked. No renderer attached; explicit SessionReloadPrepared caller is already stopped/reloadable. No runtime reload/Live claim.
+
+**Final gate500c5ed4:** GCC14 Debug/PD/Werror **51,562 checks /210 suites**, explicitgate.exit0, every row/aggregate/four validators/layout audited. Corpus **17,095/0** (long12,029;seed1=1681,seed2=1690,seed3=1695); seed coverage commits293/295/286, Undo60/57/56, Redo4/4/7, stored restores30each, forks45/43/39, switches13/7/9. Strict GCC extra Wshadow/Clang19 **3 unchanged reference prod /4 test units**, clean; Clang **17,336** (full17095 +73stored +73compaction +95history). Native full build218 exit0; final CMake COST180 scheduling estimate only, no timeout/compile/link/production change, old/new inputs retained, serialized final rebuild exit0 and unchanged frozen core SHA. Native final long12029 also timed116.46s while Clang ran. No warning/deadline/decoder-guard waiver or sanitizer/platform claim.
+
+**Compiled fault scope:** **9 /606 ordinary failures** using the final full-corpus test object, complete selected cases (five long12029, four seed1 cases1681); not a claim each mutant ran all17095. Skip cap372; count ops vs transactions1; over-prune low water1; omit day-one origin4; NULL opaque future BLOB2; drop ANOT rows2; reset restored volume53; valid noncurrent target rewrite24; split transaction cutoff147. Case/416-decision terminal markers, no exception/crash/shortened/compiler credit. Initial branch DELETE was refused by existing FKs, optional retention rolled back with634 admission/cap warnings and no intended branch assertion: rejected for that claim, raw native/source/disposition retained. Rewritten valid-target plant reached the intended material oracle. No product defect was found.
+
+**Diagnostics/retention:** initial fixture createEmpty had no project row; corrected to actual Store::create, raw4/4 retained. Preliminary repeated-full-timeline diagnostic interrupted after>2min CPU, no credit; read-only aftermath1568 user ops/Long6 confirms784 steps before compaction. Native runner/object/source retained. Independent per-step transaction/group/material counts plus periodic full timeline/public Undo removed redundant validation work and strengthened depth/current-group assertions, no cap/deadline change. `/workspace/adi-cloud/history-retention-fuzz/` holds all versions/commands/inputs, **AUDITED500c5ed4**, release-audit.json, feature.patch, decompressed-SHA-verified **25-file native GCC bundle**, four completed Clang binaries and17 remaining core/objects/rejected native artifacts. Nine gzip controls exactly reconstructed/native-member checked364,272,889→54,392,988 bytes. Three prior GCC bundles76 members exactly reconstructable1,189,591,235→447,350,464 bytes, original manifests unchanged/restore instruction adjacent. All archive jobs finished before native aggregate; preflight3,376,205,824 free bytes, unchanged2GiB reserve. No evidence/Debug data discarded.
+
+**Next immediately, same turn:** cut independent **`engine/note-diff-fuzz`** from this log successor. PLAN M2 also requires a seeded note-diff fuzz gate; existing test_note_diff has fixed10,000-note/future-tail/inactive cases but no seeded sequence. Use MI01's public captureNotes/prepareDiff/commitDiff with an independent full-record/ANOT/expression oracle, mixed literal adds/removes/changes/no-ops, sorted/unsorted/future stride and opaque tails, high-bit identities, one stream write/transaction, and Undo-all/Redo-all/Undo-all exact restoration. This is the already approved native kernel, no unapproved Clip View UI. Preserve all six fences; retain/hash-check obsolete history-fuzz executable before removing its glob entry on the independent branch. Then next remaining M2/queue, AU05/Crop questions still open. Gate,push,log,next; no CI/context stop.
+
+
+## 2026-11-12 — M2 retention corpus active: full17095/Clang17336, nine controls606; native aggregate running
+
+**Active:** uncommitted independent `engine/history-retention-fuzz`, base **engine/log `06df30bf0f994854d90094e670732dada23f7f13`**, `/workspace/wt-engine-project-replace`. Three owned files: CMake, new test_history_retention_fuzz.cpp and ENGINE-HISTORY-RETENTION-FUZZ.md. **Zero production source edits.** Quiet ff6659f2 was pushed/logged and is not a source dependency; its obsolete unregistered executable was SHA-matched against its verified23-file native bundle before removing the expanded glob entry. Six control-fenced files unchanged; main never checked out/committed.
+
+**Corpus:** 3,000 two-op steps under default2000/1GB with two names on day-one origin; per-step admission/complete current transaction, independent retained transaction SQL count and21-table typed material oracle; periodic full timeline/public Undo; documented90% low-water depth, same-point alias hash, original restore and departing-tip reachability. Three xorshift64 seeds0x4849324300112026/0x4849324300222026/0x4849324300332026,416 decisions each under cap31:1..3-op groups, Undo/Redo, forks, named points, explicit stopped/reloadable stored restores and known branch switches. All saved points revisited and forest integrity checked. Literal model changes only project name/volume; SQL kinds, REAL bits, complete BLOB bytes/future project column/ANOT uint64 identity are compared independently of checkpoint/digest code. No renderer/runtime reload or Live claim.
+
+**Positive proof:** native complete **17,095/0**; final native long-only **12,029/0** (116.46s while Clang review ran), Clang complete17,095 plus73 stored/73 compaction/95 history = **17,336**. Strict GCC extra Wshadow/Clang19 **3 unchanged reference production units /4 test units**, clean, frozen source/core/test object hashes. Full native rebuild218 exit0; final CTest **COST180 scheduling estimate only**, no TIMEOUT/compile/link/source change, old/new CMake inputs retained; serialized final rebuild.exit0 and actual library SHA equals frozen core. Full test_all now running, expected210 current executables; no release/PR closure until its final audit.
+
+**Compiled controls:** **9 /606 ordinary failures**, complete selected named cases with final shared full-corpus test object: five long cases12029 each (count ops vs transactions, over-prune low water, omit origin, NULL future BLOB, drop ANOT rows) and four seed1 cases1681 each (skip cap, rewrite valid noncurrent branch targets, reset restored volume, split transaction cutoff). Each reaches its complete case marker/416-decision terminal coverage, no exception/crash/shortened/compiler credit. CLI all/default still runs the entire corpus; selected cases are explicitly scoped, not claimed as full17095 per mutant. First deletion-based branch plant was blocked by existing FKs, optional retention rolled back and634 admission/cap warnings fired; no intended branch assertion, **not credited**. Source/object/executable/log/disposition retained under review/faults/rejected-branch-delete. Revised valid-target corruption is caught by the independent material oracle24 times. No product/test change needed for that calibration.
+
+**Initial diagnostics, not gates:** createEmpty lacks project row; switched fixture to actual Store::create (raw4/4 retained). Preliminary full-timeline-per-step runner used >2min CPU, interrupted SIGINT with no credit; retained native runner/object/source and a read-only post-interruption witness1568 user ops (784 two-op steps, Long6), before compaction. Replaced redundant full timeline reads with independent SQL transaction/group counts every long step, retaining periodic full timeline/public Undo and adding minimum depth/current group assertions; no production/deadline/cap change. Corpus cases/markers support bounded diagnosis.
+
+**Evidence/resource:** `/workspace/adi-cloud/history-retention-fuzz/`: all versions/commands/frozen inputs/positive bodies/timings/controls; four completed Clang binaries separately retained, remaining **17** core/objects/rejected native artifacts decompressed-SHA retained. Nine control gzip streams exactly reconstructed/member-verified364,272,889→54,392,988 bytes. Three prior root GCC bundles (quiet23,relative21,move32) retain76 native members with exact original gzip reconstruction1,189,591,235→447,350,464 bytes; original manifests unchanged, restore via adjacent native-solid-retention.json before original tar command. Private repack-native.py now accepts the existing gcc-native-artifacts.json manifest too. No evidence/debug data discarded. All archive jobs completed before aggregate; preflight3,376,205,824 free bytes, unchanged2GiB decoder guard.
+
+**Continue immediately in this turn:** finish aggregate/four validators/layout, retain native bundle, audit three-file/zero-prod scope/all six fences, commit/push/log, next remaining M2 gate. Inspection finds existing 10,000-note/future-tail note-diff fixed tests but **no seeded note-diff sequence** (PLAN's other fuzz gate); take that kernel corpus next without building the unapproved Clip View. AU05 material policy/Crop geometry remain open; pending two-deep trim stack is not extended. No CI/context/queue-length stop.
+
 
 ## 2026-11-12 — SRF02 manual quiet End gated and pushed; taking the M2 retention fuzz gate
 
