@@ -42,6 +42,7 @@ class MixChannelBrowser final : public juce::Component, private juce::ListBoxMod
         int item;
     };
     int getNumRows() override;
+    juce::String getNameForRow(int row) override;
     void selectedRowsChanged(int row) override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     void syncSelection();

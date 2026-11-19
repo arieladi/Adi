@@ -59,6 +59,10 @@ bool MixChannelBrowser::current() const noexcept {
 
 int MixChannelBrowser::getNumRows() { return static_cast<int>(rows_.size()); }
 
+juce::String MixChannelBrowser::getNameForRow(int row) {
+    return trackAt(row) != 0 ? entries_[rows_[static_cast<std::size_t>(row)]].name : juce::String{};
+}
+
 std::int64_t MixChannelBrowser::trackAt(int row) const {
     if (row < 0 || static_cast<std::size_t>(row) >= rows_.size()) return 0;
     return entries_[rows_[static_cast<std::size_t>(row)]].id;

@@ -9500,7 +9500,9 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     check(protectedContext, "channel browser and Info controls prevent edits to a stale Stack or track target");
     nav.infoMode.setSelectedId(2, juce::sendNotificationSync);
     mix.analysis.setMode(SharedSpectrumView::Mode::Phase);
-    nav.openInfo.onClick();
+    const auto previewCentre = nav.preview.getLocalBounds().getCentre().toFloat();
+    nav.mouseDown(pressAt(nav.preview, previewCentre, juce::ModifierKeys::leftButtonModifier));
+    nav.mouseUp(pressAt(nav.preview, previewCentre));
     root.frame();
     check(mix.tab() == MixViewPanel::Tab::Analysis && mix.analysis.isVisible() &&
               mix.analysis.mode() == SharedSpectrumView::Mode::Phase &&
