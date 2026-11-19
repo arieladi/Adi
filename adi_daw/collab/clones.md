@@ -1,5 +1,17 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER CPU and signal check on 295056b6
+
+The registered device and ShaperBox 3.6 both processed the same stereo input, at 48 kHz and 120 BPM, with a single instance, closed editors and zero reported latency. The full-range cases were the same one-bar hard Volume gate, Width at mono, and both stages in series. Both renderers restored identical stereo input before each call. Nine trials of 8,192 callbacks per cell used the same affinity; fixture order was shuffled and processing order alternated.
+
+| Frames | Gate, ADi / reference µs | Width, ADi / reference µs | Gate + Width, ADi / reference µs |
+|---:|---:|---:|---:|
+| 64 | 1.1 / 24.0 | 1.1 / 21.6 | 1.3 / 27.2 |
+| 256 | 1.8 / 34.5 | 2.0 / 30.0 | 2.9 / 37.8 |
+| 1024 | 4.8 / 85.4 | 5.4 / 67.4 | 8.8 / 93.3 |
+
+Values are medians of per-trial median callback wall times. Median processing-thread cycles per callback fell by 90.1–95.3% in the nine cells. Each corresponding stereo capture covered 192,000 frames per channel. Width to mono matched directly; every paired gate edge in ADi was 16 samples earlier than the reference. After compensating that constant edge displacement the captures agreed to 0.00001. These CPU measurements cover the three settings above. Multiband phase and pan have separate acoustic fixtures.
+
 ## 2026-11-19 — ADi-SHAPER Volume, Width and Pan
 
 **PR requested** — `clones/adi-shaper` at `295056b6`. Title **Add ADi-SHAPER multiband Volume, Width and Pan to the Pd tier**. Base `main`. Win opens and lands the PR.
