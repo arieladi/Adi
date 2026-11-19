@@ -10192,6 +10192,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             actual.mixViewPanel.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
             actual.frame();
             auto &surface = actual.mixViewPanel.stack;
+            // Generic plug-ins deliberately collapse below T3 in the new density. Exercise
+            // their real controls in this fixture, including the independent transient Stacks.
+            const auto pluginBase = surface.model().constants().tierFloors[2];
+            surface.rowSize.setValue(pluginBase, juce::sendNotificationSync);
+            const auto baseTime = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes());
+            surface.frameAt(actual.reader(), baseTime + surface.model().constants().heightAnimMs + 1);
             auto findPanel = [&](std::int64_t id) -> DevicePanelView * {
                 const auto visit = [&](auto &&self, juce::Component &component) -> DevicePanelView * {
                     if (auto *p = dynamic_cast<DevicePanelView *>(&component); p && p->id == id) return p;
@@ -10348,7 +10354,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 }
                 const auto restoreTime = std::max(compactTime + 210,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
-                surface.model().setBaseHeight(100, restoreTime);
+                surface.model().setBaseHeight(pluginBase, restoreTime);
                 surface.model().setAutoZoom(true, restoreTime);
                 surface.model().focusItem(stable, restoreTime);
                 surface.model().scrollLane(surface.model().rowRef(2), -1, restoreTime);
@@ -10577,6 +10583,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 actual.addAndMakeVisible(*transient);
                 transient->setBounds(surface.getBounds());
                 transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                transient->rowSize.setValue(pluginBase, juce::sendNotificationSync);
                 const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 1000;
                 std::shared_ptr<const ParameterPublication> supplied = document->parameterFeed().current();
                 actual.devices.publication = [&] { return supplied; };
@@ -10649,6 +10656,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     actual.addAndMakeVisible(*transient);
                     transient->setBounds(surface.getBounds());
                     transient->channelScope.setSelectedId(2, juce::sendNotificationSync);
+                    transient->rowSize.setValue(pluginBase, juce::sendNotificationSync);
                     const auto time = static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()) + 2000;
                     auto initial = std::make_shared<ParameterPublication>(*document->parameterFeed().current());
                     for (auto &device : *initial) if (device.id == 30) device.name = "Abandoned getter";

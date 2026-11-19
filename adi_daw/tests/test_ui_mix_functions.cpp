@@ -868,9 +868,9 @@ void cleanCompressor(AppCommands &commands, const std::filesystem::path &directo
           root.mixViewPanel.isVisible(), stack.isVisible(), stack.rows().size(),
           static_cast<int>(stack.model().windowView().channelScope), item.row.valid(),static_cast<int>(item.place),
           stack.getWidth(),stack.getHeight(),root.error().c_str());
-    check(stack.model().windowView().channelScope == stack::ChannelScope::WithTools &&
+    check(stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
               item.row.valid() && item.place == stack::ItemPlace::Chain && !stack.rows().empty(),
-          "actual Clean device appears in the default With Tools STACK row");
+          "actual Clean device appears in the default All channels Stack row");
     const auto bounds = stack.getBounds();
     bool fits = true;
     for (int width : {320, 480, 816, 1200}) {
