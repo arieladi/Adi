@@ -56,6 +56,24 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E37 (e): the Sampler's zone fades are a gain, not a scaled velocity
+
+**On #656's branch, `devices/oneshot-live-params` (`892830ac`).**
+
+- **Failing first, at the default Vel > Vol 35 %:** a linear select fade at w 0.5 played 0.825 of
+  the zone; a constant-power one 0.897; a key crossfade's midpoint summed +2 dB.
+- **Fix:** the weight is queued on the layer's OneShot (`queueNoteGain`, one per forwarded note-on,
+  in order) and latched as the voice's own gain; velocity is left as played. Kept: the velocity
+  zone on the unscaled velocity, the selector latch, the laws (ADI's own, labelled), the skip at
+  w ≤ 0, no allocation (fixed queue).
+- Now 0.5 / 0.707 / 2 × 0.707; velocity 0.5 still plays at 1 − .35 + .35 × .5. Plant: scaled
+  velocity → 3 failures. A test-order detail: the Sampler's saved state differs before and after a
+  prepare (re-derived zone values); the test saves after a render as it always did — noted, not
+  changed here. Sampler 35; CTest **245/245**.
+
+**PR request #656 stands** with this commit (head now `892830ac`); with (c) it waits only for
+`devices/builtin-real-values` to land first.
+
 ## 2026-11-19 — DF-E37 (c): a built-in's saved values survive a range change
 
 **`devices/builtin-real-values` (`2a4a5044`), from `main`, on win's loan of `builtin_host.cpp`'s
