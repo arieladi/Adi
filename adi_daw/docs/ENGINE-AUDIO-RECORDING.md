@@ -66,8 +66,10 @@ on a different volume from the project. Preparation reserves an exclusive
 hash-checks each completed take there. Commit publishes that closed copy with
 `AtomicOnly` on the destination filesystem; it never tries to rename the original
 take across volumes. Destroying the preparation cleans only its reserved stage.
-A failed commit removes only
-newly published files and leaves originals for a fresh prepare/retry. Identical
+A failed commit leaves the private capture for a fresh prepare and retry. It
+removes a newly published file only when the native remover can prove its
+recorded identity. Where the remover cannot do that, the transaction still
+rolls back and its error names the retained path. Identical
 owned files retained by undo are reusable, while different content/symlinks
 refuse overwrite. Successful commit removes private takes unless older media
 history still refers to them. The command manages that cleanup: do not blindly

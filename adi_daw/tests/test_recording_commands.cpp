@@ -10,6 +10,8 @@
 #include "adi/media/blake3.hpp"
 #include "adi/media/publish_file.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <exception>
 #include <array>
 #include <algorithm>
 #include <chrono>
@@ -170,13 +172,99 @@ void existingMediaAndHistoryPaths() {
         recorded.discard();
     }
 }
+bool rollbackReported(const CommitResult& result,const std::filesystem::path& path) {
+    return result.error.find("rollback")!=std::string::npos &&
+        result.error.find(media::pathUtf8(path))!=std::string::npos;
+}
+struct PublicationCommitVeto {
+    std::filesystem::path published,moved;
+    std::optional<media::FileIdentity> originalIdentity,foreignIdentity;
+    std::exception_ptr exception;
+    unsigned calls=0;
+    static constexpr const char* foreignBytes="later writer owns this path\n";
+    static int invoke(void* raw)noexcept {
+        auto& self=*static_cast<PublicationCommitVeto*>(raw);++self.calls;
+        try {
+            // This hook executes at SQLite's actual COMMIT, after the journal's
+            // beforeCommit publication. Do not execute SQLite from this hook.
+            std::error_code error;
+            self.originalIdentity=media::readFileIdentity(self.published,error);
+            if(!self.originalIdentity || !std::filesystem::is_regular_file(std::filesystem::symlink_status(self.published)))
+                throw std::runtime_error("commit hook did not observe the newly published regular WAV");
+            std::filesystem::rename(self.published,self.moved);
+            {std::ofstream foreign;foreign.exceptions(std::ios::badbit|std::ios::failbit);
+                foreign.open(self.published,std::ios::binary);foreign<<foreignBytes;foreign.close();}
+            self.foreignIdentity=media::readFileIdentity(self.published,error);
+            if(!self.foreignIdentity || self.foreignIdentity==self.originalIdentity)
+                throw std::runtime_error("commit hook failed to create a distinct later file identity");
+        }catch(...){self.exception=std::current_exception();}
+        return 1; // Veto COMMIT even if test setup failed; never unwind through C.
+    }
+};
+struct ScopedPublicationCommitVeto {
+    sqlite3* database;
+    ScopedPublicationCommitVeto(SQLite::Database& db,PublicationCommitVeto& state):database(db.getHandle()) {
+        // Fixture owns this new Store and has installed no previous commit hook.
+        sqlite3_commit_hook(database,&PublicationCommitVeto::invoke,&state);
+    }
+    ~ScopedPublicationCommitVeto(){sqlite3_commit_hook(database,nullptr,nullptr);}
+    ScopedPublicationCommitVeto(const ScopedPublicationCommitVeto&)=delete;
+    ScopedPublicationCommitVeto& operator=(const ScopedPublicationCommitVeto&)=delete;
+};
+void rollbackNeverDeletesLaterWriter() {
+    namespace fs=std::filesystem;
+    Fixture f;auto recorded=f.capture();const auto before=digestProject(*f.store).text;
+    const auto privateSource=recorded.tracks[0].file;
+    const auto sourceHash=media::blake3File(privateSource);
+    const std::array<recording::ClipIds,1> ids={{{7,8,"Late replacement"}}};
+    auto prepared=recording::prepareCommit(*f.store,recorded,ids);
+    check(prepared.ok,"prepare actual captured WAV for commit-veto identity regression");
+    if(!prepared.ok)throw std::runtime_error(prepared.error);
+    PublicationCommitVeto veto;
+    for(const auto& request:prepared.requests)if(request.opType=="media.import")
+        veto.published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
+    if(veto.published.empty())throw std::runtime_error("recording fixture has no captured publication path");
+    veto.moved=veto.published.parent_path()/"moved-owned-recording.wav";
+    const auto reference=f.temporary.path()/"foreign-reference.txt";
+    {std::ofstream foreign(reference,std::ios::binary);foreign<<PublicationCommitVeto::foreignBytes;}
+    const auto foreignHash=media::blake3File(reference);
+    CommitResult failed;
+    {ScopedPublicationCommitVeto hook(f.store->db(),veto);failed=recording::commit(*f.store,prepared);}
+    check(veto.calls==1 && !veto.exception,"actual SQLite commit hook replaced a published WAV before vetoing once");
+    if(veto.exception)std::rethrow_exception(veto.exception);
+    check(!failed.ok && digestProject(*f.store).text==before &&
+        f.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 &&
+        f.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==0,
+        "commit veto rolls back all recording/media/journal rows despite completed file publication");
+    const auto foreignAfter=media::blake3File(veto.published),movedAfter=media::blake3File(veto.moved);
+    check(foreignAfter && foreignAfter.hex==foreignHash.hex,"recording rollback retains exact bytes of the later foreign ordinary file");
+    std::error_code foreignError,movedError;
+    const auto currentForeign=media::readFileIdentity(veto.published,foreignError);
+    const auto currentMoved=media::readFileIdentity(veto.moved,movedError);
+    check(currentForeign && currentForeign==veto.foreignIdentity,"recording rollback does not remove or replace the later writer's file identity");
+    check(movedAfter && movedAfter.hex==sourceHash.hex && currentMoved && currentMoved==veto.originalIdentity,
+        "recording rollback never searches for or deletes its moved original publication");
+    check(rollbackReported(failed,veto.published),"failed recording commit reports the retained or changed publication path");
+    check(fs::is_regular_file(privateSource) && media::blake3File(privateSource).hex==sourceHash.hex,
+        "commit-veto identity conflict preserves the original private capture for recovery");
+    recorded.discard();
+}
+
 void lateSqlAndOwnedReuse() {
     Fixture f;auto recorded=f.capture();const std::array<recording::ClipIds,1> ids={{{7,8,"One"}}};auto& db=f.store->db();
     db.exec("CREATE TABLE late_parent(id INTEGER PRIMARY KEY);CREATE TABLE late_child(id INTEGER PRIMARY KEY,parent INTEGER REFERENCES late_parent(id) DEFERRABLE INITIALLY DEFERRED);CREATE TRIGGER reject_recording AFTER INSERT ON audio_clips BEGIN INSERT INTO late_child(id,parent) VALUES(NEW.clip_id,999);END");
     const auto before=digestProject(*f.store).text;auto prepared=recording::prepareCommit(*f.store,recorded,ids);auto published=std::filesystem::path{};
     for(const auto& request:prepared.requests)if(request.opType=="media.import")published=media::projectFolder(*f.store)/media::pathFromUtf8(request.payload.at("row").at("rel_path").get<std::string>());
     const auto failed=recording::commit(*f.store,prepared);
-    check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && !std::filesystem::exists(published) && std::filesystem::exists(recorded.tracks[0].file),"late SQL commit failure rolls back rows and new publication while retaining the private take for retry");
+    const bool retained=std::filesystem::exists(published);
+#if defined(_WIN32)
+    const bool cleanupAccepted=!retained;
+#else
+    // POSIX pathname unlink cannot atomically compare-and-remove an identity.
+    const auto sourceHash=media::blake3File(recorded.tracks[0].file);
+    const bool cleanupAccepted=retained && sourceHash && media::blake3File(published).hex==sourceHash.hex && rollbackReported(failed,published);
+#endif
+    check(prepared.ok && !failed.ok && digestProject(*f.store).text==before && cleanupAccepted && std::filesystem::exists(recorded.tracks[0].file),"late SQL failure rolls back rows, safely cleans or reports retained owned publication, and preserves the private take");
     db.exec("DROP TRIGGER reject_recording;DROP TABLE late_child;DROP TABLE late_parent");
     prepared=recording::prepareCommit(*f.store,recorded,ids);const auto retried=recording::commit(*f.store,prepared);check(retried.ok,"retry the same completed take after fixing the SQL failure");
     const auto originalHash=media::blake3File(published);check(History(*f.store).undo().ok && std::filesystem::exists(published),"undo keeps the owned recording available to a later recording branch");
@@ -217,6 +305,6 @@ void loopPublicationRefusesFlattening() {
 }
 int main(int argc,char** argv){try{
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
-    publicationStagingOwnership();heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
+    publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     if(argc==3)crossVolumePublication(media::pathFromUtf8(argv[2]));
 }catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
