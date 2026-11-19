@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — check the Focus overlap boundary and complete the Mid suite
+
+The updated private FIR replay compares 28 exact float and double arrays across 1,870,828 stereo frames. One case explicitly exercises External, Internal, Internal captures so the shared inverse encounters different preceding programme and key tails. Copying one overlap ring onto the other made that case fail in both precisions. The candidate adds to each ring independently and passes with the same latency and zero missed jobs.
+
+The complete shared-analysis Release target also passed all 457 checks with the optional Focus Mid projection prepared against the current cumulative source. The isolated red and green receipts still establish what the new fixture detects. Neither private proof changes the current review build.
+
 ## 2026-11-19, night — reuse identical Focus FIR work
 
 The private 192 kHz Focus proof now avoids duplicate programme and key FFTs when an entire internal-key capture has identical inputs and no active phase change. It reuses the inverse only when both source tags permit it, then adds it to each independent overlap ring in budgeted passes. Separate histories survive a route or kernel change. Fully internal ten-band processing spent 44.1% fewer counted convolution operations at 192 kHz and 43.7% fewer at 48 kHz. External and phase-processed streams keep their own transforms. These are operation counts, with CPU and the external-route callback limit still to measure.
