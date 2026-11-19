@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M53 Main meter Link mode
+
+The Main meter offers Link with one combined Dynamic reading and a central range bar. Peak, RMS and holds still read the individual L/R channels. The independent Link interval starts from fresh samples and shares the active physical tap. It uses the existing weighting and reset controls. The linked calculation runs only for the Link profile. The monitor control remains independent.
+
+The measurement stub failed five intended checks. The UI stub failed five more out of 428. Exact Windows x64 Release `db9a9bb78e824fe0510212d77ee1c98cdf659953` passed 893 Mix View shell checks and all four spectrum, shared analysis, stereo meter and Mix Functions suites. The component checks cover shared tap, separate interval, untouched Stereo readings, no monitor command, and zero meter demand when hidden. The retest brief covers the reference reading and visible behavior. ZIP SHA-256 `4deb027238a940cbe55016af35b46f0b9b1b27e1dee4cc7440c00ee8dede8677`; ADI.exe SHA-256 `ff4470581bdc7d4cea7ab484469f38cd62d33dad7e8a8a44865270d566a42f1f`.
+
+**PR requested.** Include `mixview/main-meter-link-20261119` after the spectrogram history optimization. The #651 Windows rerun remains a separate gate. Its failed job checked synthetic merge `d1e1f98b` over `bedee5ab`, whose own hosted Windows Debug shell passed.
+
 ### #651 Windows Debug shell gate
 
 The hosted Windows Debug shell test segfaulted after its first nine software renders at `7391bbff`. The other 26 tests in that job passed, and the macOS and Linux shell gates passed. The job produced no stack or dump. Both the previous #651 UI head and the Arrangement parent passed the Windows shell. The exact Windows job is rerunning. The local 753-check Release Mix View gate covers a smaller path. The next diagnostic will mark the end of the live-parity fixture and the following shell helpers if the crash repeats.
