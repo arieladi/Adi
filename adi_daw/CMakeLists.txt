@@ -1684,6 +1684,10 @@ if(ADI_WITH_JUCE)
     if(TARGET adi_test_vst3)
         add_dependencies(adi_play adi_test_vst3)
         target_compile_definitions(adi_play PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+        add_dependencies(adi_play_render_tests adi_test_vst3)
+        target_compile_definitions(adi_play_render_tests PRIVATE
+            ADI_CATALOGUE_FIXTURE="${_adi_fixture}"
+            ADI_CATALOGUE_SCANNER="$<TARGET_FILE:adi_plugin_scanner>")
     endif()
 
     target_link_libraries(adi_audio_probe PRIVATE

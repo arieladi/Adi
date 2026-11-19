@@ -3,10 +3,70 @@
 #define main adi_play_command_main
 #include "../src/juce/play.cpp"
 #undef main
+#include "adi/media/media_ops.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#if defined(ADI_CATALOGUE_FIXTURE)
+namespace {
+bool catalogueContracts() {
+    namespace fs = std::filesystem;
+    juce::ScopedJuceInitialiser_GUI initialize;
+    adi::test::TempDirectory scratch("play_render", "catalogue");
+    const auto builtHelper = adi::media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+    adi::scan::Config config;
+    config.executable = scratch.path() / builtHelper.filename();
+    config.registry = scratch.path() / "plugins.sqlite";
+    fs::copy_file(builtHelper, config.executable);
+
+    adi::device::JuceDeviceLoader loader;
+    loader.setScanConfig(config);
+    juce::KnownPluginList fixtureTypes;
+    const auto discovery = loader.vst3().scanFile(ADI_CATALOGUE_FIXTURE, fixtureTypes, config);
+    const auto descriptions = fixtureTypes.getTypes();
+    if (!discovery.complete || !discovery.failures.empty() || descriptions.isEmpty()) return false;
+
+    const auto& description = descriptions.getReference(0);
+    adi::rows::PluginRef ref;
+    ref.format = "vst3";
+    ref.uid = adi::device::identityOf(description).uid;
+    ref.pathHint = description.fileOrIdentifier.toStdString();
+    adi::engine::DeviceRequest request;
+    request.ref = &ref;
+    const auto make = loader.fn();
+    std::string error;
+    auto instance = make(request, error);
+    if (!instance || !instance->loaded()) return false;
+    instance.reset();
+
+    // Even a persistent cache hit would try to open the configured helper.
+    // A known identity or path must answer from the populated catalogue.
+    if (!fs::remove(config.executable)) return false;
+    instance = make(request, error);
+    if (!instance || !instance->loaded()) return false;
+    instance.reset();
+    ref.pathHint.clear();
+    instance = make(request, error);
+    if (!instance || !instance->loaded()) return false;
+    instance.reset();
+
+    ref.pathHint = description.fileOrIdentifier.toStdString();
+    ref.uid = "unlisted-class";
+    return !make(request, error) && loader.stats().vst3 == 3 &&
+           loader.stats().notFound == 1 && loader.stats().scans == 0 &&
+           loader.stats().failed == 0;
+}
+} // namespace
+#endif
+
 int main() {
+#if defined(ADI_CATALOGUE_FIXTURE)
+    if (!catalogueContracts()) {
+        std::printf("FAIL -- hosted VST3 catalogue lookup\n");
+        return 1;
+    }
+    std::printf("PASS -- known VST3 identities and paths require no discovery during instance load\n");
+#endif
     adi::test::TempDirectory scratch("play_render", "channels");
     adi::StoreError error{};
     auto store=adi::Store::createEmpty(scratch.path()/"render.adi",error);
