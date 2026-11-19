@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M54 Focus Scope over-range indication
+
+An aligned stereo sum above full scale now flags Sum over 0 dBFS in the existing Scope title, including when the numeric readout is absent in a narrow panel. Exactly full scale leaves the normal title. The plot scale remains fixed, so member traces do not move when the sum exceeds it. A valid cancelled sum clears the indication; the data path uses the peaks from the existing signed sum calculation.
+
+Fixture-only `c72bbd39` failed the positive-left, negative-right and narrow readout checks. Exact Windows x64 Release `d6b67334eff7b3da9c3e7c7505b469a1e00be759` passed those cases plus exact unity and cancellation. It passed 893 Mix View shell component checks and three targeted CTests. ZIP SHA-256 `cd013c0874c5540261acb3886a1f683d70d4dd8abe8cd1df4a773bdf8a36cef0`; ADI.exe SHA-256 `cde8d37d53defed20ecbaf004d4b89ed2a15607236535035e8816b4aa8a70f59`. The retest brief covers threshold, channel, polarity, narrow layout and unchanged playback.
+
+**PR requested.** Include `mixview/focus-scope-headroom-20261119` after Stack tool search in the cumulative review.
+
 ### 19 November — DF-M50/DF-M49 Stack browser searches tool names
 
 The left Search channels and tools field now matches the names of devices and native tools on each channel, as well as the channel name. Existing group and Sounding now membership still applies. Choosing a result reveals the channel by stable identity. Typing keeps the selection and adds no Undo step. The search reads passive chain metadata on a changed query or project view and retains the matches across unchanged frames.
