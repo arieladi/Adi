@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### #573 Windows compiler compatibility
+
+The failed Opto Windows job stopped in inherited `param_ops.cpp` at MSVC C4864 before reaching the Opto tests. The existing #573 branch now carries main's exact compiler fix from `85c5ab47`, preserving its author. The standalone Windows x64 Release Opto module at `8f310b710fde45be754379469fa4315230b9dcb9` passed 309 checks with zero callback allocations and frees. The hosted workflow will validate the inherited translation unit on its newer compiler.
+
+**PR requested.** Re-review the existing #573 draft at `8f310b71` after its parent stack. The Opto runtime stays unregistered at this stage.
+
 ### DF-M60 expanded identity and dormant-key red gates
 
 On the current review stack, the expanded Windows Release document gate ran 118 checks with 12 expected failures in Paste, Duplicate and incompatible legacy replacement. Both Browser cases passed. The owned VST3 gate ran 90 checks with four expected failures. It now distinguishes the first post-FX samples from Pre FX, preserves the complete programme comparison, and reproduces Undo and reopen. The fixtures are staged privately for the cumulative correction once #651 lands. The existing phase and monitor paths are outside these fixtures.
