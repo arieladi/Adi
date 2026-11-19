@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 13:25 — Corrupt Settings recovery status
+
+**PR requested** `engine-win/settings-recovery-status` at `4f04868c9a622e8c5b231e7b6d5fb6c5ea3ec129`, stacked on `engine-win/settings-json-full-bytes` at `c4d4f32c`. PD-11. If the malformed settings file cannot be moved to its recovery name, the instance reports Unavailable and stays read-only. It keeps the OS error and tells the user to reload. A fresh load after release saves the malformed bytes under the next recovery name and can then save valid settings.
+
+A real Windows read-sharing handle blocked the rename while leaving the file readable. The targeted regression went from five failures to zero. Native MSVC x64 Debug `/W4 /WX` passed 462 checks across four settings suites. The stage uses the existing recovery rename and inherits its concurrent pathname limitations.
+
 ## 2026-11-19 13:15 — Desktop decode-cache capacity settings
 
 **PR requested** `engine-win/decode-cache-runtime-limits` at `4af5e656bd3305da7acfda572f6d8b04e58023ba`, stacked on DF-E28 `60fa903d`. Apply the two validated decoded-cache limits at desktop startup and on settings change, including updates to the existing cache without replacing it or disturbing pinned readers. Settings alone and plain WAV opens leave the cache directory absent. Off-thread cache configuration leaves normal decode and explicit trimming in charge of disk work, and callback refusal happens before cache initialization.
