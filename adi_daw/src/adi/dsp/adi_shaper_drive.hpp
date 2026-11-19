@@ -19,9 +19,14 @@ class AdiShaperDrive {
 
   private:
     static constexpr int maxFactor = 4, inputs = 17, maxTaps = 16 * maxFactor + 1;
+    using Stereo = std::array<float, 2>;
+    using StereoSum = std::array<double, 2>;
+    using Phases = std::array<StereoSum, maxFactor>;
+    template<int Factor> [[nodiscard]] Phases interpolate(const Stereo* history) const noexcept;
+    std::array<double, inputs/2> oddSum_{}, oddDifference_{};
+    std::array<Stereo, inputs * 2> input_{};
+    std::array<Stereo, maxTaps * 2> wet_{};
     struct Channel {
-        std::array<float, inputs * 2> input{};
-        std::array<float, maxTaps * 2> wet{};
         double lastZ = 0.0, dc = 0.0;
     };
     std::array<Channel, 2> channels_{};
