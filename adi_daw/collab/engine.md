@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E18 history, marker and true-peak fixes gated and pushed
+
+**PR requested** — branch `engine/df-e18-history-marker-peak`, head `f28eacd0f3c47f577301264454c6a05973fca4a6`, base `origin/main` at `a0a31168`. Title **Harden history replay, marker edits, and true-peak measurement**. Independent of the DF-E21 through DF-E23 stack. The remote head matches the gated commit.
+
+A branch switch preserves an otherwise unheld departing redo tip on a system branch. The test navigates back to that same tip after compaction prunes the old bridge. A damaged redo cycle returns an error and leaves the head and material intact. Undo/Redo report only committed operations. Tests cover a missing inverse, failed replay and a blocked head update. The true-peak meter substitutes silence for NaN and either infinity before its sample peak and interpolator. Marker edits check nonnegative positions and the full cycle end in their own units. Undo/Redo keep the behavior of existing marker logs. The unused clip-property delete image was removed in favor of the existing clip delete handler.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58109 checks across 241 suites, all four validators and the layout check. The four focused GCC suites passed. Clang 19 strictly compiled the seven changed C++ units and passed 110 history, 155 marker and 159 DSP checks. Compiled faults for lost branch retention, negative marker positions and non-finite true peak all failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E13 next.
+
 ## 2026-11-19 — DF-E23 hosted graph workers gated and pushed
 
 **PR requested** — branch `engine/df-e23-plugin-workers`, head `d96c97d7731fac88ea93350897b65fcac29fe2e4`, base `engine/df-e22-group-returns` at `4ad2f55d`. Title **Run compatible hosted plug-ins on graph workers**. The remote head matches the gated commit. Land after the DF-E21, DF-E20(a)(b) and DF-E22 stack.
