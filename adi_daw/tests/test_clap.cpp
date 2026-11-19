@@ -154,6 +154,17 @@ void testEventListCarriesNoteIdAndDouble() {
     static_assert(std::is_same_v<decltype(clap_event_note_expression_t::value), double>,
                   "CLAP note expression value must be a double -- ADR-0054");
     check(sizeof(x->value) == 8, "the expression value is 8 bytes");
+
+    auto gain=expr(7,ExpressionDim::Gain,6.020599913279624);
+    auto pan=expr(7,ExpressionDim::Pan,-0.5);
+    gain.paramId=pan.paramId=engine::kNativeNoteExpressionUnits;
+    check(list.add(gain) && list.add(pan),"CLAP accepts note expression in authored AEXP units");
+    const auto* volume=reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
+    const auto* balance=reinterpret_cast<const clap_event_note_expression_t*>(list.at(3));
+    check(volume && volume->expression_id==CLAP_NOTE_EXPRESSION_VOLUME && volume->note_id==7 &&
+          std::abs(volume->value-2.0)<1e-14,"CLAP volume uses the authored linear amplitude above unity");
+    check(balance && balance->expression_id==CLAP_NOTE_EXPRESSION_PAN && balance->value==0.25,
+          "CLAP pan converts signed AEXP to the SDK's left-to-right range");
 }
 
 void testModulationIsItsOwnEvent() {
