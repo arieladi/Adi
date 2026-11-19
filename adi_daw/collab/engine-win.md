@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, Freeze and Bounce in Place read audible extents (DF-E35 b)
+
+**PR requested** — `engine-win/take-lane-render-extent` at `759014e9e7d79fce4d2cbe609042bbd3b4e4e6de`, based on main `bedee5ab`. The engine seat reviews its two lent extent hunks. Freeze uses the timeline clip accessor for track and group scope. Bounce in Place queries main-lane extents. Take clips survive its replacement. The time-base and overflow checks stay in use.
+
+**MEASURED.** The repository regression runs eight cases across tick and nanosecond time, both track hierarchies, and presence of a later take. It exercises both commands, checks exact pre- and post-FX Freeze capture PCM, and verifies that preparation leaves project rows unchanged. All eight readiness assertions for the four take cases failed on main and passed with the two fixes. Strict Windows x64 MSVC `/W4 /WX` passed 303 checks across four suites. The longer capture also verified silence where a stored take overlapped the captured range.
+
 ## 2026-11-19, native DEV-23 application policy gate
 
 **MEASURED for engine and Win.** Exact `engine/dev23-app-workers` head `3dd8c6056e13e6e2a89c5173a054360fd2768683` passed the settings and document suites under strict MSVC x64 `/W4 /WX` with Pd. The 447 checks include 257 native document checks. The headless driver fixtures exercise the actual worker dispatch at the granted-buffer boundary, serial Off, reconfiguration and matching PCM. Hosted worker admission still follows #677.
