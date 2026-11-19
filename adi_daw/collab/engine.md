@@ -18,6 +18,18 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E9 automation Undo preserves additive storage
+
+**PR requested** — branch `engine/df-e9-automation-undo`, head `ab5feee142c134fdb9a85df3f7a8c8f3865511ba`, main base `bedee5ab`. Title **DF-E9: Restore automation lanes and streams in place**. Builds on main's existing captured range support.
+
+Lane restoration updates the known fields of a surviving lane and writes the captured AAUT bytes into surviving stream rows by ID and clip address. It removes obsolete addresses and inserts missing rows with named columns. Point edits and their inverse use UPDATE for an existing stream. Future lane and data fields and their CASCADE children therefore survive Undo and Redo of lane features and point edits. New lanes use SQLite defaults for future columns.
+
+The existing `automation-splice-store` path uses guarded native row images and preserves opaque data and range cells for the captured envelope splice. DF-E9 covers ordinary lane and point operations and the `automation.restoreLane` and `automation.restoreData` paths.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked against the frozen DEV-23 Debug core. Six focused suites passed, including 93 range Undo, 39 lane, 46 point-edit, 86 snapshot, 206 splice-store and 91 changeset checks. Current main failed six assertions first. Three compiled faults detected lane replacement, stream replacement and point-edit UPSERT. Four validators and the format layout check passed.
+
+**Queue** — DF-E24(a) remains parked on #651's per-bus input implementation. The current main still lacks #651. Parts (b) and (c) remain with the DF-E20 stack as recorded in the register.
+
 ## 2026-11-19 — #530 anchored left trim on current main
 
 **PR requested** — retest the existing #530 from branch `engine/clip-trim`, head `1a2777f9be8ab1b68174d4d35f70130f02ae1140`, main base `bedee5ab`. Title **Keep unwarped Start and End synchronized with their source pins**. The original PR head `da1de8db` was advanced by a normal push. The branch merges current main and DF-E27(b) `25ba8fce`. The merge retains Win's integer linear endpoint conversion, main's take-lane MIDI regression and #530's trim playback regression.
