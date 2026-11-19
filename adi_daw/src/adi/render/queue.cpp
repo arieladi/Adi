@@ -293,7 +293,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         });
         else writer->close();
         cancellation(control);
-        const auto published = media::publishFile(staged, result.output);
+        const auto published = media::publishFile(staged, result.output, {},
+                                                  media::PublishPolicy::AtomicOnly);
         if (published.status != media::PublishStatus::published)
             throw std::runtime_error(published.status == media::PublishStatus::exists ? "export destination already exists" : published.error);
         result.state = JobState::Completed; // publication is the commit point

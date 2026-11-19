@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_clipview.hpp"
+#include "ui_controls.hpp"
 #include "ui_shell.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/meters.hpp"
@@ -2754,13 +2755,12 @@ void NoteEditor::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.setFont(look::font(look::fontSmall));
         g.drawText("Velocity", name, juce::Justification::centredLeft);
-        // The line tool's chooser (ADR-0241 d2).
+        // The line tool's chooser (ADR-0241 d2): the shared button (language.png part B), lit while a
+        // line tool is chosen.
         const auto shape = shapeBox();
-        look::box(g, shape.toFloat(), shape_ == LaneShape::Pointer ? look::button : look::accent);
+        controls::button(g, shape.toFloat(), shape_ == LaneShape::Pointer ? controls::ButtonState::Rest : controls::ButtonState::On,
+                         kLaneShapeNames[static_cast<std::size_t>(shape_)], look::fontTiny);
         labels_.push_back(shape);
-        g.setColour(look::textOn(shape_ != LaneShape::Pointer));
-        g.setFont(look::font(look::fontTiny));
-        g.drawText(kLaneShapeNames[static_cast<std::size_t>(shape_)], shape.reduced(2, 0), juce::Justification::centred);
         // The selected notes' velocity, or their range, or the value being typed (manual 10.5.12).
         const auto readout = readoutBox();
         labels_.push_back(readout);
@@ -4623,11 +4623,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     // the clip's name.
     g.setColour(d.muted ? look::mutedClip : colour_);
     g.fillRect(title);
+    // Its round shape stays; its colours are the shared button's (language.png part B), lit or at rest.
     const auto dot = activatorArea().toFloat();
-    g.setColour(d.muted ? look::button : look::accent);
+    g.setColour(d.muted ? look::buttonRest : look::accent);
     g.fillEllipse(dot);
-    g.setColour(look::text);
-    g.drawEllipse(dot.reduced(0.5f), 1.f);
+    if (d.muted) {
+        g.setColour(look::buttonEdge);
+        g.drawEllipse(dot.reduced(look::hairline / 2), look::hairline);
+    }
     // The Main panel (manual 8.2). Its fields read the clip; they act with the clip's own ops.
     const auto r = readings();
     if (!others_.empty()) {
@@ -4654,52 +4657,56 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         const auto set = setBox(which);
         text(name, {box.getX(), box.getY() - 15, box.getWidth() - (set.isEmpty() ? 0 : 26), 15},
              juce::Justification::centredLeft, look::text, look::fontCaption);
-        // Live's Set button: a small pill beside the field's name.
+        // Live's Set button: a small pill beside the field's name, the shared button at rest.
         if (!set.isEmpty()) {
-            g.setColour(look::button);
-            g.fillRoundedRectangle(set.toFloat(), look::radiusControl);
-            g.setColour(look::outline);
-            g.drawRoundedRectangle(set.toFloat().reduced(0.5f), look::radiusControl, look::hairline);
-            text("Set", set, juce::Justification::centred, look::text, look::fontMicro);
+            controls::button(g, set.toFloat(), controls::ButtonState::Rest, "Set", look::fontMicro);
+            labels_.push_back(set);
         }
-        look::box(g, box.toFloat(), look::chooser);
-        text(value, box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
+        // The field's value: the shared value box (language.png part D); Scale's opens the scales,
+        // so it is the shared chooser.
+        if (which == Field::Scale)
+            controls::chooser(g, box.toFloat(), value, look::fontLabel);
+        else
+            controls::valueBox(g, box.toFloat(), value, std::nullopt, look::fontLabel);
+        labels_.push_back(box);
     };
     field(Field::Start, "Start", r.start);
     field(Field::End, "End", r.end);
-    const auto loop = loopBox();
-    if (!loop.isEmpty())
-        look::box(g, loop.toFloat(), r.loop && !r.loopMixed ? look::accent : look::button);
-    if (r.loopMixed && !loop.isEmpty()) {
-        // Looped and unlooped clips together: the button is half lit (manual 10.8).
-        g.setColour(look::accent);
-        g.fillRect(loop.reduced(1).withWidth(loop.getWidth() / 2 - 1));
+    if (const auto loop = loopBox(); !loop.isEmpty()) {
+        // The shared button, lit while the clip loops. Looped and unlooped clips together: the
+        // button is half lit (manual 10.8), its left half drawn lit over the button at rest.
+        controls::button(g, loop.toFloat(), r.loop && !r.loopMixed ? controls::ButtonState::On : controls::ButtonState::Rest,
+                         "Loop", look::fontLabel);
+        if (r.loopMixed) {
+            juce::Graphics::ScopedSaveState half(g);
+            g.reduceClipRegion(loop.withWidth(loop.getWidth() / 2));
+            controls::button(g, loop.toFloat(), controls::ButtonState::On, "Loop", look::fontLabel);
+        }
+        labels_.push_back(loop);
     }
-    if (!loop.isEmpty())
-        text("Loop", loop, juce::Justification::centred, look::textOn(r.loop && !r.loopMixed), look::fontLabel);
     field(Field::Position, "Position", r.position);
     field(Field::Length, "Length", r.length);
     field(Field::Signature, "Signature", r.signature);
     if (midi() && !panelsFolded_) {
         field(Field::Scale, "Scale", r.scale);
-        // Scale Mode's switch (manual 8.2.4): lit while the clip holds a scale of its own.
+        // Scale Mode's switch (manual 8.2.4): the shared button, lit while the clip holds a scale of its own.
         const auto mode = scaleModeBox();
-        g.setColour(details_->scale.local ? look::accent : look::button);
-        g.fillRoundedRectangle(mode.toFloat(), look::radiusControl);
-        g.setColour(look::outline);
-        g.drawRoundedRectangle(mode.toFloat().reduced(0.5f), look::radiusControl, look::hairline);
-        text(details_->scale.local ? "On" : "Off", mode, juce::Justification::centred, look::textOn(details_->scale.local), look::fontMicro);
+        controls::button(g, mode.toFloat(), details_->scale.local ? controls::ButtonState::On : controls::ButtonState::Rest,
+                         details_->scale.local ? "On" : "Off", look::fontMicro);
+        labels_.push_back(mode);
     }
 
     if (const auto tools = toolsArea(); !tools.isEmpty()) {
         // The Pitch and Time panel (manual 8.5): its title, the range of the notes it acts on,
         // Transpose, and the utilities.
+        // Its tabs: the shared tabs (language.png part D), one ground under the strip, and each tab
+        // drawn in its own box so that the tabs stay where their clicks land.
         static constexpr const char *kTabNames[kToolTabs] = {"Pitch and Time", "Functions", "Chords"};
+        controls::tabs(g, tabBox(0).getUnion(tabBox(kToolTabs - 1)).toFloat(), juce::StringArray(), -1, look::fontCaption);
         for (int tab = 0; tab < kToolTabs; ++tab) {
             const auto box = tabBox(tab);
-            g.setColour(tab == toolsTab_ ? look::field : look::columnHead);
-            g.fillRect(box);
-            text(kTabNames[tab], box.withTrimmedLeft(tab == 0 ? 6 : 4), juce::Justification::centredLeft, look::text, look::fontCaption, tab == toolsTab_);
+            controls::tabs(g, box.toFloat(), juce::StringArray(juce::String(kTabNames[tab])), tab == toolsTab_ ? 0 : -1, look::fontCaption);
+            labels_.push_back(box);
         }
         if (toolsTab_ == 1) {
             // ADI's Functions tab: the velocity functions with their amounts, and the note functions.
@@ -4710,8 +4717,8 @@ void ClipViewPanel::paint(juce::Graphics &g) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
                 const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
-                look::box(g, box.toFloat(), look::chooser);
-                text(juce::String(shown) + suffix, box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
+                controls::valueBox(g, box.toFloat(), juce::String(shown) + suffix, std::nullopt, look::fontLabel);
+                labels_.push_back(box);
             };
             number(Field::VelocityAmount, "");
             number(Field::VelocityPercent, " %");
@@ -4720,18 +4727,21 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             number(Field::Voices, "");
             // The Quantize settings: the value, which ends move, how far, and swing.
             const auto value = quantizeChooserBox();
-            look::box(g, value.toFloat(), look::chooser);
-            text(kQuantizeValues[quantizeValue_].name, value.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
+            controls::chooser(g, value.toFloat(), kQuantizeValues[quantizeValue_].name, look::fontSmall);
+            labels_.push_back(value);
             const auto starts = quantizeStartBox(), ends = quantizeEndBox();
-            look::box(g, starts.toFloat(), quantizeStarts ? look::accent : look::button);
-            text("Start", starts, juce::Justification::centred, look::textOn(quantizeStarts), look::fontSmall);
-            look::box(g, ends.toFloat(), quantizeEnds ? look::accent : look::button);
-            text("End", ends, juce::Justification::centred, look::textOn(quantizeEnds), look::fontSmall);
+            controls::button(g, starts.toFloat(), quantizeStarts ? controls::ButtonState::On : controls::ButtonState::Rest, "Start",
+                             look::fontSmall);
+            controls::button(g, ends.toFloat(), quantizeEnds ? controls::ButtonState::On : controls::ButtonState::Rest, "End",
+                             look::fontSmall);
+            labels_.push_back(starts);
+            labels_.push_back(ends);
             const auto named = [&](Field which, const char *name) {
                 const auto box = fieldBox(which);
                 int low = 0, high = 0;
                 const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
-                look::box(g, box.toFloat(), look::chooser);
+                // The shared value box's well; its name at the left and its value at the right, as before.
+                controls::valueBox(g, box.toFloat(), {});
                 text(name, box.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), look::fontMicro);
                 text(juce::String(shown) + "%", box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
             };
@@ -4743,24 +4753,25 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             look::box(g, range.toFloat(), look::display);
             text(r.range, range.reduced(4, 0), juce::Justification::centred, look::textBright, look::fontLabel);
             const auto semitones = fieldBox(Field::Transpose);
-            look::box(g, semitones.toFloat(), look::chooser);
-            text(r.transpose, semitones.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontLabel);
+            controls::valueBox(g, semitones.toFloat(), r.transpose, std::nullopt, look::fontLabel);
+            labels_.push_back(semitones);
             // The Interval size: semitones, or the scale's degrees while Scale Mode is on.
             const auto interval = fieldBox(Field::Interval);
             const int size = std::clamp(intervalSize + (dragged_ && pressed_ == Field::Interval ? dragSteps_ : 0), -48, 48);
-            look::box(g, interval.toFloat(), look::chooser);
-            text((size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"), interval.reduced(3, 0),
-                 juce::Justification::centredRight, look::text, look::fontLabel);
-            // The Stretch control: 100 per cent until it is dragged or typed.
+            controls::valueBox(g, interval.toFloat(), (size > 0 ? "+" : "") + juce::String(size) + (details_->scale.local ? " sd" : " st"),
+                               std::nullopt, look::fontLabel);
+            labels_.push_back(interval);
+            // The Stretch control: 100 per cent until it is dragged or typed. The shared value box's
+            // well; its name at the left and its value at the right, as before.
             const auto factor = fieldBox(Field::Stretch);
-            look::box(g, factor.toFloat(), look::chooser);
+            controls::valueBox(g, factor.toFloat(), {});
             text("Stretch", factor.reduced(3, 0), juce::Justification::centredLeft, look::text.withAlpha(0.7f), look::fontMicro);
             text(juce::String(dragged_ && pressed_ == Field::Stretch ? std::clamp(100 + 5 * dragSteps_, 10, 1000) : 100) + "%", factor.reduced(3, 0),
                  juce::Justification::centredRight, look::text, look::fontLabel);
             // The Duration chooser, beside Set Length.
             const auto length = durationBox();
-            look::box(g, length.toFloat(), look::chooser);
-            text(kDurations[duration_].name, length.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
+            controls::chooser(g, length.toFloat(), kDurations[duration_].name, look::fontSmall);
+            labels_.push_back(length);
         }
         if (toolsTab_ == 2) {
             // ADI's Chords tab (ADR-0241 d2, from Cubase): the chord tools, and the overlap functions.
@@ -4769,15 +4780,15 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             text("Overlaps", inner.withY(inner.getY() + 4 * 22).withHeight(kFieldBox), juce::Justification::centredLeft, look::text, look::fontCaption, true);
             // The chord type's chooser, beside Add Chord.
             const auto chord = chordBox();
-            look::box(g, chord.toFloat(), look::chooser);
-            text(chordType().name, chord.reduced(3, 0), juce::Justification::centredLeft, look::text, look::fontSmall);
+            controls::chooser(g, chord.toFloat(), chordType().name, look::fontSmall);
+            labels_.push_back(chord);
         }
         for (const auto tool : kTools) {
             const auto box = toolBox(tool);
             if (box.isEmpty())
                 continue;
-            look::box(g, box.toFloat(), look::button);
-            text(toolName(tool), box.reduced(2, 0), juce::Justification::centred, look::text, look::fontSmall);
+            controls::button(g, box.toFloat(), controls::ButtonState::Rest, toolName(tool), look::fontSmall);
+            labels_.push_back(box);
         }
     }
 
@@ -4794,14 +4805,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.setColour(look::band);
         g.fillRect(strip.withHeight(1));
         const auto button = randomizeBox();
-        look::box(g, button.toFloat(), look::button);
-        text("Randomize", button, juce::Justification::centred, look::text, look::fontSmall);
+        controls::button(g, button.toFloat(), controls::ButtonState::Rest, "Randomize", look::fontSmall);
+        labels_.push_back(button);
         const auto number = [&](Field which) {
             const auto box = fieldBox(which);
             int low = 0, high = 0;
             const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
-            look::box(g, box.toFloat(), look::chooser);
-            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
+            controls::valueBox(g, box.toFloat(), juce::String(shown), std::nullopt, look::fontCaption);
+            labels_.push_back(box);
         };
         number(Field::RandomAmount);
         const auto start = fieldBox(Field::RampStart);
@@ -4811,32 +4822,31 @@ void ClipViewPanel::paint(juce::Graphics &g) {
     }
     // The editor's header: its tab, and the editing grid at its right (manual 10.2.1).
     if (const auto fold = foldBox(); !fold.isEmpty()) {
-        look::box(g, fold.toFloat(), notes.folded() ? look::accent : look::button);
-        text("Fold", fold, juce::Justification::centred, look::textOn(notes.folded()), look::fontSmall);
-        const auto draw = drawBox();
-        look::box(g, draw.toFloat(), notes.drawMode() ? look::accent : look::button);
-        text("Draw", draw, juce::Justification::centred, look::textOn(notes.drawMode()), look::fontSmall);
-        const auto trim = trimBox();
-        look::box(g, trim.toFloat(), notes.trimMode() ? look::accent : look::button);
-        text("Trim", trim, juce::Justification::centred, look::textOn(notes.trimMode()), look::fontSmall);
-        if (const auto focus = focusBox(); !focus.isEmpty()) {
-            look::box(g, focus.toFloat(), focus_ ? look::accent : look::button);
-            text("Focus", focus, juce::Justification::centred, look::textOn(focus_), look::fontSmall);
-        }
-        // Fold to Scale and Highlight Scale; Fold to Scale is dimmed while the clip holds no scale of its own.
-        const auto scaleFold = scaleFoldBox(), highlight = highlightBox();
-        look::box(g, scaleFold.toFloat(), notes.scaleFolded() ? look::accent : look::button);
-        text("Scale", scaleFold, juce::Justification::centred, notes.scaleOn() ? look::textOn(notes.scaleFolded()) : look::textOn(notes.scaleFolded()).withAlpha(0.4f), look::fontSmall);
-        look::box(g, highlight.toFloat(), notes.highlightScale ? look::accent : look::button);
-        text("Highlight", highlight, juce::Justification::centred, look::textOn(notes.highlightScale), look::fontSmall);
-        const auto find = findBox();
-        look::box(g, find.toFloat(), filtersShown_ ? look::accent : look::button);
-        text("Find", find, juce::Justification::centred, look::textOn(filtersShown_), look::fontSmall);
-        // What the notes are coloured by (ADI's addition).
+        // The header's switches: the shared button (language.png part B), lit while on.
+        const auto onOff = [&](juce::Rectangle<int> box, bool on, const char *name) {
+            controls::button(g, box.toFloat(), on ? controls::ButtonState::On : controls::ButtonState::Rest, name, look::fontSmall);
+            labels_.push_back(box);
+        };
+        onOff(fold, notes.folded(), "Fold");
+        onOff(drawBox(), notes.drawMode(), "Draw");
+        onOff(trimBox(), notes.trimMode(), "Trim");
+        if (const auto focus = focusBox(); !focus.isEmpty())
+            onOff(focus, focus_, "Focus");
+        // Fold to Scale and Highlight Scale; Fold to Scale is dimmed (the shared button's disabled
+        // state) while the clip holds no scale of its own, unless it is folded, when it stays lit.
+        const auto scaleFold = scaleFoldBox();
+        controls::button(g, scaleFold.toFloat(),
+                         notes.scaleFolded() ? controls::ButtonState::On
+                         : notes.scaleOn()   ? controls::ButtonState::Rest
+                                             : controls::ButtonState::Disabled,
+                         "Scale", look::fontSmall);
+        labels_.push_back(scaleFold);
+        onOff(highlightBox(), notes.highlightScale, "Highlight");
+        onOff(findBox(), filtersShown_, "Find");
+        // What the notes are coloured by (ADI's addition): the shared chooser.
         const auto colours = coloursBox();
-        look::box(g, colours.toFloat(), look::chooser);
-        text(NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], colours.reduced(4, 0), juce::Justification::centredLeft,
-             look::text, look::fontSmall);
+        controls::chooser(g, colours.toFloat(), NoteEditor::kNoteColourNames[static_cast<std::size_t>(notes.noteColours)], look::fontSmall);
+        labels_.push_back(colours);
     }
     if (const auto bar = filterArea(); !bar.isEmpty()) {
         // Find and Select Notes: the chooser, the chosen filter's controls, Invert and Select.
@@ -4844,12 +4854,14 @@ void ClipViewPanel::paint(juce::Graphics &g) {
         g.fillRect(bar);
         g.setColour(look::band);
         g.fillRect(bar.withY(bar.getBottom() - 1).withHeight(1));
+        // The shared chooser, and its accent dot while the chosen filter is applied, moved left of
+        // the chooser's arrow.
         const auto chooser = filterChooserBox();
-        look::box(g, chooser.toFloat(), look::chooser);
-        text(kNoteFilterNames[static_cast<std::size_t>(filter_)], chooser.reduced(4, 0), juce::Justification::centredLeft, look::text, look::fontCaption);
+        controls::chooser(g, chooser.toFloat(), kNoteFilterNames[static_cast<std::size_t>(filter_)], look::fontCaption);
+        labels_.push_back(chooser);
         if (filters.applied[static_cast<std::size_t>(filter_)]) {
             g.setColour(look::accent);
-            g.fillEllipse(static_cast<float>(chooser.getRight() - 10), static_cast<float>(chooser.getY() + 4), 5.f, 5.f);
+            g.fillEllipse(static_cast<float>(chooser.getRight() - 19), static_cast<float>(chooser.getY() + 4), 5.f, 5.f);
         }
         for (int slot = 0; slot < filterFieldCount(); ++slot) {
             const auto which = slot == 0 ? Field::FilterA : slot == 1 ? Field::FilterB : Field::FilterC;
@@ -4857,19 +4869,23 @@ void ClipViewPanel::paint(juce::Graphics &g) {
             int low = 0, high = 0;
             const int shown = std::clamp(*plainField(which, &low, &high) + (dragged_ && pressed_ == which ? dragSteps_ : 0), low, high);
             text(filterFieldName(slot), {box.getX() - 46, box.getY(), 42, box.getHeight()}, juce::Justification::centredRight, look::text, look::fontSmall);
-            look::box(g, box.toFloat(), look::chooser);
-            text(juce::String(shown), box.reduced(3, 0), juce::Justification::centredRight, look::text, look::fontCaption);
+            controls::valueBox(g, box.toFloat(), juce::String(shown), std::nullopt, look::fontCaption);
+            labels_.push_back(box);
         }
+        // The filter's switches, Invert and Select: the shared button, lit while on.
         for (int i = 0; i < filterToggleCount(); ++i) {
             const auto box = filterToggleBox(i);
-            look::box(g, box.toFloat(), filterToggle(i) ? look::accent : look::button);
-            text(filterToggleName(i), box, juce::Justification::centred, look::textOn(filterToggle(i)), look::fontTiny);
+            controls::button(g, box.toFloat(), filterToggle(i) ? controls::ButtonState::On : controls::ButtonState::Rest, filterToggleName(i),
+                             look::fontTiny);
+            labels_.push_back(box);
         }
         const auto invert = filterInvertBox(), select = filterSelectBox();
-        look::box(g, invert.toFloat(), filters.invert[static_cast<std::size_t>(filter_)] ? look::accent : look::button);
-        text("Invert", invert, juce::Justification::centred, look::textOn(filters.invert[static_cast<std::size_t>(filter_)]), look::fontSmall);
-        look::box(g, select.toFloat(), look::button);
-        text("Select", select, juce::Justification::centred, look::text, look::fontSmall);
+        controls::button(g, invert.toFloat(),
+                         filters.invert[static_cast<std::size_t>(filter_)] ? controls::ButtonState::On : controls::ButtonState::Rest, "Invert",
+                         look::fontSmall);
+        controls::button(g, select.toFloat(), controls::ButtonState::Rest, "Select", look::fontSmall);
+        labels_.push_back(invert);
+        labels_.push_back(select);
     }
     text(midi() ? "Notes" : audio() ? "Sample" : "", header.withTrimmedLeft(midi() ? coloursBox().getRight() - header.getX() + 10 : 8).withWidth(60),
          juce::Justification::centredLeft, look::text, look::fontBody, true);
