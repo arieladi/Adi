@@ -19241,7 +19241,8 @@ questions stay open with him, listed at the end.
 
 1. **Fix before new.** A seat's confirmed review findings, entered as register rows in its areas, come
    before its next new queue item. The seats still work until their limits (ADR-0246 d6); only the
-   order inside a queue changes.
+   order inside a queue changes. Where d6 to d10 below place a named finding after a new item, that
+   order rules, for the reason given there: a dependency, a finding not reachable on main, or d2's goal.
 2. **Function first, 20 November to 3 December.** Every queue serves one session the director can do
    from nothing on Windows: New; record audio; play his keyboard into OneShot or one of his VST3s; the
    Clip View; arrange; mix with faders heard while dragging, a return and a group; automate one
@@ -19267,7 +19268,10 @@ questions stay open with him, listed at the end.
      `analysis_comparison.*`, `analysis_palettes.hpp` with `palettes/**`, `spectrum_slope.hpp`,
      `stack_model.*`, `mix_view_provider.hpp`, `parameter_feed.*` and `focus_scope.hpp`. Of these,
      `ui_stack_picker`, `ui_scope_classic`, `smexoscope`, `mix_compressor_host` and `focus_scope` are
-     so far only on its branches.
+     so far only on its branches. Its device-key routing files (`src/adi/device_key_routes.*`,
+     `device_key_edit.cpp`) are its own until #651 lands and the engine's after (DEV-05, MX-24); two
+     files it added in other lanes' trees are loans: `src/adi/dsp/stereo_envelope_meter.*` (the
+     devices lane's tree) and `src/adi/engine/main_audition.hpp` (the engine's).
    - **clones:** `adi_shaper*` wherever they sit; its hunks in shared files are agreed with the devices
      lane through the logs.
    - **win:** `.github/**`, `docs/DECISIONS.md`, `docs/PLAN.md`, `docs/DEFERRED.md`,
@@ -19416,8 +19420,9 @@ questions stay open with him, listed at the end.
       more tracks soloed, the Mix View button opens Focus; un-soloing a track inside Focus removes it,
       and the first remaining soloed track becomes the main one (d10).
     - **CI capacity:** no spending now. Win looks again on 26 November; if the queue is then still more
-      than half a day deep, a self-hosted Windows runner on one of the director's two Windows PCs, with
-      approval required before strangers' pull requests run on it.
+      than half a day deep, a self-hosted Windows runner on one of the director's two Windows PCs (win's
+      condition, since the repository is public: pull requests from outside wait for approval before
+      they run on it).
     - **Test machines:** the director's two Windows PCs (Windows 10 and Windows 11) now; his Mac later;
       a third PC later, after he reinstalls it, with a Linux second boot. His own hands-on tests come
       when the app is ready for them; win's weekly headless proof (WTS-01, d12) goes on meanwhile, each
