@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, early — rehearse the cumulative merge on the current main
+
+The local rehearsal intersects #651 with the full-window Mix View in two shell files. It keeps the docked workspace full size, applies the reviewed Arrangement names bar layout, and hides the bar before the first docked frame. Closing and detaching restore the original ruler alignment and active controls. The deterministic Stack release fixture is included. Both the before-main rehearsal and the current-main rehearsal passed 906 Mix View, 324 Arrangement and seven appearance checks. The function, document and shared-analysis checks also passed at 253, 77 and 452. The branch remains a local rehearsal until the review order is satisfied.
+
+The deferred Focus timing harness is staged at 192 kHz and 512 frames with one and ten nodes and distinct internal and external key routes. Two untimed runs on the shared-FFT candidate were identical and verified 49,152 samples of latency, 39 completed jobs per cell and zero missed jobs. Wall time and thread cycles have separate warmed passes for the later matched run.
+
 ## 2026-11-20, after midnight — make the Stack release assertion deterministic
 
 An extra repeat of the earlier software-peer shell hit one intermittent assertion. The test checked the rectangle on a wall-clock frame after End, by which time the intended easing could already have moved it. The fixture now stages an intermediate pose, checks the exact release origin and stable tile, and checks resumed enlargement at the model's next deadline. The one host gesture and one labelled Undo remain covered. The exact test-only MSVC Release shell passed all 901 checks on three sequential runs. Queue the fixture with the next cumulative review. There is no change to the application behavior.
