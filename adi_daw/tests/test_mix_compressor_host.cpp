@@ -280,6 +280,36 @@ void cleanGraphSuspension() {
           "Clean wakes on the first sample with fresh state within float tolerance of uninterrupted DSP");
     check(allocations.load() == alloc && frees.load() == free, "drain, suspend, and wake allocate or free no DSP storage");
 }
+void thresholdEditWhileSuspended() {
+    auto parked = make(), cold = make();
+    check(parked && cold, "parked-edit fixture creates two native Clean devices");
+    if (!parked || !cold)
+        return;
+
+    const auto previousThreshold = device::ParamValue::fromNormalized(.8);
+    const auto editedThreshold = device::ParamValue::fromNormalized(.45);
+    const auto autoGainOn = device::ParamValue::fromNormalized(1.);
+    check(parked->setParam("0", previousThreshold) && parked->setParam("7", autoGainOn) &&
+              cold->setParam("0", editedThreshold) && cold->setParam("7", autoGainOn),
+          "fixture stages distinct settled make-up targets");
+    parked->prepare(48000, 64);
+    cold->prepare(48000, 64);
+
+    Audio<float> programme{};
+    programme[0].fill(.001f);
+    programme[1].fill(-.0015f);
+    auto previous = programme;
+    process(*parked, previous, 1, false);
+    device::DeviceNode parkedNode(*parked);
+    parkedNode.didSuspend();
+    check(parked->setParam("0", editedThreshold), "owner edits the parked compressor");
+
+    auto woke = programme, fresh = programme;
+    process(*parked, woke, 2, false);
+    process(*cold, fresh, 1, false);
+    check(fresh[0][0] > previous[0][0], "edited Threshold raises first-sample make-up in a fresh instance");
+    check(woke == fresh, "a Threshold edit while parked takes effect on the first sample after wake");
+}
 void stateAndDescriptors() {
     auto a = make(), b = make();
     check(a && b && a->paramCount() == 8 && a->latencySamples() == 0,
@@ -467,6 +497,7 @@ int main() {
     stateAndDescriptors();
     quietEnvelope();
     cleanGraphSuspension();
+    thresholdEditWhileSuspended();
     for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         exactAudio<float>(rate);
         exactAudio<double>(rate);
