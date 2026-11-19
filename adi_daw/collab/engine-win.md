@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-02 ZIP entry cancellation and progress
+
+**PR requested** `engine-win/collect-zip-stream` at `734f7b6f6bd58f7f549ef28f0bfe2f473e6da683`, stacked on owned media rollback `a67c3344`. Collection now reports an entry's source bytes on the worker and can cancel between chunks of at most 64 KiB, including the final chunk before publication. Cancellation or a progress callback failure is sticky. The private archive is discarded and the source project and existing ZIPs keep their bytes. The real collection regression cancels 256 KiB into a 4 MiB media entry.
+
+Four strict native MSVC x64 Debug `/W4 /WX` suites passed 443 checks. Three privilege-dependent symlink cases and the optional multi-gigabyte ZIP exercise were not run. Snapshot and media copying still stop at phase boundaries. Window progress remains a separate integration.
+
 ## 2026-11-19 — PD-12 defensive project connections
 
 **PR requested** `engine-win/project-sqlite-defensive` at `7db7e05a581d89ca86b595d4d11adba9303b37af`, stacked on the PD-12 benchmark `a3f425f8`. Each project Store connection enables SQLite Defensive mode before its first SQL, including create, explicit read-only opens and the automatic read-only reopen for an unknown major. Regular operation transactions and migrations run normally. Direct writes to SQLite's schema tables fail even after requesting writable_schema.
