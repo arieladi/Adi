@@ -7515,6 +7515,8 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
         // both back.
         check(root.command(AppCommands::Undo), "undo the row-down move");
         root.frame();
+        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12},
+              "puts them back, 13 with them");
         const auto *thirteen = [&]() -> const engine::ClipNode * {
             for (const auto &c : root.reader().findTrack(3)->clips)
                 if (c->id == 13)
@@ -7538,10 +7540,29 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
             for (const auto &c : root.reader().findTrack(3)->clips)
                 whole = whole || (c->id == 13 && c->posTicks == start && c->lengthTicks == length);
             check(whole, "one Undo gives 13 back whole");
+            // Where the planner does not place yet (here a track with an automation lane, AU-05), the clip
+            // moves as before, keeping what it lands on, and the Status Bar says why.
+            automation::LaneSpec lane;
+            lane.id = 77;
+            lane.ownerKind = "track";
+            lane.ownerId = 3;
+            lane.paramRef = "volume";
+            lane.paramName = "Volume";
+            check(submitter.submit(automation::createLane(lane)).ok, "an automation lane on track 3");
+            root.frame();
+            check(root.placeClips({{12, 3, start + length / 2}}, "Move Clip") &&
+                      root.error().rfind("Moved, keeping what the clips land on", 0) == 0,
+                  "with an automation lane the move still goes, saying it keeps what it lands on");
+            root.frame();
+            bool kept = false, moved = false;
+            for (const auto &c : root.reader().findTrack(3)->clips) {
+                kept = kept || (c->id == 13 && c->lengthTicks == length);
+                moved = moved || (c->id == 12 && c->posTicks == start + length / 2);
+            }
+            check(kept && moved, "12 moved, 13 kept whole");
+            check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the move and the lane");
+            root.frame();
         }
-        check(root.command(AppCommands::Undo), "undo");
-        root.frame();
-        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12}, "puts them back");
         // A row up, track 1's would leave the lanes: they keep their tracks, and move in time.
         clickClip(1);
         clickClip(2, pick);

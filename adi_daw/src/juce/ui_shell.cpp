@@ -1712,7 +1712,25 @@ bool AdiRootComponent::placeClips(const std::vector<ClipPlace> &places, const ch
     options.referenceRate = editRate();
     options.policy = edit_plan::capturePolicy(commands_.settings());
     auto prepared = edit_plan::prepareMove(submitter_.store(), scope, moves, options);
-    if (prepared.ok && !prepared.requests.empty())
+    if (!prepared.ok) {
+        // The planner will not place here yet (automation that follows its clips, AU-05; a frozen track;
+        // an editing setting off Live's rule; clips that already overlap): the clips move as before,
+        // keeping what they land on, and the Status Bar says why, as a range edit does.
+        std::vector<OpRequest> ops;
+        for (const auto &place : places) {
+            OpRequest op;
+            op.opType = "clip.move";
+            op.payload = {{"id", place.clip}, {"to", place.position}, {"track", place.track}};
+            op.label = label;
+            ops.push_back(std::move(op));
+        }
+        const auto why = prepared.error;
+        if (!submitEdits(std::move(ops)))
+            return false;
+        say("Moved, keeping what the clips land on: the engine does not place them here yet (" + why + ").");
+        return true;
+    }
+    if (!prepared.requests.empty())
         prepared.requests.front().label = label;
     return commitEdit(std::move(prepared));
 }
