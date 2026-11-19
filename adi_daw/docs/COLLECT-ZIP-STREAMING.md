@@ -35,9 +35,10 @@ media. Publication remains the existing atomic/no-clobber operation, with no
 public target before its commit. Existing destination files remain untouched.
 
 This is a byte-work bound between stop checks, not a wall-clock latency promise:
-an OS read, compression step, observer or finalization can block. SQLite snapshot,
-media extraction/copy/hash/check phases remain cancellable only at their existing
-phase boundaries. Central-directory finalization checks stop at the next phase
+an OS read, compression step, observer or finalization can block. External media
+copy now has its own bounded checkpoints (see `COLLECT-MEDIA-STREAMING.md`).
+SQLite snapshot, embedded extraction and hash/check phases remain cancellable
+only at their phase boundaries. Central-directory finalization checks stop at the next phase
 before publication; once final atomic publication starts, there is no rollback
 or post-commit cancellation claim. Those other phases, GUI, throttling and
 concurrent filesystem identity redesign are outside this slice.

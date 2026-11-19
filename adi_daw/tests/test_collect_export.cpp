@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/media/collect_export.hpp"
+#include "adi/media/collection_detail.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/blake3.hpp"
@@ -174,6 +175,119 @@ void collectionCancellation() {
           "a late arrival after ZIP finalization survives exclusive publication");
 }
 
+bool archiveStageRemains(const fs::path& parent) {
+    for(const auto& item:fs::directory_iterator(parent))
+        if(item.path().filename().string().starts_with(".adi-media-"))return true;
+    return false;
+}
+void cancellationInsideMediaCopy() {
+    Fixture fixture;
+    std::string bytes(4*1024*1024+123,'\0');
+    for(std::size_t i=0;i<bytes.size();++i)bytes[i]=static_cast<char>((i*41+i/13)&255);
+    fixture.add("outside.wav",bytes,1);
+    const auto source=fixture.temp.path()/"outside.wav";
+    const auto hash=media::blake3File(source).hex;
+    const auto before=digestProject(*fixture.store).text;
+    const auto owner=std::this_thread::get_id();
+    const auto output=fixture.temp.path()/"cancel-copy.zip";
+    for(const auto stopAt:{std::uint64_t{0},std::uint64_t{256*1024},static_cast<std::uint64_t>(bytes.size())}) {
+        std::stop_source stop;
+        bool observed=false,bounded=true,sameWorker=true,zipSeen=false;
+        std::uint64_t last=0;
+        const auto result=media::collectExport(fixture.store->path(),output,{stop.get_token(),
+            [&](media::ArchiveProgress progress) {
+                zipSeen|=progress.phase==media::ArchivePhase::WriteArchive || progress.phase==media::ArchivePhase::Publish;
+                if(progress.phase!=media::ArchivePhase::CollectMedia || progress.mediaFile.empty())return;
+                observed=true;sameWorker&=std::this_thread::get_id()==owner;
+                bounded&=progress.mediaBytesTotal==bytes.size() && progress.mediaBytesCopied>=last &&
+                    progress.mediaBytesCopied-last<=65536 && progress.mediaBytesCopied<=progress.mediaBytesTotal &&
+                    progress.entryBytesRead==0 && progress.entryBytesTotal==0 && progress.entry.empty();
+                last=progress.mediaBytesCopied;
+                if(last>=stopAt)stop.request_stop();
+            }});
+        check(observed && bounded && sameWorker && last==stopAt,"copy progress stops at initial, middle or final source-byte checkpoint");
+        check(result.cancelled && !result.ok && !zipSeen && !fs::exists(output),"cancelled media copy reaches neither ZIP writing nor publication");
+        check(!archiveStageRemains(fixture.temp.path()) && media::blake3File(source).hex==hash && digestProject(*fixture.store).text==before,
+              "copy cancellation preserves source/project and removes all private staging");
+    }
+    bool observerFailed=false;
+    const auto failed=media::collectExport(fixture.store->path(),output,{{},[&](media::ArchiveProgress progress) {
+        if(progress.mediaBytesCopied>0){observerFailed=true;throw 17;}
+    }});
+    check(observerFailed && !failed.ok && !failed.cancelled && failed.error.find("progress")!=std::string::npos,
+          "nonstandard copy observer failure is reported separately from cancellation");
+    check(!fs::exists(output) && !archiveStageRemains(fixture.temp.path()) && media::blake3File(source).hex==hash &&
+          digestProject(*fixture.store).text==before,"observer failure cleans the copy and preserves originals");
+    std::uint64_t completed=0;
+    const auto success=media::collectExport(fixture.store->path(),output,{{},[&](media::ArchiveProgress progress) {
+        if(!progress.mediaFile.empty())completed=progress.mediaBytesCopied;
+    }});
+    check(success.ok && !success.cancelled && completed==bytes.size(),"observed copy completes through ordinary archive publication");
+    ZipReader reader(output);const auto extracted=fixture.temp.path()/"opened";
+    check(reader.extract(extracted),"observed-copy archive has valid ZIP bytes and CRCs");
+    bool exact=false;
+    for(const auto& file:fs::directory_iterator(extracted/"audio"))exact|=media::blake3File(file.path()).hex==hash;
+    check(exact && digestProject(*fixture.store).text==before,"completed private copy retains exact source content and leaves the project unchanged");
+}
+void cancellationAfterCollectedFile() {
+    Fixture fixture;
+    fixture.add("one.wav",std::string(100000,'a'),1);
+    fixture.add("two.wav",std::string(120000,'b'),2);
+    const auto before=digestProject(*fixture.store).text;
+    std::stop_source stop;unsigned filesStarted=0;bool priorPublished=false;
+    const auto output=fixture.temp.path()/"two.zip";
+    const auto result=media::collectExport(fixture.store->path(),output,{stop.get_token(),[&](media::ArchiveProgress progress) {
+        if(progress.mediaFile.empty() || progress.mediaBytesCopied!=0)return;
+        if(++filesStarted!=2)return;
+        for(const auto& stage:fs::directory_iterator(fixture.temp.path())) {
+            if(!stage.path().filename().string().starts_with(".adi-media-"))continue;
+            for(const auto& file:fs::directory_iterator(stage.path()/"project"/"audio"))priorPublished|=file.is_regular_file();
+        }
+        stop.request_stop();
+    }});
+    check(filesStarted==2 && priorPublished && result.cancelled && !result.ok,"second-file cancellation follows a verified first publication inside the private snapshot");
+    check(!fs::exists(output) && !archiveStageRemains(fixture.temp.path()) && digestProject(*fixture.store).text==before &&
+          read(fixture.temp.path()/"one.wav")==std::string(100000,'a') && read(fixture.temp.path()/"two.wav")==std::string(120000,'b'),
+          "later-file cancellation removes private published/copy files and preserves both sources");
+}
+void stopBeforeCollectionCommit(sqlite3_context* context,int,sqlite3_value**) noexcept {
+    static_cast<std::stop_source*>(sqlite3_user_data(context))->request_stop();
+    sqlite3_result_null(context);
+}
+void terminalCopyCancellation() {
+    Fixture fixture;fixture.add("terminal.wav","terminal-copy-control",1);
+    const auto before=digestProject(*fixture.store).text;
+    std::stop_source stop;
+    auto& db=fixture.store->db();
+    check(sqlite3_create_function_v2(db.getHandle(),"cancel_copy_commit",0,SQLITE_UTF8,&stop,
+          stopBeforeCollectionCommit,nullptr,nullptr,nullptr)==SQLITE_OK,"install deterministic pre-COMMIT stop fixture");
+    db.exec("CREATE TEMP TRIGGER cancel_copy_update AFTER UPDATE OF rel_path ON media_files BEGIN SELECT cancel_copy_commit(); END");
+    const auto result=media::detail::collectSnapshotMedia(*fixture.store,{stop.get_token(),{}});
+    check(result.cancelled && !result.ok && sqlite3_get_autocommit(db.getHandle()) && digestProject(*fixture.store).text==before,
+          "stop after SQL relocation rolls back the complete private collection transaction before COMMIT");
+#if defined(_WIN32)
+    check(fs::is_empty(fixture.temp.path()/"audio") && result.warning.empty(),"pre-COMMIT stop removes exactly owned published files on Windows");
+#else
+    check(!result.warning.empty(),"unsupported handle-bound rollback reports retained published files");
+#endif
+    check(read(fixture.temp.path()/"terminal.wav")=="terminal-copy-control","late stop never modifies the source");
+    db.exec("DROP TRIGGER cancel_copy_update");
+    check(sqlite3_create_function_v2(db.getHandle(),"cancel_copy_commit",0,SQLITE_UTF8,nullptr,nullptr,nullptr,nullptr,nullptr)==SQLITE_OK,
+          "remove pre-COMMIT stop fixture");
+}
+void emptyCopyCancellation() {
+    Fixture fixture;fixture.add("empty.wav",{},1);
+    std::stop_source stop;unsigned calls=0;
+    const auto output=fixture.temp.path()/"empty.zip";
+    const auto result=media::collectExport(fixture.store->path(),output,{stop.get_token(),[&](media::ArchiveProgress progress) {
+        if(progress.mediaFile.empty())return;
+        ++calls;
+        if(progress.mediaBytesCopied==0 && progress.mediaBytesTotal==0)stop.request_stop();
+    }});
+    check(result.cancelled && !result.ok && calls==1 && !fs::exists(output),"empty media copy has an initial cancellable zero-byte checkpoint");
+    check(!archiveStageRemains(fixture.temp.path()) && fs::file_size(fixture.temp.path()/"empty.wav")==0,
+          "empty-copy cancellation cleans staging and retains its source");
+}
 void cancellationInsideEntry() {
     Fixture fixture;
     std::string samples(4 * 1024 * 1024 + 123, '\0');
@@ -605,7 +719,7 @@ void documentRollbackWarning() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectionCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
+    try { publication(); collection(); collectionCancellation(); cancellationInsideMediaCopy(); cancellationAfterCollectedFile(); terminalCopyCancellation(); emptyCopyCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

@@ -30,16 +30,24 @@ struct ArchiveProgress {
     // Reading the last byte is not ZIP finalization or publication.
     std::uint64_t entryBytesRead = 0, entryBytesTotal = 0;
     std::string entry{};
+    // CollectMedia only: current external source bytes successfully read and
+    // written to its private copy, before flush/hash/publication. Reset per
+    // file. Empty mediaFile means a phase boundary; this is not a ZIP count.
+    std::uint64_t mediaBytesCopied = 0, mediaBytesTotal = 0;
+    std::string mediaFile{};
 };
 struct ArchiveControl {
     std::stop_token stop;
+    // Synchronous worker observer. Must not close, mutate or reenter the
+    // operation's private Store; copied progress owns its names.
     std::function<void(ArchiveProgress)> progress;
 };
 // Snapshot includes committed WAL data. The source is opened read-only;
 // all relocation/extraction affects the copy. Existing ZIPs are never replaced.
-// Progress runs on the worker. During ZIP entries, stop is checked before/after
-// each <=64 KiB input read. Snapshot/media collection remain phase-only;
-// finalization observes stop at the next phase before atomic publication starts.
+// Progress runs on the worker. External-media copy and ZIP input use <=64 KiB
+// chunks with stop checks before/after. Snapshot, embedded extraction and
+// hashing/verification remain phase-only. Finalization observes stop at the
+// next phase before atomic publication starts.
 FileResult collectExport(const std::filesystem::path& input,
                          const std::filesystem::path& output,
                          const ArchiveControl& control = {});

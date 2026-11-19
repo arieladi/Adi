@@ -5,6 +5,7 @@
 #include "zip_writer.hpp"
 #include "publish_file.hpp"
 #include "published_rollback.hpp"
+#include "collection_detail.hpp"
 #include "adi/store.hpp"
 #include "adi/check.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -154,8 +155,9 @@ FileResult collectExport(const fs::path& input, const fs::path& output,
         if (!copy || copy->readOnly()) throw std::runtime_error("cannot open snapshot for relocation");
         const auto extraction = extractMedia(*copy);
         if (!extraction.ok) throw std::runtime_error(extraction.error);
-        const auto collected=copy->collectAllAndSave();
-        if(!collected.ok)throw std::runtime_error(collected.error);
+        auto collected=detail::collectSnapshotMedia(*copy, control);
+        if(collected.cancelled)return {false, "collection export cancelled", std::move(collected.warning), true};
+        if(!collected.ok)return collected;
         audioDirectory(project);
         const auto report = checkProject(*copy, true);
         if (!report.clean()) throw std::runtime_error("collected project failed check: " + report.findings.front().detail);

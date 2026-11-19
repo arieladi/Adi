@@ -9,6 +9,7 @@
 #include "adi/media/publish_file.hpp"
 #include "adi/media/published_rollback.hpp"
 #include "adi/media/collect_export.hpp"
+#include "adi/media/collection_detail.hpp"
 #include "adi/media/blake3.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <SQLiteCpp/Backup.h>
@@ -19,6 +20,9 @@
 #include <limits>
 #include <map>
 #include <functional>
+#include <algorithm>
+#include <array>
+#include <fstream>
 
 namespace adi {
 namespace {
@@ -264,38 +268,85 @@ StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileColli
 }
 
 namespace adi {
-StoreFileResult Store::collectAllAndSave() {
-    if(detail::appliedDispatchActive(*this))return {false,"reentrant collection during applied-batch delivery",{}};
+namespace {
+struct CollectionCancelled {};
+void stopCollection(const media::ArchiveControl* control) {
+    if(control && control->stop.stop_requested())throw CollectionCancelled{};
+}
+void copyMedia(const fs::path& source,const fs::path& staged,const media::ArchiveControl& control) {
+    stopCollection(&control);
+    std::ifstream input(source,std::ios::binary|std::ios::ate);
+    if(!input)throw std::runtime_error("cannot open media source: "+media::pathUtf8(source));
+    const auto end=input.tellg();
+    if(end<0)throw std::runtime_error("cannot read media size: "+media::pathUtf8(source));
+    const auto total=static_cast<std::uint64_t>(end);
+    input.seekg(0);
+    if(!input)throw std::runtime_error("cannot rewind media source: "+media::pathUtf8(source));
+    std::ofstream output(staged,std::ios::binary|std::ios::trunc);
+    if(!output)throw std::runtime_error("cannot create private media copy");
+    const auto name=control.progress?media::pathUtf8(source):std::string{};
+    std::uint64_t copied=0;
+    const auto checkpoint=[&] {
+        stopCollection(&control);
+        if(control.progress) {
+            try {
+                media::ArchiveProgress progress{media::ArchivePhase::CollectMedia};
+                progress.mediaBytesCopied=copied;progress.mediaBytesTotal=total;progress.mediaFile=name;
+                control.progress(std::move(progress));
+            }catch(...) {throw std::runtime_error("media copy progress callback failed");}
+        }
+        stopCollection(&control);
+    };
+    checkpoint();
+    std::array<char,65536> bytes{};
+    while(copied<total) {
+        stopCollection(&control);
+        const auto count=static_cast<std::streamsize>(std::min<std::uint64_t>(bytes.size(),total-copied));
+        input.read(bytes.data(),count);
+        if(input.gcount()!=count || !input)throw std::runtime_error("media source read failed: "+media::pathUtf8(source));
+        output.write(bytes.data(),count);
+        if(!output)throw std::runtime_error("private media copy write failed");
+        copied+=static_cast<std::uint64_t>(count);
+        checkpoint();
+    }
+    output.close();
+    if(!output)throw std::runtime_error("private media copy close failed");
+    stopCollection(&control);
+}
+media::FileResult collectFiles(Store& store, const media::ArchiveControl* control) {
+    if(detail::appliedDispatchActive(store))return {false,"reentrant collection during applied-batch delivery",{}};
     media::detail::PublishedRollback files;
     try {
-        if(closed_ || !db_)return {false,"project is closed",{}};
-        if(readOnly_ || major_!=kSchemaMajor)return {false,"project is read-only or unsupported",{}};
-        if(!sqlite3_get_autocommit(db_->getHandle()) || sqlite3_next_stmt(db_->getHandle(),nullptr))
+        auto& db=store.db();
+        if(store.readOnly() || store.schemaMajor()!=kSchemaMajor)return {false,"project is read-only or unsupported",{}};
+        if(!sqlite3_get_autocommit(db.getHandle()) || sqlite3_next_stmt(db.getHandle(),nullptr))
             return {false,"finish database transactions and statements before collecting",{}};
-        if(db_->execAndGet("SELECT count(*) FROM media_files WHERE embedded<>0").getInt64()!=0 ||
-           db_->execAndGet("SELECT count(*) FROM media_blobs").getInt64()!=0)
+        if(db.execAndGet("SELECT count(*) FROM media_files WHERE embedded<>0").getInt64()!=0 ||
+           db.execAndGet("SELECT count(*) FROM media_blobs").getInt64()!=0)
             return {false,"extract legacy embedded media before collecting",{}};
+        stopCollection(control);
         // Hold a write transaction across resolution/copying so a second writer
         // cannot append media between the gather and location update passes.
-        db_->exec("BEGIN IMMEDIATE");
+        db.exec("BEGIN IMMEDIATE");
         struct Transaction {
             SQLite::Database& db;bool committed=false;
             ~Transaction(){if(!committed)try{db.exec("ROLLBACK");}catch(...) {}}
-        } transaction{*db_};
+        } transaction{db};
         std::map<std::string,std::vector<Payload>> candidates;
-        visitPaths(*db_,[&](Payload& paths,const std::string& original,const std::string& hash){
+        visitPaths(db,[&](Payload& paths,const std::string& original,const std::string& hash){
             if(hash.size()!=64 || hash.find_first_not_of("0123456789abcdef")!=std::string::npos)
                 throw std::runtime_error("invalid media hash in pool or history");
             auto row=paths;row["orig_name"]=original;row["hash_blake3"]=hash;
             candidates[hash].push_back(std::move(row));return false;
         },false);
-        const auto folder=media::projectFolder(*this),audio=folder/"audio";
+        const auto folder=media::projectFolder(store),audio=folder/"audio";
         std::map<std::string,std::string> locations;
         if(!candidates.empty()) {
             if(fs::is_symlink(fs::symlink_status(audio)))throw std::runtime_error("audio/ must not be a symlink");
             fs::create_directories(audio);
             Stage stage(audio);
             for(const auto& [hash,rows]:candidates) {
+                stopCollection(control);
                 fs::path source;std::string error;
                 for(const auto& row:rows) {
                     source=media::resolveMedia(folder,row,error);
@@ -311,7 +362,9 @@ StoreFileResult Store::collectAllAndSave() {
                 if(fs::exists(target))verify(target);
                 else {
                     const auto staged=stage.path/"media.tmp";
-                    fs::copy_file(source,staged);verify(staged);
+                    if(control)copyMedia(source,staged,*control);
+                    else fs::copy_file(source,staged);
+                    verify(staged);stopCollection(control);
                     files.files.push_back({target,{}});
                     const auto result = media::publishFile(staged, target, {},
                                                            media::PublishPolicy::VerifiedCopyFallback);
@@ -321,19 +374,33 @@ StoreFileResult Store::collectAllAndSave() {
                         verify(target);fs::remove(staged);
                     }else files.files.back().identity=result.identity;
                 }
+                stopCollection(control);
                 locations[hash]=media::pathUtf8(target.lexically_relative(folder));
             }
         }
-        visitPaths(*db_,[&](Payload& paths,const std::string&,const std::string& hash){
+        stopCollection(control);
+        visitPaths(db,[&](Payload& paths,const std::string&,const std::string& hash){
             const auto before=paths;
             paths["rel_path"]=locations.at(hash);paths["abs_path_hint"]=nullptr;paths["missing"]=0;
             if(paths.contains("embedded"))paths["embedded"]=0;
             return paths!=before;
         },true);
-        db_->exec("COMMIT");transaction.committed=true;files.committed=true;
-        const auto status=sqlite3_wal_checkpoint_v2(db_->getHandle(),nullptr,SQLITE_CHECKPOINT_PASSIVE,nullptr,nullptr);
+        stopCollection(control);
+        db.exec("COMMIT");transaction.committed=true;files.committed=true;
+        const auto status=sqlite3_wal_checkpoint_v2(db.getHandle(),nullptr,SQLITE_CHECKPOINT_PASSIVE,nullptr,nullptr);
         return {true,{},status==SQLITE_OK?std::string{}:std::string("collection saved; WAL checkpoint is pending")};
-    }catch(const std::exception& e){return {false,e.what(),files.rollback()};}
+    }catch(const CollectionCancelled&){return {false,"media collection cancelled",files.rollback(),true};}
+    catch(const std::exception& e){return {false,e.what(),files.rollback()};}
+}
+}
+StoreFileResult Store::collectAllAndSave() {
+    if(detail::appliedDispatchActive(*this))return {false,"reentrant collection during applied-batch delivery",{}};
+    if(closed_ || !db_)return {false,"project is closed",{}};
+    auto result=collectFiles(*this,nullptr);
+    return {result.ok,std::move(result.error),std::move(result.warning)};
+}
+media::FileResult media::detail::collectSnapshotMedia(Store& store,const ArchiveControl& control) {
+    return collectFiles(store,&control);
 }
 StoreFileResult Store::collectAndExport(const std::filesystem::path& output) const {
     if(closed_ || !db_)return {false,"project is closed",{}};
