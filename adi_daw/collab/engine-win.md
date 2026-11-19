@@ -10,19 +10,25 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
-## 2026-11-19 13:29 — Export publication and Job preset integration
+## 2026-11-19 — PD-12 project WAL durability measurement
+
+**PR requested** `engine-win/project-wal-benchmark` at `a3f425f8488798d4345bfa4331aef9e97d2a0e69`, based on main `796fe498`. Opt-in reproducible benchmark and BENCHMARKS evidence. Native x64 MSVC Release `/O2 /W4 /WX` passed the benchmark self-test and 50 project-file checks, with one optional Windows symlink skip.
+
+**MEASURED** — On a local NTFS SSD, twelve paired repeats of real one-op owner-thread edits. Steady p50/p99 was 0.357/0.636 ms for NORMAL and 2.121/6.898 ms for FULL, 576 samples per mode. Near-full pre-checkpoint was 0.383/0.598 ms versus 2.168/2.953 ms, 108 per mode. The twelve completed threshold commits per mode had medians of 14.020 ms in NORMAL and 4.356 ms in FULL. FULL had three observations over the 16.67 ms reference. A pinned reader left 29 of 38 frames checkpointed with SQLITE_OK, then ended and let PASSIVE complete the rest. No production pragma changed. Keep the local default pending a representative project plus UI budget check. The separate removable/network policy, Apple checkpoint sync, and Defensive mode do not follow from these local timings.
+
+## 2026-11-19 — Export publication and Job preset integration
 
 **PR requested** `engine-win/export-preset-integration` at `0b6ddcce159be83265aa8a47cec5c06a5ff2e0a7`. EX-07 and EX-09. Its two parents are naming and verified delivery `fa9534a6` and user presets `ea37af92`. Integrates both subjects with the complete-byte JSON guard. Queue, WAV and NI retain the export branch's validation, collision protection and verified publication. Job JSON v2 stores explicit Fail, Increment or Replace; legacy v1 without a field reads Fail. The two preset stores retain their envelope versions. Bounds and Output carries the collision policy; Options and Format keeps the target's.
 
 Eight combined strict MSVC x64 Debug `/W4 /WX` suites passed 917 checks. NI metadata and the final-name/publication helper ran; the installed platform AAC did not pass the existing availability gate for a complete encoded NI render. Two symlink cases skipped for Windows privilege. Read-only three-way merge against main at `796fe498` reported no conflict. This is the combined candidate once the constituent export and preset requests are accounted for.
 
-## 2026-11-19 13:25 — Corrupt Settings recovery status
+## 2026-11-19 — Corrupt Settings recovery status
 
 **PR requested** `engine-win/settings-recovery-status` at `4f04868c9a622e8c5b231e7b6d5fb6c5ea3ec129`, stacked on `engine-win/settings-json-full-bytes` at `c4d4f32c`. PD-11. If the malformed settings file cannot be moved to its recovery name, the instance reports Unavailable and stays read-only. It keeps the OS error and tells the user to reload. A fresh load after release saves the malformed bytes under the next recovery name and can then save valid settings.
 
 A real Windows read-sharing handle blocked the rename while leaving the file readable. The targeted regression went from five failures to zero. Native MSVC x64 Debug `/W4 /WX` passed 462 checks across four settings suites. The stage uses the existing recovery rename and inherits its concurrent pathname limitations.
 
-## 2026-11-19 13:15 — Desktop decode-cache capacity settings
+## 2026-11-19 — Desktop decode-cache capacity settings
 
 **PR requested** `engine-win/decode-cache-runtime-limits` at `4af5e656bd3305da7acfda572f6d8b04e58023ba`, stacked on DF-E28 `60fa903d`. Apply the two validated decoded-cache limits at desktop startup and on settings change, including updates to the existing cache without replacing it or disturbing pinned readers. Settings alone and plain WAV opens leave the cache directory absent. Off-thread cache configuration leaves normal decode and explicit trimming in charge of disk work, and callback refusal happens before cache initialization.
 
