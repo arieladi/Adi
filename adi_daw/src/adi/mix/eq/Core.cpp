@@ -492,21 +492,22 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
     i.lastPhysical = physical;
     ++i.block;
     i.blockAdmitted = false;
-    const auto pending = i.pending.load(std::memory_order_acquire);
-    bool canWithdraw = false;
+    auto pending = i.pending.load(std::memory_order_acquire);
+    auto committed = i.committedLatency.load(std::memory_order_relaxed);
+    // A return to the active settings can withdraw an unread offer even if
+    // both plans share one PDC. A racing promise wins the same atomic decision.
+    if (admitPending && pending && configured == committed && !(pending & promisedLatencyBit) &&
+        samePlan(i.active, s) && i.pending.compare_exchange_strong(pending, 0, std::memory_order_acq_rel))
+        pending = 0;
     if (admitPending && pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
         i.active = i.offer;
-        i.committedLatency.store(configured, std::memory_order_release);
+        committed = configured;
+        i.committedLatency.store(committed, std::memory_order_release);
         i.pending.store(0, std::memory_order_release);
-    } else if (admitPending && configured == i.committedLatency.load(std::memory_order_relaxed)) {
-        // The callback still uses the old PDC. Reverting to the active plan
-        // can withdraw an offer before the owner advertises it. A serial parent holding an offer
-        // passes admitPending=false and keeps its child token stable.
-        canWithdraw = pending != 0;
     }
-    if (configured != i.committedLatency.load(std::memory_order_relaxed))
+    if (configured != committed)
         return {};
-    i.consider(s, canWithdraw);
+    i.consider(s);
     i.blockAdmitted = true;
     return {i.generation, i.block};
 }
