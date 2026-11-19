@@ -27,6 +27,7 @@
 #include <fstream>
 #include <memory>
 #include <limits>
+#include <optional>
 #include <random>
 #include <system_error>
 #include <thread>
@@ -686,7 +687,8 @@ std::vector<std::string> DecodeCache::problems() const {
 namespace {
 struct DefaultDecodeCacheState {
     std::mutex mutex;
-    fs::path root;
+    fs::path rootOverride;
+    std::optional<fs::path> activeRoot;
     DecodeCacheLimits limits;
     std::unique_ptr<DecodeCache> cache;
 };
@@ -694,17 +696,28 @@ DefaultDecodeCacheState& defaultCacheState() {
     static DefaultDecodeCacheState state;
     return state;
 }
+const fs::path& resolveMediaCacheRoot(DefaultDecodeCacheState& state) {
+    if (!state.activeRoot)
+        state.activeRoot = state.rootOverride.empty() ? appdata::pathsFor(appdata::App::Daw).cache : state.rootOverride;
+    return *state.activeRoot;
+}
 } // namespace
 
-bool setDefaultDecodeCacheRoot(fs::path root) {
+bool setDefaultMediaCacheRoot(fs::path root) {
     if (onAudioThread) return false;
     if (!root.empty() && (!root.is_absolute() || root.native().find(fs::path::value_type{}) != fs::path::string_type::npos))
         return false;
     auto& state = defaultCacheState();
     std::lock_guard lock(state.mutex);
-    if (state.cache) return root == state.root;
-    state.root = std::move(root);
+    if (state.activeRoot) return root == state.rootOverride;
+    state.rootOverride = std::move(root);
     return true;
+}
+
+fs::path defaultMediaCacheRoot() {
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    return resolveMediaCacheRoot(state);
 }
 
 void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
@@ -720,10 +733,8 @@ void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
 DecodeCache& defaultDecodeCache() {
     auto& state = defaultCacheState();
     std::lock_guard lock(state.mutex);
-    if (!state.cache) {
-        const auto root = state.root.empty() ? appdata::pathsFor(appdata::App::Daw).cache : state.root;
-        state.cache = std::make_unique<DecodeCache>(root / "decoded", state.limits);
-    }
+    if (!state.cache)
+        state.cache = std::make_unique<DecodeCache>(resolveMediaCacheRoot(state) / "decoded", state.limits);
     return *state.cache;
 }
 

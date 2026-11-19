@@ -3,11 +3,12 @@
 The desktop applies the maximum-size and minimum-free-space preferences at
 startup and when settings change. Applying them leaves cache creation and
 cleanup to normal cache operations. Updates retain the same cache object
-and its live pins. The desktop reads Cache Folder on launch. It uses the
-`decoded` child of the selected absolute path, or the same child of the app
-cache by default. The first decode that needs the cache creates the child.
-Changing the setting takes effect on the next launch so existing PCM readers
-keep their files and pins. Analysis still uses its separate cache and budget.
+and its live pins. The desktop reads Cache Folder on launch. Decoded PCM uses
+the `decoded` child and waveform analysis uses the `analysed` child of the
+selected absolute path. Both use the app cache parent by default. Each child
+is created only when its cache is needed. Changing the setting takes effect
+on the next launch so existing readers keep their files. Budgets remain
+separate.
 
 Before evicting any existing file for a new complete decode, `DecodeCache`
 refuses an individual estimated Float32 size above its maximum. The estimate

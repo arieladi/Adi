@@ -176,10 +176,13 @@ private:
 /// this is the shared app cache from ADR-0149. Default limits apply until
 /// the application provides its settings.
 [[nodiscard]] DecodeCache& defaultDecodeCache();
-/// Selects the parent of the decoded cache before its first use. Empty selects
-/// the app cache root. Relative paths and active-cache relocation are refused.
-/// This sets configuration without creating the directory.
-[[nodiscard]] bool setDefaultDecodeCacheRoot(std::filesystem::path root);
+/// Selects the parent of the decoded and analysed caches before either first
+/// use. Empty selects the app cache root. Relative paths and active-cache
+/// relocation are refused. Configuration creates no directories.
+[[nodiscard]] bool setDefaultMediaCacheRoot(std::filesystem::path root);
+/// Off-callback resolution of the process root. First use fixes the path for
+/// the lifetime of the caches without creating any directory.
+[[nodiscard]] std::filesystem::path defaultMediaCacheRoot();
 /// Updates the process cache's limits without creating its folder or trimming.
 /// The next cache operation uses the new limits. Owner thread only.
 void setDefaultDecodeCacheLimits(DecodeCacheLimits);

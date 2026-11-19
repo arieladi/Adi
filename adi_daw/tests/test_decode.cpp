@@ -4,6 +4,7 @@
 // Fixtures: tests/fixtures/decode (README.md there says how each was made).
 #include "adi/appdata.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "temp_directory.hpp"
@@ -343,15 +344,15 @@ void defaultCacheSettings(const fs::path& root) {
     fs::create_directories(parent);
     const auto other = parent / "keep.wav";
     std::ofstream(other, std::ios::binary) << "User media outside decoded storage";
-    check(!setDefaultDecodeCacheRoot("relative-cache"), "a relative cache folder is refused");
+    check(!setDefaultMediaCacheRoot("relative-cache"), "a relative cache folder is refused");
     auto terminated = parent.native();
     terminated.push_back(fs::path::value_type{});
-    check(!setDefaultDecodeCacheRoot(fs::path(terminated)), "a NUL in a cache path is refused");
+    check(!setDefaultMediaCacheRoot(fs::path(terminated)), "a NUL in a cache path is refused");
     {
         CallbackScope callback;
-        check(!setDefaultDecodeCacheRoot(parent), "an audio callback cannot configure a cache folder");
+        check(!setDefaultMediaCacheRoot(parent), "an audio callback cannot configure a cache folder");
     }
-    check(setDefaultDecodeCacheRoot(parent), "an absolute Unicode cache root is accepted");
+    check(setDefaultMediaCacheRoot(parent), "an absolute Unicode cache root is accepted");
     setDefaultDecodeCacheLimits({64ULL << 20, 0});
     check(!fs::exists(folder), "setting initial limits leaves the process decode folder lazy");
     check(playableFile(fixture("src16.wav")) == fixture("src16.wav") && !fs::exists(folder),
@@ -363,14 +364,18 @@ void defaultCacheSettings(const fs::path& root) {
     }
     check(refused == DecodeProblem::AudioThread && !fs::exists(folder),
           "a refused first audio callback cannot initialize the cache");
+    const auto next = root / "next-launch";
+    const auto& analysis = adi::media::defaultAnalysisCache();
+    check(analysis.folder() == parent / "analysed" && !fs::exists(analysis.folder()) && !fs::exists(folder),
+          "the analysis cache uses the selected Unicode parent without creating either cache folder");
+    check(!setDefaultMediaCacheRoot(next), "analysis use alone fixes the common root until relaunch");
     auto& configured = defaultDecodeCache();
     check(configured.folder() == folder && configured.limits().maxBytes == 64ULL << 20 &&
               configured.limits().minFreeBytes == 0,
           "first decoder use takes the selected folder and configured limits");
     const auto held = configured.playable(fixture("tone16.flac"));
-    const auto next = root / "next-launch";
     check(held.parent_path() == folder && !fs::exists(fallback) &&
-              !setDefaultDecodeCacheRoot(next) && !fs::exists(next),
+              !setDefaultMediaCacheRoot(next) && !fs::exists(next),
           "live cache use keeps the root until relaunch");
     setDefaultDecodeCacheLimits({0, 0});
     check(&defaultDecodeCache() == &configured && configured.limits().maxBytes == 0 && fs::exists(held),
