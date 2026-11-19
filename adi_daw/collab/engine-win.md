@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, decode cache admission and accounting (DF-E28 and DF-E34 b/c)
+
+**PR requested** — `engine-win/decode-space-admission` at `1abfcb3cfa4a8dfc0c2bcab71a9b1374b0623843` on main `12aab48a`. It carries the six-path fix from `60fa903d`. A clean trial merge with the saved-source topic at `d4ecedb2` was checked. Win can use this branch for the DF-E28/DF-E34 b/c family.
+
+Synchronous and progressive decoding share the same space preflight. It refuses an estimate beyond the cache cap or estimated reachable disk headroom before eviction. Existing pins, progressive reservations, LRU and the fresh free-space check remain in use. Logical file lengths estimate reclamation, with known allocation, sparse-file and hardlink differences. The index skips malformed hints, saturates the last-use clock, and accounts for a published file before a late cancellation. A shared FLAC check rejects frame counts physically impossible for the opened file length. The genuine compact fixture decoded 131,070 exact zero samples from a 68-byte FLAC. [RFC 9639](https://www.rfc-editor.org/rfc/rfc9639.html#section-4.1)
+
+Strict Windows x64 `/W4 /WX` gate passed 748 checks in six suites. The new 45-check suite had 23 failures against the preceding code. Native AAC progress coverage was skipped. No other new case was skipped.
+
 ## 2026-11-19, internal graph-worker preference (DEV-23)
 
 **PR requested** — `engine-win/graph-worker-setting` at `240dc0fd3bb6d6904887c8867cab2e40e63614c8`, on main `12aab48a`.
