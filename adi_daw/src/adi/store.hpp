@@ -128,6 +128,11 @@ public:
     /// aliases refuse replacement. Rebase media
     /// paths in both rows and captured history so undo/redo still finds audio.
     [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&, StoreFileCollision=StoreFileCollision::Fail) const;
+    /// Worker-owned, read-only source connection and an exclusive copy.
+    /// utcMicros is the triggering snapshot time. The copy is a consistent
+    /// revision read by the worker. The caller chooses its destination name.
+    [[nodiscard]] static StoreFileResult writeSnapshotBackup(
+        const std::filesystem::path& source, const std::filesystem::path& output, std::int64_t utcMicros);
     /// Save a copy, then switch this same Store object to the new writable file.
     /// Existing OpJournal/History references remain valid. Requires no live SQL
     /// statements. Refresh ProjectView/Session and the window's filename after
@@ -212,7 +217,8 @@ private:
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly,
           std::shared_ptr<media::ProjectFileLease>);
     struct CopyState;
-    CopyState saveCopyImpl(const std::filesystem::path&,StoreFileCollision) const;
+    CopyState saveCopyImpl(const std::filesystem::path&, StoreFileCollision,
+                           std::optional<std::int64_t> snapshotUtc = {}) const;
     bool applySessionPragmas();
     // Source invalidation has already completed; fold WAL and release SQLite.
     bool closeFinalized();

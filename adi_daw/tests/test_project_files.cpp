@@ -12,6 +12,7 @@
 #include <array>
 #include <algorithm>
 #include <cstdio>
+#include <future>
 
 namespace {
 using namespace adi;
@@ -129,6 +130,42 @@ void readOnlySource() {
     check(source && source->saveAs(f.target("readonly-save-as")).ok && !source->readOnly(),
           "Save As makes an editable project from a supported read-only source");
 }
+void snapshotBackup() {
+    Fixture f;
+    constexpr std::int64_t time = 1795104000123456;
+    f.store->db().exec("INSERT INTO session_lock VALUES(1,'active-writer',123,'test',1,2)");
+    const auto target = f.target("Backup", "Original [2026-11-19 140000].adi");
+    auto task = std::async(std::launch::async, [&] {
+        return Store::writeSnapshotBackup(f.source, target, time);
+    });
+    const auto result = task.get();
+    check(result.ok, "the snapshot worker can copy a live project");
+    if (!result.ok) return;
+    StoreError error{};
+    auto saved = Store::open(target, error, true);
+    check(saved && resolves(*saved), "the snapshot copy reopens and finds relative media");
+    if (!saved) return;
+    const auto meta = [](Store& store, const char* key) {
+        SQLite::Statement read(store.db(), "SELECT value FROM adi_meta WHERE key=?");
+        read.bind(1, key);
+        return read.executeStep() ? read.getColumn(0).getString() : std::string{};
+    };
+    check(meta(*saved, "snapshot_backup_utc") == std::to_string(time), "the copy stores the snapshot's UTC time");
+    check(meta(*saved, "snapshot_backup_source") == media::pathUtf8(f.source.filename()),
+          "the backup identifies its exact source filename without storing a folder");
+    check(meta(*saved, "project_uuid") == meta(*f.store, "project_uuid"), "the project identity is retained");
+    check(saved->db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 0 &&
+          f.store->db().execAndGet("SELECT count(*) FROM session_lock").getInt() == 1,
+          "the backup clears the writer record and leaves the source alone");
+    check(!Store::writeSnapshotBackup(f.source, target, time - 3600000000LL).ok &&
+          meta(*saved, "snapshot_backup_utc") == std::to_string(time),
+          "a repeated filename after a clock reversal keeps the existing backup");
+    const auto plain = f.target("restored");
+    check(saved->saveCopy(plain).ok, "a backup can be copied to an ordinary project");
+    auto restored = Store::open(plain, error, true);
+    check(restored && resolves(*restored) && meta(*restored, "snapshot_backup_utc").empty() &&
+          meta(*restored, "snapshot_backup_source").empty(), "a normal copy clears backup ownership metadata");
+}
 void historyBranches() {
     Fixture f;auto& s=*f.store;
     fs::copy_file(f.folder/"audio/tone.wav",f.folder/"moved.wav");
@@ -221,5 +258,5 @@ void unknownMajorAndReaders() {
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();snapshotBackup();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

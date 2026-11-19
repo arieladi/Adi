@@ -179,7 +179,17 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCol
     auto result=saveCopyImpl(output,collision);
     return {result.ok,std::move(result.error),std::move(result.warning)};
 }
-Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision) const {
+StoreFileResult Store::writeSnapshotBackup(const fs::path& source, const fs::path& output,
+                                           std::int64_t utcMicros) {
+    StoreError error{};
+    auto reader = open(source, error, true);
+    if (!reader || error != StoreError::Ok || reader->schemaMajor() != kSchemaMajor)
+        return {false, "Cannot open a supported project for backup: " + std::string(toString(error)), {}};
+    auto result = reader->saveCopyImpl(output, StoreFileCollision::Fail, utcMicros);
+    return {result.ok, std::move(result.error), std::move(result.warning)};
+}
+Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output, StoreFileCollision collision,
+                                    std::optional<std::int64_t> snapshotUtc) const {
     if(audio::onAudioThread)return {false,{},{}};
     try {
         if(!validCollision(collision))return {false,"unknown save collision mode",{}};
@@ -215,7 +225,19 @@ Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFi
                 rebaseHistory(destination,media::projectFolder(*this),media::projectFolder(destination).parent_path());
                 // The backup belongs to a different file. The active writer's
                 // advisory session belongs to the source that still owns it.
+                SQLite::Transaction metadata(destination);
                 destination.exec("DELETE FROM session_lock");
+                if (snapshotUtc) {
+                    SQLite::Statement stamp(destination, "INSERT OR REPLACE INTO adi_meta(key,value) VALUES "
+                        "('snapshot_backup_utc',?),('snapshot_backup_source',?)");
+                    stamp.bind(1, std::to_string(*snapshotUtc));
+                    stamp.bind(2, media::pathUtf8((fileLease_ ? fileLease_->path() : path_).filename()));
+                    stamp.exec();
+                } else {
+                    // A normal copy made from a backup is an ordinary project.
+                    destination.exec("DELETE FROM adi_meta WHERE key IN ('snapshot_backup_utc','snapshot_backup_source')");
+                }
+                metadata.commit();
             }
             destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
             destination.exec("PRAGMA journal_mode=DELETE");
