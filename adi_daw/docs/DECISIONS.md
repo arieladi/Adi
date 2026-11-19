@@ -18745,7 +18745,7 @@ about Reason's pitch editor:
 - "yes to all your picks and reason drift, keep going"
 - "slide notes (FL), a drum editor with drum maps (Cubase) are not needed (drum editor of Ableton is
   better) but the rest you suggested if not crippling the Ableton functions then please add them"
-- "also go on Ableton complete research on salon-tv to make sure we don't miss any Ableton
+- "also go on Ableton complete research on [his second PC] to make sure we don't miss any Ableton
   qualities, like i can put 2 different midi channel different colors then select both and open them
   together to see different color midi and edit both channel at once etc.. not sure we know Ableton
   can do it from our doc.. (and it defiantly can)"

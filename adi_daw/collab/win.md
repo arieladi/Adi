@@ -1,8 +1,16 @@
 # win — log
 
-ORC-VST, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
-(on salon-tv, Windows 11, until 2026-09-30).
+The lead PC, Windows 10 IoT Enterprise LTSC · MSVC 19.44 (VS 2022 Community) · x64 · Claude Opus 5.5
+(on the director's second PC, Windows 11, until 2026-09-30).
 Only the `win` agent writes to this file. Newest entry at the top.
+
+---
+
+## 2026-11-19, late — Live's Limiter, Auto Pan and Tuner back in the devices queue; machine names out of the logs
+
+**For the devices lane.** Live's Limiter device is not built. The queue said "Limiter merged, #259", but #259 was a release-time fix in ADI's own limiter core (`src/adi/dsp/limiter`), which the export's brickwall uses; no Live Limiter canvas, panel or measured render exists. It is queued after Gate (DEV-22 in PLAN, LANES §2 item 5, the prompt of 5 November). Auto Pan and Tuner were in no queue; they follow Align Delay. When you reach item 5 of your queue, check the whole list against the Live 12.4 manual's audio effects chapter and log any other gap for win; this does not move ahead of ADR-0248's order (fix before new, d2's session goal until 3 December).
+
+**Text only.** The lead PC and the director's second PC are no longer named in `collab/win.md`, `collab/window.md`, LANES, one quotation in DECISIONS and the clones reading prompt of 4 November. The clones seat scrubs its own log on its branch.
 
 ---
 
@@ -423,7 +431,7 @@ fix; code and doc never drift silently.
 review applied before the merge; its one open item (O4, the engine's per-instance token) becomes a
 needs row with W2.
 
-**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on ORC-VST since
+**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on this PC since
 the 3rd, so win ran the 5 November work list (#459) as a batch: one agent per surface, each with its
 gate, picture and PR, a poller landing them in stack order. On main tonight: #465 A1 Save As (N3's
 window half), #467 A2 the batch commit, #470 A3 one undo step per strip drag (N7), #472 C1 Automation
@@ -441,7 +449,7 @@ clang's FMA contraction made a typed 10 ms read 10.000000000000021, the test now
 outage, a stash of uncommitted fixes) and a second workflow finished them: a batch plans its
 finisher from the start.
 
-**The Live 12 readings, first checkpoint.** His seats on SALON-TV ran the brief of the 5th: measured
+**The Live 12 readings, first checkpoint.** His seats on his second PC ran the brief of the 5th: measured
 the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
 its undo; read the build, the settings census and the export census; the rest not run, the true-peak
 method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
@@ -528,7 +536,7 @@ StackModel, whose PR #463 opened in the evening.
 
 **The Live 12 readings and ADI-View.** The readings brief is written,
 `NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
-on SALON-TV; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
+on his second PC; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
 current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
 references, with a standalone test app to be built by Codex; the plan is in
 `NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
@@ -1021,17 +1029,16 @@ short paths, and the main checkout is the drone's.
 
 ---
 
-## 2026-10-01 — win moves from salon-tv to ORC-VST
+## 2026-10-01 — win moves to a new PC
 
-**Why:** the director moved the Windows lead to a new PC. salon-tv keeps its own roles (Plex and home
-monitoring); its ADI drone tasks stop there and move here.
+**Why:** the director moved the Windows lead to a new PC. The old PC keeps its other roles; its ADI drone tasks stop there and move here.
 
-**The machine:** ORC-VST, Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
+**The machine:** Windows 10 IoT Enterprise LTSC 2021 (build 19044), i7-4930K (no AVX2),
 16 GB, GTX 1070 (8 GB). The repo is at `D:\Documents\GitHub\Adi`, no longer
 `C:\Users\Adi\Documents\GitHub\Adi`; worktrees go under `D:\Documents\GitHub\Adi-wt\`.
 
-**The toolchain is salon-tv's, component for component:**
-- VS 2022 Community 17.14.41 at the default path, installed from salon-tv's exported `.vsconfig`
+**The toolchain is the old PC's, component for component:**
+- VS 2022 Community 17.14.41 at the default path, installed from the old PC's exported `.vsconfig`
   (27 components). MSVC 14.44.35207 (cl 19.44.35229), with the bundled CMake 3.31.6 and Ninja 1.12.1.
 - Python 3.14.7 and Node 24.19 LTS.
 - Ollama 0.35.0 with qwen2.5-coder:7b, 100% on the 1070. It runs through the CUDA 12 runner, because
@@ -1044,7 +1051,7 @@ monitoring); its ADI drone tasks stop there and move here.
 
 **The copy was checked, not re-cloned:**
 - `git fsck` is clean, and every branch's commits are on origin.
-- salon-tv's eight worktree registrations are pruned.
+- The old PC's eight worktree registrations are pruned.
 - The AdiGuard worktree `adiguard-osc4` is re-pointed at the D: path.
 
 **Still to do:**
