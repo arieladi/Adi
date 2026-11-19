@@ -214,6 +214,16 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
         return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry),build.hex,helperSize,helperTime));
     } catch(const std::exception&) {error="scanner configuration unavailable";return nullptr;}
 }
+bool Scanner::retry(const std::string& format,const std::filesystem::path& path,std::string& error) {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        if(format!="clap" && format!="vst3"){error="unsupported scanner format";return false;}
+        std::error_code ec;const auto canonical=std::filesystem::canonical(path,ec);
+        if(ec){error="retry candidate path unavailable";return false;}
+        return registry_->unblockScan(format,utf8(canonical),error);
+    } catch(const std::exception&){error="scan retry unavailable";return false;}
+}
 Result Scanner::probe(const std::string& format,const std::filesystem::path& path,Validator validate,void* context) {
     Result result;
     if(audio::onAudioThread){result.state=State::CallbackRefused;return result;}
@@ -235,16 +245,13 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         result.path=utf8(canonical);require(identity(format,result.path),"invalid canonical scan identity");
         const auto stamp=candidateStamp(format,canonical,helperBuildHash_,result.error);
         if(!stamp){result.cacheWarning=result.error;result.error.clear();}
-        auto ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
-        if(!ticket){result.state=State::Quarantined;return result;}
-        auto cached=stamp?registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
-        if(!result.error.empty()) {
-            std::string finishError;
-            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
-                result.state=State::Quarantined;result.error=finishError;
-            } else result.state=State::Unavailable;
-            return result;
-        }
+        std::optional<ScanTicket> ticket;
+        std::optional<ScanFailure> cachedFailure;
+        if(stamp) {
+            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error);
+            if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
+        } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
+        if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}
         auto stable=[&]() {
             const auto after=candidateStamp(format,canonical,helperBuildHash_,result.error);
             std::error_code sizeError,timeError;
@@ -253,13 +260,31 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             if(after && *after==*stamp && !sizeError && !timeError &&
                currentSize==helperSize && currentTime==helperTime)return true;
             std::string finishError;
-            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+            if(ticket && !registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
                 result.state=State::Quarantined;result.error=finishError;
             } else {result.state=State::Unavailable;result.error="scan candidate or helper changed during probe; retry required";}
             return false;
         };
+        if(cachedFailure) {
+            if(!stable())return result;
+            if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                result.state=State::Cancelled;return result;
+            }
+            result.state=cachedFailure->kind==ScanFailureKind::Rejected?State::Failed:State::Quarantined;
+            result.failureCacheHit=true;
+            result.failureStrikes=cachedFailure->strikes;result.error=cachedFailure->reason;return result;
+        }
+        auto cached=stamp?registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
+        if(!result.error.empty()) {
+            std::string finishError;
+            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+                result.state=State::Quarantined;result.error=finishError;
+            } else result.state=State::Unavailable;
+            return result;
+        }
         if(cached && cached->size()<=config_.process.maximumOutput) {
             auto plugins=decodeMetadata(*cached,format,result.path,result.error);
+            if(plugins && plugins->empty())plugins.reset();
             if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
             if(plugins) {
                 if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
@@ -280,6 +305,7 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         const bool cancel=process.succeeded() && config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
         const bool abandoned=cancel || process.status==ProcessStatus::Cancelled || process.status==ProcessStatus::LaunchFailed ||
             process.status==ProcessStatus::Invalid || process.status==ProcessStatus::CallbackRefused ||
+            process.status==ProcessStatus::IoFailed ||
             (process.status==ProcessStatus::Exited && process.exitCode==78);
         if(abandoned) {
             const auto state=cancel || process.status==ProcessStatus::Cancelled?State::Cancelled:State::Unavailable;
@@ -292,7 +318,12 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         std::optional<std::vector<Plugin>> plugins;
         if(process.succeeded())plugins=decodeMetadata(process.output,format,result.path,result.error);
         else result.error=failure(process);
+        if(plugins && plugins->empty()){plugins.reset();result.error="scanner returned no plug-in classes";}
         if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+        if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+            result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
+                State::Cancelled:State::Quarantined;return result;
+        }
         if(plugins) {
             if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
                 result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
@@ -311,8 +342,20 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         // Only bounded known diagnostics enter durable shared data. A validator
         // may return arbitrary diagnostic text; use a stable fallback if needed.
         if(!text(result.error,4096))result.error="scanner format validation failed";
+        const auto diagnostic=result.error;
+        if(stamp && !stable())return result;
+        result.error=diagnostic;
         std::string finishError;
-        if(!registry_->finishScan(*ticket,ScanDisposition::Failed,result.error,config_.clock(),finishError)) {
+        bool finished=false;
+        const auto kind=process.status==ProcessStatus::Crashed?ScanFailureKind::Crashed:
+            (process.status==ProcessStatus::TimedOut?ScanFailureKind::TimedOut:ScanFailureKind::Rejected);
+        if(stamp) {
+            const auto strikes=registry_->finishFailedScan(*ticket,*stamp,kind,result.error,config_.clock(),finishError);
+            finished=strikes.has_value();if(strikes)result.failureStrikes=*strikes;
+        } else finished=kind==ScanFailureKind::Rejected?
+            registry_->finishScan(*ticket,ScanDisposition::Rejected,"",config_.clock(),finishError):
+            registry_->finishScan(*ticket,ScanDisposition::Failed,result.error,config_.clock(),finishError);
+        if(!finished) {
             result.state=State::Quarantined;result.error=finishError;return result;
         }
         result.state=State::Failed;return result;

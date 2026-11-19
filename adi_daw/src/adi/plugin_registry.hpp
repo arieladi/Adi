@@ -31,7 +31,13 @@ namespace SQLite { class Database; }
 
 namespace adi {
 
-enum class ScanDisposition { Succeeded, Abandoned, Failed };
+enum class ScanDisposition { Succeeded, Abandoned, Failed, Rejected };
+enum class ScanFailureKind { Rejected, Crashed, TimedOut };
+struct ScanFailure {
+    ScanFailureKind kind = ScanFailureKind::Rejected;
+    std::string reason;
+    unsigned strikes = 0; // rejected=0; crash/timeout=1 or 2
+};
 enum class ScanBlockState { Pending, Blocked };
 struct ScanBlock {
     std::string format, path, reason;
@@ -50,6 +56,10 @@ private:
     std::string format_, path_;
     std::int64_t id_ = 0;
     std::weak_ptr<const int> owner_;
+};
+struct ScanAdmission {
+    std::optional<ScanTicket> ticket;
+    std::optional<ScanFailure> cachedFailure;
 };
 
 class PluginRegistry {
@@ -91,8 +101,22 @@ public:
     /// requires explicit re-enable. Never scan when this write fails.
     std::optional<ScanTicket> beginScan(const std::string& format, const std::string& path,
                                       std::int64_t nowUtc, std::string& error);
+    /// Reliable stamped admission: changed stamps retire only typed automatic
+    /// failures, never pending/manual/legacy blocks. Unchanged deterministic
+    /// failures or two crashes/timeouts return cachedFailure without a ticket.
+    /// A first crash/timeout permits one more explicit probe; no retry loop.
+    std::optional<ScanAdmission> beginStampedScan(const std::string& format,
+        const std::string& path, const std::string& stamp, std::int64_t nowUtc, std::string& error);
+    /// Atomically retire stale success metadata and finish this ticket with a
+    /// typed failure. Only crash/timeout consume strikes; rejected metadata is
+    /// immediately reusable as a negative result. Returns the resulting count.
+    std::optional<unsigned> finishFailedScan(const ScanTicket&, const std::string& stamp,
+        ScanFailureKind, const std::string& reason, std::int64_t nowUtc, std::string& error);
     /// Succeeded/Abandoned remove only this pending attempt (empty reason).
-    /// Failed retains it as blocked with a nonempty diagnostic. Use Abandoned
+    /// Failed retains it as a legacy block with a nonempty diagnostic.
+    /// Rejected removes pending and all stale cache state (empty reason), for
+    /// a deterministic rejection without a reliable stamp; never quarantines.
+    /// Use Abandoned
     /// for caller cancellation/helper launch failures, not plug-in crashes.
     /// False includes stale/foreign ticket: discard its metadata, never retry
     /// completion against a newer ticket. Existing quarantine remains intact.

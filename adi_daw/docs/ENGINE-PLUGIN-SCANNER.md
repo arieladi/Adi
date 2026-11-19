@@ -16,13 +16,14 @@ owner at a time per Scanner/registry connection, on an owner worker. These are
 blocking services, not UI/audio callback work.
 
 `probe(format,path,validator,context)` resolves an existing native canonical
-path, commits a pending marker before cache lookup or launch and invokes the helper with an
+path, checks typed negative state, commits a pending marker before success-cache lookup or launch and invokes the helper with an
 explicit argument vector. It checks exit status and validates the whole packet,
 then optional format validation, before token-checked completion. Only Ready
-contains descriptors. Crashes, timeout, bad/oversized/mismatched metadata,
-nonzero child exit and format rejection retain a named block. Existing pending/
-blocked paths never launch again without explicit re-enable. Cancellation and
-helper launch/configuration failures abandon their own marker; helper exit 78
+contains descriptors. Bad/oversized/mismatched metadata, ordinary nonzero child
+exit and format rejection retain a named negative result. Reliably stamped
+crashes/timeouts allow one further explicit probe before two strikes block more
+children. Pending and manual/legacy blocks always need explicit re-enable.
+Cancellation and helper launch/configuration/I/O failures abandon their own marker; helper exit 78
 means unsupported deployment. Completion failure/stale tickets publish nothing
 and retain quarantine. Resource exceptions retain pending state. A pending row
 means in-progress/interrupted, not proof of a plug-in crash. Native alias
@@ -30,10 +31,11 @@ resolution binds admission; no filename/Unicode case heuristic is used.
 
 ## Version 3 success cache (DEV-25 first slice)
 
-Version 3 adds only `plugin_scan_cache`: keyed by format and canonical path,
+Version 3 adds `plugin_scan_cache`: keyed by format and canonical path,
 holding a stamp, the entire bounded schema-1 packet, and an explicit timestamp.
 Version-1/2 route and quarantine rows are preserved; old applications refuse
-the newer registry rather than misreading it. Failure/strike policy is unchanged.
+the newer registry rather than misreading it. The additive failure table below
+also opens early success-only v3 databases without rewriting their existing rows.
 
 The BLAKE3 stamp incorporates its own version, the shared protocol version,
 format, canonical candidate identity and the helper executable's BLAKE3 digest.
@@ -96,11 +98,68 @@ file changes do not publish unvalidated/stale data; a late SQL refusal rolls
 back; v2 migration preserves routes/blocks. `adi_plugin_scanner_tests` also
 repeats a real CLAP module and checks that no new init PID records appear.
 
-This is a cache foundation, not the whole DEV-25 row. It does not add automatic
-failure expiry/retry, a worker pool, a UI, a startup service, or catalogue-first
+This is a cache foundation, not the whole DEV-25 row. It does not add time-based
+failure expiry, a retry loop, a worker pool, a UI, a startup service, or catalogue-first
 instance loading. The loader's lazy/hint scans still call this service; moving
 discovery out of project open is a separate change. Saved JUCE identifier/path
 spelling is unchanged. Readiness stages need separate runtime observations.
+
+## Stamped negative results and two strikes (DEV-25 second slice)
+
+The additive v3 `plugin_scan_failures` table records the same reliable stamp,
+bounded diagnostic, explicit time, failure kind, strike count and (when blocked)
+the exact automatic block row's id. Stamped admission is transactional:
+
+- An empty class list or unchanged deterministic rejection returns `Failed`
+  with `failureCacheHit=true` and the original reason, without another child.
+  It has zero strikes and no block id or quarantine row. A live pending ticket
+  or manual block takes precedence in the same admission transaction.
+- The first crash or timeout returns `Failed`, `failureStrikes=1`, and removes
+  its pending marker. A later explicit probe may run one more child. A second
+  same-stamp crash/timeout, including one of each, retains the automatic block;
+  subsequent probes reuse that failure with `failureStrikes=2`. There is no
+  immediate retry inside one probe call. A successful attempt clears strikes.
+- A changed reliable stamp retires only owned automatic failure/block state
+  and stale success metadata before admitting a new attempt. A failure, like
+  a success, must pass the post-probe stamp/helper stability check. A changed
+  file during either outcome is abandoned for a later probe.
+- Manual and inherited untyped v2/early-v3 blocks, and interrupted pending
+  attempts, never auto-expire. Without a reliable stamp, crashes/timeouts keep
+  conservative legacy immediate blocking; deterministic/empty results remain
+  uncached failures and never quarantine. Both report `cacheWarning`.
+- A completed failure removes prior success metadata in the same transaction.
+  A late block/foreign ticket/SQL error cannot publish a failure or clear a new
+  decision; transaction rollback restores the prior packet and pending ticket.
+
+`Scanner::retry(format,path,error)` resolves an existing path with exactly the
+same native canonicalization as probe, then clears block, positive and negative
+state. Separator, dot-component, Windows case and supported native links cannot
+reset a different spelling while leaving the actual canonical block behind.
+Retry launches nothing itself. Missing files refuse rather than guessing a
+canonical alias; owners with a stored canonical missing key may use the low-level
+registry API. No GUI control is introduced here.
+
+Triggers retire typed automatic ownership on a later block update/delete or
+success insert, including writes made by an earlier v3 application that knows
+only the original tables. Thus its manual block update cannot later be mistaken
+for a stamped automatic block. Earlier v3 applications may still apply their
+older immediate-block policy; those untyped results remain conservative legacy
+blocks. Earlier success-only v3 writers do not understand negative results and
+may reprobe them, but cannot bypass a pending/manual/two-strike block. Negative
+results and first strikes are stored only in the failure table, never advertised
+as active blocks by `scanBlocks`. Exit 78, launch failure, cancellation, unavailable
+registry and process I/O infrastructure errors do not consume strikes. Output
+limit or malformed protocol is a deterministic rejection. Changing timeout or
+output limits alone does not change the module stamp: explicit retry is needed
+to reconsider an already blocked result under changed process limits.
+
+The focused suite counts real child launches for negative reuse, crash/timeout
+strikes across reopen, changed-file recovery, successful second attempts and
+retry aliases. It also covers cancellation, registry contention, late block,
+SQL rollback, stale-positive removal, old-v3 block writes and additive migration.
+OS symlink tests report SKIP when the account lacks the required privilege.
+Windows also exercises a native directory junction through actual canonical
+retry and removes only its owned reparse point, leaving the target intact.
 
 The child reserves a dedicated copy of its stdout pipe before loading any
 plug-in. It redirects ordinary stdout to the null stderr channel, so constructor,

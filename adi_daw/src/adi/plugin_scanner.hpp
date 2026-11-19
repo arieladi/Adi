@@ -34,6 +34,8 @@ enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, 
 struct Result {
     State state = State::Invalid;
     bool cacheHit = false; // validated success packet; does not mean instantiated
+    bool failureCacheHit = false; // no child; matching deterministic/two-strike failure
+    unsigned failureStrikes = 0; // consecutive stable-stamp crashes/timeouts, capped at two
     std::string cacheWarning; // no reliable bounded stamp: fresh child result is not cached
     std::string path, error; // canonical request path; error is an owned diagnostic
     std::vector<Plugin> plugins;
@@ -58,6 +60,11 @@ public:
     /// plug-in in this process, and never falls back in process. Owner only.
     Result probe(const std::string& format, const std::filesystem::path& path,
                  Validator validate = nullptr, void* context = nullptr);
+    /// Explicit owner retry/re-enable, resolving existing aliases exactly as
+    /// probe does. Clears manual/legacy/automatic blocks and both cache kinds.
+    /// Missing paths refuse; callers holding a stored canonical missing key may
+    /// use PluginRegistry::unblockScan directly. Never runs a child itself.
+    bool retry(const std::string& format, const std::filesystem::path& path, std::string& error);
 private:
     Scanner(Config config, std::unique_ptr<PluginRegistry> registry, std::string buildHash,
             std::uintmax_t helperSize, std::filesystem::file_time_type helperTime);

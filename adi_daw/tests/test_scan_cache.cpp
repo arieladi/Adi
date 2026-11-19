@@ -8,12 +8,15 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <thread>
+#include <cstdlib>
 #include <vector>
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winioctl.h>
 #endif
 
 namespace {
@@ -28,6 +31,33 @@ fs::path binary(const fs::path& path){return fs::is_directory(path)?path/"Conten
 std::size_t launches(const fs::path& path){std::ifstream in(marker(path));return static_cast<std::size_t>(std::count(std::istreambuf_iterator<char>(in),{},'\n'));}
 void write(const fs::path& path,const std::string& value){std::ofstream out(path,std::ios::binary);out<<value;if(!out)throw std::runtime_error("fixture write");}
 std::string content(const fs::path& path){std::ifstream in(path,std::ios::binary);return {std::istreambuf_iterator<char>(in),{}};}
+#if defined(_WIN32)
+bool makeJunction(const fs::path& link,const fs::path& target) {
+    // Both paths belong to this test's exclusive TempDirectory. Mount-point
+    // reparse data creates a native directory junction without symlink privilege.
+    const auto print=fs::canonical(target).wstring();const auto substitute=L"\\??\\"+print;
+    struct MountPoint {
+        DWORD tag=IO_REPARSE_TAG_MOUNT_POINT;WORD bytes=0,reserved=0;
+        WORD substituteOffset=0,substituteBytes=0,printOffset=0,printBytes=0;
+        wchar_t names[2048]{};
+    } data;
+    static_assert(offsetof(MountPoint,names)==16);
+    if(substitute.size()+print.size()+2>=2048)return false;
+    data.substituteBytes=static_cast<WORD>(substitute.size()*sizeof(wchar_t));
+    data.printOffset=static_cast<WORD>(data.substituteBytes+sizeof(wchar_t));
+    data.printBytes=static_cast<WORD>(print.size()*sizeof(wchar_t));
+    data.bytes=static_cast<WORD>(8+data.printOffset+data.printBytes+sizeof(wchar_t));
+    std::copy(substitute.begin(),substitute.end(),data.names);
+    std::copy(print.begin(),print.end(),data.names+substitute.size()+1);
+    fs::create_directory(link);
+    const auto handle=CreateFileW(link.c_str(),GENERIC_WRITE,0,nullptr,OPEN_EXISTING,
+        FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,nullptr);
+    if(handle==INVALID_HANDLE_VALUE)return false;
+    DWORD returned=0;const bool ok=DeviceIoControl(handle,FSCTL_SET_REPARSE_POINT,&data,
+        static_cast<DWORD>(8+data.bytes),nullptr,0,&returned,nullptr)!=FALSE;
+    CloseHandle(handle);return ok;
+}
+#endif
 struct Fixture {
     test::TempDirectory temp{"scan_cache","owner"};
     Config config;std::string error;
@@ -42,10 +72,22 @@ int helper(const std::vector<std::string>& args) {
     const auto path=native(args[3]);std::ofstream(marker(path),std::ios::app)<<"launch\n";
     const auto module=binary(path);if(!fs::exists(module))return 65;
     const auto version=content(module);
+    if(version=="reject")return 65;
+    if(version=="unsupported")return 78;
+    if(version=="hang")std::this_thread::sleep_for(std::chrono::seconds(10));
+    if(version=="crash" || (version=="flaky" && launches(path)==1)) {
+#if defined(_WIN32)
+        TerminateProcess(GetCurrentProcess(),0xC0000005UL);
+#else
+        std::abort();
+#endif
+        return 66;
+    }
+    if(version=="change-fail"){write(module,"changed failed module");return 65;}
     if(version=="mutate")write(module,"mutated during child");
     Plugin plugin;plugin.id="org.adi.cache";plugin.name="Cache fixture";plugin.version=version;
     if(args[2]=="vst3")plugin.data="format validation fixture";
-    std::string error;auto packet=encodeMetadata(args[2],args[3],{plugin},error);
+    std::string error;auto packet=encodeMetadata(args[2],args[3],version=="empty"?std::vector<Plugin>{}:std::vector<Plugin>{plugin},error);
     if(!packet)return 65;
     std::fwrite(packet->data(),1,packet->size(),stdout);return 0;
 }
@@ -220,6 +262,11 @@ void uncacheableBundle(const fs::path& self) {
           "unreliable oversized fingerprint is explicit uncached discovery, not an unavailable plug-in");
     check(scanner->probe("clap",large).state==State::Ready && launches(large)==2,
           "unstampable result is not reused as a weak cache entry");
+    write(binary(large),"reject");const auto uncachedNegative=scanner->probe("clap",large);
+    check(uncachedNegative.state==State::Failed && !uncachedNegative.cacheWarning.empty() &&
+        !uncachedNegative.failureCacheHit && scanner->probe("clap",large).state==State::Failed &&
+        launches(large)==4 && f.registry()->scanBlocks(f.error)->empty(),
+        "unstampable deterministic failure remains uncached and never quarantines the candidate");
     const auto outside=f.temp.path()/"external";fs::create_directory(outside);write(outside/"test.clap","external module");
     const auto linked=f.temp.path()/"linked.clap";fs::create_directory(linked);std::error_code ec;
     fs::create_directory_symlink(outside,linked/"Contents",ec);
@@ -229,9 +276,176 @@ void uncacheableBundle(const fs::path& self) {
               "external internal-directory link still reaches child but is not traversed for the cache");
     } else std::printf("SKIP: directory symlink unavailable (%s)\n",ec.message().c_str());
 }
+void negativeCache(const fs::path& self) {
+    Fixture f(self);auto scanner=f.scanner();auto registry=f.registry();
+    const auto rejected=f.candidate("rejected.clap","reject");
+    const auto first=scanner->probe("clap",rejected),second=scanner->probe("clap",rejected);
+    scanner.reset();scanner=f.scanner();const auto third=scanner->probe("clap",rejected);
+    check(first.state==State::Failed && first.failureStrikes==0 && second.state==State::Failed &&
+        second.failureCacheHit && third.failureCacheHit && launches(rejected)==1 && second.error==first.error,
+        "unchanged deterministic failure reuses exact diagnostic across reopen with one real child");
+    check(registry->scanBlocks(f.error)->empty(),"deterministic negative result never appears in quarantine");
+    const auto empty=f.candidate("no-classes.clap","empty");
+    const auto empty1=scanner->probe("clap",empty),empty2=scanner->probe("clap",empty);
+    check(empty1.state==State::Failed && empty2.state==State::Failed && empty2.failureCacheHit &&
+        empty2.failureStrikes==0 && empty2.plugins.empty() && launches(empty)==1 && registry->scanBlocks(f.error)->empty(),
+        "decoded empty class list is a reusable negative result with no quarantine or crash strikes");
+    const auto pending=registry->beginScan("clap",utf8(fs::canonical(empty)),123,f.error);
+    const auto whilePending=scanner->probe("clap",empty);
+    check(pending && whilePending.state==State::Quarantined && !whilePending.failureCacheHit && launches(empty)==1,
+        "another owner's live pending ticket wins over matching negative metadata");
+    if(pending)registry->finishScan(*pending,ScanDisposition::Abandoned,"",124,f.error);
+    check(scanner->probe("clap",empty).failureCacheHit && launches(empty)==1,
+        "abandoned competing attempt leaves the prior negative cache intact");
+    const auto vstEmpty=f.candidate("no-classes.vst3","empty");
+    const auto accept=+[](const std::vector<Plugin>&,const std::string&,void*,std::string&){return true;};
+    scanner->probe("vst3",vstEmpty,accept);const auto vstNegative=scanner->probe("vst3",vstEmpty,accept);
+    check(vstNegative.state==State::Failed && vstNegative.failureCacheHit && launches(vstEmpty)==1 &&
+        registry->scanBlocks(f.error)->empty(),"empty VST3-format metadata is negative-cached before any format validator can accept it");
+    fs::last_write_time(rejected,fs::last_write_time(rejected)+std::chrono::seconds(3));
+    check(scanner->probe("clap",rejected).state==State::Failed && launches(rejected)==2,
+        "timestamp-only change releases only the typed automatic negative result");
+    const auto time=fs::last_write_time(rejected);write(rejected,"recovered larger");fs::last_write_time(rejected,time);
+    check(scanner->probe("clap",rejected).state==State::Ready && launches(rejected)==3,
+        "size-only change recovers a failed module without explicit re-enable");
+    const auto good=f.candidate("formerly-good.clap","good");const auto originalTime=fs::last_write_time(good);
+    scanner->probe("clap",good);write(good,"reject");
+    check(scanner->probe("clap",good).state==State::Failed,"replacement failure follows earlier success");
+    write(good,"good");fs::last_write_time(good,originalTime);const auto restored=scanner->probe("clap",good);
+    check(restored.state==State::Ready && !restored.cacheHit && launches(good)==3,
+        "a recorded failure deletes stale positive metadata even if original stamp is later restored");
+    const auto changing=f.candidate("changing-failure.clap","change-fail");
+    check(scanner->probe("clap",changing).state==State::Unavailable && launches(changing)==1 &&
+        scanner->probe("clap",changing).state==State::Ready && launches(changing)==2,
+        "changed-during-failure result is abandoned and cannot poison the replacement stamp");
+    registry->blockScan("clap",utf8(fs::canonical(rejected)),"manual",124,f.error);
+    write(rejected,"another replacement");const auto manual=scanner->probe("clap",rejected);
+    check(manual.state==State::Quarantined && !manual.failureCacheHit && launches(rejected)==3,
+        "changed reliable stamp never clears a manual block");
+}
+void strikesAndAbandonment(const fs::path& self) {
+    Fixture f(self);auto scanner=f.scanner();auto registry=f.registry();
+    const auto crash=f.candidate("crash.clap","crash");
+    const auto first=scanner->probe("clap",crash);
+    check(first.state==State::Failed && first.failureStrikes==1 && launches(crash)==1 && registry->scanBlocks(f.error)->empty(),
+        "first contained crash records one strike without a durable blocking marker");
+    scanner.reset();scanner=f.scanner();const auto second=scanner->probe("clap",crash),third=scanner->probe("clap",crash);
+    check(second.state==State::Failed && second.failureStrikes==2 && third.state==State::Quarantined &&
+        third.failureCacheHit && third.failureStrikes==2 && launches(crash)==2,
+        "second unchanged crash across reopen blocks a third real child");
+    fs::last_write_time(crash,fs::last_write_time(crash)+std::chrono::seconds(3));
+    const auto reset=scanner->probe("clap",crash);
+    check(reset.state==State::Failed && reset.failureStrikes==1 && launches(crash)==3,
+        "reliable changed stamp resets two crash strikes before the new attempt");
+    write(crash,"healthy replacement");
+    check(scanner->probe("clap",crash).state==State::Ready && launches(crash)==4,
+        "changed formerly crashing module recovers automatically");
+    const auto flaky=f.candidate("flaky.clap","flaky");scanner->probe("clap",flaky);
+    check(scanner->probe("clap",flaky).state==State::Ready && scanner->probe("clap",flaky).cacheHit && launches(flaky)==2,
+        "successful second same-stamp attempt clears first strike and caches metadata");
+    f.config.process.timeout=std::chrono::milliseconds(500);auto shortScan=f.scanner();
+    const auto hang=f.candidate("hang.clap","hang");
+    const auto timeout1=shortScan->probe("clap",hang),timeout2=shortScan->probe("clap",hang),timeout3=shortScan->probe("clap",hang);
+    check(timeout1.failureStrikes==1 && timeout2.failureStrikes==2 && timeout3.failureCacheHit && launches(hang)==2,
+        "two deadline failures reap two children then reuse the negative result");
+    const auto unavailable=f.candidate("unsupported.clap","unsupported");
+    check(scanner->probe("clap",unavailable).state==State::Unavailable &&
+        scanner->probe("clap",unavailable).state==State::Unavailable && launches(unavailable)==2,
+        "unsupported helper capability is not a cached candidate failure or strike");
+    const auto cancelled=f.candidate("cancel.clap","hang");std::atomic<bool> cancel{false};
+    f.config.process.cancel=&cancel;f.config.process.timeout=std::chrono::seconds(3);auto cancellable=f.scanner();
+    std::thread cancellation([&]{std::this_thread::sleep_for(std::chrono::milliseconds(250));cancel=true;});
+    const auto result=cancellable->probe("clap",cancelled);cancellation.join();
+    SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+    SQLite::Statement failed(db,"SELECT count(*) FROM plugin_scan_failures WHERE path=?");failed.bind(1,utf8(fs::canonical(cancelled)));failed.executeStep();
+    check(result.state==State::Cancelled && result.failureStrikes==0 && launches(cancelled)==1 && failed.getColumn(0).getInt()==0,
+        "cancellation reaps the child without a cached result or crash strike");
+    const auto before=launches(crash);db.exec("BEGIN IMMEDIATE");
+    const auto busy=scanner->probe("clap",crash);db.exec("ROLLBACK");
+    check(busy.state==State::Quarantined && launches(crash)==before,
+        "busy registry admission launches no child and returns no success metadata");
+}
+void retryAliases(const fs::path& self) {
+    Fixture f(self);auto scanner=f.scanner();auto registry=f.registry();const auto path=f.candidate();
+    fs::create_directory(f.temp.path()/"alias");auto slash=utf8(path);std::replace(slash.begin(),slash.end(),'\\','/');
+    std::vector<fs::path> aliases{f.temp.path()/"alias"/".."/path.filename(),native(slash)};
+#if defined(_WIN32)
+    auto casing=utf8(path);for(char& ch:casing)if(ch>='a' && ch<='z')ch=static_cast<char>(ch-'a'+'A');aliases.push_back(native(casing));
+#endif
+    const auto link=f.temp.path()/"retry-link.clap";std::error_code ec;fs::create_symlink(path,link,ec);
+    if(!ec)aliases.push_back(link);else std::printf("SKIP: retry symlink unavailable (%s)\n",ec.message().c_str());
+#if defined(_WIN32)
+    const auto junction=f.temp.path()/"owned-junction";
+    const bool junctionMade=makeJunction(junction,f.temp.path());
+    check(junctionMade && fs::canonical(junction/path.filename())==fs::canonical(path),
+        "native Windows junction is created without symlink privilege and resolves to the owned module");
+    if(junctionMade)aliases.push_back(junction/path.filename());
+#endif
+    bool passed=true;std::size_t count=0;
+    for(const auto& alias:aliases) {
+        registry->blockScan("clap",utf8(fs::canonical(path)),"manual retry",124,f.error);
+        passed=passed && scanner->retry("clap",alias,f.error);
+        const auto result=scanner->probe("clap",path);++count;
+        passed=passed && result.state==State::Ready && !result.cacheHit && launches(path)==count;
+    }
+    check(passed,"explicit retry resolves supported separator/dot/case/link aliases to the probe identity");
+#if defined(_WIN32)
+    // Remove this owned reparse point itself, never recursively follow it.
+    check(RemoveDirectoryW(junction.c_str())!=FALSE && fs::exists(path),
+        "junction retry used the canonical block and cleanup removes only the junction, retaining its target");
+#endif
+    write(path,"reject");scanner->probe("clap",path);
+    check(scanner->retry("clap",path,f.error) && scanner->probe("clap",path).state==State::Failed && launches(path)==count+2,
+        "explicit retry discards matching negative metadata and runs a fresh child");
+    check(!scanner->retry("au",path,f.error) && !scanner->retry("clap",f.temp.path()/"missing",f.error),
+        "retry refuses unsupported formats and missing paths without lexical alias guessing");
+}
+void failureTransactions(const fs::path& self) {
+    Fixture f(self);auto registry=f.registry();const auto path=utf8(f.candidate());const std::string stamp(64,'a');
+    auto ticket=registry->beginScan("clap",path,1,f.error);if(!ticket)throw std::runtime_error(f.error);
+    registry->finishCachedScan(*ticket,stamp,"old complete packet",2,f.error);
+    ticket=registry->beginScan("clap",path,3,f.error);if(!ticket)throw std::runtime_error(f.error);
+    SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+    db.exec("CREATE TRIGGER refuse_failure BEFORE INSERT ON plugin_scan_failures BEGIN SELECT RAISE(ABORT,'injected'); END");
+    check(!registry->finishFailedScan(*ticket,stamp,ScanFailureKind::Rejected,"reject",4,f.error) &&
+        registry->cachedScan(*ticket,stamp,f.error)==std::optional<std::string>("old complete packet") &&
+        registry->scanBlocks(f.error)->front().state==ScanBlockState::Pending,
+        "late negative-cache SQL failure rolls back its block, stale-positive deletion and exact pending ticket");
+    db.exec("DROP TRIGGER refuse_failure");auto other=f.registry();
+    check(!other->finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,"crash",4,f.error),
+        "foreign connection cannot consume strikes or complete a ticket");
+    other->blockScan("clap",path,"late manual",5,f.error);
+    check(!registry->finishFailedScan(*ticket,stamp,ScanFailureKind::Rejected,"reject",6,f.error) &&
+        !registry->beginStampedScan("clap",path,std::string(64,'b'),7,f.error),
+        "late manual block defeats negative completion and changed-stamp retry");
+    registry->unblockScan("clap",path,f.error);ticket=registry->beginScan("clap",path,8,f.error);
+    if(!ticket)throw std::runtime_error(f.error);
+    registry->finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,"crash",9,f.error);
+    ticket=registry->beginScan("clap",path,9,f.error);if(!ticket)throw std::runtime_error(f.error);
+    registry->finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,"crash",9,f.error);
+    // An early v3/manual writer knows only this UPDATE; even same text/time must
+    // retire automatic ownership so future stamped admission cannot clear it.
+    db.exec("UPDATE plugin_scan_blocks SET reason=reason,updated_utc=updated_utc");
+    check(!registry->beginStampedScan("clap",path,std::string(64,'b'),10,f.error) &&
+        db.execAndGet("SELECT count(*) FROM plugin_scan_failures").getInt()==0,
+        "legacy/manual SQL block updates retire typed ownership even when every value stays the same");
+    registry->unblockScan("clap",path,f.error);ticket=registry->beginScan("clap",path,11,f.error);
+    if(!ticket)throw std::runtime_error(f.error);
+    registry->finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,"crash",12,f.error);
+    auto admission=registry->beginStampedScan("clap",path,stamp,13,f.error);
+    check(admission && admission->ticket && !registry->beginStampedScan("clap",path,std::string(64,'b'),14,f.error),
+        "an interrupted second attempt remains pending even if a different reliable stamp appears");
+    registry->unblockScan("clap",path,f.error);registry.reset();other.reset();
+    db.exec("DROP TRIGGER scan_failure_block_update; DROP TRIGGER scan_failure_block_insert; "
+        "DROP TRIGGER scan_failure_block_delete; DROP TRIGGER scan_failure_success_insert; DROP TABLE plugin_scan_failures");
+    registry=f.registry();
+    check(db.execAndGet("PRAGMA user_version").getInt()==3 &&
+        db.execAndGet("SELECT count(*) FROM sqlite_master WHERE name='plugin_scan_failures'").getInt()==1,
+        "early success-only v3 registry gains the additive failure table transactionally without version bump");
+}
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

@@ -90,6 +90,8 @@ void validationAndCallbacks() {
         callback=!PluginRegistry::open(f.file,f.error) && !reg.route(format,uid) &&
             !reg.remember(format,uid,engine::RouteChoice::Plain,2,f.error) &&
             !reg.beginScan(format,f.path,2,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,none,2,f.error) &&
+            !reg.beginStampedScan(format,f.path,stamp,2,f.error) &&
+            !reg.finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,reason,2,f.error) &&
             !reg.cachedScan(*ticket,stamp,f.error) && !reg.finishCachedScan(*ticket,stamp,packet,2,f.error) &&
             !reg.blockScan(format,f.path,reason,2,f.error) && !reg.unblockScan(format,f.path,f.error) && !reg.scanBlocks(f.error);
     }

@@ -63,6 +63,7 @@ const clap_plugin_descriptor_t second{CLAP_VERSION,"org.adi.scan.second","Second
 std::uint32_t CLAP_ABI count(const clap_plugin_factory_t*) {
     if(mode.find("factory-crash")!=mode.npos)crash();
     if(mode.find("too-many")!=mode.npos)return 65537;
+    if(mode.find("no-classes")!=mode.npos)return 0;
     return 2;
 }
 const clap_plugin_descriptor_t* CLAP_ABI descriptor(const clap_plugin_factory_t*,std::uint32_t index) {
