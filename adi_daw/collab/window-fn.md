@@ -34,10 +34,53 @@ until then a need is named by its item.
 | Reserve: one N row. A distinct `scan::State` (or a shared constant) for "the scanner helper could not start", apart from the file it was asked to read | engine-win (`src/adi/plugin_scanner.*`) | DF-W34 (b): the Status Bar names the scanner, not the plug-in, when the helper is missing or blocked | the window matches `Scanner::probe`'s words ("scanner helper unavailable or scan cancelled") on an `Unavailable` failure |
 | Reserve: one N row. Live MIDI input to the armed track's instrument, taking the window's per-port rings (`MidiEventRing` of `MidiPortEvent`: MIDI 1.0 bytes, the UMP group, the arrival time in ms of JUCE's high-resolution clock) through a published list the callback reads | engine (ADR-0248 d6 item 4) | SRF-05: the director's keyboard into OneShot or his VST3 | the rings fill and are drained on the message thread; the MIDI Indicators light |
 | Reserve: one N row. A `midi.port.name` row, so a port's record can be found by name when its identifier changes (the registry's comment promises the healing) | engine-win (`src/adi/settings/registry.cpp`) | SRF-05: a keyboard on another USB socket keeps its switches | records are keyed by identifier and direction only |
+| Reserve: one N row. The render worker's contract for plug-ins (instances made and given state on the message thread, processing on the worker, `serviceHost` marshalled), so Export renders a project with a VST3 or CLAP | engine-win (EX-11's engine half, the export pipeline) | EX-11: one of the director's VST3s in the exported WAV | the page refuses such a project, saying why |
 | Reserve: one N row. The snapshot's track fields for recording: `TrackNode::recordArmed`, `monitorMode` and `inputRef`, from `tracks.record_armed`, `monitor_mode` and `input_ref` | engine (`src/adi/engine/snapshot.*`) | MX-09: the strips' Arm and the monitoring switch read the frame's snapshot as every other control does (ADR-0201) | the application hands the window the session's rows (`Session::model()`) once a frame, and an action reads them fresh |
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+
+---
+
+## 2026-11-19, window-fn — EX-11: the Export page, a WAV of the song (PR requested)
+
+**What it does** (`src/adi/ui/export_choices.hpp`, `src/juce/ui_export.*`, `ui_main.cpp`, `ui_shell.*`):
+- **File > Export Audio/Video** (Ctrl/Cmd+Shift+R; Live 12 manual 5.2.1; in the File menu after Collect and
+  Export) opens the Export page with Live's choices in Live's order: Rendered Track (Main, or a track in
+  the lanes' order), Render Start and Render Length (bar positions in the project's meter; the time
+  selection, else the loop brace whether the loop is on or not, as Live's), Include Return and Main
+  Effects, Render as Loop, Convert to Mono, Normalize, Create Analysis File, Sample Rate (the project's
+  own rate always offered), Encode PCM with File Type, Bit Depth and Dither Options, Encode MP3, Export
+  Video.
+- **Export** asks for a file (".wav" added, never swapped; a file the user chose to replace goes to the
+  trash first, so a failed render loses nothing) and renders with the engine's `render::renderWav` on a
+  worker: the project as committed, on the renderer's own read-only connection; the range on the tempo
+  map at the chosen rate; 16, 24 or 32-bit float; no, rectangular or triangular dither; Normalize as
+  Live's (peak to 0 dB). Devices are made on the message thread and handed to the worker. Progress and
+  the outcome show on the page and in the Status Bar; Cancel and Quit stop the render; opening another
+  project stops it and closes the page.
+- **Refused, each with its reason on the page:** a track through the returns and Main (the engine's
+  stems, EX-07; with the switch off the track's own post-fader signal renders), Render as Loop, Convert
+  to Mono and analysis files (EX-07), AIFF, FLAC and MP3 (EX-08), the shaped dithers (EX-06), video
+  (P2), and a project with a VST3 or CLAP device (the engine's render worker; until N57 the window cannot
+  put one on a track anyway).
+
+**For the director's session:** New's Set has Reverb and Delay on its returns, which only a Pd build
+loads; the renderer renders only a project whose every device loads, so a Pd-off build refuses New's
+Set ("export requires a fully resolved project"). The Release build is Pd on.
+
+**Review:** three dimensions (the worker and its lifetimes, behaviour against Live's dialog and the
+renderer, the tests), each finding checked by a skeptic: 23 confirmed, 2 refuted. All fixed in
+`250caf4b` (listed in its message). Planted faults fire (the exact range; MP3's refusal).
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites on main merged; `adi_ui_shell_tests` 2762 checks, 0 failures, a real render of a project to the
+chosen WAV over the whole range among them.
+
+**PR requested.** Branch `window-fn/export-page` at `250caf4b`. Title: **adi_daw: window-fn: EX-11, the
+Export page: Live's Export Audio/Video choices, one WAV of the song through the engine's renderer**.
+Depends on nothing unlanded. `AppCommands` gains `ExportAudio` after `FitToTimeRange`, as MX-09 gains
+`ArrangementRecord`: whichever lands second puts its id after the other's (one line, and the tail check).
 
 ---
 
