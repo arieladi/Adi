@@ -896,9 +896,10 @@ void nonFiniteInput() {
                 cleanKey.samples[1][63] = cleanKey.samples[0].back() = Sample{};
             }
             const bool hasKey = block < 8;
-            const bool accepted = process(subject, a, hasKey ? &key : nullptr, hasKey ? 2 : 0, settings) &
-                                  process(zeros, b, hasKey ? &cleanKey : nullptr, hasKey ? 2 : 0, settings);
-            coincides &= accepted && same(a, b) && a.finite() && subject.activity() == zeros.activity();
+            const bool accepted = process(subject, a, hasKey ? &key : nullptr, hasKey ? 2 : 0, settings);
+            const bool referenceAccepted = process(zeros, b, hasKey ? &cleanKey : nullptr, hasKey ? 2 : 0, settings);
+            coincides &= accepted && referenceAccepted && same(a, b) && a.finite() &&
+                         subject.activity() == zeros.activity();
         }
         check(coincides, audition ?
               "Carve audition replaces a corrupt key with silence and recovers without reset" :
