@@ -59,6 +59,7 @@ class SurfaceKnobs final : public device::DeviceInstance {
   public:
     const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
     bool loaded() const noexcept override { return true; }
+    std::string_view processingIssue() const noexcept override { return issue; }
     void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
     std::int32_t latencySamples() const noexcept override { return 37; }
     std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
@@ -67,6 +68,7 @@ class SurfaceKnobs final : public device::DeviceInstance {
     bool setParam(const std::string &id, const device::ParamValue &v) override { return controls.setParam(id, v); }
     std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
     test::Knobs controls;
+    std::string issue;
 };
 
 void refusedBeginOwnership(const std::filesystem::path &dir) {
@@ -193,6 +195,9 @@ void mixSurfacePublication(const std::filesystem::path &file) {
             return;
         const auto firstStamp = initial->instance;
         const auto firstRuntime = initial->runtime;
+        check(initial->processingIssue.empty() && missing->processingIssue.empty() &&
+                  knobs->controls.processingIssue().empty(),
+              "processing issue is empty by default without changing missing-device reporting");
         check(firstStamp != 0 && missing->instance != 0 && firstStamp != missing->instance &&
                   initial->available && initial->latency == 37 && !missing->available && missing->latency == 0 &&
                   firstRuntime.sameInstance(document->session().deviceRuntimeToken(3)) &&
@@ -231,6 +236,15 @@ void mixSurfacePublication(const std::filesystem::path &file) {
             return std::nullopt;
         };
         const auto beforeGesture = opCount(), beforeTxn = headTxn();
+        knobs->issue = "The configuration owner could not prepare the requested settings.";
+        document->tick(0);
+        check(panelOf(3)->processingIssue == knobs->issue && panelOf(3)->available &&
+                  panelOf(3)->instance == firstStamp && panelOf(3)->runtime.sameInstance(firstRuntime) &&
+                  panelOf(3)->latency == 37 &&
+                  std::all_of(panelOf(3)->declarations().begin(), panelOf(3)->declarations().end(),
+                              [](const auto &parameter) { return parameter.modifiable; }) &&
+                  opCount() == beforeGesture && headTxn() == beforeTxn,
+              "nonfatal processing issue preserves availability, exact target, latency, edits and history");
         check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin, .5, firstRuntime, firstStamp) &&
                   document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .65, firstRuntime, firstStamp) &&
                   document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .8, firstRuntime, firstStamp) &&
@@ -242,6 +256,20 @@ void mixSurfacePublication(const std::filesystem::path &file) {
                   headTxn() != beforeTxn && rowValue("cutoff") && std::abs(*rowValue("cutoff") - .8) < 1e-9 &&
                   panelOf(3)->instance == firstStamp,
               "Mix View: one guarded gesture is one undo transaction and preserves the instance stamp");
+        const auto issuePublication = document->parameterFeed().current();
+        knobs->issue = "The configuration worker could not start.";
+        document->tick(0);
+        const auto keptIssue = std::find_if(issuePublication->begin(), issuePublication->end(),
+                                           [](const auto &d) { return d.id == 3; });
+        check(keptIssue != issuePublication->end() &&
+                  keptIssue->processingIssue == "The configuration owner could not prepare the requested settings." &&
+                  panelOf(3)->processingIssue == knobs->issue,
+              "retained parameter publication owns its status text across later runtime mutations");
+        knobs->issue.clear();
+        document->tick(0);
+        check(panelOf(3)->processingIssue.empty() && panelOf(3)->available &&
+                  panelOf(3)->instance == firstStamp && panelOf(3)->latency == 37,
+              "clearing a processing issue restores ordinary presentation without replacing the device");
         check(document->ops().undo().ok && document->synchronise() && headTxn() == beforeTxn && !rowValue("cutoff"),
               "Mix View: one undo returns the guarded parameter gesture to the previous stored state");
         check(document->ops().redo().ok && document->synchronise() && rowValue("cutoff") &&

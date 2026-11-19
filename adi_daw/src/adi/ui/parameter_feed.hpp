@@ -55,6 +55,8 @@ struct DevicePanelData {
     const auto &defaultValues() const noexcept { return metadata ? metadata->defaults : defaults; }
     const auto &groups() const noexcept { return metadata ? metadata->groups : parameterGroups; }
     const auto &parameters() const noexcept { return cachedRecords ? *cachedRecords : records; }
+    // Copied nonfatal runtime status; availability and editing remain independent.
+    std::string processingIssue{};
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.

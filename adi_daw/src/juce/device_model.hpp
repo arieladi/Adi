@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -209,6 +210,13 @@ public:
     /// STILL a device and still in the chain — ADR-0011 — it simply passes
     /// audio through and holds its bytes.
     [[nodiscard]] virtual bool loaded() const noexcept = 0;
+
+    /// A nonfatal processing/configuration issue for presentation on Main only.
+    /// Empty during ordinary pending work. Read already-published status without
+    /// SDK calls or side effects; the view stays valid until the next Main-side
+    /// mutation or destruction. Consumers copy it into their publication. This
+    /// does not change loaded(), parameter availability or audio behavior.
+    [[nodiscard]] virtual std::string_view processingIssue() const noexcept { return {}; }
 
     // Names commented out, matching `engine::Node::prepare`: MSVC /W4 raises
     // C4100 on an unreferenced parameter in a defaulted body, and the
