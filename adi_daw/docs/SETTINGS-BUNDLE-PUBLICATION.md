@@ -1,4 +1,4 @@
-# Settings-bundle publication
+# Settings-bundle publication and import envelopes
 
 `exportBundle` builds its JSON and ZIP in a uniquely reserved sibling directory
 and publishes the closed archive through `media::replaceFile`. It preserves the
@@ -22,7 +22,22 @@ nonthrowing scalar/string moves. Import reports do not populate this field.
 The optional per-call `BundleExportHooks` are diagnostic injection; ordinary
 calls leave them empty.
 
-Existing bundle contents, role conversion, preset selection and import behavior
-remain unchanged. This export safety slice does not validate imported schema
-versions or add migration, archive resource limits, path-role hardening, import
-transactions or UI warning presentation. These remain separate PD-11 work.
+Before import can change or log any setting, both `manifest.json` and
+`settings.json` must be objects with an integer `schema` equal to the supported
+`kSettingsSchema` (currently 1). Missing, older, newer, floating, string or other
+malformed version values are rejected; integers are compared without narrowing
+to `int`. No absent-schema legacy format or migration is implied.
+
+The manifest must contain the string kind `adi-settings-bundle` and a string
+application name matching the receiving application. The settings document must
+also contain that same application string and an object `values`. Missing or
+wrongly typed kind/app fields produce an unsuccessful report rather than a JSON
+type exception. Any envelope rejection has zero applied settings and no returned
+presets; the receiver's stored values, settings file and change log are untouched.
+The input ZIP is read only.
+
+Actual exported v1 archives retain their existing settings, preset selection
+and role resolution behavior. This envelope gate does not change individual
+value/preset handling, validate preset schemas, add migration, archive resource
+limits, path-role hardening, transactional rollback after the gate, or UI warning
+presentation. These remain separate PD-11 work.

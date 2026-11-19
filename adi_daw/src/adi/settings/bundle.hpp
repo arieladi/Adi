@@ -77,6 +77,9 @@ BundleReport exportBundle(const AppSettings&, const std::vector<Preset>&,
 
 /// Reads a bundle into `target`, resolving roles against `target`'s own
 /// folders. A bundle from another application is refused (ADR-0145 d10).
+/// Requires object manifest/settings documents with the supported integer
+/// schema, a string manifest kind, and matching application strings. The
+/// complete envelope gate runs before any target mutation or change-log write.
 /// Does not save.
 BundleReport importBundle(const std::filesystem::path& zipFile, AppSettings& target,
                           const ChangeContext& who);

@@ -113,6 +113,23 @@ private:
     bool ok_ = false;
 };
 
+bool supportedSchema(const Value& document,const char* name,std::string& why) {
+    if(!document.is_object()) {why=std::string(name)+" must be an object";return false;}
+    const auto schema=document.find("schema");
+    if(schema==document.end() || !schema->is_number_integer()) {
+        why=std::string(name)+" schema must be an integer";return false;
+    }
+    // Compare the JSON integer directly: narrowing a uint64 schema to int
+    // could wrap an unsupported version into the current version. A floating
+    // 1.0 is deliberately not a version integer either.
+    if(*schema!=kSettingsSchema) {
+        why=std::string("unsupported ")+name+" schema "+schema->dump()+
+            " (expected "+std::to_string(kSettingsSchema)+")";
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 Roles rolesOf(const AppSettings& s) {
@@ -288,22 +305,38 @@ BundleReport importBundle(const std::filesystem::path& zipFile, AppSettings& tar
         return text ? Value::parse(*text, nullptr, false) : Value(Value::value_t::discarded);
     };
     const Value manifest = parse(zip.read("manifest.json"));
-    if (manifest.is_discarded() || !manifest.is_object() || manifest.value("kind", "") != kKind) {
+    if (!manifest.is_object() || !manifest.contains("kind") ||
+        !manifest.at("kind").is_string() || manifest.at("kind") != kKind) {
         rep.why = "no settings-bundle manifest";
         return rep;
     }
-    if (manifest.value("app", "") != appdata::displayName(target.app())) {
-        rep.why = "this bundle is " + manifest.value("app", std::string("unnamed")) +
+    if(!supportedSchema(manifest,"settings-bundle manifest",rep.why))return rep;
+    const auto manifestApp=manifest.find("app");
+    if(manifestApp==manifest.end() || !manifestApp->is_string()) {
+        rep.why="settings-bundle manifest app must be a string";return rep;
+    }
+    if (*manifestApp != appdata::displayName(target.app())) {
+        rep.why = "this bundle is " + manifestApp->get_ref<const std::string&>() +
                   "'s; settings do not cross applications (ADR-0145 d10)";
         return rep;
     }
     const Value settingsDoc = parse(zip.read("settings.json"));
-    if (settingsDoc.is_discarded() || !settingsDoc.contains("values") ||
+    if(!supportedSchema(settingsDoc,"bundle settings.json",rep.why))return rep;
+    const auto settingsApp=settingsDoc.find("app");
+    if(settingsApp==settingsDoc.end() || !settingsApp->is_string()) {
+        rep.why="bundle settings.json app must be a string";return rep;
+    }
+    if(*settingsApp!=*manifestApp) {
+        rep.why="bundle settings.json names a different application from its manifest";return rep;
+    }
+    if (!settingsDoc.contains("values") ||
         !settingsDoc.at("values").is_object()) {
         rep.why = "the bundle's settings.json is unreadable";
         return rep;
     }
 
+    // Both envelopes are fully checked before set() can mutate values or log
+    // a change. Preset/value handling below retains its existing behavior.
     const Roles roles = rolesOf(target);   // THIS machine's folders
     const auto localise = [&](const Setting& s, const Value& v, Value& out) {
         const auto one = [&](const Value& e, Value& dst) {

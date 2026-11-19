@@ -10,6 +10,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/audio/decode.hpp"
+#include "adi/media/zip_writer.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
 #include "adi/settings/channel_config.hpp"
@@ -24,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <sstream>
 #include <set>
@@ -750,6 +752,112 @@ void testBundlePublication() {
           "overlapping exports have independent stages and cannot clean up each other's work");
 }
 
+void testBundleSchemas() {
+    section("bundle import envelope gate: versions and application types before mutation");
+    adi::test::TempDirectory temp("settings","bundle-schema");
+    AppSettings source(appdata::App::Daw,temp.path()/"source"/"settings.json");
+    std::string why;
+    source.set("lookfeel.theme","light",kUser,why);
+    source.set("library.userLibrary","/sender/library",kUser,why);
+    source.set("files.recordFolder","/sender/library/Recordings",kUser,why);
+    const auto preset=makePreset(source,"Actual v1 preset",{"Display & Input","Theme & Colors"});
+    const auto exported=temp.path()/"existing-v1.zip";
+    check(exportBundle(source,{preset},exported).ok,"schema cases start with an actual exported v1 archive");
+    const auto originalArchive=readText(exported);
+    const Value manifest=readZipJson(exported,"manifest.json");
+    const Value settings=readZipJson(exported,"settings.json");
+    const Value presetDocument=readZipJson(exported,"presets/1.json");
+    const auto targetFile=temp.path()/"receiver"/"settings.json";
+    {
+        AppSettings target(appdata::App::Daw,targetFile);
+        target.set("lookfeel.theme","dark",kUser,why);
+        target.set("library.userLibrary","/receiver/library",kUser,why);
+        check(target.save(why),"receiver has an existing persisted configuration and change log");
+    }
+    const auto fixture=temp.path()/"candidate.zip";
+    const auto reject=[&](const std::string& label,const std::optional<std::string>& manifestText,
+                          const std::optional<std::string>& settingsText) {
+        const auto documents=temp.path()/"documents";
+        writeText(documents/"preset.json",presetDocument.dump());
+        {
+            adi::media::ZipWriter zip(fixture);
+            bool ok=true;
+            if(manifestText) {writeText(documents/"manifest.json",*manifestText);ok=zip.addFile(documents/"manifest.json","manifest.json");}
+            if(settingsText) {writeText(documents/"settings.json",*settingsText);ok=ok && zip.addFile(documents/"settings.json","settings.json");}
+            if(!ok || !zip.addFile(documents/"preset.json","presets/1.json") || !zip.finish())
+                throw std::runtime_error("schema archive fixture failed");
+        }
+        AppSettings target(appdata::App::Daw,targetFile);
+        const Value before=target.stored();
+        const auto diskBefore=readText(targetFile),logBefore=readText(target.changeLogFile()),inputBefore=readText(fixture);
+        BundleReport report;
+        bool threw=false;
+        try {report=importBundle(fixture,target,kUser);} catch(...) {threw=true;}
+        check(!threw && !report.ok && !report.why.empty() && report.applied==0 && report.presets.empty() &&
+              report.skipped.empty() && report.unresolved.empty() && !report.publication &&
+              target.stored()==before && readText(targetFile)==diskBefore &&
+              readText(target.changeLogFile())==logBefore && readText(fixture)==inputBefore,
+              label+": refuses without target, log, input or preset mutation");
+    };
+    const std::vector<Value> badSchemas={0,-1,2,std::uint64_t{0x100000001ULL},
+        std::numeric_limits<std::uint64_t>::max(),std::numeric_limits<std::int64_t>::min(),
+        1.0,"1",true,nullptr,Value::array(),Value::object()};
+    for(const auto& schema:badSchemas) {
+        auto badManifest=manifest;badManifest["schema"]=schema;
+        reject("manifest schema "+schema.dump(),badManifest.dump(),settings.dump());
+        auto badSettings=settings;badSettings["schema"]=schema;
+        reject("settings schema "+schema.dump(),manifest.dump(),badSettings.dump());
+    }
+    auto missing=manifest;missing.erase("schema");
+    reject("missing manifest schema",missing.dump(),settings.dump());
+    missing=settings;missing.erase("schema");
+    reject("missing settings schema",manifest.dump(),missing.dump());
+    const std::vector<Value> wrongTypes={nullptr,true,7,1.5,Value::array(),Value::object()};
+    for(const auto& value:wrongTypes) {
+        auto bad=manifest;bad["kind"]=value;
+        reject("manifest kind type "+value.dump(),bad.dump(),settings.dump());
+        bad=manifest;bad["app"]=value;
+        reject("manifest app type "+value.dump(),bad.dump(),settings.dump());
+        bad=settings;bad["app"]=value;
+        reject("settings app type "+value.dump(),manifest.dump(),bad.dump());
+    }
+    for(const auto* key:{"kind","app"}) {
+        auto bad=manifest;bad.erase(key);
+        reject(std::string("missing manifest ")+key,bad.dump(),settings.dump());
+    }
+    missing=settings;missing.erase("app");
+    reject("missing settings app",manifest.dump(),missing.dump());
+    auto bad=manifest;bad["kind"]="other-bundle";
+    reject("foreign manifest kind",bad.dump(),settings.dump());
+    bad=manifest;bad["app"]="ADiJ";
+    reject("foreign manifest app",bad.dump(),settings.dump());
+    bad=settings;bad["app"]="ADiJ";
+    reject("manifest/settings application disagreement",manifest.dump(),bad.dump());
+    const std::vector<Value> badRoots={nullptr,true,7,"document",Value::array()};
+    for(const auto& root:badRoots) {
+        reject("nonobject manifest "+root.dump(),root.dump(),settings.dump());
+        reject("nonobject settings "+root.dump(),manifest.dump(),root.dump());
+    }
+    for(const auto& value:badRoots) {
+        bad=settings;bad["values"]=value;
+        reject("nonobject settings values "+value.dump(),manifest.dump(),bad.dump());
+    }
+    missing=settings;missing.erase("values");
+    reject("missing settings values",manifest.dump(),missing.dump());
+    reject("missing manifest entry",std::nullopt,settings.dump());
+    reject("missing settings entry",manifest.dump(),std::nullopt);
+    reject("malformed manifest JSON",std::string("{not json"),settings.dump());
+    reject("malformed settings JSON",manifest.dump(),std::string("{not json"));
+
+    AppSettings target(appdata::App::Daw,targetFile);
+    const auto valid=importBundle(exported,target,kUser);
+    check(valid.ok && valid.why.empty() && valid.applied>0 && !valid.publication &&
+          target.get("lookfeel.theme")=="light" && target.get("library.userLibrary")=="/receiver/library" &&
+          target.get("files.recordFolder")=="/receiver/library/Recordings" &&
+          valid.presets.size()==1 && valid.presets[0].name=="Actual v1 preset" && readText(exported)==originalArchive,
+          "actual exported v1 bundle still imports settings, roles and presets without changing its archive");
+}
+
 
 // --- the catalogue (ADR-0156) ---------------------------------------------------------------
 
@@ -1010,6 +1118,7 @@ int runAll() {
     testPartialPreset();
     testBundles();
     testBundlePublication();
+    testBundleSchemas();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;
