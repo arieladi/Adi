@@ -380,6 +380,68 @@ void focusBarScopeBroker() {
     companion.reset();
     check(released == 2 && broker.stats().taps == 0, "the last subscriber releases each tap exactly once");
 }
+void focusBarScopeBrokerBoundaries() {
+    using Source = adi::engine::ScopeSource;
+    using Status = SharedAnalysis::BarScopeStatus;
+    const std::array sources{Source{1, ScopePoint::PostFader, 0}, Source{2, ScopePoint::PostFader, 0}};
+    std::array<Source, 3> releases{};
+    std::size_t detached = 0;
+    bool failSecond = true;
+    std::array taps{std::make_shared<ScopeTap>(48000., .25), std::make_shared<ScopeTap>(44100., .25),
+                    std::make_shared<ScopeTap>(48000., .25)};
+    SharedAnalysis broker([&](Source source, double) -> std::shared_ptr<const ScopeTap> {
+        if (source.track == 2 && failSecond) throw std::bad_alloc();
+        return taps[static_cast<std::size_t>(source.track - 1)];
+    }, [&](Source source) {
+        if (detached < releases.size()) releases[detached] = source;
+        ++detached;
+    }, SharedAnalysis::Mode::Manual);
+    auto companion = broker.acquire({3});
+    bool refused = false;
+    try { (void)broker.acquireBarScope(sources, 8); } catch (const std::bad_alloc &) { refused = true; }
+    check(refused && detached == 2 && releases[0] == sources[0] && releases[1] == sources[1] &&
+              companion.available() && broker.stats().taps == 1,
+          "failed grouped attach releases its new provider demand and preserves an existing subscriber");
+    failSecond = false;
+    auto lease = broker.acquireBarScope(sources, 8);
+    check(lease && lease.sampleRate() == 0. && !lease.request({0, 32, 48000.}),
+          "different tap rates expose no coherent rate or accepted request");
+    if (!lease) return;
+
+    taps[1] = std::make_shared<ScopeTap>(48000., .25);
+    broker.refreshSources();
+    check(lease.sampleRate() == 48000. && lease.request({100, 32, 48000.}, 9), "rate is available after rebinding both sources");
+    std::array<float, 32> samples{};
+    for (const auto &tap : std::span(taps).first(2)) tap->write(samples.data(), nullptr, 32, 100, true, 9);
+    broker.pump();
+    const auto prior = lease.read();
+    check(prior && lease.status() == Status::Ready, "one aligned stamped group produces a completed result");
+    broker.refreshSources(true);
+    check(lease.status() == Status::Missed && !lease.read() && prior && prior->firstStamp == 100,
+          "a forced format epoch drops the group result while an older publication remains immutable");
+
+    check(lease.request({200, 32, 48000.}), "a valid bar can be requested before its first source arrives");
+    taps[0]->write(samples.data(), nullptr, 32, 201, true, 10);
+    broker.pump();
+    check(lease.status() == Status::Missed && !lease.read(), "starting after the first bar sample misses instead of truncating");
+
+    check(lease.request({300, 32, 48000.}), "an unresolved revision can be learned from heard samples");
+    taps[0]->write(samples.data(), nullptr, 32, 300, true, 11);
+    taps[1]->write(samples.data(), nullptr, 32, 300, true, 12);
+    broker.pump();
+    check(lease.status() == Status::Missed && !lease.read(), "equal stamps cannot align two transport revisions");
+
+    check(lease.request({400, 32, 48000.}), "the group can wait for a fresh complete interval");
+    taps[0]->write(samples.data(), nullptr, 32, 400, true, 12);
+    broker.pump();
+    lease.reset();
+    const auto idle = broker.stats();
+    taps[1]->write(samples.data(), nullptr, 32, 400, true, 12);
+    broker.pump();
+    check(idle.domains == 1 && idle.taps == 1 && detached == 4 && companion.available() &&
+              broker.stats().cursorReads == idle.cursorReads && broker.stats().publications == idle.publications,
+          "closing a partially staged group leaves no queued reads and retains the companion");
+}
 void focusScopeSumProjection() {
     using namespace adi::ui;
     SharedAnalysis::Result a, b;
@@ -1888,7 +1950,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
