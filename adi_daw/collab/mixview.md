@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Reconcile the older Mix View register rows
+
+The cumulative branch contains the implementation and headless gates for DF-M4, M10, M19, M21, M22 and M24–M26. These cover changing audio format and resuming analysis in place, restored Stack settings, spectrum slope, native activators and add menus, Compare/Average/Classic Scope, the detached analyser return, and withdrawal of reserved slots. Live acceptance remains separate. The retained Ducking test fixture has no production producer or reserved slot.
+
+DF-M23 remains with Win's carrier and chain-placement ADR. The director's whole-set replacement and one-Undo rule is settled. The previous private preset prototype predates the retained-device-ID fix. Its add planner uses the current SQL maximum, so it can recycle the ID of a removed native function. Bring forward the retained-ID floor within the captured transaction when the preset policy is settled, including a replacement of the same native type. Its compatible identity metadata cannot distinguish a genuinely new device from the retired instance.
+
 ### 2026-11-19 — Add a device-key preparation refusal gate
 
 The new owned-device fixture runs through ProjectDocument with the transport advancing. A shape-changing recipient can refuse its first key preparation before changing prepared state. The same committed Post FX route is then retried. The gate requires the first rejected callback to keep invoking the old device and produce the identical programme, while the project keeps exactly one stored Undo step. After retry the key must arrive without another history entry.
