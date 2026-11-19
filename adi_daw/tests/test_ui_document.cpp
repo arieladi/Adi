@@ -1271,6 +1271,12 @@ int main(int argc, char **argv) {
             check(armed->ops().undo().ok && armed->synchronise() && snapshot()->automationOverridden && laneOverridden() &&
                       armed->ops().redo().ok && armed->synchronise() && snapshot()->automationOverridden,
                   "undo and redo of the move edit the stored value, not the override: it stands (not an op)");
+            // DF-W30 (b): Collect All and Save reads the rows again with the override standing: one
+            // refresh, and the marks stay.
+            const auto generationBeforeCollect = armed->view().generation();
+            check(armed->collectAllAndSave() && snapshot()->automationOverridden && laneOverridden() &&
+                      armed->view().generation() == generationBeforeCollect + 1,
+                  "Collect All and Save keeps the override marks, in one refresh");
             const auto opsBeforeReenable = opCount();
             const auto txnBeforeReenable = headTxn();
             check(armed->reenableAutomation() && armed->error().empty() && !armed->session().automationOverridden() &&

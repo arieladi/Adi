@@ -71,6 +71,9 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
         return edit;
     }
     std::vector<OpRequest> ins, outs;
+    // A fade the selection gives the length it already has is no change, and no op: one the limit
+    // clamped to where it was would otherwise make an empty undo step (DF-W30 c).
+    bool unchanged = false;
     for (const auto id : selected) {
         const auto *t = track_edits_detail::find(tracks, id);
         if (t == nullptr)
@@ -86,6 +89,14 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
                 in = fadeLimit(*c, true, to - a);
             if (holdsEnd)
                 out = fadeLimit(*c, false, b - from);
+            if (in && *in == c->fadeInTicks) {
+                in.reset();
+                unchanged = true;
+            }
+            if (out && *out == c->fadeOutTicks) {
+                out.reset();
+                unchanged = true;
+            }
             if (!in && !out)
                 continue;
             // A clip that ends where another begins, and both get their fade: a crossfade.
@@ -98,8 +109,9 @@ inline FadeEdit createFades(const SnapshotTracks &tracks, const std::vector<std:
         }
     }
     if (edit.ops.empty()) {
-        edit.refusal = "The selection holds no audio clip's start or end: select from before a clip's start, or "
-                       "past its end.";
+        edit.refusal = unchanged ? "The fades are already that long."
+                                 : "The selection holds no audio clip's start or end: select from before a clip's "
+                                   "start, or past its end.";
         return edit;
     }
     if (edit.crossfade)
