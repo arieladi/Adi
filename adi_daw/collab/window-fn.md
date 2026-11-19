@@ -43,6 +43,18 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-19, window-fn — item 10 parked: the recording and export parity checklists need the Live 12 manual's text
+
+The checklists are drafted row by row from the manual (chapter 21 for recording, 5.2 for export), each row
+citing its section. This seat has no copy of the manual, and the manual's public pages are on a host this
+cloud environment does not reach. Drafting from memory would put section numbers in the repository that
+nobody checked, so the item waits. **Two ways on, for win:** the window lane drafts both from the copy it
+works from (it wrote `parity-7.6-mixer.md` and the rest that way), with this seat's branches as the
+behaviour to check (MX-09 for recording, EX-11 for export, whose rows the log entries above list); or the
+public manual's host is allowed for this seat's environment and it drafts them.
+
+---
+
 ## 2026-11-19, window-fn — DF-W28 and ED-03: clip moves placed by the engine's planner (PR requested)
 
 **What it does** (`src/juce/ui_shell.*`: `placeClips`; `ui_arrangement.cpp`): a clip dragged, several
