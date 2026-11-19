@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "adi/blob.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -29,6 +30,22 @@ struct ClipScale {
     std::vector<std::int64_t> degrees;
     bool local = false;
 };
+struct NoteExpressionCurve {
+    std::int64_t clipId=0;
+    std::uint64_t noteId=0;
+    std::int64_t dimension=0;
+    std::uint16_t recordSize=0;
+    std::vector<ExpressionPoint> points;
+};
+struct NoteExpressionsRead {
+    std::vector<NoteExpressionCurve> curves;
+    std::vector<std::string> problems;
+};
+
+/// Owner-thread projection of the stored AEXP streams, optionally for one clip.
+/// Invalid streams report their row and leave the other curves available.
+[[nodiscard]] NoteExpressionsRead readNoteExpressions(const Store&,std::optional<std::int64_t> clipId={});
+
 /// Owner-thread value snapshot for Clip View; no store/stream handles escape.
 struct ClipDetails {
     std::int64_t id = 0, trackId = 0, timeBase = 0;
@@ -48,6 +65,7 @@ struct ClipDetails {
     std::string notesProblem, propertiesProblem;
     std::uint16_t notesRecordSize = 0;
     std::vector<std::byte> encodedNotes;
+    NoteExpressionsRead noteExpressions;
 };
 struct ClipDetailsRead {
     std::optional<ClipDetails> clip;
@@ -56,6 +74,7 @@ struct ClipDetailsRead {
 
 /// Call on the store's owner/message thread after the journal moves, outside
 /// its mutation transaction. Includes muted notes and their original identity.
-/// It reads only this clip's stream. No playback or op is triggered.
-[[nodiscard]] ClipDetailsRead readClipDetails(const Store&, std::int64_t clipId,bool includeNotes=true);
+/// The expression editor can request this clip's AEXP streams with its notes.
+[[nodiscard]] ClipDetailsRead readClipDetails(const Store&,std::int64_t clipId,
+                                              bool includeNotes=true,bool includeExpression=false);
 } // namespace adi::engine

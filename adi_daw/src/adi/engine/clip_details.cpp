@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_details.hpp"
 #include "adi/engine/snapshot.hpp"
-#include "adi/blob.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -9,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 
@@ -68,6 +68,49 @@ void readNotes(ClipDetails& clip, SQLite::Database& db) {
     }
     if (ambiguous) clip.notesProblem = "unassigned or duplicate note ids; do not address these notes by a display index";
 }
+bool expressionValue(std::int64_t dimension,float value) {
+    if(!std::isfinite(value))return false;
+    switch(dimension) {
+        case static_cast<std::int64_t>(ExpressionDim::Pitch): return value>=-48.0f && value<=48.0f;
+        case static_cast<std::int64_t>(ExpressionDim::Pressure):
+        case static_cast<std::int64_t>(ExpressionDim::Timbre): return value>=0.0f && value<=1.0f;
+        case static_cast<std::int64_t>(ExpressionDim::Pan): return value>=-1.0f && value<=1.0f;
+        default: return true;
+    }
+}
+
+NoteExpressionCurve readExpressionRow(const SQLite::Statement& row) {
+    NoteExpressionCurve curve;
+    curve.clipId=row.getColumn(1).getInt64();
+    curve.noteId=static_cast<std::uint64_t>(row.getColumn(2).getInt64());
+    curve.dimension=row.getColumn(3).getInt64();
+    if(curve.noteId==0)throw std::runtime_error("missing stable note identity");
+    if(curve.dimension<0 || (curve.dimension>static_cast<std::int64_t>(ExpressionDim::Pan) && curve.dimension<64))
+        throw std::runtime_error("unassigned expression dimension");
+    const auto data=row.getColumn(4);
+    const std::span bytes(static_cast<const std::byte*>(data.getBlob()),static_cast<std::size_t>(data.getBytes()));
+    const StreamReader<ExpressionPoint> reader(bytes,FourCC::Expression);
+    if(!reader.ok())throw std::runtime_error(toString(reader.error()));
+    if((reader.header().flags & ~StreamFlags::SortedByTime)!=0)
+        throw std::runtime_error("unsupported expression stream flags");
+    auto points=reader.all();
+    if(!points)throw std::runtime_error("expression point count exceeds the reader budget");
+    for(auto& point:*points) {
+        if(point.curve>static_cast<std::uint8_t>(Curve::Bezier) || !expressionValue(curve.dimension,point.value) ||
+           std::any_of(std::begin(point.reserved),std::end(point.reserved),[](std::uint8_t value){return value!=0;}))
+            throw std::runtime_error("invalid expression point");
+        point.tension=std::isnan(point.tension)?0.0f:std::clamp(point.tension,-1.0f,1.0f);
+    }
+    const auto timeOrder=[](const auto& a,const auto& b){return a.time_ticks<b.time_ticks;};
+    if((reader.header().flags & StreamFlags::SortedByTime)==0)
+        std::sort(points->begin(),points->end(),timeOrder);
+    if(std::adjacent_find(points->begin(),points->end(),[&](const auto& a,const auto& b){return !timeOrder(a,b);})!=points->end())
+        throw std::runtime_error("expression point times must strictly increase");
+    curve.recordSize=reader.recSize();
+    curve.points=std::move(*points);
+    return curve;
+}
+
 void localProperties(SQLite::Database& db, ClipDetails& clip) {
     // N33's additive table can be read before or after its format PR lands.
     // Absence means inherited properties. A present but broken table is a SQL
@@ -91,7 +134,28 @@ void localProperties(SQLite::Database& db, ClipDetails& clip) {
 }
 } // namespace
 
-ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId,bool includeNotes) {
+NoteExpressionsRead readNoteExpressions(const Store& store,std::optional<std::int64_t> clipId) {
+    NoteExpressionsRead result;
+    try {
+        auto& db=const_cast<SQLite::Database&>(store.db());
+        SQLite::Statement rows(db,clipId?
+            "SELECT id,clip_id,note_id,dimension,data FROM note_expression WHERE clip_id=? ORDER BY note_id,dimension":
+            "SELECT id,clip_id,note_id,dimension,data FROM note_expression ORDER BY clip_id,note_id,dimension");
+        if(clipId)rows.bind(1,*clipId);
+        while(rows.executeStep()) {
+            try {result.curves.push_back(readExpressionRow(rows));}
+            catch(const std::runtime_error& error) {
+                result.problems.push_back("note_expression#"+std::to_string(rows.getColumn(0).getInt64())+" " +error.what());
+            }
+        }
+    } catch(const std::exception& error) {
+        result.curves.clear();
+        result.problems.push_back(error.what());
+    }
+    return result;
+}
+
+ClipDetailsRead readClipDetails(const Store& store,std::int64_t clipId,bool includeNotes,bool includeExpression) {
     ClipDetailsRead result;
     try {
         auto& db = const_cast<SQLite::Database&>(store.db());
@@ -146,7 +210,21 @@ ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId,bool inc
             }
         }
         localProperties(db, clip);
-        if (includeNotes && clip.kind == "midi") readNotes(clip, db);
+        if(includeNotes && clip.kind=="midi") {
+            readNotes(clip,db);
+            if(includeExpression)clip.noteExpressions=readNoteExpressions(store,clip.id);
+            if(!clip.noteExpressions.curves.empty()) {
+                std::map<std::uint64_t,std::size_t> identities;
+                for(const auto& note:clip.notes)++identities[note.id];
+                std::erase_if(clip.noteExpressions.curves,[&](const auto& curve) {
+                    const auto match=identities.find(curve.noteId);
+                    if(match!=identities.end() && match->second==1)return false;
+                    clip.noteExpressions.problems.push_back("expression for note "+std::to_string(curve.noteId)+
+                        " needs one stable matching note");
+                    return true;
+                });
+            }
+        }
         // Finish the active single-row statement before ending the read view.
         query.reset();
         if(transaction)transaction->commit();
