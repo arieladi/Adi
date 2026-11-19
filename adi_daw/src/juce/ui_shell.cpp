@@ -932,12 +932,20 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addChildComponent(clipResizer);
     addAndMakeVisible(mixer);
     addAndMakeVisible(strip);
-    strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
+    addAndMakeVisible(namesBar);
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
-    // Live's selectors at the strip's foot repeat the View menu's toggles (manual 18.1).
-    strip.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
-    strip.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
-    strip.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
+    // The bar over the track names (the Arrangement sheet): Flip Sides; the track row's sections, which
+    // repeat the View menu's toggles as Live's selectors do (manual 18.1); H and W; and the two that
+    // wait for the engine's automation.
+    namesBar.flip.onClick = [this] { command(AppCommands::SwapPanels); };
+    namesBar.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
+    namesBar.sends.onClick = [this] { command(AppCommands::ToggleSends); };
+    namesBar.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
+    namesBar.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
+    namesBar.height.onClick = [this] { command(AppCommands::OptimizeHeight); };
+    namesBar.width.onClick = [this] { command(AppCommands::OptimizeWidth); };
+    namesBar.automation.onClick = [this] { say(NamesBar::kAutomationWaits); };
+    namesBar.lock.onClick = [this] { say(NamesBar::kLockWaits); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -1254,7 +1262,7 @@ void AdiRootComponent::resized() {
     transport.arrangementPage.setToggleState(!state_.mixView, juce::dontSendNotification);
     if (fullMix) {
         for (auto *child : std::initializer_list<juce::Component*>{
-                 &arrangement, &arrangement.overview, &mixer, &strip, &browser, &aiTab,
+                 &arrangement, &arrangement.overview, &namesBar, &mixer, &strip, &browser, &aiTab,
                  &mixerView, &mixerViewResizer, &clipView, &clipResizer, &devices, &dockResizer, &infoSpectrum})
             child->setVisible(false);
         browserArea_ = chatArea_ = mixerArea_ = mixerViewArea_ = stripArea_ = {};
@@ -1391,17 +1399,30 @@ void AdiRootComponent::resized() {
     mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3,
                                mixerViewArea_.getWidth(), 6);
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
-    strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
+    namesBar.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
-    strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
-    strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
-    strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
+    namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+    namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+    namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
+    namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
+    // The bar over the track names, their controls and the strip, level with the beat ruler (the
+    // Arrangement sheet); the strip's head under it.
+    {
+        const auto names = arrangement.headers.getBounds() + arrangement.getPosition();
+        auto span = names.getHorizontalRange();
+        for (const auto &r : {mixerArea_, stripArea_})
+            if (!r.isEmpty())
+                span = span.getUnionWith(r.getHorizontalRange());
+        const int barY = top + arrangement.overviewHeight();
+        // The sheet's row, 26 high: it ends above Set, which stands at the ruler's foot.
+        namesBar.setBounds(span.getStart(), barY, span.getLength(), ArrangementView::kRulerHeight - 3);
+        strip.setHead(arrangement.overviewHeight() + ArrangementView::kRulerHeight);
+    }
+    namesBar.setVisible(namesBar.getWidth() > 0);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
-    const int overviewRight = browserLeft && !mixerArea_.isEmpty()
-                                  ? mixerArea_.getRight() - 48
-                                  : centreX + centreW - 4;
+    const int overviewRight = arrangement.getX() + arrangement.canvas.getRight() - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
     arrangement.overview.setVisible(state_.overview);
@@ -2399,7 +2420,7 @@ bool AdiRootComponent::insertReturnTrack() {
     if (state_.hideReturns) {
         state_.hideReturns = false;
         persist();
-        strip.returns.setToggleState(true, juce::dontSendNotification);
+        namesBar.returns.setToggleState(true, juce::dontSendNotification);
     }
     arrangement.geometry.selection.track = id;
     arrangement.geometry.selection.toTrack = 0;
@@ -3410,8 +3431,9 @@ bool AdiRootComponent::command(int id) {
                 row->resized();
                 row->repaint();
             }
-        strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
-        strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
+        namesBar.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+        namesBar.sends.setToggleState(state_.sends, juce::dontSendNotification);
+        namesBar.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
         break;
     }
     case AppCommands::FullScreen: {
@@ -3567,7 +3589,7 @@ bool AdiRootComponent::command(int id) {
         }
         arrangement.applyView();
         arrangement.firstShownIfHidden();
-        strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
+        namesBar.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: a selected time signature marker (Edit Time Signature), the

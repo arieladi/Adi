@@ -11,6 +11,7 @@
 #include <array>
 #include <algorithm>
 #include <limits>
+#include <set>
 #include <stdexcept>
 namespace adi::media {
 namespace fs = std::filesystem;
@@ -301,13 +302,37 @@ MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std
     return prepared;
 }
 MediaResult relinkMedia(Store& store, std::int64_t id, const fs::path& path, Actor actor) {
+    if(audio::onAudioThread)return {};
     try {
-        const auto source = path.is_absolute() ? path : projectFolder(store) / path;
-        const auto hash = blake3File(source); const auto row = mediaRow(store.db(), id);
-        if (!hash || hash.hex != row.at("hash_blake3").get<std::string>()) return {false, "hash mismatch or unreadable file: " + pathUtf8(source)};
-        OpRequest request; request.opType = "media.relink"; request.actor = actor;
-        request.payload = {{"id", id}, {"hash", hash.hex}, {"paths", capturedPaths(store, source)}};
-        const auto result = OpJournal(store).commit(request); return {result.ok, result.error, id};
+        const RelinkTarget target{id,path};
+        return relinkMediaBatch(store,{&target,1},actor);
+    } catch(const std::exception& error) {return {false,error.what()};}
+}
+MediaResult relinkMediaBatch(Store& store, std::span<const RelinkTarget> targets, Actor actor) {
+    if(audio::onAudioThread)return {};
+    try {
+        if(store.readOnly())return {false,"project is read-only"};
+        if(targets.empty())return {false,"no media selected for relink"};
+        const auto folder=projectFolder(store);
+        std::set<std::int64_t> ids;
+        std::vector<OpRequest> requests;requests.reserve(targets.size());
+        for(const auto& target:targets) {
+            if(!ids.insert(target.mediaId).second)return {false,"duplicate media id in relink selection"};
+            std::string error;
+            if(!noEmbedded(store.db(),target.mediaId,error))return {false,error};
+            const auto row=mediaRow(store.db(),target.mediaId);
+            // Resolve the selected alias before hashing and capture that
+            // canonical spelling. External files are not locked by capture.
+            const auto source=fs::weakly_canonical(target.path.is_absolute()?target.path:folder/target.path);
+            const auto hash=blake3File(source);
+            if(!hash || hash.hex!=row.at("hash_blake3").get<std::string>())
+                return {false,"hash mismatch or unreadable file: "+pathUtf8(source)};
+            OpRequest request;request.opType="media.relink";request.actor=actor;
+            request.payload={{"id",target.mediaId},{"hash",hash.hex},{"paths",capturedPaths(store,source)}};
+            requests.push_back(std::move(request));
+        }
+        const auto result=OpJournal(store).commit(requests);
+        return {result.ok,result.error,targets.size()==1?targets.front().mediaId:0};
     } catch (const std::exception& e) { return {false, e.what()}; }
 }
 } // namespace adi::media

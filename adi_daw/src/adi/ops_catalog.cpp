@@ -44,6 +44,7 @@
 #include "adi/track_image.hpp"
 #include "adi/tuning_ops.hpp"
 #include "adi/history_roots.hpp"
+#include "adi/take_lane_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -574,6 +575,9 @@ bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& 
 
 bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        SQLite::Statement laneOwner(c.db,"SELECT 1 FROM clips c JOIN lanes l ON l.id=c.lane_id WHERE c.id=? AND (l.track_id<>c.track_id OR l.track_id<>?)");
+        laneOwner.bind(1,detail::signedInteger(p.at("id")));laneOwner.bind(2,detail::signedInteger(p.at("track")));
+        if(laneOwner.executeStep())throw std::runtime_error("detach a take-lane clip before moving it to another track");
         SQLite::Statement st(c.db,
             "UPDATE clips SET pos_ticks = ?, track_id = ? WHERE id = ?");
         st.bind(1, p.at("to").get<std::int64_t>());
@@ -2071,6 +2075,7 @@ std::span<const OpDescriptor> builtinOps() {
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
+        const auto takeLanes=takeLaneOps();v.insert(v.end(),takeLanes.begin(),takeLanes.end());
         const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
         const auto recording=trackRecordingOps();
         v.insert(v.end(),recording.begin(),recording.end());
