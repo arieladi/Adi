@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — #651 hardened Clang fixture fix
+
+The hardened clang job rejected the compressor fixture's two bitwise boolean expressions under `-Wbitwise-instead-of-logical`. It stopped before CTest. The local Clang diagnostic reproduced both failures on the exact fixture. The revised test executes the subject and reference renders separately and then checks both statuses and the output. This preserves the comparison after a failed render.
+
+`c21e1170a8c87cabe047827b8826279fd5bde473` is pushed to the existing `mixview/part-a-and-review-20261119` branch. The same Clang check passed after the change. Windows x64 Release compressor tests passed 111 checks, compared 425,984 samples and recorded zero audio allocations or frees. This is a fixture-only change. Hosted checks and the additional local host regressions are pending.
+
+**PR requested.** Re-review the existing #651 head after hosted checks settle.
+
 ### 19 November — DF-M54 one musical bar in Focus Scope
 
 Focus Scope now projects a complete heard bar from the actual device rate, project tempo and meter grid. The existing short preview covers the wait for a complete bar. Group columns are streamed from the existing short physical taps. The projection adds signed stereo samples before reducing them to extrema, so opposite polarity cancels. It retains early and late transients after the earlier audio has rolled out of both tap rings. The completed bar uses one grouped reader and zero FFT plans. Stop, hiding and full clipping release its demand. Timing and routing are unchanged.
