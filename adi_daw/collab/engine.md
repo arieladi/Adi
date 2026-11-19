@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E54(b) project structure and timing checks
+
+**PR requested** · `engine/df-e54-project-structure` · `3887a4cbe798cde066c9a76630d75cda92961779`
+**Title** — Check project structure, native clip lengths and tempo query.
+
+`checkProject` now reports track-parent cycles and effective main-output cycles, including a main edge returning into an implicit group output. The graph check is iterative. Disabled edges and sends sit outside the main-output graph. Each clip checks its native length column, with zero legal, and a failed tempo query reports an Error on `tempo_map`. Window parent-walk hardening remains tracked under DF-W35.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors in both. Check 62, Collect and Export 149, history 95, project files 53, engine 137, all pass. The previous checker at `56510cf7` failed exactly the nine planted assertions, covering both cycle families, missing and negative lengths in each clock and the failed tempo query. `git diff --check` passed.
+
+**Dependency** — Stack after DF-E54(a) `56510cf7`.
+
 ## 2026-11-19 — DF-E54(a) project check after Cut and Undo
 
 **PR requested** — branch `engine/df-e54-journal-targets`, head `56510cf7bbceaf2f7c4f9a20b748663f5c119045`, main base `8416ed0f`. Title **DF-E54(a): Validate journal targets as historical metadata**. Land before Collect and Export reaches its Window command.
