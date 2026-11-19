@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Collect and Export status warning relay
+
+**PR requested** `engine-win/archive-window-warning` at `d5a50adb5c1dfd650327ad85ba0210c528e5cb41`, stacked on `99b03094`. The normal desktop export completion reports the archived filename or failure and includes the worker's existing warning. This keeps a successful published ZIP visible even when its directory sync was unconfirmed. A failed result can also carry a retained-file warning.
+
+The exact archive topic sources built and linked the Windows JUCE application under strict MSVC x64 Debug `/W4 /WX`. Collection, ZIP and project-file paths have the preceding native 286-check base gate. No interactive warning case ran.
+
 ## 2026-11-19 — PD-02 and PD-04 collected-media durability receipts
 
 **PR requested** `engine-win/collect-publication-warnings` at `37e3ce5ead7a40fd8b3564c225af78e9856279ba`, stacked on `99b03094`. Live Collect All and Save and legacy extraction retain path-qualified directory-sync warnings after successful publication. Both rename and verified-copy fallback keep file identity for rollback. The collection result can carry both media warnings and a partial WAL checkpoint warning. A private ZIP input's directory-sync advisory does not become a warning about the independently checked and published archive.
