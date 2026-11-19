@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — TM-MD-05 bounded FFprobe stream selection
+
+**PR requested** `engine-win/ffprobe-bounded-audio` at `16e4159e8535f9aaec0bf63cd75a0fcdc85085ef`. The worker probe calls a chosen executable through the bounded process runner and validates just the first audio stream's absolute index, channel count and sample rate. Input uses the local-file protocol and a media demuxer allowlist. Playlist and concat inputs stay outside this path. PCM decoding, configuration and cache integration have separate gates. [FFprobe options](https://ffmpeg.org/ffprobe.html)
+
+Strict native Windows x64 MSVC Debug passed 193 checks across decoding, PCM and progressive reads. A separate test using FFprobe 9.0.1 passed nine owned-input cases. It confirmed WMA, WV, CAF, MKV, WebM, AVI, TS, video-only refusal, and concat refusal. The MKV selected audio index 1 with a video stream and two audio streams. Native AAC remained unavailable.
+
 ## 2026-11-19 — DEV-25 Plug-In source Settings
 
 **PR requested** `engine-win/scanner-settings-roots` at `c800d747c3e9a54d9b3f1927b02eb9a2f78e4f36`, stacked on scanner Refresh `8adc7a92`. The desktop applies existing VST3 and CLAP lists independently, at launch and on Settings changes. The VST3-only system-folder switch leaves CLAP defaults intact. An admitted scan keeps its captured roots. Applying settings alone leaves the catalogue and instances available and launches no helper. This is now the scanner review tip.
