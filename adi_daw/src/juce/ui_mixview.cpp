@@ -328,7 +328,8 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
     spectrum.present(root_.sharedAnalysis, root_.analysisTrack(reader));
     spectrum.frame();
     if (!alive) return;
-    analysis.frame(root_.sharedAnalysis, reader, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
+    analysis.frame(root_.sharedAnalysis, reader, root_.analysisTrack(reader), root_.analysisTrack(reader, true),
+                   root_.projectViewGeneration());
     if (!alive) return;
     analyzerDock.frame(root_.sharedAnalysis, root_.analysisTrack(reader), root_.analysisTrack(reader, true));
     if (!alive) return;

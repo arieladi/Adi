@@ -934,16 +934,16 @@ void mixAnalyserPages() {
     const auto main = channel(1, "Main", "master");
     const auto first = channel(2, "Bass");
     const auto fixed = channel(largeTrackId, "Guitar");
-    const auto project = [&](std::uint64_t revision, std::shared_ptr<Track> other) {
+    // ProjectView leaves Snapshot::seq at zero even as authored channels change.
+    const auto project = [&](std::shared_ptr<Track> other) {
         auto state = std::make_shared<adi::engine::Snapshot>();
-        state->seq = revision;
         state->tracks = {main, first};
         if (other) state->tracks.push_back(std::move(other));
         return state;
     };
 
-    const SnapshotReader reader{project(1, fixed)};
-    Fixture f;
+    const SnapshotReader reader{project(fixed)};
+    Fixture f, replacement;
     Root root;
     root.setBounds(0, 0, 1040, 620);
     MixAnalysers pages;
@@ -1007,16 +1007,18 @@ void mixAnalyserPages() {
 
     const int fixedMenuId = pages.sourceBox.getItemId(3);
     pages.sourceBox.setSelectedId(fixedMenuId, juce::sendNotificationSync);
-    const SnapshotReader renamed{project(2, channel(largeTrackId, "Lead guitar"))};
+    const SnapshotReader renamed{project(channel(largeTrackId, "Lead guitar"))};
     pages.frame(f.broker, renamed, main->id, first->id);
     check(pages.detail.view.track() == largeTrackId && pages.sourceBox.getSelectedId() == fixedMenuId &&
               pages.sourceBox.getText() == "Lead guitar",
           "fixed channel uses a stable 64-bit track identity through selection changes and renames");
-    const SnapshotReader removed{project(3, {})};
-    pages.frame(f.broker, removed, main->id, first->id);
+    const SnapshotReader removed{project({})};
+    check(removed.seq() == renamed.seq() && pages.target(removed, main->id, first->id) == main->id,
+          "an unstamped changed snapshot cannot resolve a stale fixed source before a frame");
+    pages.frame(f.broker, removed, main->id, first->id, 24);
     check(pages.detail.view.track() == main->id && pages.sourceBox.getSelectedId() == 1 &&
-              pages.sourceBox.getNumItems() == 3,
-          "removing a fixed channel returns the source chooser to Main and releases the removed tap");
+              pages.sourceBox.getNumItems() == 3 && f.broker->stats().taps == 1,
+          "removing a fixed channel in an unstamped snapshot restores Main and releases the removed tap");
 
     pages.setPage(Page::Analysis);
     pages.frame(f.broker, reader, main->id, first->id);
@@ -1029,6 +1031,14 @@ void mixAnalyserPages() {
           "hiding Analysers releases the full measurement table without another frame");
     pages.setVisible(true);
     pages.frame(f.broker, reader, main->id, first->id);
+    const auto beforeAncestorHide = f.broker->stats();
+    root.setVisible(false);
+    pages.frame(f.broker, reader, main->id, first->id);
+    check(f.broker->stats().consumers == 0 && f.broker->stats().taps == 0 &&
+              f.broker->stats().frameRequests == beforeAncestorHide.frameRequests,
+          "hiding the workspace ancestor releases the table and a hidden frame requests no work");
+    root.setVisible(true);
+    pages.frame(f.broker, reader, main->id, first->id);
     pages.suspend(true);
     pages.frame(f.broker, reader, main->id, first->id);
     check(f.broker->stats().consumers == 0, "suspending Analysers stops demand and prevents reacquisition while minimized");
@@ -1038,7 +1048,6 @@ void mixAnalyserPages() {
 
     pages.setPage(Page::Scope);
     pages.sourceBox.setSelectedId(pages.sourceBox.getItemId(3), juce::sendNotificationSync);
-    Fixture replacement;
     pages.frame(replacement.broker, reader, main->id, first->id);
     check(pages.sourceBox.getSelectedId() == 1 && pages.detail.view.track() == main->id &&
               f.broker->stats().taps == 0 && replacement.broker->stats().taps == 1,

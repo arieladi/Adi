@@ -159,12 +159,16 @@ void MixAnalysers::followSelection(bool value) {
 
 std::int64_t MixAnalysers::target(const SnapshotReader &reader, std::int64_t main, std::int64_t selected) const noexcept {
     if (followsSelection_) return selected;
-    return fixedTrack_ > 0 && (channelRevision_ == reader.seq() || reader.findTrack(fixedTrack_)) ? fixedTrack_ : main;
+    return fixedTrack_ > 0 && reader.findTrack(fixedTrack_) ? fixedTrack_ : main;
 }
 
-void MixAnalysers::refreshChannels(const SnapshotReader &reader, std::int64_t main) {
-    if (channelRevision_ == reader.seq()) return;
-    channelRevision_ = reader.seq();
+void MixAnalysers::refreshChannels(const SnapshotReader &reader, std::int64_t main, std::uint64_t viewGeneration) {
+    // ProjectView snapshots carry no publisher sequence. Its generation and
+    // the borrowed reader identity also cover a detached frame or preview.
+    if (channelGeneration_ == viewGeneration && channelSnapshot_ == reader.get() && channelMain_ == main) return;
+    channelGeneration_ = viewGeneration;
+    channelSnapshot_ = reader.get();
+    channelMain_ = main;
     const auto &tracks = reader.tracks();
     if (std::ranges::equal(tracks, channels_, [main](const auto &track, const Channel &channel) {
             return track->id == channel.id && track->name == channel.name && (track->id == main) == (channel.menuId == 0);
@@ -201,14 +205,15 @@ void MixAnalysers::refreshSourceControl() {
 }
 
 void MixAnalysers::frame(const std::shared_ptr<SharedAnalysis> &broker, const SnapshotReader &reader,
-                         std::int64_t main, std::int64_t selected) {
+                         std::int64_t main, std::int64_t selected, std::uint64_t viewGeneration) {
     if (!isShowing() || suspended_ || getLocalBounds().isEmpty()) return;
     if (owner_.owner_before(broker) || broker.owner_before(owner_)) {
         owner_ = broker;
         followSelection(followsSelection_);
-        channelRevision_.reset();
+        channelGeneration_.reset();
+        channelSnapshot_ = nullptr;
     }
-    refreshChannels(reader, main);
+    refreshChannels(reader, main, viewGeneration);
     const auto track = target(reader, main, selected);
     if (page_ == Page::All) {
         for (auto &tile : tiles_) {

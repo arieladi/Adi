@@ -298,6 +298,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     std::int64_t renderedSamplePosition() const noexcept { return mailbox_.position(); }
     double bpm() const noexcept;
     std::uint64_t generation() const noexcept { return generation_; }
+    std::uint64_t projectViewGeneration() const noexcept { return view_.generation(); }
     unsigned lastDrain() const noexcept { return lastDrain_; }
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
