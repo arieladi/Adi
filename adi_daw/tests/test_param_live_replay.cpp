@@ -1451,6 +1451,33 @@ void attachmentAndRetirement() {
     }
     {
         Fixture f;
+        f.store->db().exec("INSERT INTO plugin_refs(id,format,uid,name,subtype) "
+                           "VALUES(2,'vst3','test.param.replacement','Replacement probe','effect')");
+        auto replacement = insertDevice();
+        replacement.payload["ref"] = 2;
+        replacement.payload["name"] = "Replacement probe";
+        auto* const original = f.device;
+        const auto originalGain = original->getParam("gain").normalized;
+        const auto calls = f.probe->count;
+        const auto realised = f.session.realisedAppliedSequence();
+        const std::array requests{removeDevice(), replacement, parameter(0.625)};
+        const auto commit = OpJournal(*f.store).commit(requests);
+        require(commit.ok, "commit removal, same-ID replacement and replacement gain: " + commit.error);
+        check(f.store->db().execAndGet("SELECT plugin_ref_id FROM devices WHERE id=7").getInt64() == 2 &&
+                  storedGain(*f.store) == 0.625,
+              "one journal group stores the replacement and its authored gain");
+
+        const auto waiting = f.capture.retryApplied(f.ownerTime());
+        check(f.session.realisedAppliedSequence() == realised && f.session.instanceFor(7) == original &&
+                  f.loaderCalls == 1 && f.probe->count == calls && original->getParam("gain").normalized == originalGain,
+              "pre-refresh replacement delivery never writes to the still-attached original instance");
+        check(waiting.state == AppliedDeliveryState::AwaitingAttachment && waiting.pendingBatchCount == 1,
+              "same-journal replacement gain waits for its own attachment: state=" +
+                  std::to_string(static_cast<int>(waiting.state)) + ", pending=" +
+                  std::to_string(waiting.pendingBatchCount) + ", error=" + waiting.error);
+    }
+    {
+        Fixture f;
         f.capture.detach(7);
         const auto commit = OpJournal(*f.store).commit(parameter(0.75));
         check(commit.ok, "temporarily detached target accepts SQL edit");
