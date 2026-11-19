@@ -15,7 +15,8 @@ Checks:
   5. RequiresPause stays a small, named set (OPS.md 4).
   6. Coalescable ops are symmetric -- coalescing a state-capture inverse would
      silently discard intermediate state.
-  7. The headline count in the prose matches the tables.
+  7. The counts are the tables' own. They are printed, never compared with a
+     number in the prose: OPS.md keeps none (see check 7 below).
   8. Media ops are registered and retired embedding ops stay struck/unimplemented.
 """
 
@@ -120,14 +121,24 @@ def main() -> int:
         n_coal = sum(1 for *_x, inv, _p in rows if "coalescable" in inv)
         ok(f"{n_coal} coalescable ops, all symmetric")
 
-    print("[7] headline count matches the tables")
+    # Counted, never compared (2026-11-19, win). OPS.md's headline used to say
+    # "**211 ops** -- 71 P0, ..." and this check failed when the tables
+    # disagreed. Every pull request that added an op rewrote that one line to
+    # the same new number, so two of them merge cleanly one after the other
+    # and leave main red; on 19 November four open pull requests had all
+    # written "212". The number now lives here, computed from the tables, and
+    # the headline says so. A count written back into the prose fails, because the next merge
+    # would make it wrong without anyone touching it.
+    print("[7] the op count is computed from the tables, not read from the prose")
+    by_prio = collections.Counter(p for *_x, p in rows)
     m = re.search(r"\*\*(\d+) ops\*\*", txt)
-    if not m:
-        fail("no '**N ops**' headline found in the prose")
-    elif int(m.group(1)) != len(rows):
-        fail(f"prose says {m.group(1)} ops, tables contain {len(rows)}")
+    if m:
+        fail(f"OPS.md states a count ('**{m.group(1)} ops**'): remove it -- "
+             f"the count is this check's output, and a written one goes stale "
+             f"with the next merge")
     else:
-        ok(f"prose and tables agree: {len(rows)}")
+        ok(f"{len(rows)} ops: " + ", ".join(
+            f"{by_prio[p]} {p}" for p in sorted(by_prio)))
 
     print("[8] media implementation and retired embedding ops (ADR-0143)")
     catalog = (HERE.parent / "src/adi/ops_catalog.cpp").read_text(encoding="utf-8")
@@ -141,11 +152,6 @@ def main() -> int:
             fail(f"retired embedding op must be struck and never implemented: {name}")
         else:
             ok(f"{name} retired (ADR-0127)")
-
-    by_prio = collections.Counter(p for *_x, p in rows)
-    for label, claimed in re.findall(r"(\d+) (P[0-3])", txt[m.start():m.start() + 120] if m else ""):
-        if by_prio[claimed] != int(label):
-            fail(f"prose claims {label} {claimed}, tables have {by_prio[claimed]}")
 
     print()
     print(f"  scopes:  {dict(collections.Counter(s for _n, s, *_x in rows))}")
