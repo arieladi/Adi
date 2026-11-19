@@ -13,6 +13,8 @@ class EqEight {
     void prepare(double) noexcept;
     void set(Param, double) noexcept;
     int latency() const noexcept { return p_[HiQuality] >= .5 ? 16 : 0; }
+    /// A parameter's current value, by index (0..Count-1); 0 past the end.
+    [[nodiscard]] double value(std::size_t n) const noexcept { return n < p_.size() ? p_[n] : 0.0; }
     void process(const float *, const float *, float *, float *, std::size_t) noexcept;
 
   private:
