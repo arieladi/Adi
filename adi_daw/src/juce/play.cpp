@@ -37,11 +37,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -116,6 +118,7 @@ struct Options {
     bool list = false;
     bool cacheOnly = false;
     bool searchOnly = false;
+    unsigned scanWorkers = 0; // 0 means the discovery default
     bool fixture = false;
     /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
     /// a render through a missing plug-in is a SUCCESS: the project played,
@@ -157,7 +160,7 @@ int usage() {
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
-        "adi_play --list [--cache-only] [--search DIR]... [--search-only DIR]... [--fixture]\n"
+        "adi_play --list [--cache-only | --scan-workers 1..4] [--search DIR]... [--search-only DIR]... [--fixture]\n"
         "  --list performs explicit incremental discovery; --cache-only reads only\n"
         "  validated stored metadata. --search-only excludes platform default roots.\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
@@ -192,6 +195,16 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--resize")  { const char* v = next(i); if (!v) return false; o.resize = std::atoi(v); }
         else if (a == "--search")  { const char* v = next(i); if (!v) return false; o.searchDirs.emplace_back(v); }
         else if (a == "--search-only") { const char* v = next(i); if (!v || !*v) return false; o.searchOnly=true; o.searchDirs.emplace_back(v); }
+        else if (a == "--scan-workers") {
+            const char* value = next(i);
+            if (!value || o.scanWorkers != 0) return false;
+            const std::string_view number(value);
+            const auto end = number.data() + number.size();
+            const auto parsed = std::from_chars(number.data(), end, o.scanWorkers);
+            if (parsed.ec != std::errc{} || parsed.ptr != end ||
+                o.scanWorkers == 0 || o.scanWorkers > adi::scan::kMaximumProbeWorkers)
+                return false;
+        }
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
         else if (a == "--expect-no-edits") o.expectNoEdits = true;
@@ -227,6 +240,7 @@ bool parse(int argc, char** argv, Options& o) {
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
     if ((o.cacheOnly || o.searchOnly) && !o.list) return false;
+    if (o.scanWorkers != 0 && (!o.list || o.cacheOnly)) return false;
     if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
@@ -464,6 +478,12 @@ int main(int argc, char** argv) {
 #endif
 
     if (o.list) {
+        if (o.scanWorkers != 0) {
+            adi::scan::Config config;
+            config.workers = o.scanWorkers;
+            loader.setScanConfig(config);
+            std::printf("  scanner workers requested: %u\n", config.workers);
+        }
         const auto discovery=loader.discover(o.cacheOnly?adi::device::DiscoveryMode::CacheOnly:adi::device::DiscoveryMode::Incremental);
         if(!discovery)return 1;
         for(const auto& failure:discovery->report.failures)

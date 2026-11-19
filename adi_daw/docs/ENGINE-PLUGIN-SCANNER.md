@@ -325,6 +325,10 @@ existing timeouts. An external cancellation flag reaches every active probe.
 Only a complete batch can replace the runtime catalogue. Unchanged warm probes
 reuse their metadata without starting a module probe.
 
+`adi_play --list --search-only DIR --scan-workers 4` is a scoped command-line
+diagnostic for this setting. It lists validated metadata and opens no audio
+stream. Use a private ADI home when measuring cold or warm discovery.
+
 Hosts/loaders also require one owner at a time. lastScanReport is borrowed only
 between jobs; copy/publish reports for another thread after completion.
 The window can read/re-enable PluginRegistry's owned blocklist; no UI is drawn

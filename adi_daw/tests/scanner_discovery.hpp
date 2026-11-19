@@ -243,8 +243,14 @@ inline void command() {
     TempDirectory scratch("discovery_operation","command");ScopedHome home(scratch.path()/"home");
     require(cli({"adi_play","--list","--cache-only"})==1 && !fs::exists(appdata::pluginRegistryFile()),"CLI missing CacheOnly reported success or wrote storage");
     require(cli({"adi_play","--cache-only","never-open.adi"})==2,"cache-only flag silently applied to project open");
+    require(cli({"adi_play","--scan-workers","4","never-open.adi"})==2 &&
+                cli({"adi_play","--list","--cache-only","--scan-workers","4"})==2,
+            "scanner workers require an incremental list operation");
+    for (const auto* invalid : {"0", "5", "3x", "-1"})
+        require(cli({"adi_play","--list","--scan-workers",invalid})==2,"scanner workers reject invalid counts");
     const auto root=scratch.path()/"modules";fs::create_directory(root);const auto module=root/"command.clap";copyClap(module);
-    require(cli({"adi_play","--list","--search-only",text(root)})==0 && pids(module).child==1 && pids(module).parent==0,
+    require(cli({"adi_play","--list","--search-only",text(root),"--scan-workers","4"})==0 &&
+                pids(module).child==1 && pids(module).parent==0,
         "actual headless incremental operation failed or used parent module loading");
     require(cli({"adi_play","--list","--cache-only"})==0 && pids(module).child==1 && pids(module).parent==0,
         "actual headless CacheOnly rescanned its module");
