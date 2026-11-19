@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E26 compaction at an undone head gated and pushed
+
+**PR requested** — branch `engine/df-e26-compaction-branches`, head `a548544d3c6254dace1f5c7a971537258dd37d6e`. Title **Preserve only severed redo tips during compaction**. Base `origin/main` `e8b67c77` with DF-E18 `f28eacd0`. The remote head matches the gated commit.
+
+Compaction follows the highest surviving child from the current head, which is the same choice Redo makes after pruning. A tip that can still be reached that way needs no branch. A severed unheld tip gets a system branch before compaction. If a previous compaction branch was opened and undone, the tip gets a distinct name and the existing branch keeps its head. The budget and its all-lines accounting remain with Win's DF-E26(c) handoff when the retention setting is discussed.
+
+The regression runs explicit compaction after 12 edits and 11 undos at a budget of 8. The original stored head has no Redo. Switching to the saved tip restores the state with precisely seven undo steps. The fixture also tests a second cut and a retry, plus the still-connected redo paths at and above the cut.
+
+**Gate** — GCC 14 Debug and Pure Data with warnings as errors, 245 CTest suites, four validators and the layout check. The focused history compaction suite passed 85 checks on GCC and Clang 19. Three compiled faults kept a pruned edge, added a redundant live-tip branch, or reused a system branch name. Each failed its regression. One separated-stems assertion failed in the first parallel CTest run and passed when run alone. The full gate was rerun with one retry allowed per suite. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27 next. DF-E28 remains with the Windows engine seat.
+
 ## 2026-11-19 — DF-E24 VST3 buses and mixer routing gated and pushed
 
 **PR requested** — branch `engine/df-e24-vst3-routing`, head `a4023a80f4dab03589df723bed984e8b69d0c95d`. Title **Negotiate VST3 buses and preserve mixer routing**. Base `engine/df-e23-plugin-workers` at `d96c97d7` merged with `origin/main` at `796fe498`. Includes the DF-E20(b) key-input dependency through that stack. The remote head matches the gated commit.
