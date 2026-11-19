@@ -731,6 +731,33 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     check(strip.dropFunction(*native, 21) && moves == 1 && moved.id == 20 && moved.instance == 71 && movedBefore == 21 &&
               !native->functionDragTarget(),
           "drop forwards one captured move and clears its drag owner before the callback");
+    {
+        const auto currentTarget = strip.targetCurrent;
+        const auto submitMove = strip.moveFunction;
+        // The destination can replace its panels during validation. Keep the drag source alive independently.
+        DevicePanelView dragSource(strip, publication->back(), true);
+        check(dragSource.beginFunctionDrag(), "independent source starts a native drag on the displayed track");
+        bool changedDestination = false;
+        std::optional<std::int64_t> submittedTrack;
+        strip.targetCurrent = [&](std::int64_t id, const engine::DeviceRuntimeToken &runtime, std::uint64_t stamp) {
+            const bool valid = currentTarget(id, runtime, stamp);
+            strip.frame(3);
+            changedDestination = strip.panels.empty();
+            return valid;
+        };
+        strip.moveFunction = [&](const DevicePanelData &, std::int64_t track, std::optional<std::int64_t>) {
+            submittedTrack = track;
+            return true;
+        };
+        const bool accepted = strip.dropFunction(dragSource, 21);
+        strip.targetCurrent = currentTarget;
+        strip.moveFunction = submitMove;
+        check(changedDestination, "validating the drop updates the destination to another track");
+        check(!accepted && !submittedTrack, "destination track change refuses the drop without submitting a move");
+        strip.frame(2);
+        if (strip.panels.size() != 2) { check(false, "original track restores its device panels"); return; }
+        native = strip.panels[1].get();
+    }
     check(native->beginFunctionDrag(), "a second drag captures the displayed instance");
     publication = std::make_shared<ParameterPublication>(*publication);
     publication->back().instance = 72;
