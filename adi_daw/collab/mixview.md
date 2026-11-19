@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Reproduce the remaining DF-M34 tail declarations
+
+Two headless native-host fixtures now expose the outstanding default-tail behavior. Windows Release EQ host passed 878 of 879 checks. Its only failure was the inherited infinite tail. The default impulse remained sample-exact and its callback allocation gate passed. The Limiter suite passed 284 of 285, with only the default finite declaration failing. Prepared silence stayed exactly zero with dither off. With 16-bit dither on, zero input produced nonzero output and retained the infinite declaration. Preserve that audio when making quiet modes eligible for suspension.
+
+The implementation needs a wake-safe prepared history path and a separate hold while latency or configuration is pending. The EQ's current reset calls prepare. The limiter reset clears its latency offer. Neither is a suitable unconditional suspension callback. The next real graph gate will cover waking with current settings, delayed output and both idle and pending work.
+
 ### 2026-11-19 — Reconcile DF-M29 through DF-M42
 
 The cumulative branch carries the EQ precision handoff, deterministic offline plan edits and parked-failure recovery in DF-M29–31. It carries Clean's quiet recovery, native activator recovery, compressor preparation and buffer guards, and the independent native audio and Stack undo tests in DF-M32–33 and M36–39. The live EQ plan still publishes asynchronously. The unchanged-format gate directly tests the EQ hold window. Engine review and a deterministic hold test for the other hosts remain separate. The Clean make-up ramp has numerical coverage and still needs the requested listening check.
