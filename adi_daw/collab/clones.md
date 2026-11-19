@@ -5,6 +5,12 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 2026-11-19 — Programmable processing order ready for review
+
+**PR requested** — `clones/adi-shaper-order` at `98df1ab9`. Title **Add recallable processing order for the eleven shaper stages**. Review after `clones/adi-shaper-performance`. IDs 716–726 set one integer rank per stage. Lower ranks process earlier; tied ranks use the original stage order. The existing 715 IDs and initial routing are preserved. A stage carries its controls and delay history with it across a move. The existing 16-sample Drive compensation follows the active stage in either position.
+
+All twelve focused MSVC Release tests passed with warnings-as-errors. They cover 4,096 sampled permutations, tied and extreme ranks, nonlinear Volume-before/after-Drive output, old states loaded into a used instance, live Time history and both native and editable Pd paths at irregular callback sizes.
+
 ## 2026-11-19 — Shaper performance and live state restore
 
 **PR requested** — `clones/adi-shaper-performance` at `4ee156c0`. Title **Reduce idle shaper overhead and match the long-running Crush clock**. Review after `clones/adi-shaper-sources`. All twelve focused Release suites passed under strict MSVC warnings. Restoring an earlier state over a running shaper clears parameters introduced in later versions. A revision counter lets the processing callback skip up to 715 unchanged atomic parameter reads. At 64/256/1,024 frames the measured neutral median callback fell from 1.6/1.7/2.1 µs to 0.4/0.5/1.3 µs in the two passes.
