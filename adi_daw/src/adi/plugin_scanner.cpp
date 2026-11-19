@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/plugin_scanner.hpp"
+#include "adi/scan_helper_protocol.hpp"
 #include "adi/appdata.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/scan_stamp.hpp"
@@ -383,8 +384,14 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         }
         const auto process=runProcess(config_.executable,{"--scan",format,result.path},config_.process);
         const bool cancel=process.succeeded() && config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
-        const bool helperFailure = process.status == ProcessStatus::Exited &&
-            (process.exitCode == 64 || process.exitCode == 74 || process.exitCode == 75 || process.exitCode == 78);
+        // These exits can also come from a plug-in during load. The prefix
+        // only indicates that the helper had passed its pre-open setup.
+        const bool enteredProbe = !process.output.empty() && process.output.front()==kModuleOpening;
+        const bool setupExit = !enteredProbe &&
+            (process.exitCode==64 || process.exitCode==74 || process.exitCode==75 || process.exitCode==78);
+        // A partial payload can only follow the helper's enumeration phase.
+        const bool writeExit = process.exitCode==75 && enteredProbe && process.output.size()>1;
+        const bool helperFailure = process.status==ProcessStatus::Exited && (setupExit || writeExit);
         const bool abandoned=cancel || process.status==ProcessStatus::Cancelled || process.status==ProcessStatus::LaunchFailed ||
             process.status==ProcessStatus::Invalid || process.status==ProcessStatus::CallbackRefused ||
             process.status==ProcessStatus::IoFailed || helperFailure;

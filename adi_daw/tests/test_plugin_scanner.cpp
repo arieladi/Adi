@@ -193,6 +193,25 @@ void realLibraries() {
     f.registry->unblockScan("clap",utf8(fs::canonical(good)),f.error);
     check(scanner->probe("clap",good).state==State::Ready,"explicit re-enable allows a new isolated scan");
 }
+void reservedCandidateExits() {
+    Fixture f;device::ClapHost host;
+    const auto exit74=f.bundle("a-init-exit74"),exit75=f.bundle("b-init-exit75"),
+        healthy=f.bundle("z-healthy");
+    const auto first=host.scan({utf8(f.temp.path())},f.config);
+    check(first.complete && first.failures.size()==2 && host.plugins().size()==2 && host.libraryCount()==0,
+        "plug-in exits 74 and 75 do not stop discovery of a healthy sibling");
+    auto scanner=f.scanner();
+    for(const auto& module:{exit74,exit75}) {
+        const auto result=scanner->probe("clap",module);
+        const auto path=native(utf8(module)+".pids");
+        std::ifstream markers(path);long long pid=0,extra=0;
+        check(result.state==State::Failed && result.failureCacheHit && result.failureStrikes==0 &&
+            (markers>>pid) && pid!=static_cast<long long>(test::processId()) && !(markers>>extra),
+            "plug-in reserved exit is a stable rejected result with exactly one child init");
+    }
+    check(fs::exists(native(utf8(healthy)+".pids")) && f.registry->scanBlocks(f.error)->empty(),
+        "healthy sibling ran and candidate exits made no pending or manual block");
+}
 void hostAndFailurePolicy() {
     Fixture f;device::ClapHost host;
     const auto healthy=f.bundle("healthy");(void)healthy;
@@ -232,7 +251,7 @@ void hostAndFailurePolicy() {
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==4 && arguments[1]=="--scan")return fakeHelper(arguments);
     if(arguments.size()!=1)return 64;
-    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();hostAndFailurePolicy();}
+    try {protocol();protocolProcess(fs::absolute(native(arguments[0])));realLibraries();reservedCandidateExits();hostAndFailurePolicy();}
     catch(const std::exception& error){++failures;std::printf("EXCEPTION: %s\n",error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

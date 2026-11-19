@@ -8,6 +8,8 @@
 #include "adi/mix_functions.hpp"
 #include "adi/appdata.hpp"
 #include "adi/scan_catalogue.hpp"
+#include "adi/scan_prune.hpp"
+#include "adi/media/media_ops.hpp"
 #include "juce/vst3_scan_host.hpp"
 
 #include <algorithm>
@@ -15,6 +17,24 @@
 #include <utility>
 
 namespace adi::device {
+
+namespace {
+
+bool fitsCatalogue(std::size_t vst3, std::size_t clap) {
+    return clap<=scan::kMaximumPlugins && vst3<=scan::kMaximumPlugins-clap;
+}
+
+void appendClapMetadata(std::vector<ClapPluginRef>& catalogue,
+                        const std::string& path, const std::vector<scan::Plugin>& plugins) {
+    for(const auto& plugin:plugins) {
+        ClapPluginRef ref;ref.bundlePath=path;ref.id=plugin.id;ref.name=plugin.name;
+        ref.vendor=plugin.vendor;ref.version=plugin.version;ref.features=plugin.features;
+        ref.isInstrument=plugin.instrument;
+        catalogue.push_back(std::move(ref));
+    }
+}
+
+} // namespace
 
 JuceDeviceLoader::JuceDeviceLoader(bool includeDefaultSearchPaths) {
     if(includeDefaultSearchPaths)setSearchPaths(defaultSearchPaths());
@@ -74,22 +94,40 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         // the last accepted runtime catalogue, not its successful prefix.
         if(mode==DiscoveryMode::CacheOnly || !publishedCatalogue_)hydrationError_=message;
     };
+    const auto maintenanceFailed=[&](const scan::ScanPruneResult& reason) {
+        result->report.cancelled=reason.status==scan::ScanPruneStatus::Cancelled;
+        const auto state=result->report.cancelled?scan::State::Cancelled:scan::State::Unavailable;
+        const auto diagnostic=reason.error.empty()?"plug-in catalogue maintenance did not complete":reason.error;
+        result->report.failures.push_back({"",diagnostic,state});
+        failed(diagnostic,state);
+    };
     try {
         if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh) {
             failed("invalid discovery mode",scan::State::Invalid);return result;
         }
         hydrationAttempted_=true;
-        // Explicit discovery never silently switches to the legacy lazy path.
-        // The ordinary hydrateCatalogue compatibility call is distinct.
-        if(!allowLegacyFallback)catalogueHydrated_=true;
+        // Explicit CacheOnly stays in force across subsequent project hydrations.
+        if(mode==DiscoveryMode::CacheOnly && !allowLegacyFallback)cacheOnly_=true;
         auto stagedVst3=std::make_unique<juce::KnownPluginList>();
         std::vector<ClapPluginRef> stagedClap;
+        scan::ScanPruneRequest prune;
         if(mode!=DiscoveryMode::CacheOnly) {
             ++stats_.scans;
             auto config=scanConfig_;
             config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
+            }
+            if(mode==DiscoveryMode::Incremental) {
+                prune.cancel=config.process.cancel;
+                for(int i=0;i<searchPaths->vst3.getNumPaths();++i) {
+                    const auto root=searchPaths->vst3[i].getFullPathName().toStdString();
+                    prune.roots.push_back({"vst3",media::pathFromUtf8(root)});
+                }
+                for(const auto& root:searchPaths->clap)
+                    prune.roots.push_back({"clap",media::pathFromUtf8(root)});
+                const auto bound=scan::bindScanPruneRoots(prune);
+                if(!bound){maintenanceFailed(bound);return result;}
             }
             result->report=vst3_.scan(searchPaths->vst3,*stagedVst3,config);
             if(result->report.complete && !result->report.cancelled) {
@@ -133,17 +171,11 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
                         throw std::runtime_error(error);
                     for(const auto& description:descriptions)stagedVst3->addType(description);
                 } else {
-                    for(const auto& plugin:module.plugins) {
-                        ClapPluginRef ref;ref.bundlePath=module.canonicalPath;ref.id=plugin.id;
-                        ref.name=plugin.name;ref.vendor=plugin.vendor;ref.version=plugin.version;
-                        ref.features=plugin.features;ref.isInstrument=plugin.instrument;
-                        stagedClap.push_back(std::move(ref));
-                    }
+                    appendClapMetadata(stagedClap,module.canonicalPath,module.plugins);
                 }
             }
         }
-        if(stagedClap.size()>scan::kMaximumPlugins ||
-            static_cast<std::size_t>(stagedVst3->getNumTypes())>scan::kMaximumPlugins-stagedClap.size())
+        if(!fitsCatalogue(static_cast<std::size_t>(stagedVst3->getNumTypes()),stagedClap.size()))
             throw std::runtime_error("combined catalogue descriptor bound");
         auto snapshot=std::make_shared<DiscoveryCatalogue>();snapshot->clap=stagedClap;
         for(const auto& description:stagedVst3->getTypes())snapshot->vst3.push_back(description);
@@ -154,12 +186,20 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
             return a.bundlePath==b.bundlePath?a.id<b.id:a.bundlePath<b.bundlePath;
         });
         auto report=result->report;
+        if(mode==DiscoveryMode::Incremental) {
+            prune.discoveryComplete=true;
+            const auto registry=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
+            const auto pruned=scan::pruneMissingScans(registry,prune);
+            if(!pruned){maintenanceFailed(pruned);return result;}
+        }
         // Both formats, snapshot ownership and the copied report are prepared
         // before replacing either runtime catalogue. Old const snapshots live on.
         known_.swap(stagedVst3);clapCatalogue_.swap(stagedClap);
         publishedCatalogue_=std::move(snapshot);result->catalogue=publishedCatalogue_;
         result->outcome=DiscoveryOutcome::Published;scanReport_=std::move(report);
-        scanned_=true;catalogueHydrated_=true;hydrationError_.clear();
+        scanned_=true;
+        if(mode!=DiscoveryMode::CacheOnly)cacheOnly_=false;
+        hydrationError_.clear();
     } catch(const std::exception& failure){failed(failure.what(),scan::State::Invalid);}
     return result;
 }
@@ -242,30 +282,43 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
             }
         }
     }
-    if(!found && catalogueHydrated_) {
+    if(!found && cacheOnly_) {
         ++stats_.notFound;++stats_.needsDiscovery;
         err="NeedsDiscovery: VST3 identity is not in the validated catalogue";return nullptr;
     }
 
-    // An unknown saved path still needs discovery until the startup catalogue
-    // owns all discovery. A known module or matched identity needs no probe.
-    if (!found && !knownHint && absoluteHint && juce::File(hint).exists()) {
+    // Even a known bundle can gain a new class after an update. The scanner
+    // reuses its stamped packet for an unchanged bundle.
+    if (!found && absoluteHint && juce::File(hint).hasFileExtension("vst3") && juce::File(hint).exists()) {
         juce::KnownPluginList types;
         const auto report=vst3_.scanFile(hint,types,scanConfig_);
         if(!report.complete || !report.failures.empty()) {
-            ++stats_.failed;err=report.failures.empty()?"VST3 path-hint scan incomplete":report.failures.front().error;
+            err=report.failures.empty()?"VST3 path-hint scan incomplete":report.failures.front().error;
+            if(!report.complete && publishedCatalogue_) {
+                ++stats_.notFound;++stats_.needsDiscovery;err="NeedsDiscovery: "+err;
+            } else ++stats_.failed;
             return nullptr;
+        }
+        const auto prospective=static_cast<std::size_t>(known_->getNumTypes())+
+            static_cast<std::size_t>(types.getNumTypes());
+        if(!fitsCatalogue(prospective,clapCatalogue_.size())) {
+            ++stats_.failed;err="combined catalogue descriptor bound";return nullptr;
         }
         for (const auto& description : types.getTypes()) known_->addType(description);
         found = find(types);
     }
-    if (!found && !knownHint) {
-        if (!scanned_) scan();
+    if (!found && !knownHint && !scanned_ && !publishedCatalogue_) {
+        scan();
         if(!scanned_){++stats_.failed;err="VST3 discovery unavailable or cancelled";return nullptr;}
         found = find(*known_);
     }
     if (!found) {
         ++stats_.notFound;
+        if(publishedCatalogue_) {
+            ++stats_.needsDiscovery;
+            err="NeedsDiscovery: VST3 identity is not in the validated catalogue";
+            return nullptr;
+        }
         err = "no VST3 with uid '" + ref.uid + "' in the search path (" +
               std::to_string(known_->getNumTypes()) + " known" +
               (ref.pathHint.empty() ? std::string() : "; hint '" + ref.pathHint + "'") + ")";
@@ -290,29 +343,65 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeClap(const engine::DeviceR
     // Discovery/quarantine resolves aliases. Preserve an older project's
     // preferred installed copy when its saved hint used a symlink or dots.
     std::string preferred=ref.pathHint;
+    std::filesystem::path installedHint;
     if(!preferred.empty()) {
+        const auto path=media::pathFromUtf8(preferred);
         std::error_code error;
-        const auto canonical=std::filesystem::canonical(
-            std::filesystem::path(std::u8string(preferred.begin(),preferred.end())),error);
-        if(!error){const auto bytes=canonical.u8string();preferred.assign(bytes.begin(),bytes.end());}
+        if(path.is_absolute()) {
+            const auto canonical=std::filesystem::canonical(path,error);
+            if(!error) {
+                const auto bytes=canonical.u8string();
+                preferred.assign(bytes.begin(),bytes.end());
+                if(juce::File(juce::String::fromUTF8(preferred.c_str())).hasFileExtension("clap"))
+                    installedHint=canonical;
+            }
+        }
     }
-    const ClapPluginRef* pick = nullptr;
-    for (const ClapPluginRef& p : clapCatalogue_) {
-        if (p.id != ref.uid) continue;
-        if (pick == nullptr || p.bundlePath == preferred) pick = &p;
+    const auto find=[&]() -> const ClapPluginRef* {
+        const ClapPluginRef* first=nullptr;
+        for(const auto& candidate:clapCatalogue_) {
+            if(candidate.id!=ref.uid)continue;
+            std::error_code error;
+            if(!std::filesystem::exists(media::pathFromUtf8(candidate.bundlePath),error))continue;
+            if(candidate.bundlePath==preferred)return &candidate;
+            if(first==nullptr)first=&candidate;
+        }
+        return first;
+    };
+    auto* pick=find();
+    if(pick==nullptr && !cacheOnly_ && !installedHint.empty()) {
+        auto scanner=scan::Scanner::open(scanConfig_,err);
+        if(!scanner) {
+            ++stats_.notFound;++stats_.needsDiscovery;err="NeedsDiscovery: "+err;
+            return nullptr;
+        }
+        const auto result=scanner->probe("clap",installedHint);
+        if(result.state!=scan::State::Ready) {
+            ++stats_.failed;err=result.error.empty()?"CLAP path-hint scan incomplete":result.error;
+            return nullptr;
+        }
+        const auto sameModule=[&](const auto& candidate){return candidate.bundlePath==result.path;};
+        const auto retained=clapCatalogue_.size()-static_cast<std::size_t>(
+            std::count_if(clapCatalogue_.begin(),clapCatalogue_.end(),sameModule));
+        if(!fitsCatalogue(static_cast<std::size_t>(known_->getNumTypes()),retained+result.plugins.size())) {
+            ++stats_.failed;err="combined catalogue descriptor bound";return nullptr;
+        }
+        std::erase_if(clapCatalogue_,sameModule);
+        appendClapMetadata(clapCatalogue_,result.path,result.plugins);
+        pick=find();
     }
-    if(pick==nullptr && catalogueHydrated_) {
-        ++stats_.notFound;++stats_.needsDiscovery;
-        err="NeedsDiscovery: CLAP identity is not in the validated catalogue";return nullptr;
-    }
-    if(pick==nullptr && !scanned_) {
+    if(pick==nullptr && !cacheOnly_ && !scanned_ && !publishedCatalogue_) {
         scan();
         if(!scanned_){++stats_.failed;err="CLAP discovery unavailable or cancelled";return nullptr;}
-        for(const auto& candidate:clapCatalogue_)if(candidate.id==ref.uid &&
-            (pick==nullptr || candidate.bundlePath==preferred))pick=&candidate;
+        pick=find();
     }
-    if (pick == nullptr) {
+    if(pick==nullptr) {
         ++stats_.notFound;
+        if(cacheOnly_ || publishedCatalogue_) {
+            ++stats_.needsDiscovery;
+            err="NeedsDiscovery: CLAP identity is not in the validated catalogue";
+            return nullptr;
+        }
         err = "no CLAP with id '" + ref.uid + "' in the search path (" +
               std::to_string(clapCatalogue_.size()) + " known)";
         return nullptr;

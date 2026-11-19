@@ -142,6 +142,10 @@ int helper(const std::vector<std::string>& args) {
     if(version=="bad-request")return 64;
     if(version=="channel-setup")return 74;
     if(version=="channel-write")return 75;
+    if(version=="channel-partial-write") {
+        std::fputs("{\"format\":",stdout);
+        return 75;
+    }
     if(version=="unsupported")return 78;
     if(version=="hang")std::this_thread::sleep_for(std::chrono::seconds(10));
     if(version=="crash" || (version=="flaky" && launches(path)==1)) {
@@ -647,7 +651,7 @@ void infrastructureFailures(const fs::path& self) {
     Fixture f(self);
     auto scanner = f.scanner();
     auto registry = f.registry();
-    for (const auto* reason : {"bad-request", "channel-setup", "channel-write", "unsupported"}) {
+    for (const auto* reason : {"bad-request", "channel-setup", "channel-write", "channel-partial-write", "unsupported"}) {
         const auto path = f.temp.path() / (std::string(reason) + ".clap");
         write(path, reason);
         const auto first = scanner->probe("clap", path);
@@ -760,6 +764,10 @@ void waitsForRegistryWriter(const fs::path& self) {
         write.commit();
         return std::pair(waited, result.get());
     };
+    const auto [waitedForOpen, opened] = withWriter([&] {
+        return PluginRegistry::open(f.config.registry,f.error);
+    });
+    check(waitedForOpen && opened,"schema admission waits for another writer and opens the current registry");
     const auto [waitedForAdmission, admitted] = withWriter([&] {
         return registry->beginStampedScan("clap", path, stamp, 1, f.error);
     });

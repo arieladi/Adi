@@ -168,23 +168,28 @@ std::unique_ptr<PluginRegistry> PluginRegistry::open(const std::filesystem::path
         auto db = std::make_unique<SQLite::Database>(
             utf8(file), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
         db->setBusyTimeout(2000);   // ADI and ADiJ may both have it open
-        const int appId = db->execAndGet("PRAGMA application_id").getInt();
-        const int version = db->execAndGet("PRAGMA user_version").getInt();
-        const bool fresh = appId == 0 && version == 0;
-        if (!fresh && appId != kApplicationId) {
-            error = utf8(file) + " is not a plugin registry";
-            return nullptr;
-        }
-        if (version > kVersion) {
-            error = utf8(file) + " is registry version " + std::to_string(version) +
-                    "; this build reads up to " + std::to_string(kVersion);
-            return nullptr;
-        }
+        const auto supportedHeader = [&] {
+            const int appId = db->execAndGet("PRAGMA application_id").getInt();
+            const int version = db->execAndGet("PRAGMA user_version").getInt();
+            const bool fresh = appId == 0 && version == 0;
+            if (!fresh && appId != kApplicationId) {
+                error = utf8(file) + " is not a plugin registry";
+                return false;
+            }
+            if (version > kVersion) {
+                error = utf8(file) + " is registry version " + std::to_string(version) +
+                        "; this build reads up to " + std::to_string(kVersion);
+                return false;
+            }
+            return true;
+        };
+        if (!supportedHeader()) return nullptr;
         db->exec("PRAGMA journal_mode = WAL");
         {
-            // Early v3 registries have the success table but no typed failures.
-            // Install the additive tables/triggers atomically on every open.
-            SQLite::Transaction txn(*db);
+            // Verify the header again after admission. Early v3 registries get
+            // the additive cache tables and triggers in the same transaction.
+            SQLite::Transaction txn(*db, SQLite::TransactionBehavior::IMMEDIATE);
+            if (!supportedHeader()) return nullptr;
             db->exec(kSchema);
             verifyScanColumns(*db);
             db->exec("PRAGMA application_id = " + std::to_string(kApplicationId));

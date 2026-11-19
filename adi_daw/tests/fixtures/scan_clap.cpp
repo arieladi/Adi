@@ -48,6 +48,8 @@ bool CLAP_ABI initialize(const char* path) {
     marker<<getpid()<<'\n';
 #endif
     marker.close();
+    if(mode.find("init-exit74")!=mode.npos)std::exit(74);
+    if(mode.find("init-exit75")!=mode.npos)std::exit(75);
     if(mode.find("init-crash")!=mode.npos)crash();
     if(mode.find("init-hang")!=mode.npos)std::this_thread::sleep_for(std::chrono::seconds(30));
     if(mode.find("noisy")!=mode.npos){std::printf("plug-in stdout chatter\n{not metadata}\n");std::fprintf(stderr,"plug-in stderr chatter\n");}

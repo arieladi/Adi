@@ -277,6 +277,59 @@ inline void cacheStates() {
     require(result && result->outcome==DiscoveryOutcome::Published && result->report.complete && result->catalogue &&
         result->catalogue->clap.empty() && result->catalogue->vst3.empty() && missesWithoutDiscovery(loader),"valid empty catalogue differs from missing storage");
 }
+inline void clapHintAndMove() {
+    using device::DiscoveryMode;
+    TempDirectory scratch("discovery_operation","clap_hint_and_move");
+    const auto oldPath=scratch.path()/"a-original.clap",currentPath=scratch.path()/"z-current.clap";
+    copyClap(oldPath);
+    scan::Config config;config.registry=scratch.path()/"registry.sqlite";
+    config.executable=media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+    std::string error;
+    {auto scanner=scan::Scanner::open(config,error);
+        require(scanner && scanner->probe("clap",oldPath).state==scan::State::Ready,"seed original CLAP row");}
+    rows::PluginRef ref;ref.format="clap";ref.uid="org.adi.catalogue.runtime";ref.pathHint=text(oldPath);
+    engine::DeviceRequest request;request.ref=&ref;request.sampleRate=48000;request.maxFrames=64;
+    const auto load=[&](device::JuceDeviceLoader& loader) {
+        const auto instance=loader.fn()(request,error);return instance && instance->loaded();
+    };
+    {
+        device::JuceDeviceLoader loader(false);loader.setScanConfig(config);
+        require(load(loader) && pids(oldPath).parent==1,"original CLAP opens from the catalogue");
+    }
+    const auto oldCanonical=text(fs::canonical(oldPath));
+    copyClap(currentPath);fs::remove_all(oldPath);
+    {
+        device::JuceDeviceLoader loader(false);loader.setScanConfig(config);
+        const auto stored=scan::readCatalogue(config.registry,error);
+        require(stored && stored->find("clap",oldCanonical),"CacheOnly retains the stale row until owner discovery");
+        ref.pathHint=text(currentPath);
+        require(load(loader) && pids(currentPath).child==1 && loader.stats().scans==0,
+            "compatibility load probes the installed CLAP hint when only a stale candidate exists");
+        require(load(loader) && pids(currentPath).child==1 && loader.stats().catalogueReads==1,
+            "known installed CLAP hint instantiates without a helper or SQL reread");
+    }
+    for(const auto& hint:{text(oldPath),std::string{}}) {
+        device::JuceDeviceLoader loader(false);loader.setScanConfig(config);ref.pathHint=hint;
+        const auto snapshot=loader.discover(DiscoveryMode::CacheOnly);
+        require(snapshot && snapshot->catalogue && snapshot->catalogue->clap.size()==2,"both existing and stale CLAP rows hydrate");
+        require(load(loader) && pids(currentPath).child==1 && loader.stats().scans==0,
+            "moved CLAP falls back to the live copy for stale and empty hints");
+    }
+    copyClap(oldPath);
+    {
+        device::JuceDeviceLoader loader(false);loader.setScanConfig(config);ref.pathHint=text(currentPath);
+        require(load(loader) && pids(currentPath).parent==4,"the saved hint selects between both installed CLAP copies");
+    }
+    fs::remove_all(oldPath);
+    device::JuceDeviceLoader owner(false);owner.setScanConfig(config);
+    owner.addSearchPath(juce::File(juce::String::fromUTF8(text(scratch.path()).c_str())));
+    const auto fresh=owner.discover(DiscoveryMode::Incremental);
+    const auto stored=scan::readCatalogue(config.registry,error);
+    require(fresh && fresh->outcome==device::DiscoveryOutcome::Published && fresh->catalogue &&
+        fresh->catalogue->clap.size()==1 && stored && !stored->find("clap",oldCanonical) &&
+        stored->modules.size()==1 && pids(currentPath).child==1,
+        "a complete owner walk retires the stale row and reuses the live module");
+}
 struct ScopedHome {
 #if defined(_WIN32)
     std::wstring saved;
@@ -325,6 +378,7 @@ inline bool scannerDiscoveryContracts() {
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
         auto receipt=discovery_test_detail::modes();discovery_test_detail::refreshModes();discovery_test_detail::parallelDiscovery();
         discovery_test_detail::cacheStates();discovery_test_detail::command();
+        discovery_test_detail::clapHintAndMove();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
         receipt["serial_parallel_catalogue_equal"]=true;
         std::printf("DISCOVERY_OPERATION %s\n",receipt.dump().c_str());return true;

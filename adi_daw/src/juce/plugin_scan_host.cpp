@@ -91,22 +91,25 @@ int selfTest() {
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==2 && arguments[1]=="--self-test")return selfTest();
     if(arguments.size()!=4 || arguments[1]!="--scan")return 64;
+    const bool isClap=arguments[2]=="clap";
+#if defined(ADI_SCAN_WITH_VST3)
+    if(!isClap && arguments[2]!="vst3")return 78;
+#else
+    if(!isClap)return 78;
+#endif
     Channel channel;if(!channel.reserve())return 74;
+    if(std::fputc(adi::scan::kModuleOpening,channel.file)==EOF || std::fflush(channel.file)!=0)return 74;
     try {
         std::vector<adi::scan::Plugin> plugins;
-        if(arguments[2]=="clap")plugins=clap(arguments[3]);
-        else if(arguments[2]=="vst3") {
+        if(isClap)plugins=clap(arguments[3]);
 #if defined(ADI_SCAN_WITH_VST3)
-            plugins=adi::device::probeVst3Bundle(arguments[3]);
-#else
-            return 78;
+        else plugins=adi::device::probeVst3Bundle(arguments[3]);
 #endif
-        } else return 78;
         std::string error;const auto packet=adi::scan::encodeMetadata(arguments[2],arguments[3],plugins,error);
-        if(!packet)return 65;
-        // 74 is channel setup before opening a module. A completed domain
-        // probe whose output pipe fails has its own infrastructure status.
-        if(std::fwrite(packet->data(),1,packet->size(),channel.file)!=packet->size() || std::fflush(channel.file)!=0)return 75;
+        if(!packet || packet->empty() || packet->front()!=adi::scan::kModuleOpening)return 65;
+        const std::string_view remainder=std::string_view(*packet).substr(1);
+        if(std::fwrite(remainder.data(),1,remainder.size(),channel.file)!=remainder.size() ||
+            std::fflush(channel.file)!=0)return 75;
         return 0;
     } catch(const std::exception&) {return 65;}
 }

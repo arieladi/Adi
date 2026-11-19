@@ -55,6 +55,58 @@ inline void seed(Store& store,const rows::PluginRef& ref,const fs::path& wave) {
     clip.bind(1,nanoseconds(8192));clip.exec();
     store.db().exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,11,8192)");
 }
+inline void projectHintFallback() {
+    TempDirectory scratch("session_catalogue_reopen","new_project_hints");
+    const auto wave=scratch.path()/"source.wav";
+    const std::vector<float> pcm(8300*2,0.1f);
+    {audio::WavWriter writer(wave,48000,2,audio::WavFormat::Float32);writer.write(pcm.data(),8300);writer.close();}
+    const auto original=media::pathFromUtf8(ADI_CATALOGUE_FIXTURE);
+    const auto moduleB=scratch.path()/"later"/original.filename();
+    const auto describe=[&](const fs::path& path) {
+        device::Vst3Host host;juce::KnownPluginList types;scan::Config reference;
+        reference.executable=media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+        reference.registry=scratch.path()/"identities.sqlite";
+        const auto report=host.scanFile(juce::String::fromUTF8(text(path).c_str()),types,reference);
+        require(report.complete && report.failures.empty() && types.getNumTypes()==3,"derive fixture identity");
+        auto description=types.getTypes().getReference(0);
+        return description;
+    };
+    const auto descriptionA=describe(original);
+    auto descriptionB=descriptionA;
+    descriptionB.fileOrIdentifier=juce::File(juce::String::fromUTF8(text(moduleB).c_str())).getFullPathName();
+    const auto project=[&](const char* name,const juce::PluginDescription& description) {
+        StoreError error{};auto store=Store::createEmpty(scratch.path()/name,error);
+        require(static_cast<bool>(store),"create project for saved hint");
+        rows::PluginRef ref;ref.format="vst3";ref.uid=device::identityOf(description).uid;
+        ref.pathHint=description.fileOrIdentifier.toStdString();
+        seed(*store,ref,wave);return store;
+    };
+    auto first=project("first.adi",descriptionA),second=project("second.adi",descriptionB);
+    scan::Config config;config.executable=media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+    config.registry=scratch.path()/"project-registry.sqlite";
+    device::JuceDeviceLoader loader(false);loader.setScanConfig(config);
+    engine::SessionSpec spec;spec.channels=2;spec.sampleRate=48000;spec.maxFrames=64;spec.performanceState=false;
+    const auto loads=[&](Store& store,device::JuceDeviceLoader& selected) {
+        std::string error;require(selected.hydrateCatalogue(error),error);
+        engine::Session session;
+        require(session.load(store,selected.fn(),spec),"load project with saved hint: "+session.error());
+        return session.stats().loaded==1 && session.stats().placeholders==0;
+    };
+    require(loads(*first,loader) && fs::exists(config.registry),"first project should create a registry through its VST3 hint");
+    require(!loads(*second,loader),"a missing module must remain a placeholder");
+    fs::create_directories(moduleB.parent_path());
+    fs::copy(original,moduleB,fs::copy_options::recursive);
+    require(loads(*second,loader),"a later installation should load after opening the second project");
+    require(loader.stats().scans==0,"saved-hint project open should not walk roots");
+    config.registry=scratch.path()/"empty-registry.sqlite";
+    std::string error;{auto registry=PluginRegistry::open(config.registry,error);require(static_cast<bool>(registry),error);}
+    device::JuceDeviceLoader strict(false);strict.setScanConfig(config);
+    const auto empty=strict.discover(device::DiscoveryMode::CacheOnly);
+    require(empty && empty->outcome==device::DiscoveryOutcome::Published,"explicit empty CacheOnly");
+    require(!loads(*second,strict) && strict.stats().scans==0,"explicit CacheOnly must stay scan-free with an installed module hint");
+    device::JuceDeviceLoader ordinary(false);ordinary.setScanConfig(config);
+    require(loads(*second,ordinary) && ordinary.stats().scans==0,"a valid empty registry must allow an ordinary saved hint");
+}
 inline Json formatCase(const std::string& format) {
     TempDirectory scratch("session_catalogue_reopen",format.c_str());
     Json receipt{{"format",format},{"passed",false},{"sample_rate",48000},{"maximum_block",64},
@@ -181,6 +233,11 @@ inline Json formatCase(const std::string& format) {
 } // namespace scanner_reopen_detail
 inline bool scannerSessionReopenContracts() {
     juce::ScopedJuceInitialiser_GUI initialize;bool passed=true;
+    try {scanner_reopen_detail::projectHintFallback();}
+    catch(const std::exception& error) {
+        passed=false;
+        std::printf("SCANNER_PROJECT_HINT %s\n",error.what());
+    }
     for(const auto* format:{"clap","vst3"})try{const auto receipt=scanner_reopen_detail::formatCase(format);
         std::printf("SCANNER_SESSION_REOPEN %s\n",receipt.dump().c_str());passed=passed && receipt.at("passed").get<bool>();}
     catch(const std::exception& error){passed=false;std::printf("SCANNER_SESSION_REOPEN %s\n",

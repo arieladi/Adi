@@ -11,8 +11,9 @@
 //     descriptor's reverse-DNS id). VST3 checks the in-memory catalogue first.
 //     Discovery at an unknown VST3 path_hint contributes its descriptions to
 //     that catalogue. CLAP uses path_hint to choose between copies of one id.
-//     A hydrated catalogue miss needs explicit discovery. Lazy discovery is
-//     retained for a fresh loader with no registry or a validated v1/v2 schema.
+//     An ordinary open can probe one installed saved hint after a catalogue miss.
+//     Explicit CacheOnly prohibits that probe. Legacy root discovery is retained
+//     for a fresh loader with no registry or a validated v1/v2 schema.
 //   * **An instance that did not load is NOT returned.** Both hosts hand back a
 //     `MissingDevice` rather than null on failure (ADR-0011), which is right
 //     for a probe and wrong here: the SESSION builds the placeholder, because
@@ -80,8 +81,8 @@ public:
     /// Adding a root does not invalidate or bypass a hydrated snapshot.
     void addSearchPath(const juce::File& dir);
 
-    /// Explicit owner scan. A fresh loader with no cache-capable registry retains legacy
-    /// lazy discovery; after hydration, misses report NeedsDiscovery instead.
+    /// Explicit owner scan. Only a fresh loader with no cache-capable registry
+    /// retains legacy lazy root discovery for a miss without a usable hint.
     void scan();
 
     /// Synchronous owner-side operation. Incremental enumerates configured roots
@@ -102,8 +103,8 @@ public:
     /// Missing or validated v1/v2 registry on a fresh loader permits legacy discovery;
     /// only that later owner discovery migrates. Corrupt existing metadata
     /// fails closed for new external instances until a successful refresh/scan.
-    /// A valid empty catalogue also disables implicit discovery. Publication
-    /// replaces metadata only at this explicit boundary, not on every insert.
+    /// Ordinary opens can later probe one installed saved hint on a miss.
+    /// Hydration itself never checks installed plug-ins or launches the helper.
     /// Does not claim current filesystem freshness or runtime readiness.
     bool hydrateCatalogue(std::string& error);
 
@@ -112,7 +113,7 @@ public:
     void setScanConfig(const scan::Config& config) {
         if(audio::onAudioThread)return;
         scanConfig_=config;scanned_=false;known_->clear();clapCatalogue_.clear();
-        hydrationAttempted_=false;catalogueHydrated_=false;hydrationError_.clear();
+        hydrationAttempted_=false;cacheOnly_=false;hydrationError_.clear();
         publishedCatalogue_.reset();
     }
     /// Borrowed on the owner between jobs; copy/publish for another thread.
@@ -131,7 +132,7 @@ public:
         std::int64_t failed = 0;     ///< matched, and did not instantiate
         std::int64_t scans = 0;
         std::int64_t catalogueReads = 0; ///< persistent metadata reads, never discovery
-        std::int64_t needsDiscovery = 0; ///< cached snapshot misses; no implicit scan
+        std::int64_t needsDiscovery = 0; ///< unresolved catalogue misses requiring discovery
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
 
@@ -155,7 +156,7 @@ private:
     std::shared_ptr<const PluginSearchPaths> searchPaths_ = std::make_shared<PluginSearchPaths>();
     bool scanned_ = false;
     bool hydrationAttempted_ = false;
-    bool catalogueHydrated_ = false;
+    bool cacheOnly_ = false;
     std::string hydrationError_;
     Stats stats_;
     scan::Config scanConfig_;

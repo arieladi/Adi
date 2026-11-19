@@ -24,10 +24,14 @@ exit and format rejection retain a named negative result. Reliably stamped
 crashes/timeouts allow one further explicit probe before two strikes block more
 children. Pending and manual/legacy blocks always need explicit re-enable.
 Cancellation and helper launch, configuration or I/O failures abandon their own marker.
-The dedicated helper reserves exit 64 for an invalid request, 74 for metadata channel
-setup before the module is opened, 75 for a metadata write or flush failure after
-enumeration and 78 for unavailable format support. Completion failure/stale tickets publish nothing
-and retain quarantine. Resource exceptions retain pending state. A pending row
+The dedicated helper uses exit 64 for an invalid request, 74 for metadata channel
+setup, 75 for a metadata write or flush failure and 78 for unavailable format support.
+It flushes the opening brace of the metadata packet before it opens the module.
+An exit with only that opening mark is classified as a candidate result, including
+a plug-in's own exit 74 or 75. Unmarked reserved exits and exit 75 with a partial
+payload abandon admission. Cancellation, process-launch and parent I/O errors
+also abandon it. Completion failure and stale tickets publish nothing and retain
+quarantine. Resource exceptions retain pending state. A pending row
 means in-progress/interrupted, not proof of a plug-in crash. Native alias
 resolution binds admission; no filename/Unicode case heuristic is used.
 
@@ -255,16 +259,17 @@ Repeated instance creation does not repeat the SQL read. `setScanConfig` explici
 clears staged metadata and resets hydration. A corrupt existing registry fails
 closed for new external requests until an explicit successful refresh/scan.
 
-After a v3 catalogue has been hydrated, including a valid **empty** catalogue, an unknown
-identity returns a null device with a `NeedsDiscovery` diagnostic and increments
-`Stats.needsDiscovery`. It never falls back to a path-hint scan, root walk or child.
-Adding search roots prepares a later explicit `scan()`; it does not bypass this
-policy. A fresh loader with no registry file or a validated historical v1/v2
-schema retains the legacy discovery path. Read-only hydration never migrates;
-only later actual owner discovery opens/migrates the legacy registry, retaining
-route preferences and v2 quarantine rows. Foreign, future and corrupt files are
-not treated as legacy or absence. A missing or validated legacy registry during
-an explicit refresh retains an existing complete in-memory snapshot.
+An ordinary project load tries the in-memory catalogue first. On a miss it can
+ask the isolated scanner for the one installed module named by an absolute saved
+hint, including after hydration of a valid empty catalogue. The stamp still
+governs reuse of prior results. A matching catalogue entry needs no helper or SQL
+read. A miss after ordinary hydration without a usable hint reports
+`NeedsDiscovery`. Project hydration alone performs no filesystem walk or probe.
+Explicit CacheOnly disables hinted probes until the next successful owner scan.
+A fresh loader with a missing registry or validated v1/v2 keeps the older discovery
+path. Read-only hydration leaves legacy bytes intact. A subsequent owner probe
+or discovery can migrate the registry while retaining its routes and v2 quarantine
+rows. Foreign, future and corrupt files fail closed.
 The existing explicit scan/CLI listing path remains available; automatic background
 discovery and a GUI manager action are not added by this slice.
 
@@ -273,7 +278,8 @@ the loader resolves that hint and projects a temporary description onto its orig
 absolute spelling **only** when the stored canonical module matches. It then demands
 the exact saved identifier; no class-hash match guesses another installed location,
 and canonical cache/project rows are not rewritten. CLAP keeps stable descriptor id
-and the existing canonical preferred-copy selection. VST3's stored class hashes
+and prefers the saved canonical path among installed catalogue copies of that ID.
+An installed catalogue match needs no hinted probe. VST3's stored class hashes
 remain hashes, not fabricated native 128-bit CIDs.
 
 The hosted fixture gate populates the persistent cache using real VST3 and CLAP
@@ -506,12 +512,22 @@ CacheOnly opens the registry read-only and performs both common and format
 validation. It does not open/check a scanner helper, enumerate roots, stat
 candidates or load a native module. Its results distinguish `Missing`,
 validated pre-cache `Legacy`, a `Published` empty catalogue, and `Failed`
-corruption. An explicit CacheOnly request with no usable cache leaves misses
-as `NeedsDiscovery`, never a hidden scan. The existing `hydrateCatalogue`
-compatibility wrapper still allows a fresh loader's documented missing/v1/v2
-legacy discovery path; that path is not renamed CacheOnly. Corrupt cached
+corruption. Explicit CacheOnly leaves every miss as `NeedsDiscovery`. The ordinary
+`hydrateCatalogue` call keeps the bounded saved-hint policy described above.
+Corrupt cached
 metadata fails closed for subsequent external instances, even if an older
 immutable snapshot remains available for presentation.
+
+A complete Incremental discovery also reconciles missing success and failure
+rows in its verified roots. The operation binds canonical roots before the
+format scans and verifies those bindings during a bounded second traversal.
+A retargeted root or a failed maintenance walk refuses catalogue publication. It uses read-only key inventory on a
+warm pass and starts one writer transaction only when an absent eligible key
+needs cleanup. Cleanup rechecks absence and leaves manual and pending blocks
+alone. Missing optional roots and out-of-root aliases retain their rows.
+Cancellation or an incomplete walk retains the previous catalogue and removes
+no stale rows. CacheOnly keeps the stored rows, including copies whose module
+has been deleted since discovery.
 
 The existing `scan()` delegates to Incremental. `adi_play --list` also uses
 this operation, prints its candidate diagnostics, and returns nonzero when no
@@ -531,8 +547,7 @@ the actual headless command modes. Its CLAP entry log distinguishes scanner
 children from parent runtime loading. The prior Session-reopen and legacy
 compatibility gates remain in the same executable.
 
-This is one necessary service boundary. Clean rebuild/root reconciliation,
-startup scheduling, persistent application scan logs beyond command output,
+Startup scheduling and an explicit clean rebuild, persistent application scan logs beyond command output,
 native VST3 class-ID indexing, expanded alias traversal, expiry/retry service
 integration and Settings UI remain separate DEV-25 work. Stored metadata is
 neither proof of current filesystem freshness nor instantiated/audio readiness.
