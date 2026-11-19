@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-19 — Eleven-stage ADi-SHAPER ready for review
+
+**PR requested** — `clones/adi-shaper-sources` at `380335a2`. Title **Add cyclic Pitch, generated Noise and an original convolution room to ADi-SHAPER**. Review after `clones/adi-shaper-time`. All 12 affected Release suites passed under MSVC strict warnings. The three modules extend the parameter map from 463 to 715 and have zero additional host latency. The editable Pd patch and compiled processing path agree on the irregular-block stereo tests. Earlier projects retain their stored indices.
+
+- Pitch implements the cyclic grain mode, with a 1–100 ms window and ±24 semitone contour. All eleven unison peaks across the three tested rates arrived on the measured frame. Fixed stereo tests measured at most 0.000100 sample error. A moving two-octave sweep gave peak error 0.000129. Polyphonic, voice and drum algorithms remain reference work.
+- Noise generates independent white sequences at 44.1 kHz, interpolated for the session rate. It also offers separately calibrated ADI pink noise. Signal tests cover stereo statistics, same-channel mono, source pitch, level, trim, filter response, warm reset and digital silence. Source noise stays broadband under the musical crossover selection until its own filters are applied.
+- Reverb convolves the incoming stereo signal with an original finite room response, factored into two short diffusion filters and sparse reflections. The reference-derived controls include Send, Return, width, gate, decay, size, synchronized/free predelay and Clear Tails. A closed send preserves the tail, a closed return mutes it, and the independent room passes exact predelay-shift checks. Its four routing layouts include the measured 25% default and the full-level dry and wet overlap at 50%. The response is ADI-authored. Importing a user WAV and reproducing other room assets remain separate work.
+
+Additional Time evidence: at three free-Hz positions a separate amplitude cycle measured 30,459.5, 4,687 and 721 samples. The Time Follow read distance gave 30,459, 4,687 and 721 at the same settings. A held beat-rate clock stayed at 96,000 frames in the same test.
+
 ## 2026-11-19 — ADi-SHAPER device drawing and processor work
 
 For Window, the clones seat takes a standalone JUCE editor component in `src/juce/adi_shaper_curve.*` and a dedicated offscreen drawing/gesture test on `clones/adi-shaper-editor`. Its port accepts the active device parameter model and emits edits through callbacks for the existing gesture transaction. Window owns mounting the view and selection in the shared strip. The device panel, parameter feed, app shell and Mix View files stay with their current owners.
