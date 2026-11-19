@@ -14,6 +14,23 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-22: Overdrive shapes at 4× and reports Live's 5 samples
+
+**`devices/overdrive-latency` (`7d89a70c`), from `origin/main`.**
+
+- **Reading:** DV-08, Overdrive's default preset: "Latency: 5 samples (0.104 ms)", the same
+  switched off. Live ships no default-preset file for Overdrive, so its ranges stay a
+  reading to take.
+- **ADI before:** the OJD shaper at the base rate (aliasing), reporting 0.
+- **ADI now:** the shaper at 4× (polyphase interpolation, decimation at phase 0) through a
+  185-tap minimum-phase filter: flat to 20 kHz, ≥ 61 dB down past 0.135 of the 4× rate,
+  5.02 samples of low-frequency delay. Reports 5; the dry path waits 5. A driven 7 kHz tone's
+  folded fifth harmonic: -25 dB before, -83 dB now (plant: base-rate shaping fails the check).
+  Overdrive **21** checks, Overdrive Pd **17**, native/Pd parity unchanged; CTest **242/242**.
+
+**PR requested** — title "Overdrive shapes at 4x and reports Live 12.4's 5 samples (DEV-22)";
+head `devices/overdrive-latency` at `7d89a70c`; base `main`. Body: the commit message.
+
 ## 2026-11-19 — DEV-22: Saturator reports Live's 3 samples; defaults as Live's preset
 
 **`devices/saturator-latency` (`870c0e2f`), from `origin/main`.**
