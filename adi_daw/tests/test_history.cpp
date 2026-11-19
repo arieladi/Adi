@@ -15,6 +15,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -227,6 +228,72 @@ void testUndoRedoStack() {
     check(trackName(*s, 4) == "T4", "and in the right order");
 }
 
+void testBranchSwitchPreservesRedoTip() {
+    section("switching branches preserves the departing redo tip through compaction");
+    Scratch sc("branch-redo-tip");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+
+    const auto original = j.currentBranchId();
+    check(j.commit(mkTrack(1, "Common")).ok && j.commit(mkTrack(2, "Old")).ok &&
+              h.undo().ok && j.commit(mkTrack(3, "New")).ok, "made two diverging lines");
+    const auto departingHead = h.head();
+    const auto branches = h.branches();
+    const auto old = std::find_if(branches.begin(), branches.end(),
+                                  [](const auto& branch) { return !branch.isCurrent; });
+    if (old == branches.end()) {
+        check(false, "the fork created a branch");
+        return;
+    }
+
+    check(j.commit(mkTrack(4, "New tail")).ok, "extended the departing line");
+    const auto tip = h.head();
+    check(h.undo().ok && h.head() == departingHead && h.switchToBranch(old->id).ok &&
+              trackName(*s, 2) == "Old" && trackName(*s, 4) == "<gone>",
+          "switching from an undone head opens the other line");
+    const auto saved = h.branches();
+    const auto kept = std::find_if(saved.begin(), saved.end(), [&](const auto& branch) {
+        return !branch.isCurrent && branch.headSeq == tip;
+    });
+    check(kept != saved.end(), "the unheld departing tip has a system branch immediately");
+    check(h.switchToBranch(original).ok && h.head() == departingHead &&
+              h.switchToBranch(old->id).ok && h.branches().size() == saved.size(),
+          "the named head remains at its undone point and repeat switches do not duplicate the tip");
+
+    UndoRetentionPolicy policy;
+    policy.maxTransactions = 2;
+    const auto compacted = h.setUndoRetentionPolicy(policy);
+    check(compacted.ok && compacted.baseSeq == h.head() && !h.canRedo(),
+          "compaction stores the current old line below the cut");
+    check(kept != saved.end() &&
+              h.switchToBranch(kept->id, History::StoredRestore::SessionReloadPrepared).ok &&
+              h.head() == tip && trackName(*s, 4) == "New tail" && trackName(*s, 2) == "<gone>",
+          "the same saved tip remains reachable after compaction discards its old bridge");
+}
+
+void testNavigationRefusesRedoCycle() {
+    section("navigation rejects a damaged redo cycle");
+    Scratch sc("redo-cycle");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    check(j.commit(mkTrack(1, "First")).ok, "first edit");
+    const auto target = h.head();
+    const auto snap = h.takeSnapshot("Before cycle", 1, 0);
+    check(snap.ok && j.commit(mkTrack(2, "Second")).ok, "snapshot and second edit");
+    const auto head = h.head();
+    s->db().exec("UPDATE ops SET parent_seq=seq WHERE seq=(SELECT MAX(seq) FROM ops)");
+    const auto move = h.moveTo(target);
+    const auto revert = h.revertToSnapshot(snap.id, 2);
+    check(!move.ok && move.error.find("redo chain loops") != std::string::npos &&
+              !revert.ok && revert.error.find("redo chain loops") != std::string::npos &&
+              h.head() == head && h.branches().size() == 1 && trackCount(*s) == 2,
+          "move and snapshot revert return a cycle error without mutation");
+}
+
 // --- the properties that are easy to get wrong ------------------------------------
 
 void testUndoDoesNotGrowTheLog() {
@@ -320,13 +387,45 @@ void testUndoIsAtomic() {
 
     const auto headBefore = h.head();
     const auto r = h.undo();
-    check(!r.ok, "the undo fails");
+    check(!r.ok && r.opsApplied == 0, "the rolled-back undo reports zero applied ops");
     check(r.error.find("no stored inverse") != std::string::npos,
           "and says why: " + r.error);
     check(trackCount(*s) == 2,
           "BOTH tracks are still there -- the partial undo rolled back, saw " +
               std::to_string(trackCount(*s)));
     check(h.head() == headBefore, "and the head did not move");
+}
+
+void testReplayRollbackCount() {
+    section("undo and redo report only committed operations");
+    Scratch sc("rolled-back-count");
+    auto s = project(sc / "p.adi");
+    if (!s) return;
+    OpJournal j(*s);
+    History h(*s);
+    const OpRequest batch[] = {mkTrack(1, "A"), mkTrack(2, "B")};
+    check(j.commit(batch).ok, "batch committed");
+    const auto savedHead = h.head();
+    const auto blockHead =
+        "CREATE TEMP TRIGGER block_head BEFORE UPDATE OF head_seq ON op_branches "
+        "BEGIN SELECT RAISE(IGNORE); END";
+    s->db().exec(blockHead);
+    const auto undo = h.undo();
+    check(!undo.ok && undo.opsApplied == 0 && undo.error == "could not move the undo head" &&
+              h.head() == savedHead && trackCount(*s) == 2, "Undo rolls back when the head cannot move");
+    s->db().exec("DROP TRIGGER block_head");
+    check(h.undo().ok && !h.head() && trackCount(*s) == 0, "undo succeeds once the head can move");
+
+    s->db().exec(blockHead);
+    const auto redo = h.redo();
+    check(!redo.ok && redo.opsApplied == 0 && redo.error == "could not move the undo head" &&
+              !h.head() && trackCount(*s) == 0, "Redo rolls back when the head cannot move");
+    s->db().exec("DROP TRIGGER block_head");
+    s->db().exec("UPDATE ops SET payload=x'00' WHERE seq=2");
+    const auto malformed = h.redo();
+    check(!malformed.ok && malformed.opsApplied == 0 &&
+              malformed.error.find("redoing track.create") != std::string::npos &&
+              !h.head() && trackCount(*s) == 0, "the bad second Redo payload rolls back the first");
 }
 
 void testReadOnlyRefuses() {
@@ -358,11 +457,14 @@ int runAll() {
     testTransactionUndoesAsOne();
     testSurvivesRestart();
     testForkPreservesTheAbandonedLine();
+    testBranchSwitchPreservesRedoTip();
+    testNavigationRefusesRedoCycle();
     testUndoRedoStack();
     testUndoDoesNotGrowTheLog();
     testEphemeralSkipped();
     testSelBeforeIsCarried();
     testUndoIsAtomic();
+    testReplayRollbackCount();
     testReadOnlyRefuses();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
