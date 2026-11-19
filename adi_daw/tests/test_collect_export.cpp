@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <thread>
 namespace {
 using namespace adi;
 namespace fs = std::filesystem;
@@ -173,6 +174,49 @@ void collectionCancellation() {
           "a late arrival after ZIP finalization survives exclusive publication");
 }
 
+void cancellationInsideEntry() {
+    Fixture fixture;
+    std::string samples(4 * 1024 * 1024 + 123, '\0');
+    for (std::size_t i = 0; i < samples.size(); ++i) samples[i] = static_cast<char>((i * 29 + i / 17) & 255);
+    fixture.add("large.wav", samples, 1);
+    const auto source = fixture.temp.path() / "large.wav";
+    const auto hash = media::blake3File(source).hex;
+    const auto before = digestProject(*fixture.store).text;
+    const auto owner = std::this_thread::get_id();
+    std::stop_source stop;
+    bool observed = false, bounded = true, sameWorker = true, publishSeen = false;
+    std::uint64_t last = 0; unsigned chunks = 0;
+    const auto output = fixture.temp.path() / "cancelled-inside.zip";
+    const auto result = media::collectExport(fixture.store->path(), output, {stop.get_token(),
+        [&](media::ArchiveProgress progress) {
+            if (progress.phase == media::ArchivePhase::Publish) publishSeen = true;
+            if (progress.phase != media::ArchivePhase::WriteArchive || !progress.entry.starts_with("audio/")) return;
+            observed = true; sameWorker = sameWorker && std::this_thread::get_id() == owner;
+            bounded = bounded && progress.entriesWritten == 1 && progress.entryBytesTotal == samples.size() &&
+                progress.entryBytesRead >= last && progress.entryBytesRead - last <= 65536 && progress.entryBytesRead <= progress.entryBytesTotal;
+            if (progress.entryBytesRead > last) ++chunks;
+            last = progress.entryBytesRead;
+            if (last >= 256 * 1024) stop.request_stop();
+        }});
+    check(observed && bounded && sameWorker && chunks == 4 && last == 256 * 1024 && last < samples.size(),
+          "real collect cancellation occurs during the fourth bounded media-entry read");
+    check(result.cancelled && !result.ok && !publishSeen && !fs::exists(output), "mid-entry cancellation never reaches publication");
+    bool staged = false;
+    for (const auto& entry : fs::directory_iterator(fixture.temp.path())) staged |= entry.path().filename().string().starts_with(".adi-media-");
+    check(!staged && media::blake3File(source).hex == hash && digestProject(*fixture.store).text == before,
+          "mid-entry cancellation cleans private ZIP/copy and preserves source bytes/project");
+    bool threwInEntry = false;
+    const auto failed = media::collectExport(fixture.store->path(), output, {{},
+        [&](media::ArchiveProgress progress) {
+            if (progress.entry.starts_with("audio/") && progress.entryBytesRead > 0) { threwInEntry = true; throw 17; }
+        }});
+    check(threwInEntry && !failed.ok && !failed.cancelled && failed.error.find("progress") != std::string::npos && !fs::exists(output),
+          "nonstandard observer exception becomes an archive failure, never a C unwind or cancellation");
+    staged = false;
+    for (const auto& entry : fs::directory_iterator(fixture.temp.path())) staged |= entry.path().filename().string().starts_with(".adi-media-");
+    check(!staged && media::blake3File(source).hex == hash && digestProject(*fixture.store).text == before,
+          "observer failure preserves source and removes private stage");
+}
 void collection() {
     Fixture f;
     f.add("one/clip.wav", std::string(140000,'A') + "first", 1);
@@ -561,7 +605,7 @@ void documentRollbackWarning() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectionCancellation(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
+    try { publication(); collection(); collectionCancellation(); cancellationInsideEntry(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

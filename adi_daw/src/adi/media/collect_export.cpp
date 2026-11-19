@@ -165,12 +165,24 @@ FileResult collectExport(const fs::path& input, const fs::path& output,
         const auto zipPath = stage.path / "archive.zip";
         advanceArchive(control, {ArchivePhase::WriteArchive});
         ZipWriter zip(zipPath);
-        if (!zip.addFile(copyPath, filename)) throw std::runtime_error("cannot archive copied database");
-        std::size_t entries = 1;
-        advanceArchive(control, {ArchivePhase::WriteArchive, entries});
-        for (const auto& entry : fs::directory_iterator(project / "audio")) {
-            if (!zip.addFile(entry.path(), "audio/" + pathUtf8(entry.path().filename()))) throw std::runtime_error("cannot archive " + pathUtf8(entry.path()));
+        std::size_t entries = 0;
+        const auto addEntry = [&](const fs::path& path, const std::string& name) {
+            ZipEntryControl entryControl{control.stop, {}};
+            if (control.progress) entryControl.progress = [&](ZipEntryProgress bytes) {
+                // ZipWriter catches all observer exceptions before returning
+                // through miniz. Stop checks surround this worker notification.
+                control.progress({ArchivePhase::WriteArchive, entries, bytes.bytesRead, bytes.totalBytes, name});
+            };
+            if (!zip.addFile(path, name, ZipCompression::store, entryControl)) {
+                if (zip.error() == ZipError::cancelled) throw ArchiveCancelled{};
+                if (zip.error() == ZipError::progress) throw std::runtime_error("archive progress callback failed");
+                throw std::runtime_error("cannot archive " + pathUtf8(path));
+            }
             advanceArchive(control, {ArchivePhase::WriteArchive, ++entries});
+        };
+        addEntry(copyPath, filename);
+        for (const auto& entry : fs::directory_iterator(project / "audio")) {
+            addEntry(entry.path(), "audio/" + pathUtf8(entry.path().filename()));
         }
         if (!zip.finish()) throw std::runtime_error("ZIP finalization failed");
         advanceArchive(control, {ArchivePhase::Publish, entries});

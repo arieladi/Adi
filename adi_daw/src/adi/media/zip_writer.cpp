@@ -26,8 +26,22 @@ struct Input {
     mz_uint64 size = 0;
     mz_uint64 read = 0;
     bool failed = false;
+    bool cancelled = false;
+    bool observerFailed = false;
+    const ZipEntryControl* control = nullptr;
+    bool stopped() noexcept {
+        if (control->stop.stop_requested()) cancelled = true;
+        return cancelled;
+    }
+    bool checkpoint() noexcept {
+        if (stopped()) return false;
+        try { if (control->progress) control->progress({read, size}); }
+        catch (...) { observerFailed = true; return false; }
+        return !stopped();
+    }
     static size_t callback(void* opaque, mz_uint64 offset, void* buffer, size_t size) noexcept {
         auto& self = *static_cast<Input*>(opaque);
+        if (self.stopped()) return 0;
         if (offset != self.read || offset > self.size) { self.failed = true; return 0; }
         const auto count = static_cast<std::streamsize>(std::min<mz_uint64>(
             std::min<size_t>(size, 65536), self.size - offset));
@@ -36,6 +50,7 @@ struct Input {
             self.stream.read(static_cast<char*>(buffer), count);
             if (self.stream.gcount() != count || !self.stream) { self.failed = true; return 0; }
             self.read += static_cast<mz_uint64>(count);
+            if (!self.checkpoint()) return 0;
             return static_cast<size_t>(count);
         } catch (...) { self.failed = true; return 0; }
     }
@@ -83,25 +98,30 @@ ZipWriter::ZipWriter(const std::filesystem::path& output) noexcept {
 }
 ZipWriter::~ZipWriter() = default;
 bool ZipWriter::addFile(const std::filesystem::path& source, std::string_view archivePath,
-                        ZipCompression compression) noexcept {
+                        ZipCompression compression, const ZipEntryControl& control) noexcept {
     if (error_ != ZipError::none) return false;
     if (!impl_ || impl_->finished) return fail(ZipError::state);
     if (!validPath(archivePath)) return fail(ZipError::invalidPath);
+    if (control.stop.stop_requested()) return fail(ZipError::cancelled);
     try {
         std::error_code ec;
         if (!std::filesystem::is_regular_file(source, ec) || ec) return fail(ZipError::open);
         if (std::filesystem::equivalent(source, impl_->path, ec) || ec) return fail(ZipError::invalidPath);
         const std::string name(archivePath);
         Input input;
+        input.control = &control;
         input.stream.open(source, std::ios::binary | std::ios::ate);
         if (!input.stream) return fail(ZipError::open);
         const auto end = input.stream.tellg();
         if (end < 0) return fail(ZipError::read);
         input.size = static_cast<mz_uint64>(end);
         input.stream.seekg(0);
+        if (!input.checkpoint()) return fail(input.cancelled ? ZipError::cancelled : ZipError::progress);
         const mz_uint level = compression == ZipCompression::store ? 0u : 6u;
         const bool ok = mz_zip_writer_add_read_buf_callback(&impl_->zip, name.c_str(), Input::callback,
             &input, input.size, nullptr, nullptr, 0, level, nullptr, 0, nullptr, 0) != 0;
+        if (input.observerFailed) return fail(ZipError::progress);
+        if (input.stopped()) return fail(ZipError::cancelled);
         if (input.failed || input.read != input.size) return fail(ZipError::read);
         if (impl_->writeFailed) return fail(ZipError::write);
         if (!ok) return fail(ZipError::archive);
