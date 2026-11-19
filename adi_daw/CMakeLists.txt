@@ -329,6 +329,8 @@ add_library(adi_core STATIC
     src/juce/pd_declarations.cpp
     # PD4: the allowed-object walk, static like the parse above.
     src/juce/pd_object_walk.cpp
+    # DEV-16 step 1: the .amxd reader and translator, static too.
+    src/juce/pd_amxd.cpp
     src/adi/cue_settings.cpp
     src/adi/transport_settings.cpp
     src/adi/store.cpp
@@ -988,6 +990,12 @@ add_executable(adi_pd_object_walk_tests tests/test_pd_object_walk.cpp)
 target_link_libraries(adi_pd_object_walk_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_pd_object_walk_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
 add_test(NAME adi_pd_object_walk_tests COMMAND adi_pd_object_walk_tests)
+
+# DEV-16 step 1: .amxd devices written by the test, translated, walked and played.
+add_executable(adi_pd_amxd_tests tests/test_pd_amxd.cpp)
+target_link_libraries(adi_pd_amxd_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pd_amxd_tests PRIVATE ADI_PD_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd")
+add_test(NAME adi_pd_amxd_tests COMMAND adi_pd_amxd_tests)
 
 # libpd actually running, as against test_pd.cpp's contract-with-a-fake. The
 # patch directory is compiled in rather than found from the working directory,
