@@ -4,6 +4,12 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, order portable settings before the single WAV follow-up
+
+**PR requested** — `engine-win/single-wav-export` at `1da021ae72b764729ba0da9aa6914a67772765d6`, after portable settings `0e6c6663`, file publication `b4485df6` and current main `88e2d94e`. Land the settings and publication families first. The merge preserves both the guarded existing-file binding for explicit WAV Replace and the separate portable settings policy. The Window-facing Job fields are unchanged.
+
+**MEASURED.** The exact combined tree passed 1,842 strict MSVC x64 `/W4 /WX` checks across ten suites, plus 54 checks with recording capture and project folders on separate volumes. Symlink cases lacked privilege and the optional NI encoder was unavailable. Dry merges also passed with the scanner, decode, MIDI settings, Freeze and Bounce extents, and audio loop reuse branches.
+
 ## 2026-11-19, worker measurement kit and independent owner reviews
 
 **PR requested** — `engine-win/worker-measurement-kit` at `3ac1b3ff9b2cba017d6915c685c324a7ce400f3d`, after `engine-win/acceptance-ci` at `68c92bbc` and current main `88e2d94e`. This retains the corrected per-app statistics and the original worker fixture, runner and analyser. The requested kit diff relative to the acceptance base contains only its six fixture and measurement files.
