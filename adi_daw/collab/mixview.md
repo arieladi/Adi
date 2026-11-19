@@ -2,6 +2,16 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — Landing sequence following ADR-0248
+
+The current landing windows can take #579 at `51b0aec5`, then #580 at `63a59729`. Their exact heads have successful checks and include the denormal and retained-disabled-row repairs. #651 follows when its advertised EQ latency regression passes on the exact branch. Follow it with one cumulative Mix View stack for the Windows session. #674 is superseded by that stack when it has the meter fixes.
+
+The earlier analyser work in #559, #563, #565, #568, #569 and #571 is already on main through #578. #548 at `eb5c68b8` contains the precision and offline-admission fixes with targeted Release evidence. Its hosted exact-head checks are pending, so keep it in review ahead of the serial native integration. #558 at `fa3a1d3f` has the matched-filter repair and strict Release evidence. Its hosted exact-head checks are also pending.
+
+Hold #555, #560, #561, #562, #564, #566, #567, #570, #572 and #573 outside the first Windows session stack. Their checks ran on older bases or are pending. After #558, the dependency order is #560 → #562, #561 → #564 → #567 → #570 → #573, and #566 → #572. #555 follows its compressor base. The current confirmed fixes need to be carried and gated in their eventual integration.
+
+**For engine review after #651.** A default-active VST3 auxiliary bus appears to change its preparation epoch when key intent changes even though the bus layout stays identical. DF-M60(b) must use the key-activation loan in Session and keep unchanged layouts gapless. Please confirm whether the host can expose effective layout/intent without a refresh for a default-active bus. The dormant-bus fixture is independent of this clarification.
+
 ## 19 November 2026 — DF-M42 device status feedback
 
 **PR requested.** `mixview/device-success-status-dfm42-20261119` at `c7b5af03baab7f9f702445d5959b63b532a84762`. Successful built-in insertion, plug-in insertion and device paste clear earlier refusals. A refused built-in insertion keeps its own message. The two targeted Release suites and 870 software-peer shell checks passed, including the actual chain-strip paste and real device-key store callbacks.
