@@ -12,6 +12,12 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## FOR THE DIRECTOR — DF-E29(e), MIDI timing with Delay Compensation off
+
+Should MIDI keep the upstream plug-in's physical latency when Delay Compensation is off, or follow the same heard-time clock as the addressed automation? On current main the setting is reachable through the engine API. The app registry declares the setting, and its production switch has no Session binding yet. A real graph with a 1,024-sample reporting delay put the note and automation at sample 4,116 when compensation was on. With compensation off the note arrived at 5,140 and automation still arrived at 4,116.
+
+My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
+
 ## 2026-11-19 — DF-E27(a) backported to DF-E17 and gated
 
 **PR requested** — update the existing `engine/df-e17-edit-invariants` branch to `0c30d4ce713ece414a65b4c92be37a38ed10d15a`. The preceding remote head was `c0269d2d`. Title **Preserve native clip and rack edits through undo**. This adds the DF-E27(a) fix from `2accc015` and retains DF-E17's checked linear endpoint arithmetic. The remote head matches the gated commit. DF-E17 remains in the landing slot that follows agreement with DF-E35's lane semantics.
