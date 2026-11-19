@@ -9723,6 +9723,7 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
+    std::fputs("[shell] mix fixture entered\n", stderr);
     StoreError err{};
     auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
@@ -9746,7 +9747,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         madeAll = submitter.submit(std::move(r)).ok && madeAll;
     }
     check(madeAll, "Kick, Bass, Lead and Main");
-    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    // Keep the three long-lived roots off the Debug test thread stack.
+    const auto rootStorage = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                               persistence, session, "mix");
+    auto &root = *rootStorage;
+    std::fputs("[shell] mix fixture root constructed\n", stderr);
     root.setSize(1440, 900);
     root.mark(DirtySet::All);
     root.frame();
@@ -10150,10 +10155,11 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
     }
     // A second window keeps its own.
-    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
-    other.setSize(1200, 720);
-    other.frame();
-    check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
+    const auto other = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                         persistence, session, "mix-other");
+    other->setSize(1200, 720);
+    other->frame();
+    check(!other->mixViewPanel.isVisible() && other->arrangement.isVisible(), "a second window keeps its own view");
     root.transport.mix.onClick();
     root.frame();
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
@@ -10177,6 +10183,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.transport.mix.onClick();
         root.frame();
     }
+    std::fputs("[shell] mix fixture docking start\n", stderr);
     // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
     // into the floating host's window and back.
     {
@@ -10280,6 +10287,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
         root.applicationCommand = nullptr;
     }
+    std::fputs("[shell] mix fixture device document start\n", stderr);
     // A real document and its shared feed, using only the headless Knobs fixture.
     {
         std::string error;
@@ -10299,8 +10307,10 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             }
             check(document->ops().submit(std::move(make)).ok && document->synchronise(),
                   "two actual ordered devices on one track");
-            AdiRootComponent actual(document->view(), document->ops(), document->mailbox(), commands,
-                                    document->views(), document->sessionState(), "mix-devices");
+            const auto actualStorage = std::make_unique<AdiRootComponent>(document->view(), document->ops(),
+                document->mailbox(), commands, document->views(), document->sessionState(), "mix-devices");
+            auto &actual = *actualStorage;
+            std::fputs("[shell] mix fixture device root constructed\n", stderr);
             // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
             UiPeerRoot fake;
             fake.setSize(1440, 900);
@@ -10415,6 +10425,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 check(knobs && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
                           actual.undoTitle(false) == beforeUndo,
                       "one undo restores the untouched parameter through the shared authority");
+                std::fputs("[shell] mix fixture compact activator start\n", stderr);
                 const auto compactTime = std::max(dragTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
@@ -10454,6 +10465,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     check(actual.command(AppCommands::Undo), "undo only the displayed second pill's activator");
                     document->tick(38); actual.frame();
                 }
+                std::fputs("[shell] mix fixture compact activator returned\n", stderr);
                 const auto restoreTime = std::max(compactTime + 210,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setBaseHeight(100, restoreTime);
@@ -11016,6 +11028,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             actual.afterEdit = nullptr;
             fake.removeChildComponent(&actual);
             fake.removeFromDesktop();
+            std::fputs("[shell] mix fixture demand peers start\n", stderr);
             // Exercise the real main/floating visibility hooks with fake peers.
             // Neither DocumentWindow constructs a native peer in this fixture.
             std::map<const void *, std::vector<std::int64_t>> demands;
@@ -11153,7 +11166,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   "panel End still reaches its original owner after target validation turns stale");
         }
     }
+    std::fputs("[shell] mix fixture seek checks start\n", stderr);
     adi::uitest::mixSeekChecks(commands, dir, check);
+    std::fputs("[shell] mix fixture seek checks returned\n", stderr);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (!headlessOnly && folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
