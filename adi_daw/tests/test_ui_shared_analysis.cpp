@@ -553,6 +553,22 @@ void permanentMainMeter() {
     check(!meter.subscribed(), "explicit minimisation suspends even when the owner component remains visible");
     meter.suspend(false); meter.frame(f.broker, 1, source);
     check(meter.subscribed() && !meter.reading(), "restored meter waits for fresh data");
+    meter.listenBox.setSelectedId(5, juce::sendNotificationSync);
+    owner.setTopLeftPosition(-120, 0);
+    check(meter.subscribed() && calls.back() == MixOutputMeter::Audition::Side,
+          "a partly visible meter keeps its lease and audition");
+    owner.setTopLeftPosition(-160, 0);
+    check(!meter.subscribed() && f.broker->stats().consumers == 0 && calls.size() == 7 &&
+              calls.back() == MixOutputMeter::Audition::Stereo && meter.listenBox.getSelectedId() == 1,
+          "an entirely clipped ancestor releases the meter and ends audition before the next frame");
+    const auto clippedReads = reads;
+    f.write(4096); f.broker->pump(); meter.frame(f.broker, 1, source);
+    check(!meter.reading() && reads == clippedReads && f.broker->stats().consumers == 0,
+          "a fully clipped meter neither reads loudness nor holds analysis demand");
+    owner.setTopLeftPosition(0, 0);
+    meter.frame(f.broker, 1, source);
+    check(meter.subscribed() && !meter.reading() && calls.size() == 7,
+          "returning to view acquires fresh data without restoring audition");
     meter.setAuditionSink({});
     root.removeFromDesktop();
 }
