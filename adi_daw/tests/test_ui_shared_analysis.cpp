@@ -1176,6 +1176,39 @@ void compareAndAveragePages() {
               pair.a.metadata->endpoint.request.track == main && pair.b.metadata->endpoint.request.track == guitar &&
               pair.a.binsDbfs[16] > pair.b.binsDbfs[16],
           "Compare presents the two calibrated broker windows on their explicit channels");
+    const auto displayShowsBothTraces = [&] {
+        auto *compare = pages.compareA.getParentComponent();
+        if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
+        juce::Image image(juce::Image::RGB, compare->getWidth(), compare->getHeight(), true, juce::SoftwareImageType{});
+        juce::Graphics graphics(image);
+        compare->paint(graphics);
+        const auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
+            .reduced(look::gap).withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
+        const auto hasSegment = [&](std::span<const float> bins, juce::Colour colour) {
+            if (bins.size() <= 16) return false;
+            const auto x = [&](int bin) {
+                return plot.getX() + plot.getWidth() * static_cast<float>(std::log(bin * 48000. / 1024. / 20.) / std::log(1000.));
+            };
+            const auto y = [&](std::size_t bin) {
+                return plot.getY() + plot.getHeight() * std::clamp(bins[bin] / -96.f, 0.f, 1.f);
+            };
+            for (float fraction : {.1f, .3f, .5f, .7f, .9f}) {
+                const int px = juce::roundToInt(std::lerp(x(15), x(16), fraction));
+                const int py = juce::roundToInt(std::lerp(y(15), y(16), fraction));
+                bool visible = false;
+                for (int dy = -2; dy <= 2; ++dy) {
+                    const auto actual = image.getPixelAt(px, py + dy);
+                    const int distance = std::abs(actual.getRed() - colour.getRed()) +
+                        std::abs(actual.getGreen() - colour.getGreen()) + std::abs(actual.getBlue() - colour.getBlue());
+                    visible |= distance <= 72;
+                }
+                if (!visible) return false;
+            }
+            return true;
+        };
+        return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent);
+    };
+    check(displayShowsBothTraces(), "both Compare paths draw continuous segments between consecutive measured bins");
     write(*first, .4f, 1024, 2); broker->pump();
     pages.frame(broker, original, main, main);
     check(pages.comparisonView().status == Comparison::Unavailable,

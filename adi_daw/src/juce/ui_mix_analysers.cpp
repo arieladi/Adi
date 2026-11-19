@@ -204,12 +204,15 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
                 g.drawVerticalLine(juce::roundToInt(xAt(frequency)), plot.getY(), plot.getBottom());
         const auto stroke = [&](AnalysisComparison::Picture picture, juce::Colour colour) {
             juce::Path curve;
+            bool started = false;
             const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
             for (std::size_t i = 1; i < picture.binsDbfs.size(); ++i) {
                 const auto hz = hzPerBin * static_cast<double>(i);
                 if (hz < 20. || hz > topHz) continue;
-                if (curve.isEmpty()) curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[i]));
-                else curve.lineTo(xAt(hz), yAt(picture.binsDbfs[i]));
+                if (!started) {
+                    curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[i]));
+                    started = true;
+                } else curve.lineTo(xAt(hz), yAt(picture.binsDbfs[i]));
             }
             g.setColour(colour);
             g.strokePath(curve, juce::PathStrokeType(look::line));
