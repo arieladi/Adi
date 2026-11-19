@@ -41,7 +41,9 @@ The documented Delta waveform subtracts the second enabled sound’s mono compon
 
 With a frozen pair on the same audible timeline, keep A fixed. If B arrives `d` samples late, preview `B[n+d]` beside A and recompute their two-channel sum on the overlapping interval. Label the advance in samples and milliseconds. Use a separate polarity control. Discard the estimate when the capture revision changes. Preview must leave playback and saved track timing intact. Both reference effects reported zero samples of processing compensation and passed 204,800 two-channel frames exactly at their measured defaults, tested with silence, noise and displaced impulses.
 
-The independent fixture recovered a 137-sample advance (2.854 ms at 48 kHz) from a delayed broadband copy, including an inverted copy. The six 4,096-frame kick-and-bass regions yielded three weak and three ambiguous results. All six should retain their waveform and levels with no suggested shift. Silence and a steady repeating tone also supply no unique lag. As a CPU baseline, the older component at `f7fab268` used 2.15% of one core during updates alone and 10.74% during updates plus normal clipped software painting at 30 Hz. That baseline predates the signed Sum, headroom indicator and flat-path change. The cost of the current view with timing preview remains open.
+The independent fixture recovered a 137-sample advance (2.854 ms at 48 kHz) from a delayed broadband copy, including an inverted copy. The six 4,096-frame kick-and-bass regions yielded three weak and three ambiguous results. All six should retain their waveform and levels with no suggested shift. Silence and a steady repeating tone also supply no unique lag. As a CPU baseline, the older component at `f7fab268` used 2.15% of one core during updates alone and 10.74% during updates plus normal clipped software painting at 30 Hz. That baseline predates the signed Sum, headroom indicator and flat-path change. The timing preview is still an owner implementation item.
+
+**Current kick-and-bass cost.** At `3774e736`, three independent software-rendered runs each exercised 480 updates per condition at 30 Hz and 48 kHz. All four source traces and both Sum paths were present. An independent sum over the first 1,024 frames gave L/R peaks 0.669833 / 0.674723 and RMS 0.350962 / 0.354846, which the component reproduced. The 1,046 × 361 image matched across all three runs. Relative to suspended Focus, update-only cost was 2.54% of one core. Updating and painting the normal 1,025 × 288 repaint area cost 15.63% (three runs 15.43–16.11%). Median paint time was 4.45 ms and p95 was 6.72 ms. These are message-thread costs per simulated 30 Hz refresh budget. Audio rendering and the proposed timing preview are outside this measurement.
 
 ## 19 November 2026 — Window lane, ADI-Shaper proposal sheet requested
 
@@ -56,6 +58,18 @@ The review stack exposes 415 parameters across seven stages in fixed signal orde
 Win: one commit on main `12aab48a` carries the original Volume, Width and Pan implementation through Filter, Sweep, Drive and Crush. The device opens in ADI → Audio Effects. Its editable canvas, compiled-in external and canonical native processor use the same 415 parameter indices. Eight equally spaced heights and a choice of hold or linear interpolation per curve preserve the state contract described below. The panel sheet belongs to Window.
 
 MSVC x64 Release with /W4 /WX passed eleven CTest suites in each Pd precision. The catalog, five DSP suites, editable versus canonical parity, native devices, Pd engine, Pd device and zero-delay host suites ran at both precisions. An independently altered canvas swaps the two output connections and checks its stereo output against known samples. Sparse recall into an active instance restores omitted stages to their defaults and releases Drive compensation. Stored beat information survives a missing graph transport, while an exact segment takes priority. Both builds embed the same 61,101 normalized canvas bytes, verified against the shipped file. The Session regression with upstream compensation is due when DF-E29 lands.
+
+**Kick and bass, 48 kHz.** The registered native device and ShaperBox 3.6 processed identical stereo samples at 120 BPM with their editors closed. Each pair ran serially on the same logical processor, after 98,304 warm-up frames. The table gives callback median / p99 in microseconds over 10,240 calls per device, configuration and block size.
+
+| Active configuration | ADI at 256 | Reference at 256 | ADI at 2,048 | Reference at 2,048 |
+|---|---:|---:|---:|---:|
+| Three-band Volume | 24.1 / 52.2 | 40.6 / 92.5 | 113.2 / 301.2 | 249.4 / 488.6 |
+| Filter | 23.9 / 62.9 | 80.0 / 208.6 | 187.2 / 402.3 | 348.5 / 838.5 |
+| Sweep | 7.1 / 23.7 | 42.4 / 91.1 | 54.3 / 134.7 | 118.2 / 285.9 |
+| Drive | 52.2 / 144.9 | 131.3 / 971.8 | 436.9 / 1115.1 | 797.7 / 3177.9 |
+| Crush | 21.1 / 43.0 | 66.4 / 208.6 | 166.3 / 331.8 | 241.1 / 781.0 |
+
+Median thread cycles per block decreased by 37.6–76.3% across these ten comparisons, including input restoration and timing overhead. The 256-frame deadline was 5.33 ms. ADI exceeded it on 8 of 51,200 calls (Filter 2, Drive 4, Crush 2), and the reference exceeded it on 16. Both recorded zero misses at 2,048 frames. In the four-second stereo comparisons the largest per-channel RMS difference was 0.00003535 for Drive. Both paths reported 16 frames of delay for Drive and zero for the other four cases. Width and Pan have DSP coverage within the seven-stage suite and were outside this timing matrix.
 
 ## 2026-11-19 — DEV-31 review scope
 
