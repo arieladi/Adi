@@ -14,6 +14,25 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-16, step 4: what the director's own device uses most
+
+**`devices/amxd-translator` (`607d3d5a`), one more commit on the same PR request.** Chosen by the
+box counts of his `AVC Spectrum Meter.amxd` (the entry below on step 3).
+
+- `[prepend]`/`[append]` (list then `[list trim]`, so the first word is the selector, as Max);
+  `[f]`, `[i]`, `[delay]`, `[abs~]`; `[!- n]` as (−x) + n, int unless n is a float; `[gate n]` as
+  a prefix and a `[route]`; `[selector~ n]` as one `[*~]` per input, summed; `[slide~]` as its own
+  recursion in `[fexpr~]`; **`[biquad~]`**: Max's a0 a1 a2 b1 b2 subtract the feedback, Pd's
+  fb1 fb2 ff1 ff2 ff3 add it — arguments reordered, a coefficient list reordered and negated on the
+  way in (a control source into its left inlet takes that route, a signal goes straight in);
+  `live.text` (toggle), `live.menu`, `live.tab` as parameters.
+- Played in libpd: `[prepend set]` 3 → "set 3"; `[i]` 2.9 → 2; `[!- 10]` 3.5 → 7, `[!- 10.]` →
+  6.5; `[gate 2]` passes 5 out of outlet 2; `[selector~ 2 1]` passes input 1 exactly; `[slide~ 10
+  10]` on a step is 1 − 0.9^(n+1) sample for sample; Max's `biquad~` "1 0 0 −0.5 0" starts at 1,
+  settles at 2. Plant: feedback not negated → 0.667, fails. 60 checks; CTest **247/247**.
+
+**PR requested** — as step 1's entry (head `devices/amxd-translator`, now `607d3d5a`).
+
 ## 2026-11-19 — DEV-10: the three starter templates, proved
 
 **`devices/pd-templates` (`bc3a84de`), stacked on `devices/pd-object-walk`.** M7's "Pd templates"
