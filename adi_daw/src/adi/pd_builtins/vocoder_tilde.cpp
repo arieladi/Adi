@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/dsp/vocoder.hpp"
 #include "juce/pd_builtins.hpp"
+#include "adi/pd_builtins/float_signals.hpp"
 extern "C" {
 #include "m_pd.h"
 }
@@ -11,9 +12,10 @@ struct Object {
     t_object object;
     t_float signal;
     adi::dsp::Vocoder *core;
+    adi::device::FloatSignals* signals;
 };
 void *create() {
-    auto *x = reinterpret_cast<Object *>(pd_new(klass));
+    auto *x = reinterpret_cast<Object *>(pd_new(klass)); x->signals = new adi::device::FloatSignals;
     x->core = new adi::dsp::Vocoder;
     for (int i = 0; i < 3; ++i)
         inlet_new(&x->object, &x->object.ob_pd, &s_signal, &s_signal);
@@ -21,7 +23,7 @@ void *create() {
     outlet_new(&x->object, &s_signal);
     return x;
 }
-void destroy(Object *x) { delete x->core; }
+void destroy(Object *x) { delete x->core; delete x->signals; }
 t_int *perform(t_int *w) {
     auto *x = reinterpret_cast<Object *>(w[1]);
     x->core->process(reinterpret_cast<const float *>(w[2]), reinterpret_cast<const float *>(w[3]),
@@ -31,12 +33,13 @@ t_int *perform(t_int *w) {
     return w + 9;
 }
 void dsp(Object *x, t_signal **s) {
+    x->signals->begin(s, 4, 2);
     x->core->prepare(s[0]->s_sr);
-    t_int a[] = {reinterpret_cast<t_int>(x),           reinterpret_cast<t_int>(s[0]->s_vec),
-                 reinterpret_cast<t_int>(s[1]->s_vec), reinterpret_cast<t_int>(s[2]->s_vec),
-                 reinterpret_cast<t_int>(s[3]->s_vec), reinterpret_cast<t_int>(s[4]->s_vec),
-                 reinterpret_cast<t_int>(s[5]->s_vec), static_cast<t_int>(s[0]->s_n)};
-    dsp_addv(perform, 8, a);
+    t_int a[] = {reinterpret_cast<t_int>(x),           x->signals->at(0),
+                 x->signals->at(1), x->signals->at(2),
+                 x->signals->at(3), x->signals->at(4),
+                 x->signals->at(5), static_cast<t_int>(s[0]->s_n)};
+    dsp_addv(perform, 8, a); x->signals->end();
 }
 void parameter(Object *x, t_symbol *, int n, t_atom *a) {
     if (n != 2)

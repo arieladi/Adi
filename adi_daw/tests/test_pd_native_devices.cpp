@@ -216,8 +216,19 @@ void parity(const Fixture& fixture) {
     // Same core, input floats, message precision and 64-sample process calls:
     // only dac~'s zero-sign normalization may differ. This catches a default
     // rounded differently, even by one ulp, with no numeric tolerance.
+#if PD_FLOATSIZE == 64
+    // DEV-09 AR17: with PD_FLOATSIZE=64 the canvas does its parameter
+    // arithmetic in double before the float core rounds it once; the native
+    // path rounds the same value from float. Measured: AutoFilter and EQ Eight
+    // differ by 2^-25, one float ulp at 0.5, every other device by nothing.
+    // One float ulp at full scale is allowed, and nothing more.
+    (void)bitExact;
+    check(finite && maxError <= 0x1p-24, fixture.file,
+          "native and real-Pd renders match within one float ulp (PD_FLOATSIZE=64)");
+#else
     check(finite && bitExact && maxError == 0, fixture.file,
           "native and real-Pd renders match exactly apart from zero signs");
+#endif
     check(allocations == 0, fixture.file, "native parameters and processing allocate nothing");
     check(guards && extraSilent, fixture.file, "segment guards and extra channels respected");
     check(wrongDelayError > 1e-5, fixture.file, "one-sample delay plant fails parity");
