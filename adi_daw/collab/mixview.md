@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M53 hold Main meter demand to the visible plot
+
+Moving the meter or one of its ancestors fully outside the visible plot now releases analysis immediately and restores Stereo when an audition was active. Partial clipping retains the existing reader and audition. Bringing the plot back waits for fresh data and leaves the monitor in Stereo. Normal meter and audio paths are unchanged.
+
+The new test at `c0f452cd` reproduced the stale lease and active audition before the next frame. Exact Windows x64 Release `013f041a3cd3b10bb5f49846a31f9b9811844d6d` passed 877 Mix View checks and three targeted CTests, including own-move and ancestor-move clipping. ZIP SHA-256 `3a4051d32ae0eaad6e0c136766291c8cf97c87f10d0211f41b2aac82b4d9add3`; ADI.exe SHA-256 `7379f8e3f42c67856ddb1d0ebf1fefac7a212c37704e687e73cebb2229862d23`. The retest brief sets out the audience-visible audition result, optional geometry check and peak/hold regression.
+
+**PR requested.** Include `mixview/main-meter-clipping-20261119` after the Compare visibility gate in the cumulative review.
+
 ### 19 November — DF-M55 clipped Compare gate
 
 A partly clipped Compare keeps its subscriptions while the plot remains visible. Moving the plot entirely outside an ancestor now has an exact component gate: both leases go away, further audio reads and transforms stay zero while clipped, and the restored plot waits for fresh publications from both sources. The gate adds coverage to the existing visibility behavior.
