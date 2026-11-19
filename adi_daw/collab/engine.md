@@ -18,6 +18,16 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — N57 third-party plug-in insertion
+
+**PR requested** — branch `engine/n57-plugin-insertion`, head `2b67a9acb4719979ceab4e45ca837f25f6e2ce32`, base `af13cf5a`. Title **Insert third-party plug-ins with ordered placement and one Undo**. The remote head matches the gated commit. The reserved N57 engine and document core and its fixture are taken from Mix View commit `668e05c99cad906099e75c6573d98e6f138a3a1a`, with main's existing `RowIds` allocator.
+
+`preparePluginInsert` captures the resolved VST3 or CLAP format, reference identity, shell, and path hint before any project write. MIDI effects are placed before the first instrument and audio effects after the last. Placement uses the chain's device roles and an optional anchor. An explicit replacement occupies the selected instrument's existing slot, and a chain with several instruments needs an unambiguous target. An instrument rack can be a placement boundary, and a replacement targets a particular instrument in its child chain so the rack is retained. Registration, chain creation or replacement, order, the instance and its expression route commit together with one Undo. A planted insert failure after removal leaves the previous instrument, state and journal intact.
+
+**For Window / DF-W9** — `ProjectDocument::insertPlugin(ref, track, before, options)` is the common document entry point. Pass the resolved catalogue reference, with an optional before-device anchor and explicit replacement or expression-route choice. The real document fixture exercises Session realization and Undo. N58 supplies installed catalogue details and Window owns the Browser hookup.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, five focused suites, four validators and the format layout check. GCC and Clang 19 each passed 111 device and 248 document checks. Clang also compiled the four changed units with Pd disabled. Five compiled faults detected wrong MIDI and audio placement, retaining the replaced instrument, losing the selected route and accepting replacement of an instrument rack. Logs are in `/workspace/adi-engine-validation`.
+
 ## 2026-11-19 — CT-02 atomic loop-pass Undo groups
 
 **PR requested** — branch `engine/ct02-loop-undo-groups`, head `a0a42ebd62c6b90abf9af4fc08c69f5ec0bde84c`, base `12aab48a`. Title **Commit loop passes atomically with separate Undo groups**. The remote head matches the gated commit. ADR-0248 d6 item 4, the journal contract for engine-win.
