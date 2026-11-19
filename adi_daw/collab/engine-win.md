@@ -16,6 +16,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — TM-MD-05 FFmpeg PCM stream
+
+**PR requested** `engine-win/ffmpeg-pcm-stream` at `e0db001a641d98e043b93dc6dd8b9225525b9c16`. This combines bounded process streaming and the current media cache/FFprobe tip. The PCM adapter maps the selected stream explicitly and delivers complete interleaved float frames. The caller sets a frame budget and owns staged output. Empty or partial output, a child error, cancellation and a refused sink have typed failure results. Tool settings and actual cache import admission are still separate.
+
+Strict native x64 MSVC Debug passed 551 checks across seven suites. The owned child gate checked split float words, frame alignment, the exact byte budget, late failure and sink errors. Nine real FFmpeg 9.0.1 cases passed. WMA, WV, CAF, MKV, WebM, AVI and TS matched direct FFmpeg frame counts and peaks. A two-tone MKV selected the intended first audio stream and refused a budget one frame short. Symlink and unavailable native AAC progress checks skipped. [FFmpeg command](https://ffmpeg.org/ffmpeg.html) · [FFmpeg protocols](https://ffmpeg.org/ffmpeg-protocols.html)
+
 ## 2026-11-19 — TM-MD-05 bounded binary process streaming
 
 **PR requested** `engine-win/streamed-process-output` at `228adcb72b11a4bfd467d61522b9ec1de8e7f0e7`. The shared process runner gains a synchronous binary sink with a caller-supplied total-byte cap. It detects sink refusals and exceptions, keeps delivered bytes provisional until a clean child exit, and terminates and waits for the owned Windows process during cleanup. The scanner retains its existing buffered protocol, limits and deadline ordering.
