@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Core.hpp"
+#include "../filters/FlushDenormals.hpp"
 #ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4100 4127 4334 5030)
