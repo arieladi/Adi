@@ -1,27 +1,56 @@
-# Working in parallel — three agents, one repo
+# Working in parallel — six seats and win, one repo
 
-Four agents work on `adi_daw`, on different machines and different accounts,
+Six seats and win work on `adi_daw`, on different machines and different accounts,
 synced only through this git repository. This file is the protocol. Read it
 before your first commit, and re-read it if you have been away.
 
 ## Roster
 
-| Agent | Machine | Model | Owns | Cannot |
+As of 19 November 2026 (ADR-0208, ADR-0236, ADR-0246 d4 and d5, ADR-0247 d5, ADR-0248 d3 and d14).
+Each seat writes only its own log, on its own log branch; win lands the logs with the seat's work.
+The window-fn row is a proposal to the director: it exists only once he starts it (ADR-0248 d14).
+
+| Seat | Runs as | Log | Branches | Owns, in short |
 |---|---|---|---|---|
-| **win** | ORC-VST, a Windows 10 IoT Enterprise LTSC desktop (salon-tv, Windows 11, until 2026-09-30), MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code; since ADR-0202 also `.github/**`, `src/juce/**` (the plug-in host), `cmake/**`, `third_party/JUCE`, `docs/UI-ARCHITECTURE.md` and `docs/STEP-7-PLAN.md` | Build or test on macOS/clang/arm64 |
-| **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | **Retired by the director on 2026-09-30, until he decides otherwise (ADR-0202).** Its areas moved to win and win_codex; its history and ADRs stand | Everything, until recalled |
-| **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
-| **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
-| **win_codex** | the director's Windows 11 PC, MSVC / x64 | Codex app (OpenAI), full access, in its own worktree | The color-bass Pd devices (ADR-0192): `src/adi/dsp/combchord.*`, `src/adi/dsp/colorcab.*`, `src/adi/pd_builtins/**`, `pd/devices/**`, their tests; since ADR-0202 also step 7's UI (`src/adi/ui/**`, `src/juce/ui_*`, their tests) and the Pd tier (`src/juce/pd_*`, `pd/**`) on win's missions, win reviewing; work win assigns | `src/juce/**`, `.github/**`, `tools/fetch_external.sh`, UI, the schema, ADR numbers or claims without `win`; the main checkout (win and the drone use it) |
+| **win** | Claude Code, on a Windows desktop (MSVC 19.44, x64) | `collab/win.md` | `win/<topic>` | coordination (ADR-0109, LANES §1): ADRs, the plan, the register, the reservations, `.github/**`; reviews and lands every pull request |
+| **engine** | Codex, a cloud session (Linux) | `collab/engine.md` on `engine/log` | `engine/<topic>` | the engine: the graph and the plan, the plug-in hosts, the store and the ops, the snapshot (LANES §1), less what ADR-0246 d4 gave engine-win |
+| **engine-win** | Codex, on the director's research machine (Windows) | `collab/engine-win.md` on `engine-win/log` | `engine-win/<topic>` | the scanner, the registry and the catalogue, the settings, publication and the export queue, take lanes and recording into them, the measurement harness (ADR-0246 d4) |
+| **devices** | Claude, on the director's research machine (Windows, with Live 12.4) | `collab/devices.md` on `devices/log` | `devices/<topic>` | Live's devices as ADI's built-ins and the Pd tier (LANES §4b) |
+| **window** | Claude, a cloud session | `collab/window.md` on `window/log` | `window/<topic>` | the window (LANES §1, §3b) |
+| **mixview** | Codex, on the director's PC | `collab/mixview.md` on `mixview/log` | `mixview/<topic>` | the Mix View (ADR-0236) |
+| **clones** | Codex, on the director's PC | `collab/clones.md` on `clones/log` | `clones/<topic>` | ADI-Shaper and the measured contracts of OScope 2 and PsyScope Pro (ADR-0247 d5) |
+| **window-fn** (proposed) | not started; a second window seat if the director starts it (ADR-0248 d14) | `collab/window-fn.md` on `window-fn/log` | `window-fn/<topic>` | the window's function rows: recording, MIDI input, export, plug-in loading, faders heard while dragging; the window lane keeps the look work. Its paths are agreed with the window lane before it starts; until then the window lane takes both, function first |
 
-**Claims since ADR-0202:** with two agents left, win_codex holds its areas through its roster row and adds **no per-branch claim rows**. Every open PR adding a row was the last source of merge conflicts. Only a delegation outside its roster areas gets a row, from win.
+**Who owns which paths** (ADR-0248 d3). One owner per shared path. A seat that needs another seat's
+path asks its owner in its log; the owner answers or lends. No seat edits `.github/**`: it asks win.
 
-**Retired (director, 2026-09-30):** mac, both sessions (the host/UI session and the analyser session), until the director decides otherwise (ADR-0202). Its step-7 handoff is `collab/handoff/2026-09-29-step7.md`.
+| Seat | Paths |
+|---|---|
+| engine | `src/juce/vst3_host.*`, `src/juce/clap_host.*`, `src/adi/builtin_insert.cpp`, the graph and the plan (`src/adi/engine/graph.*`, `src/adi/engine/plan.*`), `src/adi/engine/snapshot.*`, and the rest of the engine LANES §1 gives it |
+| engine-win | the scanner (`src/adi/plugin_scanner.*`, `src/adi/scan_process.*`, `src/juce/plugin_scan_host.cpp`), the registry (`src/adi/plugin_registry.*`), the catalogue API of `src/juce/juce_device_loader.*` (N58), the settings (`src/adi/settings/**`), publication (`src/adi/media/publish_file.*`) and the export queue (`src/adi/render/queue.*`, `src/adi/render/ni_stems.cpp`) |
+| window | `src/adi/ui/**` and `src/juce/ui_*`, less the Mix View's files in its row below; the theme and the density (`src/adi/ui/theme.*`, `density.*`), the Control Bar (`src/juce/ui_controlbar.*`), the MIDI port host of SRF-05 (`src/juce/app_midi_ports.*`) and the Export page of EX-11 |
+| devices | device DSP (`src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, `pd/**`) and the Pd tier (`src/juce/pd_*`) |
+| mixview | `src/adi/mix/**`; the Mix View's own `src/juce/ui_mix*` files (`src/juce/ui_mixer.*`, the Mixer, stays the window's); the STACK and the shared analyser (`src/juce/ui_stack.*`, `ui_stack_picker.*`, `ui_analysis.*`); the classic scope (`src/juce/ui_scope_classic.*`, `src/juce/smexoscope/**`); the function hosts (`src/juce/mix_*_host.*`); in `src/adi/ui/`: `shared_analysis.*`, `analysis_comparison.*`, `analysis_palettes.hpp` and `palettes/**`, `spectrum_slope.hpp`, `stack_model.*`, `mix_view_provider.hpp`, `parameter_feed.*` and `focus_scope.hpp`. `ui_stack_picker`, `ui_scope_classic`, `smexoscope`, `mix_compressor_host` and `focus_scope` are so far only on its branches. Its device-key routing (`src/adi/device_key_routes.*`, `device_key_edit.cpp`) until #651 lands, then the engine's; loans: `src/adi/dsp/stereo_envelope_meter.*` (devices lane's tree), `src/adi/engine/main_audition.hpp` (engine's) |
+| clones | `adi_shaper*` wherever they sit; its hunks in shared files are agreed with the devices lane through the logs |
+| win | `.github/**`, `docs/DECISIONS.md`, `docs/PLAN.md`, `docs/DEFERRED.md`, `collab/RESERVATIONS.md`, this file; `src/adi/builtin_catalog.cpp` and `src/juce/builtin_host.cpp`, lent to the devices lane |
 
-**Availability (director, 2026-09-26):** mac is back in the loop, a day
-early, on `collab/prompts/2026-09-26-mac-return-host-half.md`. linux (Codex)
-returns after 2026-10-01. cloud receives no new missions; its last, ADR-0159,
-is merged.
+Loans, each named in ADR-0248 d3: the engine lends `snapshot.cpp`'s clip projection to engine-win for
+DF-E35 once #677 has landed; win lends the devices lane `src/adi/builtin_catalog.cpp`,
+`makeBuiltinDevice`'s instrument dispatch and `src/juce/builtin_host.cpp`'s value mapping; for DF-M60
+(a) and (b) only, the engine lends the Mix View seat `builtin_insert.cpp`'s choice of a new id,
+`Session::resolveNewRows` and `Session::refreshDeviceKeys` (`src/adi/engine/session.cpp`), and the
+window lends it `ProjectDocument::pasteDevice` (`src/adi/ui/project_document.cpp`); each owner
+reviews its part.
+
+Numbers (schema minors, ADRs, register ids, op names, the window's N rows) are reserved in
+`collab/RESERVATIONS.md` before a branch uses them.
+
+**Earlier agents.** mac (both its sessions) was retired by the director on 2026-09-30 (ADR-0202); its
+step-7 handoff is `collab/handoff/2026-09-29-step7.md`. linux (Codex: portable C++, headless CI and
+sanitizers) and cloud (Claude Code on the web) worked on win's assignments in September; cloud's last
+mission was ADR-0159. win_codex (the Codex app) built the color-bass Pd devices (ADR-0192) and, on
+win's missions, step 7's UI and the Pd tier; the seats above now hold those areas. The earlier agents'
+logs stay in this folder, and their history and ADRs stand.
 
 ## Governance (ADR-0109)
 
@@ -276,6 +305,17 @@ subject, say so in your log instead of writing it twice.
 | 0235 | win | `win/adr-0235-0236` | ADiJ stays light: no Mix View and no unified built-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid; CPU is a requirement (director) | used |
 | 0236 | win | `win/adr-0235-0236` | the Mix View seat: his plug-in list is in, ADR-0212's gate opens; a dedicated local Codex seat builds the Mix View across the lanes, starting with a decision guide; his device-area tab model is the baseline; ADI-Clip is the clipper, ADI-C the compressor (director) | used |
 | 0237 | win | `win/adr-0235-0236` | the Mix View's first answers: one of each function per channel, added and removed like Live devices (undo), nothing on by default; EQ carries the unmasking, the limiter the clipper; analysers boxed in the Info box and in a Mix View tab, no CPU when unseen; compact rows (director) | used |
+| 0238 | win | `win/adr-0238-juce` | JUCE moves from 9.0.2 to 9.0.5 (d60b7a78): his plug-ins' JUCE, the newest stable; lands with #537 (director) | used |
+| 0239 | win | `control/mcp-slice` | the control stack's open questions answered: the token both ways, the user's choice; standalone adi-mcp first; every deferral a row in docs/DEFERRED.md until done, the release gate; win merges, he decides (director) | used |
+| 0240 | win | `win/adr-0240` | the Clip View approved and built by win; loading a channel's Mix Set replaces its native functions in one undo step; the Mix View answers that lived only in the seat's log (director) | used |
+| 0241 | win | `win/clip-view-additions` | the Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken (director) | used |
+| 0242 | win | `win/adr-0242` | more Clip View additions: win's picks and Reason's drift taken; the rest of the candidates on condition they impair no Live function; slide notes and a drum editor not taken; Live's clip editing audited, multi-clip editing now (director) | used |
+| 0243 | win | `window/no-channel-slots` | the look is settled surface by surface with the director; no channel button for a Mix View function; Live the base with Bitwig's and FabFilter's design language; the Mix View takes the window | used |
+| 0244 | win | `window/design-round-1` | the first design round: five sheets agreed; a cloned tool looks like its source and the scope is s(M)exoscope itself; the Mix View's pages are Stack, Focus and Analysers | used |
+| 0245 | win | `win/research-intake` | the November research taken in: folded into the plan's rows, Windows first, proved after the build; cables only in the Grid; clips drawn as Live 12; a hosted plug-in told the time of its audio; a return inside a group; no look-ahead engine; DEV-23 earlier (director) | used |
+| 0246 | win | `win/seats-1119` | ADR-0245's two additions measured and three sentences corrected; a second engine seat on Windows; the devices lane again; every seat works until its limit (director) | used |
+| 0247 | win | `win/adr-0247` | the take lanes sheet and the return-inside-a-group sheet agreed; the parked questions answered; the clones lane and ADI-Shaper; Focus's two answers; Shifter keeps Live's way (director) | used |
+| 0248 | win | `win/steer-1119` | the steering of 19 November: fix before new; one usable session first for two weeks; who owns what; reservations; landing windows; the director's answers of 19 November (win; d2 confirmed by the director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -288,7 +328,6 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
-| `docs/daws/**`, `collab/prompts/2026-11-04-clones-daw-reference-reading.md` (director-assigned research only; raw evidence stays private on SALON-TV) | clones | `clones/daw-reference-reading-20261104` | 2026-11-04 |
 | Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |

@@ -24,6 +24,8 @@
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <functional>
+#include <mutex>
 
 namespace adi::engine {
 namespace {
@@ -47,10 +49,128 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
+struct ScopeLease::State {
+    mutable std::mutex mutex;
+    std::shared_ptr<const ScopeTap> current;
+    std::function<void()> release;
+    bool alive = true;
+};
+ScopeLease::ScopeLease(std::shared_ptr<State> state) : state_(std::move(state)) {}
+ScopeLease::~ScopeLease() { reset(); }
+ScopeLease::ScopeLease(ScopeLease&& other) noexcept : state_(std::move(other.state_)) {}
+ScopeLease& ScopeLease::operator=(ScopeLease&& other) noexcept {
+    if (this != &other) { reset(); state_ = std::move(other.state_); }
+    return *this;
+}
+void ScopeLease::reset() noexcept {
+    auto state = std::move(state_);
+    if (!state) return;
+    std::function<void()> release;
+    {
+        std::lock_guard lock(state->mutex);
+        release = std::move(state->release);
+        state->current.reset();
+        state->alive = false;
+    }
+    // Owner publication may fail to allocate. The consumer is already gone; leaving
+    // its previous capture publication alive until the next rebuild is safe.
+    if (release) try { release(); } catch (...) {}
+}
+ScopeLease::operator bool() const noexcept {
+    if (!state_) return false;
+    std::lock_guard lock(state_->mutex);
+    return state_->alive;
+}
+std::shared_ptr<const ScopeTap> ScopeLease::tap() const {
+    if (!state_) return {};
+    std::lock_guard lock(state_->mutex);
+    return state_->current;
+}
+
+struct Session::ScopeRuntime {
+    struct Request { ScopeSource source; double seconds; std::shared_ptr<ScopeLease::State> state; };
+    struct PortKey {
+        Node::ScopePorts* ports = nullptr;
+        bool output = false;
+        std::uint64_t epoch = 0;
+        auto operator<=>(const PortKey&) const = default;
+    };
+    struct Binding {
+        PortKey key;
+        std::shared_ptr<Node::ScopePorts> ports;
+        std::shared_ptr<const void> identity;
+        std::shared_ptr<ScopeTap> tap;
+    };
+    struct Bindings : Sequenced { std::vector<Binding> items; };
+    std::map<std::uint64_t, Request> requests;
+    std::map<ScopeSource, double> legacy;
+    std::map<PortKey, Binding> groups;
+    std::map<ScopeSource, std::shared_ptr<ScopeTap>> bySource;
+    SnapshotPublisher<Bindings> publisher;
+    std::unique_ptr<Bindings> deferred; // owner only; newest desired plan behind one unacknowledged publication
+    bool dirty = false; // owner only; a failed demand rebuild must reconcile before deferred publication
+    const Bindings* audio = nullptr; // audio only, protected by publisher's strict epoch
+    std::uint64_t next = 0;
+
+    bool awaitingAudio() const noexcept {
+        return publisher.publishedSeq() > publisher.inUseSeq();
+    }
+    void publishOrDefer(std::unique_ptr<Bindings>& plan) {
+        publisher.collect();
+        if (awaitingAudio()) {
+            deferred = std::move(plan);
+            return;
+        }
+        // Any publication failure preserves both the caller's candidate and
+        // the previous deferred demand. Acceptance below is nonthrowing.
+        publisher.publishPrepared(plan);
+        deferred.reset();
+    }
+    std::size_t collect() {
+        const auto freed = publisher.collect();
+        if (deferred && !awaitingAudio()) publisher.publishPrepared(deferred);
+        return freed;
+    }
+
+    void adopt() noexcept {
+        const auto* plan = publisher.peek();
+        if (plan == audio) return;
+        // Finish all access to the previous plan before announcing the new one.
+        // Ports themselves outlive a retired Node; no graph-collection assumption.
+        if (audio) for (const auto& binding : audio->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(nullptr, std::memory_order_release);
+        }
+        if (plan) for (const auto& binding : plan->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(binding.tap.get(), std::memory_order_release);
+        }
+        publisher.announce(plan);
+        audio = plan;
+    }
+    void revoke() noexcept {
+        for (auto& [id, request] : requests) {
+            (void)id;
+            std::lock_guard lock(request.state->mutex);
+            request.state->alive = false;
+            request.state->release = {};
+            request.state->current.reset();
+        }
+        // Session destruction is after the driver stops. The last publication is
+        // still protected, even if a graph holding its Node has already retired.
+        if (audio) for (const auto& binding : audio->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(nullptr, std::memory_order_release);
+        }
+    }
+};
+
 Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
+    scopeRuntime_ = std::make_unique<ScopeRuntime>();
     endpoint_->owner_=this;
 }
 Session::~Session() {
+    scopeRuntime_->revoke();
     endpoint_->owner_=nullptr;
     lifetime_.reset();
     for(const auto& client:runtimeClients_)client->sessionEnded();
@@ -321,6 +441,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         rq.ref = ref;
         rq.sampleRate = spec_.sampleRate;
         rq.maxFrames = spec_.maxFrames;
+        rq.channels = spec_.channels;
+        rq.exporting = spec_.exporting;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -332,6 +454,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         ++stats_.placeholders;
         sessionProblems_.push_back(deviceRef(row) + ": kept as a placeholder (ADR-0011): " + err);
     } else {
+        inst->setOffline(spec_.offline || spec_.exporting);
         restoreState(store, row, *inst);
         ++stats_.loaded;
         syncRoute(e, *inst);
@@ -675,6 +798,11 @@ bool Session::rebuild() {
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    for (const auto& event : timing->tempo.events)
+        timing->deviceClockChanges.emplace_back(loopSample(event.posTicks), event.posTicks);
+    for (const auto& meter : timing->signatures)
+        timing->deviceClockChanges.emplace_back(loopSample(meter.posTicks), meter.posTicks);
+    std::sort(timing->deviceClockChanges.begin(), timing->deviceClockChanges.end());
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
     try {
@@ -1013,6 +1141,19 @@ struct StripValues {
     double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
+bool knownNonAutomatable(const device::DeviceInstance* instance,const std::string& parameter,bool laneReference) {
+    if (!instance || !instance->loaded()) return false;
+    for (std::int32_t i=0;i<instance->paramCount();++i) {
+        const auto* descriptor=instance->paramAt(i);
+        if (!descriptor || descriptor->missing) continue;
+        const auto reference=laneReference ? automationParamRef(instance->identity().format,descriptor->id)
+                                           : std::optional<std::string>{descriptor->id};
+        if (reference && *reference==parameter) return !descriptor->automatable;
+    }
+    // Unknown and temporarily missing declarations keep their existing waiting
+    // semantics. Only a live, explicit non-automatable declaration rejects it.
+    return false;
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
     std::set<std::int64_t> clapRefs, clapDevices;
@@ -1093,6 +1234,7 @@ bool Session::refresh(const Store& store) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
             if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
+            if (knownNonAutomatable(instanceFor(key.first),key.second,true)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
@@ -1230,66 +1372,148 @@ std::int32_t Session::feedbackTrip(std::int64_t routingId) {
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<const ScopeTap> Session::openScope(std::int64_t trackId, double seconds, ScopePoint point) {
-    if (strips_.stripFor(trackId) == nullptr) return nullptr;
-    const TapKey key{trackId, point};
-    auto& tap = taps_[key];
-    if (!tap) tap = std::make_shared<ScopeTap>(spec_.sampleRate, seconds);
-    openTaps_.insert(key);
+    if (strips_.stripFor(trackId) == nullptr || !std::isfinite(seconds) || seconds <= 0 ||
+        point == ScopePoint::DeviceInput || point == ScopePoint::DeviceOutput) return {};
+    const ScopeSource source{trackId, point, 0};
+    // Preserve the legacy idempotent open contract: repeat calls keep the first
+    // demand, even if a caller omits its earlier custom history argument.
+    scopeRuntime_->legacy.try_emplace(source, seconds);
     attachTaps();
-    return tap;
+    const auto it = scopeRuntime_->bySource.find(source);
+    return it != scopeRuntime_->bySource.end() ? it->second : nullptr;
 }
 
 void Session::closeScope(std::int64_t trackId, ScopePoint point) {
-    openTaps_.erase({trackId, point});
-    if (point == ScopePoint::ChainInput) {
-        const auto node = chainTapNodes_.find(trackId);
-        if (node != chainTapNodes_.end()) {
-            node->second->setInputTap(nullptr);
-            chainTapNodes_.erase(node);
-        }
-    } else if (StripNode* strip = strips_.stripFor(trackId)) {
-        if (point == ScopePoint::PreFader) strip->setPreFaderTap(nullptr);
-        else strip->setTap(nullptr);
-    }
+    if (scopeRuntime_->legacy.erase({trackId, point, 0}) != 0) attachTaps();
 }
 
+ScopeLease Session::requestScope(const ScopeRequest& request) {
+    if (request.source.track <= 0 || !std::isfinite(request.seconds) || request.seconds <= 0 ||
+        !std::isfinite(request.seconds * spec_.sampleRate) ||
+        request.seconds * spec_.sampleRate > static_cast<double>(std::int64_t{1} << 24)) return {};
+    const bool device = request.source.point == ScopePoint::DeviceInput ||
+                        request.source.point == ScopePoint::DeviceOutput;
+    if (device != (request.source.device > 0)) return {};
+    auto state = std::make_shared<ScopeLease::State>();
+    const auto id = ++scopeRuntime_->next;
+    state->release = [this, id] {
+        scopeRuntime_->requests.erase(id);
+        attachTaps();
+    };
+    scopeRuntime_->requests.emplace(id, ScopeRuntime::Request{request.source, request.seconds, state});
+    try { attachTaps(); }
+    catch (...) { scopeRuntime_->requests.erase(id); throw; }
+    return ScopeLease(std::move(state));
+}
+
+std::size_t Session::collectScopeTaps() {
+    if (scopeRuntime_->dirty) attachTaps();
+    return scopeRuntime_->collect();
+}
+Session::ScopeStats Session::scopeStats() const {
+    return {scopeRuntime_->requests.size() + scopeRuntime_->legacy.size(),
+            scopeRuntime_->groups.size(), scopeRuntime_->publisher.retainedCount(),
+            scopeRuntime_->deferred ? std::size_t{1} : std::size_t{0}, scopeRuntime_->awaitingAudio()};
+}
+void Session::beginScopeRead() noexcept { scopeRuntime_->adopt(); }
+
 void Session::attachTaps() {
-    Graph* g = graph_.currentGraph();
-    for (const auto& key : openTaps_) {
-        const auto [id, point] = key;
-        StripNode* strip = strips_.stripFor(id);
-        const auto tap = taps_.find(key);
-        if (strip == nullptr || tap == taps_.end()) continue;
-        // Heard timeline: this point's arrival. Only PostFader adds the
-        // strip's own reported latency (negative for ADR-0172 track delay).
-        Node* tapped = strip;
-        if (point == ScopePoint::ChainInput) {
-            const auto chain = chainFor(id);
+    scopeRuntime_->dirty = true;
+    struct Demand {
+        std::shared_ptr<Node::ScopePorts> ports;
+        std::shared_ptr<const void> identity;
+        double seconds = 0;
+        std::int32_t latency = 0;
+    };
+    std::map<ScopeRuntime::PortKey, Demand> desired;
+    std::map<ScopeSource, ScopeRuntime::PortKey> resolved;
+    Graph* graph = graph_.currentGraph();
+    const auto add = [&](const ScopeSource& source, double seconds) {
+        auto* strip = strips_.stripFor(source.track);
+        if (!strip || !graph) return;
+        Node* node = strip;
+        bool output = source.point == ScopePoint::PostFader;
+        std::shared_ptr<const void> identity;
+        if (source.point == ScopePoint::DeviceInput || source.point == ScopePoint::DeviceOutput) {
+            const auto* entry = entryFor(source.device);
+            if (!entry || entry->retired || entry->parked || entry->placeholder ||
+                entry->trackId != source.track || !entry->runtimeIdentity) return;
+            node = &devices_.nodeAt(entry->hostIndex);
+            identity = entry->runtimeIdentity;
+            output = source.point == ScopePoint::DeviceOutput;
+        } else if (source.point == ScopePoint::ChainInput) {
+            const auto chain = chainFor(source.track);
             std::size_t first = 0;
             for (std::size_t i = 0; i < chain.size(); ++i)
                 if (chain[i]->eventFlow() == EventFlow::Consume) first = i + 1;
-            if (first < chain.size()) tapped = chain[first];
-            const auto gain = inputGains_.find(id);
-            if (gain != inputGains_.end()) tapped = gain->second.get();
-            if (frozenSources_.contains(id)) {
-                const auto cached = trackChain(id);
-                if (!cached.empty())
-                    tapped = cached.front();
+            if (first < chain.size()) node = chain[first];
+            const auto gain = inputGains_.find(source.track);
+            if (gain != inputGains_.end()) node = gain->second.get();
+            if (frozenSources_.contains(source.track)) {
+                const auto cached = trackChain(source.track);
+                if (!cached.empty()) node = cached.front();
             }
-            auto& previous = chainTapNodes_[id];
-            if (previous && previous != tapped) previous->setInputTap(nullptr);
-            previous = tapped;
         }
-        std::int32_t latency = point == ScopePoint::PostFader ? strip->latencySamples() : 0;
-        if (g != nullptr) {
-            const NodeId n = g->find(*tapped);
-            if (n != kInvalidNode) latency += g->arrivalOf(n);
-        }
-        tap->second->setLatency(latency);
-        if (point == ScopePoint::ChainInput) tapped->setInputTap(tap->second.get());
-        else if (point == ScopePoint::PreFader) strip->setPreFaderTap(tap->second.get());
-        else strip->setTap(tap->second.get());
+        const auto nodeId = graph->find(*node);
+        if (nodeId == kInvalidNode) return;
+        const auto ports = node->scopePorts();
+        // Port identity distinguishes a replaced Node under the same authored ID;
+        // aliases such as ChainInput/first DeviceInput must share one writer. The
+        // format epoch distinguishes newly prepared rates, precision and runtime.
+        ScopeRuntime::PortKey key{ports.get(), output, runtimeEpoch_};
+        auto& demand = desired[key];
+        demand.ports = ports;
+        demand.identity = std::move(identity);
+        demand.seconds = (std::max)(demand.seconds, seconds);
+        const auto arrival = static_cast<std::int64_t>(graph->arrivalOf(nodeId));
+        const auto own = graph->outputLatencyOf(nodeId).value_or(arrival) - arrival;
+        const auto latency = (spec_.delayCompensation ? arrival : 0) + (output ? own : 0);
+        demand.latency = static_cast<std::int32_t>(std::clamp(latency,
+            static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()),
+            static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())));
+        resolved[source] = key;
+    };
+    for (const auto& [source, seconds] : scopeRuntime_->legacy) add(source, seconds);
+    for (const auto& [id, request] : scopeRuntime_->requests) { (void)id; add(request.source, request.seconds); }
+
+    std::map<ScopeRuntime::PortKey, ScopeRuntime::Binding> groups;
+    std::map<ScopeSource, std::shared_ptr<ScopeTap>> bySource;
+    auto plan = std::make_unique<ScopeRuntime::Bindings>();
+    plan->items.reserve(desired.size());
+    bool changed = desired.size() != scopeRuntime_->groups.size();
+    for (const auto& [key, demand] : desired) {
+        std::shared_ptr<ScopeTap> tap;
+        const auto previous = scopeRuntime_->groups.find(key);
+        const auto frames = std::ceil(spec_.sampleRate * demand.seconds);
+        if (previous != scopeRuntime_->groups.end() &&
+            previous->second.tap->sampleRate() == spec_.sampleRate &&
+            static_cast<double>(previous->second.tap->capacity()) >= frames)
+            tap = previous->second.tap;
+        else { tap = std::make_shared<ScopeTap>(spec_.sampleRate, demand.seconds); changed = true; }
+        tap->setLatency(demand.latency); // compatibility diagnostic; writes use Graph's cached values
+        ScopeRuntime::Binding binding{key, demand.ports, demand.identity, tap};
+        groups.emplace(key, binding);
+        plan->items.push_back(std::move(binding));
     }
+    for (const auto& [source, key] : resolved) bySource.emplace(source, groups.at(key).tap);
+    // Acquire every potentially throwing lease lock before accepting a plan.
+    // A requestScope rollback must not leave its failed request in a published
+    // or deferred plan because a later lease-state lock failed.
+    std::vector<std::unique_lock<std::mutex>> leaseLocks;
+    leaseLocks.reserve(scopeRuntime_->requests.size());
+    for (const auto& [id, request] : scopeRuntime_->requests) {
+        (void)id;
+        leaseLocks.emplace_back(request.state->mutex);
+    }
+    if (changed) scopeRuntime_->publishOrDefer(plan);
+    scopeRuntime_->groups.swap(groups);
+    scopeRuntime_->bySource.swap(bySource);
+    for (const auto& [id, request] : scopeRuntime_->requests) {
+        (void)id;
+        const auto it = scopeRuntime_->bySource.find(request.source);
+        request.state->current = it != scopeRuntime_->bySource.end() ? it->second : nullptr;
+    }
+    scopeRuntime_->dirty = false;
 }
 
 void Session::bindDeviceSources() {
@@ -1361,6 +1585,7 @@ bool Session::reenableAutomation(std::int64_t laneId) {
 bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
     if (!deviceAutomation_) return true;
     const auto* instance = instanceFor(deviceId);
+    if (knownNonAutomatable(instance,paramId,false)) return true;
     const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
     if (!ref) return true;
     const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
@@ -1373,6 +1598,7 @@ bool Session::tick(std::int64_t nowMs) {
     if(presentationPending_ && cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph())) {
         presentationPending_=false;error_.clear();
     }
+    collectScopeTaps();
     if(gestureAudio_)gestureAudio_->collect();
     mainLoudness_.collect();
     cueMonitor_.collect();
@@ -1440,6 +1666,7 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     TransportInfo info;
     info.stripLanes = stripLanes.get();
     info.playing = transport.playing();
+    info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
     const auto ticks = tempo.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
     info.bpm = tempo.bpmAt(ticks);
@@ -1467,6 +1694,62 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     return info;
 }
 
+double Session::TimingView::quartersAt(std::int64_t sample) const noexcept {
+    const double seconds = static_cast<double>(sample) / sampleRate;
+    if (sample <= 0)
+        return seconds * tempo.bpmAt(0) / 60.0;
+    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
+    if (seconds >= tempo.ticksToSeconds(maximumTick))
+        return static_cast<double>(maximumTick) / ppq;
+    const auto wholeTick = tempo.secondsToTicks(seconds);
+    const double remainder = seconds - tempo.ticksToSeconds(wholeTick);
+    return static_cast<double>(wholeTick) / ppq + remainder * tempo.bpmAt(wholeTick) / 60.0;
+}
+
+DeviceTransport Session::TimingView::deviceAt(std::int64_t sample) const noexcept {
+    DeviceTransport result;
+    result.sample = sample;
+    result.quarterNotes = quartersAt(sample);
+    const auto next = std::upper_bound(deviceClockChanges.begin(), deviceClockChanges.end(), sample,
+        [](std::int64_t value, const auto& change) { return value < change.first; });
+    if (next != deviceClockChanges.end()) result.nextChange = next->first;
+    auto tick = tempo.secondsToTicks(static_cast<double>(sample) / sampleRate);
+    if (next != deviceClockChanges.begin()) tick = std::max(tick, std::prev(next)->second);
+    result.bpm = tempo.bpmAt(tick);
+    const auto& transport = session->transport_;
+    result.playing = transport.playing();
+    result.looping = transport.looping();
+    if (result.looping) {
+        result.loopBegin = transport.loopBegin();
+        result.loopEnd = transport.loopEnd();
+        result.loopBeginQuarterNotes = quartersAt(result.loopBegin);
+        result.loopEndQuarterNotes = quartersAt(result.loopEnd);
+    }
+
+    std::int64_t start = 0;
+    std::int64_t barsBefore = 0;
+    std::int64_t barTicks = textproj::kWhole;
+    for (const auto& meter : signatures) {
+        if (meter.posTicks > tick) break;
+        const auto span = meter.posTicks - start;
+        barsBefore += span / barTicks + (span % barTicks != 0 ? 1 : 0);
+        start = meter.posTicks;
+        result.numerator = static_cast<int>(meter.numerator);
+        result.denominator = static_cast<int>(meter.denominator);
+        barTicks = textproj::kWhole * meter.numerator / meter.denominator;
+    }
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
+    const double startQuarters = static_cast<double>(start) / ppq;
+    const double barQuarters = static_cast<double>(barTicks) / ppq;
+    const auto barsIntoMeter = sample < 0
+        ? static_cast<std::int64_t>(std::floor(result.quarterNotes / barQuarters))
+        : (tick - start) / barTicks;
+    result.bar = barsBefore + barsIntoMeter;
+    result.barStart = startQuarters + static_cast<double>(barsIntoMeter) * barQuarters;
+    return result;
+}
+
 void Session::TimingView::applyLoop() const noexcept {
     const bool sameLoop = session->loopApplied_ && session->loopOn_ == settings.loopEnabled &&
                           session->loopStartTick_ == settings.loopStartTicks && session->loopEndTick_ == settings.loopEndTicks;
@@ -1483,6 +1766,11 @@ const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     const StripLaneBindings* overlay=gestureAudio?gestureAudio->apply(gestureGeneration):nullptr;
     applyLoop();
     blockInfo=at(session->transport_);
+    blockInfo.deviceClock = &session->transport_;
+    blockInfo.deviceClockContext = this;
+    blockInfo.devicePosition = [](const void* context, std::int64_t sample) noexcept {
+        return static_cast<const TimingView*>(context)->deviceAt(sample);
+    };
     if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;
 }
@@ -1514,6 +1802,7 @@ bool Session::readDriverClock(DriverClock& result) const noexcept {
 
 Session::RenderBlock::RenderBlock(Session& session) noexcept
     : session_(session), graph_(session.graph_.beginRender()) {
+    session_.beginScopeRead();
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (timing) timing->applyLoop();
     session_.publishDriverClock();
@@ -1558,17 +1847,7 @@ std::int64_t Session::RenderBlock::tickAtSample(std::int64_t sample) const noexc
 }
 double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
-    if (!timing || sample <= 0) return 0;
-    const double seconds = static_cast<double>(sample) / timing->sampleRate;
-    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
-    constexpr double ppq = static_cast<double>(textproj::kPPQ);
-    if (seconds >= timing->tempo.ticksToSeconds(maximumTick))
-        return static_cast<double>(maximumTick) / ppq;
-    const auto wholeTick = timing->tempo.secondsToTicks(seconds);
-    // Reuse the one TempoMap inverse, then retain its sub-tick remainder.
-    // Dividing only the truncated tick accumulates drift over small loop spans.
-    const double remainder = seconds - timing->tempo.ticksToSeconds(wholeTick);
-    return static_cast<double>(wholeTick) / ppq + remainder * timing->tempo.bpmAt(wholeTick) / 60.0;
+    return timing && sample > 0 ? timing->quartersAt(sample) : 0;
 }
 bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
     if (sample < 0) return false;
@@ -1687,9 +1966,12 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     }
     session_.recording_->capture(io, session_.transport_);
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
-    if (!graph_.process(io)) return false;
     AudioIo block = io;
-    if (timing) block.transport = &timing->blockInfo;
+    if (timing) {
+        block.transport = &timing->blockInfo;
+        block.exporting = timing->spec.exporting;
+    }
+    if (!graph_.process(block)) return false;
     session_.mainLoudness_.process(block);
     struct ClickContext { Session* session; const TimingView* timing; };
     ClickContext click{&session_, timing};

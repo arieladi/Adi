@@ -1,0 +1,103 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Focus sheet, proposal 2</title>
+<style>html,body{margin:0;background:#101013}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="lib.js"></script><script src="lib2.js"></script>
+<script>
+// ADI, the Focus page of the Mix View, proposal 1 (17 November 2026): two (or more) chosen channels worked
+// on together. Reached from the Arrangement with the tracks soloed or selected. ADI's own drawing.
+Object.assign(C,{win:'#131316',bar:'#1c1c21',panel:'#202027',head:'#2a2a33',well:'#141418',ctl:'#30303a',edge:'#3f3f4b',grp:'#26262e',grpEdge:'#3a3a45',text:'#d9d9de',dim:'#8b8b96',faint:'#55555f',ink:'#16161a',val:'#5ec8ff',acc:'#ffb13b'});
+const W=1920,H=1080,SB=H-26,CA='#5ec8ff',CB='#7fd36b',CC='#ff8fb8';let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','mix');
+s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'FOCUS SHEET  ·  proposal 2',{z:11.5,w:700,a:'middle',f:C.ink});s+=note(1641,24,1);
+// the song strip
+s+=R(0,69,W,62,'#17171b');s+=L(0,131,W,131,C.line);
+{const lanes=['#ff8a5c','#ffb13b','#f2e15a','#7fd36b','#42c9c2','#5ec8ff','#8f8cff','#c479ff','#ff6fb1','#b7b7c2'];const r=rng(7);for(let i=0;i<10;i++){let px=8;while(px<1900){const len=40+Math.floor(r()*260);if(r()>0.28)s+=R(px,73+i*3.6,Math.min(len,1904-px),2.6,(i===3||i===5||i===8)?lanes[i]:'#4a4a55',{op:(i===3||i===5||i===8)?0.95:0.6});px+=len+6}}}
+for(let b=1;b<=120;b+=8){const bx=8+(b-1)*15.8;s+=L(bx,112,bx,131,'#3a3a45');s+=T(bx+4,126,String(b),{z:10.5,f:C.dim})}
+s+=R(8+32*15.8,112,16*15.8,5,C.acc,{op:0.9,r:2});s+=R(8+32*15.8,69,16*15.8,43,C.acc,{op:0.06});s+=L(8+41.3*15.8,69,8+41.3*15.8,131,'#ffffff',1.5);
+// the Mix View's bar
+s+=R(0,132,W,36,C.bar);s+=L(0,168,W,168,C.line);
+s+=grp(270,138,264,24);s+=T(305,154.5,'Stack',{z:12,a:'middle',f:C.dim,w:600});s+=R(342,140,70,20,'#3d3d49',{r:6});s+=T(377,154.5,'Focus',{z:12,a:'middle',w:700});s+=T(471,154.5,'Analysers',{z:12,a:'middle',f:C.dim,w:600});s+=note(552,150,2);
+
+// ---- the left column, as in the Stack: the browser with the focused channels marked, the analyser box ----
+const lx=6,lwid=252,infoH=250,infoY=SB-6-infoH;
+const names=[['Kick','#ff8a5c'],['Snare','#ff8a5c'],['Hats','#ffb13b'],['Drum Bus','#ffb13b'],['Bass','#f2e15a'],['Lead Vocals',CA,'A'],['Backing Vox','#5eb4ff'],['Melodic Guitar',CB,'B'],['Keys',CC,'C'],['Pads','#c479ff'],['FX','#ff6fb1'],['A Reverb','#b7b7c2'],['B Delay','#b7b7c2'],['Main','#e8e8ee']];
+s+=R(lx,176,lwid,28,C.well,{r:6,s:'#30303a'});s+=T(lx+12,195,'Search channels and tools',{z:11.5,f:C.faint});
+s+=R(lx,210,lwid,14*21+12,C.panel,{r:6});
+names.forEach(([n,c,tag],i)=>{const yy=216+i*21;if(tag)s+=R(lx+4,yy,lwid-8,20,'#34343f',{r:4});s+=R(lx+10,yy+5,10,10,c,{r:2,op:tag?1:0.45});s+=T(lx+27,yy+14.5,n,{z:11.5,f:tag?C.text:'#77778a',w:tag?600:400});
+  if(tag){s+=R(lx+lwid-34,yy+3,22,14,c,{r:4});s+=T(lx+lwid-23,yy+14,tag,{z:10,a:'middle',w:700,f:C.ink})}else s+=T(lx+lwid-14,yy+14.5,'+',{z:12,a:'end',f:C.faint})});
+s+=note(lx+lwid+2,352,3);
+const gy=210+14*21+20;s+=R(lx,gy,lwid,infoY-gy-8,C.panel,{r:6});s+=T(lx+12,gy+18,'In focus',{z:11.5,w:600});s+=T(lx+lwid-12,gy+18,'3 channels  ·  soloed',{z:10.5,f:C.dim,a:'end'});
+[['A   Lead Vocals',CA,'main'],['B   Melodic Guitar',CB,''],['C   Keys',CC,'']].forEach(([t,c,m],i)=>{s+=R(lx+10,gy+30+i*24,lwid-20,20,'#141418',{r:5,s:m?c:'#30303a'});s+=CI(lx+22,gy+40+i*24,4,c);s+=T(lx+34,gy+44+i*24,t,{z:11});if(m)s+=T(lx+lwid-36,gy+44+i*24,'main',{z:9.5,a:'end',f:c,w:600});s+=T(lx+lwid-18,gy+44+i*24,'×',{z:12,a:'end',f:C.dim})});
+s+=T(lx+12,gy+118,'Focus follows Solo. Un-solo a channel here',{z:10,f:C.faint});s+=T(lx+12,gy+132,'and it leaves; the first one still soloed',{z:10,f:C.faint});s+=T(lx+12,gy+146,'becomes the main. Leaving keeps the solos.',{z:10,f:C.faint});
+s+=btn(lx+10,gy+158,lwid-20,22,'Back to all channels',{z:11,f:C.dim});
+s+=infoBox(lx,infoY,lwid,infoH,{seed:9,src:'Focus sum'});
+// ---- the meter at the right, on the two channels' sum ----
+const mw=196,mx0=W-6-mw;s+=bigMeter(mx0,176,mw,SB-6-176,'Meter  ·  A + B + C');
+
+// ---- the centre ----
+const ax=lx+lwid+8,ar=mx0-8,cw=ar-ax;let y=176;
+// who is in focus, and what is heard
+s+=R(ax,y,cw,40,C.panel,{r:7});
+const chip=(x,tag,name,c,main)=>{let g=R(x,y+7,226,26,'#141418',{r:6,s:c,sw:main?1.8:1});g+=R(x+4,y+11,22,18,c,{r:4});g+=T(x+15,y+24,tag,{z:11,a:'middle',w:700,f:C.ink});g+=T(x+34,y+25,name,{z:12.5,w:600});
+  g+=P(`M${x+154} ${y+13}l2.6 5.4l5.9 0.8l-4.3 4.1l1 5.9l-5.2 -2.8l-5.2 2.8l1 -5.9l-4.3 -4.1l5.9 -0.8z`,{f:main?c:'none',s:main?c:C.faint,sw:1.2});g+=btn(x+172,y+11,22,18,'M',{z:9.5,r:4,f:C.dim});g+=btn(x+198,y+11,22,18,'S',{z:9.5,r:4,on:1,c:C.val});return g};
+s+=chip(ax+10,'A','Lead Vocals',CA,1);s+=chip(ax+244,'B','Melodic Guitar',CB,0);s+=chip(ax+478,'C','Keys',CC,0);s+=R(ax+712,y+7,34,26,'#1c1c23',{r:6,s:'#4a4a58'});s+=P(`M${ax+722} ${y+20}h14M${ax+729} ${y+13}v14`,{s:C.text,sw:2});
+s+=T(ax+772,y+25,'Hear',{z:11.5,f:C.dim});s+=grp(ax+808,y+8,330,24);[['A',0],['B',0],['C',0],['All',1],['What is removed',0]].forEach(([t,on],k)=>{const xs=[0,36,72,108,160],ws=[36,36,36,52,170];if(on)s+=R(ax+810+xs[k],y+10,ws[k]-4,20,C.acc,{r:5});s+=T(ax+808+xs[k]+ws[k]/2,y+24.5,t,{z:11,a:'middle',w:700,f:on?C.ink:C.dim})});
+s+=T(ar-12,y+25,'A -14.2    B -17.8    C -19.5 LUFS',{z:11,f:C.dim,a:'end'});s+=note(ax-2,y+12,4);
+y+=48;
+
+// the two channels together: both spectra, where they overlap, and what Unmask takes out of B
+{const h=306,px=ax,py=y,pw=cw;s+=R(px,py,pw,h,'#17171c',{r:8,s:'#2a2a33'});const dx=px+44,dy=py+34,dw=pw-56,dh=h-62;s+=R(dx,dy,dw,dh,'#101014',{r:6});
+ const fx=f=>dx+dw*Math.log(f/20)/Math.log(1000);[30,40,50,60,70,80,90,200,300,400,500,600,700,800,900,2000,3000,4000,5000,6000,7000,8000,9000].forEach(f=>s+=L(fx(f),dy,fx(f),dy+dh,'#ffffff',1,{op:0.03}));
+ [[20,'20'],[50,'50'],[100,'100'],[200,'200'],[500,'500'],[1000,'1k'],[2000,'2k'],[5000,'5k'],[10000,'10k'],[20000,'20k']].forEach(([f,t])=>{s+=L(fx(f),dy,fx(f),dy+dh,'#ffffff',1,{op:0.08});s+=T(Math.min(fx(f)+4,dx+dw-22),dy+dh+14,t,{z:9.5,f:C.dim})});
+ ['0','-12','-24','-36','-48','-60'].forEach((t,k)=>{const yy=dy+dh*k/5;s+=L(dx,yy,dx+dw,yy,'#ffffff',1,{op:0.05});s+=T(dx-8,yy+3.5,t,{z:9.5,f:C.dim,a:'end'})});
+ const N=260,ra=rng(11),rb=rng(23),rc=rng(37);let na=0.5,nb=0.5,nc=0.5;const A=[],B=[],Cc=[];
+ for(let k=0;k<=N;k++){const u=k/N;na=na*0.6+0.4*ra();nb=nb*0.6+0.4*rb();
+   const ea=(0.10+0.46*Math.exp(-Math.pow((u-0.40)/0.10,2))+0.62*Math.exp(-Math.pow((u-0.60)/0.09,2))+0.30*Math.exp(-Math.pow((u-0.80)/0.07,2)))*(u<0.2?u*5:1)*(u>0.9?Math.max(0,1-(u-0.9)*9):1);
+   const eb=(0.14+0.58*Math.exp(-Math.pow((u-0.33)/0.11,2))+0.52*Math.exp(-Math.pow((u-0.56)/0.11,2))+0.20*Math.exp(-Math.pow((u-0.74)/0.08,2)))*(u<0.14?u*7:1)*(u>0.86?Math.max(0,1-(u-0.86)*7):1);
+   nc=nc*0.6+0.4*rc();const ec=(0.08+0.40*Math.exp(-Math.pow((u-0.48)/0.13,2))+0.34*Math.exp(-Math.pow((u-0.68)/0.10,2)))*(u<0.24?u*4.2:1)*(u>0.88?Math.max(0,1-(u-0.88)*8):1);
+   A.push(Math.max(0.01,ea*(0.82+0.3*na)));B.push(Math.max(0.01,eb*(0.82+0.3*nb)));Cc.push(Math.max(0.01,ec*(0.82+0.3*nc)))}
+ const Y=v=>dy+dh-v*dh*0.9,X=k=>dx+dw*k/N;const path=arr=>arr.map((v,k)=>(k?'L':'M')+X(k).toFixed(1)+' '+Y(v).toFixed(1)).join('');
+ s+=`<clipPath id="tg"><rect x="${dx}" y="${dy}" width="${dw}" height="${dh}" rx="6"/></clipPath><g clip-path="url(#tg)">`;
+ s+=`<pattern id="hat" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="2.2" height="6" fill="${C.acc}"/></pattern>`;
+ s+=P(path(Cc)+`L${dx+dw} ${dy+dh}L${dx} ${dy+dh}Z`,{f:CC,op:0.16});s+=P(path(B)+`L${dx+dw} ${dy+dh}L${dx} ${dy+dh}Z`,{f:CB,op:0.20});s+=P(path(A)+`L${dx+dw} ${dy+dh}L${dx} ${dy+dh}Z`,{f:CA,op:0.20});
+ const M=A.map((v,k)=>Math.min(v,Math.max(B[k],Cc[k])));s+=`<path d="${path(M)}L${dx+dw} ${dy+dh}L${dx} ${dy+dh}Z" fill="url(#hat)" opacity="0.30"/>`;
+ s+=P(path(Cc),{s:CC,sw:1.3});s+=P(path(B),{s:CB,sw:1.5});s+=P(path(A),{s:CA,sw:1.8});
+ // what Unmask takes out of B, hanging from the top, inside its range
+ const lo=0.47,hi=0.72;let rd=`M${dx+dw*lo} ${dy}`;for(let k=0;k<=N;k++){const u=k/N;if(u<lo||u>hi)continue;const d=Math.max(0,A[k]-0.25)*0.55*Math.sin(Math.PI*(u-lo)/(hi-lo));rd+=`L${X(k).toFixed(1)} ${(dy+d*dh*0.75).toFixed(1)}`}rd+=`L${dx+dw*hi} ${dy}Z`;s+=P(rd,{f:C.mod,op:0.35});s+=P(rd,{s:C.mod,sw:1.4});
+ s+='</g>';
+ [lo,hi].forEach(u=>{s+=L(dx+dw*u,dy,dx+dw*u,dy+dh,C.mod,1,{op:0.7});s+=R(dx+dw*u-5,dy+dh-16,10,16,C.mod,{r:3})});s+=T(dx+dw*(lo+hi)/2,dy+16,'-6.2 dB on B   ·   -3.1 dB on C',{z:11,a:'middle',f:'#e4c8ff',w:600});
+ // legend
+ s+=T(px+14,py+22,'Together',{z:13,w:700});let lxx=px+100;[['A  Lead Vocals (main)',CA],['B  Melodic Guitar',CB],['C  Keys',CC]].forEach(([t,c])=>{s+=R(lxx,py+13,12,12,c,{r:3});s+=T(lxx+18,py+23.5,t,{z:11});lxx+=40+t.length*6.4});
+ s+=`<rect x="${lxx}" y="${py+13}" width="12" height="12" rx="3" fill="url(#hat)"/>`;s+=T(lxx+18,py+23.5,'Where the main is covered: 1.1 to 3.8 kHz',{z:11});lxx+=270;s+=R(lxx,py+13,12,12,C.mod,{r:3});s+=T(lxx+18,py+23.5,'Taken out of B and C by Unmask',{z:11});
+ s+=T(px+pw-14,py+23.5,'Pre  ·  Post  ·  Freeze',{z:11,f:C.dim,a:'end'});s+=note(px-2,py+14,5);y+=h+8}
+
+// the tools for two channels: Unmask, Match, Align, Scope
+{const h=214,g=8,n=4,w=(cw-g*(n-1))/n;const cardT=(x,name,sub)=>R(x,y,w,h,'#1a1a20',{r:8,s:'#23232b'})+iPower(x+15,y+17,C.acc)+T(x+30,y+21.5,name,{z:13,w:700})+T(x+w-12,y+21.5,sub,{z:10.5,f:C.dim,a:'end'});
+ // Unmask
+ let x=ax;s+=cardT(x,'Unmask','B and C make room for A  ▾');s+=knob(x+52,y+84,24,0.55,C.mod,'AMOUNT','55 %',{lz:9.5});s+=knob(x+122,y+88,16,0.3,C.val,'ATTACK','8 ms',{lz:9});s+=knob(x+176,y+88,16,0.5,C.val,'RELEASE','120 ms',{lz:9});
+ s+=dynd(x+212,y+38,w-240,104,61,{per:7,depth:0.42,col:C.mod,noth:1});s+=meterV(x+w-20,y+38,5,104,0.6)+R(x+w-13,y+38,5,104,'#0d0d0f',{r:2})+R(x+w-13,y+38,5,30,C.mod,{r:2});
+ s+=T(x+14,y+166,'Range',{z:10,f:C.dim});s+=box(x+56,y+154,58,17,'1.1 kHz',{z:10});s+=T(x+121,y+166,'to',{z:10,f:C.dim});s+=box(x+136,y+154,58,17,'3.8 kHz',{z:10});s+=pill(x+204,y+154,76,17,'Whole band');
+ s+=pill(x+12,y+h-28,80,18,'Dynamic',{on:1,c:C.mod});s+=pill(x+98,y+h-28,58,18,'Static');s+=pill(x+162,y+h-28,104,18,'Hear what goes');s+=note(x+w/2,y-1,6);
+ // Match
+ x+=w+g;s+=cardT(x,'Match','B towards A  ▾');{const dx=x+12,dy=y+38,dw=w-24,dh=92;s+=R(dx,dy,dw,dh,'#101014',{r:6});s+=L(dx,dy+dh/2,dx+dw,dy+dh/2,'#ffffff',1,{op:0.12});const r=rng(5);let d='',f='',v=0;for(let k=0;k<=80;k++){const u=k/80;v=v*0.8+0.2*(r()-0.5);const m=0.5*Math.sin(u*5.2+0.6)*Math.exp(-Math.pow((u-0.55)/0.4,2))+v*0.5;d+=(k?'L':'M')+(dx+dw*u).toFixed(1)+' '+(dy+dh/2-m*dh*0.42).toFixed(1)}s+=P(d+`L${dx+dw} ${dy+dh/2}L${dx} ${dy+dh/2}Z`,{f:C.yel,op:0.12});s+=P(d,{s:C.yel,sw:1.8});s+=T(dx+8,dy+14,'the curve that would be added to B',{z:9.5,f:C.dim})}
+ s+=knob(x+40,y+158,15,0.6,C.yel,'AMOUNT','60 %',{lz:9});s+=knob(x+94,y+158,15,0.4,C.val,'SMOOTH','1/3 oct',{lz:9});s+=btn(x+136,y+142,70,22,'Learn',{z:11});s+=btn(x+212,y+142,w-224,22,'Make EQ bands',{z:11,on:1});s+=T(x+136,y+184,'or match to a file  ▾',{z:10,f:C.dim});
+ // Align
+ x+=w+g;s+=cardT(x,'Align','A with B  ▾');s+=T(x+14,y+52,'Correlation',{z:10.5,f:C.dim});s+=T(x+w-14,y+52,'+0.31',{z:12,a:'end',w:700});s+=R(x+14,y+60,w-28,8,'#0d0d0f',{r:4});s+=R(x+w/2,y+60,(w-28)*0.155,8,C.yel,{r:4});s+=L(x+w/2,y+57,x+w/2,y+71,'#777');s+=T(x+14,y+84,'-1',{z:9,f:C.faint});s+=T(x+w-14,y+84,'+1',{z:9,f:C.faint,a:'end'});
+ s+=R(x+14,y+96,w-28,46,'#141418',{r:6,s:'#30303a'});s+=T(x+26,y+115,'Suggested',{z:10,f:C.dim});s+=T(x+26,y+133,'Delay B by 0.42 ms  ·  +0.78',{z:11.5,w:600});s+=btn(x+w-82,y+108,58,22,'Apply',{z:11,on:1});
+ s+=T(x+14,y+166,'Delay',{z:10,f:C.dim});s+=box(x+52,y+154,62,17,'0.00 ms',{z:10});s+=T(x+126,y+166,'Polarity',{z:10,f:C.dim});s+=btn(x+176,y+153,30,19,'A Ø',{z:9.5,r:4,f:C.dim});s+=btn(x+210,y+153,30,19,'B Ø',{z:9.5,r:4,f:C.dim});
+ s+=T(x+14,y+h-14,'One undo step each; nothing is applied until you say so.',{z:9.5,f:C.faint});
+ // Scope
+ x+=w+g;s+=cardT(x,'Scope','1 bar  ▾');{const dx=x+12,dy=y+38,dw=w-24,dh=h-50;s+=R(dx,dy,dw,dh,'#101014',{r:6});s+=L(dx,dy+dh/2,dx+dw,dy+dh/2,'#ffffff',1,{op:0.10});for(let k=1;k<4;k++)s+=L(dx+dw*k/4,dy,dx+dw*k/4,dy+dh,'#ffffff',1,{op:0.06});
+  const wave=(seed,amp,ph,c)=>{const r=rng(seed);let d='',e=0;for(let k=0;k<=dw;k+=1.5){const u=k/dw,hit=(u*4%1)<0.06?1:0;e=Math.max(e*0.985,hit);const v=(Math.sin(u*90+ph)*0.6+Math.sin(u*230+ph*2)*0.3+(r()-0.5)*0.3)*(0.25+0.75*e)*amp;d+=(k?'L':'M')+(dx+k).toFixed(1)+' '+(dy+dh/2-v*dh*0.45).toFixed(1)}return P(d,{s:c,sw:1.1,op:0.9})};s+=wave(5,0.6,2.0,CC)+wave(3,0.9,0,CB)+wave(8,0.75,1.1,CA)}
+ s+=note(x+w/2,y-1,7);y+=h+8}
+
+// the two channels' own chains, editable here as in the Stack
+</script><script>const rows=[];</script><script src="rows6.js"></script><script>
+{const rs=[['A','Lead Vocals',CA,5,['eq','comp','lim']],['B','Melodic Guitar',CB,7,['eq','comp','unmask:Lead Vocals']],['C','Keys',CC,8,['eq','unmask:Lead Vocals']]];let yy=y;const hh=Math.floor((SB-6-yy-8)/3);
+ rs.forEach(([tag,n,c,idx,chain],i)=>{const h=hh,GUT=112;s+=R(ax,yy,cw,h,'#17171d',{r:9});s+=R(ax,yy+3,3,h-6,c,{r:1.5});s+=meterV(ax+12,yy+5,3,h-10,0.7-i*0.1)+meterV(ax+17,yy+5,3,h-10,0.66-i*0.1);
+  s+=R(ax+28,yy+7,20,16,c,{r:4});s+=T(ax+38,yy+19,tag,{z:10.5,a:'middle',w:700,f:C.ink});const tx=ax+GUT-8,by=yy+h-9;s+=CI(tx-3,by-4,3.4,c);s+=T(tx-12,by,n,{z:11.5,a:'end',w:600});s+=btn(tx-37,by-32,16,14,'M',{z:8.5,r:4,f:C.dim});s+=btn(tx-17,by-32,16,14,'S',{z:8.5,r:4,on:1,c:C.val});
+  let fx=ax+GUT;const cy=yy+4,ch=h-8;chain.forEach((f,k)=>{const[kind,arg]=f.split(':');if(kind==='eq'){s+=eqCard(fx,cy,400,ch,2,SETS[idx],100+idx,false);fx+=406}else{s+=dynCard(fx,cy,264,ch,1,kind,200+idx*7+k,arg,6+((idx*3+k)%7));fx+=270}});
+  s+=R(fx,cy,36,ch,'#1c1c23',{r:8,s:'#4a4a58'});s+=P(`M${fx+11} ${cy+ch/2}h14M${fx+18} ${cy+ch/2-7}v14`,{s:C.text,sw:2});if(!i)s+=note(ax-2,yy+12,8);yy+=h+4})}
+s+=R(0,SB,W,26,'#0e0e11');s+=T(12,SB+17,'Focus  ·  Lead Vocals (main) with Melodic Guitar and Keys  ·  soloed  ·  the Mix View button opens Focus while tracks are soloed',{z:11.5,f:C.dim});s+=T(W-12,SB+17,'17 Nov 2026  ·  a picture to talk about, not a build',{z:11,f:C.faint,a:'end'});
+finish(W,H,s);
+</script></body></html>

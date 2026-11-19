@@ -143,6 +143,24 @@ struct ParamDescriptor {
     /// so compacting the list would silently repoint every held index at a
     /// different parameter.
     bool          missing = false;
+    // Optional native function pages. Empty keeps the existing ordinary panel layout.
+    // Page selection is presentation only; enabling a page is this real parameter's
+    // common automation/undo gesture, never a private UI bypass flag.
+    std::string   groupId{}, groupName{};
+    bool          groupEnableControl = false;
+    /// Explicit owner-thread configuration opt-in. Permits a common undoable
+    /// UI gesture without making this setting eligible for automation. Other
+    /// non-automatable parameters remain read-only unless they opt in.
+    bool          configurable = false;
+    /// Optional native function presentation metadata. A stable band number is
+    /// independent of descriptor order; -1 denotes a global control. Sections
+    /// let compact views expose one manageable control set without changing IDs.
+    std::int32_t  bandIndex = -1;
+    std::string   sectionId{}, sectionName{};
+    /// Optional exact captions for discrete values, in normalized step order.
+    /// Empty entries retain the ordinary numeric fallback. Construct once;
+    /// these are presentation data, not another value-to-parameter mapping.
+    std::vector<std::string> choiceLabels{};
 };
 
 /// Enough to find the plugin again, and to tell the user what is missing when
@@ -198,6 +216,8 @@ public:
     // build never shows.
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+    /// Owner side. The requested mode is applied on the next prepare.
+    virtual void setOffline(bool) noexcept {}
 
     /// Explicit mode: CLAP's native floating window follows ADR-0076; Hosted
     /// supplies content for ADR-0180's FloatingHost, never for the device strip.
@@ -209,6 +229,7 @@ public:
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
+    [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -555,6 +576,9 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override {
+        return inst_ && inst_->wantsDeviceTransport();
+    }
 
     [[nodiscard]] bool hasBypass() const noexcept override { return true; }
     void processActive(const engine::NodeIo& io) noexcept override;

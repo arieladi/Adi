@@ -153,6 +153,11 @@ public:
     /// as for drain. Every call belongs to the same owner/message thread.
     bool uiEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
                  double value, std::int64_t nowMs, std::vector<OpRequest>& out);
+    /// Explicit non-automatable configuration opt-in. Uses the same capture,
+    /// ownership, undo and restoration lifecycle as uiEvent, but never overrides
+    /// or arms an automation lane. Refuses ordinary and read-only parameters.
+    bool uiConfigurationEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
+                              double value, std::int64_t nowMs, std::vector<OpRequest>& out);
 
     /// Standalone compatibility: seed one borrowed sink/ring. Device must
     /// outlive this frontend or be detached with caller-proven quiescence.

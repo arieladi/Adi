@@ -104,6 +104,10 @@ struct SessionSpec {
     /// uses this constant tempo for ALL musical playback and clock consumers;
     /// authored project tempo rows remain intact. Not an offline export option.
     std::optional<double> externalTempoBpm = std::nullopt;
+    /// Export quality is independent of monitoring/performance-state suppression.
+    bool exporting = false;
+    /// Processing without a realtime deadline, even at the normal quality.
+    bool offline = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -114,6 +118,8 @@ struct DeviceRequest {
     const rows::PluginRef* ref = nullptr;
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
+    std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
+    bool exporting = false; ///< known before prepare, so the first block uses the intended bank
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
@@ -380,12 +386,24 @@ public:
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
     /// Message thread. A second call for the same key returns the same tap
-    /// with its original ring length. Taps live as long as the session, so audio
-    /// thread can never write into a freed one; closing one only detaches it.
+    /// with its original requested history while the endpoint is unchanged. Reacquire
+    /// after graph/format changes, or use ScopeLease to follow generations. Retired
+    /// taps remain safe snapshots and are reclaimed only after callback detachment.
     /// Null for a track with no strip in the graph.
     [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0,
                                                          ScopePoint point = ScopePoint::PostFader);
     void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
+    /// Scoped visual demand. Compatible logical endpoints share their physical capture and the
+    /// longest requested history. Off-thread tap snapshots follow replacement generations.
+    [[nodiscard]] ScopeLease requestScope(const ScopeRequest&);
+    /// Owner collection and latest deferred-plan publication after audio acknowledgement;
+    /// never releases a tap used by a stalled physical callback.
+    std::size_t collectScopeTaps();
+    struct ScopeStats {
+        std::size_t consumers = 0, sources = 0, retired = 0, deferredPlans = 0;
+        bool awaitingAudio = false;
+    };
+    [[nodiscard]] ScopeStats scopeStats() const;
 
     /// ADR-0203 d3: how long a return's send into itself takes to come back,
     /// in samples, in the graph now playing -- the loop's block, D, plus the
@@ -479,12 +497,15 @@ private:
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
+        std::vector<std::pair<std::int64_t, std::int64_t>> deviceClockChanges; ///< sample, tick
         std::shared_ptr<const StripLaneBindings> stripLanes;
         ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
         SessionSpec spec;
         void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] double quartersAt(std::int64_t sample) const noexcept;
+        [[nodiscard]] DeviceTransport deviceAt(std::int64_t sample) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
     MainLoudness mainLoudness_;
@@ -527,11 +548,10 @@ private:
     MixerStrips strips_;
     std::map<std::int64_t, std::unique_ptr<InputGainNode>> inputGains_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
-    using TapKey = std::pair<std::int64_t, ScopePoint>;
-    std::map<TapKey, std::shared_ptr<ScopeTap>> taps_; ///< all taps live until audio stops
-    std::set<TapKey> openTaps_;
-    std::map<std::int64_t, Node*> chainTapNodes_; ///< detach even after chain edits
+    struct ScopeRuntime;
+    std::unique_ptr<ScopeRuntime> scopeRuntime_;
     void attachTaps();
+    void beginScopeRead() noexcept;
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.
     std::shared_ptr<StripAutomation> stripAutomation_;

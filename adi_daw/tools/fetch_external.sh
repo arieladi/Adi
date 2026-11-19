@@ -77,6 +77,9 @@ THIRD_PARTY=(
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
+  # Preserve the authored EQ's static-target SIMD/FFT evaluation. A dependency
+  # update requires rerunning its strict extraction comparisons.
+  "google/highway               highway     Apache-2.0 1.4.0    2607d3b5b0113992fe84d3848859eae13b3b52c1  build"
   # libpd has a required submodule: pure-data
   # IS the DSP -- libpd without it is a wrapper around nothing. Its commit is
   # fixed by libpd's own tree, so the pin below still answers "what did we build
@@ -111,7 +114,7 @@ THIRD_PARTY=(
   # the table now takes a full URL. Nothing here reaches into bungee's submodule
   # -- a dependency two levels down that nobody fetched is not a pin.
   "https://bitbucket.org/jpommier/pffft.git pffft PFFFT/FFTPACK-BSD v1.0.0 02fe7715a5bf8bfd914681c53429600f94e0f536  build"
-  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
+  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.5     d60b7a78030661574a615b586d9325ba7a7fa7dd  juce"
 )
 
 # NOTE: helio is helio-fm/helio-sequencer, NOT Ahornberg/helio-workstation --
@@ -219,8 +222,10 @@ fetch_pinned() {
     # A submodule is fetched only where the table asks. Shallow, like the parent:
     # the gitlink in the parent's tree names the exact commit, so depth 1 still
     # lands on it.
+    # A failed update must stop the script (set -e), not leave a stale or
+    # missing submodule behind a pin line that reads OK.
     if [ "$sub" = submodules ] && [ -d "$path/.git" ]; then
-        git -C "$path" submodule update --init --depth 1 --recursive -q 2>/dev/null || true
+        git -C "$path" submodule update --init --depth 1 --recursive -q
     fi
 
     # A tag is a mutable ref. Matching the tag name proves nothing about the
@@ -238,6 +243,14 @@ fetch_pinned() {
         echo "Either upstream moved the tag, or someone edited this table without" >&2
         echo "updating the commit beside it. Do not 'fix' this by copying the new" >&2
         echo "hash in -- moving a pin is a reviewed change. See ADR-0024." >&2
+        exit 1
+    fi
+    # The parent's commit pins its submodules by gitlink; verify they sit there
+    # ('-' uninitialised, '+' at another commit, 'U' conflicted).
+    if [ "$sub" = submodules ] && git -C "$path" submodule status --recursive | grep -q '^[-+U]'; then
+        printf 'MISMATCH\n'
+        echo "FATAL: $repo submodules are not at the gitlinks of its pinned commit:" >&2
+        git -C "$path" submodule status --recursive >&2
         exit 1
     fi
     printf '%s %s  %-9s [%s]\n' "${got:0:9}" "$(git -C "$path" log -1 --format='%cs')" "$tag" "$lic"

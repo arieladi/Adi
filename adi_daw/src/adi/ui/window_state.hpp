@@ -34,6 +34,24 @@ struct WindowState {
     int deviceHeight;
     int deviceFloor; // from DesktopDefaults, never persisted
     bool docked = true;
+    // Live's Clip View (manual 8; STEP-7-PLAN 7.7): in the detail row above the Device View, hidden
+    // until a clip is opened; and its height, which its top edge drags.
+    bool clipView = false;
+    int clipViewHeight = 286; // room for an octave of key tracks under the stretch markers' strip, above the Velocity lane and its controls
+    // The Note Editor's own settings, kept with the window: its editing grid (manual 10.2.1),
+    // Highlight Scale (10.6), what its notes are coloured by (ADR-0242 d1), and the Quantize
+    // settings (10.5.11) with ADI's swing.
+    bool noteGridSnap = true, noteGridFixed = false, noteGridTriplet = false;
+    int noteGridNarrow = 0;
+    double noteGridFixedQuarters = .25;
+    bool highlightScale = true;
+    int noteColours = 0;
+    int noteLaneHeight = 56; // the Velocity lane, as its divider left it
+    int noteSpelling = 0;    // sharps, flats, both, auto, numbers (manual 10.6)
+    bool clipPanelsFolded = false; // the Clip View's panels folded to a strip (manual 8.1.1)
+    int clipPanelsArrangement = 0; // by the view's height, side by side, stacked (manual 8.1.2)
+    int quantizeValue = 0, quantizeAmount = 100, quantizeSwing = 0;
+    bool quantizeStarts = true, quantizeEnds = false;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
     double timelineLeft = 0, pixelsPerQuarter = 48;
@@ -49,6 +67,12 @@ struct WindowState {
     // Where it opens: docked in the centre, or in a window of its own onto any display (ADR-0209
     // d11, ADR-0180 d3); the window's place is kept as every floating window's.
     bool mixViewDetached = false;
+    // Optional right-side shared analyzer presentation; never audio parameters.
+    bool mixAnalyzerDock = false;
+    int mixAnalyzerWidth = 300, mixAnalyzerSource = 0, mixAnalyzerPoint = 0, mixAnalyzerChannel = 0;
+    std::string analysisPalette = "adi";
+    bool analysisPaletteReverse = false;
+    std::string analysisSpectrumSlope = "flat";
     // The ★ Reference track (ADR-0209 §4, d11): hidden from the project view until its
     // [Reference Track] toggle shows it.
     bool showReference = false;

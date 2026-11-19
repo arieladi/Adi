@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/session.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/dsp/auto_gain.hpp"
 #include "adi/dsp/true_peak.hpp"
 #include <algorithm>
@@ -84,6 +85,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     SessionSpec offlineSpec{2,spec_.sampleRate,spec_.maxFrames};
     offlineSpec.precision=spec_.precision;
     offlineSpec.performanceState=false;
+    offlineSpec.exporting=false;
     if (!offline.load(store,loader_,offlineSpec)) return fail(offline.error());
     if (offline.stats().placeholders || offline.stats().skipped || !offline.problems().empty())
         return fail("gain stage requires a fully resolved project: missing device, media or unsupported playback");
@@ -95,7 +97,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     std::int64_t end = options.endSample;
     if (end == 0) {
         const auto snapshot = SnapshotBuilder::fromStore(store);
-        for (const auto& clip : offline.model_.clips) if (!clip.muted) {
+        for (const auto& clip : timelineClips(offline.model_)) if (!clip.muted) {
             const auto position=clip.posTicks.value_or(0), length=clip.lengthTicks.value_or(0);
             if (length < 0 || position > std::numeric_limits<std::int64_t>::max()-length)
                 return fail("invalid gain-stage clip range");
@@ -118,7 +120,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     for (const auto& track : offline.model_.tracks) if (track.kind=="audio" || track.kind=="midi") {
         if (track.kind=="midi") {
             bool hasClips=false, hasInstrument=false;
-            for (const auto& clip : offline.model_.clips)
+            for (const auto& clip : timelineClips(offline.model_))
                 hasClips=hasClips || (clip.trackId==track.id && !clip.muted);
             for (auto* node : offline.chainFor(track.id))
                 hasInstrument=hasInstrument || node->eventFlow()==EventFlow::Consume;
@@ -126,11 +128,22 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
         }
         auto tap=offline.openScope(track.id,1.0,ScopePoint::ChainInput);
         if (!tap) return fail("cannot tap track " + std::to_string(track.id));
-        latency=std::max(latency,static_cast<std::int64_t>(tap->latency()));
         meters.emplace_back(tap,spec_.sampleRate,options.measure);
         GainStageTrack measurement; measurement.trackId=track.id;
         result.tracks.push_back(measurement);
     }
+    // This isolated renderer owns the callback boundaries. Adopt every meter's
+    // latest tap plan before rendering any source samples or MIDI events.
+    for (int attempt=0; attempt<4; ++attempt) {
+        const auto pending=offline.scopeStats();
+        if (!pending.awaitingAudio && !pending.deferredPlans) break;
+        { auto boundary=offline.beginRender(); static_cast<void>(boundary); }
+        offline.collectScopeTaps();
+    }
+    const auto settled=offline.scopeStats();
+    if (settled.awaitingAudio || settled.deferredPlans) return fail("offline taps did not settle");
+    for (const auto& meter : meters)
+        latency=std::max(latency,static_cast<std::int64_t>(meter.tap->latency()));
     const int block = std::min(spec_.maxFrames,4096);
     if (block <= 0) return fail("invalid gain-stage block size");
     std::vector<float> l(static_cast<std::size_t>(block)), r(l.size()), output(2*l.size());

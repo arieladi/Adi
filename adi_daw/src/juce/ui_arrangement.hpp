@@ -6,9 +6,12 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/track_tree.hpp"
+#include "ui_look.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <map>
 #include <optional>
+#include <vector>
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -213,6 +216,7 @@ class ArrangementCanvas final : public juce::Component,
     explicit ArrangementCanvas(ArrangementView &);
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
@@ -248,8 +252,47 @@ class ArrangementCanvas final : public juce::Component,
     // Whether the clip's length is being changed from the keyboard: Enter with the insert
     // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
     bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
+    // Live's fade handles on audio clips (Live 12 manual 6.8; E4): a square at each fade's peak sets
+    // its length, a diamond on its curve its shape. They show over the clip under the mouse, on the
+    // selected clips, and on every audio clip while F is held. A drag is one `clip.setFades` batch
+    // for the dragged clip and every other selected audio clip.
+    struct FadeHandle {
+        std::int64_t clip = 0, track = 0;
+        bool in = true, curve = false;
+        friend bool operator==(const FadeHandle &, const FadeHandle &) = default;
+    };
+    std::optional<FadeHandle> fadeHandleAt(int x, int y) const;
+    // Where a handle is drawn, for its clip; nothing when the handle is not shown.
+    std::optional<juce::Point<float>> fadeHandlePoint(const FadeHandle &) const;
+    // The handle being dragged, and the fade it would set; none when no handle is.
+    std::optional<FadeHandle> fadeDragging() const noexcept { return fadeDrag_; }
+    // The handle last clicked: Delete deletes its fade (manual 6.8).
+    std::optional<FadeHandle> selectedFade() const noexcept { return selectedFade_; }
+    // F held: every audio clip's handles show (manual 6.8, §42.25's momentary keys).
+    bool showFades = false;
+    bool keyStateChanged(bool isKeyDown) override;
+    void focusLost(FocusChangeType) override;
+    void mouseExit(const juce::MouseEvent &) override;
 
   private:
+    // A clip's body on screen (under its title strip), and the clip and track: every clip drawn.
+    struct ClipBody {
+        const engine::TrackNode *track = nullptr;
+        const engine::ClipNode *clip = nullptr;
+        float left = 0, right = 0, top = 0, bottom = 0;
+    };
+    std::vector<ClipBody> clipBodies() const;
+    std::optional<juce::Point<float>> fadeHandlePoint(const FadeHandle &, const ClipBody &) const;
+    bool fadeHandlesShown(const engine::ClipNode &) const;
+    // A clip's fades as drawn: what the snapshot holds, or what a drag would set.
+    void fadesOf(const engine::ClipNode &, std::int64_t &in, std::int64_t &out, std::optional<double> &inTension,
+                 std::optional<double> &outTension) const;
+    void paintFades(juce::Graphics &, const engine::ClipNode &, float left, float right, float top,
+                    float bottom) const;
+    std::optional<FadeHandle> fadeDrag_, selectedFade_;
+    std::int64_t fadeTicks_ = 0, hoverClip_ = 0;
+    double fadeTension_ = 0, fadeTensionFrom_ = 0;
+    int fadeFromY_ = 0;
     // What a screen reader hears after a key moves the selection.
     void announce(const juce::String &);
     // Live's left and right arrows (online §41.4.1.3): by the grid, or to a clip's edge with
@@ -285,25 +328,84 @@ class ArrangementCanvas final : public juce::Component,
     // drawn at `pos`.
     void paintWaveform(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
                        float bottom) const;
+    // A MIDI clip's notes in its body, as Live draws them (manual 6.1: a clip shows what it holds): a bar for
+    // each note, the keys the clip uses spread over the body's height. Read through
+    // `engine::readClipDetails` on the message thread, once for each clip and document generation.
+    void paintNotes(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
+                    float bottom) const;
+    struct ClipNotes {
+        struct Bar {
+            std::int64_t start = 0, duration = 0;
+            int key = 0;
+            bool active = true;
+        };
+        std::uint64_t readAt = 0; // the generation it was read at, plus one; 0 before the first read
+        bool midi = false;
+        std::int64_t startMarker = 0, loopStart = 0, loopLength = 0;
+        int low = 127, high = 0;
+        std::vector<Bar> bars;
+    };
+    mutable std::map<std::int64_t, ClipNotes> clipNotes_;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
     bool panning = false;
 };
-// Bitwig's project view button (Master Reference 10, Figure 32; the director, 28 October 2026):
-// at the top of the track names, a tree with its menu's arrow. Lit while a group is chosen, so a
-// view that leaves tracks out always says so.
+// Bitwig's project view (Master Reference 10, Figure 32; the director, 28 October 2026), drawn as
+// the Arrangement sheet's "Show" chooser over the track names: "Show", then the view chosen ("All
+// groups", or the group's name, in the accent while a group is chosen, so a view that leaves tracks
+// out always says so), and the arrow of its menu.
 class ProjectViewButton final : public juce::Button {
   public:
     ProjectViewButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    static constexpr const char *kAllGroups = "All groups";
+};
+// A button of the bar over the track names (the Arrangement sheet; language.png part B): a box of
+// its own, with its label or its glyph; or a cell of a group, lit in the accent while on.
+class BarButton final : public juce::Button {
+  public:
+    using Glyph = std::function<void(juce::Graphics &, juce::Rectangle<float>, juce::Colour)>;
+    BarButton(const juce::String &name, const juce::String &tooltip, bool cell, Glyph = {});
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    const bool cell;
+
+  private:
+    Glyph glyph_;
+};
+// The bar over the track names and their controls, level with the beat ruler (the Arrangement
+// sheet, arrangement.png; ADR-0244 d8; DF-W25), left to right: Flip Sides (the track names to the
+// window's other side, ADR-0080); Show, the project view; the track row's sections, In/Out, Sends,
+// Returns, Mixer and Track Delay, in one group; Live's Optimize Arrangement Height and Width (H, W)
+// in another; Automation Mode; Lock Envelopes.
+class NamesBar final : public juce::Component {
+  public:
+    NamesBar();
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    BarButton flip;
+    ProjectViewButton show;
+    // Mixer only shows its state: the track controls' mixer has no toggle to switch.
+    BarButton inOut, sends, returns, mixer, delay;
+    BarButton height, width;
+    BarButton automation, lock;
+    // Show's least width: "Show" and a few letters of the view.
+    static constexpr int kShowMin = 80;
+    // What Automation Mode and Lock Envelopes say while they wait.
+    static constexpr const char *kAutomationWaits =
+        "Automation Mode waits for the engine's automation lanes (window log, N26).";
+    static constexpr const char *kLockWaits = "Lock Envelopes waits for the engine's automation lanes (window log, N26).";
+
+  private:
+    // The two groups' boxes, drawn behind their cells.
+    juce::Rectangle<float> sections_, sizes_;
 };
 // One pixel wide, above the canvas, transparent to the mouse (ADR-0050 d2): moving
 // it repaints two thin strips, never the arrangement.
 class ArrangementPlayhead final : public juce::Component {
   public:
     ArrangementPlayhead() { setInterceptsMouseClicks(false, false); }
-    void paint(juce::Graphics &g) override { g.fillAll(juce::Colour(0xffffd66b)); }
+    void paint(juce::Graphics &g) override { g.fillAll(look::dropTarget); }
 };
 // The Overview is the root's child, not the view's: Live draws it across the track
 // headers as well, up to the H and W buttons.
@@ -312,10 +414,9 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // Above the track names, Live's Set Locator, Previous and Next Locator buttons and its Automation
-    // Mode and Lock Envelopes toggles (Live 12 manual 6): where paint draws each, and where a click
-    // finds it. Each waits for the engine (locators N25, automation N26); a click says so.
-    enum class TopButton { Set, Previous, Next, Automation, Lock };
+    // Under the bar over the track names, Live's Set Locator, Previous and Next Locator buttons (Live 12
+    // manual 6.4): where paint draws each, and where a click finds it.
+    enum class TopButton { Set, Previous, Next };
     // What a track's Unfold Track button and U say on a track that is not a group.
     static constexpr const char *kUnfoldWaits =
         "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
@@ -420,9 +521,8 @@ class ArrangementView final : public juce::Component {
     ArrangementCanvas canvas;
     ArrangementPlayhead playhead;
     std::uint64_t canvasPaints = 0;
-    // Bitwig's project view: the button, its menu of the whole project and its groups, and the
-    // view chosen there, which the lanes, the track controls and the Mixer View all follow.
-    ProjectViewButton projectView;
+    // Bitwig's project view: its menu of the whole project and its groups (the bar's Show opens it),
+    // and the view chosen there, which the lanes, the track controls and the Mixer View all follow.
     // What fills in the project's tracks as the view sees them, in place, for each new snapshot
     // and when the menu opens; applied at once. The snapshot's rows by default (rowsFromSnapshot);
     // tests give it a tree.
@@ -439,9 +539,10 @@ class ArrangementView final : public juce::Component {
     void toggleFold(std::int64_t group);
     // Alt+U (§42.16): every group unfolded.
     void unfoldAll();
-    // Where a row's name column begins: past a band in its group's colour for each group it
-    // sits in (Live's).
-    static constexpr int kGroupBand = 6;
+    // Where a row's name column begins: past a line in its group's colour for each group it sits
+    // in, as Live's; the Arrangement sheet's lines, 4 wide at a step of 5, the row itself as wide as
+    // its group's (DF-W25).
+    static constexpr int kGroupBand = 5, kGroupLine = 4;
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);

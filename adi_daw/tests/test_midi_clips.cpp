@@ -102,6 +102,24 @@ void placement(){
         check(i.count>=2 && i.heard[1].e.type==EventType::NoteExpression && i.heard[1].e.value==0.3125 && i.heard[1].e.noteId==i.heard[0].e.noteId,"tuning cents reaches instrument as per-note semitones");
     }
 }
+void takeLanePlayback() {
+    Fixture f;
+    f.clip(1, 24024);
+    f.clip(2, 12012);
+    f.store->db().exec("INSERT INTO lanes(id,track_id,name) VALUES(7,1,'Lane');"
+                       "UPDATE clips SET lane_id=7 WHERE id=2");
+    f.load();
+    f.render();
+    const auto& instrument = *f.instrument;
+    check(f.session.model().clips.size() == 2 && instrument.balance() == 1 &&
+          instrument.count == 2 && instrument.heard[0].clock == 100,
+          "main lane sends its note and expression while an overlapping take stays silent");
+    f.store->db().exec("DELETE FROM clips WHERE id=1");
+    f.refresh();
+    f.render();
+    check(f.session.model().clips.size() == 1 && f.instrument->balance() == 0,
+          "refresh releases the main note without activating a stored take");
+}
 void cleanup(){
     for(int transition=0;transition<6;++transition){
         Fixture f;f.clip(1,0,5765760);f.load();f.render();check(f.instrument->balance()==1,"note sounding before transition");
@@ -654,6 +672,8 @@ void sessionControllers() {
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
     try { if (only == "all" || only == "signed") signedOrigins(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");

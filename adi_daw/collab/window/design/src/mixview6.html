@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Mix View sheet, proposal 6</title>
+<style>html,body{margin:0;background:#101013}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="lib.js"></script><script src="lib2.js"></script>
+<script>
+// ADI Mix View, proposal 3 (17 November 2026): the channel browser at the left with the analyser box
+// under it, the rows in the middle with each channel's header at the RIGHT, a mastering-style meter at
+// the far right; the row under the pointer grown, the device under the pointer grown more.
+Object.assign(C,{win:'#131316',bar:'#1c1c21',panel:'#202027',head:'#2a2a33',well:'#141418',ctl:'#30303a',edge:'#3f3f4b',grp:'#26262e',grpEdge:'#3a3a45',text:'#d9d9de',dim:'#8b8b96',faint:'#55555f',ink:'#16161a',val:'#5ec8ff',acc:'#ffb13b'});
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','mix');
+s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'MIX VIEW SHEET  ·  proposal 6',{z:11.5,w:700,a:'middle',f:C.ink});
+s+=note(1641,24,1);
+
+// ---- the song strip: overview, ruler, loop, playhead; click and drag as in the Arrangement ----
+s+=R(0,69,W,62,'#17171b');s+=L(0,131,W,131,C.line);
+const lanes=['#ff8a5c','#ffb13b','#f2e15a','#7fd36b','#42c9c2','#5ec8ff','#8f8cff','#c479ff','#ff6fb1','#b7b7c2'];
+{const r=rng(7);for(let i=0;i<10;i++){let px=8;while(px<1900){const len=40+Math.floor(r()*260);if(r()>0.28)s+=R(px,73+i*3.6,Math.min(len,1904-px),2.6,lanes[i],{op:0.85});px+=len+6}}}
+for(let b=1;b<=120;b+=8){const bx=8+(b-1)*15.8;s+=L(bx,112,bx,131,'#3a3a45');s+=T(bx+4,126,String(b),{z:10.5,f:C.dim})}
+s+=R(8+32*15.8,112,16*15.8,5,C.acc,{op:0.9,r:2});s+=R(8+32*15.8,69,16*15.8,43,C.acc,{op:0.06});
+s+=L(8+41.3*15.8,69,8+41.3*15.8,131,'#ffffff',1.5);s+=P(`M${8+41.3*15.8-5} 69h10l-5 7z`,{f:'#ffffff'});
+s+=note(22,100,2);
+
+// ---- the Mix View's own bar ----
+s+=R(0,132,W,36,C.bar);s+=L(0,168,W,168,C.line);
+s+=grp(270,138,196,24);s+=R(272,140,70,20,'#3d3d49',{r:6});s+=T(307,154.5,'Stack',{z:12,a:'middle',w:700});s+=T(403,154.5,'Analysers',{z:12,a:'middle',f:C.dim,w:600});
+['Scope','Phase','Spectrogram','Loudness','Analysis'].forEach((t,i)=>s+=T(486+[0,52,104,192,268][i],154.5,t,{z:11,f:C.faint}));
+s+=note(826,150,3);
+s+=btn(860,138,108,24,'With tools ▾',{f:C.dim});s+=btn(974,138,92,24,'+ Function');
+s+=T(1092,154.5,'Rows',{z:11.5,f:C.dim});s+=R(1128,148,130,4,'#0b0b0d',{r:2});s+=R(1128,148,34,4,C.acc,{r:2});s+=CI(1162,150,7,'#e9e9ee');
+s+=R(1276,141,28,18,C.acc,{r:9});s+=CI(1295,150,7,C.ink);s+=T(1312,154.5,'Grow under the pointer',{z:11.5});
+s+=note(1466,150,4);
+
+s+=btn(1668,138,128,24,'');s+=CI(1682,150,4,C.grn);s+=T(1692,154.5,'Sounding now',{z:11.5,w:600});s+=P(`M1786 150a6 6 0 1 1 -2 -4.5M1784.5 141.5v4.5h-4.5`,{s:C.dim,sw:1.6});s+=note(1812,150,12);
+
+// ---- data ----
+const rows=[
+ {n:'Kick',c:'#ff8a5c',f:['eq','comp','clip'],m:0.72,g:'Drums'},{n:'Snare',c:'#ff8a5c',f:['eq','comp'],m:0.61,g:'Drums'},{n:'Hats',c:'#ffb13b',f:['eq'],m:0.38,g:'Drums'},
+ {n:'Drum Bus',c:'#ffb13b',f:['eq','comp','plug:Saturator X','lim'],m:0.78,g:'Drums'},{n:'Bass',c:'#f2e15a',f:['eq','comp','unmask:Kick'],m:0.66,g:'Music'},
+ {n:'Lead Vocals',c:'#5ec8ff',f:['eq','comp','lim'],m:0.7,big:1,g:'Vocals'},{n:'Backing Vox',c:'#5ec8ff',f:['eq','comp'],m:0.52,g:'Vocals'},
+ {n:'Melodic Guitar',c:'#7fd36b',f:['eq','comp','unmask:Lead Vocals'],m:0.58,g:'Music'},{n:'Keys',c:'#8f8cff',f:['eq'],m:0.44,g:'Music'},
+ {n:'Pads',c:'#c479ff',f:['eq','plug:Valhalla Room'],m:0.4,g:'Music'},{n:'FX',c:'#ff6fb1',f:['eq','comp'],m:0.33,g:'FX'},
+ {n:'A Reverb',c:'#b7b7c2',f:['eq'],m:0.36},{n:'B Delay',c:'#b7b7c2',f:['eq'],m:0.29},{n:'Main',c:'#e8e8ee',f:['eq','clip','lim'],m:0.8}];
+const bandsets=[
+ [{t:'hp',f:0.08},{f:0.22,g:0.5,q:0.05,c:'#ff5a5a'},{f:0.62,g:-0.35,q:0.08,c:'#62d36b'}],[{t:'hp',f:0.14},{f:0.3,g:0.45,q:0.05,c:'#ff5a5a'},{t:'hs',f:0.75,g:0.4,c:'#5ec8ff'}],
+ [{t:'hp',f:0.3},{t:'hs',f:0.8,g:0.5,c:'#c479ff'}],[{f:0.2,g:0.3,q:0.08,c:'#ff5a5a'},{f:0.5,g:-0.3,q:0.06,c:'#62d36b'},{t:'hs',f:0.82,g:0.3,c:'#5ec8ff'}],
+ [{t:'ls',f:0.18,g:0.45,c:'#ff5a5a'},{f:0.36,g:-0.5,q:0.04,c:'#c479ff'}],BANDS,[{t:'hp',f:0.2},{f:0.66,g:0.35,q:0.1,c:'#62d36b'}],
+ [{t:'hp',f:0.1},{f:0.42,g:-0.45,q:0.06,c:'#c479ff'},{f:0.58,g:0.3,q:0.05,c:'#62d36b'},{t:'hs',f:0.8,g:0.5,c:'#ff5a5a'}],[{f:0.3,g:-0.3,q:0.1,c:'#ff5a5a'},{t:'hs',f:0.8,g:0.25,c:'#5ec8ff'}],
+ [{t:'hp',f:0.16},{f:0.5,g:-0.25,q:0.12,c:'#62d36b'}],[{t:'hp',f:0.22},{t:'hs',f:0.7,g:-0.3,c:'#5ec8ff'}],[{t:'hp',f:0.2},{t:'hs',f:0.72,g:-0.4,c:'#5ec8ff'}],
+ [{t:'hp',f:0.18},{f:0.5,g:0.2,q:0.2,c:'#62d36b'}],[{t:'ls',f:0.12,g:0.2,c:'#ff5a5a'},{f:0.4,g:-0.15,q:0.1,c:'#c479ff'},{t:'hs',f:0.86,g:0.25,c:'#5ec8ff'}]];
+
+// ---- the left column: find, the channel browser, the groups, and the analyser box at its foot ----
+const lx=6,lwid=252,SB=H-26,infoH=250,infoY=SB-6-infoH;
+s+=R(lx,176,lwid,28,C.well,{r:6,s:'#30303a'});s+=T(lx+12,195,'Search channels and tools',{z:11.5,f:C.faint});s+=T(lx+lwid-10,195,'Ctrl+F',{z:10,f:C.faint,a:'end'});
+s+=R(lx,210,lwid,14*21+12,C.panel,{r:6});
+rows.forEach((row,i)=>{const yy=216+i*21;if(row.big)s+=R(lx+4,yy,lwid-8,20,'#34343f',{r:4});s+=R(lx+10,yy+5,10,10,row.c,{r:2});s+=T(lx+27,yy+14.5,row.n,{z:11.5,f:row.big?C.text:'#b9b9c3',w:row.big?600:400});
+  s+=T(lx+162,yy+14.5,String(row.f.length),{z:10,f:C.faint,a:'end'});s+=meterH(lx+lwid-78,yy+8,68,4,row.m,Math.min(0.97,row.m+0.1))});
+s+=note(lx+lwid+2,190,5);
+const gy=210+14*21+20;s+=R(lx,gy,lwid,infoY-gy-8,C.panel,{r:6});s+=T(lx+12,gy+18,'Show',{z:11.5,w:600});s+=T(lx+lwid-12,gy+18,'groups',{z:10.5,f:C.dim,a:'end'});
+[['All',1,'#8b8b96'],['Sounding now  ↻',0,'#62d36b'],['Drums',0,'#ff8a5c'],['Music',0,'#7fd36b'],['Vocals',0,'#5ec8ff'],['FX',0,'#ff6fb1'],['Returns and Main',0,'#b7b7c2']].forEach(([t,on,c],i)=>{const yy=gy+30+i*22;if(yy+20>infoY-10)return;s+=R(lx+10,yy+3,26,14,on?C.acc:'#141418',{r:7,s:on?null:'#3a3a45'});s+=CI(on?lx+29:lx+17,yy+10,5,on?C.ink:C.dim);s+=R(lx+46,yy+5,10,10,c,{r:2});s+=T(lx+63,yy+14.5,t,{z:11.5,f:on?C.text:'#b9b9c3'})});
+s+=infoBox(lx,infoY,lwid,infoH,{seed:9});s+=note(lx+lwid+2,infoY+14,6);
+
+// ---- the far right: the meter ----
+const mw=196,mx0=W-6-mw;s+=bigMeter(mx0,176,mw,SB-6-176,'Meter');s+=note(mx0+18,190,10);
+
+// ---- the rows (rows5.js) ----
+const ax=lx+lwid+8,ar=mx0-8;
+</script><script src="rows6.js"></script><script>
+// ---- the Status Bar ----
+s+=R(0,SB,W,26,'#0e0e11');s+=T(12,SB+17,'Lead Vocals  ·  EQ  ·  Band 3  2.84 kHz  +4.1 dB  Q 1.20',{z:11.5,f:C.dim});s+=T(W-12,SB+17,'17 Nov 2026  ·  a picture to talk about, not a build',{z:11,f:C.faint,a:'end'});
+finish(W,H,s);
+</script></body></html>

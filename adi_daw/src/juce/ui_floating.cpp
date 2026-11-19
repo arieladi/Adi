@@ -25,74 +25,36 @@ std::vector<MonitorArea> currentMonitors() {
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
-    for (auto &b : bins_)
-        b.store(-120, std::memory_order_relaxed);
-    worker_ = std::jthread([this](std::stop_token stop) {
-        while (!stop.stop_requested()) {
-            analyseOnce();
-            std::this_thread::sleep_for(std::chrono::milliseconds(33));
-        }
-    });
+    broker_ = std::make_shared<SharedAnalysis>([tap = tap_](std::int64_t, engine::ScopePoint) { return tap; },
+                                              [](std::int64_t, engine::ScopePoint) {}, SharedAnalysis::Mode::Manual);
 }
-AnalyserModel::~AnalyserModel() {
-    worker_.request_stop();
-    if (worker_.joinable())
-        worker_.join();
-}
+AnalyserModel::AnalyserModel(std::shared_ptr<SharedAnalysis> broker, std::int64_t track)
+    : broker_(std::move(broker)), track_(track) {}
+AnalyserModel::~AnalyserModel() = default;
 void AnalyserModel::analyseOnce() noexcept {
-    std::int64_t stamp = 0;
-    if (!tap_->read(left_, right_, stamp))
-        return;
-    for (std::size_t i = 0; i < left_.size(); ++i)
-        left_[i] = (left_[i] + right_[i]) * .5f;
-    spectrum_.analyse(left_, scratch_);
-    revision_.fetch_add(1, std::memory_order_seq_cst);
-    for (std::size_t i = 0; i < bins_.size(); ++i)
-        bins_[i].store(dsp::toDbfs(scratch_[i]), std::memory_order_seq_cst);
-    revision_.fetch_add(1, std::memory_order_seq_cst);
+    if (!broker_) return;
+    try { if (!diagnostic_) diagnostic_ = broker_->acquire({track_}); broker_->pump(); } catch (...) {}
 }
 bool AnalyserModel::read(std::array<float, 513> &out, std::uint64_t &revision) const noexcept {
-    const auto before = revision_.load(std::memory_order_seq_cst);
-    if (!before || (before & 1) || before == revision)
-        return false;
-    std::array<float, 513> next{};
-    for (std::size_t i = 0; i < out.size(); ++i)
-        next[i] = bins_[i].load(std::memory_order_seq_cst);
-    if (revision_.load(std::memory_order_seq_cst) != before)
-        return false;
-    out = next;
-    revision = before;
+    const auto result = diagnostic_.read();
+    if (!result || result->revision == revision || result->binsDbfs.size() != out.size()) return false;
+    std::copy(result->binsDbfs.begin(), result->binsDbfs.end(), out.begin()); revision = result->revision;
     return true;
 }
+double AnalyserModel::sampleRate() const noexcept {
+    if (const auto result = diagnostic_.read()) return result->sampleRate;
+    return tap_ ? tap_->sampleRate() : 0;
+}
 AnalyserView::AnalyserView(std::shared_ptr<AnalyserModel> model) : model_(std::move(model)) {
-    bins_.fill(-120);
     setName("Track spectrum");
+    addAndMakeVisible(view_);
+    view_.present(model_->broker(), model_->track());
 }
 void AnalyserView::frame() noexcept {
-    if (model_->read(bins_, revision_))
-        repaint();
+    view_.present(model_->broker(), model_->track()); view_.frame();
 }
 void AnalyserView::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff101820));
-    g.setColour(juce::Colour(0xff334450));
-    for (int db = 0; db >= -120; db -= 24) {
-        int y = static_cast<int>(-db / 120. * getHeight());
-        g.drawHorizontalLine(y, 0.f, static_cast<float>(getWidth()));
-    }
-    g.setColour(juce::Colour(0xff72ced8));
-    juce::Path line;
-    for (std::size_t i = 1; i < bins_.size(); ++i) {
-        const double hz = static_cast<double>(i) * model_->sampleRate() / 1024.;
-        const float x =
-            static_cast<float>(std::log(std::max(20., hz) / 20.) / std::log(1000.) * getWidth());
-        const float y = static_cast<float>(
-            std::clamp(-static_cast<double>(bins_[i]) / 120., 0., 1.) * getHeight());
-        if (i == 1)
-            line.startNewSubPath(x, y);
-        else
-            line.lineTo(x, y);
-    }
-    g.strokePath(line, juce::PathStrokeType(1.5f));
+    g.fillAll(look::editorBack);
 }
 namespace {
 // An ADI view at its floating window's own interface zoom, as ZoomHost holds the main
@@ -126,7 +88,7 @@ struct FloatingHost::Entry {
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
-            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, juce::Colours::black,
+            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, look::ink,
                              entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
               h(host),
               e(entry), clock(this, [this](double) {
@@ -154,7 +116,17 @@ struct FloatingHost::Entry {
         bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
         void closeButtonPressed() override {
             e.closing = true;
+            if (e.component.getComponent() == &h.root_.mixViewPanel)
+                h.root_.mixViewPanel.stack.suspendParameters(true);
             setVisible(false);
+        }
+        void minimisationStateChanged(bool minimised) override {
+            if (e.component.getComponent() == &h.root_.mixViewPanel) {
+                h.root_.mixViewPanel.suspendAnalysis(minimised);
+                h.root_.mixViewPanel.stack.suspendParameters(minimised || e.hidden || e.closing);
+                if (minimised) h.root_.mixViewPanel.stack.cancelInteractions();
+            }
+            if (auto *analysis = dynamic_cast<AnalysisPane *>(e.component.getComponent())) analysis->suspend(minimised);
         }
         FloatingHost &h;
         Entry &e;
@@ -241,6 +213,8 @@ void FloatingHost::show(const std::string &key, bool on) {
         return;
     auto &e = *it->second;
     e.hidden = !on;
+    if (e.component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(!on || e.closing || (e.window && e.window->isMinimised()));
     if (native_ && e.window && !e.closing)
         e.window->setVisible(on);
 }
@@ -274,6 +248,8 @@ void FloatingHost::frame(const std::string &key) {
     auto &e = *it->second;
     if (!alive_(e.device)) {
         e.closing = true;
+        if (e.component.getComponent() == &root_.mixViewPanel)
+            root_.mixViewPanel.stack.suspendParameters(true);
         e.window->setVisible(false);
         return;
     }
@@ -325,6 +301,8 @@ void FloatingHost::close(const std::string &key) {
         return;
     auto &e = *it->second;
     save(e, false);
+    if (e.component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(true);
     // Gone before its content leaves it: an empty window never shows (the director's R3).
     e.window->setVisible(false);
     e.window->clearContentComponent();
@@ -343,6 +321,8 @@ void FloatingHost::requestClose(const std::string &key) {
     if (it == entries_.end())
         return;
     it->second->closing = true;
+    if (it->second->component.getComponent() == &root_.mixViewPanel)
+        root_.mixViewPanel.stack.suspendParameters(true);
     if (it->second->window)
         it->second->window->setVisible(false);
 }
@@ -359,6 +339,8 @@ void FloatingHost::closeAll(bool remember) {
     while (!entries_.empty()) {
         auto &e = *entries_.begin()->second;
         save(e, remember);
+        if (e.component.getComponent() == &root_.mixViewPanel)
+            root_.mixViewPanel.stack.suspendParameters(true);
         e.window->setVisible(false);
         e.window->clearContentComponent();
         if (e.dock && e.component) {
@@ -376,6 +358,9 @@ namespace {
 constexpr const char *kMixViewKey = "Mix View";
 }
 bool detachMixView(FloatingHost &host, AdiRootComponent &root, bool detach) {
+    root.mixViewPanel.stack.cancelInteractions();
+    root.devices.cancelFunctionInteractions();
+    root.mixViewPanel.suspendAnalysis(false);
     if (!detach) {
         // Back where it docks: the host returns the panel to the root, which lays it out.
         host.close(kMixViewKey);
@@ -407,6 +392,40 @@ void syncMixView(FloatingHost &host, AdiRootComponent &root, bool restore) {
         detachMixView(host, root, true);
     else
         root.setMixView(false, true); // its window was closed by its own button
+}
+bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t track) {
+    constexpr const char *key = "Analysis";
+    if (track <= 0) track = root.analysisTrack();
+    if (track != 0 && !root.reader().findTrack(track)) return false;
+    if (track != 0 && track != root.analysisTrack() &&
+        track != root.arrangement.geometry.selection.track && root.reader().findTrack(track)) {
+        root.arrangement.geometry.selection.track = track;
+        root.publishSelection();
+    }
+    if (auto *existing = dynamic_cast<AnalysisPane *>(host.content(key))) {
+        existing->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
+        host.show(key, true); existing->suspend(false); return true;
+    }
+    auto pane = std::make_unique<AnalysisPane>();
+    pane->setSize(800, 420);
+    pane->setMode(root.mixViewPanel.analysis.mode());
+    pane->setPoint(root.mixViewPanel.analysis.point());
+    pane->view.setChannel(root.mixViewPanel.analysis.view.channel());
+    pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
+    pane->setPalette(root.mixViewPanel.analysis.view.palette(), root.mixViewPanel.analysis.view.paletteReversed());
+    pane->setSpectrumSlope(root.mixViewPanel.analysis.view.spectrumSlope());
+    pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
+    pane->expandButton.setButtonText("Mix View");
+    pane->onExpand = [&root](std::int64_t channel) {
+        if (root.reader().findTrack(channel)) { root.arrangement.geometry.selection.track = channel; root.publishSelection(); }
+        root.mixViewPanel.analysis.setSource(channel == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
+        root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Analysis));
+        root.setMixView(true, root.state().mixViewDetached);
+    };
+    auto *view = pane.get();
+    return host.openView(key, 0, std::move(pane), [&root, view](const SnapshotReader &reader) {
+        view->frame(root.sharedAnalysis, root.analysisTrack(reader), root.analysisTrack(reader, true));
+    }, true, "Analysis");
 }
 juce::Component *FloatingHost::content(const std::string &key) const {
     auto it = entries_.find(key);

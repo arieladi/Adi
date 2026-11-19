@@ -7,6 +7,7 @@
 #include "adi/history_content.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
+#include "adi/media/published_rollback.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/media/blake3.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -158,11 +159,6 @@ std::string joinedWarning(std::string first,const std::string& next) {
     if(!first.empty())first+="; ";
     first+=next;return first;
 }
-struct CollectedFiles {
-    std::vector<fs::path> owned;
-    bool committed=false;
-    ~CollectedFiles(){if(!committed)for(const auto& file:owned){std::error_code ec;fs::remove(file,ec);}}
-};
 std::string collectionName(const std::string& hash,const fs::path& source) {
     auto extension=media::pathUtf8(source.extension());
     if(extension.empty() || extension.size()>16 || extension.find_first_not_of(".abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")!=std::string::npos)
@@ -270,6 +266,7 @@ StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileColli
 namespace adi {
 StoreFileResult Store::collectAllAndSave() {
     if(detail::appliedDispatchActive(*this))return {false,"reentrant collection during applied-batch delivery",{}};
+    media::detail::PublishedRollback files;
     try {
         if(closed_ || !db_)return {false,"project is closed",{}};
         if(readOnly_ || major_!=kSchemaMajor)return {false,"project is read-only or unsupported",{}};
@@ -294,7 +291,6 @@ StoreFileResult Store::collectAllAndSave() {
         },false);
         const auto folder=media::projectFolder(*this),audio=folder/"audio";
         std::map<std::string,std::string> locations;
-        CollectedFiles files;
         if(!candidates.empty()) {
             if(fs::is_symlink(fs::symlink_status(audio)))throw std::runtime_error("audio/ must not be a symlink");
             fs::create_directories(audio);
@@ -316,13 +312,14 @@ StoreFileResult Store::collectAllAndSave() {
                 else {
                     const auto staged=stage.path/"media.tmp";
                     fs::copy_file(source,staged);verify(staged);
-                    files.owned.push_back(target);
-                    const auto result=media::publishFile(staged,target);
+                    files.files.push_back({target,{}});
+                    const auto result = media::publishFile(staged, target, {},
+                                                           media::PublishPolicy::VerifiedCopyFallback);
                     if(result.status!=media::PublishStatus::published) {
-                        files.owned.pop_back();
+                        files.files.pop_back();
                         if(result.status!=media::PublishStatus::exists)throw std::runtime_error("publish media: "+result.error);
                         verify(target);fs::remove(staged);
-                    }
+                    }else files.files.back().identity=result.identity;
                 }
                 locations[hash]=media::pathUtf8(target.lexically_relative(folder));
             }
@@ -336,12 +333,12 @@ StoreFileResult Store::collectAllAndSave() {
         db_->exec("COMMIT");transaction.committed=true;files.committed=true;
         const auto status=sqlite3_wal_checkpoint_v2(db_->getHandle(),nullptr,SQLITE_CHECKPOINT_PASSIVE,nullptr,nullptr);
         return {true,{},status==SQLITE_OK?std::string{}:std::string("collection saved; WAL checkpoint is pending")};
-    }catch(const std::exception& e){return {false,e.what(),{}};}
+    }catch(const std::exception& e){return {false,e.what(),files.rollback()};}
 }
 StoreFileResult Store::collectAndExport(const std::filesystem::path& output) const {
     if(closed_ || !db_)return {false,"project is closed",{}};
     if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before exporting",{}};
     const auto result=media::collectExport(media::projectFolder(*this)/path_.filename(),output);
-    return {result.ok,result.error,{}};
+    return {result.ok,result.error,result.warning};
 }
 }

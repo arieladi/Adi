@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/midi_controllers.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/engine/curves.hpp"
 #include <algorithm>
 #include <atomic>
@@ -235,7 +236,7 @@ MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double 
     }
     std::map<std::int64_t, const rows::Clip *> clips;
     std::set<std::int64_t> tracks;
-    for (const auto &clip : model.clips)
+    for (const auto &clip : timelineClips(model))
         clips.emplace(clip.id, &clip);
     for (const auto &track : model.tracks)
         tracks.insert(track.id);

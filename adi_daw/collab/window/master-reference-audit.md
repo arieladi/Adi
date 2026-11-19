@@ -88,8 +88,8 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Partial (E1): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy and silence over a range, and Insert and Delete Time wait (N17) |
-| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Built (E1, E2, E3): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy, paste and duplicate over a range (E2); Cut, Copy, Paste, Duplicate and Delete Time (Ctrl/Cmd+Shift+X, C, V, D, Delete) and Insert Silence (Ctrl/Cmd+I) across every track, locators, the loop and time signature markers moving with the time (E3). Silence over a range that keeps the time (Live's Delete on a time selection leaves silence) is Delete's |
+| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Built (E4, `window/fades`): peak and curve handles on audio clips, the same fade on every selected clip in one step; Create Fade In/Out and Create Crossfade on Ctrl/Cmd+Alt+F; Delete Fades/Crossfades on Ctrl/Cmd+Alt+Backspace; F shows the handles. Waits: the fade-start handles (a fade offset in `clip.setFades`), a crossfade over hidden material (parity-7.3 row 43) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
 | Markers and locators, a marker holding a note and a prompt | 3.3 | Waits: no marker ops (new Need) |
@@ -98,7 +98,7 @@ MR § is the Master Reference's section.
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
-| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track |
+| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track The import prompt (E5): Warp, Create Fades on Clip Edges and Copy into the project's folder asked on a drop, all off by default, kept as the last ones; with any on, the engine's material import on a worker, one undo step per file. |
 
 ## 5. Devices and the editors (MR 3.4, 4, 5, 9)
 
@@ -112,8 +112,8 @@ MR § is the Master Reference's section.
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Built (D5, N28, #414): the Impulse tile beside Color Cab's controls takes a file from the desktop or the browser's Samples, in any format the browser lists; it shows the empty and the missing-file marks; Clear empties it; each is one undo step, and the live device takes the new state. Missing: undo and redo of an assignment reach the file, not the live device, until N47; the file is decoded on the message thread |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
-| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
-| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |
+| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing. Planned as STEP-7-PLAN §7.7 (window/clip-view), Live 12's layout; its picture `pictures/2026-10-28-clip-view.png` went to the director on 28 October. The frame can be built alone; the clip's properties wait on N32 and N33 |
+| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing. Planned in §7.7 with `parity-7.7-clip-view.md`. The note ruler and the geometry can be built alone; drawing and editing notes wait on reading them (N32); the five note ops exist and the Pitch and Time tools compose them |
 | Layered editing; the editors torn out | 3.4, 4.1 | Later, with the editors |
 | The Pd patch editor | 9.3 | Later (P1, its own step) |
 
@@ -144,7 +144,7 @@ MR § is the Master Reference's section.
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |
-| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Partial: on devices (D2, N18): Ctrl/Cmd+X, C, V and D on the focused device, Paste also at the chain's end; Select All in the Arrangement. Missing: clips and time on the clipboard (N17); a paste onto a track with no chain yet (N51) |
+| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Partial: on devices (D2, N18): Ctrl/Cmd+X, C, V and D on the focused device, Paste also at the chain's end; Select All in the Arrangement. On clips and time selections (E2, N17): Ctrl/Cmd+X, C, V and D on the chosen clip or the time selection, Paste at the insert marker, a range onto as many tracks as it came from, each one undo step. Missing: several picked clips as one copy; the …Time commands (E3); a paste onto a track with no chain yet (N51) |
 | Create: Insert Audio / MIDI Track | — | Built |
 | Create: Insert Return Track; Import MIDI File | 8.2, V.2 §5 | Insert Return Track built (`window/return-commands`); Import MIDI File later (P2) |
 | View: Undo History (Ctrl+Alt+Z / Cmd+Option+Z), newest on top, pick a line to go back, with ADI's branches and snapshots; any node opens read-only in a silent tab | 1.6, 11.1, V.4 §4 | Waits: `History` lists branches and snapshots, but no undo steps (new Need) |

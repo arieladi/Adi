@@ -120,7 +120,8 @@ struct ParamOps::Runtime final : SessionRuntimeClient, std::enable_shared_from_t
     using Stats = ParamOps::Stats;
     explicit Runtime(std::int32_t ringCapacity);
     ~Runtime() override;
-    bool uiEvent(std::int64_t, const std::string&, ParamEventKind, double, std::int64_t, std::vector<OpRequest>&);
+    bool uiEventImpl(std::int64_t, const std::string&, ParamEventKind, double, std::int64_t,
+                     std::vector<OpRequest>&, bool configuration);
     bool attach(std::int64_t, device::DeviceInstance&);
     void detach(std::int64_t);
     std::size_t attachSession(Session&);
@@ -484,10 +485,12 @@ struct ParamOps::Runtime::DevicePresentation final : gesture::Presentation {
         if(!owner || !task)return result(gesture::PresentationState::Detached);
         if(owner->replay_->life.expired() || !owner->replay_->session)return result(gesture::PresentationState::Detached);
         const auto found=owner->devices_.find(task->deviceId);
+        // An obsolete runtime cannot become current by waiting for its own capture barrier.
+        // Retiring its exact owner needs no SDK access, including after a format interruption.
+        if(found==owner->devices_.end() || !owner->replay_->session->resolveDevice(task->input.token))return result(gesture::PresentationState::Detached,"captured device instance ended");
         const bool recovering=task->cancelRequested && found!=owner->devices_.end() && found->second.detached &&
             found->second.inst && found->second.inst->captureCallbacksQuiescent();
         if(!recovering && !owner->presentationReady(next.source,next.sequence))return result(gesture::PresentationState::Pending,"older device delivery or capture is still pending");
-        if(found==owner->devices_.end() || !owner->replay_->session->resolveDevice(task->input.token))return result(gesture::PresentationState::Detached,"captured device instance ended");
         try {committed=committedImage(store,found->second.committed);base=next;return result(gesture::PresentationState::Current);}
         catch(const std::exception& error){return result(gesture::PresentationState::Refused,error.what());}
     }
@@ -992,13 +995,16 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(row==replay.session->model().devices.end())return Target::Retired;
                 const auto& reference=facts->device->at("plugin_ref_id");
                 const auto expected=reference.is_null()?std::optional<std::int64_t>{}:
-                    std::optional<std::int64_t>{reference.get<std::int64_t>()};
+                    std::optional<std::int64_t>{reference.template get<std::int64_t>()};
                 if(row->pluginRefId!=expected)return Target::Invalid;
                 const auto* entry=replay.session->entryFor(id);
                 if(!entry || entry->resolvedPluginRef!=expected)return Target::Invalid;
                 if(facts->pluginRef && expected) {
-                    const auto& expectedFormat=facts->pluginRef->at("format").get_ref<const std::string&>();
-                    const auto& expectedUid=facts->pluginRef->at("uid").get_ref<const std::string&>();
+                    // `template` here and on `reference` above: MSVC 14.52 (the CI runner's image since
+                    // 19 November) reads these as dependent template names and warns C4864 without the
+                    // keyword, which is valid either way.
+                    const auto& expectedFormat=facts->pluginRef->at("format").template get_ref<const std::string&>();
+                    const auto& expectedUid=facts->pluginRef->at("uid").template get_ref<const std::string&>();
                     const auto ref=std::find_if(replay.session->model().pluginRefs.begin(),replay.session->model().pluginRefs.end(),
                         [&](const auto& item){return item.id==*expected;});
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
@@ -1291,8 +1297,8 @@ void ParamOps::Runtime::cancelUi(std::int64_t id, Attached& a, std::int32_t inde
     a.uiPending.erase(index); a.uiExplicit.erase(index);
 }
 
-bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, ParamEventKind kind,
-                       double value, std::int64_t nowMs, std::vector<OpRequest>& out) {
+bool ParamOps::Runtime::uiEventImpl(std::int64_t id, const std::string& param, ParamEventKind kind,
+                       double value, std::int64_t nowMs, std::vector<OpRequest>& out, bool configuration) {
     discardExpiredSessions();
     const auto found = devices_.find(id);
     if (found == devices_.end() || !found->second.active || !found->second.inst || !std::isfinite(value) ||
@@ -1300,7 +1306,9 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
     auto& a = found->second;
     const auto index = indexOf(*a.inst,param);
     const auto* descriptor = index < 0 ? nullptr : a.inst->paramAt(index);
-    if (!descriptor || descriptor->missing || !descriptor->automatable) return false;
+    if (!descriptor || descriptor->missing ||
+        (configuration ? (descriptor->automatable || !descriptor->configurable) : !descriptor->automatable))
+        return false;
     if(a.session && coordinator_) {
         // Complete an earlier implicit gesture before judging this new value.
         // Even a refused setter returns that older sealed offer to the caller.
@@ -1345,7 +1353,7 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
                 return false;
             }
             task->input=std::move(image);task->dirty=true;task->lastInputMs=nowMs;
-            (void)a.session->overrideDeviceAutomation(id,param);
+            if (!configuration) (void)a.session->overrideDeviceAutomation(id,param);
         }
         if(kind==ParamEventKind::End) {task->complete=true;openGestures_.erase(key);}
         advanceGestures(nowMs);(void)offerOne(out);return true;
@@ -1366,7 +1374,7 @@ bool ParamOps::Runtime::uiEvent(std::int64_t id, const std::string& param, Param
         const auto refused = stats_.appliedRefused;
         const bool sent = appliedImpl(intent.payload,nowMs,true);
         if (stats_.appliedRefused != refused) return false;
-        if (sent && a.session) (void)a.session->overrideDeviceAutomation(id,param);
+        if (sent && a.session && !configuration) (void)a.session->overrideDeviceAutomation(id,param);
         a.uiPending.insert(index);
     }
     if (!a.uiCapture->push({id,index,kind,value})) return false;
@@ -2104,7 +2112,10 @@ gesture::CancelOutcome ParamOps::cancelPending(const gesture::OwnerToken& owner,
 gesture::CancelOutcome ParamOps::retryPendingCancel(const gesture::OwnerToken& owner,std::int64_t now) {return runtime_->cancelPending(owner,now,true);}
 gesture::DrainOutcome ParamOps::pumpGestures(std::int64_t now) {return runtime_->pumpGestures(now);}
 bool ParamOps::uiEvent(std::int64_t id,const std::string& param,ParamEventKind kind,double value,std::int64_t now,std::vector<OpRequest>& out) {
-    return runtime_->uiEvent(id,param,kind,value,now,out);
+    return runtime_->uiEventImpl(id,param,kind,value,now,out,false);
+}
+bool ParamOps::uiConfigurationEvent(std::int64_t id,const std::string& param,ParamEventKind kind,double value,std::int64_t now,std::vector<OpRequest>& out) {
+    return runtime_->uiEventImpl(id,param,kind,value,now,out,true);
 }
 bool ParamOps::attach(std::int64_t id,device::DeviceInstance& instance) { return runtime_->attach(id,instance); }
 void ParamOps::detach(std::int64_t id) { runtime_->detach(id); }
