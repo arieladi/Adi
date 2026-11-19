@@ -273,7 +273,7 @@ struct SharedAnalysis::Domain {
         const auto consumed = consumedSequence.load(std::memory_order_acquire);
         if (end == consumed) return false;
         const auto quiet = tap->lastParkedSilence();
-        if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin <= consumed && quiet.end >= end);
+        if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin < consumed && quiet.end >= end);
         return !(quiet.end >= end && settledParkedSilence(quiet));
     }
     std::atomic<bool> active{true}, available{false};
@@ -486,8 +486,9 @@ struct SharedAnalysis::Domain {
         if (neutralMeter.load(std::memory_order_relaxed)) {
             // A fully empty reading has never accumulated a nonzero peak. The
             // certified parked zeros keep its history exactly neutral through wrap.
+            // Read the first block of a new certificate to observe its epoch.
             const auto quiet = tap->lastParkedSilence();
-            if (quiet.begin <= cursor.next && quiet.end > cursor.next)
+            if (quiet.begin < cursor.next && quiet.end > cursor.next)
                 cursor.next = std::min(end, quiet.end);
         }
         bool advanced = false;
