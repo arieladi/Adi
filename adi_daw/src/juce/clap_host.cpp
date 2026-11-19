@@ -153,9 +153,7 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
             slot.param.header.flags = 0;
             slot.param.param_id  = static_cast<clap_id>(in.paramId);
             slot.param.cookie    = nullptr;
-            slot.param.note_id   = (in.noteId == 0)
-                                     ? -1
-                                     : static_cast<std::int32_t>(in.noteId % 0x7FFFFFFFu);
+            slot.param.note_id   = engine::pluginNoteId(in.noteId);
             slot.param.port_index = -1;
             slot.param.channel    = -1;
             slot.param.key        = -1;
@@ -169,10 +167,6 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
 }
 
 namespace {
-
-std::int32_t clapNoteId(std::uint64_t id) noexcept {
-    return id == 0 ? -1 : static_cast<std::int32_t>(id % 0x7FFFFFFFu);
-}
 
 std::uint8_t unit7(double v) noexcept {
     const double c = v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
@@ -227,7 +221,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                     o.kind == K::NoteOn ? CLAP_EVENT_NOTE_ON : CLAP_EVENT_NOTE_OFF);
                 slot.note.header.flags    = 0;
                 // A REAL note id, not -1: CLAP anchors note expression to it.
-                slot.note.note_id    = clapNoteId(o.noteId);
+                slot.note.note_id    = engine::pluginNoteId(o.noteId);
                 slot.note.port_index = 0;
                 slot.note.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 slot.note.key        = o.key;
@@ -243,7 +237,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                 slot.expr.header.type     = CLAP_EVENT_NOTE_EXPRESSION;
                 slot.expr.header.flags    = 0;
                 slot.expr.expression_id   = id;
-                slot.expr.note_id    = clapNoteId(o.noteId);
+                slot.expr.note_id    = engine::pluginNoteId(o.noteId);
                 slot.expr.port_index = 0;
                 slot.expr.channel    = static_cast<std::int16_t>(o.channel & 0x0F);
                 // The note's own key when the route is tracking it, -1 (any)

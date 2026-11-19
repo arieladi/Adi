@@ -153,6 +153,19 @@ void testEventListCarriesNoteIdAndDouble() {
     // an event struct, and this is the last hop before the plugin.
     static_assert(std::is_same_v<decltype(clap_event_note_expression_t::value), double>,
                   "CLAP note expression value must be a double -- ADR-0054");
+
+    // These voices previously both narrowed to 3 in a plug-in, despite
+    // carrying distinct 64-bit IDs in the graph.
+    const auto clip = (std::uint64_t{1} << 32) | 1;
+    const auto live = engine::kLiveNoteIdPrefix | 1;
+    list.clear();
+    check(list.add(noteOn(clip, 60, 0.75)) && list.add(noteOn(live, 60, 0.75)) &&
+          list.add(expr(live, ExpressionDim::Pitch, 0.25)), "overlapping live and clip voices translate together");
+    const auto* clipNote = reinterpret_cast<const clap_event_note_t*>(list.at(0));
+    const auto* liveNote = reinterpret_cast<const clap_event_note_t*>(list.at(1));
+    const auto* livePitch = reinterpret_cast<const clap_event_note_expression_t*>(list.at(2));
+    check(clipNote && liveNote && livePitch && clipNote->note_id != liveNote->note_id &&
+          liveNote->note_id == livePitch->note_id, "CLAP keeps overlapping live and clip note IDs distinct");
     check(sizeof(x->value) == 8, "the expression value is 8 bytes");
 }
 

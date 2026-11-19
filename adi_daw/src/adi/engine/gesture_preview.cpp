@@ -100,7 +100,7 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
 Tables topology(Tables value) {
     const std::map<std::string,std::set<std::string>> retained{
         {"project",{"sample_rate","ppq"}},
-        {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode"}},
+        {"tracks",{"id","parent_id","index_in_parent","kind","time_base","frozen","solo_defeat","freeze_media_id","role","input_ref","monitor_mode","record_armed"}},
         {"mixer_strip",{"track_id","pan_law","width","phase_invert","delay_samples","vca_group_id"}},
         {"mixer_pan_settings",{"track_id","mode"}},
         {"group_summing",{"track_id","enabled","flavor"}},
@@ -452,6 +452,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
         timing->spec=owner->spec_;timing->sourceReadiness=out->clips->readiness();timing->stripLanes=out->controls->lanes;
+        owner->prepareMidiInput(*timing, image->model);
         timing->inputSlice.resize(64);
         timing->outputSlice.resize(static_cast<std::size_t>(std::max(64,owner->spec_.channels)));
         timing->outputSlice64.resize(timing->outputSlice.size());

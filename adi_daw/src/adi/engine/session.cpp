@@ -165,7 +165,7 @@ struct Session::ScopeRuntime {
     }
 };
 
-Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
+Session::Session():midiInput_(std::make_unique<LiveMidiInput>()),recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
     scopeRuntime_ = std::make_unique<ScopeRuntime>();
     endpoint_->owner_=this;
 }
@@ -763,6 +763,40 @@ DeviceChainFn Session::eventPathFor(const rows::Model& model) {
     };
 }
 
+void Session::prepareMidiInput(TimingView& timing, const rows::Model& model) {
+    if (!timing.spec.performanceState || timing.spec.exporting) return;
+    std::map<const Node*, std::int64_t> armed;
+    for (const auto& track : model.tracks) {
+        if (!track.recordArmed ||
+            (track.kind != "midi" && track.kind != "instrument" && track.kind != "audio"))
+            continue;
+        for (const auto* node : chainFor(track.id)) {
+            if (node->eventFlow() == EventFlow::Consume) {
+                armed.emplace(node, track.id);
+                break;
+            }
+        }
+    }
+    for (const auto& entry : entries_) {
+        if (entry.retired || entry.placeholder) {
+            midiInputVoices_.erase(entry.hostIndex);
+            continue;
+        }
+        auto& instance = devices_.deviceAt(entry.hostIndex);
+        if (instance.eventFlow() != EventFlow::Consume) continue;
+        auto& node = devices_.nodeAt(entry.hostIndex);
+        const auto target = armed.find(&node);
+        // Keep a disarmed or parked instrument's state until it can render
+        // its releases. A retired instance's last graph still owns its state.
+        auto voices = midiInputVoices_.find(entry.hostIndex);
+        if (target == armed.end() && voices == midiInputVoices_.end()) continue;
+        if (voices == midiInputVoices_.end())
+            voices = midiInputVoices_.emplace(entry.hostIndex, std::make_shared<LiveMidiInput::Voices>()).first;
+        timing.midiInputRoutes.push_back({&node, voices->second, target == armed.end() ? 0 : target->second,
+                                          node.eventFlow() == EventFlow::Consume});
+    }
+}
+
 bool Session::rebuild() {
     if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
@@ -899,6 +933,7 @@ bool Session::rebuild() {
     cueMonitor_.captureLanes(*laneBindings);
     timing->stripLanes = std::move(laneBindings);
     timing->generationControls=nativeGestureControls(*this);
+    prepareMidiInput(*timing, model_);
     attach(std::move(timing)); // publish the matching clock with this graph
     gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
@@ -1618,6 +1653,7 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
     if (changed) {
         recording_->stop();
+        resetMidiInput();
         if (transport_.countInRemaining() > 0)
             transport_.play(false);
     }
@@ -1970,6 +2006,7 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     if (timing) {
         block.transport = &timing->blockInfo;
         block.exporting = timing->spec.exporting;
+        session_.midiInput_->render(graph_, io, timing->midiInputRoutes);
     }
     if (!graph_.process(block)) return false;
     session_.mainLoudness_.process(block);
@@ -1996,6 +2033,13 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
 void Session::process(const AudioIo& io) noexcept {
     auto block = beginRender();
     (void)block.process(io);
+}
+
+bool Session::enqueueMidiInput(std::int64_t sample, const Event& event) noexcept {
+    return midiInput_->push(sample, event);
+}
+void Session::resetMidiInput() noexcept {
+    midiInput_->reset();
 }
 
 void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {
@@ -2063,6 +2107,7 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
 void Session::release() {
     ++runtimeEpoch_;
     recording_->stop();
+    resetMidiInput();
     // A device stop cancels a pending lead-in, as a format change does in
     // prepare(): the recorder it was counting in for has just stopped, so a
     // same-format restart must not resume clicking and then start the
