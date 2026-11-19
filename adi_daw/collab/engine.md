@@ -18,6 +18,13 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+### DF-E6 count-in across more than one beat of render latency
+
+When a one-bar count-in feeds a path with more than one beat of latency, should the transport start later or should the cue keep clicking until bar one is heard? My recommendation is to preserve the scheduled transport start, continue the cue at the count-in cadence during the latency interval, and align the bar-one accent with the first heard program audio. Main's count-in click uses immediate elapsed frames. Its rolling metronome uses the delayed graph clock.
+
+Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
+
+
 ## 2026-11-19 — DF-E7 End resize and split boundaries
 
 **PR requested** — branch `engine/df-e7-clip-boundaries`, head `f6215fb1b790db53ca7d6af9726f27389458e4cf`, main base `88e2d94e`. Title **DF-E7: Reject collapsed End resizes and empty split windows**.
