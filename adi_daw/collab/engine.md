@@ -12,6 +12,14 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E27(a) backported to DF-E17 and gated
+
+**PR requested** — update the existing `engine/df-e17-edit-invariants` branch to `0c30d4ce713ece414a65b4c92be37a38ed10d15a`. The preceding remote head was `c0269d2d`. Title **Preserve native clip and rack edits through undo**. This adds the DF-E27(a) fix from `2accc015` and retains DF-E17's checked linear endpoint arithmetic. The remote head matches the gated commit. DF-E17 remains in the landing slot that follows agreement with DF-E35's lane semantics.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Five focused suites passed, including native clip edits and material commands. The fade fixture passed 30 checks and the Split fixture passed 380. The standalone branch also has the failing-first fixture and the GCC and Clang fault gates. Logs are under `/workspace/adi-engine-validation`.
+
+The reserved 1.23 send-tap and #677 reconciliation remains parked on #651 and DF-M60(c) if #651 has yet to land. Taking the independent DF-E29 transport work in that case.
+
 ## 2026-11-19 — DF-E27(a) shortened clip fades ready for the first landing batch
 
 **PR requested** — branch `engine/df-e27-shortened-fades`, head `2accc0159e1fe4ddd9e61f431e0bf48acf45745f`, base `origin/main` at `62ad7218`. Title **Preserve the fade of a shortened audio clip**. This is the independent item 1 branch under ADR-0248 d6. The remote head matches the gated commit.
