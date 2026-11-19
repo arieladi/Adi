@@ -6,12 +6,14 @@
 #include "adi/ops.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <thread>
 #include <type_traits>
 
 namespace {
@@ -60,6 +62,57 @@ std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBa
     rows::PluginRef ref;ref.format=format;ref.uid=uid;ref.name="EQ";ref.vendor="ADI";
     engine::DeviceRequest rq;rq.ref=&ref;rq.channels=channels;std::string error;
     return device::makeMixEqFunction(rq,error,std::move(backend));
+}
+void pairPublication() {
+    auto probe = std::make_unique<Observe>();
+    auto* observed = probe.get();
+    auto device = make(std::move(probe));
+    if (!device) { check(false, "paired publication fixture loads EQ"); return; }
+    using Pair = device::DeviceInstance::ParameterPair;
+    const Pair low{{{"13", .24}, {"14", .28}}};
+    const Pair high{{{"13", .76}, {"14", .72}}};
+    check(device->supportsParameterPair(low) && device->setParameterPair(low),
+          "native EQ accepts one frequency and gain in the same band");
+    const auto lowFrequency = static_cast<float>(device->getParam("13").real);
+    const auto lowGain = static_cast<float>(device->getParam("14").real);
+    auto invalid = high;
+    invalid[1].second = std::numeric_limits<double>::quiet_NaN();
+    const Pair differentBands{{{"13", .76}, {"39", .72}}};
+    check(!device->setParameterPair(invalid) && !device->supportsParameterPair(differentBands) &&
+          !device->setParameterPair(differentBands) && device->getParam("13").real == lowFrequency &&
+          device->getParam("14").real == lowGain,
+          "rejected pair writes neither coordinate");
+    if (!device->setParameterPair(high)) { check(false, "second native pair accepted"); return; }
+    const auto highFrequency = static_cast<float>(device->getParam("13").real);
+    const auto highGain = static_cast<float>(device->getParam("14").real);
+    device->prepare(48000, 64);
+    std::array<float, 64> left{}, right{};
+    std::array<float*, 2> output{left.data(), right.data()};
+    engine::NodeIo io;
+    io.channels = 2;
+    io.frames = 64;
+    io.out = output.data();
+    std::atomic<bool> refused{false};
+    std::jthread writer([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            if (!device->setParameterPair(low) || !device->setParameterPair(high))
+                refused.store(true, std::memory_order_relaxed);
+        }
+    });
+    bool completePairs = true;
+    for (std::uint64_t block = 1; block <= 4000; ++block) {
+        io.renderBlock = block;
+        inAudio = true;
+        device->process(io);
+        inAudio = false;
+        const auto& band = observed->seen.bands[0];
+        completePairs = completePairs && ((band.frequencyHz == lowFrequency && band.gainDb == lowGain) ||
+                                         (band.frequencyHz == highFrequency && band.gainDb == highGain));
+    }
+    writer.request_stop();
+    writer.join();
+    check(completePairs && !refused.load(std::memory_order_relaxed),
+          "callback refresh sees complete native EQ coordinate pairs during publication");
 }
 bool set(device::DeviceInstance& d,std::size_t id,double value) {
     return d.setParam(std::to_string(id),device::ParamValue::fromNormalized(value));
@@ -294,7 +347,7 @@ int main() {
     check(!make(std::make_unique<Observe>(),2,"vst3"),"ordinary plugin never relabelled native EQ");
     auto narrow=std::make_unique<Observe>();narrow->doubles=false;auto d=make(std::move(narrow));
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
-    publishedDesignPreview();metadataAndMapping();strictState();offsetsAndEvents<float>();offsetsAndEvents<double>();
+    publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
     prepareLifecycle();continuousPrepare<float>();continuousPrepare<double>();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");

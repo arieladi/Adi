@@ -35,6 +35,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace adi::gesture::detail { class ProducerFence; class StateProducerFence; }
@@ -404,6 +405,13 @@ public:
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.
     virtual bool setParam(const std::string& paramId, const ParamValue& v);
+
+    using ParameterPair = std::array<std::pair<std::string, double>, 2>;
+    /// Owner thread, normalized values. A supported pair is accepted together
+    /// or refused with neither value changed. Single-parameter devices keep
+    /// their existing editing path.
+    [[nodiscard]] virtual bool supportsParameterPair(const ParameterPair&) const noexcept { return false; }
+    virtual bool setParameterPair(const ParameterPair&) { return false; }
     /// Message thread: an accepted control is still waiting for processing.
     /// State recall must supersede it even if the serialized chunk is equal.
     [[nodiscard]] virtual bool hasPendingParamChanges() const noexcept { return false; }

@@ -108,6 +108,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // must never redirect a gesture to a replacement instance.
     bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
                                   double normalized, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    bool parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &,
+                                      engine::ParameterPairEvent, const engine::DeviceRuntimeToken &,
+                                      std::uint64_t instance, std::shared_ptr<const gesture::OwnerToken> &owner);
     bool deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance);
     // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
     // this run follows its envelope again, from the playhead at once, and the snapshot's

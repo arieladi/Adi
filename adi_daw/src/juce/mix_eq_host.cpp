@@ -233,6 +233,24 @@ public:
         values_[i].store(physical(i,value.normalized),std::memory_order_release);
         revision_.fetch_add(1,std::memory_order_release);return true;
     }
+    bool supportsParameterPair(const ParameterPair& pair) const noexcept override {
+        return bandPair(indexFor(pair[0].first), indexFor(pair[1].first));
+    }
+    bool setParameterPair(const ParameterPair& pair) override {
+        const auto first = indexFor(pair[0].first);
+        const auto second = indexFor(pair[1].first);
+        const auto valid = [](double value) { return std::isfinite(value) && value >= 0.0 && value <= 1.0; };
+        if (!bandPair(first, second) || !valid(pair[0].second) || !valid(pair[1].second))
+            return false;
+        // The existing snapshot fence also covers an overlapping refresh from
+        // an earlier revision. DSP observes both values in one settings update.
+        stateVersion_.fetch_add(1, std::memory_order_acq_rel);
+        values_[first].store(physical(first, pair[0].second), std::memory_order_release);
+        values_[second].store(physical(second, pair[1].second), std::memory_order_release);
+        stateVersion_.fetch_add(1, std::memory_order_release);
+        revision_.fetch_add(1, std::memory_order_release);
+        return true;
+    }
     std::string paramText(const std::string& id,double n) const override {
         const auto i=indexFor(id);if(i==count||!std::isfinite(n)||n<0||n>1)return {};
         const auto v=physical(i,n);
@@ -288,6 +306,11 @@ public:
         }catch(const std::exception&){return false;}
     }
 private:
+    static bool bandPair(std::size_t first, std::size_t second) noexcept {
+        const auto lower = std::min(first, second);
+        return lower >= globals && lower + 1 < extensionFirst &&
+               (lower - globals) % legacyBandFields == Frequency && std::max(first, second) == lower + 1;
+    }
     template<class Sample>void run(const engine::NodeIo& io,const Sample* const* input,Sample* const* output,
                                    const Sample* const* side,const q::Settings& desired) noexcept {
         std::array<Sample*,2> main{};std::array<const Sample*,2> key{};

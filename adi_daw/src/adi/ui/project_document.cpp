@@ -616,7 +616,7 @@ bool ProjectDocument::parameterGestureExpected(std::int64_t id, const std::strin
     const auto key = std::make_pair(id, param);
     if (kind == engine::ParamEventKind::Begin && !surfaceGestures_.contains(key)) {
         for (const auto &pending : parameterOps_.pendingGestures())
-            if (pending.deviceId == id && pending.parameterId == param) {
+            if (pending.deviceId == id && (pending.parameterId == param || pending.pairedParameterId == param)) {
                 error_ = "Another editor is still editing that parameter.";
                 return false;
             }
@@ -692,6 +692,63 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     if (!taken) {
         error_ = refusalReason(id, param);
         return false;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::parameterPairGestureExpected(std::int64_t id, const engine::ParameterPair &values,
+                                                   engine::ParameterPairEvent event,
+                                                   const engine::DeviceRuntimeToken &expected, std::uint64_t stamp,
+                                                   std::shared_ptr<const gesture::OwnerToken> &owner) {
+    using Event = engine::ParameterPairEvent;
+    std::vector<OpRequest> requests;
+    const auto now = captureNowMs();
+    const auto cancel = [&] {
+        return !owner || parameterOps_.uiParameterPairEvent(id, values, Event::Cancel, now, owner, requests);
+    };
+    if (event == Event::Cancel) {
+        const bool cancelled = cancel();
+        if (cancelled) {
+            feed_.publish(session_, realisedGeneration_);
+            error_.clear();
+        } else error_ = "The paired EQ edit is waiting to restore its values.";
+        return cancelled;
+    }
+    const auto published = feed_.current();
+    const bool available = std::any_of(published->begin(), published->end(), [&](const auto &device) {
+        return device.id == id && device.instance == stamp && device.available;
+    });
+    if (!available || !deviceTargetCurrent(id, expected, stamp) || !session_.resolveDevice(expected)) {
+        (void)cancel();
+        error_ = "That device changed while it was being edited. Start a new edit.";
+        return false;
+    }
+    const bool taken = parameterOps_.uiParameterPairEvent(id, values, event, now, owner, requests);
+    const bool committed = commitCaptured(requests);
+    followOverrides();
+    if (!committed || !taken) {
+        (void)cancel();
+        feed_.publish(session_, realisedGeneration_);
+        if (committed) error_ = "The plug-in did not take the paired EQ edit.";
+        return false;
+    }
+    if (event == Event::End) {
+        const auto result = ops_.commitPrepared([&](Store &, Actor) -> CommitResult {
+            auto outcome = parameterOps_.commitPending(*owner, now);
+            if (outcome.durable) return std::move(*outcome.durable);
+            CommitResult refused;
+            refused.error = std::move(outcome.status.message);
+            return refused;
+        });
+        if (!result.ok) {
+            (void)cancel();
+            feed_.publish(session_, realisedGeneration_);
+            error_ = result.error;
+            return false;
+        }
+        owner.reset();
+        if (!synchronise()) return false;
+        feed_.publish(session_, realisedGeneration_);
     }
     error_.clear();
     return true;
