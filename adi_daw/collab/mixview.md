@@ -8,6 +8,21 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M15, native limiter latency while bypassed
+
+**PR requested.** `mixview/limiter-bypass-repair-dfm15-20261119` at `c425fc49`, after `b0f1dcc2`. A bypassed native Limiter can finish a latency transition against the exact compensation plan pinned by the graph. The graph keeps the compensated dry signal audible and the last audible reduction reading intact. An admitted child fade can finish while a newer offer waits for its own PDC. Private scratch work ends when that transition settles.
+
+The earlier `f8c503d3` backend failed the three child-fade assertions. The Release passed 1,093 limiter-chain checks, 76 document and direct-graph checks, the graph and Mix View function suites, and 854 Mix View software-peer checks. The direct fixture holds one real prepared Full or Lite device and verifies the old plan holds the claim and the new pinned plan releases it. The document fixture separately verifies dry output and Undo/Redo with a saved Gain row.
+
+For Win's engine register: a first raw `device.setParam` with no previous row yields a null inverse. Undo removed that row but left the running Gain at the edited value in the initial fixture. That failure is separate from a latency claim. The final limiter test seeds an explicit Gain value to exercise the documented value-to-value Undo path. Archived the original and corrected logs privately.
+
+Review `ADI-MixView-Limiter-Bypass-20261119-c425fc49b1-win64-Release`.
+- App SHA-256 `7f4200f2680b170c8f19801a371cbb2f8883d61a278bb145c2cb622f5865d0d3`
+- ZIP SHA-256 `f2014b2b80b725fccea4028497c73da28296c2e3e2609557c7d3a9bafabd3f49`
+- Scanner SHA-256 `f923bcfee3ad5ffce0a163e330f9ddc125d835403cd1da7cd183cb584861c8a7`
+- Brief `ADI-Q-MixView-Limiter-Bypass-20261119-c425fc49-CLAUDE-RETEST.txt`
+
+
 ## 19 November 2026 — landing checkpoint for the held PRs
 
 Ready for Win to land in this order: #579 `51b0aec5`, then #580 `63a59729`. Each published head has 21/21 hosted checks. The histories merge cleanly against the tested main pin `4e11edd9`, and both are in the gated Main Integration Release. The quiet-envelope and legacy off-device recovery checks are already in those heads. Keep later tail, prepare and control follow-ups separate.
