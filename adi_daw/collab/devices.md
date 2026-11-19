@@ -14,6 +14,46 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-28, step 1: the one loudness meter, proved against Tech 3341/3342 and a brute-force reference
+
+**`devices/loudness-meter` (`a3d4dfac`), from `origin/main`.** New: `src/adi/dsp/loudness.*`,
+`cmake/devices/loudness.cmake`, `tests/test_loudness.cpp`.
+
+- **The meter** follows the row's contract: K-weighting (AutoGain's BS.1770 prototypes at any
+  rate); 10 ms sub-blocks (boundaries at round(k·rate/100)); M over 40, S over 300, both and
+  their maxima every sub-block, -inf until filled; a 400 ms gating block and a 10 Hz
+  short-term value every 100 ms above -70 LUFS; histograms as **Fenwick trees** over 0.01 LU
+  bins (-70..+20 LUFS) with counts and exact energy sums, so I and LRA are recomputed every
+  100 ms in O(log n) and nothing walks the bins on the audio thread; LRA by Tech 3342's MATLAB
+  rule; run and pause (no window holding paused audio feeds I, LRA or the maxima after
+  resuming); true peak via `TruePeakMeter` (≤ 8 channels); float and double input; explicit
+  channel weights.
+- **Proof (62 checks):** EBU Tech 3341 (2023) cases 1-6 (48 kHz; 1 and 5 also at 44.1 and
+  96), 9, 12, 10, 13, 11, 14, 15-23 (20-23 synthesised at 4 fs, low-passed, decimated at
+  offsets 0-3); Tech 3342 (2023) cases 1-4 (48 kHz; 1 also at 44.1 and 96). Cases 7, 8 (3341)
+  and 5, 6 (3342) are the EBU's programme files and are not used. A brute-force reference in
+  the test (every gating block, both gates, sorting) agrees within 0.02 LU for I and LRA.
+  Block sizes 1 to 4096 give bit-identical readings; process/readings/reset allocate nothing.
+  Plants: no relative gate fails 3341 cases 3 and 4; a 5th percentile fails 3342 case 4.
+- The test takes 56 s alone in MSVC Debug (74 s in the parallel run); most of it is the
+  100-second cases and the reference. MSVC `/W4 /WX` clean; CTest **243/243**.
+- The tables were read from the EBU's own Tech 3341 v4 and 3342 v4 PDFs (public); nothing of
+  them is in the repository beyond the case numbers and levels the test synthesises.
+
+**PR requested** — title "The one loudness meter, proved against EBU Tech 3341/3342 and a
+brute-force reference (DEV-28 step 1)"; head `devices/loudness-meter` at `a3d4dfac`; base
+`main`. Body: the commit message.
+
+**Requests (DEV-28's other halves; not this lane's files):**
+- **win:** pin **libebur128** in `tools/fetch_external.sh` (test-only, MIT) and its
+  EXTERNAL-CODE row, so the meter can be checked against it at 44.1/48/96 kHz (LD3). Its LRA
+  (1 Hz hop) is not used as an oracle, per the row.
+- **engine:** move N13 (`src/adi/engine/main_loudness.*`, the Main meter) and export
+  normalization onto `dsp::LoudnessMeter` (one integrated-LUFS implementation, XC-03). Its
+  `readings()` is a plain snapshot: read it on the thread that processes, or publish it.
+- This lane next: Auto Gain Stage's LUFS mode onto the meter (`src/adi/dsp/auto_gain.*`,
+  ours), and the true-peak meter's double path and more than 8 channels.
+
 ## 2026-11-19 — DEV-22: what the research's default-preset corpus says next (no branch)
 
 The research's DV-09 corpus (16 of Live 12.4's effects at their browser defaults, compensated
