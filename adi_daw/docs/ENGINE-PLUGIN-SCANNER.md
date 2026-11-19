@@ -389,3 +389,35 @@ VST3 factory execution. Catalogue `State::Ready` still means validated metadata,
 not an instantiated/restored/processing audio device. No production readiness
 enum, graph ownership change, automatic startup service or hardware test is
 introduced by this acceptance gate.
+
+### Persisted Session reopen
+
+`adi_play_render_tests` also runs `scannerSessionReopenContracts` with both
+owned hosted formats. Each case discovers a private copied native module,
+loads an actual Session with a stereo WAV clip, changes native plug-in state,
+and persists it through Session-bound `ParamOps::snapshot` and the ordinary
+journal's captured transaction. The test checks the durable state row and its
+actual BLAKE3-addressed bytes before closing every initial Session/loader and
+the project Store.
+
+It then removes the private scanner executable, reopens the `.adi` file with a
+fresh Store/loader/Session, and requires one instantiated device, one restored
+chunk, no placeholder and no implicit scan. The saved UID and opaque state must
+match exactly. At 48 kHz, Float32 and a maximum block of 64, the first blocks
+after seeks to samples 31, 1003 and 4097 contain exactly 19, 64 and 1 expected
+stereo frames, with untouched surrounding output guards and no primed-clip
+underrun. Graph transition fading is explicitly zero for this sample oracle.
+
+The CLAP fixture's restored state changes its output to one quarter of its
+input. The VST3 fixture's patch/Drive state is checked independently: Drive is
+not an audio gain in this fixture, and its no-note path passes input through.
+An exported fixture-only cumulative counter additionally proves each VST3
+Session block reaches a successful nonempty plug-in process call; passthrough
+PCM alone would not distinguish an accidentally skipped device. These receipts
+are printed as `SCANNER_SESSION_REOPEN` JSON.
+
+This is headless project/owner reopen in one process, with native Windows x64
+validation. It does not claim an application-process restart, native macOS or
+Linux execution, physical audio-device timing, relocated plug-ins, settings UI
+or the remaining DEV-25 startup-service/discovery workflow. The test changes
+no host-processing, graph-publication or production readiness interface.

@@ -12,6 +12,7 @@
 
 #if defined(ADI_CATALOGUE_FIXTURE)
 #include "scanner_readiness.hpp"
+#include "scanner_session_reopen.hpp"
 namespace {
 bool catalogueContracts() {
     namespace fs = std::filesystem;
@@ -234,6 +235,7 @@ int main() {
     if(!legacyCatalogueContracts())return 1;
     std::printf("PASS -- genuine legacy registries defer migration to discovery; invalid stores remain closed\n");
     if(!adi::test::scannerReadinessContracts())return 1;
+    if(!adi::test::scannerSessionReopenContracts())return 1;
 #endif
     adi::test::TempDirectory scratch("play_render", "channels");
     adi::StoreError error{};

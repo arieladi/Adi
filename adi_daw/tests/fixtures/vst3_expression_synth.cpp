@@ -40,6 +40,8 @@
 // `adiFixtureInProcess`, how many process calls are inside a plugin now; and
 // `adiFixtureOverlaps`, how many setActive or setupProcessing calls arrived
 // while a process call was inside the same plugin.
+// `adiFixtureCompletedProcessCalls` counts successfully rendered nonempty
+// blocks, so a passthrough fixture can prove it participated in a Session.
 //
 // Each voice is a sine at the note's pitch, with pressure as amplitude
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
@@ -124,6 +126,8 @@ std::atomic<int> g_liveSynths{0};
 std::atomic<int> g_overlaps{0};
 /// Process calls inside a plugin now, across every plugin object.
 std::atomic<int> g_inProcess{0};
+std::atomic<std::uint64_t> g_completedProcessCalls{0};
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -309,6 +313,7 @@ public:
         }
         applyEvents(data.inputEvents);
         render(data);
+        if (data.numSamples > 0) g_completedProcessCalls.fetch_add(1, std::memory_order_relaxed);
         return kResultOk;
     }
 
@@ -734,6 +739,9 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
 extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
+extern "C" SMTG_EXPORT_SYMBOL std::uint64_t adiFixtureCompletedProcessCalls() {
+    return g_completedProcessCalls.load(std::memory_order_relaxed);
+}
 
 #if defined(__APPLE__)
 // A macOS VST3 is a BUNDLE, and a host opens it through CFBundle rather than
