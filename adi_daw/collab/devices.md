@@ -82,6 +82,37 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — for win: the audio-effects queue checked against Live 12.4's own list, three gaps
+
+Win's late entry asks, when this lane reaches item 5, for a check of the whole queue against Live
+12.4's audio effects. This compares Live 12.4's browser list of audio effects with what ADI has
+built and the queue: the 5 November prompt's order, LANES §2 item 5 and ADR-0249.
+
+- **Built (16 of Live's 48):** Auto Filter, Chorus-Ensemble, Delay, Echo, EQ Eight, Hybrid Reverb, Multiband
+  Dynamics, Overdrive, Phaser-Flanger, Redux, Resonators, Reverb, Saturator, Shifter, Utility,
+  Vocoder. ADI's own Chord Comb and Color Cab are not Live's.
+- **Queued (24):** Compressor (its core is on `devices/compressor-core`), Glue Compressor, Gate, Limiter, Beat Repeat, Drum Buss, Dynamic Tube,
+  Channel EQ, EQ Three, Erosion, Filter Delay, Grain Delay, Looper, Pedal, Roar, Amp, Cabinet, Vinyl
+  Distortion, Corpus, Spectral Resonator, Spectral Time, Align Delay, Auto Pan, Tuner.
+- **Elsewhere by design:**
+  - Audio Effect Rack is DEV-01 and DEV-03, the engine's.
+  - Envelope Follower, LFO and Shaper are DEV-07's modulators, with this lane's kernels (ADR-0249
+    d8).
+  - Max Audio Effect is the Max path, rejected (ADR-0203 d8).
+- **Gaps, for win to place:**
+  1. **Auto Shift**, Live 12's pitch-correction effect. It is in no queue. Recommendation: after
+     Tuner, since both track pitch and can share one pitch detector, as the clones seat and this
+     lane share one stereo history.
+  2. **External Audio Effect**, a hardware insert (send to an output, return from an input, with
+     its delay compensated). Recommendation: the engine's, with MX-24's routing and DEV-05's
+     compensation, since it is routing and has no DSP of its own. This lane would give only its
+     canvas and panel contract.
+  3. **Spectrum**, Live's analyser device. Recommendation: the Mix View seat's shared analyser
+     (`dsp/spectrum.hpp`, ADR-0183 d7) as a device on a track, with this lane's canvas. Or none, if
+     the Mix View's analyser is held to cover it.
+- **A name:** Live 12.4 calls Auto Pan "Auto Pan-Tremolo". The queue's "Auto Pan" means that device;
+  its uid and browser name should say Auto Pan-Tremolo.
+
 ## 2026-11-19 — DF-E46: OneShot's Slice mode; a key with no slice steals nothing, slices stop at End
 
 **PR requested:** head `devices/oneshot-slices` (6625eb37), stacked on `devices/oneshot-instrument`
