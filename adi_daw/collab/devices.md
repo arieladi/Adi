@@ -71,7 +71,7 @@ method); Live's files and renders stay in the director's research.
 
 ## 2026-11-19 — DEV-22: Live's Compressor, the core only
 
-**PR requested:** head `devices/compressor-core` (0a1180a8, one commit on bedee5ab), base `main`.
+**PR requested:** head `devices/compressor-core` (431bc637, two commits on bedee5ab; the second keeps the gcc and clang legs' -Wconversion quiet), base `main`.
 This is the default named in the question to win below. The queue's first new effect is built as
 a DSP core with its tests, so the device is ready when reading 17 arrives. It claims no parity and
 is in no catalogue; win may hold it until then. Files: `dsp/live_compressor.*`,
