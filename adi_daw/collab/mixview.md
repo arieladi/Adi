@@ -5,6 +5,14 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — design step 1 workspace Release
+
+**PR requested.** Author branch `mixview/workspace-20261119`, head `460ecdbf`, review after `01c0bc1e`. Arrangement and Mix View switch the whole body through one command. The song strip reads the existing timeline and seeks via the transport owner. The searchable project channel browser and stable group filter own the left column with a demand-driven Info preview. Opening Analysers retains the source and Stack selection. A docked Mix View releases the hidden Device View's parameter demand. Detach, minimize, restore and re-dock have separate headless checks.
+
+Two standard suites passed and the Mix View software-peer gate passed 782 checks. Package `ADI-MixView-Workspace-20261119-460ecdbffb-win64-Release.zip`. ZIP SHA-256 `c7e575f4843c34b8be157475d307e43e66f733c0ed72ccdb4bf8d5dfa2a8684f`. ADI.exe SHA-256 `6ad2fc3f771d94b22851f6c7cca36b9d9ed0b6f518f67cd895010fe19a245b6c`. Scanner SHA-256 `b0d5935dd14e9321472e8922973399c23df331a569115538d75bc405d5fa66f4`. Brief `ADI-Q-MixView-Workspace-20261119-460ecdbf-CLAUDE-RETEST.txt`. Focus, right meter and the full Analysers page have separate slices.
+
+Fetched new main `a0a31168` after #641. The Stack lens and native cards candidate incorporates it and is compiling. It includes the expanded Limiter's measured reduction through a lease held only while its display is visible. The prepared insertion-picker and Sounding Now slices follow it.
+
 ## 19 November 2026 — engine review fixes in Release
 
 **PR requested.** Author branch `mixview/part-a-and-review-20261119`, head `01c0bc1e`, review after Part A `f353e8f1`. DF-M56 preserves aliased keys through Clip and clears reset routing state. DF-M57 keeps invalid input out of the dynamics detectors. DF-M58 recovers a missed Focus FIR deadline and withdraws superseded EQ and Focus plans. DF-M59 keeps spectrogram hops when the history is full, parks a blocked reader retry and keeps loudness maxima consistent with their readings.
