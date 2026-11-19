@@ -10,6 +10,34 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Hosted CLAP acceptance, catalogue hydration, capture, export identity and settings
+
+**PR requested** — `engine-win/clap-transport-gate` at `63c1fb2fdc0056f7394013510963657092f1d180`, stacked on `engine-win/probe-portability` at `882bf20a`. Title **Exercise CLAP transport behind a reporting VST3 delay**.
+
+DF-E21. Against the exact cloud implementation `3c9961f861f3828240b197a6eb3bdb147e5a4d15`, the opt-in ADI host gate passed all 20 cases and 390,265 assertions under strict x64 MSVC. An actual CLAP observer downstream of the 1,024- and 4,800-sample VST3 delays checked the callback position, pre-roll, seek, PDC off, own loop wrap, offline mode and exact stereo PCM. All 20 cases failed on the baseline without the transport changes. CLAP tempo and beat-field assertions and a CLAP-format delay stay open.
+
+**PR requested** — `engine-win/host-catalogue-hydration` at `6793c40ae07eb8c99e545334382fc99f95d34dc2`, stacked on the scanner catalogue read and catalogue-first branches. Title **Hydrate the hosted plug-in catalogue before opening projects**.
+
+DEV-25. Fresh loader instances resolve the known VST3 and CLAP fixtures without a helper. A stored hint can rebind only to the same canonical module. A hydrated snapshot that lacks a class returns NeedsDiscovery without walking the roots. The genuine v1/v2 registry path retains legacy compatibility and migrates on discovery. Broken, foreign and newer snapshots fail closed. Five strict x64 MSVC suites passed. This covered native fixture instantiation and compiled GUI and CLI wiring. The full scan case sequence and an explicit first-processed-audio check are separate.
+
+**PR requested** — `engine-win/audio-loop-pass-capture` at `d644644e2782f1aea13fa6148cd07c39d1ee0cba`, stacked on `engine-win/take-lane-operations` at `dc65a5f7`. Title **Capture audio loop boundaries alongside a single recording file**.
+
+CT-02 capture step. Session writes one file per target and a preallocated, bounded pass log for an opt-in loop recording. Strict x64 MSVC passed 491 checks across five suites. Coverage includes 3½ loop lengths in both precision paths, count-in, partial edge passes, and refusal on seek or parameter changes that invalidate the capture. The linear commit route refuses loop captures so the recorded passes are not flattened.
+
+**For the cloud engine seat.** CT-02 lane publication needs one durable store transaction that can write distinct Undo groups for each pass. The current OpJournal commit gives one Undo group to an entire batch. Please provide or agree the history contract before Windows wires loop pass publication. Capture and the stored-file lifetime can advance independently.
+
+**PR requested** — `engine-win/export-media-identity` at `e5461f1edf031beb98ba301c6870ff06afb0abf3`, stacked on `engine-win/export-revision-report` at `56799a95`. Title **Bind WAV runs to the external media they actually read**.
+
+EX-01. Selected external media comes from the immutable playback generation. It is fingerprinted at start and verified before final delivery. Two hardlinks share one content read and retain their individual reference paths. Tests cover a same-size rewrite and no output on detected change. Strict x64 MSVC passed 995 checks across five suites. The NI inner stage compiles with the guard. NI-wide identity, native AAC, plug-in assets and filesystem snapshot behavior still need validation.
+
+**PR requested** — `engine-win/settings-newer-read-only` at `bb41a4799b8a2674d45f5023c8d0d1aab8c6bb1c`, based on `a0a31168`. Title **Keep settings from a newer schema read-only**.
+
+PD-11. A newer document refuses mutation, reset and save even if its values have a shape this build cannot read. The file and its change log keep their bytes. Two strict x64 MSVC suites passed, including 368 settings checks.
+
+**PR requested** — `engine-win/settings-reset-overrides` at `783ee27a091e4b0dc3a96d714de60b0e068e45ed`, stacked on `engine-win/settings-newer-read-only` at `bb41a479`. Title **Remove stored overrides when settings follow their defaults**.
+
+PD-11. Reset removes overrides so the registry remains the default source. Page reset preserves other pages and unknown keys. Two strict x64 MSVC suites passed, including 372 settings checks.
+
 ## 2026-11-19 · Take-lane journal operations
 
 **PR requested** — `engine-win/take-lane-operations` at `dc65a5f72c432cd0939a395c387d0e6b1ef47867`, stacked on `engine-win/timeline-main-lane` at `8c088dcbfce9a2264290d58022dfee171843fbbb`. Title **Add undoable take lane operations**.
