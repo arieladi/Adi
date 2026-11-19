@@ -494,6 +494,12 @@ void ownedPublicationRemoval() {
     check(published.status==media::PublishStatus::published && published.identity.has_value(),"removal fixture has actual published identity");
     if(!published.identity)return;
 #if defined(_WIN32)
+    auto wrongHigh=*published.identity;wrongHigh.fileHigh^=1;
+    check(media::removePublishedFile(target,wrongHigh)==std::errc::state_not_recoverable && read(target)=="owned bytes",
+          "rollback rejects an expected identity differing only in the high file half");
+    auto wrongVolume=*published.identity;wrongVolume.volume^=0x100000000ULL;
+    check(media::removePublishedFile(target,wrongVolume)==std::errc::state_not_recoverable && read(target)=="owned bytes",
+          "rollback rejects an expected identity differing only in upper volume bits");
     {std::ifstream reader(target,std::ios::binary);
         check(reader.good() && media::removePublishedFile(target,*published.identity) && read(target)=="owned bytes",
               "busy publication is retained instead of falling back to pathname deletion");}
