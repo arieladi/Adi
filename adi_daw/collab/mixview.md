@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — #651 Windows Debug shell passes
+
+**PR requested.** On `c2a3b8f7196fa75fb608429700b5a13a459652e2`, the actual merge `bd1e8f9a1b3791a4480eec40e9d245b759d1c548` passed the full Windows Debug shell in 60.91 seconds, all 27 tests in the UI job and the following hosted smoke. macOS and Linux UI also passed. The first three failed Windows runs had all stopped at `mixViewShell` once checkpointed. The new run passed the unchanged test coverage with the smaller fixture frame. Direct exception status from the earlier failure remains unavailable. Win can review and land the current #651 head once its remaining core leg is green; the next cumulative branch still waits for the actual merge.
+
 ### 2026-11-19 — Keep the original EQ tail on an unread same-latency reversion
 
 **PR requested on existing #651.** `c2a3b8f7196fa75fb608429700b5a13a459652e2` includes the fail-first follow-up to DF-M60 (c). A Minimum Phase → SVF offer and return to Minimum Phase before the owner reads it used to switch the next physical block to SVF, even though both plans had zero latency. The Release fixture had two failures in 143 checks, including a changed filter tail. A return to the committed settings now competes with the owner's promise before admission, even at equal PDC. The second control exercises a promised 0-to-0 change and its separate reversal. The 384-sample lookahead and ring-priming cases also pass.
