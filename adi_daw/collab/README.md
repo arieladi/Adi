@@ -322,6 +322,7 @@ subject, say so in your log instead of writing it twice.
 | 0248 | win | `win/steer-1119` | the steering of 19 November: fix before new; one usable session first for two weeks; who owns what; reservations; landing windows; the director's answers of 19 November (win; d2 confirmed by the director) | used |
 | 0249 | win | `win/adr-0249-racks-forward` | racks, macros and modulation right after 3 December; Live's Beat Repeat the first device for his glitch-effect racks; his own rack presets read-only; the seats' parts, `device_copy.*` to the engine (director; d8's placements win's) | used |
 | 0250 | win | `win/adr-0249-racks-forward` | an interrupted recording comes back (Q-I); Live's three Pow-r slots are Shaped 1, 2 and 3 (Q-J) (director) | used |
+| 0251 | win | `win/adr-0251-classic-scope` | the classic scope keeps its source's own images and is named Classic Scope (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
