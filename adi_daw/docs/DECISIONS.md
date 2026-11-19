@@ -19200,6 +19200,14 @@ and "i think ill take all your recommendations". On two he answered in his own w
    and the device's files are named in its log so the devices lane keeps clear. Its name is his to give.
 6. **OScope 2 and PsyScope Pro are installed on the machine the Mix View is built on,** so the Mix View seat's
    question of where to find them is answered; their measured contracts come from the clones lane (d5).
+7. **The shaper of d5 is named ADI-Shaper** (his word).
+8. **Focus, two answers** (the Mix View seat's questions, its recommendations taken: "agree with all three
+   recommendations"). Hear What Is Removed plays what is taken from the selected recipient at the selected
+   stage, as a latency-aligned difference, not the combined reduction across the group. Align Apply commits a
+   timing offset to the selected recipient in one Undo step; phase rotation stays with the unmask tools.
+9. **Shifter keeps Live's way** (the devices lane's question): it reports no latency and its Pitch mode plays
+   half a window late, uncompensated, as Live 12.4 was measured. Compensating it would be an addition behind a
+   switch, to decide only if he misses it in use.
 
 ### Amendments, in one place
 
