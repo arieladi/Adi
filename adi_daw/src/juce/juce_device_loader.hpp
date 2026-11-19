@@ -8,11 +8,11 @@
 //
 //   * **How a row is matched to a binary.** `plugin_refs.uid` is the identity
 //     (VST3: JUCE's identifier string, as `identityOf` records it; CLAP: the
-//     descriptor's reverse-DNS id). `path_hint` is tried FIRST for VST3 -- a
-//     file the project remembers is exact and costs one child probe
-//     rather than a directory scan -- and is the tie-break for CLAP when one id
-//     is installed twice. The scan runs once, lazily, on the first row that
-//     needs it, and again only after a search path is added.
+//     descriptor's reverse-DNS id). VST3 checks the in-memory catalogue first.
+//     Discovery at an unknown VST3 path_hint contributes its descriptions to
+//     that catalogue. CLAP uses path_hint to choose between copies of one id.
+//     Unknown modules can still cause lazy discovery until the startup service
+//     owns it.
 //   * **An instance that did not load is NOT returned.** Both hosts hand back a
 //     `MissingDevice` rather than null on failure (ADR-0011), which is right
 //     for a probe and wrong here: the SESSION builds the placeholder, because
@@ -55,7 +55,7 @@ public:
     /// paths use app defaults. Changing it invalidates the lazy discovery cache.
     void setScanConfig(const scan::Config& config) {
         if(audio::onAudioThread)return;
-        scanConfig_=config;scanned_=false;
+        scanConfig_=config;scanned_=false;known_.clear();
     }
     /// Borrowed on the owner between jobs; copy/publish for another thread.
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }

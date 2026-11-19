@@ -7,6 +7,7 @@
 #include "juce/mix_pipeline_host.hpp"
 #include "adi/mix_functions.hpp"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -74,38 +75,42 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
 std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceRequest& rq,
                                                            std::string& err) {
     const rows::PluginRef& ref = *rq.ref;
-    juce::PluginDescription found;
-    bool have = false;
+    const auto uid = juce::String::fromUTF8(ref.uid.c_str());
+    const auto find = [&](const juce::KnownPluginList& catalog) -> std::unique_ptr<juce::PluginDescription> {
+        auto candidate = catalog.getTypeForIdentifierString(uid);
+        if (!candidate || candidate->createIdentifierString() == uid) return candidate;
+        // JUCE's lookup permits a suffix match. Keep ADI's exact persisted
+        // identity when that broader match selects a different description.
+        const auto types = catalog.getTypes();
+        const auto match = std::find_if(types.begin(), types.end(), [&](const auto& description) {
+            return description.createIdentifierString() == uid;
+        });
+        return match == types.end() ? nullptr : std::make_unique<juce::PluginDescription>(*match);
+    };
+    auto found = find(known_);
+    const auto hint = juce::String::fromUTF8(ref.pathHint.c_str());
+    const bool absoluteHint = juce::File::isAbsolutePath(hint);
+    const bool knownHint = !found && absoluteHint &&
+        known_.getTypeForFile(juce::File(hint).getFullPathName()) != nullptr;
 
-    // The hint first: exact, and one file rather than a directory tree.
-    if (!ref.pathHint.empty() && juce::File::isAbsolutePath(juce::String(ref.pathHint)) &&
-        juce::File(juce::String(ref.pathHint)).exists()) {
+    // An unknown saved path still needs discovery until the startup catalogue
+    // owns all discovery. A known module or matched identity needs no probe.
+    if (!found && !knownHint && absoluteHint && juce::File(hint).exists()) {
         juce::KnownPluginList types;
-        const auto report=vst3_.scanFile(juce::String::fromUTF8(ref.pathHint.c_str()),types,scanConfig_);
+        const auto report=vst3_.scanFile(hint,types,scanConfig_);
         if(!report.complete || !report.failures.empty()) {
             ++stats_.failed;err=report.failures.empty()?"VST3 path-hint scan incomplete":report.failures.front().error;
             return nullptr;
         }
-        for (const auto& d : types.getTypes()) {
-            if (identityOf(d).uid == ref.uid) {
-                found = d;
-                have = true;
-                break;
-            }
-        }
+        for (const auto& description : types.getTypes()) known_.addType(description);
+        found = find(types);
     }
-    if (!have) {
+    if (!found && !knownHint) {
         if (!scanned_) scan();
         if(!scanned_){++stats_.failed;err="VST3 discovery unavailable or cancelled";return nullptr;}
-        for (const juce::PluginDescription& d : known_.getTypes()) {
-            if (identityOf(d).uid == ref.uid) {
-                found = d;
-                have = true;
-                break;
-            }
-        }
+        found = find(known_);
     }
-    if (!have) {
+    if (!found) {
         ++stats_.notFound;
         err = "no VST3 with uid '" + ref.uid + "' in the search path (" +
               std::to_string(known_.getNumTypes()) + " known" +
@@ -113,7 +118,7 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::makeVst3(const engine::DeviceR
         return nullptr;
     }
 
-    std::unique_ptr<DeviceInstance> dev = vst3_.makeDevice(found, rq.sampleRate, rq.maxFrames, err);
+    std::unique_ptr<DeviceInstance> dev = vst3_.makeDevice(*found, rq.sampleRate, rq.maxFrames, err);
     if (dev == nullptr || !dev->loaded()) {
         // The host's placeholder is discarded: the session builds its own,
         // with the mirror and the bytes (ADR-0122 d4).
