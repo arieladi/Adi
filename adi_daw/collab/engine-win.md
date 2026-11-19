@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, publication and single WAV follow landed #666
+
+**PR requested** — `engine-win/file-publication-reliability` at `b4485df6b7c6caa511e6274b08ee62d802205c16`, on main `bedee5ab`. #666 already landed the queue manifest, folded collisions and final suffix budget. The reconciliation retains them and adds bounded stage retries, project-volume recording stages and spaced Windows device-stem escaping. Post-publication directory sync is carried through both exclusive rename and verified copy. Strict MSVC x64 `/W4 /WX` passed 980 checks across eight suites, plus 54 on actual separate capture and project volumes.
+
+**PR requested** — `engine-win/single-wav-export` at `87959193cd9032a4970fdcb84f33774447ce800e` after that publication branch. This is a follow-up to #666. It keeps the literal WAV filename and explicit Replace binding, the widened native file ID and the existing export media verification. Strict MSVC x64 `/W4 /WX` passed 1,540 checks across nine suites, plus 54 on separate volumes. Native NI encoding remained unavailable. Window still owns the Export page entry point and its host-thread servicing.
+
 ## 2026-11-19, retain the final recorded block at Stop
 
 **PR requested** — `engine-win/audio-recording-finalization` at `274f81f54cde8ac7d292e5f3c1434fada1f4e86b`, based on main `bedee5ab`. The writer rechecks the published end of the ring after acquiring Stop on the empty path. It drains frames accepted before callback quiescence before closing each WAV.
