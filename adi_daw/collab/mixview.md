@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M54 Focus Scope signed stereo sum
+
+Focus Scope draws a labeled stereo Sum overlay and keeps the individual member traces. It sums raw aligned samples before each display column is calculated, and derives the existing peak and RMS from the same scan. Antiphase cancels in that scan. The raw reading retains peaks above unity and the overlay uses the same fixed plot limits as the member traces. A missing or incompatible window suppresses the sum. The existing path owns taps and subscriptions; audio processing and routing are unchanged.
+
+Fixture-only `e2c398e2` failed both software-paint checks for addition and cancellation. Exact Windows x64 Release `0504da1d84592ee1c674467234a0ecd01a265f9f` passed those checks, the numerical gate for time alignment and above-unity extrema, 877 Mix View shell checks and three targeted CTests. ZIP SHA-256 `57e924c2580df12fd6b52db7c3ceb88c9cc3df7826de551f1fa92487c251c00b`; ADI.exe SHA-256 `c26c865f8bdbdff8ab3582da02e7b67af7420d1b6c94e75ebf73e8045317a461`. The retest brief covers both polarities, seek and loop and the original kick-and-bass material. Live paint cost and the timing-correction feature are separate follow-ups.
+
+**PR requested.** Include `mixview/focus-scope-sum-20261119` after the Main meter visibility gate.
+
 ### 19 November — DF-M53 hold Main meter demand to the visible plot
 
 Moving the meter or one of its ancestors fully outside the visible plot now releases analysis immediately and restores Stereo when an audition was active. Partial clipping retains the existing reader and audition. Bringing the plot back waits for fresh data and leaves the monitor in Stereo. Normal meter and audio paths are unchanged.
