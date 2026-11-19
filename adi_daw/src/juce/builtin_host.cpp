@@ -93,9 +93,9 @@ public:
         std::ostringstream text;text<<real;if(!declaration.unit.empty())text<<' '<<declaration.unit;return text.str();
     }
     void prepare(double rate,std::int32_t frames)override {
-        const ReactivationGate::Hold hold(gate_);
         if(prepared_ && rate==rate_ && frames==frames_)return;
         if(!std::isfinite(rate) || rate<=0 || rate>768000 || frames<=0)throw std::runtime_error("invalid built-in format");
+        const ReactivationGate::Hold hold(gate_);
         // Prepare every potentially throwing sample first; the old live slot remains
         // intact if a new rate cannot be prepared.
         std::vector<std::pair<std::int32_t,std::unique_ptr<PdSampleBuffer>>> preparedSamples;

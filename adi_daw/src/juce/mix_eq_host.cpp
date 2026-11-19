@@ -181,7 +181,6 @@ public:
     bool processesDouble() const noexcept override {return backend_->supportsDouble();}
     void willBeHanded(engine::Precision width) override { handedWidth_=width; }
     void prepare(double rate,std::int32_t maximum) override {
-        const ReactivationGate::Hold hold(gate_);
         if(!std::isfinite(rate)||rate<=0||maximum<=0)throw std::invalid_argument("Invalid EQ prepare format");
         // A replacement graph may prepare this same retained device again.
         // That is not an authored reset: preserve its running filter/detector
@@ -190,6 +189,7 @@ public:
         if(prepared_&&rate==sampleRate_&&maximum==maximum_&&preparedWidth_==handedWidth_) {
             publishLatency(backend_->advertisedLatency());return;
         }
+        const ReactivationGate::Hold hold(gate_);
         prepared_=false;
         refresh();backend_->prepare(rate,maximum,channels_,settings(cached_));
         sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;prepared_=true;publishLatency(backend_->advertisedLatency());

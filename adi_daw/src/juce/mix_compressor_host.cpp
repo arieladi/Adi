@@ -116,9 +116,9 @@ class CompressorDevice final : public DeviceInstance {
     bool loaded() const noexcept override { return true; }
     bool processesDouble() const noexcept override { return true; }
     void prepare(double rate, std::int32_t maximum) override {
-        const ReactivationGate::Hold hold(gate_);
         if (prepared_ && rate == rate_ && maximum == maximum_)
             return;
+        const ReactivationGate::Hold hold(gate_);
         if (core_.prepare({rate, maximum, channels_}, settings(read())) != c::Status::Ok)
             throw std::runtime_error("Clean compressor preparation failed");
         rate_ = rate;
