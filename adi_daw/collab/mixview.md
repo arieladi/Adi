@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — #651 merge validator
+
+The hosted validator for `c21e1170` saw 213 operation rows and read 212 in the headline. Each parent passes on its own. The synthetic merge combines #651's existing `routing.setKeyTap` and main's existing `lane.restore` from #662, so the shared headline also needs 86 P1 rows instead of 85. The same two failures reproduced locally after merging main.
+
+Merged `12aab48a` into the existing #651 branch and corrected those two totals in `811702260b8cb0b26462f8c943e416e327b1a17d`. The operation, schema upgrade and CI validators passed. The only merge-resolution edit was the headline count. Win's #679 can apply its longer-term count removal independently.
+
+**PR requested.** Re-review #651 at `81170226`. Hosted jobs are rerunning on this head.
+
 ### 19 November — #651 hardened Clang fixture fix
 
 The hardened clang job rejected the compressor fixture's two bitwise boolean expressions under `-Wbitwise-instead-of-logical`. It stopped before CTest. The local Clang diagnostic reproduced both failures on the exact fixture. The revised test executes the subject and reference renders separately and then checks both statuses and the output. This preserves the comparison after a failed render.
