@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M60(c) Windows Release review
+
+The exact #651 head `8575a967` produced the Windows x64 Release review build. It passed the nine targeted CTests and all 753 software-peer shell checks on this branch. The separate cumulative assembly is local while its dependencies land. It retains the serial EQ provider and the reviewed engine-owned VST3 and CLAP sources.
+
+- Release ZIP `ADI-MixView-EQ-Promised-Latency-8575a9676d-win64-Release.zip`, SHA-256 `427353b63458af62e6d7c90fefe5b87ffa56efaa30782b9faf3a7c537d84fb48`.
+- ADI.exe SHA-256 `571004d5ee2c1d523da35f8d5ebd9cce93d7b1250612c535170b85d573352de1`, scanner `20f9683fb41adf370ee95bc785bc1a84dd085f6d7ba6c4e737524ca3a96bdeb1`, corresponding source `4c2a9f7d94b39706bb416ef4a33f5c1102a9bb08eb25830d1b08e549d213bb79`.
+- Claude brief `ADI-Q-MixView-EQ-Promised-Latency-8575a967-CLAUDE-RETEST.txt`.
+
 ## 19 November 2026 — DF-M60(c), EQ latency reservation on #651
 
 **PR requested.** #651's existing branch `mixview/part-a-and-review-20261119` is advanced from `5bad5728` to `8575a9676dc03e429c7851850ac8b4a6ae238984` and ready for re-review. The standalone EQ reserves the latency it advertises. Undo during ring growth keeps the old graph fed until the originally promised plan receives its matching physical block, then offers the return. The serial owner's explicit hold, withdrawal of an unread offer and same-physical-block pinning remain intact. One atomic wins either withdrawal or reservation and the callback takes no lock or allocation.
