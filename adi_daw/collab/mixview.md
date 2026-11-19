@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — Device routing and identity reproductions on the cumulative branch
+
+The local #651 integration `0c6e1985` takes the reviewed VST3 and CLAP host sources as-is and keeps the serial EQ provider. Its Release passes the EQ, serial-backend and existing unchanged-route suites. The serial graph version of the priming fixture keeps the promised EQ wet while the host grows its compensation rings.
+
+At fixture head `4fe8c665`, DF-M60(a) reproduced nine failures across Paste, Duplicate and explicit legacy ID replay. Browser insertion already passed with the picker’s retained-ID floor. DF-M60(b) reproduced four failures in the owned dormant-auxiliary VST3 through actual project routing and audio callbacks, including first audio after reopen. DF-M60(d)'s hidden, unchanged-runtime width-publication test passes on the cumulative branch, which already compares both sidechain width and processing issue. The queued #651 hosted checks are running. The loaned production points remain untouched before it lands. The independent Main meter gates are building now.
+
 ## 19 November 2026 — DF-M60(c) Windows Release review
 
 The exact #651 head `8575a967` produced the Windows x64 Release review build. It passed the nine targeted CTests and all 753 software-peer shell checks on this branch. The separate cumulative assembly is local while its dependencies land. It retains the serial EQ provider and the reviewed engine-owned VST3 and CLAP sources.
