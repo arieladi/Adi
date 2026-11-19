@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### #651 Windows Debug shell gate
+
+The hosted Windows Debug shell test segfaulted after its first nine software renders at `7391bbff`. The other 26 tests in that job passed, and the macOS and Linux shell gates passed. The job produced no stack or dump. Both the previous #651 UI head and the Arrangement parent passed the Windows shell. The exact Windows job is rerunning. The local 753-check Release Mix View gate covers a smaller path. The next diagnostic will mark the end of the live-parity fixture and the following shell helpers if the crash repeats.
+
 ### DF-M55 unchanged spectrogram history
 
 A spectrogram that already shows the current publication skips the clear-prefix lookup. A new publication finds the first serial after a local clear by binary search. The source-driven comparison covered 49,923 ordered and gapped histories, with up to 128 comparisons on the earlier unchanged path and zero now. The Release software-peer gate at `e17abc0adc8939c09916f78b462b685d2aa5fa1c` passed 422 checks, including the retained history, pixels, palette and freeze regressions. These are operation counts and image checks. Live timing remains with Claude.
