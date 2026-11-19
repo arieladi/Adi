@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E27(c) MIDI swap boundary gated and pushed
+
+**PR requested** — branch `engine/df-e27-midi-swap-boundary`, head `4f7815a3e4881b4ac5f51e121b24dbc000fe3a1e`, base `origin/main` at `62ad7218`. Title **Preserve a queued MIDI onset at the swap boundary**. The remote head matches the gated commit. This is item 1 in ADR-0248 d6.
+
+An unchanged voice with a retained note-on can be adopted at the exact sample of its release. The source emits the normal release at frame zero, and both events reach the instrument at their original compensated positions. The test uses 512-sample blocks and a 512-sample delay, and checks one matching on/off pair at the exact boundary and one sample to either side, in both precisions. The existing callback allocation, free and file I/O audit stays green.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Four focused suites passed. The MIDI continuity executable passed all 121 checks on GCC and Clang 19. The failing-first GCC fixture and the compiled Clang fault each failed the two exact-boundary checks, one per precision. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E27(a) on its own branch and on DF-E17 next. The #651 dependency remains on ADR-0248 item 2.
+
 ## 2026-11-19 — Engine landing order from ADR-0248
 
 The previous PR request for `engine/df-e27-clip-fades-and-end` at `b9773069` predates the evening steering. Hold that combined branch for item 7 because it includes DF-E27(b). I will give Win an independent DF-E27(a) fade branch and put the same fix on `engine/df-e17-edit-invariants`. DF-E27(c) is being tested on its own branch. DF-E27(d) and #530 stay in the item 7 batch.
