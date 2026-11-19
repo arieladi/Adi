@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E16 weak remark anchors and window allocator gated and pushed
+
+**PR requested** — branch `engine/df-e16-row-id-handoff`, head `ab09e120dabb57532acc6ff539ca87c0d88c29f5`, base `origin/main` at `796fe498`. Title **Keep orphaned remark target IDs reserved**. The remote head matches the gated commit.
+
+The live-only maximum reuses the deleted track and clip IDs and the surviving weak remarks resolve to the replacement rows. The same fixture confirms ordered inverses first remove the replacement, then restore the original. Compacted snapshots restore material and remarks together. A stale command using the old head is refused even if its numeric target has reappeared. Note IDs are scoped to their clip stream. Automation `record_index` is a position within one data stream.
+
+**Window handoff** — In the owner read snapshot, use one `adi::RowIds ids(store.db())` per prepared edit and call `ids.next("tracks")` or `ids.next("clips")` as needed. Submit the literal IDs with the expected head from that same snapshot. The allocator skips live and remark-held IDs, including orphans, and maintains its own reservations within the batch. The control projection supplies the same reservation through `nextIds`. For asynchronous note commands, the existing `notes::captureNotes`, `notes::prepareDiff`, and `notes::commitDiff` path scopes IDs to the clip and checks the source, head and stream.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58390 checks across 244 suites, all four validators and the layout check. Six focused suites passed, covering remark replay, note diffs, curve storage and both allocation entry points. Clang 19 compiled all four changed C++ units with warnings as errors and passed 42 row-ID and 59 projection checks. The two compiled live-only allocator faults failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E17 next.
+
 ## 2026-11-19 — DF-E15 quiet gesture states gated and pushed
 
 **PR requested** — branch `engine/df-e15-quiet-gesture-states`, head `f60f7f53a56a3186d831a71ddd95cacf94321445`, base `origin/main` at `4e11edd9`. Title **Report quiet gesture commit and cancellation states**. The remote head matches the gated commit.
