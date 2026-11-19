@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M36 unchanged-format prepare keeps audio admitted
+
+**PR requested.** `mixview/native-noop-prepare-20261119` is pushed at `bf221a35`. Exact-format and sufficient-capacity prepares return before taking the reactivation Hold in native EQ, Clean, and the built-in host. The EQ still updates the advertised read-only latency. Real format changes retain the guarded prepare path.
+
+The fixture-only `8542a7d3` failed the reentrant audio-admission check. Release passed 875 EQ host checks and both float/double duplicate-prepare renders were sample-identical. It also passed 870 software-peer checks and five CTests, including the serial EQ and live device-callback key regressions. Evidence is in `NowWeReverse/ADI-View/mixview-seat/dfm36-built-20261119`.
+
+- ZIP `outputs/ADI-MixView-Native-Noop-Prepare-bf221a35c8-win64-Release.zip`, SHA-256 `eeba7fa76b736a678db26f5f9ac5efb851071881566fadc6db4dc346d1131d30`.
+- ADI.exe SHA-256 `3c33dff3798aee9df47007b7ed7327eb54c9312e0da01151d7a0ada26ee43035`, scanner SHA-256 `3b5c90a5f8c4168ed31abdf87167174e991bb166a8b236b3e1524844a69dd0c3`, corresponding source SHA-256 `fbb69f386c4fb19b29de2e604a3aea0c10a37e9328732ce87151b552d002666b`.
+- Claude brief `outputs/ADI-Q-MixView-Native-Noop-Prepare-bf221a35-CLAUDE-RETEST.txt`.
+
 ## 19 November 2026 — DF-M35 Clean make-up and wake Release
 
 **PR requested.** `mixview/clean-makeup-wake-20261119` is pushed at `36fc0109`. Ordinary make-up edits use a continuous linear-amplitude ramp, including reversals. The steady loop has no ramp branch. Explicit Auto Gain toggles and reset use the current target. The first valid wake segment adopts current authored settings before resetting state, so a parked Threshold edit is present on its first sample.
