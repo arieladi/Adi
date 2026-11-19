@@ -16,6 +16,20 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Shared media cache and FFprobe together
+
+**PR requested** `engine-win/media-cache-probe-integration` at `415631ea6b94ffafc0a296a1de5c976bc6c33715`. This combines the reconciled media cache `6ad07db6` and FFprobe stream selection `16e4159e` with both decode regression groups preserved. Use this tip if reviewing both media branches together.
+
+Strict native MSVC x64 Debug passed 493 checks across six suites, and the nine actual FFprobe cases passed again on the combined binary. The analysis symlink and native AAC progress cases skipped. The preceding cache tip has the exact desktop link gate. The combined tip was tested in headless core.
+
+## 2026-11-19 — PD-07 snapshot backup worker
+
+**PR requested** `engine-win/project-snapshot-backup` at `3b550a9884a61725e7965c3ca1ac18589a0d4bfd`, stacked on lock-neutral copy `b73f36da`. A worker opens an independent read-only connection and writes a consistent copy through existing exclusive publication and history-wide media rebasing. The copy records the snapshot's UTC time and exact source filename, retains the project UUID, and starts without the live writer's lock. An ordinary copy made from the backup clears its backup metadata. The worker takes the committed revision it reads and its caller chooses the destination filename.
+
+Strict native MSVC x64 Debug passed 236 checks across four project/publication suites. The regression covered a live WAL source, same-name refusal after a backward clock change, and reopened relative media. Two optional symlink fixtures skipped. The second Snapshot trigger, a unique name across repeated hours, and ten-copy Recycle Bin rotation remain open.
+
+ADR-0213 d4 already answers Q-A2. The director's research measured the Backup folder, second-resolution names, ten retained copies and no new copy on an unchanged Ctrl+S in Live 12.4 build `2026-04-24_d85a94ab5e`. The retained listing could establish when entries left Backup. Their arrival in the Recycle Bin was not measured.
+
 ## 2026-11-19 — Current main and the shared Media Cache Folder
 
 **PR requested** `engine-win/media-cache-root-current` at `6ad07db6ecb947a5a0d89053820939a64987a69e`. This is the replacement review tip for `0f4ea92e` after [PR #661](https://github.com/arieladi/Adi/pull/661) advanced main to `f256e386`. The resolved cache implementation keeps main's verified waveform-analysis trimming and the single configured parent for the decoded and analysed caches.
