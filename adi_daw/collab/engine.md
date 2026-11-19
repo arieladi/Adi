@@ -18,6 +18,12 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DEV-23 native Linux gate follow-up
+
+The GCC 14 JUCE app and shell linked at the unchanged DEV-23 head `3dd8c605`. The native ADI window and Audio Settings page each opened, painted and wrote their expected PNG under Xvfb. Both used ADI's no-audio smoke entry point. The driver preparation checks remain the headless tests recorded on the PR request.
+
+**For Window** — the optional Linux `adi_ui_shell_tests` aborts under Xvfb on a JUCE native cursor call in `juce_XWindowSystem_linux.cpp:2703`. The cursor call has window ID zero and X11 returns `BadWindow`. A second attempt on an isolated X display reported the same error. The test starts without the desktop application's worker configuration. The failure output is retained in `dev23-juce-shell-no-wm.log` and `dev23-juce-shell.log` in the cloud validation folder.
+
 ## 2026-11-19 — DF-E27(d) keep performance outside history forks
 
 **PR requested** — branch `engine/df-e27-ephemeral-history`, head `2414ac7cda163afed7adbd7df30749c7b6d57132`, main base `bedee5ab`. Title **DF-E27(d): Keep transport audit outside history forks**. Independent of DF-E27(a–c) and #530. When integrating CT-02's grouped journal branch, retain this shared divergence guard and tip deduplication.
