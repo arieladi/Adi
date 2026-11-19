@@ -16,6 +16,7 @@
 #include <limits>
 #include <numbers>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <utility>
@@ -250,6 +251,80 @@ void realtimeMaximumDecayAndAdmission() {
               "settled parked maximum skips later certified quiet samples");
     }
 }
+void focusScopeMidBeforeBinning() {
+    using adi::ui::FocusScopeBarBlock;
+    using adi::ui::FocusScopeBarProjection;
+    using adi::ui::FocusScopeBarSource;
+    using adi::ui::FocusScopeRange;
+    using adi::ui::FocusSumColumn;
+    constexpr FocusScopeRange range{48000, 2, 48000.};
+    constexpr std::uint64_t revision = 31;
+    constexpr std::array sources{FocusScopeBarSource{{7}, 11}, FocusScopeBarSource{{8}, 15}};
+    constexpr std::array left{.5f, -.5f}, inverted{-.5f, .5f}, silence{0.f, 0.f};
+
+    struct Captured {
+        FocusSumColumn member, sum;
+        std::size_t midCount = 0;
+        std::array<double, 2> mid{};
+    };
+    const auto capture = [&]<class Projection>(Projection &projection, std::span<const float> right,
+                                                bool requestMid) -> std::optional<Captured> {
+        bool prepared;
+        if constexpr (requires { projection.prepare(range, sources, 1, revision, true); }) {
+            prepared = requestMid ? projection.prepare(range, sources, 1, revision, true)
+                                  : projection.prepare(range, sources, 1, revision);
+        } else {
+            prepared = projection.prepare(range, sources, 1, revision);
+        }
+        if (!prepared) return {};
+        for (std::size_t frame = 0; frame < left.size(); ++frame) {
+            const auto stamp = range.first + static_cast<std::int64_t>(frame);
+            const auto quiet = std::span(silence).subspan(frame, 1);
+            std::array blocks{
+                FocusScopeBarBlock{sources[0], stamp, revision, range.sampleRate, true,
+                                   std::span(left).subspan(frame, 1), right.subspan(frame, 1)},
+                FocusScopeBarBlock{sources[1], stamp, revision, range.sampleRate, true, quiet, quiet}
+            };
+            if (frame == 1) {
+                ++blocks[1].firstStamp;
+                if (projection.append(blocks) || projection.frames() != frame) return {};
+                --blocks[1].firstStamp;
+            }
+            if (!projection.append(blocks) || projection.frames() != frame + 1) return {};
+        }
+        const auto member = projection.memberColumns(0), sum = projection.sumColumns();
+        if (!projection.complete() || member.size() != 1 || sum.size() != 1) return {};
+        Captured result{member.front(), sum.front(), 0, {}};
+        if constexpr (requires { projection.memberMidColumns(std::size_t{}); }) {
+            const auto mid = projection.memberMidColumns(0);
+            result.midCount = mid.size();
+            if (mid.size() == 1) result.mid = {mid.front().low, mid.front().high};
+        }
+        return result;
+    };
+    const auto stereoMatches = [](const std::optional<Captured> &result,
+                                  std::array<double, 2> low, std::array<double, 2> high) {
+        return result && result->member.low == low && result->member.high == high &&
+            result->sum.low == low && result->sum.high == high;
+    };
+    FocusScopeBarProjection projection;
+    const auto inPhase = capture(projection, left, true);
+    const auto cancel = capture(projection, inverted, true);
+    const auto leftOnly = capture(projection, silence, true);
+    const auto unrequested = capture(projection, left, false);
+    check(stereoMatches(inPhase, {-.5, -.5}, {.5, .5}) && stereoMatches(cancel, {-.5, -.5}, {.5, .5}) &&
+              stereoMatches(leftOnly, {-.5, 0.}, {.5, 0.}) && stereoMatches(unrequested, {-.5, -.5}, {.5, .5}),
+          "the split stamped blocks retain exact existing L/R member and sum extrema");
+    check(inPhase && inPhase->midCount == 1 && inPhase->mid == std::array{-.5, .5},
+          "in-phase L/R is preserved in the requested Mid column");
+    check(cancel && cancel->midCount == 1 && cancel->mid == std::array{0., 0.},
+          "opposed L/R with the same stereo extrema cancels before Mid binning");
+    check(leftOnly && leftOnly->midCount == 1 && leftOnly->mid == std::array{-.25, .25},
+          "a single active channel contributes half its amplitude to Mid");
+    check(unrequested && unrequested->midCount == 0,
+          "unrequested Mid has no stored columns even after re-preparation");
+}
+
 void focusScopeBarTiming() {
     constexpr auto quarter = adi::textproj::kPPQ;
     const adi::engine::TempoMap constant{{{0, 120., 0}}};
@@ -2197,7 +2272,7 @@ void operator delete[](void *p) noexcept {::operator delete(p);}
 void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
-    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
+    try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeBarTiming(); focusScopeBarProjection(); focusScopeMidBeforeBinning(); focusScopeWindows(); focusBarScopeBroker(); focusBarScopeBrokerBoundaries(); focusScopeSumProjection(); focusScopeFlatPath(); focusMatchWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
           sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); realtimeMaximumSpectrum(); realtimeMaximumDecayAndAdmission(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
