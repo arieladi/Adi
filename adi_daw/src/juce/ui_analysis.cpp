@@ -136,7 +136,7 @@ struct SharedSpectrumView::Raster {
     std::array<std::uint16_t, static_cast<std::size_t>(width * height)> intensity{};
     std::array<juce::Colour, 256> colors{};
     juce::Image image;
-    std::uint64_t revision = 0, epoch = 0, column = 0;
+    std::uint64_t revision = 0, epoch = 0, column = 0, sweepOrigin = 0;
     ThemeId theme = ThemeId::Dark;
     bool paletteDirty = true;
     Raster() { intensity.fill(gap); }
@@ -160,6 +160,35 @@ struct SharedSpectrumView::Raster {
         }
         image.moveImageSection(0, 0, added, 0, width - added, height);
         clearColumns(width - added, added);
+    }
+    void paintSweep(juce::Graphics &g, juce::Rectangle<float> plot) const {
+        if (!sweepOrigin || column < sweepOrigin) {
+            g.drawImage(image, plot);
+            return;
+        }
+        const auto head = (column - sweepOrigin) % width;
+        const auto rotation = static_cast<float>((head + 1) % width) * (plot.getWidth() / width);
+        const auto clip = plot.toNearestInt();
+        if (clip.isEmpty()) return;
+        if (rotation == 0.f) {
+            g.drawImage(image, plot);
+        } else {
+            // Rotate the scrolling raster at draw time. Both fragments use the
+            // same scale and the same published pixels as Scroll.
+            const int split = std::clamp(juce::roundToInt(plot.getX() + rotation), clip.getX(), clip.getRight());
+            auto right = clip;
+            const auto left = right.removeFromLeft(split - clip.getX());
+            const auto draw = [&](juce::Rectangle<int> limit, float offset) {
+                juce::Graphics::ScopedSaveState state(g);
+                if (g.reduceClipRegion(limit)) g.drawImage(image, plot.translated(offset, 0.f));
+            };
+            draw(left, rotation - plot.getWidth());
+            draw(right, rotation);
+        }
+        const auto boundary = plot.getX() + static_cast<float>(head + 1) * (plot.getWidth() / width);
+        const auto x = std::clamp(juce::roundToInt(boundary), clip.getX(), clip.getRight() - 1);
+        g.setColour(look::textOnBand.withAlpha(.55f));
+        g.drawVerticalLine(x, plot.getY(), plot.getBottom());
     }
     void recolor() {
         if (image.isNull()) return;
@@ -246,6 +275,11 @@ void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
         try { updateRaster(); } catch (...) { raster_.reset(); }
     }
     repaint();
+}
+void SharedSpectrumView::setHistoryMotion(HistoryMotion motion) {
+    if (historyMotion_ == motion) return;
+    historyMotion_ = motion;
+    if (mode_ == Mode::Spectrogram && eligible()) repaint();
 }
 void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     slope = spectrumSlopeFromId(spectrumSlopeId(slope));
@@ -605,9 +639,15 @@ void SharedSpectrumView::updateRaster() {
     auto &raster = *raster_;
     if (raster.image.isNull() || raster.revision != shown_->revision || raster.epoch != shown_->sourceEpoch) {
         auto firstColumn = skipped;
-        const bool reset = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
-            shown_->historySerial < raster.column || shown_->historySerial - raster.column >= Raster::width;
-        if (reset) {
+        const bool newSweep = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
+            shown_->historySerial < raster.column;
+        if (newSweep) {
+            if (clearedEpoch_ == shown_->sourceEpoch && clearedColumn_ < shown_->historySerial)
+                raster.sweepOrigin = clearedColumn_ + 1;
+            else
+                raster.sweepOrigin = count ? shown_->columns[skipped].serial : shown_->historySerial;
+        }
+        if (newSweep || shown_->historySerial - raster.column >= Raster::width) {
             // History scrolls and changes individual pixels on the message thread.
             // Keep those edits in memory so shifts and clears never read back a GPU surface.
             if (raster.image.isNull())
@@ -851,7 +891,8 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         }
     } else if (mode_ == Mode::Spectrogram && raster_ && !raster_->image.isNull()) {
         g.setImageResamplingQuality(juce::Graphics::lowResamplingQuality);
-        g.drawImage(raster_->image, plot);
+        if (historyMotion_ == HistoryMotion::Sweep) raster_->paintSweep(g, plot);
+        else g.drawImage(raster_->image, plot);
     }
     const double topHz = std::min(20000.0, shown_->sampleRate * .5);
     if (topHz <= 20) return;
@@ -938,6 +979,15 @@ AnalysisPane::AnalysisPane() {
     modeBox.setTitle("Analysis mode"); sourceBox.setTitle("Analysis channel source");
     pointBox.setTitle("Analysis tap point"); channelBox.setTitle("Spectrum channel");
     paletteBox.setTitle("Spectrogram palette"); reverseButton.setTitle("Reverse spectrogram palette");
+    historyBox.addItemList({"History: Scroll", "History: Sweep"}, 1);
+    historyBox.setTitle("Spectrogram history motion");
+    historyBox.setTooltip("Scroll keeps new columns at the right. Sweep writes in place and wraps at the edge.");
+    historyBox.onChange = [this] {
+        using Motion = SharedSpectrumView::HistoryMotion;
+        setHistoryMotion(historyBox.getSelectedId() == 2 ? Motion::Sweep : Motion::Scroll);
+    };
+    setHistoryMotion(SharedSpectrumView::HistoryMotion::Scroll);
+    addAndMakeVisible(historyBox);
     slopeBox.addItemList({"Slope: Flat", "+4.5 dB/oct @ 1k"}, 1);
     slopeBox.setTitle("Spectrum display slope");
     slopeBox.setTooltip("Display tilt around 1 kHz only. Raw sine-calibrated dBFS, peak/RMS and comparison bins are unchanged.");
@@ -996,6 +1046,7 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage;
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
     const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
+    historyBox.setVisible(spectrogram);
     paletteBox.setVisible(spectrogram);
     paletteBox.setEnabled(spectrogram);
     reverseButton.setVisible(spectrogram);
@@ -1038,6 +1089,10 @@ void AnalysisPane::setSpectrumScale(SharedSpectrumView::SpectrumScale scale) {
     view.setSpectrumScale(scale);
     scaleBox.setSelectedId(scale == SharedSpectrumView::SpectrumScale::Detail ? 2 : 1, juce::dontSendNotification);
 }
+void AnalysisPane::setHistoryMotion(SharedSpectrumView::HistoryMotion motion) {
+    view.setHistoryMotion(motion);
+    historyBox.setSelectedId(motion == SharedSpectrumView::HistoryMotion::Sweep ? 2 : 1, juce::dontSendNotification);
+}
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     if (const auto theme = look::themeId(); theme != palettePreviewTheme_) {
         palettePreviewTheme_ = theme;
@@ -1056,8 +1111,8 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 11> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &scaleBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const std::array<juce::Component *, 12> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &historyBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));

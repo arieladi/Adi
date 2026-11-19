@@ -24,6 +24,7 @@ struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
     static bool hasDetailPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.detailSpectrum_); }
+    static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
 };
 }
 namespace {
@@ -1187,6 +1188,116 @@ void spectrumDetailScale() {
           "20 kHz axis is fixed while the trace stops at Nyquist on a lower-rate source");
 }
 
+void spectrogramHistoryMotion() {
+    using namespace adi::ui;
+    using Mode = SharedSpectrumView::Mode;
+    using Motion = SharedSpectrumView::HistoryMotion;
+    constexpr int width = 128, height = 256, left = 5, top = 21;
+    // One raster pixel per logical pixel. The only paint addition is the cursor
+    // at the next write edge, so exclude that column from the color comparison.
+    const auto isRotated = [](const juce::Image &scroll, const juce::Image &sweep, int head) {
+        const auto rotation = head + 1;
+        const auto cursor = std::min(width - 1, rotation);
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                if (x == cursor) continue;
+                const int input = (x + width - rotation) % width;
+                if (sweep.getPixelAt(left + x, top + y) != scroll.getPixelAt(left + input, top + y)) return false;
+            }
+        }
+        return true;
+    };
+    const auto sameWork = [](const auto &before, const auto &after) {
+        return before.transforms == after.transforms && before.analysisWindows == after.analysisWindows &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.workerPasses == after.workerPasses && before.consumers == after.consumers &&
+            before.domains == after.domains && before.taps == after.taps;
+    };
+
+    AnalysisPane controls;
+    check(!controls.historyBox.isVisible() && controls.view.historyMotion() == Motion::Scroll,
+          "other analyser modes keep the history motion control hidden");
+    controls.setMode(Mode::Spectrogram);
+    check(controls.historyBox.isVisible() && controls.historyBox.getSelectedId() == 1,
+          "Spectrogram exposes Scroll as the initial presentation");
+    controls.historyBox.setSelectedId(2, juce::dontSendNotification); controls.historyBox.onChange();
+    controls.setMode(Mode::Spectrum); controls.setMode(Mode::Spectrogram);
+    check(controls.historyBox.getSelectedId() == 2 && controls.view.historyMotion() == Motion::Sweep,
+          "the Spectrogram history menu remembers Sweep when switching pages");
+
+    Fixture f;
+    Root root; root.setSize(340, 340); root.setVisible(true); root.addToDesktop(0);
+    SharedSpectrumView view, sibling;
+    view.setBounds(0, 0, 156, 311); sibling.setBounds(170, 0, 156, 311);
+    for (auto *consumer : {&view, &sibling}) {
+        consumer->setMode(Mode::Spectrogram);
+        root.addAndMakeVisible(*consumer);
+        consumer->present(f.broker, 1);
+    }
+    f.write(); f.broker->pump(); view.frame(); sibling.frame();
+    const auto initial = view.snapshot();
+    const auto stat = f.broker->stats();
+    view.setHistoryMotion(Motion::Sweep);
+    const auto first = softwarePicture(view), scroll = softwarePicture(sibling);
+    check(initial && !initial->columns.empty() && initial->historySerial == initial->columns.front().serial &&
+              initial == view.snapshot() && initial == sibling.snapshot() && f.acquired == 1 && sameWork(stat, f.broker->stats()),
+          "Scroll and Sweep display the same first immutable history and single compatible analysis");
+    check(initial && isRotated(scroll, first, 0) && !samePixels(scroll, first) &&
+              first.getPixelAt(left + 1, top + height / 2) != look::display,
+          "first published column moves to the left with a visible adjacent cursor");
+
+    const auto repaints = root.fake->repaints;
+    view.setHistoryMotion(Motion::Sweep); view.frame();
+    check(root.fake->repaints == repaints && sameWork(stat, f.broker->stats()) &&
+              samePixels(first, softwarePicture(view)),
+          "stationary publication leaves the sweep and cursor stationary without invalidation");
+
+    const auto origin = initial ? initial->historySerial : 1;
+    bool wrapped = false;
+    for (int block = 1; block <= 40; ++block) {
+        f.write(block * 1024); f.broker->pump(); view.frame(); sibling.frame();
+        const auto next = view.snapshot();
+        if (!next || next->historySerial < origin + width) continue;
+        const auto head = static_cast<int>((next->historySerial - origin) % width);
+        wrapped = next == sibling.snapshot() && isRotated(softwarePicture(sibling), softwarePicture(view), head);
+        break;
+    }
+    check(wrapped, "wrapping the sweep preserves both visible runs of the scrolling raster");
+
+    view.freeze(true);
+    const auto held = view.snapshot();
+    const auto frozenSweep = softwarePicture(view);
+    const auto heldStats = f.broker->stats();
+    view.setHistoryMotion(Motion::Scroll); view.setHistoryMotion(Motion::Sweep); view.frame();
+    check(held && view.snapshot() == held && !view.subscribed() &&
+              samePixels(frozenSweep, softwarePicture(view)) && sameWork(heldStats, f.broker->stats()),
+          "switching history motion on a frozen display preserves its picture and released lease");
+
+    view.freeze(false);
+    writeFrames(f, 1024); f.broker->pump(); view.frame(); sibling.frame();
+    const auto clearAt = view.snapshot() ? view.snapshot()->historySerial : 0;
+    view.clear();
+    writeFrames(f, 1024); f.broker->pump(); view.frame(); sibling.frame();
+    const auto fresh = view.snapshot();
+    const auto clearedSweep = softwarePicture(view);
+    view.setHistoryMotion(Motion::Scroll);
+    const auto clearedScroll = softwarePicture(view);
+    const auto head = fresh && fresh->historySerial > clearAt
+        ? static_cast<int>((fresh->historySerial - clearAt - 1) % width) : width - 1;
+    check(fresh && clearAt && head < width - 3 && isRotated(clearedScroll, clearedSweep, head) &&
+              clearedSweep.getPixelAt(left + head + 2, top + height / 2) == look::display &&
+              sibling.subscribed(),
+          "a local history reset starts a new sweep without clearing sibling data or retaining old pixels");
+
+    root.setVisible(false);
+    const auto hidden = f.broker->stats();
+    view.setHistoryMotion(Motion::Sweep); view.frame(); f.broker->pump();
+    check(hidden.consumers == 0 && !view.subscribed() && !sibling.subscribed() &&
+              !SharedSpectrumViewTestAccess::hasRaster(view) && sameWork(hidden, f.broker->stats()) &&
+              f.acquired == 1 && f.released == 1,
+          "hiding the last observers releases their raster and acquisition and hidden settings do no analysis work");
+}
+
 void classicScopeSurface() {
     using namespace adi::ui;
     using Trigger = adi::dsp::TriggeredScope::Trigger;
@@ -1665,7 +1776,7 @@ int main() {
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale();
-          classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
+          spectrogramHistoryMotion(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
