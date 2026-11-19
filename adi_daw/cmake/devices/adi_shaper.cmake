@@ -16,3 +16,7 @@ if(ADI_WITH_PD)
         ADI_SHAPER_PATCH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/pd/devices")
     add_test(NAME adi_shaper_pd_tests COMMAND adi_shaper_pd_tests)
 endif()
+
+add_executable(adi_shaper_wave_tests tests/adi_shaper_wave_tests.cpp)
+target_link_libraries(adi_shaper_wave_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_shaper_wave_tests COMMAND adi_shaper_wave_tests)

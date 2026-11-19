@@ -351,6 +351,11 @@ void AdiShaper::setMod(Param id, float value) noexcept {
 
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
+    if (id >= AdiShaperWaveBank::firstId - 1) {
+        freeWaves_.set(static_cast<int>(id) + 1, value);
+        return;
+    }
+    if (id >= BaseCount) return;
     if (id == MasterMix) {
         masterMix_ = std::clamp(value, 0.0f, 100.0f) * 0.01f;
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
@@ -434,20 +439,27 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             r *= g.right;
         }
     };
+    constexpr int stageIndex = static_cast<int>(kind);
+    std::array<AdiShaperWaveBank::View, 3> primaryWaves, secondaryWaves;
+    for (int b = 0; b < 3; ++b) {
+        primaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 0));
+        secondaryWaves[b] = freeWaves_.view(AdiShaperWaveBank::key(stageIndex, b, 1));
+    }
     auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r, [[maybe_unused]] float& dryL, [[maybe_unused]] float& dryR) {
         const auto& band = stage.bands[index];
         const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
         if constexpr (kind >= Stage::Filter) {
-            const float primary = band.primary.at(p);
+            const float primary = primaryWaves[index].empty() ? band.primary.at(p) : AdiShaperWaveBank::at(primaryWaves[index], p);
+            const auto secondary = [&] { return secondaryWaves[index].empty() ? band.secondary.at(p) : AdiShaperWaveBank::at(secondaryWaves[index], p); };
             if constexpr (kind == Stage::Drive) {
                 driveDry_[index].advance(dryL, dryR);
                 drives_[index].process(l, r, primary);
             } else if constexpr (kind == Stage::Filter) {
-                filters_[index].process(l, r, primary, band.secondary.at(p));
+                filters_[index].process(l, r, primary, secondary());
             } else if constexpr (kind == Stage::Sweep) {
-                sweeps_[index].processStereo(l, r, primary, band.secondary.at(p));
+                sweeps_[index].processStereo(l, r, primary, secondary());
             } else {
-                crush_[index].processStereo(l, r, primary, band.secondary.at(p));
+                crush_[index].processStereo(l, r, primary, secondary());
             }
             if (band.blend == 0.0f) { l = dryL; r = dryR; }
             else if (band.blend != 1.0f) {
@@ -456,7 +468,13 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             }
         } else {
             Gain g;
-            if (band.primary.constant) g = band.heldGains[0];
+            if (!primaryWaves[index].empty()) {
+                float y = AdiShaperWaveBank::at(primaryWaves[index], p);
+                if constexpr (kind == Stage::Width) y *= 2.f;
+                if constexpr (kind == Stage::Pan) y = 2.f * y - 1.f;
+                g = gain(kind, y, band.blend);
+            }
+            else if (band.primary.constant) g = band.heldGains[0];
             else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
             else g = gain(kind, band.primary.at(p), band.blend);
             applyGain(g, l, r);
@@ -465,7 +483,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
     if (stage.layout == 0) {
         if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
             const auto& band = stage.bands[1];
-            if (band.primary.constant) {
+            if (band.primary.constant && primaryWaves[1].empty()) {
                 for (std::size_t i = 0; i < frames; ++i) {
                     const float l = inL[i], r = inR[i];
                     outL[i] = l * band.heldGains[0].left;
@@ -495,7 +513,8 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         float sumL = 0.0f, sumR = 0.0f;
         auto accumulate = [&](std::size_t index, float l, float r) {
             float wetL = l, wetR = r;
-            if (stage.bands[index].active) applyBand(index, i, wetL, wetR, l, r);
+            if (stage.bands[index].active || !primaryWaves[index].empty())
+                applyBand(index, i, wetL, wetR, l, r);
             if (flatPhase) {
                 sumL += wetL - l;
                 sumR += wetR - r;
@@ -533,8 +552,16 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
 }
 
 void AdiShaper::process(const float* inL, const float* inR, float* outL, float* outR,
-                        std::size_t frames) noexcept {
+                        std::size_t frames, AdiShaperScope* scope) noexcept {
     if (!frames) return;
+    if (!scope) scope = &editorScope_;
+    const int key = scope->selection();
+    const bool capture = key >= 0 && static_cast<std::size_t>(key / 3) < stages_.size();
+    if (capture) {
+        const auto& band = stages_[key / 3].bands[key % 3];
+        scope->begin(key, inL, inR, frames, band.phase, band.step, sampleRate_);
+    }
+    freeWaves_.prepareBlock();
     // A full-range neutral rack takes only a stereo copy. Configured split
     // filters still follow the input while dry so automation reopens them warm.
     auto run = [&]<Stage kind>() {
@@ -542,7 +569,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
         if constexpr (kind >= Stage::Filter) {
             if (!stage.enabled) return;
         }
-        if (!stage.active && stage.layout == 0) return;
+        if (!stage.active && stage.layout == 0 && !freeWaves_.hasStage(static_cast<int>(kind))) return;
         render<kind>(stage, inL, inR, outL, outR, frames);
         inL = outL;
         inR = outR;
@@ -555,6 +582,7 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     run.template operator()<Stage::Drive>();
     run.template operator()<Stage::Crush>();
     copyStereo(inL, inR, outL, outR, frames);
+    if (capture) scope->end(outL, outR, frames);
     for (auto& stage : stages_) {
         if (!stage.enabled) continue;
         for (auto& band : stage.bands)

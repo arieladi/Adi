@@ -4,6 +4,8 @@
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
 #include "adi/dsp/adi_shaper_sweep.hpp"
+#include "adi/dsp/adi_shaper_wave.hpp"
+#include "adi/dsp/adi_shaper_scope.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -28,7 +30,7 @@ class AdiShaper {
                  SweepOn = FilterOn + modStageParameterCount, SweepLowPolarity = SweepOn + modStageParameterCount,
                  SweepMidPolarity, SweepHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
-                 Count = CrushOn + modStageParameterCount };
+                 BaseCount = CrushOn + modStageParameterCount, Count = AdiShaperWaveBank::lastId };
     enum class Stage { Volume, Width, Pan, Filter, Sweep, Drive, Crush };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
@@ -58,7 +60,8 @@ class AdiShaper {
     void tempo(double bpm) noexcept;
     void sync(double quarterNotes, bool playing = true) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
-                 std::size_t frames) noexcept;
+                 std::size_t frames, AdiShaperScope* scope = nullptr) noexcept;
+    AdiShaperScope* shaperScope() noexcept { return &editorScope_; }
     [[nodiscard]] int latency() const noexcept {
         return stages_[static_cast<std::size_t>(Stage::Drive)].enabled ? AdiShaperDrive::latencySamples : 0;
     }
@@ -125,6 +128,8 @@ class AdiShaper {
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
+    AdiShaperScope editorScope_;
+    AdiShaperWaveBank freeWaves_;
     std::array<StageData, 7> stages_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperSweep, 3> sweeps_;

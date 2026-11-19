@@ -223,7 +223,7 @@ void modulationPd(const std::string& editedDir, bool filterOn, bool sweepOn, boo
 int main() try {
     auto device = open();
     const auto* info = adi::findBuiltin(uid);
-    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415, "device registration");
+    check(info && info->name == "ADI-Shaper" && device->paramCount() == 415 + 2 * adi::dsp::AdiShaperWaveBank::slots, "device registration");
     for (int id = 1; id <= 415; ++id)
         check(device->paramAt(id - 1) && device->paramAt(id - 1)->id == std::to_string(id), "contiguous stable parameter IDs");
     check(device->wantsDeviceTransport() && device->latencySamples() == 0, "position and latency");
