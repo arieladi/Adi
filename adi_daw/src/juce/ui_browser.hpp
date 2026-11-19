@@ -96,6 +96,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::function<PluginListing()> listPlugins;
     // The app's scan is done: Plug-Ins, if it is the label chosen, lists what it found.
     void pluginsChanged();
+    // Scan the plug-ins again (a right-click on Plug-Ins: Rescan Plug-Ins); unset outside the app.
+    std::function<void()> rescanPlugins;
+    // The Plug-Ins label's menu: Rescan Plug-Ins.
+    juce::PopupMenu plugInsMenu();
     const PluginListing &plugins() const noexcept { return plugins_; }
     // What a load of a plug-in says until the engine inserts one (N57).
     static std::string pluginWaits(const PluginEntry &);

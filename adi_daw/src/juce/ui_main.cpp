@@ -9,6 +9,7 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include "mix_function_host.hpp"
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -86,12 +87,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
         // The plug-in folders the Settings' Plug-Ins page names, searched ahead of the system's for
-        // both formats (DF-W9), before any project asks the loader for a plug-in.
-        for (const char *key : {"plugins.vst3Folders", "plugins.clapFolders"})
-            if (const auto folders = settings_->get(key); folders.is_array())
-                for (const auto &folder : folders)
-                    if (folder.is_string() && !folder.get<std::string>().empty())
-                        loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.get<std::string>().c_str())));
+        // both formats (DF-W9), before any project asks the loader for a plug-in. A scan Quit stops is
+        // cancelled through the helper, so no file is left marked as being read (DF-W34 a).
+        auto scanConfig = scan::Config{};
+        scanConfig.process.cancel = &pluginCancel_;
+        loader_.setScanConfig(scanConfig);
+        pluginFolders_ = pluginFolders();
+        for (const auto &folder : pluginFolders_)
+            loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.c_str())));
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -181,46 +184,87 @@ class AdiApplication final : public juce::JUCEApplication,
             index.reset();
         });
     }
-    // The loader's catalogue as the Browser lists it: its VST3 lines and its CLAP descriptors, with the
-    // files its last scan could not read.
+    // The Browser's Plug-Ins (DF-W9, DF-W34 a): what the one loader found, as last listed. A scan runs
+    // on its own worker, never on the message thread; the Browser says "Scanning" until it ends and
+    // never waits. The loader is used by one thread at a time (`loaderMutex_`): a project's own lazy
+    // scan, inside its open, waits for this one rather than run beside it, since two scans at once
+    // would meet the registry's refusal of a pending file and lose good plug-ins.
     PluginListing pluginListing() {
-        // The first scan runs on the message thread (N58 asks for one off it): a moment after the
-        // Status Bar has said so and the window has painted, so the window never looks hung without a
-        // word. A Quit while it runs leaves the file being read marked, as the loader's own scan does.
-        if (loader_.stats().scans == 0) {
-            if (!pluginScanQueued_) {
-                pluginScanQueued_ = true;
-                juce::Timer::callAfterDelay(100, [this] {
-                    if (juce::JUCEApplicationBase::getInstance() != this)
-                        return;
-                    loader_.scan();
-                    if (root_)
-                        root_->browser.pluginsChanged();
-                });
-            }
-            PluginListing waiting;
-            waiting.scanning = true;
-            return waiting;
-        }
-        PluginListing out;
-        for (const auto &line : loader_.knownPlugins())
-            if (auto entry = parseKnownVst3(line))
-                out.plugins.push_back(std::move(*entry));
-        for (const auto &p : loader_.clap().plugins())
-            out.plugins.push_back({"clap", p.id, p.name, p.vendor, p.version, p.bundlePath,
-                                   clapKind(p.isInstrument, p.features)});
-        const auto &report = loader_.lastScanReport();
-        out.failed = report.failures.size();
-        if (report.cancelled)
-            out.error = "the scan was cancelled.";
-        else if (!report.complete)
-            // The scan stopped part way: its first failure says why.
-            out.error = report.failures.empty() || report.failures.front().error.empty()
-                            ? std::string("the scan stopped part way.")
-                            : report.failures.front().error;
+        if (pluginsDue_ && !pluginThread_.joinable())
+            startPluginScan();
+        auto out = plugins_;
+        out.scanning = pluginThread_.joinable();
         return out;
     }
-    bool pluginScanQueued_ = false;
+    void startPluginScan() {
+        pluginsDue_ = false;
+        auto owner = pluginOwner_ = std::make_shared<PluginOwner>();
+        auto folders = std::exchange(pendingFolders_, {});
+        pluginThread_ = std::thread([this, owner, folders = std::move(folders)] {
+            PluginListing found;
+            {
+                std::lock_guard lock(loaderMutex_);
+                for (const auto &folder : folders)
+                    loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.c_str())));
+                loader_.scan();
+                std::vector<PluginEntry> clap;
+                for (const auto &p : loader_.clap().plugins())
+                    clap.push_back({"clap", p.id, p.name, p.vendor, p.version, p.bundlePath,
+                                    clapKind(p.isInstrument, p.features)});
+                found = listingOf(loader_.knownPlugins(), std::move(clap), loader_.lastScanReport());
+            }
+            juce::MessageManager::callAsync([this, owner, found = std::move(found)]() mutable {
+                if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
+                    return;
+                if (pluginThread_.joinable())
+                    pluginThread_.join();
+                // A rescan that stopped keeps the last complete list on screen, with its reason.
+                if (!found.error.empty() && !plugins_.plugins.empty() && plugins_.error.empty()) {
+                    plugins_.error = found.error;
+                } else
+                    plugins_ = std::move(found);
+                if (root_)
+                    root_->browser.pluginsChanged();
+            });
+        });
+    }
+    // Rescan (the Browser's Plug-Ins menu), or the Settings' folders changed: the next listing scans.
+    void rescanPlugins() {
+        pluginsDue_ = true;
+        if (root_)
+            root_->browser.pluginsChanged();
+    }
+    std::vector<std::string> pluginFolders() const {
+        std::vector<std::string> out;
+        for (const char *key : {"plugins.vst3Folders", "plugins.clapFolders"})
+            if (const auto folders = settings_->get(key); folders.is_array())
+                for (const auto &folder : folders)
+                    if (folder.is_string() && !folder.get<std::string>().empty())
+                        out.push_back(folder.get<std::string>());
+        return out;
+    }
+    // The Settings changed: folders the Plug-Ins page added are searched from the next scan, which is
+    // due at once (a folder taken away stays searched until the next launch: the loader only adds).
+    void pluginFoldersChanged() {
+        auto now = pluginFolders();
+        if (now == pluginFolders_)
+            return;
+        for (const auto &folder : now)
+            if (std::find(pluginFolders_.begin(), pluginFolders_.end(), folder) == pluginFolders_.end())
+                pendingFolders_.push_back(folder);
+        pluginFolders_ = std::move(now);
+        rescanPlugins();
+    }
+    void stopPlugins() {
+        pluginCancel_ = true;
+        if (pluginOwner_)
+            pluginOwner_->stop = true;
+        if (pluginThread_.joinable())
+            pluginThread_.join();
+    }
+    struct PluginOwner {
+        std::atomic<bool> stop{false};
+    };
     void stopLibrary() {
         if (!libraryThread_.joinable())
             return;
@@ -244,6 +288,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (import_.joinable())
             import_.join();
         stopLibrary();
+        stopPlugins();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -295,7 +340,13 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+        // The one loader, used by one thread at a time: a plug-in scan on its worker, or a project's
+        // device made here (DF-W34 a).
+        engine::DeviceLoader guarded = [this, made = loader_.fn()](const engine::DeviceRequest &rq, std::string &why) {
+            std::lock_guard lock(loaderMutex_);
+            return made(rq, why);
+        };
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, std::move(guarded), error,
                                           &commands_->recordingDefaults());
         if (!next) {
             report(error);
@@ -417,6 +468,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // The one loader the projects load from lists them, so no second scan races its registry (N58
         // asks for the scan off the message thread).
         root->browser.listPlugins = [this] { return pluginListing(); };
+        root->browser.rescanPlugins = [this] { rescanPlugins(); };
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);
@@ -784,7 +836,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    pluginFoldersChanged();
+                };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);
@@ -879,6 +934,15 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // The plug-in scan's worker and what it last listed (DF-W34): the loader's lock, the Quit flag the
+    // helper reads, a scan due (none yet, Rescan, folders added), the folders the Settings name.
+    std::mutex loaderMutex_;
+    std::atomic<bool> pluginCancel_{false};
+    std::thread pluginThread_;
+    std::shared_ptr<PluginOwner> pluginOwner_;
+    PluginListing plugins_;
+    bool pluginsDue_ = true;
+    std::vector<std::string> pluginFolders_, pendingFolders_;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;

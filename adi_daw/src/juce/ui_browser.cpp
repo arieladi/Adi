@@ -478,8 +478,23 @@ void BrowserPanel::paint(juce::Graphics &g) {
     g.drawEllipse(headphones, 2.f);
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
-    if (sidebarArea_.contains(e.getPosition()))
-        choose((e.y - sidebarArea_.getY() - 1) / kRowHeight);
+    if (!sidebarArea_.contains(e.getPosition()))
+        return;
+    const int i = (e.y - sidebarArea_.getY() - 1) / kRowHeight;
+    choose(i);
+    // A right-click on Plug-Ins: Rescan Plug-Ins (Live keeps it in Settings' Plug-Ins page too).
+    if (e.mods.isPopupMenu() && i >= 0 && i < static_cast<int>(sidebar_.size()) &&
+        sidebar_[static_cast<std::size_t>(i)].name == "Plug-Ins")
+        plugInsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
+            {e.getScreenX(), e.getScreenY(), 1, 1}));
+}
+juce::PopupMenu BrowserPanel::plugInsMenu() {
+    juce::PopupMenu m;
+    m.addItem("Rescan Plug-Ins", rescanPlugins != nullptr, false, [safe = SafePointer<BrowserPanel>(this)] {
+        if (safe && safe->rescanPlugins)
+            safe->rescanPlugins();
+    });
+    return m;
 }
 void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {

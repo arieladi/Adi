@@ -5,6 +5,7 @@
 // No JUCE: the app fills it from the loader (`JuceDeviceLoader::knownPlugins`, `ClapHost::plugins`),
 // tests fill it by hand, and the Browser lays it out.
 #pragma once
+#include "adi/plugin_scanner.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
@@ -97,11 +98,45 @@ inline std::vector<PluginGroup> pluginGroups(const PluginListing &listing, const
             return va < vb;
         return lowerCase(a->name) < lowerCase(b->name);
     });
+    // One folder per vendor whatever its spelling's case (FabFilter and Fabfilter are one maker), named
+    // by the first spelling in the sort's order (DF-W34 c).
     std::vector<PluginGroup> out;
+    std::string folderKey;
     for (const auto *p : kept) {
-        if (out.empty() || out.back().format != p->format || out.back().vendor != vendorOf(p))
+        const auto key = lowerCase(vendorOf(p));
+        if (out.empty() || out.back().format != p->format || folderKey != key) {
             out.push_back({p->format, vendorOf(p), {}});
+            folderKey = key;
+        }
         out.back().entries.push_back(p);
+    }
+    return out;
+}
+// What a scan found, as the Browser lists it: the loader's VST3 lines, its CLAP plug-ins, and its
+// report. A scan that stopped part way is named by its own failure: one with no file is the scan
+// service's (the helper, the registry), not a plug-in's (DF-W34 b).
+inline PluginListing listingOf(const std::vector<std::string> &vst3Lines, std::vector<PluginEntry> clap,
+                               const scan::Report &report) {
+    PluginListing out;
+    for (const auto &line : vst3Lines)
+        if (auto entry = parseKnownVst3(line))
+            out.plugins.push_back(std::move(*entry));
+    for (auto &entry : clap)
+        out.plugins.push_back(std::move(entry));
+    out.failed = 0;
+    for (const auto &f : report.failures)
+        if (!f.path.empty())
+            ++out.failed;
+    if (report.cancelled)
+        out.error = "the scan was cancelled.";
+    else if (!report.complete) {
+        const scan::Failure *why = nullptr;
+        for (const auto &f : report.failures)
+            if (why == nullptr || (f.path.empty() && !why->path.empty()))
+                why = &f;
+        out.error = why == nullptr || why->error.empty() ? std::string("the scan stopped part way.")
+                    : why->path.empty()                 ? "the scan service failed: " + why->error
+                                                        : why->path + ": " + why->error;
     }
     return out;
 }

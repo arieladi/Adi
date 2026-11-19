@@ -2579,6 +2579,34 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                   clapKind(false, "audio-effect delay") == PluginEntry::Kind::Effect,
               "a CLAP is an instrument, a MIDI effect (a note effect) or an audio effect");
         PluginListing found;
+        // One maker whatever the case of its spelling (DF-W34 c): FabFilter and Fabfilter are one folder.
+        {
+            PluginListing cased;
+            cased.plugins = {{"vst3", "a", "Pro-C 2", "FabFilter", "1", "/a", PluginEntry::Kind::Unknown},
+                             {"vst3", "b", "Pro-L 2", "Fabfilter", "1", "/b", PluginEntry::Kind::Unknown},
+                             {"vst3", "c", "Pro-Q 4", "FabFilter", "1", "/c", PluginEntry::Kind::Unknown},
+                             {"vst3", "d", "Hiss", "", "1", "/d", PluginEntry::Kind::Unknown},
+                             {"vst3", "e", "Noise", "other", "1", "/e", PluginEntry::Kind::Unknown}};
+            const auto groups = pluginGroups(cased, "");
+            check(groups.size() == 2 && groups[0].vendor == "FabFilter" && groups[0].entries.size() == 3 &&
+                      groups[1].entries.size() == 2,
+                  "one folder per maker whatever its case, named by its first spelling; no vendor and \"other\" share Other");
+        }
+        // A scan that stopped part way is named by its own failure, the service's before a file's; a
+        // file that failed alone is counted with the rest listed (DF-W34 b).
+        {
+            scan::Report stopped;
+            stopped.complete = false;
+            stopped.failures = {{"/x/Bad.vst3", "helper crashed", scan::State::Failed},
+                                {"", "plugin scanner helper is not executable", scan::State::Unavailable}};
+            const auto halted = listingOf({"vst3  VST3-Echo-1  Echo -- Zeta 1.0  (/x/Echo.vst3)"}, {}, stopped);
+            scan::Report oneBad;
+            oneBad.failures = {{"/x/Bad.vst3", "helper crashed", scan::State::Failed}};
+            const auto partial = listingOf({}, {{"clap", "org.x", "X", "Y", "1", "/x.clap", PluginEntry::Kind::Effect}}, oneBad);
+            check(halted.error == "the scan service failed: plugin scanner helper is not executable" && halted.failed == 1 &&
+                      halted.plugins.size() == 1 && partial.error.empty() && partial.failed == 1 && partial.plugins.size() == 1,
+                  "a scan that stopped is named by the service's failure; one bad file is counted, the rest listed");
+        }
         found.plugins = {*echo,
                          {"clap", "org.adi.glass", "Glass Piano", "Northwind Audio", "1.0", "/x/glass.clap",
                           PluginEntry::Kind::Instrument},
