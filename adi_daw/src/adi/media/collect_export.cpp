@@ -4,6 +4,7 @@
 #include "blake3.hpp"
 #include "zip_writer.hpp"
 #include "publish_file.hpp"
+#include "published_rollback.hpp"
 #include "adi/store.hpp"
 #include "adi/check.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -42,11 +43,6 @@ struct Stage {
     }
     ~Stage() { std::error_code ec; fs::remove_all(path, ec); }
 };
-struct Published {
-    std::vector<fs::path> paths;
-    bool committed = false;
-    ~Published() { if (!committed) for (const auto& p : paths) { std::error_code ec; fs::remove(p, ec); } }
-};
 std::string safeName(const std::string& original, std::int64_t id) {
     std::string name = original;
     for (char& c : name) if (static_cast<unsigned char>(c) < 32 || std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos) c = '_';
@@ -67,14 +63,14 @@ void audioDirectory(const fs::path& folder) {
     fs::create_directories(audio);
 }
 fs::path publish(const fs::path& staged, const fs::path& folder, const std::string& original,
-                 std::int64_t id, Published& owned) {
+                 std::int64_t id, detail::PublishedRollback& owned) {
     const auto name = safeName(original, id);
     for (unsigned i = 0; i < 10000; ++i) {
         const auto target = folder / "audio" / pathFromUtf8(i == 0 ? name : std::to_string(id) + "-" + std::to_string(i) + "-" + name);
-        owned.paths.push_back(target);
+        owned.files.push_back({target,{}});
         const auto result = publishFile(staged, target, {}, PublishPolicy::VerifiedCopyFallback);
-        if (result.status == PublishStatus::published) return target;
-        owned.paths.pop_back();
+        if (result.status == PublishStatus::published) {owned.files.back().identity=result.identity;return target;}
+        owned.files.pop_back();
         if (result.status != PublishStatus::exists) throw std::runtime_error("publish media: " + pathUtf8(target) + ": " + result.error);
     }
     throw std::runtime_error("too many filename collisions for " + original);
@@ -116,13 +112,14 @@ void streamChunks(SQLite::Database& db, std::int64_t id, const fs::path& target)
 }
 }
 FileResult extractMedia(Store& store) {
+    detail::PublishedRollback published;
     try {
         if (store.readOnly()) return {false, "project is read-only"};
         SQLite::Transaction transaction(store.db());
         const auto ids = embeddedIds(store.db());
         if (ids.empty()) { transaction.commit(); return {true, {}}; }
         const auto folder = projectFolder(store); audioDirectory(folder);
-        Stage stage(folder / "audio"); Published published;
+        Stage stage(folder / "audio");
         for (const auto id : ids) {
             const auto row = mediaRow(store.db(), id);
             const auto name = row.at("orig_name").get<std::string>();
@@ -134,7 +131,7 @@ FileResult extractMedia(Store& store) {
             SQLite::Statement erase(store.db(), "DELETE FROM media_blobs WHERE media_id=?"); erase.bind(1, id); erase.exec();
         }
         transaction.commit(); published.committed = true; return {true, {}};
-    } catch (const std::exception& e) { return {false, e.what()}; }
+    } catch (const std::exception& e) { return {false, e.what(),published.rollback()}; }
 }
 FileResult collectExport(const fs::path& input, const fs::path& output,
                          const ArchiveControl& control) {

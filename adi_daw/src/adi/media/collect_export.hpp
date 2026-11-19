@@ -14,8 +14,11 @@ struct FileResult {
     bool cancelled = false;
 };
 // Maintenance, not a schema upgrade or an undoable embedding operation.
-// One SQL transaction covers all extracted rows. Normal failures remove only
-// newly published files. A crash may leave harmless unreferenced files.
+// One SQL transaction covers all extracted rows. Windows rollback removes only
+// the expected published file by an exclusive DELETE handle. Changed, busy or
+// unsupported paths remain and are named in warning; other hosts conservatively
+// retain public files rather than race a pathname unlink. A crash may leave
+// harmless unreferenced files.
 FileResult extractMedia(Store&);
 enum class ArchivePhase { Snapshot, CollectMedia, WriteArchive, Publish };
 struct ArchiveProgress {

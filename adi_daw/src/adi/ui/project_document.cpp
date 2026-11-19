@@ -190,11 +190,12 @@ bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
 bool ProjectDocument::collectAllAndSave() {
     warning_.clear();
     const auto result = store_->collectAllAndSave();
+    warning_ = result.warning;
     if (!result.ok) {
         error_ = "Collect All and Save failed: " + result.error;
+        if (!warning_.empty())error_ += "; " + warning_;
         return false;
     }
-    warning_ = result.warning;
     // The media rows point at the copies now: the view and the session read them again.
     view_.refresh(*store_);
     if (!synchronise()) {
