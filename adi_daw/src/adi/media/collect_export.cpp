@@ -63,7 +63,7 @@ fs::path publish(const fs::path& staged, const fs::path& folder, const std::stri
     for (unsigned i = 0; i < 10000; ++i) {
         const auto target = folder / "audio" / pathFromUtf8(i == 0 ? name : std::to_string(id) + "-" + std::to_string(i) + "-" + name);
         owned.paths.push_back(target);
-        const auto result = publishFile(staged, target);
+        const auto result = publishFile(staged, target, {}, PublishPolicy::VerifiedCopyFallback);
         if (result.status == PublishStatus::published) return target;
         owned.paths.pop_back();
         if (result.status != PublishStatus::exists) throw std::runtime_error("publish media: " + pathUtf8(target) + ": " + result.error);
@@ -160,7 +160,7 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
             if (!zip.addFile(entry.path(), "audio/" + pathUtf8(entry.path().filename()))) throw std::runtime_error("cannot archive " + pathUtf8(entry.path()));
         }
         if (!zip.finish()) throw std::runtime_error("ZIP finalization failed");
-        const auto publication = publishFile(zipPath, target);
+        const auto publication = publishFile(zipPath, target, {}, PublishPolicy::AtomicOnly);
         if (publication.status != PublishStatus::published) throw std::runtime_error("publish archive: " + publication.error);
         return {true, {}};
     } catch (const std::exception& e) { return {false, e.what()}; }

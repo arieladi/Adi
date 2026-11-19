@@ -321,7 +321,8 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         patch_ = nullptr;
         return false;
     }
-    libpd_bind(PdLatencyReceiver::nameFor(dollarZero_).c_str());
+    // KEPT, because it is a handle (see latencyBinding_): unbound in close().
+    latencyBinding_ = libpd_bind(PdLatencyReceiver::nameFor(dollarZero_).c_str());
     return true;
 }
 
@@ -331,6 +332,9 @@ void LibPdEngine::close() noexcept {
     nativePrepared_ = false;
     adapterLatency_ = 0;
     paramSymbols_.clear();
+    // A t_symbol* comes from the instance's own table (dogensym takes the
+    // instance) and pdinstance_free frees that table: never kept past close.
+    transportSymbol_ = nullptr;
     if (instance_ == nullptr) return;
     selectInstance();
     if (patch_ != nullptr) {
@@ -341,6 +345,12 @@ void LibPdEngine::close() noexcept {
             dspOn_ = false;
         }
         receivers_.unbind(dollarZero_);
+        // Unbound while this instance is still selected and alive: the
+        // receive object lives in its symbol table.
+        if (latencyBinding_ != nullptr) {
+            libpd_unbind(latencyBinding_);
+            latencyBinding_ = nullptr;
+        }
         libpd_closefile(patch_);
         patch_ = nullptr;
         dollarZero_ = 0;

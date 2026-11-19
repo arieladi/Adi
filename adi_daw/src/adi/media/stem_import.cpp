@@ -293,7 +293,8 @@ CommitResult commitStemImport(Store &store, StemImport &prepared, std::uint64_t 
                 std::error_code ignored;
                 fs::remove(publication, ignored);
                 copyAsset(asset.privateFile, publication, [&] { cancel(data->options); });
-                const auto published = publishFile(publication, asset.target);
+                const auto published = publishFile(publication, asset.target, {},
+                                                   PublishPolicy::AtomicOnly);
                 if (published.status == PublishStatus::exists &&
                     fs::is_regular_file(fs::symlink_status(asset.target))) {
                     const auto existing = blake3File(asset.target);
