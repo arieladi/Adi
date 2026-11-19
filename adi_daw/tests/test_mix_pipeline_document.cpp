@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
 #include "adi/mix/clip/Values.hpp"
+#include "adi/store_rows.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "juce/mix_pipeline_host.hpp"
@@ -21,8 +22,9 @@ int checks=0,failures=0;
 void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("FAIL %s\n",label);}}
 struct Tone final:engine::Node {
     std::int64_t cursor=0;
+    static float at(std::int64_t sample) noexcept { return static_cast<float>(.9 * std::sin(static_cast<double>(sample) * .071)); }
     void process(const engine::NodeIo& io)noexcept override {
-        for(int i=0;i<io.frames;++i){const auto value=static_cast<float>(.9*std::sin(static_cast<double>(cursor++)*.071));
+        for(int i=0;i<io.frames;++i){const auto value=at(cursor++);
             for(int c=0;c<io.channels;++c)io.out[c][io.blockOffset+i]=value;}
     }
 };
@@ -90,9 +92,6 @@ void bypassedClaim(bool full) {
         return;
     }
     const auto hostIndex = entry->hostIndex;
-    // Keep a direct test observer while the document would normally revoke UI
-    // demand, so a mistaken publication from scratch processing is detectable.
-    const auto reduction = mix::limiter::ReductionMailbox::observe(device::limiterReductionSource(*instance));
     const auto isBypassed = [&] { return session.devices().nodeAt(hostIndex).bypassed(); };
     const auto trackInput = session.requestScope({{2, engine::ScopePoint::DeviceInput, shown.id}, 1.});
     const auto trackOutput = session.requestScope({{2, engine::ScopePoint::DeviceOutput, shown.id}, 1.});
@@ -100,14 +99,20 @@ void bypassedClaim(bool full) {
     // The two providers have different owner claims. Full enables Clip
     // against immutable serial compensation; Lite enables its actual Limiter.
     const std::string stage = full ? "20" : "19";
-    bool initial = true;
-    if (full)
-        initial = edit(*doc, shown, std::to_string(21 + mix::clip::threshold), .75);
-    else
-        initial = edit(*doc, shown, "0", .3) && edit(*doc, shown, stage, 0);
+    constexpr double seededGain = .3;
+    const bool initial = edit(*doc, shown, "0", seededGain) &&
+        (full ? edit(*doc, shown, std::to_string(21 + mix::clip::threshold), .75) : edit(*doc, shown, stage, 0));
     check(initial, "prepare an audible effect and an initially disabled stage");
     if (!initial) return;
     cycle(16);
+    // A first raw journal set with no existing mirror row has a null inverse.
+    // Exercise a value-to-value Undo here, independently of that store behavior.
+    const auto stored = rows::readModel(doc->store());
+    const bool seeded = std::any_of(stored.pluginParams.begin(), stored.pluginParams.end(), [&](const auto &param) {
+        return param.deviceId == shown.id && param.paramId == "0" && std::abs(param.normalized - seededGain) < .005;
+    });
+    check(seeded, "both native providers start the claim test with a durable Gain value");
+    if (!seeded) return;
     const auto previousLatency = instance->latencySamples();
     check(instance->getParam(stage).real == 0 && edit(*doc, shown, stage, 1),
           "a real authored edit requests the latency-changing stage enable");
@@ -118,8 +123,10 @@ void bypassedClaim(bool full) {
     const auto offered = instance->latencySamples();
     check(offered > previousLatency, "owner advertises a positive pending latency before bypass");
     if (offered <= previousLatency) return;
-    const auto lastWetReduction = reduction.read();
-    check(lastWetReduction && lastWetReduction->renderBlock != 0, "active Limiter publishes to the test observer");
+    const bool claimHeld = !instance->setParam(stage, device::ParamValue::fromNormalized(0)) &&
+        instance->getParam(stage).real == 1;
+    check(claimHeld, "the actual retained runtime refuses a different structural value before graph bypass");
+    if (!claimHeld) return;
     check(doc->deviceAction("device.setEnabled", {{"id", shown.id}, {"enabled", false}}) && isBypassed() &&
           session.instanceFor(shown.id) == instance,
           "graph activator bypass retains the instance that owns the claim");
@@ -147,10 +154,6 @@ void bypassedClaim(bool full) {
     check(session.graph().currentGraph() && session.graph().currentGraph()->latencySamples() == offered,
           "the pinned graph retains the advertised delay while bypassed");
     check(dry && *dry < 2.e-5, "bypassed node actually outputs coherent compensated dry");
-    const auto bypassedReduction = reduction.read();
-    check(lastWetReduction && bypassedReduction &&
-              bypassedReduction->renderBlock == lastWetReduction->renderBlock,
-          "settling a bypassed transition never publishes the private wet reduction");
 
     const auto authored = [&](const std::string &param, double normalized, const char *label) {
         OpRequest op;
@@ -188,6 +191,97 @@ void bypassedClaim(bool full) {
           wet && *wet > 1.e-3,
           "Undo re-enables genuine wet output with the same compensated device latency");
     doc->release();
+}
+
+// Use the real native DeviceNode and its one prepared Graph. Retapping only
+// replaces compensation, so an unrelated document rebuild cannot prepare
+// away the outstanding native claim.
+void bypassedPinnedClaim(bool full) {
+    rows::PluginRef reference;
+    reference.format = "internal";
+    reference.uid = "org.adidaw.mix.limiter";
+    reference.name = "L";
+    engine::DeviceRequest request;
+    request.ref = &reference;
+    std::string error;
+    auto instance = full ? device::makeFullMixFunction(request, error) : device::makeMixFunction(request, error);
+    check(instance != nullptr, "pinned claim fixture assembles a real native Limiter");
+    if (!instance) return;
+    const std::string stage = full ? "20" : "19";
+    const auto setStage = [&](double value) {
+        return instance->setParam(stage, device::ParamValue::fromNormalized(value));
+    };
+    if (!full && !setStage(0)) {
+        check(false, "Lite Limiter starts this test with its stage disabled");
+        return;
+    }
+
+    constexpr int frames = 256;
+    Tone tone;
+    device::DeviceNode node(*instance);
+    engine::Graph graph;
+    const auto source = graph.addNode(tone);
+    const auto limiter = graph.addNode(node);
+    check(graph.connect(source, limiter), "the test tone drives the native graph node");
+    graph.setOutput(limiter);
+    graph.setLatencyHeadroom(8192);
+    graph.prepare(48000., frames);
+    check(graph.ok(), "the native-device graph prepares once");
+    if (!graph.ok()) return;
+    // Observe only after preparation, which revokes earlier leases.
+    const auto reduction = mix::limiter::ReductionMailbox::observe(device::limiterReductionSource(*instance));
+
+    std::array<float, frames> left{}, right{};
+    std::array<float *, 2> planes{left.data(), right.data()};
+    engine::AudioIo io;
+    io.out = planes.data();
+    io.numOut = 2;
+    io.frames = frames;
+    const auto render = [&] { ++io.renderBlock; graph.process(io); };
+    render();
+    const auto oldLatency = graph.latencySamples();
+    const bool requested = instance->getParam(stage).real == 0 && setStage(1);
+    check(requested, "the native stage starts an owner-authorized latency change");
+    if (!requested) return;
+    render();
+    instance->pumpMainThread();
+    const auto offered = instance->latencySamples();
+    const bool claimed = offered > oldLatency && !setStage(0) && instance->getParam(stage).real == 1;
+    check(claimed, "the old active graph leaves a verifiably claimed new latency");
+    if (!claimed) return;
+    const auto lastWet = reduction.read();
+    check(lastWet && lastWet->renderBlock == io.renderBlock,
+          "the active graph publishes reduction under the current observation epoch");
+
+    node.setBypassed(true);
+    render();
+    const bool stillClaimed = graph.latencySamples() == oldLatency && !setStage(0);
+    check(stillClaimed, "a bypassed callback pinned to old compensation does not release the new claim");
+    if (!stillClaimed) return;
+    const bool scheduled = graph.retapLatency();
+    check(scheduled && graph.latencySamples() == oldLatency,
+          "owner schedules the new graph compensation without preparing the native node again");
+    if (!scheduled) return;
+    for (int i = 0; i < 12; ++i) render();
+    check(graph.latencySamples() == offered && node.bypassed(),
+          "the bypassed graph physically admits the offered compensation");
+    const auto held = reduction.read();
+    check(lastWet && held && held->renderBlock == lastWet->renderBlock,
+          "private bypass transition processing leaves the last audible reduction publication intact");
+    const auto first = tone.cursor - frames - offered;
+    double maxError = 0.;
+    bool finite = true;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const float expected = Tone::at(first + static_cast<std::int64_t>(i));
+        finite = finite && std::isfinite(left[i]) && std::isfinite(right[i]);
+        maxError = std::max({maxError, std::abs(static_cast<double>(left[i] - expected)),
+                             std::abs(static_cast<double>(right[i] - expected))});
+    }
+    check(first >= 0 && finite && maxError < 2.e-5,
+          "the native node still outputs the compensated dry tone under the new plan");
+    check(setStage(0) && node.bypassed() && instance->getParam(stage).real == 0,
+          "the real bypassed native node releases the structural claim under its new pinned compensation");
+    graph.release();
 }
 
 }
@@ -253,5 +347,7 @@ int main(){
     doc->release();
     bypassedClaim(true);
     bypassedClaim(false);
+    bypassedPinnedClaim(true);
+    bypassedPinnedClaim(false);
     std::printf("pipeline document: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
