@@ -30,7 +30,8 @@ public:
     virtual void release() noexcept = 0;
     virtual void process(float* const* main, const float* const* sidechain,
                          std::int32_t frames, const limit_chain::Settings&,
-                         std::uint64_t physicalBlock, std::int32_t configuredTotal) noexcept = 0;
+                         std::uint64_t physicalBlock, std::int32_t configuredTotal,
+                         limiter::BlockReduction* reduction = nullptr) noexcept = 0;
     virtual void pumpMainThread(const limit_chain::Settings&) = 0;
     [[nodiscard]] virtual std::int32_t advertisedLatency() const noexcept = 0;
     /// Manual structural edits must be refused before publishing values while a latency

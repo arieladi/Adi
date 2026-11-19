@@ -43,7 +43,7 @@ public:
     [[nodiscard]] BlockContext beginBlock(std::uint64_t physicalBlock,
         std::int32_t graphConfiguredTotal,const Settings&) noexcept;
     bool process(float* const* main,const float* const* key,std::int32_t frames,
-                 const Settings&,const BlockContext&) noexcept;
+                 const Settings&,const BlockContext&,limiter::BlockReduction* reduction = nullptr) noexcept;
     [[nodiscard]] std::uint32_t clipContinuationWord() const noexcept;
     bool restoreClipContinuationWord(std::uint32_t) noexcept;
     /// Audio-side diagnostics, or owner after processing stops. No atomic RMW on hot path.

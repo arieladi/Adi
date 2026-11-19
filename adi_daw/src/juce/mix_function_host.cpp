@@ -159,13 +159,16 @@ public:
             (enabled_.load(std::memory_order_acquire)&&transition_.load(std::memory_order_acquire)!=0));
     }
     void process(float* const* main,const float* const* key,std::int32_t frames,const Settings& s,
-                 std::uint64_t serial,std::int32_t configured) noexcept override {
+                 std::uint64_t serial,std::int32_t configured,l::BlockReduction* reduction) noexcept override {
         auto enabled=enabled_.load(std::memory_order_acquire);
         if(enabled!=s.limiterEnabled&&configured==(s.limiterEnabled?engine_.latencySamples():0)) {
             enabled=s.limiterEnabled;enabled_.store(enabled,std::memory_order_release);
             stagePending_.store(false,std::memory_order_release);lastBlock_=0;
         }
-        if(!enabled) {engine_.requestConfiguration(s.limiter);return;}
+        if(!enabled) {
+            if(reduction)*reduction={0.f,frames>0};
+            engine_.requestConfiguration(s.limiter);return;
+        }
         observeTransition();
         if(serial==0||serial!=lastBlock_) {
             const auto pending=engine_.pendingLatencyChange();
@@ -174,7 +177,7 @@ public:
             const auto token=transition_.load(std::memory_order_acquire);
             if(token&&static_cast<std::int32_t>(token&0xffffffffU)!=configured)block_.latencyAcknowledged=0;
         }
-        engine_.process(main,key,frames,s.limiter,block_);
+        engine_.process(main,key,frames,s.limiter,block_,reduction);
     }
 private:
     void observeTransition() noexcept {

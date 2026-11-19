@@ -170,7 +170,10 @@ public:
     void prepare(double,std::int32_t,std::int32_t,const mix::limit_chain::Settings& s) override{last=s;++prepares;}
     void release() noexcept override{}
     void process(float* const*,const float* const*,std::int32_t,const mix::limit_chain::Settings& s,
-                 std::uint64_t,std::int32_t) noexcept override{last=s;++blocks;}
+                 std::uint64_t,std::int32_t,mix::limiter::BlockReduction* reduction) noexcept override{
+        if(reduction)*reduction={};
+        last=s;++blocks;
+    }
     void pumpMainThread(const mix::limit_chain::Settings& s) override{last=s;}
     std::int32_t advertisedLatency() const noexcept override{return 0;}
     bool configurationBusy() const noexcept override{return busy;}

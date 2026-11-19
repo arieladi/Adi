@@ -23,9 +23,10 @@ public:
     }
     void release() noexcept override {prepared_=false;core_.setBackgroundActive(false);}
     void process(float* const* main,const float* const* key,std::int32_t frames,
-                 const Settings& settings,std::uint64_t physicalBlock,std::int32_t configuredTotal) noexcept override {
+                 const Settings& settings,std::uint64_t physicalBlock,std::int32_t configuredTotal,
+                 limiter::BlockReduction* reduction) noexcept override {
         const auto block=core_.beginBlock(physicalBlock,configuredTotal,settings);
-        (void)core_.process(main,key,frames,settings,block);
+        (void)core_.process(main,key,frames,settings,block,reduction);
     }
     void pumpMainThread(const Settings& settings) override {
         const auto pending=core_.claimPendingLatencyChange(settings);

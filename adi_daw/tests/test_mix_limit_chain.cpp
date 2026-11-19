@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <chrono>
 #include <thread>
@@ -29,22 +30,139 @@ struct Audio {
     void signal(int block,float gain=1){for(int ch=0;ch<2;++ch)for(int i=0;i<128;++i)samples[static_cast<std::size_t>(ch)][static_cast<std::size_t>(i)]=gain*(.13f+.85f*std::sin(static_cast<float>(block*128+i)*(.027f+.009f*static_cast<float>(ch))));}
 };
 chain::BlockContext begin(chain::Core& core,std::uint64_t block,int latency,const chain::Settings& s){RT rt;return core.beginBlock(block,latency,s);}
-void render(chain::Core& core,Audio& audio,Audio* key,int count,const chain::Settings& s,const chain::BlockContext& block){bool ok=false;{RT rt;ok=core.process(audio.pointers.data(),key?key->constPointers.data():nullptr,count,s,block);}check(ok,"valid composition block processed");}
+void render(chain::Core& core,Audio& audio,Audio* key,int count,const chain::Settings& s,const chain::BlockContext& block,
+            limiter::BlockReduction* reduction=nullptr) {
+    bool ok;
+    {
+        RT rt;
+        ok=core.process(audio.pointers.data(),key?key->constPointers.data():nullptr,count,s,block,reduction);
+    }
+    check(ok,"valid composition block processed");
+}
 void limiterOnly(){
     for(int style=0;style<8;++style){
         chain::Settings s;s.limiter.styleIndex=style;s.limiter.inputGainDb=6;s.limiter.externalSidechain=true;s.limiter.truePeak=style%2==1;
         chain::Core combined;combined.prepare({48000,128,limiter::ChannelLayout::stereo()},s);combined.setBackgroundActive(false);
         limiter::DspEngine alone;alone.prepare(48000,128,limiter::ChannelLayout::stereo(),s.limiter);alone.setMeteringOptions(false,true);alone.setLoudnessRecording(false);alone.setBackgroundActive(false);
-        bool exact=true;
+        bool exact=true, validReduction=true;
         for(int block=0;block<16;++block){Audio a,b,key;a.signal(block);b.signal(block);key.signal(block,.7f);
             const auto context=begin(combined,static_cast<std::uint64_t>(block+1),combined.latencySamples(),s);
-            render(combined,a,&key,128,s,context);{RT rt;alone.process(b.pointers.data(),key.constPointers.data(),128,s.limiter,alone.beginBlock());}
-            exact=exact&&a.samples==b.samples;
+            limiter::BlockReduction reduction;
+            render(combined,a,&key,128,s,context,&reduction);{RT rt;alone.process(b.pointers.data(),key.constPointers.data(),128,s.limiter,alone.beginBlock());}
+            validReduction=validReduction&&reduction.available&&reduction.peakLoss>=0.f&&reduction.peakLoss<=1.f;
+            exact=exact&&std::memcmp(a.samples.data(),b.samples.data(),sizeof a.samples)==0;
         }
-        check(exact&&combined.latencySamples()==alone.latencySamples(),"Clip disabled is sample-identical to the canonical limiter at identical latency");
+        check(exact&&combined.latencySamples()==alone.latencySamples(),"Clip disabled with telemetry is sample-identical to the canonical limiter at identical latency");
+        check(validReduction,"every settled limiter style provides bounded real reduction");
         check(combined.statistics().clipFrames==0&&combined.statistics().keyHistoryFrames==0,"Clip-off runs no Clip DSP or key-delay pass");
     }
 }
+void blockReduction() {
+    limiter::EngineSettings engineSettings;
+    engineSettings.inputGainDb = 10.f;
+    engineSettings.externalSidechain = true;
+    limiter::DspEngine measured, plain;
+    for(auto* engine : {&measured, &plain}) {
+        engine->prepare(48000, 64, limiter::ChannelLayout::stereo(), engineSettings);
+        engine->setMeteringOptions(false, true);
+        engine->setLoudnessRecording(false);
+        engine->setBackgroundActive(false);
+    }
+    plain.setMeteringOptions(false,false);
+    bool exact = true, positive = false;
+    for(int i=0;i<12;++i) {
+        Audio a,b,key;
+        a.signal(i,.21f);b.signal(i,.21f);key.signal(i,1.7f);
+        limiter::BlockReduction reduction;
+        {
+            RT rt;
+            measured.process(a.pointers.data(),key.constPointers.data(),64,engineSettings,measured.beginBlock(),&reduction);
+            plain.process(b.pointers.data(),key.constPointers.data(),64,engineSettings,plain.beginBlock());
+        }
+        check(reduction.available,"settled engine produces a real block reduction");
+        exact=exact&&std::memcmp(a.samples.data(),b.samples.data(),sizeof a.samples)==0;
+        positive=positive||reduction.peakLoss>.1f;
+        const auto db=-20.f*std::log10(std::max(1.e-8f,1.f-reduction.peakLoss));
+        check(std::abs(db-plain.getMeterSnapshot().gainReduction)<1.e-6f,
+              "linear block reduction agrees with the existing native meter at steady settings");
+    }
+    check(exact&&positive,"enabling only block telemetry leaves external-key audio bit-identical");
+    check(measured.getMeterSnapshot().gainReduction==0.f,
+          "native reduction does not resume paused full-meter scans");
+    {
+        Audio a,key;a.signal(12,.21f);key.signal(12,1.7f);
+        limiter::BlockReduction reduction{1.f,true};
+        auto changed=engineSettings;changed.styleIndex=4;
+        {
+            RT rt;
+            measured.process(a.pointers.data(),key.constPointers.data(),64,changed,measured.beginBlock(),&reduction);
+        }
+        check(!reduction.available && reduction.peakLoss==0.f,
+              "a pending structure emits a clean gap before replacement is audible");
+    }
+    {
+        engineSettings.bypass=true;
+        Audio a,key;key.signal(13,1.7f);
+        limiter::BlockReduction reduction;
+        {
+            RT rt;
+            measured.process(a.pointers.data(),key.constPointers.data(),64,engineSettings,measured.beginBlock(),&reduction);
+        }
+        check(!reduction.available,"the bypass ramp is an explicit history gap");
+        for(int i=0;i<24;++i) {
+            a.signal(i,.21f);
+            RT rt;
+            measured.process(a.pointers.data(),key.constPointers.data(),64,engineSettings,measured.beginBlock(),&reduction);
+        }
+        check(reduction.available && reduction.peakLoss==0.f,"settled bypass reports unity under an active external key");
+    }
+
+    chain::Settings settings;
+    settings.clipEnabled=true;
+    settings.clip[clip::input]=4.f;
+    settings.limiter.inputGainDb=8.f;
+    settings.limiter.externalSidechain=true;
+    chain::Core whole,split;
+    for(auto* engine : {&whole,&split}) {
+        engine->prepare({48000,64,limiter::ChannelLayout::stereo()},settings);
+        engine->setBackgroundActive(false);
+    }
+    bool same=true;
+    for(int i=0;i<8;++i) {
+        Audio a,b,key;a.signal(i);b.signal(i);key.signal(i,.7f);
+        const auto blockId=static_cast<std::uint64_t>(i+1);
+        limiter::BlockReduction combined,first,second;
+        const auto m=begin(whole,blockId,whole.latencySamples(),settings);
+        const auto n=begin(split,blockId,split.latencySamples(),settings);
+        std::array<float*,2> tail{b.pointers[0]+64,b.pointers[1]+64};
+        std::array<const float*,2> tailKey{key.constPointers[0]+64,key.constPointers[1]+64};
+        bool valid;
+        {
+            RT rt;
+            valid=whole.process(a.pointers.data(),key.constPointers.data(),128,settings,m,&combined)&&
+                  split.process(b.pointers.data(),key.constPointers.data(),64,settings,n,&first)&&
+                  split.process(tail.data(),tailKey.data(),64,settings,n,&second);
+        }
+        check(valid&&combined.available&&first.available&&second.available&&
+                  combined.peakLoss==std::max(first.peakLoss,second.peakLoss),
+              "Clip and Limiter aggregate real reduction across internal callback chunks");
+        same=same&&std::memcmp(a.samples.data(),b.samples.data(),sizeof a.samples)==0;
+    }
+    check(same,"instrumented Clip then Limiter stays bit-identical through split callbacks");
+
+    settings.limiterEnabled=false;
+    auto backend=chain::makeBackend();
+    backend->prepare(48000,64,2,settings);
+    Audio a;a.signal(0);
+    limiter::BlockReduction disabled{1.f,false};
+    {
+        RT rt;
+        backend->process(a.pointers.data(),nullptr,128,settings,1,backend->advertisedLatency(),&disabled);
+    }
+    check(disabled.available&&disabled.peakLoss==0.f,"Clip activity does not appear as Limiter reduction with Limiter off");
+    backend->release();
+}
+
 void clipOnly(){
     for(int mode=0;mode<8;++mode)for(const bool multi:{false,true}){
         chain::Settings s;s.clipEnabled=true;s.limiterEnabled=false;s.clip[clip::mode]=static_cast<float>(mode);s.clip[clip::multi]=multi?1.f:0.f;
@@ -251,7 +369,7 @@ void backendFadeLatency(){
     backend->release();
 }
 }
-int main(){try{limiterOnly();clipOnly();serialAndKey();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
+int main(){try{limiterOnly();blockReduction();clipOnly();serialAndKey();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
     check(allocations==0,"no callback C++ allocations in composition or admissions");check(deallocations==0,"no callback C++ deallocations in composition or admissions");
 }catch(const std::exception& e){++failures;std::printf("FAIL exception: %s\n",e.what());}
 std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

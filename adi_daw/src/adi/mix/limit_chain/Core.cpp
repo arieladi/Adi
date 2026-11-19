@@ -215,7 +215,8 @@ BlockContext Core::beginBlock(std::uint64_t physicalBlock,std::int32_t configure
     return block;
 }
 bool Core::process(float* const* main,const float* const* key,std::int32_t frames,
-                   const Settings& settings,const BlockContext& block) noexcept {
+                   const Settings& settings,const BlockContext& block,limiter::BlockReduction* reduction) noexcept {
+    if(reduction)*reduction={};
     auto& d=*impl_;
     if(!d.prepared || !main || frames<0 || !block.generation || !block.block ||
         block.generation!=d.current.generation || block.block!=d.current.block)return false;
@@ -225,16 +226,21 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
     if(!block.clipEnabled) {
         if(block.limiterEnabled) {
             // No Clip processing, key copy, hidden meter or extra audio pass.
-            d.limiter.process(main,key,frames,settings.limiter,block.limiter);
+            d.limiter.process(main,key,frames,settings.limiter,block.limiter,reduction);
             d.stats.limiterFrames+=static_cast<std::uint64_t>(frames);
+        } else if(reduction) {
+            *reduction={0.f,true};
         }
         return true;
     }
     if(!block.limiterEnabled) {
         (void)d.key(key,0,frames,false);
         if(!d.clip.process(main,frames,settings.clip,block.clip))return false;
-        d.stats.clipFrames+=static_cast<std::uint64_t>(frames);return true;
+        d.stats.clipFrames+=static_cast<std::uint64_t>(frames);
+        if(reduction)*reduction={0.f,true};
+        return true;
     }
+    limiter::BlockReduction observed{0.f,reduction!=nullptr};
     for(int offset=0;offset<frames;) {
         const auto n=std::min(d.clip.capacity(),frames-offset);
         std::array<float*,2> audio{main[0]+offset,d.spec.channels.size()==2?main[1]+offset:nullptr};
@@ -242,9 +248,16 @@ bool Core::process(float* const* main,const float* const* key,std::int32_t frame
         for(int ch=0;ch<d.spec.channels.size();++ch)directKey[static_cast<std::size_t>(ch)]=key&&key[ch]?key[ch]+offset:nullptr;
         const auto delayed=d.key(key,offset,n,true);
         if(!d.clip.process(audio.data(),n,settings.clip,block.clip))return false;
-        d.limiter.process(audio.data(),delayed?d.keyPointers.data():key?directKey.data():nullptr,n,settings.limiter,block.limiter);
+        limiter::BlockReduction chunk;
+        d.limiter.process(audio.data(),delayed?d.keyPointers.data():key?directKey.data():nullptr,n,
+                          settings.limiter,block.limiter,observed.available?&chunk:nullptr);
+        if(observed.available) {
+            observed.available=chunk.available;
+            observed.peakLoss=std::max(observed.peakLoss,chunk.peakLoss);
+        }
         offset+=n;
     }
+    if(reduction&&observed.available)*reduction=observed;
     d.stats.clipFrames+=static_cast<std::uint64_t>(frames);d.stats.limiterFrames+=static_cast<std::uint64_t>(frames);
     return true;
 }
