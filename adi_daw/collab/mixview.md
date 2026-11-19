@@ -1,5 +1,17 @@
 # Mix View seat
 
+## FOR THE DIRECTOR
+
+- **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
+- **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
+
+## 19 November 2026 — Release handoffs and clean publication queue
+
+The 18 November responsiveness and review-fix packages are available for Claude. Source `4e5c6dfd` now also has a sealed x64 Release package for Focus entry and unsolo, the Stack EQ spectrum and A/C/K meter weighting. The build passed 795 software-peer checks. ZIP SHA-256 `6ed5362d1f3252e7465d9f5402d760ba43501db6cf73d22e971487d3a9c227e7`. ADI.exe SHA-256 `49fe04c88c0792566d4b47cd39282eb36193af07fc0a3a72bb29205727d5fb8f`. Brief `ADI-Q-MixView-Focus-Policy-20261119-4e5c6dfd-CLAUDE-RETEST.txt`. Claude's original responsiveness gate is still the first live item.
+
+The integration build has the private Mix Set prototype. Source publishing starts from clean main and ports the tested owned changes in review order. The storage/format/placement ADR still belongs to Win under DF-M23. DF-M43 and the paired EQ gesture are being prepared as separate author slices. The four-job Release build cap applies to this seat.
+
+
 
 ## 19 November 2026 — Focus entry and unsolo confirmed
 
