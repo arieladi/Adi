@@ -1898,11 +1898,42 @@ void compareAndAveragePages() {
     };
     check(pages.compareScale.isShowing() && pages.compareScale.getSelectedId() == 1 && displayShowsBothTraces(1),
           "Wide is the initial Compare projection and both paths draw adjacent measured bins");
-    write(*first, .4f, 1024, 2); broker->pump();
+    const auto unchanged = [](const auto &before, const auto &after) {
+        return before.consumers == after.consumers && before.taps == after.taps && before.domains == after.domains &&
+            before.spectralPlans == after.spectralPlans && before.transforms == after.transforms &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.frameRequests == after.frameRequests && before.workerPasses == after.workerPasses;
+    };
+    const auto visible = broker->stats();
+    pages.setTopLeftPosition(root.getWidth() / 2, 0);
+    check(pages.comparisonView().visible && unchanged(visible, broker->stats()),
+          "a partly clipped Compare ancestor keeps its two existing sources");
+    pages.setTopLeftPosition(root.getWidth(), 0);
+    check(pages.compareA.isShowing() && !pages.comparisonView().visible &&
+              broker->stats().consumers == 0 && broker->stats().taps == 0 && broker->stats().spectralPlans == 0,
+          "moving a still-visible ancestor completely offscreen releases both Compare sources immediately");
+    const auto clipped = broker->stats();
+    write(*first, .2f, 1024, 1); write(*second, .15f, 1024, 1);
+    pages.frame(broker, original, main, guitar); broker->pump();
+    check(unchanged(clipped, broker->stats()), "audio written while Compare is clipped creates no analysis work");
+    pages.setTopLeftPosition(0, 0);
+    pages.frame(broker, original, main, guitar); broker->pump();
+    pages.frame(broker, original, main, guitar);
+    pair = pages.comparisonView();
+    check(pair.visible && !pair.a.metadata && !pair.b.metadata && broker->stats().consumers == 2,
+          "both restored Compare sources fence audio written while the plot was clipped");
+    write(*first, .64f, 2048, 1); write(*second, .32f, 2048, 1); broker->pump();
+    pages.frame(broker, original, main, guitar);
+    pair = pages.comparisonView();
+    check(pair.status == Comparison::Independent && pair.a.metadata && pair.b.metadata &&
+              pair.a.metadata->firstSequence == 2048 && pair.b.metadata->firstSequence == 2048,
+          "both restored Compare traces use the first fresh publication");
+
+    write(*first, .4f, 3072, 2); broker->pump();
     pages.frame(broker, original, main, main);
     check(pages.comparisonView().status == Comparison::Unavailable,
           "a live overlay waits when the two tap publications disagree on the audio transport revision");
-    write(*second, .2f, 1024, 2); broker->pump();
+    write(*second, .2f, 3072, 2); broker->pump();
     const int priorBMenu = pages.compareB.getSelectedId();
     pages.frame(broker, renamed, main, main);
     pair = pages.comparisonView();
@@ -1913,19 +1944,13 @@ void compareAndAveragePages() {
     pages.holdB.onClick();
     check(pages.comparisonView().status == Comparison::Held && broker->stats().taps == 1,
           "holding B retains its actual bins and releases its live tap");
-    write(*first, .1f, 2048, 3); broker->pump();
+    write(*first, .1f, 4096, 3); broker->pump();
     pages.frame(broker, renamed, main, main);
     pair = pages.comparisonView();
     check(pair.status == Comparison::Held && pair.b.binsDbfs[16] == reference &&
               pair.a.metadata->transportRevision == 3,
           "a deliberately held reference survives a new live transport revision");
     const auto immutableA = pair.a.binsDbfs.data(), immutableB = pair.b.binsDbfs.data();
-    const auto unchanged = [](const auto &before, const auto &after) {
-        return before.consumers == after.consumers && before.taps == after.taps && before.domains == after.domains &&
-            before.spectralPlans == after.spectralPlans && before.transforms == after.transforms &&
-            before.publications == after.publications && before.cursorReads == after.cursorReads &&
-            before.frameRequests == after.frameRequests && before.workerPasses == after.workerPasses;
-    };
     const auto beforeScale = broker->stats();
     for (const int id : {2, 3, 4, 1}) {
         pages.compareScale.setSelectedId(id, juce::sendNotificationSync);
@@ -1966,11 +1991,12 @@ void compareAndAveragePages() {
     // Prime the exponential average after its zero-state reset before comparing
     // its response to a sudden drop with the latest unsmoothed window.
     constexpr int warmBlocks = 64;
+    const auto firstStamp = first->written();
     for (int block = 0; block < warmBlocks; ++block) {
-        write(*first, .8f, 3072 + block * 1024, 4); broker->pump();
+        write(*first, .8f, firstStamp + block * 1024, 4); broker->pump();
         pages.frame(broker, original, main, guitar);
     }
-    write(*first, .1f, 3072 + warmBlocks * 1024, 4); broker->pump();
+    write(*first, .1f, firstStamp + warmBlocks * 1024, 4); broker->pump();
     pages.frame(broker, original, main, guitar);
     const auto average = publishedAverage.readAverage();
     const auto rawWindow = raw.read();
