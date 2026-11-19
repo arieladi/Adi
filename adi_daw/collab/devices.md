@@ -55,7 +55,8 @@ method); Live's files and renders stay in the director's research.
     Spin's Amount; the input filter's Lo Cut and Hi Cut (the band's frequency and width, or its two
     edges); Diffusion and Scale; the Density chooser's entries and which is selected; the Size
     Smoothing chooser's entries and which is selected. A fresh Hybrid Reverb, as shown: Routing,
-    Predelay, the synced predelay value, Decay and Size.
+    Predelay, the synced predelay value, Decay and Size. And for Hybrid Reverb: the delay it reports, and whether an IR at another sample rate keeps the level of a click on its first sample.
+
 16. **Redux's 64 samples (DEV-22).** A fresh Redux, an impulse of 0.5: where it comes out and the
     first 256 output samples. The research's table says Live reports 64; this shows what the 64
     buys (a filter's shape), before ADI copies the delay.
@@ -81,6 +82,38 @@ method); Live's files and renders stay in the director's research.
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+## 2026-11-19 — DEV-22: Hybrid Reverb is loadable (its native path and its impulse slot)
+
+**PR requested:** head `devices/hybrid-reverb-loadable` (24f0d83b), stacked on
+`devices/oneshot-instrument` (base that branch until it lands, then `main`). The work is on win's
+loan of `builtin_catalog.cpp`. DEV-22's row names it: Hybrid Reverb's native factory. It had a
+canvas and a core, but its catalogue entry was unavailable.
+- **The native path.** `HybridReverbStereo` reads the impulse response from slot 1 per segment, as
+  the Pd external does. The core takes it only when it was prepared at the core's rate, and the
+  latency is the 256-sample partition. The canvas is embedded and the entry is available. Native
+  and Pd renders of the canvas match exactly; it is a new parity fixture.
+- **The impulse slot.** An IR is kept as its source (the first two channels, at its own rate) and
+  restored at the device's rate. Each channel is resampled and scaled by the inverse of the rate
+  ratio, because a resampler keeps a signal's amplitude, which would scale an IR's DC gain by the
+  ratio.
+  - **One cost, stated:** an IR whose sound starts on its very first sample loses the half of its
+    resampled pulse that falls before time zero. That measured 0.118 for 0.125 at 44.1 to 48 kHz,
+    about 0.5 dB of that first click. Keeping it would delay every IR, so it is not kept. An IR at
+    the session's rate is not resampled.
+  - **For win, a question for after 3 December:** Live's own behaviour here, and Hybrid Reverb's
+    latency (ADI reports the 256-sample partition; the research's table does not list Hybrid
+    Reverb). Both are added to reading 15.
+- **Tests, written first.** The device was unavailable before, so they could not pass.
+  - In a Session at 48 kHz, through the product's calls (the insert, the IR assigned to its slot as
+    one undo step, the Convolution route fully wet): an IR at 48 kHz gives **0.125000** exactly,
+    and one at 44.1 kHz **0.124961**. Plant (no gain scaling): 0.136, 1 failure.
+  - `adi_builtin_devices_tests` 125, `adi_pd_native_devices_tests` 274; CTest 245/245 (MSVC Debug,
+    /W4 /WX).
+  - The test that used Hybrid Reverb as its unavailable example no longer can: with Pd every
+    catalogue entry is available, and the PD-disabled build refuses them all.
+- **Count lines, updated:** this branch makes it 19 entries, all 19 available. With
+  `clones/shaper-rollup` it becomes **20 entries, all 20 available** for whichever lands second.
 
 ## 2026-11-19 — for the clones seat: one two-head delay reader, agreed (corrects this lane's earlier answer)
 
