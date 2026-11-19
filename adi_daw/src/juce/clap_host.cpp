@@ -254,7 +254,7 @@ bool ClapEventList::addOut(const engine::MpeOut& o, ClapDialect dialect,
                 // is what the engine carries. The plain value, not VST3's.
                 slot.expr.value = (id == CLAP_NOTE_EXPRESSION_TUNING)
                                     ? semitonesToClapTuning(o.plain)
-                                    : std::clamp(o.plain, 0.0, 1.0);
+                                    : std::clamp(o.plain, 0.0, id == CLAP_NOTE_EXPRESSION_VOLUME ? 4.0 : 1.0);
                 break;
             }
             case K::PolyPressure:
