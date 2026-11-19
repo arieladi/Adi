@@ -48,7 +48,7 @@ struct Project {
 };
 #endif
 void catalogueAndHost() {
-    check(builtinCatalog().size()==18 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==19 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -68,7 +68,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==17,"all registered native canonical factories are available");
+    check(available==18,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif

@@ -66,6 +66,7 @@ public:
         if(info_.midi)midi_.resize(4096);
     }
     const DeviceIdentity& identity()const noexcept override{return identity_;}
+    bool wantsDeviceTransport()const noexcept override{return info_.uid=="org.adidaw.builtin.adi-shaper";}
     bool loaded()const noexcept override{return native_!=nullptr;}
     std::int32_t paramCount()const noexcept override{return static_cast<std::int32_t>(descriptors_.size());}
     const ParamDescriptor* paramAt(std::int32_t index)const noexcept override {

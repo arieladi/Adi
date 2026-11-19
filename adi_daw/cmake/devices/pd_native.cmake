@@ -11,10 +11,17 @@ if(ADI_WITH_PD)
         if(NOT delimiter_position EQUAL -1)
             message(FATAL_ERROR "Raw string delimiter appears in ${relative_path}")
         endif()
+        # MSVC limits each source literal to 16 KiB. Split at complete Pd lines
+        # so large canvases retain every byte, including UTF-8 and line feeds.
+        string(LENGTH "${patch_text}" patch_size)
+        if(patch_size GREATER 16000)
+            string(REPLACE "\n" "\n)ADI_PD_CANON\"\nR\"ADI_PD_CANON(" patch_text "${patch_text}")
+        endif()
         string(APPEND ADI_NATIVE_PD_HEADER
             "inline constexpr std::string_view ${identifier} = R\"ADI_PD_CANON(${patch_text})ADI_PD_CANON\";\n")
         set(ADI_NATIVE_PD_HEADER "${ADI_NATIVE_PD_HEADER}" PARENT_SCOPE)
     endfunction()
+    adi_embed_native_pd(adiShaper "pd/devices/ADi-SHAPER.pd")
     adi_embed_native_pd(autoFilter "pd/devices/AutoFilter.pd")
     adi_embed_native_pd(chordComb "pd/devices/Chord Comb.pd")
     adi_embed_native_pd(chorusEnsemble "pd/devices/Chorus-Ensemble.pd")
