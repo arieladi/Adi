@@ -5,6 +5,21 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 2026-11-19 — Four-track shaper CPU and independently extracted Pd kit
+
+The Windows review at `592f6ba7` also has a 37,205-byte editable Pd kit. The canonical canvas and its parameter abstraction match the commit byte-for-byte. The complete 753-parameter device passed the strict MSVC native-versus-editable suite with both search paths pointing at the extracted archive. Tests exercised state, transport, stage order, nonlinear latency and stereo split-band envelopes. `ADi-SHAPER-Pd.zip` SHA-256 `a615d29774d99042e15c7983bcee7f0b28560c20a812e7bbfdca2be7dc16c125`.
+
+### Four tracks at the 256-frame buffer
+
+Four independent ADi-SHAPER instances or four independent reference instances processed the same stereo kick and bass on four tracks. The host called the four instances serially on one pinned render thread. At 48 kHz each combined callback has 5.333 ms to complete. The table gives medians across nine trials of 8,192 callbacks each. The thread CPU percentages are CPU time divided by represented audio duration; they include identical input staging, timing and output checks. Cycle percentiles surround the four processing calls and their timing queries.
+
+| Four-track load | ADI / reference render-thread CPU, % of one core | ADI / reference median cycles | ADI / reference p99 cycles | ADI / reference p99 wall time |
+|---|---:|---:|---:|---:|
+| Moving hard-clip Drive | 6.044% / 11.337% | 1,163,585 / 2,099,943 | 1,425,479 / 2,839,714 | 7.911 / 9.433 ms |
+| Internal Width follower | 0.465% / 2.325% | 68,594 / 364,706 | 113,087 / 615,134 | 0.045 / 1.116 ms |
+
+The four-instance moving Drive used 44.59% fewer median cycles and Width used 81.19% fewer. **Both four-Drive p99 wall times exceeded the 5.333 ms deadline under the shared workload.** Each instance's two-channel capture matched its corresponding single-instance output bit-for-bit. The moving Drive fixture reported 16 samples of latency in every instance, with worst stereo sample error 0.00020603 against the reference. Width reported zero samples, with worst stereo sample error 0.0000005663.
+
 ## 2026-11-19 — ADi-SHAPER Windows review build and internal Width follower
 
 **PR requested** — `clones/adi-shaper-follower` at `592f6ba7`. Title **Add a measured stereo envelope follower to each shaper Width band**. Review after `clones/adi-shaper-order` at `f820812f`, the cumulative head containing the previously requested editor and faster Drive. This is one review chain. The new commit appends 27 parameters after the existing 726. Each band has its own Add/Multiply, amount, depth, offset, threshold, attack, hold and release. Older project states start with the followers off.
