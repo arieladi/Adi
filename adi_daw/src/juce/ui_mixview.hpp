@@ -12,6 +12,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
+#include <optional>
 namespace adi::ui {
 class AdiRootComponent;
 class SnapshotReader;
@@ -74,10 +75,6 @@ class MixViewPanel final : public juce::Component {
     static constexpr std::array<const char *, kTabCount> kTabNames{"Overview", "Stack", "Scope & Phase",
                                                                    "Spectrogram", "", "Analysers", "Focus"};
     static constexpr std::array<Tab, 3> pages{Tab::Stack, Tab::Focus, Tab::Analysis};
-    static constexpr int kHeaderHeight = 25;
-    // The ★ Reference strip under the tabs (ADR-0209 d11): the track against the arrangement's
-    // length, [REF] and [Reference Track].
-    static constexpr int kStripHeight = 30;
     explicit MixViewPanel(AdiRootComponent &);
     ~MixViewPanel() override;
     // The window's frame: the shown tab follows the view state, and STACK its rows.
@@ -119,7 +116,7 @@ class MixViewPanel final : public juce::Component {
     bool focusChannelSearch();
     bool analyzerDockShown() const noexcept { return analyzerDock.isVisible(); }
     static constexpr int kStackMinimumWidth = 320, kDockMinimumWidth = 240, kDockGap = 6;
-    static constexpr int kDockMinimumHeight = 420, kHeaderSingleRowWidth = 632;
+    static constexpr int kDockMinimumHeight = 420;
     void suspendAnalysis(bool value) {
         spectrum.suspend(value);
         analysis.suspend(value);
@@ -132,10 +129,12 @@ class MixViewPanel final : public juce::Component {
   private:
     AdiRootComponent &root_;
     int shownTab_ = -1;
-    int headerHeight_ = kHeaderHeight;
     bool layoutPending_ = false, appliedDock_ = false, ownerReady_ = false;
     int appliedWidth_ = 300;
+    std::optional<ThemeId> appliedTheme_;
+    DensityId appliedDensity_ = DensityId::Compact;
     juce::Rectangle<int> appliedBody_, appliedStrip_;
+    void refreshTheme();
     bool persistAnalyzerSettings();
 };
 } // namespace adi::ui

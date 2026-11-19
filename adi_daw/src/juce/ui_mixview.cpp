@@ -13,18 +13,18 @@ void FloatButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(look::text);
     const float s = std::min(r.getWidth(), r.getHeight());
     const juce::Rectangle<float> back(r.getX() + s * .25f, r.getY() + s * .22f, s * .42f, s * .34f);
-    g.drawRect(back, 1.f);
+    g.drawRect(back, look::hairline);
     const auto front = back.translated(s * .14f, s * .2f);
     g.setColour(getToggleState() ? look::accent : look::button);
     g.fillRect(front);
     g.setColour(look::text);
-    g.drawRect(front, 1.f);
+    g.drawRect(front, look::hairline);
 }
 void ReferenceButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto r = getLocalBounds().toFloat();
     look::box(g, r, getToggleState() ? look::accent : over ? look::chooser : look::button);
     g.setColour(look::text);
-    g.setFont(look::font(11.5f, true));
+    g.setFont(look::font(look::fontBody, true));
     g.drawText("REF", r, juce::Justification::centred);
 }
 void ReferenceButton::mouseDown(const juce::MouseEvent &e) {
@@ -170,16 +170,13 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
         auto button = std::make_unique<juce::TextButton>(kTabNames[static_cast<std::size_t>(i)]);
         button->setTitle(kTabNames[static_cast<std::size_t>(i)]);
         button->setClickingTogglesState(false);
-        button->setColour(juce::TextButton::buttonColourId, look::button);
-        button->setColour(juce::TextButton::buttonOnColourId, look::accent);
-        button->setColour(juce::TextButton::textColourOffId, look::text);
-        button->setColour(juce::TextButton::textColourOnId, look::text);
         button->setMouseClickGrabsKeyboardFocus(false);
         button->onClick = [this, i] { root_.chooseMixViewTab(i); };
         addChildComponent(*button);
         button->setVisible(std::any_of(pages.begin(), pages.end(), [i](Tab page) { return static_cast<int>(page) == i; }));
         tabs[static_cast<std::size_t>(i)] = std::move(button);
     }
+    refreshTheme();
     floating.setTooltip("Mix View in a Window. Moves the Mix View to a window of its own, onto any display; "
                         "again, back to the centre.");
     floating.setMouseClickGrabsKeyboardFocus(false);
@@ -296,8 +293,10 @@ juce::Rectangle<int> MixViewPanel::strip() const noexcept {
 }
 juce::Rectangle<int> MixViewPanel::timeline() const noexcept {
     const auto s = strip();
-    const int left = eye.getRight() + look::gap;
-    return {left, s.getY() + 5, std::max(0, s.getRight() - look::gap - left), s.getHeight() - 10};
+    const auto &measures = densityFor(appliedDensity_);
+    const int left = eye.getRight() + measures.gap;
+    const int inset = measures.border + juce::roundToInt(measures.hairline);
+    return {left, s.getY() + inset, std::max(0, s.getRight() - measures.gap - left), std::max(0, s.getHeight() - 2 * inset)};
 }
 juce::String MixViewPanel::referenceText() const {
     if (const auto id = root_.referenceTrack(); id != 0)
@@ -305,8 +304,22 @@ juce::String MixViewPanel::referenceText() const {
             return juce::String::fromUTF8(t->name.c_str());
     return "None yet";
 }
+void MixViewPanel::refreshTheme() {
+    const auto theme = look::themeId();
+    if (appliedTheme_ == theme) return;
+    appliedTheme_ = theme;
+    for (auto &button : tabs) {
+        button->setColour(juce::TextButton::buttonColourId, look::button);
+        button->setColour(juce::TextButton::buttonOnColourId, look::accent);
+        button->setColour(juce::TextButton::textColourOffId, look::text);
+        button->setColour(juce::TextButton::textColourOnId, look::text);
+    }
+    channels.list.setColour(juce::ListBox::backgroundColourId, look::panel);
+    repaint();
+}
 void MixViewPanel::frame(const SnapshotReader &reader) {
     const juce::Component::SafePointer<MixViewPanel> alive(this);
+    refreshTheme();
     floating.setToggleState(root_.state().mixViewDetached, juce::dontSendNotification);
     if (ref.getToggleState() != root_.reference().on() || eye.getToggleState() != root_.state().showReference ||
         root_.playing()) {
@@ -344,7 +357,7 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         layoutPending_ = true;
         repaint();
     }
-    if (layoutPending_ || appliedDock_ != root_.state().mixAnalyzerDock ||
+    if (layoutPending_ || appliedDensity_ != look::densityId() || appliedDock_ != root_.state().mixAnalyzerDock ||
         song.getHeight() != std::min(look::mixSongHeight, getHeight() / 5) ||
         appliedWidth_ != root_.state().mixAnalyzerWidth) resized();
     if (!alive) return;
@@ -408,31 +421,36 @@ void MixViewPanel::resized() {
     // held. The next owner frame coalesces requested changes after release.
     if (stack.model().capture()) { layoutPending_ = true; return; }
     layoutPending_ = false;
+    appliedDensity_ = look::densityId();
     const auto &state = root_.state();
     appliedDock_ = state.mixAnalyzerDock; appliedWidth_ = state.mixAnalyzerWidth;
-    headerHeight_ = getWidth() >= kHeaderSingleRowWidth ? kHeaderHeight : kHeaderHeight * 2;
+    const bool singleRow = getWidth() >= look::mixHeaderSingleRowWidth;
+    const int headerHeight = look::mixHeaderHeight * (singleRow ? 1 : 2);
     auto remainingArea = getLocalBounds();
     song.setBounds(remainingArea.removeFromTop(std::min(look::mixSongHeight, getHeight() / 5)));
-    appliedBody_ = remainingArea.withTrimmedTop(headerHeight_ + kStripHeight).reduced(look::border);
-    appliedStrip_ = {look::border, song.getBottom() + headerHeight_, std::max(0, getWidth() - 2 * look::border), kStripHeight - 2};
+    appliedBody_ = remainingArea.withTrimmedTop(headerHeight + look::mixReferenceHeight).reduced(look::border);
+    appliedStrip_ = {look::border, song.getBottom() + headerHeight, std::max(0, getWidth() - 2 * look::border),
+                     look::mixReferenceHeight - look::border / 2};
     analyzerToggle.setToggleState(appliedDock_, juce::dontSendNotification);
     int x = look::gap;
-    const int y = song.getBottom() + (kHeaderHeight - look::fieldHeight) / 2;
+    const int y = song.getBottom() + (look::mixHeaderHeight - look::fieldHeight) / 2;
     const int tabsWidth = std::max(0, getWidth() - look::gap * 3 -
-        (headerHeight_ == kHeaderHeight ? 120 : 26));
+        look::mixFloatButtonWidth - look::border - (singleRow ? look::mixDockButtonWidth : 0));
     const int pageWidth = std::min(look::mixPageWidth, tabsWidth / static_cast<int>(pages.size()));
     for (const auto page : pages) {
         tabs[static_cast<std::size_t>(page)]->setBounds(x, y, pageWidth, look::fieldHeight);
         x += pageWidth + look::border;
     }
-    floating.setBounds(std::max(0, getWidth() - look::gap - 22), y, std::min(22, getWidth()), look::fieldHeight);
-    analyzerToggle.setBounds(headerHeight_ == kHeaderHeight ? std::max(x, floating.getX() - 98) : look::gap,
-                             y + (headerHeight_ == kHeaderHeight ? 0 : kHeaderHeight),
-                             std::min(94, std::max(0, getWidth() - look::gap * 2)), look::fieldHeight);
+    floating.setBounds(std::max(0, getWidth() - look::gap - look::mixFloatButtonWidth), y,
+                       std::min(look::mixFloatButtonWidth, getWidth()), look::fieldHeight);
+    analyzerToggle.setBounds(singleRow ? std::max(x, floating.getX() - look::mixDockButtonWidth - look::border) : look::gap,
+                             y + (singleRow ? 0 : look::mixHeaderHeight),
+                             std::min(look::mixDockButtonWidth, std::max(0, getWidth() - look::gap * 2)), look::fieldHeight);
     const auto s = strip();
     const int sy = s.getY() + (s.getHeight() - look::fieldHeight) / 2;
-    ref.setBounds(s.getX() + 210, sy, 38, look::fieldHeight);
-    eye.setBounds(ref.getRight() + 6, sy, 124, look::fieldHeight);
+    const int refTextWidth = look::mixReferenceLabelWidth + look::mixReferenceNameWidth + 2 * look::gap - look::border / 2;
+    ref.setBounds(s.getX() + refTextWidth, sy, look::mixReferenceButtonWidth, look::fieldHeight);
+    eye.setBounds(ref.getRight() + look::gap - look::border / 2, sy, look::mixReferenceVisibilityWidth, look::fieldHeight);
     auto content = body();
     const int roomForMeter = content.getWidth() - kStackMinimumWidth - look::gap;
     const bool showMeter = roomForMeter >= look::mixMeterMinWidth && content.getHeight() >= look::mixMeterMinHeight;
@@ -481,9 +499,9 @@ void MixViewPanel::resized() {
     analysis.setBounds(content);
 }
 void MixViewPanel::paint(juce::Graphics &g) {
-    // Live's panel: the dark band with its rounded 4 pt edge, the tabs on it, the body inside.
+    const auto &measures = densityFor(appliedDensity_);
     g.setColour(look::band);
-    g.fillRoundedRectangle(getLocalBounds().toFloat(), 5.f);
+    g.fillRoundedRectangle(getLocalBounds().toFloat(), measures.radiusControl);
     const auto inner = body();
     g.setColour(look::frame);
     g.fillRect(inner);
@@ -493,34 +511,37 @@ void MixViewPanel::paint(juce::Graphics &g) {
     g.setColour(look::panel);
     g.fillRect(s);
     g.setColour(look::text);
-    g.setFont(look::font(12.f, true));
+    g.setFont(look::font(measures.fontField, true));
     const juce::String star = juce::String(juce::CharPointer_UTF8("\xe2\x98\x85"));
-    g.drawText(star + " Reference", s.getX() + 8, s.getY(), 96, s.getHeight(), juce::Justification::centredLeft);
-    g.setFont(look::font(12.f));
+    const int labelX = s.getX() + measures.gap;
+    g.drawText(star + " Reference", labelX, s.getY(), measures.mixReferenceLabelWidth, s.getHeight(),
+               juce::Justification::centredLeft);
+    g.setFont(look::font(measures.fontField));
     const auto reference = root_.referenceTrack();
     g.setColour(reference != 0 ? look::text : look::textDim);
-    g.drawText(referenceText(), s.getX() + 104, s.getY(), 100, s.getHeight(), juce::Justification::centredLeft, true);
+    g.drawText(referenceText(), labelX + measures.mixReferenceLabelWidth, s.getY(), measures.mixReferenceNameWidth,
+               s.getHeight(), juce::Justification::centredLeft, true);
     const auto line = timeline();
     g.setColour(look::lane);
     g.fillRect(line);
     const auto *track = reference != 0 ? root_.reader().findTrack(reference) : nullptr;
     if (track == nullptr) {
         g.setColour(look::textDim);
-        g.setFont(look::font(11.5f));
+        g.setFont(look::font(measures.fontBody));
         g.drawText("A track's Reference role arrives with the format (N38); its route with the cue path (N23).",
-                   line.reduced(6, 0), juce::Justification::centredLeft, true);
+                   line.reduced(measures.gap - measures.border / 2, 0), juce::Justification::centredLeft, true);
     } else if (line.getWidth() > 0) {
         const auto end = static_cast<double>(root_.arrangement.geometry.end(root_.reader()));
         const auto rows = root_.arrangement.geometry.rows(root_.reader());
         const float lx = static_cast<float>(line.getX()), lw = static_cast<float>(line.getWidth());
         auto xOf = [&](std::int64_t tick) { return static_cast<float>(static_cast<double>(tick) / end) * lw; };
         g.setColour(root_.arrangement.colourFor(rows.find(reference)));
+        const auto clip = line.reduced(0, measures.border / 2).toFloat();
         for (const auto &c : track->clips)
-            g.fillRect(lx + xOf(c->posTicks), static_cast<float>(line.getY() + 2), std::max(1.f, xOf(c->lengthTicks)),
-                       static_cast<float>(line.getHeight() - 4));
+            g.fillRect(lx + xOf(c->posTicks), clip.getY(), std::max(measures.hairline, xOf(c->lengthTicks)), clip.getHeight());
         const auto px = lx + xOf(root_.timelineTick());
         g.setColour(look::text);
-        g.fillRect(px, static_cast<float>(line.getY()), 1.f, static_cast<float>(line.getHeight()));
+        g.fillRect(px, static_cast<float>(line.getY()), measures.hairline, static_cast<float>(line.getHeight()));
     }
 }
 } // namespace adi::ui

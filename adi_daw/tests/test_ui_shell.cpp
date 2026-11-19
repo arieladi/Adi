@@ -9484,6 +9484,25 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     root.frame();
     auto &mix = root.mixViewPanel;
     auto &nav = mix.channels;
+    const auto oldTheme = look::themeId();
+    const auto oldDensity = look::densityId();
+    look::apply(ThemeId::Dark, DensityId::Compact);
+    mix.frame(root.reader());
+    const auto compactBounds = mix.getBounds();
+    const int compactTop = mix.body().getY();
+    const int compactReference = mix.ref.getWidth();
+    look::apply(ThemeId::Light, DensityId::Open);
+    mix.frame(root.reader());
+    const auto &stackTab = *mix.tabs[static_cast<std::size_t>(MixViewPanel::Tab::Stack)];
+    check(mix.getBounds() == compactBounds && mix.body().getY() > compactTop &&
+              mix.ref.getWidth() == look::mixReferenceButtonWidth && mix.ref.getWidth() > compactReference &&
+              nav.list.getRowHeight() == look::mixChannelRowHeight,
+          "the same Mix View lays out its existing controls with Open density on the next frame");
+    check(stackTab.findColour(juce::TextButton::buttonColourId) == look::button &&
+              nav.list.findColour(juce::ListBox::backgroundColourId) == look::panel,
+          "an existing Mix View refreshes the cached colours of its tabs and channel list");
+    look::apply(oldTheme, oldDensity);
+    mix.frame(root.reader());
     mix.stack.channelScope.setSelectedId(2, juce::sendNotificationSync);
     check(nav.isShowing() && nav.trackAt(0) == 10 && nav.trackAt(4) == 14 && nav.trackAt(5) == 1,
           "the browser presents ordered authored channels, with Main at the end");
@@ -9870,7 +9889,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
           "STACK shows, lit, with a row for each channel");
     check(panel.channels.isVisible() && panel.body().contains(panel.channels.getBounds()) &&
               panel.body().contains(panel.stack.getBounds()) &&
-              panel.channels.getRight() < panel.stack.getX() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
+              panel.channels.getRight() < panel.stack.getX() && panel.body().getY() >= look::mixHeaderHeight,
           "channels and Stack sit beside one another below the page buttons");
     {
         const auto before = panel.getBounds();

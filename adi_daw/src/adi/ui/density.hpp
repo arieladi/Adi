@@ -41,6 +41,15 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(mixFocusChipHeight) \
     ADI_DENSITY_INT(mixFocusSourceWidth) \
     ADI_DENSITY_INT(mixFocusAddWidth) \
+    ADI_DENSITY_INT(mixHeaderHeight) /* one row of workspace controls */ \
+    ADI_DENSITY_INT(mixHeaderSingleRowWidth) /* space to keep those controls on one row */ \
+    ADI_DENSITY_INT(mixFloatButtonWidth) \
+    ADI_DENSITY_INT(mixDockButtonWidth) \
+    ADI_DENSITY_INT(mixReferenceHeight) /* the reference timeline and its controls */ \
+    ADI_DENSITY_INT(mixReferenceLabelWidth) \
+    ADI_DENSITY_INT(mixReferenceNameWidth) \
+    ADI_DENSITY_INT(mixReferenceButtonWidth) \
+    ADI_DENSITY_INT(mixReferenceVisibilityWidth) \
     ADI_DENSITY_INT(mixChannelMinWidth) /* left channel column */ \
     ADI_DENSITY_INT(mixChannelMaxWidth) \
     ADI_DENSITY_INT(mixChannelRowHeight) \
