@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E11 callback denormal handling
+
+**PR requested** — branch `engine/df-e11-callback-denormals`, head `830ad57c862860269556d8aad49cea0004339b21`, main base `bedee5ab`. Title **DF-E11: Scope denormal flushing to the device callback**. Implements ADR-0042 d6 in the shared device callback.
+
+The device saves the caller's control, enables x86 FTZ and DAZ or the ARM denormal flush mode, and restores the saved control after processing. Each render job inherits the device callback's floating-point environment and denormal mode through the shared control helper. The live tests exercise float and double arithmetic on subnormal inputs and subnormal results, caller rounding, callback exit restoration, a short second callback and actual worker dispatch.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them against the frozen DEV-23 Debug core. Both passed device (52), graph workers (92), device host (60), Session (214) and transport info (131). Current main failed three new checks. The three compiled faults detected missing callback flushing, missing worker propagation and leaked caller controls. Clang cross-compiled the scope for Linux and Darwin ARM64 and emitted FPCR save, set and restore. Runtime arithmetic checks ran on Linux x86-64. Four validators and the format layout check passed.
+
 ## 2026-11-19 — DF-E9 automation Undo preserves additive storage
 
 **PR requested** — branch `engine/df-e9-automation-undo`, head `ab5feee142c134fdb9a85df3f7a8c8f3865511ba`, main base `bedee5ab`. Title **DF-E9: Restore automation lanes and streams in place**. Builds on main's existing captured range support.
