@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DF-E28 decoded cache consistency
+
+**PR requested** — `engine-win/decode-cache-consistency`, `60fa903dee31aabb60b6a1dbda7e4164586c7f12`, based on main `1a46048d`. An estimated single-file decode beyond the maximum now refuses before eviction. Malformed usage hints are skipped while real cached PCM is retained and rediscovered. The complete published target is accounted before the final cancellation check, and a cancelled caller acquires no pin. Extreme valid stamps saturate safely. The new native suite reproduced 24 failures before the changes. Strict x64 MSVC passed 218 checks across four suites after the fix. Native AAC runtime checks followed the unavailable codec gate.
+
 ## 2026-11-19 — DEV-25 Windows scanner timing
 
 **MEASURED** — Ten cold and ten warm ADI Debug invocations, five paired runs per state, using the exact worker CLI source `aa26f099` with 24 owned CLAP and 24 owned VST3 modules. All returned the same ordered 96-class catalogue. Cold median changed from 2,409.1 to 1,086.6 ms with four workers, paired difference −1,371.1 ms [−1,490.9, −1,251.2]. Warm median changed from 616.6 to 725.6 ms, paired difference +122.9 ms [+68.0, +177.8]. Every cold CLAP candidate initialized once and warm ones did not initialize. In separate addition cases, the same prewarmed registries each produced one native VST3 factory call for the sole new module and kept all 72 prior VST3 classes. No audio stream was opened. Raw data stays private.
