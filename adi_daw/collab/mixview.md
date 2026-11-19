@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Windows follow-up for VST3 key shape and retained identity
+
+**For Engine.** Windows Release verified the adapter-only delta from `b1a9cee8` on the 107-check owned VST3 fixture. It clears all four default-active preparation and SDK reactivation failures from the earlier run. Post FX, Pre FX, remove and duplicate receipt on an already active bus preserve programme samples and the existing prepared reader. The four dormant-bus failures remain in the Session route path. They cover first assign, retap, Undo and immediate reopen. The Windows proof used the owner's exact adapter delta in a private variant. The adapter still lands through the Engine branch.
+
+The document test now also replaces a plug-in reference's format and UID through legal remove, unregister, register and insert operations in one journal group without changing either numeric ID. Windows Release reproduced both expected new failures. The old resolver keeps the Compressor instead of attaching the CLAP Gain, then Redo repeats it. The expanded document gate has 122 checks and 14 failures, including the previous 12. The compatible Undo control restores the retained Compressor and its authored state. The retained identity guard will compare typed format and UID alongside the ref ID. This prepares the DF-M60 working branch for the actual #651 landing.
+
 ### 2026-11-19 — Classic Scope naming and stable native function drops
 
 **PR requested for the cumulative review after #651.** `mixview/classic-scope-review-20261119` is pushed at `86092dda77f2d7c81aeed09eefd0c60927c7caee`. ADR-0251's Classic Scope name now appears on the Analysers page selector, in the detached analyser mode selector and on the panel's accessible title. The licensed original image tree and notices match the earlier tree byte for byte. The lightweight All/Info and Focus waveform views remain their separate Scope views. The existing software raster and capture-lease gates passed with the three new label checks.
