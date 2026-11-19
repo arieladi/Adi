@@ -5,6 +5,12 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — design step 2 Stack lens and cards Release
+
+**PR requested.** Author branch `mixview/stack-cards-clean-20261119`, head `3d4904ae`, after workspace `460ecdbf`. The Stack uses the sheet's continuous row lens and a Rows control. Channel names, colour, peak/RMS, Mute and Solo stay at the left. Native cards show the EQ curve, the visible device's post-EQ spectrum, a paired bell drag with one Undo, and real, demand-gated Limiter reduction. Compact folded pills can activate, unfold and remove the exact device through existing authority. The default Stack shows all channels. Third-party named chips and per-row insertion are the next design step.
+
+Nine targeted Release suites and 788 software-peer checks passed. The limiter retirement gate exercises revoke, Undo on the original runtime with a fresh telemetry lease, Redo and replacement. The package is `ADI-MixView-Stack-Cards-20261119-3d4904ae4e-win64-Release.zip`. ZIP SHA-256 `98b0c89d4df6f9352c4390d100040bde14c500f6af607c2f99e56d14eaa98501`. ADI.exe SHA-256 `79e7db9693fc555734c33cd6fc678f13221636ddffa405b312b7c122fbff1a92`. Scanner SHA-256 `f02b53217c98a9a9c88d7efeb83eaf4fc5d9dce7a6df35082f7371a441181a66`. Brief `ADI-Q-MixView-Stack-Cards-20261119-3d4904ae-CLAUDE-RETEST.txt`. Live geometry, drag feel and stopped CPU still await Claude. The Limiter history reports actual callbacks. Other dynamics-card displays still need their specific contracts.
+
 ## 19 November 2026 — design step 1 workspace Release
 
 **PR requested.** Author branch `mixview/workspace-20261119`, head `460ecdbf`, review after `01c0bc1e`. Arrangement and Mix View switch the whole body through one command. The song strip reads the existing timeline and seeks via the transport owner. The searchable project channel browser and stable group filter own the left column with a demand-driven Info preview. Opening Analysers retains the source and Stack selection. A docked Mix View releases the hidden Device View's parameter demand. Detach, minimize, restore and re-dock have separate headless checks.
