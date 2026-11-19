@@ -1895,6 +1895,24 @@ bool Session::tick(std::int64_t nowMs) {
 // ---------------------------------------------------------------------------
 
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
+    prepareFormat(sampleRate, maxFrames, false);
+}
+
+void Session::prepareWithGraphWorkers(double sampleRate, std::int32_t maxFrames,
+                                     std::uint32_t workers, std::int32_t minimumFrames) {
+    constexpr std::uint32_t minimumNodes = 2;
+    const auto revision = graph_.configurationRevision();
+    const bool configured = graph_.setParallelRendering(workers, minimumFrames, minimumNodes);
+    if (prepareFormat(sampleRate, maxFrames, graph_.configurationRevision() != revision))
+        return;
+    if (configured && workers != 0) {
+        // A failed parallel preparation must still give the device a chance to play serially.
+        graph_.setParallelRendering(0, minimumFrames, minimumNodes);
+        rebuild();
+    }
+}
+
+bool Session::prepareFormat(double sampleRate, std::int32_t maxFrames, bool workerPolicyChanged) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
     if (changed) {
@@ -1908,7 +1926,7 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
     // sleep/wake -- must not produce a seam the user did not ask for.
-    if (!changed && live_) return;
+    if (!changed && !workerPolicyChanged && live_) return true;
 
     if (changed) {
         ++runtimeEpoch_;
@@ -1916,8 +1934,7 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
         spec_.sampleRate = sampleRate;
         spec_.maxFrames = maxFrames;
     }
-    if (!loaded_) return;   // `process` writes silence until a project arrives
-    rebuild();
+    return !loaded_ || rebuild();  // `process` writes silence until a project arrives
 }
 
 bool Session::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) {

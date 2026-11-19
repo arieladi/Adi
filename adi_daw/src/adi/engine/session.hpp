@@ -333,6 +333,9 @@ public:
                             const std::function<bool()>& publishGuard = {});
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+    /// Configure device-owned workers as part of the same graph preparation as the device format.
+    void prepareWithGraphWorkers(double sampleRate, std::int32_t maxFrames,
+                                 std::uint32_t workers, std::int32_t minimumFrames);
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
@@ -351,6 +354,11 @@ public:
     bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
     [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
 
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
     /// precision is a new graph, built and published as a format change is
     /// (decision 3), and swapped in as any graph is: the handover carries
@@ -358,11 +366,6 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
-    /// Owner only. Configures the next graph and rebuilds when loaded; the
-    /// prior graph stays live on failure. Zero workers restores serial.
-    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
-                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
-                              void* context=nullptr);
     bool setPrecision(Precision p);
 
     /// Message thread. Publish a new alignment policy without reloading
@@ -618,6 +621,7 @@ private:
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
     std::shared_ptr<SessionEndpoint> endpoint_;
     std::vector<std::shared_ptr<SessionRuntimeClient>> runtimeClients_;
+    bool prepareFormat(double sampleRate, std::int32_t maxFrames, bool workerPolicyChanged);
     std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
     std::set<std::int64_t> frozenGroupChildren_;

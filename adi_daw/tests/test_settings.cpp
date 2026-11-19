@@ -73,12 +73,13 @@ void testRegistry() {
         unique = unique && keys.insert(s.key).second;
         std::string why;
         defaultsLegal = defaultsLegal && validate(s, s.defaultValue, why);
-        pageKnown = pageKnown && !s.page.empty() && !s.label.empty() && !s.help.empty();
+        const bool internal = s.page.empty() && s.scope == Scope::App && !s.agentMayChange && s.section.empty();
+        pageKnown = pageKnown && (!s.page.empty() || internal) && !s.label.empty() && !s.help.empty();
     }
     check(registry().size() >= 30, "at least thirty settings, saw " + std::to_string(registry().size()));
     check(unique, "every key is unique");
     check(defaultsLegal, "every default is a legal value of its own setting");
-    check(pageKnown, "every setting has a page, a label and help text (R-01, R-02)");
+    check(pageKnown, "visible settings have a page and all settings carry a label and help");
     const std::vector<std::string> liveTabs = {"Display & Input", "Theme & Colors", "Audio",
                                                "Link",            "Tempo & MIDI",   "File & Folder",
                                                "Library",         "Plug-Ins",       "Record, Warp & Launch",
@@ -392,6 +393,37 @@ void testStoreBasics() {
     const auto j = AppSettings::forApp(appdata::App::DJ).file();
     check((d.empty() && j.empty()) || (d != j && d.filename() == "settings.json"),
           "each application has its own file under its own config folder (ADR-0149)");
+}
+
+void testGraphWorkerPreference() {
+    section("DEV-23 graph worker admission");
+    const auto* row = find(kGraphWorkersKey);
+    check(row && row->type == Type::Choice && row->scope == Scope::App &&
+              row->page.empty() && !row->agentMayChange && row->defaultValue == "auto",
+          "graph workers are an internal app preference in automatic mode by default");
+    const auto pageList = pages();
+    check(std::find(pageList.begin(), pageList.end(), "") == pageList.end() &&
+              search(kGraphWorkersKey).empty(),
+          "internal graph worker preference is outside Settings pages and Find");
+
+    adi::test::TempDirectory temp("settings", "graph_workers");
+    const auto file = temp.path() / "settings.json";
+    AppSettings preferences(appdata::App::Daw, file);
+    const auto automatic = preferences.get(kGraphWorkersKey);
+    check(!graphWorkersEnabled(automatic, -1) && !graphWorkersEnabled(automatic, 0) &&
+              !graphWorkersEnabled(automatic, 256) && !graphWorkersEnabled(automatic, 512) &&
+              !graphWorkersEnabled(automatic, 1023) && graphWorkersEnabled(automatic, 1024) &&
+              graphWorkersEnabled(automatic, 2048),
+          "automatic policy uses the actual positive driver buffer with a 1024-frame threshold");
+
+    std::string why;
+    check(!preferences.set(kGraphWorkersKey, "always", kUser, why),
+          "unrecognized worker policy is refused");
+    check(preferences.set(kGraphWorkersKey, "off", kUser, why) && preferences.save(why),
+          "explicit serial mode is saved");
+    AppSettings reopened(appdata::App::Daw, file);
+    check(reopened.get(kGraphWorkersKey) == "off" && !graphWorkersEnabled(reopened.get(kGraphWorkersKey), 2048),
+          "serial override survives reopening at a large device buffer");
 }
 
 void testUnknownKeysSurvive() {
@@ -905,6 +937,7 @@ int runAll() {
     testM0Records();
     testCatalogue();
     testStoreBasics();
+    testGraphWorkerPreference();
     testUnknownKeysSurvive();
     testCorruptKeptAside();
     testApplicationsNeverShare();

@@ -196,6 +196,7 @@ public:
     bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
                               std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
                               void* context=nullptr) noexcept;
+    [[nodiscard]] std::uint64_t configurationRevision() const noexcept { return configuration_; }
     void setPrecision(Precision p) noexcept {
         if (precision_ != p) ++configuration_;
         precision_ = p;

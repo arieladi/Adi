@@ -9,6 +9,7 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include "mix_function_host.hpp"
+#include <algorithm>
 #include <chrono>
 #include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -543,6 +544,14 @@ class AdiApplication final : public juce::JUCEApplication,
             report(error.toStdString());
             return;
         }
+        document_->configureGraphWorkers([this](std::int32_t granted) -> std::uint32_t {
+            if (!settings::graphWorkersEnabled(settings_->get(settings::kGraphWorkersKey), granted))
+                return 0;
+            // The device callback also renders. The graph caps this further by its available work.
+            const auto cores = std::thread::hardware_concurrency();
+            return cores > 1 ? (std::min)(cores - 1U, static_cast<unsigned>(engine::RenderWorkers::maximum))
+                             : 0U;
+        }, settings::kGraphWorkersMinimumFrames);
         bridge_ = std::make_unique<device::DeviceBridge>(*document_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());

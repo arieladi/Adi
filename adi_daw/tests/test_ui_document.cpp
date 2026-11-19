@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/settings/store.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
+#include "juce/device_core.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
@@ -45,6 +47,84 @@ class Tone final : public engine::Node {
     }
     const char *name() const noexcept override { return "document tone"; }
 };
+class WorkerTone final : public engine::Node {
+  public:
+    bool canProcessOnWorker() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override {
+        for (int c = 0; c < io.channels; ++c)
+            std::fill_n(io.out[c] + io.blockOffset, io.frames, 0.125f);
+    }
+    const char *name() const noexcept override { return "device graph worker tone"; }
+};
+void deviceGraphWorkers(const std::filesystem::path &dir) {
+    std::array<WorkerTone, 4> sources;
+    std::vector<std::int64_t> tracks;
+    settings::AppSettings preferences(appdata::App::Daw, dir / "device-graph-workers.json");
+    std::string error;
+    auto document = ui::ProjectDocument::open(dir / "device-graph-workers.adi", true, {}, error);
+    check(document != nullptr, "graph workers: open a project through the document");
+    if (!document) return;
+    auto &session = document->session();
+    for (const auto &track : document->view().current()->tracks)
+        if (track->kind == "audio" || track->kind == "midi")
+            tracks.push_back(track->id);
+    check(tracks.size() == sources.size(), "graph workers: independent audio and MIDI strips");
+    if (tracks.size() != sources.size()) return;
+    session.setSourcesFor([&](std::int64_t id) {
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            if (id == tracks[i]) return std::vector<engine::Node *>{&sources[i]};
+        return std::vector<engine::Node *>{};
+    });
+
+    constexpr int minimum = settings::kGraphWorkersMinimumFrames;
+    int lastGrant = 0;
+    document->configureGraphWorkers([&](std::int32_t granted) -> std::uint32_t {
+        lastGrant = granted;
+        return settings::graphWorkersEnabled(preferences.get(settings::kGraphWorkersKey), granted) ? 2U : 0U;
+    }, minimum);
+    device::DeviceCore driver;
+    const auto workerCount = [&] { return session.graph().currentGraph()->renderWorkerCount(); };
+    check(driver.open(*document, 48000, 2048, 1023).sizeMismatch() &&
+              lastGrant == 1023 && workerCount() == 0,
+          "graph workers: a large request with a 1023-frame grant stays serial");
+    const auto before = session.stats().rebuilds;
+    check(driver.changeBlockSize(48000, 256, minimum).sizeMismatch() &&
+              lastGrant == minimum && workerCount() == 2 && session.stats().rebuilds == before + 1,
+          "graph workers: a small request with a 1024-frame grant prepares workers in one build");
+
+    std::array<float, minimum> left{}, right{};
+    std::array<float *, 2> outputs{left.data(), right.data()};
+    driver.process(outputs.data(), 2, nullptr, 0, minimum - 1);
+    check(session.graph().currentGraph()->stats().workerNodeBlocks == 0 && left[0] > 0,
+          "graph workers: a short callback renders serially on the prepared graph");
+    driver.process(outputs.data(), 2, nullptr, 0, minimum);
+    const auto parallelLeft = left;
+    const auto parallelRight = right;
+    check(session.graph().currentGraph()->stats().workerNodeBlocks > 0 && left[0] > 0,
+          "graph workers: a full callback dispatches independent tracks");
+    auto *parallel = session.graph().currentGraph();
+    const auto builds = session.stats().rebuilds;
+    check(driver.changeBlockSize(48000, 2048, minimum).opened &&
+              session.graph().currentGraph() == parallel && session.stats().rebuilds == builds,
+          "graph workers: unchanged grant and policy preserve the live graph");
+
+    check(preferences.set(settings::kGraphWorkersKey, "off", {}, error),
+          "graph workers: the internal Off override is accepted");
+    check(driver.changeBlockSize(48000, 2048, minimum).opened &&
+              workerCount() == 0 && session.stats().rebuilds == builds + 1,
+          "graph workers: Off takes effect at the same granted format");
+    driver.process(outputs.data(), 2, nullptr, 0, minimum);
+    check(left == parallelLeft && right == parallelRight, "graph workers: serial and parallel output match exactly");
+    check(preferences.set(settings::kGraphWorkersKey, "auto", {}, error),
+          "graph workers: automatic device policy can be restored");
+    check(driver.changeBlockSize(48000, 4096, 2048).opened && workerCount() == 2 &&
+              driver.changeBlockSize(48000, 4096, 512).opened && lastGrant == 512 && workerCount() == 0,
+          "graph workers: changing device size back below the boundary removes the workers");
+    driver.close();
+    check(driver.open(*document, 48000, 256, minimum).opened && workerCount() == 2,
+          "graph workers: a restarted device reapplies its actual grant");
+    driver.close();
+}
 double bin(const std::array<float, 2048> &data, int k) {
     std::complex<double> sum{};
     for (int i = 0; i < 1024; ++i)
@@ -1476,6 +1556,7 @@ int main(int argc, char **argv) {
             check(false, e.what());
         }
     }
+    deviceGraphWorkers(temp.path());
     refusedBeginOwnership(temp.path());
     importWithChoices(temp.path());
     mixSurfacePublication(temp.path() / "mix-surface.adi");
