@@ -629,10 +629,14 @@ struct ParamOps::Runtime::DevicePresentation final : gesture::Presentation {
         if(!task)return result(gesture::PresentationState::Detached);
         if(task->unchangedState)return result(gesture::PresentationState::Current);
         if(task->cancelRequested)return result(gesture::PresentationState::Pending,"gesture is cancelling");
-        if(!task->state && (value->image.parameters.at(task->parameter)!=task->input.parameters.at(task->parameter) ||
-           (!task->pairedParameter.empty() &&
-            value->image.parameters.at(task->pairedParameter)!=task->input.parameters.at(task->pairedParameter))))
-            return result(gesture::PresentationState::Pending,"captured endpoint has a newer owned absolute input");
+        if(!task->state) {
+            const auto tolerance=task->pairedParameter.empty()?0.0:owner->tolerance_;
+            const auto differs=[&](const std::string& endpoint) {
+                return std::fabs(value->image.parameters.at(endpoint)-task->input.parameters.at(endpoint))>tolerance;
+            };
+            if(differs(task->parameter) || (!task->pairedParameter.empty() && differs(task->pairedParameter)))
+                return result(gesture::PresentationState::Pending,"captured endpoint has a newer owned absolute input");
+        }
         return apply(value->image,false);
     }
     gesture::PresentationStatus promote(const Store& store,const gesture::Base& at,const gesture::OwnerToken&,const AppliedBatch&) override {
