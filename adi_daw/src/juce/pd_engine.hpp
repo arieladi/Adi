@@ -232,24 +232,7 @@ public:
     /// 16,777,216, and ADI's 5,765,760 ticks per quarter note (SPEC 4.2) pass
     /// that within three quarter notes. Bar, beat and ticks-within-the-quarter
     /// are each small enough to stay exact for as long as anyone plays.
-    struct Transport {
-        bool playing = false;
-        double bpm = 120.0;
-        int timeSigNumerator = 4;
-        int timeSigDenominator = 4;
-        /// 1-based, as a musician counts them.
-        double bar = 1.0;
-        double beat = 1.0;
-        /// **The QUARTER-NOTE grid, not the position within the beat**, and in
-        /// 5/8 or 7/8 those are different numbers. It is the absolute tick
-        /// count modulo `ADI_PPQ` (5,765,760), counted from bar 1, so it runs
-        /// 0..5,765,759 and wraps once per quarter note whatever the meter
-        /// calls a beat. In 7/8, where the beat is an eighth, it wraps once
-        /// per TWO beats. `bar` and `beat` carry the meter; this carries a
-        /// quarter-note phase, and a patch that confuses them is early or late
-        /// by a factor of two with nothing to say why.
-        double ticksInQuarter = 0.0;
-    };
+    using Transport = PdTransport;
 
     /// **`process` READS `io.transport` ITSELF**, so nothing needs to call
     /// this in the ordinary path. `NodeIo::transport` is null outside a
