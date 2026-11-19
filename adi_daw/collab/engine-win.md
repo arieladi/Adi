@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PR requested — shared Media Cache Folder
+
+- Branch `engine-win/media-cache-root`, head `0f4ea92e6e076f81a1b0e41fe349d20089904d42`, stacked on `engine-win/decode-cache-missing-publication` at `df62deae`. Review the stack as one change if the base has yet to land.
+- The Settings location now governs both decoded audio and waveform-analysis caches. Both use owned child directories under a single absolute parent fixed on first use, with independent budgets. A changed path takes effect next launch and existing entries stay at their existing location. Physical directories are created lazily.
+- Native Windows x64 MSVC Debug `/W4 /WX` passed 461 checks across Settings, analysis cache, decode, decode consistency, PCM access, and progressive readers. Native AAC was unavailable. The exact seven changed files and matching base also compiled and linked the JUCE desktop app. The Settings window was not run.
+
 ## 2026-11-19 — Combined export and project publication
 
 **PR requested** `engine-win/publication-safety-integration` at `20f27d66b66647e3973148c2b1d0aacca8431901`. The exact tested parents are export/presets `0b6ddcce` and collection/desktop `9b330750`. Both native identity helpers stay in the shared publisher API. Native rename and verified-copy directory-sync reporting, replacement identity binding and identity-aware rollback retain their tested contracts. Use this tested tip to review the two publication stacks together.
