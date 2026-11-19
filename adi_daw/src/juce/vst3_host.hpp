@@ -116,6 +116,7 @@ public:
     [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+    void setOffline(bool offline) noexcept override { requestedOffline_ = offline; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -126,6 +127,7 @@ public:
     /// construction: the graph asks before it prepares, and a VST3 does not
     /// change what it supports.
     [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
+    [[nodiscard]] bool wantsDeviceTransport() const noexcept override { return true; }
     /// The graph's width for the next `prepare`. A VST3 fixes its sample
     /// size in `setupProcessing`, at activation, so it is set up at 64 only
     /// when it will be handed double, and at 32 in a graph at 32 whatever it
@@ -317,7 +319,13 @@ private:
 
     void readParameters();
 
+    struct PlayHead final : juce::AudioPlayHead {
+        const engine::DeviceTransport* clock = nullptr;
+        [[nodiscard]] juce::Optional<PositionInfo> getPosition() const override;
+    };
+
     std::weak_ptr<DeviceEditor> editor_;
+    PlayHead playHead_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
@@ -386,6 +394,7 @@ private:
     std::int32_t channels_ = 2;
     double sampleRate_ = 0.0;
     bool prepared_ = false;
+    bool requestedOffline_ = false;
     std::int64_t activations_ = 0;
     /// Holds the audio thread off the plug-in while `prepare` or `release`
     /// reactivates it, which a live rebuild does while the last graph still

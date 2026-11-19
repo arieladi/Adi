@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -52,6 +53,7 @@ namespace adi::engine {
 class ScopeTap;
 class StripLaneBindings;
 class EventSource;
+class Transport;
 
 /// Fixed-format staging preserves compatible nodes already prepared by a
 /// graph. A mismatch refuses staging; it never re-prepares a live plug-in.
@@ -75,6 +77,24 @@ inline constexpr std::int64_t kInfiniteTail = INT64_MAX;
 /// this one; it arrives when something needs it.
 enum class Bus : std::uint8_t { Main = 0, Sidechain = 1 };
 
+/// Transport at the first sample of a hosted device's current segment.
+struct DeviceTransport {
+    std::int64_t sample = 0;
+    std::int64_t bar = 0; ///< zero-based
+    double quarterNotes = 0;
+    double barStart = 0;
+    double bpm = 120;
+    int numerator = 4;
+    int denominator = 4;
+    bool playing = false;
+    bool looping = false;
+    std::int64_t loopBegin = 0;
+    std::int64_t loopEnd = 0;
+    double loopBeginQuarterNotes = 0;
+    double loopEndQuarterNotes = 0;
+    std::int64_t nextChange = std::numeric_limits<std::int64_t>::max();
+};
+
 /// Session transport at the first sample of a BLOCK, shared by all segments.
 /// ADR-0188 d3: only the quarter-note remainder goes to Pd, never absolute ticks.
 struct TransportInfo {
@@ -91,6 +111,9 @@ struct TransportInfo {
     const StripLaneBindings* stripLanes = nullptr;
     /// Driver-applied transport identity; seeks can be discontinuous even at equal stamps.
     std::uint64_t transportRevision = 0;
+    const Transport* deviceClock = nullptr;
+    const void* deviceClockContext = nullptr;
+    DeviceTransport (*devicePosition)(const void*, std::int64_t) noexcept = nullptr;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -144,6 +167,7 @@ struct NodeIo {
     std::uint64_t renderBlock = 0;
     std::int32_t configuredLatency = 0; ///< this graph publication's cached slot latency
     bool exporting = false; ///< explicit quality intent, not inferred from transport state
+    const DeviceTransport* deviceTransport = nullptr; ///< valid only during this call
 
     /// This call is at full width: `out64` is the buffer to write.
     [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
@@ -174,6 +198,9 @@ public:
     /// Audio thread. Bounded, allocation-free, no I/O. Push into `out`; a full
     /// list refuses, and the list counts what it refused.
     virtual void emit(EventList& out, std::int32_t frames) noexcept = 0;
+    virtual void emitAtInput(EventList& out, std::int32_t frames, std::int32_t) noexcept {
+        emit(out, frames);
+    }
 };
 
 /// One processing node.
@@ -190,6 +217,7 @@ public:
 
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+    [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
     /// Owner-side shape admission for staged graphs. DeviceNode forwards its
     /// instance's shape epoch. Native fixed-shape nodes retain zero.
     [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return 0; }

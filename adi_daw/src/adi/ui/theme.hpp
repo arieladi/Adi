@@ -84,6 +84,31 @@ enum class ThemeId { Dark, MidGrey, Light, MixView };
     ADI_THEME_ROLE(knobTrack) /* a rotary's track, a scroll bar's thumb */ \
     ADI_THEME_ROLE(knobRim) /* a rotary's rim */ \
     ADI_THEME_ROLE(tooltip) /* a tooltip's ground */ \
+    /* the shared controls (language.png parts B, C, D) */ \
+    ADI_THEME_ROLE(buttonRest) /* a button at rest */ \
+    ADI_THEME_ROLE(buttonEdge) /* its edge */ \
+    ADI_THEME_ROLE(buttonHover) /* under the pointer */ \
+    ADI_THEME_ROLE(buttonHoverEdge) \
+    ADI_THEME_ROLE(buttonPressed) /* pressed */ \
+    ADI_THEME_ROLE(buttonPressedEdge) \
+    ADI_THEME_ROLE(buttonDisabled) /* disabled */ \
+    ADI_THEME_ROLE(buttonDisabledEdge) \
+    ADI_THEME_ROLE(group) /* a rounded group of buttons */ \
+    ADI_THEME_ROLE(groupEdge) \
+    ADI_THEME_ROLE(groupSeparator) /* the line between a group's buttons */ \
+    ADI_THEME_ROLE(play) /* Play while playing */ \
+    ADI_THEME_ROLE(knobFaceHigh) /* the knob's dial, its lit side */ \
+    ADI_THEME_ROLE(knobFaceLow) /* and its shaded side */ \
+    ADI_THEME_ROLE(knobFaceHoverHigh) /* the dial under the pointer */ \
+    ADI_THEME_ROLE(knobFaceHoverLow) \
+    ADI_THEME_ROLE(knobNeedleOff) /* a disabled knob's needle */ \
+    ADI_THEME_ROLE(modulation) /* a modulated knob's second arc */ \
+    ADI_THEME_ROLE(boxFill) /* a value box */ \
+    ADI_THEME_ROLE(boxEdge) /* its edge, and a switch's when off */ \
+    ADI_THEME_ROLE(switchOff) /* a switch's track when off */ \
+    ADI_THEME_ROLE(tabsBack) /* the tabs' ground */ \
+    ADI_THEME_ROLE(tabOn) /* the chosen tab */ \
+    ADI_THEME_ROLE(tabOnEdge) \
     /* menus */ \
     ADI_THEME_ROLE(menuBack) \
     ADI_THEME_ROLE(menuEdge) \

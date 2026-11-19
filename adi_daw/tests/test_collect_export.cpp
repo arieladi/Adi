@@ -85,6 +85,13 @@ std::error_code refuseRename(const fs::path&, const fs::path&) {
 }
 void corruptCopy(const fs::path& path) { write(path, "corrupt"); }
 void failCopy(const fs::path& path) { write(path, "partial"); throw std::runtime_error("injected copy failure"); }
+void concurrentDestination(const fs::path& copy) {
+    write(copy.parent_path().parent_path() / "target", "another writer's output");
+}
+void concurrentDestinationAndFail(const fs::path& copy) {
+    concurrentDestination(copy);
+    failCopy(copy);
+}
 void publication() {
     adi::test::TempDirectory temp{"publish", "fallback"};
     const auto source = temp.path() / "source", target = temp.path() / "target";
@@ -98,8 +105,14 @@ void publication() {
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::exists && read(target) == bytes, "fallback never overwrites existing file");
     fs::remove(target); write(source, bytes);
+    result = media::publishFile(source, target, {refuseRename, concurrentDestination},
+                                media::PublishPolicy::AtomicOnly);
+    check(result.status == media::PublishStatus::failed && !result.usedFallback &&
+          !fs::exists(target) && read(source) == bytes,
+          "atomic-only refusal reports failure without starting the copy");
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::published && result.usedFallback && read(target) == bytes, "refused rename takes verified streaming fallback");
+    check(result.identity.has_value(), "verified publication reports destination identity");
     check(!fs::exists(source), "fallback consumes staging only after verification");
     fs::remove(target); write(source, bytes);
     result = media::publishFile(source, target, {refuseRename, corruptCopy});
@@ -108,6 +121,17 @@ void publication() {
     result = media::publishFile(source, target, {refuseRename, failCopy});
     check(result.status == media::PublishStatus::failed, "fallback reports injected copy failure");
     check(!fs::exists(target), "failed fallback removes partial target");
+    result = media::publishFile(source, target, {refuseRename, concurrentDestination});
+    check(result.status == media::PublishStatus::exists && read(target) == "another writer's output",
+          "late fallback collision leaves the other writer's output intact");
+    check(read(source) == bytes, "late collision retains the original stage");
+    fs::remove(target);
+    result = media::publishFile(source, target, {refuseRename, concurrentDestinationAndFail});
+    check(result.status == media::PublishStatus::failed && read(target) == "another writer's output",
+          "fallback failure cleanup never touches a concurrently published destination");
+    check(read(source) == bytes, "failed copy retains the original stage");
+    check(std::distance(fs::directory_iterator(temp.path()), fs::directory_iterator{}) == 2,
+          "private copy staging is removed on success, collision and failure");
 }
 void collection() {
     Fixture f;

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/app_audio_page.hpp"
+#include "../src/juce/ui_controls.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
@@ -8162,6 +8163,230 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
 // a band of the clip's body, and nothing past the clip's source window once the clip is longer.
 // E4: Live's audio clip fades (Live 12 manual 6.8; N17): the handles, Create Fade and Crossfade,
 // Delete Fades, F.
+// The window as the director judges it (win's note of 18 November): one picture at 1920 x 1080, real
+// size, on a project of real parts: a drum pattern, held chords, a bass line and a melody as MIDI, and
+// two audio files imported through the window's own drop, so their waveforms are the files'. Made
+// only when ADI_UI_SHOWCASE names a folder; it writes adi-showcase.png there.
+void showcase(AppCommands &commands, const std::filesystem::path &dir) {
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_SHOWCASE", {});
+    if (folder.isEmpty())
+        return;
+    std::string error;
+    auto document = ProjectDocument::open(dir / "Showcase.adi", true, {}, error);
+    check(document != nullptr, "the showcase project opens");
+    if (!document)
+        return;
+    const std::int64_t bar = textproj::kWhole, beat = bar / 4, eighth = beat / 2, sixteenth = beat / 4;
+    std::vector<OpRequest> ops;
+    const auto add = [&](const char *type, Payload payload, const char *label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        ops.push_back(std::move(r));
+    };
+    // Live's default set (two MIDI and two audio tracks) named for the song, and two MIDI tracks more.
+    add("track.rename", {{"id", 2}, {"name", "Drums"}}, "Rename");
+    add("track.rename", {{"id", 3}, {"name", "Chords"}}, "Rename");
+    add("track.rename", {{"id", 4}, {"name", "Drum Loop"}}, "Rename");
+    add("track.rename", {{"id", 5}, {"name", "Pad"}}, "Rename");
+    add("track.create", {{"id", 20}, {"kind", "midi"}, {"name", "Bass"}}, "Insert MIDI Track");
+    add("track.create", {{"id", 21}, {"kind", "midi"}, {"name", "Melody"}}, "Insert MIDI Track");
+    std::int64_t noteId = 1;
+    const auto note = [&](std::int64_t clip, std::int64_t start, std::int64_t length, int key, int velocity) {
+        add("note.insert", {{"clip", clip}, {"note", noteId++}, {"start", start}, {"dur", length}, {"key", key}, {"vel", velocity}},
+            "Add Note");
+    };
+    const auto clip = [&](std::int64_t id, std::int64_t track, std::int64_t pos, std::int64_t length, const char *name) {
+        add("clip.create", {{"id", id}, {"track", track}, {"kind", "midi"}, {"pos", pos}, {"length", length}}, "Insert MIDI Clip");
+        add("clip.setName", {{"id", id}, {"name", name}}, "Rename");
+    };
+    // Drums, eight bars: kick on one and three (and the and of three every other bar), snare on two and
+    // four, closed hats on the eighths, an open hat closing each bar, a fill in the last.
+    clip(100, 2, 0, 8 * bar, "Beat");
+    for (int b = 0; b < 8; ++b) {
+        const std::int64_t at = b * bar;
+        note(100, at, sixteenth, 36, 118);
+        note(100, at + 2 * beat, sixteenth, 36, 110);
+        if (b % 2 == 1)
+            note(100, at + 2 * beat + eighth, sixteenth, 36, 92);
+        note(100, at + beat, sixteenth, 38, 112);
+        note(100, at + 3 * beat, sixteenth, 38, 116);
+        for (int e = 0; e < 7; ++e)
+            note(100, at + e * eighth, sixteenth, 42, e % 2 == 0 ? 96 : 70);
+        note(100, at + 7 * eighth, eighth, 46, 88);
+        if (b == 7)
+            for (int f = 0; f < 4; ++f)
+                note(100, at + 3 * beat + f * sixteenth, sixteenth, f < 2 ? 45 : 47, 90 + 6 * f);
+    }
+    // Chords, held a bar each: Am, F, C, G, twice.
+    clip(101, 3, 0, 8 * bar, "Chords");
+    const std::array<std::array<int, 4>, 4> chords{{{57, 60, 64, 69}, {53, 57, 60, 65}, {48, 55, 60, 64}, {55, 59, 62, 67}}};
+    for (int b = 0; b < 8; ++b)
+        for (const int key : chords[static_cast<std::size_t>(b % 4)])
+            note(101, b * bar, bar - sixteenth, key, 84);
+    // Bass, on the chords' roots: the root on the beat, the octave and the fifth between.
+    clip(102, 20, 0, 8 * bar, "Bass");
+    const std::array<int, 4> roots{45, 41, 48, 43};
+    for (int b = 0; b < 8; ++b) {
+        const int root = roots[static_cast<std::size_t>(b % 4)];
+        const std::array<std::pair<std::int64_t, int>, 6> line{
+            {{0, root}, {beat + eighth, root}, {2 * beat, root + 12}, {2 * beat + eighth, root + 7}, {3 * beat, root},
+             {3 * beat + eighth, root + 7}}};
+        for (const auto &[at, key] : line)
+            note(102, b * bar + at, eighth, key, 104);
+    }
+    // Melody, a phrase in A minor over four bars, answered in the next four.
+    clip(103, 21, 0, 8 * bar, "Lead");
+    const std::array<std::tuple<std::int64_t, std::int64_t, int>, 13> phrase{{{0, beat, 76},
+                                                                               {beat, eighth, 74},
+                                                                               {beat + eighth, eighth, 72},
+                                                                               {2 * beat, 2 * beat, 69},
+                                                                               {bar, beat + eighth, 72},
+                                                                               {bar + beat + eighth, eighth, 74},
+                                                                               {bar + 2 * beat, 2 * beat, 76},
+                                                                               {2 * bar, eighth, 79},
+                                                                               {2 * bar + eighth, eighth, 76},
+                                                                               {2 * bar + beat, beat, 74},
+                                                                               {2 * bar + 2 * beat, 2 * beat, 72},
+                                                                               {3 * bar, 3 * beat, 71},
+                                                                               {3 * bar + 3 * beat, beat, 69}}};
+    for (int half = 0; half < 2; ++half)
+        for (const auto &[at, length, key] : phrase)
+            note(103, half * 4 * bar + at, length, half == 1 && at >= 3 * bar ? key - 2 : key, 100);
+    check(document->ops().submit(std::move(ops)).ok && document->synchronise(), "the song's parts are in");
+    // Two audio files, made here and dropped through the window: a two-bar drum loop at 120 BPM and an
+    // eight-bar pad, each with the shape of the real thing (a kick's sweep, a snare's noise, hats; a
+    // chord's swell).
+    const auto samples = dir / "Samples";
+    std::filesystem::create_directories(samples);
+    const double rate = 48000;
+    juce::Random random(7);
+    const auto write = [&](const std::filesystem::path &file, const std::vector<float> &stereo) {
+        audio::WavWriter writer(file, 48000, 2, audio::WavFormat::Pcm16);
+        writer.write(stereo.data(), static_cast<std::uint32_t>(stereo.size() / 2));
+    };
+    {
+        const int frames = static_cast<int>(4 * rate);
+        std::vector<float> out(static_cast<std::size_t>(frames) * 2, 0.f);
+        const auto hit = [&](double at, double length, auto voice) {
+            const int start = static_cast<int>(at * rate), count = static_cast<int>(length * rate);
+            for (int i = 0; i < count && start + i < frames; ++i) {
+                const double t = i / rate;
+                const float v = static_cast<float>(voice(t));
+                out[static_cast<std::size_t>(start + i) * 2] += v;
+                out[static_cast<std::size_t>(start + i) * 2 + 1] += v;
+            }
+        };
+        const double spb = 0.5;
+        for (int b = 0; b < 8; ++b) {
+            const double at = b * spb;
+            if (b % 2 == 0)
+                hit(at, 0.4, [](double t) { return 0.9 * std::exp(-t * 9) * std::sin(2 * juce::MathConstants<double>::pi * (55 + 90 * std::exp(-t * 30)) * t); });
+            else
+                hit(at, 0.25, [&](double t) { return 0.6 * std::exp(-t * 16) * (random.nextDouble() * 2 - 1) + 0.25 * std::exp(-t * 20) * std::sin(2 * juce::MathConstants<double>::pi * 190 * t); });
+            for (int e = 0; e < 2; ++e)
+                hit(at + e * spb / 2, 0.06, [&](double t) { return (e == 0 ? 0.25 : 0.15) * std::exp(-t * 70) * (random.nextDouble() * 2 - 1); });
+        }
+        write(samples / "Drum Loop.wav", out);
+    }
+    {
+        const int frames = static_cast<int>(16 * rate);
+        std::vector<float> out(static_cast<std::size_t>(frames) * 2, 0.f);
+        const std::array<std::array<double, 3>, 4> notes{{{220, 261.6, 329.6}, {174.6, 220, 261.6}, {130.8, 196, 261.6}, {196, 246.9, 293.7}}};
+        for (int i = 0; i < frames; ++i) {
+            const double t = i / rate, inBar = std::fmod(t, 2.0);
+            const auto &chord = notes[static_cast<std::size_t>(static_cast<int>(t / 2.0) % 4)];
+            const double swell = std::min(1.0, inBar / 0.6) * (inBar > 1.7 ? (2.0 - inBar) / 0.3 : 1.0);
+            double v = 0;
+            for (const double f : chord)
+                for (int h = 1; h <= 3; ++h)
+                    v += std::sin(2 * juce::MathConstants<double>::pi * f * h * t) / (h * 4.0);
+            out[static_cast<std::size_t>(i) * 2] = static_cast<float>(0.5 * swell * v);
+            out[static_cast<std::size_t>(i) * 2 + 1] = static_cast<float>(0.5 * swell * v * 0.97);
+        }
+        write(samples / "Pad.wav", out);
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "showcase");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.importAudio = [&](const std::string &path, AudioImport &out, std::string &why) {
+        if (document->prepareImport(path, 1'700'000'000'000'000, out))
+            return true;
+        why = document->error();
+        return false;
+    };
+    root.arrangement.waveforms = &document->waveforms();
+    root.setSize(1920, 1080);
+    root.frame();
+    commands.activate(root);
+    for (int b = 0; b < 8; b += 2)
+        check(root.dropAudio((samples / "Drum Loop.wav").string(), 4, b * bar, "Drum Loop"), "the drum loop dropped");
+    check(root.dropAudio((samples / "Pad.wav").string(), 5, 0, "Pad"), "the pad dropped");
+    root.frame();
+    // The waveforms come from the document's worker: wait for every audio clip's peaks.
+    for (int tries = 0; tries < 200; ++tries) {
+        bool all = true;
+        for (const auto &t : root.reader().tracks())
+            for (const auto &c : t->clips)
+                if (c->audio && document->waveforms().peaks(*c->audio) == nullptr)
+                    all = false;
+        if (all)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    // The Melody track chosen, its two devices in the Device View, the arrangement fitted to the song.
+    auto publication = std::make_shared<ParameterPublication>();
+    struct Knob {
+        const char *name, *text;
+        double value;
+    };
+    const std::array<std::pair<const char *, std::vector<Knob>>, 2> devices{
+        {{"Auto Filter",
+          {{"Freq", "1.20 kHz", .62}, {"Res", "38 %", .38}, {"Attack", "6.00 ms", .2}, {"Release", "200 ms", .5},
+           {"Amount", "+12", .6}, {"Rate", "1/8", .45}, {"Phase", "180°", 1}}},
+         {"Echo", {{"Time", "1/8", .4}, {"Feedback", "42 %", .42}, {"Dry/Wet", "24 %", .24}}}}};
+    std::int64_t deviceId = 91;
+    for (const auto &[name, knobs] : devices) {
+        DevicePanelData data;
+        data.id = deviceId++;
+        data.track = 21;
+        data.name = name;
+        for (const auto &k : knobs) {
+            panel::Record record;
+            record.id = record.name = k.name;
+            record.playing = record.stored = k.value;
+            record.shape = panel::Shape::Continuous;
+            record.text = k.text;
+            data.records.push_back(record);
+            data.resolved.entries.push_back({record.id, false});
+        }
+        panel::finalize(data.records);
+        publication->push_back(data);
+    }
+    root.devices.publication = [publication] { return publication; };
+    root.arrangement.geometry.selection.track = 21;
+    root.command(AppCommands::OptimizeWidth);
+    root.command(AppCommands::OptimizeHeight);
+    // No time selection over the song: the insert marker at its start, so every clip shows its own colour.
+    auto &sel = root.arrangement.geometry.selection;
+    sel.start = sel.end = sel.insert = 0;
+    sel.marked = true;
+    sel.track = 21;
+    root.frame();
+    root.frame();
+    juce::Image image(juce::Image::ARGB, 1920, 1080, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        root.paintEntireComponent(g, true);
+    }
+    const auto file = juce::File(folder).getChildFile("adi-showcase.png");
+    file.deleteFile();
+    juce::FileOutputStream out(file);
+    juce::PNGImageFormat().writeImageToStream(image, out);
+    commands.detach(root);
+    document->release();
+}
 void clipFades(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "fades.adi", true, {}, error);
@@ -11340,9 +11565,9 @@ int main(int argc, char **argv) {
               a.transport.play.glyph == BarItem::Glyph::Play,
           "the transport's buttons are Live's glyphs, named for the Info View");
     reference(a, "root-default", write);
-    // The theme and density tables (DF-W24). Dark is the default; Mid grey is the window as built
-    // before the sheets, value for value: a window made in it draws the golden drawn before them,
-    // pixel for pixel (root-default-midgrey.png is that golden, kept). Each other theme and Open
+    // The theme and density tables (DF-W24). Dark is the default; Mid grey keeps the colours of the
+    // window as built before the sheets (step 1 matched that golden pixel for pixel; since the
+    // shared controls of step 3, root-default-midgrey.png is the Mid grey window with them). Each other theme and Open
     // draw a window too.
     {
         check(look::themeId() == ThemeId::Dark && look::densityId() == DensityId::Compact &&
@@ -11389,6 +11614,159 @@ int main(int argc, char **argv) {
             }
         check(!look::apply(ThemeId::MixView, DensityId::Open), "setting the same pair again changes nothing");
         appearanceSettingsView(settings, commands);
+        // The shared controls (DF-W24 step 3; language.png parts B, C, D): one painter each.
+        look::apply(ThemeId::Dark, DensityId::Compact);
+        {
+            using controls::ButtonState;
+            using controls::Lit;
+            check(controls::stateOf(false, false, false, true) == ButtonState::Rest &&
+                      controls::stateOf(false, true, false, true) == ButtonState::Over &&
+                      controls::stateOf(false, true, true, true) == ButtonState::Pressed &&
+                      controls::stateOf(true, true, true, true) == ButtonState::On &&
+                      controls::stateOf(true, false, false, true, Lit::Record) == ButtonState::OnRecord &&
+                      controls::stateOf(true, false, false, true, Lit::Value) == ButtonState::OnValue &&
+                      controls::stateOf(false, true, true, false) == ButtonState::Disabled &&
+                      controls::stateOf(true, true, true, false) == ButtonState::DisabledOn,
+                  "a button's state: rest, pointer over, pressed, on (in the accent, the record's red or the value's "
+                  "blue), disabled, and disabled while on");
+            // A disabled switch that is on still reads as on (a Settings switch of another scope).
+            {
+                juce::Image off(juce::Image::ARGB, 40, 20, true, juce::SoftwareImageType{}), on = off.createCopy();
+                {
+                    juce::Graphics g(off);
+                    controls::button(g, {0, 0, 40, 20}, ButtonState::Disabled);
+                }
+                {
+                    juce::Graphics g(on);
+                    controls::button(g, {0, 0, 40, 20}, ButtonState::DisabledOn);
+                }
+                check(off.getPixelAt(20, 3) != on.getPixelAt(20, 3), "a disabled switch on and off look apart");
+            }
+            // A Solo made in one theme is drawn in the next theme's blue: its kind is its own, not its colour.
+            {
+                juce::TextButton solo("S");
+                solo.setLookAndFeel(&look::liveLook());
+                solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+                solo.getProperties().set("adi.lit", "value");
+                solo.setToggleState(true, juce::dontSendNotification);
+                solo.setSize(30, 20);
+                look::apply(ThemeId::Light, DensityId::Compact);
+                juce::Image shot(juce::Image::ARGB, 30, 20, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(shot);
+                    solo.paintEntireComponent(g, true);
+                }
+                check(shot.getPixelAt(15, 3) == look::value, "a lit Solo takes the theme's value blue after a theme change");
+                look::apply(ThemeId::Dark, DensityId::Compact);
+                solo.setLookAndFeel(nullptr);
+            }
+            check(controls::labelColour(ButtonState::On) == look::ink && controls::labelColour(ButtonState::OnRecord) == look::ink &&
+                      controls::labelColour(ButtonState::Rest) == look::text &&
+                      controls::labelColour(ButtonState::Disabled) == look::textFaint,
+                  "a lit button's label is the ink, a resting one's the text, a disabled one's faint");
+            const juce::Rectangle<float> monitor(0, 0, 70, 13);
+            const juce::StringArray io{"In", "Auto", "Off"};
+            const auto in = controls::oneOfCell(monitor, io, 0), autoCell = controls::oneOfCell(monitor, io, 1),
+                       off = controls::oneOfCell(monitor, io, 2);
+            check(autoCell.getWidth() > in.getWidth() && in.getRight() == autoCell.getX() &&
+                      std::abs(off.getRight() - monitor.getRight()) < 0.01f,
+                  "one of three: each choice as wide as its label wants, the three filling the box");
+            // A button drawn at rest and on: the sheet's colours, at its middle.
+            juce::Image cell(juce::Image::ARGB, 40, 20, true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(cell);
+                controls::button(g, {0, 0, 40, 20}, ButtonState::Rest);
+            }
+            const bool rest = cell.getPixelAt(20, 3) == look::buttonRest;
+            {
+                juce::Graphics g(cell);
+                controls::button(g, {0, 0, 40, 20}, ButtonState::OnRecord);
+            }
+            check(rest && cell.getPixelAt(20, 3) == look::record, "a button at rest and on for record, in the sheet's colours");
+            // The PR's picture: every control in every state, as the sheet's parts B, C and D lay them out.
+            if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+                juce::Image sheet(juce::Image::ARGB, 1920, 300, true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(sheet);
+                    g.fillAll(look::frame);
+                    g.setFont(look::font(look::fontBody));
+                    const auto caption = [&](float cx, float y, const char *t) {
+                        g.setColour(look::textDim);
+                        g.drawText(t, juce::Rectangle<float>(cx - 50, y, 100, 14), juce::Justification::centred);
+                    };
+                    float x = 24;
+                    for (const auto &[state, name] : std::vector<std::pair<ButtonState, const char *>>{
+                             {ButtonState::Rest, "Rest"}, {ButtonState::Over, "Pointer over"}, {ButtonState::Pressed, "Pressed"},
+                             {ButtonState::On, "On"}, {ButtonState::OnRecord, "On, record"}, {ButtonState::OnValue, "On, value"},
+                             {ButtonState::Disabled, "Disabled"}}) {
+                        controls::button(g, {x, 34, 74, 28}, state, "Solo");
+                        caption(x + 37, 70, name);
+                        x += 86;
+                    }
+                    controls::group(g, {24, 110, 150, 30});
+                    controls::separator(g, 74, 110, 30);
+                    controls::separator(g, 124, 110, 30);
+                    controls::button(g, {540, 113, 34, 24}, ButtonState::On, "1");
+                    controls::button(g, {578, 113, 26, 24}, ButtonState::Rest, "S");
+                    controls::button(g, {608, 113, 26, 24}, ButtonState::Rest);
+                    caption(587, 146, "Track: on, Solo, Arm");
+                    float kx = 686;
+                    const auto knob = [&](float r, float v, controls::KnobLook k, const char *name) {
+                        controls::ringKnob(g, {kx, 62}, r, v, k);
+                        caption(kx, 96, name);
+                        kx += r * 2 + 40;
+                    };
+                    knob(look::knobSmall, 0.55f, {}, "Small");
+                    knob(look::knobMedium, 0.55f, {}, "Medium");
+                    knob(look::knobLarge, 0.55f, {}, "Large");
+                    controls::KnobLook over;
+                    over.over = true;
+                    knob(17, 0.3f, over, "pointer over");
+                    controls::KnobLook centre;
+                    centre.fromCentre = true;
+                    knob(17, 0.72f, centre, "from centre");
+                    controls::KnobLook automated;
+                    automated.automated = true;
+                    knob(17, 0.6f, automated, "automated");
+                    controls::KnobLook modulated;
+                    modulated.modulation = std::make_pair(0.3f, 0.7f);
+                    knob(17, 0.45f, modulated, "modulated");
+                    controls::KnobLook disabled;
+                    disabled.disabled = true;
+                    knob(17, 0.5f, disabled, "disabled");
+                    controls::KnobLook second;
+                    second.colour = look::accent;
+                    knob(17, 0.64f, second, "second colour");
+                    const float dx = 1380;
+                    controls::valueBox(g, {dx, 34, 70, 22}, "-6.0 dB", 0.57f);
+                    caption(dx + 35, 62, "Value box");
+                    controls::chooser(g, {dx + 86, 34, 104, 22}, "Ext. In");
+                    caption(dx + 138, 62, "Chooser");
+                    controls::oneOf(g, {dx + 206, 34, 96, 22}, {"In", "Auto", "Off"}, 1);
+                    caption(dx + 254, 62, "One of three");
+                    controls::toggleSwitch(g, {dx + 318, 36, 32, 18}, true);
+                    controls::toggleSwitch(g, {dx + 360, 36, 32, 18}, false);
+                    caption(dx + 355, 62, "Switch");
+                    controls::tabs(g, {dx, 100, 392, 30}, {"Notes", "Envelopes", "MPE", "Expression"}, 0);
+                    caption(dx + 196, 138, "Tabs");
+                }
+                const auto file = juce::File(folder).getChildFile("adi-shared-controls.png");
+                file.deleteFile();
+                juce::FileOutputStream out(file);
+                juce::PNGImageFormat().writeImageToStream(sheet, out);
+            }
+        }
+        // Back to a density the settings must move, so the check below tests it.
+        look::apply(ThemeId::MixView, DensityId::Open);
+        // The settings choose them: the registry's word for the theme, the density's key once it is there.
+        std::string why;
+        settings.set("lookfeel.theme", std::string("light"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Light && look::densityId() == DensityId::Compact,
+              "lookfeel.theme \"light\" chooses Light; no density key reads as Compact");
+        settings.set("lookfeel.theme", std::string("os"), {}, why);
+        commands.reload();
+        check(look::themeId() == ThemeId::Dark, "and \"os\", the registry's default, reads as Dark");
         look::apply(ThemeId::Dark, DensityId::Compact);
     }
     check(submitter.submit(track(1)).ok, "commit between window frames");
@@ -14257,6 +14635,7 @@ int main(int argc, char **argv) {
     undoHistoryWindow(commands, temp.path());
     clipWaveforms(commands, temp.path());
     clipFades(commands, temp.path());
+    showcase(commands, temp.path());
     loopMetronome(commands, settings, temp.path());
     locators(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

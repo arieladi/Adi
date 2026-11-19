@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/session.hpp"
+#include "adi/engine/timeline_clips.hpp"
 #include "adi/dsp/auto_gain.hpp"
 #include "adi/dsp/true_peak.hpp"
 #include <algorithm>
@@ -96,7 +97,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     std::int64_t end = options.endSample;
     if (end == 0) {
         const auto snapshot = SnapshotBuilder::fromStore(store);
-        for (const auto& clip : offline.model_.clips) if (!clip.muted) {
+        for (const auto& clip : timelineClips(offline.model_)) if (!clip.muted) {
             const auto position=clip.posTicks.value_or(0), length=clip.lengthTicks.value_or(0);
             if (length < 0 || position > std::numeric_limits<std::int64_t>::max()-length)
                 return fail("invalid gain-stage clip range");
@@ -119,7 +120,7 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     for (const auto& track : offline.model_.tracks) if (track.kind=="audio" || track.kind=="midi") {
         if (track.kind=="midi") {
             bool hasClips=false, hasInstrument=false;
-            for (const auto& clip : offline.model_.clips)
+            for (const auto& clip : timelineClips(offline.model_))
                 hasClips=hasClips || (clip.trackId==track.id && !clip.muted);
             for (auto* node : offline.chainFor(track.id))
                 hasInstrument=hasInstrument || node->eventFlow()==EventFlow::Consume;
