@@ -195,6 +195,9 @@ void PdDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // AFTER the engine knows the real rate. A report from [loadbang] was made
     // at Pd's default 44.1 kHz; this is the one that is true.
     engine_->requestLatencyReport();
+    // DEV-14: whatever the patch held (voices, a [pipe]) belongs to the audio
+    // before this preparation.
+    (void)engine_->hostReset();
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
     prepared_ = true;

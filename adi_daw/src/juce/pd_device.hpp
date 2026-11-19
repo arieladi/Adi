@@ -236,6 +236,9 @@ public:
     [[nodiscard]] virtual std::uint64_t adapterEpoch() const noexcept { return 0; }
     /// The split a host should keep this engine's block on (DEV-13); 1 = any.
     [[nodiscard]] virtual std::int32_t segmentQuantum() const noexcept { return 1; }
+    /// DEV-14: a bang to the patch's `$0-adi-reset`, delivered before the next
+    /// tick. False when the engine has no patch or the patch does not listen.
+    virtual bool hostReset() noexcept { return false; }
 };
 
 /// A Pd patch in a chain, wired into delay compensation through the ordinary
@@ -273,6 +276,9 @@ public:
         // The patch's reports and the engine's own adapter both move it.
         return latency_.epoch() + (engine_ != nullptr ? engine_->adapterEpoch() : 0);
     }
+    /// DEV-14: the host's reset bang to the patch ($0-adi-reset), for stop,
+    /// bypass and panic. prepare() sends it too. Message thread.
+    bool hostReset() noexcept { return loaded_ && engine_ != nullptr && engine_->hostReset(); }
     /// DEV-13: see PdPatchEngine::segmentQuantum. 1 when nothing is loaded.
     [[nodiscard]] std::int32_t segmentQuantum() const noexcept {
         return loaded_ && engine_ != nullptr ? engine_->segmentQuantum() : 1;

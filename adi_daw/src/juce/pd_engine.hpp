@@ -192,6 +192,34 @@ public:
     void requestLatencyReport() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    /// DEV-14: one MIDI message a patch sent out ([noteout], [ctlout],
+    /// [bendout], [touchout], [polytouchout], [pgmout]). MIDI 1 by
+    /// construction: 7-bit values, channel 0..15, bend -8192..8191.
+    struct MidiOut {
+        enum class Kind : std::uint8_t { NoteOn, NoteOff, Control, Program, PitchBend,
+                                         ChannelPressure, PolyPressure };
+        std::int32_t frame = 0;   ///< block-relative, like an engine::Event
+        Kind kind = Kind::NoteOn;
+        std::uint8_t channel = 0;
+        std::uint8_t data = 0;    ///< pitch, controller or program
+        std::int16_t value = 0;   ///< velocity, controller value, pressure or bend
+    };
+    /// AUDIO THREAD, after process(): what the patch sent during that call,
+    /// each at the frame where its sound comes out -- Pd's logical time within
+    /// its tick (so [pipe] and [delay] land on the exact sample), plus the
+    /// adapter's queue: an audio patch's notes come out with its audio, one
+    /// block late when the adapter holds a block. Valid until the next process.
+    [[nodiscard]] const MidiOut* midiOut() const noexcept { return midiOut_.data(); }
+    [[nodiscard]] std::int32_t midiOutCount() const noexcept { return midiOutCount_; }
+    /// True when this call's output overflowed its fixed array: the caller
+    /// releases every note it holds from this device (DEV-14). Counted too.
+    [[nodiscard]] bool midiOutOverflowed() const noexcept { return midiOutOverflowed_; }
+
+    /// DEV-14: a bang to the patch's `$0-adi-reset` (queued like sendFloat,
+    /// delivered before the next tick): the host's reset on prepare, stop,
+    /// bypass and panic. False when the patch does not listen for it.
+    bool hostReset() noexcept override;
+
     [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
 
     /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd;
@@ -364,6 +392,8 @@ public:
         std::int64_t sendsDropped = 0;
         /// DEV-13: times Automatic had to take its one reported block.
         std::int64_t blockFallbacks = 0;
+        /// DEV-14: MIDI messages from the patch lost to a full array.
+        std::int64_t midiOutDropped = 0;
     };
     [[nodiscard]] Counters counters() const noexcept;
 
@@ -476,7 +506,32 @@ private:
     struct FloatSend {
         void* symbol = nullptr;   ///< t_symbol*, resolved under the lock by sendFloat
         float value = 0.f;
+        bool bang = false;        ///< a bang rather than the value (hostReset)
     };
+    bool enqueueSend(const char* suffix, float value, bool bang) noexcept;
+
+    // DEV-14: the patch's MIDI output. Hooks stamp each message with the
+    // absolute output sample its tick's audio comes out at plus Pd's logical
+    // offset within the tick; process() hands out those due in its segment.
+    struct PendingOut { std::int64_t at = 0; MidiOut message{}; };
+    static constexpr std::size_t kMidiOut = 512;
+    std::vector<MidiOut> midiOut_;
+    std::vector<PendingOut> midiPending_;
+    std::int32_t midiOutCount_ = 0;
+    std::size_t midiPendingCount_ = 0;
+    bool midiOutOverflowed_ = false;
+    std::atomic<std::int64_t> midiOutDropped_{0};
+    std::int64_t popped_ = 0;              ///< output frames handed out since prepare
+    std::int64_t tickOutputAt_ = 0;        ///< where the running tick's audio comes out
+    double tickStartTime_ = 0.0;           ///< Pd's logical time at the running tick
+    void collectMidi(MidiOut::Kind kind, int channel, int data, int value) noexcept;
+    void emitDueMidi(std::int32_t blockOffset, std::int32_t frames) noexcept;
+    static void noteOnHook(int channel, int pitch, int velocity);
+    static void controlHook(int channel, int controller, int value);
+    static void programHook(int channel, int value);
+    static void bendHook(int channel, int value);
+    static void pressureHook(int channel, int value);
+    static void polyPressureHook(int channel, int pitch, int value);
     static constexpr std::uint64_t kSendSlots = 256;
     std::array<FloatSend, kSendSlots> sends_{};
     std::atomic<std::uint64_t> sendHead_{0}, sendTail_{0};
