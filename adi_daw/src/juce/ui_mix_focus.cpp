@@ -58,7 +58,10 @@ MixFocus::MixFocus(AdiRootComponent &root) : root_(root) {
         addAndMakeVisible(*c);
     refreshControls();
 }
-MixFocus::~MixFocus() { scroll_.setViewedComponent(nullptr); }
+MixFocus::~MixFocus() {
+    unwatchAncestors();
+    scroll_.setViewedComponent(nullptr);
+}
 bool MixFocus::contains(std::int64_t id) const noexcept {
     return std::any_of(members_.begin(), members_.end(), [id](const auto &member) { return member.id == id; });
 }
@@ -212,22 +215,47 @@ void MixFocus::drop() {
     broker_.reset();
     redraw_ = true;
 }
+void MixFocus::dropIfActive() {
+    if (!broker_.expired() ||
+        std::any_of(members_.begin(), members_.end(), [](const auto &member) { return member.outputs != 0; }))
+        drop();
+}
 void MixFocus::suspend(bool v) {
     if (v == suspended_) return;
     suspended_ = v;
-    if (v) drop();
+    if (v) dropIfActive();
 }
 void MixFocus::visibilityChanged() {
     if (!isShowing())
-        drop();
+        dropIfActive();
 }
 void MixFocus::parentHierarchyChanged() {
-    if (!isShowing())
-        drop();
+    watchAncestors();
+    visibilityChanged();
+}
+void MixFocus::watchAncestors() {
+    unwatchAncestors();
+    for (auto *parent = getParentComponent(); parent != nullptr; parent = parent->getParentComponent()) {
+        ancestors_.emplace_back(parent);
+        parent->addComponentListener(this);
+    }
+}
+void MixFocus::unwatchAncestors() noexcept {
+    for (auto &parent : ancestors_)
+        if (parent != nullptr) parent->removeComponentListener(this);
+    ancestors_.clear();
+}
+void MixFocus::componentVisibilityChanged(juce::Component &) { visibilityChanged(); }
+void MixFocus::componentParentHierarchyChanged(juce::Component &) { parentHierarchyChanged(); }
+void MixFocus::componentBeingDeleted(juce::Component &) {
+    unwatchAncestors();
+    dropIfActive();
 }
 void MixFocus::frame(const SnapshotReader &reader) {
-    if (!isShowing() || suspended_)
+    if (!isShowing() || suspended_) {
+        dropIfActive();
         return;
+    }
     const SafePointer<MixFocus> alive(this);
     if (density_ != look::densityId()) {
         density_ = look::densityId();
@@ -235,7 +263,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
         if (!alive) return;
     }
     if (plot_.isEmpty()) {
-        if (!broker_.expired()) drop();
+        dropIfActive();
         return;
     }
     if (generation_ != root_.generation() || snapshot_ != reader.get()) {
@@ -275,7 +303,7 @@ void MixFocus::frame(const SnapshotReader &reader) {
     }
     const bool scopeShown = scope.getToggleState();
     if (scopeShown && !playing) {
-        if (!broker_.expired()) drop();
+        dropIfActive();
         if (!alive) return;
         if (redraw_) {
             rebuildScope();

@@ -7,7 +7,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class SnapshotReader;
-class MixFocus final : public juce::Component {
+class MixFocus final : public juce::Component, private juce::ComponentListener {
   public:
     explicit MixFocus(AdiRootComponent &);
     ~MixFocus() override;
@@ -49,6 +49,12 @@ class MixFocus final : public juce::Component {
     void setMembers(const std::vector<std::int64_t> &, bool promoteSoloed);
     void hear(bool group);
     void drop();
+    void dropIfActive();
+    void watchAncestors();
+    void unwatchAncestors() noexcept;
+    void componentVisibilityChanged(juce::Component &) override;
+    void componentParentHierarchyChanged(juce::Component &) override;
+    void componentBeingDeleted(juce::Component &) override;
     void rebuildPlot();
     void rebuildScope();
     void refreshControls();
@@ -62,6 +68,7 @@ class MixFocus final : public juce::Component {
     std::optional<FocusSumReading> sum_;
     std::vector<Member> members_;
     std::vector<std::int64_t> choices_;
+    std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
     std::weak_ptr<SharedAnalysis> broker_;
     std::unique_ptr<dsp::MaskingBands> bands_;
     std::vector<float> magnitudes_, normalizedBinX_;

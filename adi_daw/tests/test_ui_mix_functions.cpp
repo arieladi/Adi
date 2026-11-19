@@ -871,11 +871,14 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     root.sharedAnalysis = broker;
 
     UiPeerRoot peer;
+    juce::Component docked;
     peer.setSize(1200, 800);
     peer.setVisible(true);
     peer.addToDesktop(0);
-    peer.addAndMakeVisible(root);
-    root.setBounds(peer.getLocalBounds());
+    peer.addAndMakeVisible(docked);
+    docked.setBounds(peer.getLocalBounds());
+    docked.addAndMakeVisible(root);
+    root.setBounds(docked.getLocalBounds());
     const auto solo = [&](std::int64_t id) {
         const auto current = root.current();
         const auto *track = current ? current->findTrack(id) : nullptr;
@@ -931,6 +934,63 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
           "stopped Focus Scope releases both member taps while waiting for alignable audio");
     focus.scope.setToggleState(false, juce::dontSendNotification);
     root.frame();
+
+    auto detail = broker->acquire(same);
+    auto rawRequest = same;
+    rawRequest.outputs = SharedAnalysis::Scope;
+    auto waveform = broker->acquire(rawRequest);
+    const auto beforeAncestorHide = closed.size();
+    docked.setVisible(false);
+    check(focus.isVisible() && !focus.isShowing() && closed.size() == beforeAncestorHide + 1 &&
+              closed.back() == second && detail.available() && waveform.available(),
+          "ancestor hide drops Focus spectrum demand immediately and preserves both sibling readers");
+    const auto opensBeforeRestore = opened.size();
+    docked.setVisible(true);
+    root.frame();
+    check(focus.isShowing() && opened.size() == opensBeforeRestore + 1 && opened.back() == second,
+          "restoring the parent reattaches only the previously released source");
+
+    engine::Transport driver;
+    driver.play(true);
+    driver.locate(4096);
+    doc->mailbox().publish(driver);
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    std::array<float, 1024> pcm{};
+    pcm.fill(.25f);
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    broker->pump();
+    const auto retained = waveform.read();
+    check(root.playing() && retained && detail.read() == retained && !retained->scopeLeft.empty(),
+          "the detailed analyzer and waveform own the same publication while Focus Scope is active");
+    auto floating = std::make_unique<juce::Component>();
+    peer.addChildComponent(floating.get());
+    floating->setBounds(peer.getLocalBounds());
+    const auto beforeReparent = closed.size();
+    floating->addChildComponent(&root);
+    check(!focus.isShowing() && closed.size() == beforeReparent + 1 && closed.back() == second &&
+              waveform.read() == retained && detail.read() == retained,
+          "reparenting Focus Scope into a hidden owner drops only its own demand immediately");
+
+    floating->setVisible(true);
+    root.frame();
+    const auto beforeOwnerClose = closed.size();
+    docked.setVisible(false);
+    check(focus.isShowing() && closed.size() == beforeOwnerClose,
+          "hiding the former docked parent has no effect after reparenting");
+    docked.setVisible(true);
+    floating.reset();
+    check(root.getParentComponent() == nullptr && closed.size() == beforeOwnerClose + 1 &&
+              closed.back() == second && waveform.read() == retained && detail.read() == retained,
+          "closing a visible hosting component detaches Focus Scope without another frame");
+
+    docked.addAndMakeVisible(root);
+    driver.play(false);
+    doc->mailbox().publish(driver);
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+    waveform.reset();
+    detail.reset();
     focus.setMembers({first, added, second});
     root.frame();
     check(focus.channelIds() == std::vector{first, added, second} && mix.stack.model().shownIndex(added),
@@ -951,7 +1011,7 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
           "closing Focus returns to Arrangement without modifying solos");
     check(root.command(AppCommands::ShowChannelEq) && mix.tab() == MixViewPanel::Tab::Stack,
           "the explicit Channel EQ command still opens Stack with two solos");
-    peer.removeChildComponent(&root);
+    docked.removeChildComponent(&root);
     peer.removeFromDesktop();
     rootOwner.reset();
 }
