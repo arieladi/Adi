@@ -179,6 +179,67 @@ void editedFades() {
         check(std::abs(sample(50)-0.125)<1e-7 && sample(799)==0.5,"undo restores old square arithmetic and no automatic end fade");
     }
 }
+
+void shortenedFade() {
+    for (const int start : {0, 400}) {
+        Fixture f(48000, 2, 4000, -1);
+        f.add(1, start, 800, 0, 1000);
+        const auto ticks = static_cast<std::int64_t>(start) * 24024 / 100;
+        SQLite::Statement placement(f.store->db(), "UPDATE clips SET time_base=0,pos_ticks=?,"
+            "length_ticks=192192,pos_ns=NULL,length_ns=NULL WHERE id=1");
+        placement.bind(1, ticks);
+        placement.exec();
+        OpJournal journal(*f.store);
+        OpRequest fade;
+        fade.opType = "clip.setFades";
+        fade.payload = {{"id",1},{"out",{{"ticks",192192}}}};
+        check(journal.commit(fade).ok, "set a fade over the entire clip");
+        f.load(1024);
+        const auto render = [&] {
+            f.session.transport().locate(start);
+            return f.render(1024);
+        };
+        const auto before = render();
+        OpRequest resize;
+        resize.opType = "clip.resize";
+        resize.payload = {{"id",1},{"pos",ticks},{"length",96096}};
+        check(journal.commit(resize).ok && f.session.refresh(*f.store), "right edge resizes under its fade");
+        const auto shorter = render();
+        check(std::abs(shorter[0] - 0.5f * 399.0f / 400.0f) < 1e-7f &&
+              std::abs(shorter[200] - 0.5f * 199.0f / 400.0f) < 1e-7f &&
+              shorter[399] == 0.0f && shorter[400] == 0.0f,
+              "shortening clamps the fallback fade to the audible clip span");
+        const auto split = clip_edit::prepareSplit(*f.store, 1, 2, {0, ticks + 48048}, 48000);
+        const bool splitCommitted = split.ok && clip_edit::commitPrepared(*f.store, split).ok;
+        check(splitCommitted && f.session.refresh(*f.store) && render() == shorter,
+              "splitting a shortened clip retains the clamped fade exactly");
+        if (splitCommitted)
+            check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render() == shorter,
+                  "Undo of Split restores the shortened clip and its audible fade");
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render() == before,
+              "Undo of a shorter placement restores the entire original fade exactly");
+    }
+
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 0, 400, 0, 1000);
+    auto& db = warped.store->db();
+    db.exec("UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=96096,pos_ns=NULL,length_ns=NULL,"
+        "fade_out_ticks=192192; UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {1000, 240240}}};
+    const auto map = audio::writeWarpMap(markers, 1000);
+    if (!map) throw std::runtime_error("prepare shortened fade Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    warped.load(1024);
+    const auto before = warped.render(1024);
+    const auto split = clip_edit::prepareSplit(*warped.store, 1, 2, {0, 48048}, 48000);
+    check(before[100] > 0.1f && split.ok && clip_edit::commitPrepared(*warped.store, split).ok &&
+              warped.session.refresh(*warped.store),
+          "a shortened Warp clip can split inside its clamped fade");
+    warped.session.transport().locate(0);
+    check(warped.render(1024) == before, "the split Warp fade keeps the exact audible envelope");
+}
 void splitSourceClocks() {
     for(const auto sourceRate:{44100u,48000u})for(const bool loop:{false,true}) {
         Fixture f(sourceRate,2,4000);f.add(1,0,800,0,1000);
@@ -525,6 +586,40 @@ void sourceMarkers() {
     loop.load(512);const auto repeated=loop.render(512);
     check(repeated[150]==loop.media[414] && repeated[250]==loop.media[214] && repeated[500]==0,
           "Loop uses its own source window while the End marker is inactive");
+}
+
+void endSourceClocks() {
+    Fixture plain(48000, 2, 4000, -1);
+    plain.add(1, 600, 800, 0, 1000);
+    plain.store->db().exec("INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0);"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,120120);"
+        "INSERT INTO clip_playback_details(clip_id,source_end_ns) VALUES(1,10416667);"
+        "UPDATE tempo_map SET bpm=240 WHERE pos_ticks=0");
+    plain.load(1024);
+    plain.session.transport().locate(600);
+    const auto pinned = plain.render(1024);
+    check(pinned[249] == 0.5f && pinned[499] == 0.5f && pinned[500] == 0.0f,
+          "a physical End pin keeps 500 samples when the placement tempo doubles");
+
+    Fixture warped(48000, 2, 4000, -1);
+    warped.add(1, 600, 800, 0, 2000);
+    auto& db = warped.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(144144,240,0);"
+        "UPDATE clips SET time_base=0,pos_ticks=144144,length_ticks=384384,pos_ns=NULL,length_ns=NULL,"
+        "content_offset_ticks=72072;"
+        "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,144144);"
+        "UPDATE audio_clips SET warp_enabled=1,warp_mode='re-pitch'");
+    const std::array<WarpMarker, 2> markers{{{0, 0}, {2000, 480480}}};
+    const auto map = audio::writeWarpMap(markers, 2000);
+    if (!map) throw std::runtime_error("prepare End clock test Warp map");
+    SQLite::Statement setMap(db, "UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+    setMap.bind(1, map.bytes.data(), static_cast<int>(map.bytes.size()));
+    setMap.exec();
+    warped.load(1024);
+    warped.session.transport().locate(600);
+    const auto retimed = warped.render(1024);
+    check(std::abs(retimed[0]) > 0.1f && std::abs(retimed[149]) > 0.1f && retimed[150] == 0.0f,
+          "Warp End retains the 150-frame tail projected across its source tempo boundary");
 }
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
@@ -886,11 +981,11 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="take-lanes")takeLanePlayback();
         if(only=="all" || only=="properties")properties();
-        if(only=="all" || only=="fades")editedFades();
+        if(only=="all" || only=="fades"){editedFades();shortenedFade();}
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
-        if(only=="all" || only=="markers")sourceMarkers();
+        if(only=="all" || only=="markers"){sourceMarkers();endSourceClocks();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();
