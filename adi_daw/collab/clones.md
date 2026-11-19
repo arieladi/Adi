@@ -4,6 +4,8 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
+For an exact comparison of the three drawing pens, please save four private Volume states from a flat full-range band. Make one rising Line, Arc and S stroke from the same grid square in separate states. In the fourth, click once more at the end of the S stroke without moving. The installed editor identifies all three tools, but its isolated toolbar kept the pointer selected. These drawings would let us compare the inserted points, corner weights and repeat position directly. The clones lane owns the pen edits in `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
+
 ## 19 November 2026 — Lower CPU cost for repeating a weighted curve
 
 **PR requested** · `clones/shaper-curve-cpu` · **Reuse calculated curve samples during ADI-Shaper playback** · `f1c0ce15`
