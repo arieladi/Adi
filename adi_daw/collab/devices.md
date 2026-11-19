@@ -25,6 +25,30 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — DEV-22: Auto Filter's default is Live 12.4's and nulls its measured response
+
+**`devices/auto-filter-defaults` (`6521366e`), from `main`.** First of the corpus devices in the
+manual's order (the DV-09 entry further down), from readings already taken — no new Live.
+
+- **Reading (DV-09, the research's default renders, 48 kHz):** Auto Filter's browser default (LP,
+  24 dB, 10 kHz, Resonance 0, Clean; values from Live's own default preset, read privately) gives
+  71/223/997/3001/7001/11003 Hz at −0.0006/−0.0063/−0.1255/−1.1305/−6.0077/−14.5236 dB, phase
+  −1.39/−4.36/−19.47/−58.15/−130.93/+164.70°; impulse peak +2 samples at 0.2942.
+- **The fit:** two cascaded TPT state-variable low-passes, k = 2 (Q 0.5 each), cutoff prewarped
+  — to four decimals. That is ADI's Clean core already; ADI's default was 1 kHz, 29 %, 12 dB.
+- **ADI now:** Live's defaults, and Live's ranges where the control means the same — Frequency
+  20..20000 Hz (10 kHz), Resonance 0, Slope 24 dB, envelope Attack 1 ms (to 100 ms) and Release
+  250 ms, LFO 0.1..60 Hz, Steps 2..64, sidechain EQ 30..15000 Hz at 200 Hz, Q 0.1..12, ±15 dB.
+  Not claimed: Live 12's separate 12/24 and 6–48 Morph slopes, LFO time modes, other circuits,
+  the Resonance law beyond 0 (only k = 2 at 0 is measured).
+- Test: six tones within **0.00024 dB / 0.0014°**, impulse peak +2 at 0.2942. Plant: the old
+  12 dB default → 3 failures. Auto Filter 166 checks; CTest **245/245**.
+
+**PR requested** — title "Auto Filter's default is Live 12.4's, and nulls its measured response
+(DEV-22)"; head `devices/auto-filter-defaults` at `6521366e`; base `main`. Body: the commit message.
+
+**Next:** the same for Chorus-Ensemble, Delay, Echo and on down the corpus list.
+
 ## 2026-11-19 — the readings this lane waits on, as recipes (FOR THE DIRECTOR item 2)
 
 One device, one question each, Live 12.4 at 48 kHz, a fresh Set, the device from the browser (no
