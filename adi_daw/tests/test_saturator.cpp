@@ -2,6 +2,7 @@
 #include "adi/dsp/saturator.hpp"
 #include <algorithm>
 #include <bit>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -72,6 +73,10 @@ double error(const std::vector<float> &a, const std::vector<float> &b) {
 void measurements() {
     auto x = tone(1000);
     C c;
+    // The curves at the base rate with Color off: Live's default preset has
+    // High Quality and Color on, which the exactness checks below do not test.
+    c.set(C::HiQuality, 0);
+    c.set(C::ColorOn, 0);
     c.prepare(48000);
     check(render(c, x) == x, "Analog stays exactly linear below its knee");
     c.set(C::CurveType, 6);
@@ -103,6 +108,7 @@ void measurements() {
     c.set(C::ShaperDrive, 100);
     for (auto param : {C::Curve, C::Depth, C::Linear, C::Damp, C::Period}) {
         C a;
+        a.set(C::HiQuality, 0);
         a.set(C::CurveType, 7);
         a.set(C::ShaperDrive, 100);
         a.set(C::Depth, 30);
@@ -134,12 +140,14 @@ void measurements() {
               "post clipping limits output even after Color boost");
     }
     C dc;
+    dc.set(C::HiQuality, 0);
     dc.set(C::PreDC, 1);
     dc.prepare(48000);
     std::vector<float> constant(96000, .3f);
     auto zero = render(dc, constant);
     check(std::abs(zero.back()) < 1e-10, "Pre-DC rejects constant input");
     C hq;
+    hq.set(C::HiQuality, 0);
     hq.set(C::CurveType, 6);
     hq.set(C::Drive, 18);
     hq.prepare(48000);
@@ -150,15 +158,69 @@ void measurements() {
     const double before = bin(raw, 15000), after = bin(filtered, 15000);
     check(after < before * .2, "4x HiQuality suppresses folded third harmonic by more than 14 dB");
     check(bin(filtered, 11000) > .2, "HiQuality keeps wanted energy");
-    check(hq.latency() == 16, "HQ advertises 16-sample group delay");
+    check(hq.latency() == 3, "HQ reports 3 samples, as Live 12.4 does for its default preset");
     std::printf("METRIC alias raw %.9f HQ %.9f\n", before, after);
     hq.set(C::Mix, 0);
     hq.prepare(48000);
     auto dry = render(hq, x);
     bool aligned = true;
-    for (std::size_t i = 16; i < x.size(); ++i)
-        aligned &= dry[i] == x[i - 16];
-    check(aligned, "HQ dry signal aligned by 16 samples");
+    for (std::size_t i = 3; i < x.size(); ++i)
+        aligned &= dry[i] == x[i - 3];
+    check(aligned, "HQ dry signal aligned by the reported 3 samples");
+    // DEV-22: the minimum-phase resampling filter (saturator.cpp) has unity DC
+    // gain, the windowed sinc's magnitude, and 7.12 taps of low-frequency group
+    // delay a pass: 3.56 samples for both passes at the base rate.
+    const auto &h = C::resamplingFilter();
+    double sum = 0, moment = 0;
+    for (std::size_t i = 0; i < h.size(); ++i) {
+        sum += h[i];
+        moment += static_cast<double>(i) * h[i];
+    }
+    check(std::abs(sum - 1) < 1e-12, "resampling filter has unity DC gain");
+    check(std::abs(moment / sum - 7.1213620078788935) < 1e-9,
+          "resampling filter is minimum phase: 7.12 taps of DC group delay a pass");
+    auto magnitude = [](auto taps, double f) {
+        std::complex<double> z{};
+        for (std::size_t i = 0; i < taps.size(); ++i)
+            z += taps[i] * std::polar(1., -2 * std::numbers::pi * f * static_cast<double>(i));
+        return std::abs(z);
+    };
+    std::array<double, 65> linear{};
+    double linearSum = 0;
+    for (std::size_t i = 0; i < 65; ++i) {
+        const double t = static_cast<double>(i) - 32;
+        linear[i] = (t == 0 ? .225 : std::sin(std::numbers::pi * .225 * t) / (std::numbers::pi * t)) *
+                    (.5 - .5 * std::cos(2 * std::numbers::pi * static_cast<double>(i) / 64));
+        linearSum += linear[i];
+    }
+    for (auto &v : linear) v /= linearSum;
+    double worst = 0;
+    for (double f = 0; f <= .1; f += .001)   // the passband at the 4x rate
+        worst = std::max(worst, std::abs(magnitude(h, f) - magnitude(linear, f)));
+    check(worst < 1e-6, "and the windowed sinc's magnitude through the passband");
+}
+// DEV-22: Live 12.4's default Saturator preset, read from the file that build
+// ships (the director's research machine, 19 November): Bass Shaper threshold
+// -50 dB, Color on, Waveshaper Drive 100 %, Oversampling (High Quality) on;
+// Amt Lo -36..36 dB, Frequency 30..18500 Hz, Output -36..0 dB.
+void liveDefaults() {
+    C c;
+    check(c.latency() == 3, "the default device reports Live's 3 samples (High Quality on)");
+    c.prepare(48000);
+    auto x = tone(1000, .01);
+    const auto y = render(c, x);
+    check(std::abs(bin(y, 1000) - .01) < 1e-5 && bin(y, 3000) < 1e-7,
+          "and a quiet tone passes at its level, nothing added (Color flat at zero amounts)");
+    c.set(C::Output, -60);
+    c.set(C::AmtLo, 40);
+    c.set(C::Frequency, 10);
+    c.prepare(48000);
+    C top;
+    top.set(C::Output, -36);
+    top.set(C::AmtLo, 36);
+    top.set(C::Frequency, 30);
+    top.prepare(48000);
+    check(render(c, x) == render(top, x), "Output, Amt Lo and Frequency stop at Live's limits");
 }
 void partitions() {
     auto x = tone(731);
@@ -188,6 +250,7 @@ void partitions() {
 }
 } // namespace
 int main() {
+    liveDefaults();
     measurements();
     partitions();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
