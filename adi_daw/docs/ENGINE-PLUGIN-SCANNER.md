@@ -161,6 +161,55 @@ OS symlink tests report SKIP when the account lacks the required privilege.
 Windows also exercises a native directory junction through actual canonical
 retry and removes only its owned reparse point, leaving the target intact.
 
+## Read-only stored catalogue (DEV-25 hydration foundation)
+
+`scan::readCatalogue(registry,error,limits)` opens a separate SQLite READONLY
+connection and one read transaction. It does not open a Scanner, require/hash
+the helper, create/migrate the registry, write a pending ticket, launch a child,
+resolve/stat candidate paths or enumerate search roots. Missing, foreign,
+pre-v3 and future registries fail explicitly. Both success-only v3 files and
+v3 files with the additive failure table can be read without schema changes.
+
+Only positive rows with no matching pending/manual/automatic block and no typed
+failure (including a first strike or zero-strike negative) enter the snapshot.
+That exclusion and the packets come from the same database transaction. Stored
+types, timestamps, stamp text and packet lengths are checked before extraction;
+the strict common metadata decoder then verifies format and exact stored path.
+A legacy valid empty class list is excluded, not advertised as an installed
+positive. Any corrupt included row or exhausted bound refuses the whole read,
+never a healthy prefix. Bounds are 65,536 modules, 65,536 aggregate descriptors
+and 64 MiB aggregate stored text, with tighter caller limits available; each
+packet still has its 8 MiB bound. No read failure silently falls back to scanning.
+
+The result is a **stored metadata snapshot**, not `State::Ready`, an instantiated
+device or a guarantee that files/helper builds are still current. Each module
+retains format, stored canonical path, opaque stamp, timestamp and Plugin fields.
+VST3's data remains serialized XML: the JUCE adapter must still run its format
+validator before installation, then restore the original absolute path-hint
+spelling when computing saved JUCE identifiers. `Catalogue::find` performs an
+exact in-memory lookup using a caller-supplied canonical key; it does not guess
+aliases or touch the filesystem. A block added after the read requires a fresh
+snapshot or an explicit use-time policy; a frozen snapshot is not live authority.
+
+The focused `adi_scan_catalogue_tests` populate through real child processes,
+remove only their owned helper, and verify unchanged child receipts, no pending
+rows, unchanged registry/WAL bytes and unchanged data version after hydration.
+They cover real two-strike exclusion, deliberately seeded stale positive/failure
+overlaps, manual/pending exclusion, packet identity/corruption, empty legacy data,
+bounds, older-v3 compatibility and transactions concurrent with owner updates.
+The registry callback gate also refuses this reader before allocation/file I/O.
+
+This branch does not install the snapshot into JUCE/CLAP hosts, change the
+loader's lazy scans, implement the startup/background discovery service or add
+a CacheOnly loader policy. Those owners still need staged complete catalogue
+publication, VST3 XML validation/path rebinding, CLAP preferred-copy selection,
+staleness/block refresh rules, and a `NeedsDiscovery` miss that never triggers a
+project-open scan. The phase acceptance remains: hydrate at startup, restore or
+reinsert known devices without scanner children/root enumeration, preserve a
+previous complete catalogue on failed refresh, and distinguish found metadata,
+runtime instantiation, state restoration and first audio. None of those runtime
+stages is inferred from a successful stored catalogue read.
+
 The child reserves a dedicated copy of its stdout pipe before loading any
 plug-in. It redirects ordinary stdout to the null stderr channel, so constructor,
 init, factory, deinit and unload chatter cannot become metadata. CLAP strings

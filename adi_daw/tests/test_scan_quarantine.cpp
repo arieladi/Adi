@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/plugin_registry.hpp"
+#include "adi/scan_catalogue.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -91,6 +92,7 @@ void validationAndCallbacks() {
             !reg.remember(format,uid,engine::RouteChoice::Plain,2,f.error) &&
             !reg.beginScan(format,f.path,2,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,none,2,f.error) &&
             !reg.beginStampedScan(format,f.path,stamp,2,f.error) &&
+            !scan::readCatalogue(f.file,f.error) &&
             !reg.finishFailedScan(*ticket,stamp,ScanFailureKind::Crashed,reason,2,f.error) &&
             !reg.cachedScan(*ticket,stamp,f.error) && !reg.finishCachedScan(*ticket,stamp,packet,2,f.error) &&
             !reg.blockScan(format,f.path,reason,2,f.error) && !reg.unblockScan(format,f.path,f.error) && !reg.scanBlocks(f.error);
