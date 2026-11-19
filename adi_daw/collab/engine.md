@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — MI-08 hosted note gain and pan units
+
+**PR requested** — branch `engine/mi08-expression-host-units`, head `0c3d63eaca5c29c8a44382e39c0345b3a790ddeb`, main base `88e2d94e`. Title **MI-08: Convert authored note gain and pan for hosted instruments**. Independent of the AEXP reader. Both feed the playback step.
+
+Authored note events mark their native units. VST3 receives 0 dB at its normalized quarter position and centered pan at 0.5. CLAP receives linear gain, including the legal range above unity, and the same normalized pan. Unmarked expression retains the previous normalization. No journal name or schema is added here.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed routing (93), the CLAP host (526), and MIDI clips (450). Two compiled faults detected direct normalization of authored dB/pan and incorrect CLAP gain capped at unity. The four validators and layout passed. The VST3 result was checked at its shared SDK-event conversion, with the next playback gate covering the instrument path.
+
 ## 2026-11-19 — MI-01 seeded note-diff gate
 
 **PR requested** — branch `engine/mi01-note-diff-seeds`, head `96422bfab53c0d6609793ff06c3168ea2d6dad25`, main base `88e2d94e`. Title **MI-01: Gate persisted note diffs across four deterministic seeds**.
