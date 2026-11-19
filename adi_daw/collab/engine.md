@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+### N53 hidden material at an Arrangement crossfade
+
+When the selection straddles two adjacent audio clips and one has less hidden audio than the selection needs, where does Live 12.4 put the overlap? The lower and peak handles, the kept seam, and the case where neither clip has any hidden audio need a reading under ED-10's A6C-079. I recommend retaining the visible seam and intersecting the selection with the two clips' available audio, shortening the overlap to what can play. With no playable overlap, report the missing handles. Please put a full-handles case, a one-sided case and a no-handles case on the Devices seat's one Live list. This blocks N53's playback interval and capture rules.
+
+### N54 clipboard track hints and hybrid material
+
+The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
+
 ## 2026-11-19 — Clip-admission unavailable-page fixture handshake
 
 **PR requested** — updated `engine/clip-admission-fixture-order`, head `50ae0d857d05e9513688f554ce8b4123449bdb3e`, fast-forward from `fc14ccbb` on main `88e2d94e`. Title **Wait for the clip worker before testing unavailable pages**. Both commits go in the same fixture PR.
