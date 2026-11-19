@@ -190,6 +190,14 @@ void keepBranchTip(SQLite::Database& db, std::int64_t tip, const std::string& na
     keep.exec();
 }
 
+bool namedSnapshotHoldsRoot(SQLite::Database& db, std::int64_t seq) {
+    SQLite::Statement held(db,
+        "SELECT 1 FROM history_snapshots s JOIN history_roots r ON r.seq=s.op_seq "
+        "WHERE s.op_seq=? AND s.auto=0 LIMIT 1");
+    held.bind(1, seq);
+    return held.executeStep();
+}
+
 /// Rewinds from `from` to the common ancestor with `to`, then replays forward
 /// to `to`. The caller holds the transaction and moves the head afterwards.
 ///
@@ -502,10 +510,15 @@ History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t
         SQLite::Transaction txn(db);
         // NULL is the original pre-edit state. Once roots are materialized its
         // native address is the origin root, never a new head below a checkpoint.
-        if (!target && history_detail::hasStoredRoots(db)) {
-            target = history_detail::originRoot(db);
-            if (!target)
+        if (!target) {
+            if (history_detail::hasStoredRoots(db)) {
+                target = history_detail::originRoot(db);
+                if (!target)
+                    throw std::runtime_error("original history state is no longer retained");
+            } else if (db.execAndGet("SELECT EXISTS(SELECT 1 FROM history_checkpoint WHERE id=1)")
+                           .getInt() != 0) {
                 throw std::runtime_error("original history state is no longer retained");
+            }
         }
         auto boundary = [&](std::optional<std::int64_t> seq) {
             if (!seq)
@@ -547,7 +560,10 @@ History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t
         // work. Following redo from the destination preserves the same line
         // without new metadata; otherwise keep an unheld departing tip once.
         const auto tip = tipOf(db, here);
-        if (tip && tip != tipOf(db, target))
+        // A named snapshot keeps a stored root addressable through compaction.
+        // An unheld childless root still needs a branch when its head moves.
+        if (tip && tip != tipOf(db, target) &&
+            (tip != here || !namedSnapshotHoldsRoot(db, *tip)))
             keepBranchTip(db, *tip, "before history move", nowUtc);
         std::string error;
         if (!moveBetween(ctx, here, target, r.opsApplied, error, &applied))
