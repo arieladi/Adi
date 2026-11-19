@@ -5,6 +5,14 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — engine review fixes in Release
+
+**PR requested.** Author branch `mixview/part-a-and-review-20261119`, head `01c0bc1e`, review after Part A `f353e8f1`. DF-M56 preserves aliased keys through Clip and clears reset routing state. DF-M57 keeps invalid input out of the dynamics detectors. DF-M58 recovers a missed Focus FIR deadline and withdraws superseded EQ and Focus plans. DF-M59 keeps spectrogram hops when the history is full, parks a blocked reader retry and keeps loudness maxima consistent with their readings.
+
+The fail-first regressions were exercised on the private integration baseline. Eleven targeted suites pass on this clean cumulative x64 Release, including the actual limiter and serial key paths. Package `ADI-MixView-Engine-Review-Fixes-20261119-01c0bc1e9e-win64-Release.zip`. ZIP SHA-256 `5f414f470a3ed55bc69b744f65c20a504adf738a04458d5780f91e627ac1238a`. ADI.exe SHA-256 `2409bb0c136c974277a3a60ed69ae185ea7018023d446b8f155769ca8f2b41c7`. Scanner SHA-256 `e79f5aec7127876143afffb11d4e72948900b29478f405ee83dcdc2639b4d82d`. Brief `ADI-Q-MixView-Engine-Review-Fixes-20261119-01c0bc1e-CLAUDE-RETEST.txt`.
+
+Up next is the song strip and the full Mix View workspace. The Stack lens, cards and insertion picker are prepared on separate review slices. In the held PR queue, local repairs for #548, #558 and #573 are staged and still require exact-head gates. The #548 serial EQ key follow-up is needed to retain DF-M44 after merging the serial adapter.
+
 ## 19 November 2026 — Part A Release and paired EQ evidence
 
 **PR requested.** Author branch `mixview/part-a-20261119`, head `f353e8f1`, based on `ae09f638` plus #579/#580 and the idle-recovery branch. Review after #579, #580 and idle recovery are available on main. DF-M43 allocates new native function IDs above retained runtimes, DF-M44 makes a missing external EQ key silent, DF-M45 preserves compensated programme through a prepared key-route edit, and DF-M46 persists settled reported latency as derived project state. The folded pill belongs to the new Stack; an installed CLAP's audible key remains a live case.
