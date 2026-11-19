@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — MI-01 seeded note-diff gate
+
+**PR requested** — branch `engine/mi01-note-diff-seeds`, head `96422bfab53c0d6609793ff06c3168ea2d6dad25`, main base `88e2d94e`. Title **MI-01: Gate persisted note diffs across four deterministic seeds**.
+
+The three-clip byte reference now runs four explicit seeds through 288 actual commits, 288 Undo steps and 288 Redo steps after reopen. Every failure includes its seed. Standard, future-stride and unsorted streams retain independent reference bytes. Undo also compares the original expression rows and schema extension bytes.
+
+**Gate** — GCC 14 and Clang 19 with warnings as errors each passed note diff (1,052), note compatibility (271) and MIDI clip playback (450). The four validators and format-layout check passed. This is the local MI-01 seeded gate. The existing history-fuzz branch and the remaining hosted legs have their own landing order.
+
 ## 2026-11-19 — MI-08 native expression read step
 
 **PR requested** — branch `engine/mi08-note-expression-read`, head `e5b350cd34d569825ea7bb41fd47c0c85519a75e`, main base `88e2d94e`. Title **MI-08: Read stored per-note expression for the Clip View**.
