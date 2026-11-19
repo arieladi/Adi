@@ -41,7 +41,7 @@ enum class LoadStatus {
     Loaded,        // read
     CorruptKept,   // did not parse; moved aside to `keptAside`, defaults in use
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
-    NewerSchema,   // written by a newer build: read, its unknown keys kept
+    NewerSchema,   // written by a newer build: read familiar values, refuse writes
 };
 [[nodiscard]] const char* toString(LoadStatus);
 
@@ -84,7 +84,7 @@ public:
 
     /// Writes the file atomically (a temporary beside it, then a rename).
     /// Keys this build does not know are written back exactly as read.
-    /// Refused for a file that names another application.
+    /// Refused for a file that names another application or uses a newer schema.
     bool save(std::string& why) const;
 
     /// The raw stored values, unknown keys included -- what save writes.
@@ -104,7 +104,6 @@ private:
     std::filesystem::path file_;
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
-    int schema_ = kSettingsSchema;
     Value values_ = Value::object();
     bool logUsers_ = true;
 };

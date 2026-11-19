@@ -412,12 +412,26 @@ void testUnknownKeysSurvive() {
     check(kept == Value({{"attack", 3}, {"release", 300}}),
           "and the newer build's key is still there, exactly");
 
-    writeText(file, R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"}})");
+    const std::string future = R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"},
+         "futureHeader": {"mustSurvive": true}})";
+    writeText(file, future);
+    const auto logBefore = readText(s.changeLogFile());
     AppSettings newer(appdata::App::Daw, file);
     check(newer.status() == LoadStatus::NewerSchema && newer.get("lookfeel.theme") == "light",
           "a newer schema is read");
-    check(newer.save(why) && Value::parse(readText(file)).at("schema") == 3,
-          "and saved without downgrading its schema number");
+    check(!newer.set("lookfeel.theme", "dark", kUser, why) &&
+          !newer.reset("lookfeel.theme", kUser, why), "newer settings refuse mutation and reset");
+    newer.resetPage("Theme & Colors", kUser);
+    check(!newer.save(why) && why.find("read-only") != std::string::npos &&
+          newer.get("lookfeel.theme") == "light" && readText(newer.changeLogFile()) == logBefore &&
+          readText(file) == future, "newer settings and their change log stay byte-identical");
+
+    const std::string futureShape = R"({"schema": 18446744073709551615, "app": "ADI", "values": []})";
+    writeText(file, futureShape);
+    AppSettings incompatible(appdata::App::Daw, file);
+    check(incompatible.status() == LoadStatus::NewerSchema && !incompatible.keptAside() &&
+          !incompatible.save(why) && readText(file) == futureShape,
+          "a newer schema with a different shape is kept in place without narrowing its version");
 }
 
 void testCorruptKeptAside() {
