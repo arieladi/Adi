@@ -2,6 +2,7 @@
 #include "adi/ui/shared_analysis.hpp"
 #include "adi/ui/focus_scope.hpp"
 #include "adi/dsp/spectrum_average.hpp"
+#include "adi/engine/transport.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -1187,6 +1188,68 @@ void stereoMeterSharingAndIntervals() {
           "last meter consumer releases the physical tap");
 }
 
+void stereoMeterTransportContinuity() {
+    using Meter = adi::dsp::StereoEnvelopeMeter;
+    Fixture f;
+    const auto view = f.broker.acquireStereoMeter(1, {});
+    SharedAnalysis::Request request{1};
+    request.fftSize = request.hopSize = 256;
+    request.outputs = SharedAnalysis::Spectrum;
+    const auto spectrum = f.broker.acquire(request);
+    constexpr int frames = 480;
+    adi::engine::Transport transport;
+    transport.loop(0, frames);
+    transport.play();
+    std::array<float, frames> left{}, right{}, silent{};
+    Meter direct;
+    check(direct.prepare({48000., .6, .5, .5, 1.e-6}), "continuous stereo-meter oracle prepares");
+    const auto step = [&](float l, float r, bool parkedSilence = false) {
+        left.fill(l); right.fill(r);
+        const auto &oracleLeft = parkedSilence ? silent : left;
+        const auto &oracleRight = parkedSilence ? silent : right;
+        f.tap->write(parkedSilence ? nullptr : left.data(), parkedSilence ? nullptr : right.data(),
+                     frames, transport.position(), transport.playing(), transport.revision());
+        transport.advance(frames);
+        f.broker.pump();
+        (void)direct.process(oracleLeft, oracleRight);
+        return view.readStereoMeter();
+    };
+    const auto first = step(.9f, .45f);
+    const auto initialSpectrum = spectrum.read();
+    const auto wrapped = step(.1f, -.05f);
+    check(first && wrapped && wrapped->epoch == first->epoch && wrapped->reading == direct.reading() &&
+              wrapped->reading.maximumPeak[0] == .9f && wrapped->reading.peakHold[0] == .9f,
+          "the same-revision loop wrap preserves exact continuous envelope and held peaks");
+    check(initialSpectrum && spectrum.read() && spectrum.read()->sourceEpoch > initialSpectrum->sourceEpoch,
+          "a spectrum sharing the source starts a new epoch at the loop wrap");
+
+    transport.play(false);
+    const auto stopped = step(0.f, 0.f, true);
+    check(wrapped && stopped && stopped->epoch == wrapped->epoch && stopped->reading == direct.reading() &&
+              stopped->reading.maximumPeak[0] == .9f && std::isfinite(stopped->reading.peakHold[0]) &&
+              stopped->reading.peak[0] < wrapped->reading.peak[0],
+          "Stop decays the envelope continuously and preserves its interval maximum and holds");
+    transport.play();
+    const auto restarted = step(.2f, .1f);
+    check(stopped && restarted && restarted->epoch == stopped->epoch && restarted->reading == direct.reading() &&
+              restarted->reading.maximumPeak[0] == .9f,
+          "Play maintains the measurement interval across the engine's advancing revision change");
+
+    transport.locate(0);
+    direct.reset();
+    const auto sought = step(.125f, .0625f);
+    check(restarted && sought && sought->epoch > restarted->epoch && sought->reading == direct.reading() &&
+              sought->reading.maximumPeak[0] == .125f,
+          "a same-stamp seek clears highs from the prior interval");
+    transport.play(false);
+    transport.locate(0);
+    direct.reset();
+    const auto skippedSeek = step(0.f, 0.f, true);
+    check(sought && skippedSeek && skippedSeek->epoch > sought->epoch &&
+              skippedSeek->reading == Meter::Reading{},
+          "an advancing flip cannot mask a seek also issued before the next audio block");
+}
+
 void parkedStereoMeter() {
     using Meter = adi::dsp::StereoEnvelopeMeter;
     Fixture f;
@@ -1484,7 +1547,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { continuousCapture(); captureBoundaries(); captureSharesLiveTap(); focusScopeWindows(); parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); stereoMeterTransportContinuity(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

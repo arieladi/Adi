@@ -477,9 +477,13 @@ void permanentMainMeter() {
     const auto initial = meter.reading();
     check(initial && std::abs(initial->reading.maximumPeak[0] - .5) < 1.e-6 && meter.loudness() && reads == 1,
           "Main meter publishes the stereo envelope and projects one existing loudness snapshot");
+    const auto beforeScale = f.broker->stats();
     meter.scaleBox.setSelectedId(3, juce::sendNotificationSync);
     meter.frame(f.broker, 1, source);
-    check(meter.reading() == initial && reads == 1, "K scale relabels the same reading and does not rearm analysis");
+    const auto afterScale = f.broker->stats();
+    check(meter.reading() == initial && afterScale.publications == beforeScale.publications &&
+              afterScale.spectralPlans == beforeScale.spectralPlans,
+          "K scale relabels the same reading without a new publication or plan");
     const auto releaseMouse = [&](juce::Point<float> down, juce::Point<float> up, juce::ModifierKeys buttons,
                                   bool dragged = false) {
         const auto now = juce::Time::getCurrentTime();
@@ -498,16 +502,17 @@ void permanentMainMeter() {
         releaseMouse(controlsClick, plotClick, juce::ModifierKeys::leftButtonModifier);
         check(meter.reading() == initial && otherReader.readStereoMeter() == initial,
               "only a primary click within the plot restarts the meter");
+        const auto beforeReset = reads;
         releaseMouse(plotClick, plotClick, juce::ModifierKeys::leftButtonModifier);
         meter.frame(f.broker, 1, source);
-        check(!meter.reading() && !meter.loudness() && !otherReader.readStereoMeter() && reads == 1,
+        check(!meter.reading() && !meter.loudness() && !otherReader.readStereoMeter() && reads == beforeReset,
               "a click on the meter restarts the shared interval without reading or resetting Main loudness");
         const auto afterClick = f.broker->stats();
         check(meter.subscribed() && afterClick.consumers == 2 && afterClick.domains == 1 &&
                   afterClick.spectralPlans == 0 && f.acquired == 1 && f.released == 0,
               "meter click keeps both observers on one live tap without an FFT");
         f.write(1024); f.broker->pump(); meter.frame(f.broker, 1, source);
-        check(meter.reading() && meter.reading() == otherReader.readStereoMeter() && meter.loudness() && reads == 2,
+        check(meter.reading() && meter.reading() == otherReader.readStereoMeter() && meter.loudness() && reads == beforeReset + 1,
               "both observers resume at the first new result and Main loudness is projected again");
     }
     meter.channelBox.setSelectedId(2, juce::sendNotificationSync);
@@ -547,6 +552,56 @@ void permanentMainMeter() {
     meter.suspend(false); meter.frame(f.broker, 1, source);
     check(meter.subscribed() && !meter.reading(), "restored meter waits for fresh data");
     meter.setAuditionSink({});
+    root.removeFromDesktop();
+}
+
+void parkedMainLoudnessProjection() {
+    using namespace adi::ui;
+    Fixture f;
+    Root root;
+    MixOutputMeter meter;
+    root.setSize(240, 520);
+    meter.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(meter);
+    root.setVisible(true); root.addToDesktop(0);
+    int reads = 0;
+    MainMeterSnapshot snapshot{1, 48000., 1, -10.f, -12.f, -13.f, -.8f};
+    const auto source = std::make_shared<MainMeterSource>(MainMeterSource{
+        1, [&] { ++reads; return std::optional(snapshot); }});
+    meter.frame(f.broker, 1, source);
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, 480, 0, false, 1);
+    f.broker->pump(); meter.frame(f.broker, 1, source);
+    const auto envelope = meter.reading();
+    check(envelope && meter.loudness() == snapshot && reads == 1,
+          "parked fixture presents the existing independent Main loudness");
+    const auto stable = f.broker->stats();
+    f.tap->write(static_cast<const float *>(nullptr), nullptr, 480, 0, false, 1);
+    f.broker->pump();
+    const auto beforeTruePeak = root.fake->repaints;
+    snapshot.truePeakDb = -.4f;
+    meter.frame(f.broker, 1, source);
+    check(meter.reading() == envelope && meter.loudness() == snapshot && reads == 2 &&
+              root.fake->repaints > beforeTruePeak,
+          "held true peak refreshes independently of the parked stereo publication");
+    const auto beforeMomentary = root.fake->repaints;
+    snapshot.momentaryLufs = -std::numeric_limits<float>::infinity();
+    meter.frame(f.broker, 1, source);
+    check(meter.reading() == envelope && meter.loudness() == snapshot && reads == 3 &&
+              root.fake->repaints > beforeMomentary,
+          "the parked meter's ghost momentary value clears when Main loudness reaches silence");
+    const auto stablePaint = root.fake->repaints;
+    meter.frame(f.broker, 1, source);
+    const auto after = f.broker->stats();
+    check(reads == 4 && root.fake->repaints == stablePaint && after.publications == stable.publications &&
+              after.workerPasses == stable.workerPasses && after.cursorReads == stable.cursorReads &&
+              after.spectralPlans == 0,
+          "an unchanged loudness frame makes no paint or analysis work");
+    snapshot.sampleRate = 44100.;
+    meter.frame(f.broker, 1, source);
+    check(meter.reading() == envelope && !meter.loudness() && reads == 5, "a stale loudness format clears the overlay");
+    meter.suspend(true); meter.frame(f.broker, 1, source);
+    check(!meter.reading() && !meter.loudness() && reads == 5 && f.broker->stats().consumers == 0,
+          "suspending an eligible meter releases its lease and stops loudness polling");
     root.removeFromDesktop();
 }
 
@@ -1481,7 +1536,8 @@ void compareAndAveragePages() {
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
+          compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
