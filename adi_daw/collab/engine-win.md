@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Missing decode-cache publications
+
+**PR requested** `engine-win/decode-cache-missing-publication` at `df62deaef6ed928ac83d868c365c475e5855d007`, stacked on Cache Folder `b89e9a5b`. A failed cache file size read now refuses before incrementing bytes, stats or pins on publication or on a warm hit. The deterministic regression removes a completed owned target before accounting. It reproduces the false success, phantom size and extra pin on the base, then verifies clean refusal and an ordinary retry.
+
+Five native MSVC x64 Debug `/W4 /WX` suites passed 416 checks after the change. The focused regression was red at three assertions before it. Native AAC progress still followed its unavailable gate.
+
 ## 2026-11-19 — Scanner stack reconciled with the current main probe
 
 **PR requested** `engine-win/scanner-current-main` at `fe7dda00fb3ee4a4ba887e72c3ef2cab6d8bc9d6`. This review candidate brings the integrated scanner `926f6078` onto main `796fe498` in the topic only. The single conflicted owned VST3 fixture retains both independent readers, for signed transport and for completed scanner `process` calls. The PE export receipt confirms both.
