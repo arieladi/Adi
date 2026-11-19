@@ -24,6 +24,12 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — DF-E10 Link stopped-transport intermittent
+
+The #548 assertion is in the local SDK test, with networking disabled. The peer fixture requires an explicit argument. Main's CTest configuration already holds the same Link resource lock for both Link suites.
+
+Linux x86-64 ran the unchanged local suite 700 times at concurrency 12. A timing probe ran another 1,200 times with a stop-to-capture scheduling gap, then 128 times with a 520 ms pre-stop pause and 40 ms post-stop pause to exercise SDK publication. All 2,028 runs passed. The ordinary CTest Link session, Link playback and external-tempo suites also passed together. This leaves the original ARM64 occurrence unexplained. For Win's next native ARM64 run, retain the original timeout and capture the stop intention, beat and tempo if this assertion recurs.
+
 ## 2026-11-19 — DF-E4 library discovery and hash admission
 
 **PR requested** — branch `engine/df-e4-library-scan`, head `47243494b7ed54c18cfe104242b9e230e961adf1`, main base `88e2d94e`. Title **DF-E4: Keep library discovery and hash admission atomic**. Follows the scanner cancellation work already on main.
