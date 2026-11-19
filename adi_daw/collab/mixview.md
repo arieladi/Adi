@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### #651: Carve fixture keeps both renders under Clang
+
+Hosted hardened Clang rejected the non-finite-input fixture's boolean bitwise operator. Both processing calls now run separately before their results are combined. The targeted Clang diagnostic and exact Windows x64 Release Carve suite pass (431 checks). Production files are identical to the previous head. Author branch head `9b87852b`, hosted checks rerunning.
+
+**PR requested.** Same #651, with win retaining the landing order.
+
 ### 19 November — #651 local Windows gates on the reconciled head
 
 Exact `811702260b8cb0b26462f8c943e416e327b1a17d` rebuilt under Windows x64 Release and passed `adi_mix_eq_host_tests`, `adi_mix_compressor_tests` and `adi_mix_compressor_host_tests`. These cover the previously advertised EQ latency handover and the compressor's paired non-finite-input fixture. The hosted rerun remains the landing gate.
