@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER Volume, Width and Pan
+
+**PR requested** — `clones/adi-shaper` at `295056b6`. Title **Add ADi-SHAPER multiband Volume, Width and Pan to the Pd tier**. Base `main`. Win opens and lands the PR.
+
+The catalog now exposes ADi-SHAPER. Each of its three serial stages has a full-range path and independent low/mid/high clocks, blend and eight editable curve heights. Beat and Hz clocks support held and linear segments. Each crossover independently selects 6, 12 or 24 dB/octave. The neutral full-range device preserves the input bits and reports zero latency.
+
+The compiled pan law matched both channels at 32 held-out heights within 0.0000002 gain. The largest sample error measured in 20 isolated-band and all-band impulse comparisons was 0.000000382. The reference checks cover five combinations of crossover slopes at 48 kHz. The registered device uses exact musical positions across graph segments, loops, seeks and meter changes. See the editable-Pd clock handoff below for the current host adapter's different timing contract.
+
+The Release MSVC build used /W4 /WX. All four headless suites passed, covering DSP, registered-device state and transport, editable Pd versus native audio, and catalog/host integration. This piece implements Volume, Width and Pan; the eleven-stage measurement contract is below.
+
 ## 2026-11-19 — ADi-SHAPER next device increment
 
 On `clones/adi-shaper-modulation` the clones seat takes the shaper's filter and short-delay modulation DSP, `src/adi/dsp/adi_shaper_filter.*`, `src/adi/dsp/adi_shaper_liquid.*`, their dedicated tests and the same ADi-SHAPER device files already reserved. The measured targets are the six low-pass amplitudes at 400 Hz/8 kHz, the modulated flanger delay and the four all-pass stage counts. These additions use the shared per-band curves and crossover path. The first Volume/Width/Pan branch remains independently reviewable.
