@@ -567,9 +567,48 @@ void replaceIdentityInOneJournalStep() {
           "one Undo restores the retained Compressor and its state at the same ID");
     const bool redone = doc->ops().redo().ok && doc->synchronise();
     doc->tick(3);
-    check(redone && gain && gain != compressor && doc->session().instanceFor(id) == gain &&
-              gain->identity().uid == ordinaryUid,
-          "one Redo restores the retained replacement at the same ID");
+    const bool restored = redone && gain && gain != compressor && doc->session().instanceFor(id) == gain &&
+                          gain->identity().uid == ordinaryUid;
+    check(restored, "one Redo restores the retained replacement at the same ID");
+    if (!restored)
+        return;
+    const auto active = matchingPanel(*doc, ordinaryUid, 3, id);
+    if (!active || !gain->hasParamSink()) {
+        check(false, "the current generation is published with its parameter capture attached");
+        return;
+    }
+
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.label = "Rename source track";
+    rename.payload = {{"id", 2}, {"name", "Other source name"}};
+    if (!doc->ops().submit(rename).ok) {
+        check(false, "the unrelated edit publishes a new document generation");
+        return;
+    }
+    {
+        // Hold a real capture reader as the owner synchronises the already
+        // committed edit. Detaching a valid binding now cannot reattach it.
+        const auto reading = gain->beginStateSignal();
+        check(!gain->captureCallbacksQuiescent(), "the current generation has an in-flight capture reader");
+        check(doc->synchronise(), "the document realises the unrelated edit while capture is reading");
+        check(gain->hasParamSink(),
+              "an unrelated publication keeps the current capture attached despite an older retired entry at the same ID");
+    }
+    doc->tick(4);
+    const auto beforeGesture = OpJournal(doc->store()).headSeq();
+    const auto oldValue = gain->getParam("420").normalized;
+    const auto edit = [&](engine::ParamEventKind kind, double value) {
+        return doc->parameterGestureExpected(id, "420", kind, value, active->runtime, active->instance);
+    };
+    using Kind = engine::ParamEventKind;
+    constexpr double newValue = .625;
+    check(edit(Kind::Begin, oldValue) && edit(Kind::Value, newValue) && edit(Kind::End, newValue) &&
+              gain->getParam("420").normalized == newValue && OpJournal(doc->store()).headSeq() > beforeGesture,
+          "the current surface can author a complete gesture after the unrelated edit");
+    check(doc->ops().undo().ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == beforeGesture &&
+              gain->getParam("420").normalized == oldValue,
+          "one Undo restores the current generation's gesture without undoing the unrelated edit");
 }
 }
 int main() {
