@@ -275,7 +275,7 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (mode_ == mode) return;
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-    sourcePosition_ = {}; freshRequired_ = false;
+    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
         classicPanel_ = std::make_unique<ClassicScopePanel>();
         classicPanel_->setBounds(getLocalBounds());
@@ -300,13 +300,13 @@ void SharedSpectrumView::setMode(Mode mode) {
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-    sourcePosition_ = {}; freshRequired_ = false;
+    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     point_ = point; device_ = device; resetClassic(false); updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-    sourcePosition_ = {}; freshRequired_ = false;
+    sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
     channel_ = channel; updateDemand(); repaint();
 }
 void SharedSpectrumView::setPalette(std::string_view id, bool reverse) {
@@ -423,6 +423,7 @@ void SharedSpectrumView::freeze(bool value) {
     else {
         freshRequired_ = true; sourcePosition_ = {};
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+        historyClearPosition_ = {};
         resetPicture(); mainMeter_.reset(); raster_.reset(); updateDemand();
     }
     repaint();
@@ -443,6 +444,7 @@ void SharedSpectrumView::clear() {
         clearedColumn_ = shown_->historySerial;
     }
     armFreshBoundary();
+    if (mode_ == Mode::Spectrogram) historyClearPosition_ = sourcePosition_;
     resetPicture(); mainMeter_.reset(); raster_.reset();
     status_ = lease_.available() ? Status::Waiting : Status::Detached; repaint();
 }
@@ -459,7 +461,7 @@ void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::in
         broker_ = std::move(broker);
         track_ = track;
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
-        sourcePosition_ = {}; freshRequired_ = false;
+        sourcePosition_ = {}; historyClearPosition_ = {}; freshRequired_ = false;
         status_ = Status::Detached;
         resetClassic(false);
         repaint();
@@ -516,6 +518,7 @@ void SharedSpectrumView::updateDemand() noexcept {
                 lease_ = broker_->acquire(request);
                 sourcePosition_ = lease_.sourcePosition();
                 clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
+                historyClearPosition_ = {};
             }
             catch (...) { lease_.reset(); }
         }
@@ -677,10 +680,21 @@ void SharedSpectrumView::updateRaster() {
     if (needsColumns) {
         const auto &columns = shown_->columns;
         // Published history is ordered by serial, including across gaps.
-        const auto firstVisible = shown_->sourceEpoch == clearedEpoch_
+        auto firstVisible = shown_->sourceEpoch == clearedEpoch_
             ? std::upper_bound(columns.begin(), columns.end(), clearedColumn_,
                                [](auto serial, const auto &entry) { return serial < entry.serial; })
             : columns.begin();
+        const bool afterClear = historyClearPosition_.generation != 0 &&
+            historyClearPosition_.generation == shown_->generation;
+        if (afterClear) {
+            // A publication seen after Clear can contain columns completed
+            // before it. Use each column's first physical window, including
+            // a group whose last window crossed the Clear boundary.
+            const auto lastOldStart = historyClearPosition_.written - shown_->request.fftSize;
+            firstVisible = std::upper_bound(firstVisible, columns.end(), lastOldStart,
+                                           [](auto start, const auto &entry) { return start < entry.firstSequence; });
+            if (firstVisible == columns.end()) { raster_.reset(); return; }
+        }
         const auto skipped = static_cast<std::size_t>(firstVisible - columns.begin());
         const auto count = columns.size() - skipped;
         const auto topHz = std::min(20000., shown_->sampleRate * .5);
@@ -694,7 +708,9 @@ void SharedSpectrumView::updateRaster() {
         const bool newSweep = raster.image.isNull() || raster.epoch != shown_->sourceEpoch ||
             shown_->historySerial < raster.column;
         if (newSweep) {
-            if (clearedEpoch_ == shown_->sourceEpoch && clearedColumn_ < shown_->historySerial)
+            if (afterClear)
+                raster.sweepOrigin = firstVisible->serial;
+            else if (clearedEpoch_ == shown_->sourceEpoch && clearedColumn_ < shown_->historySerial)
                 raster.sweepOrigin = clearedColumn_ + 1;
             else
                 raster.sweepOrigin = count ? columns[skipped].serial : shown_->historySerial;

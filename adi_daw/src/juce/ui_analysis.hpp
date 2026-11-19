@@ -145,6 +145,7 @@ class SharedSpectrumView final : public juce::Component,
     // Owner-only source position, independent of parked stamps and worker backlog.
     // Initial compatible pictures may be reused; explicit fresh actions fence them.
     SharedAnalysis::Lease::SourcePosition sourcePosition_;
+    SharedAnalysis::Lease::SourcePosition historyClearPosition_;
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
