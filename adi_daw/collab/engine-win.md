@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, background plug-in catalogue service (N58, DF-W34)
+
+**PR requested** — `engine-win/scanner-service` at `93d91ff0b057ccebeff6077eb55f0e960012a2e1`. Queue after the DF-E31 scanner family at `5c2e8423`. Based on main `12aab48a` through that family. Six files in the N58 change, with no Window-owned source edits.
+
+**For Window #676.** On the existing application loader, call `startDiscovery(CacheOnly)` to hydrate on the worker, then `startDiscovery(Incremental)` for installed changes. Rescan uses `Refresh`. Retain the returned job ID, read `discoveryProgress()` from the owner and call `adoptDiscovery(id)` once Ready. Candidate totals appear after each format's enumeration. Read `catalogue()` for typed VST3 `PluginDescription::isInstrument` and typed CLAP references. Display the returned failure and cancellation state. A settings change invalidates its older job. Cache hits can still instantiate while discovery runs. Defer a project open that needs an unknown plug-in until the catalogue is adopted or the scan failure is visible to the user. The default worker count is half the reported hardware threads, bounded to one through four.
+
+MSVC x64 `/W4 /WX`: all ten scanner/player suites passed and the Windows app linked. The held-worker fixture verified nonblocking owner progress, one discovery admission, hint suppression, typed VST3 instrument metadata, no synchronous project-open hydration after adoption, warm reuse, explicit Rescan, cancellation, stale settings and helper deployment refusal. No app UI run. Window owns startup and Rescan invocation, polling and project-open retry on #676.
+
 ## 2026-11-19, scanner discovery and registry family (DF-E31)
 
 **PR requested** — `engine-win/scanner-dfe31` at `5c2e84233387057945bdfd7a4866f64c1324c53f`, on main `12aab48a`. One branch replaces #643, #644, #669 and #670. It includes 0f7289b2, 79db43b6, win's native tick encoding and the Windows canonical-bundle test fix. Owner admission and schema checks use immediate transactions.
