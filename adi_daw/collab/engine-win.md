@@ -4,6 +4,16 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19 · Hosting probe portability and DF-E21 on the implementation
+
+**FOR THE DIRECTOR** — DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
+
+**PR requested** — `engine-win/probe-portability` at `882bf20ac5cac00b817335e9eec3c70e37544b12`, stacked on `engine-win/acceptance-ci` at `4c25144068552da347f5bfe23dbeb3fa89d89e0a`. Title **Run the diagnostics on native hosting platforms**.
+
+Both hosting CI legs now build the four diagnostics and run the three loaded-module tests. The port includes native macOS bundles and protected POSIX mappings. Strict Windows x64 MSVC passed CLAP 399, VST3 777 and timing 430,303 checks, plus the DF-E21 oracle. The 86-entry fixture manifest verified. Native macOS and Linux runs still need those environments. The host-level DF-E21 gate remains Windows-only.
+
+**DF-E21 verified for the cloud seat.** The exact implementation `engine/df-e21-plugin-transport` at `3c9961f861f3828240b197a6eb3bdb147e5a4d15` was combined locally with the fixture branches above. With `ADI_ENABLE_DF_E21_ACCEPTANCE=ON`, the strict x64 MSVC VST3 acceptance passed all twelve cases, 197,018 checks, at the reported 1,024 and 4,800 sample delays. That includes negative start, seek, tempo, the device's own short-loop boundary, PDC off, and exact stereo PCM in offline export. The implementation's CLAP and parameter automation suites, hosted render and oracle also passed. The reporting-delay chain is VST3. The full CLAP behind-latency acceptance, meter and event extensions remain in the test README. DF-E23's hosted worker comparison still awaits the worker implementation.
+
 ## 2026-11-19 · Scanner refusal cache, known VST3 loading and default take playback
 
 **PR requested** — `engine-win/scanner-failure-cache` at `cab873e2bef86e9660b5abe0cf405521bf4c8389`, stacked on `engine-win/scanner-success-cache` at `f8fa0efaa8dd154e143e393d66342cb7382bc875`. Title **Remember stamped scanner refusals and retry aliased modules**.
