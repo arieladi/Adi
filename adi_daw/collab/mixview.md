@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Verify the default EQ after omitted silence
+
+The exact cumulative Windows Release EQ host suite passed 887 checks. Two real backends used 17+47-sample segments at 48 kHz. One omitted 64 silent blocks after a nonzero prelude. Both precisions resumed bit for bit at zero latency and took the same first transition on a subsequent owner gain edit. The callback allocation gate stayed green.
+
+This supports a narrow settled, pristine default case without an unconditional reset. Keep other modes running until their histories are proven settled. Owner edits must wake the native path before they produce an offer, and offline calls require the separate Engine fix.
+
 ### 2026-11-19 — Export and normal-quality offline suspension regression
 
 **For Engine.** The test-only branch `mixview/offline-suspension-regression-20261119` at `13ed3175682727019a63de901e53bc74f2df606a` demonstrates the ADR-0043 d5 gap through the normal Session entry point. Exact Windows Release has 25 checks and only two failures. A zero-tail device is skipped on a silent block in both an explicit export and a normal-quality offline render. The live suspension control, offline-to-device setup, and export-quality intent checks pass. The branch adds only the reproduction and is not a landing candidate by itself.
