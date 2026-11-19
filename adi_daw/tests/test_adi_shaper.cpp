@@ -16,7 +16,8 @@ using Shaper = adi::dsp::AdiShaper;
 using Band = Shaper::Band;
 using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
-static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::Count == 133);
+static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
+static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::Count == 286);
 int failures = 0;
 
 void check(bool condition, const char* description) {
@@ -359,6 +360,120 @@ void clockLimitsAndAliases() {
     swapped.process(inL.data(), inR.data(), inR.data(), inL.data(), count);
     check(inR == outL && inL == outR, "crossed input and output planes survive split and in-place stages");
 }
+
+void modulationStack() {
+    Shaper rack;
+    rack.prepare(48000);
+    rack.set(Shaper::FilterOn, 1);
+    rack.set(Shaper::LiquidOn, 1);
+    rack.set(Shaper::MasterMix, 50);
+    rack.set(Shaper::modParam(Stage::Filter, Band::Mid, Shaper::ModMix), 80);
+    rack.set(Shaper::modParam(Stage::Liquid, Band::Mid, Shaper::ModMix), 60);
+    rack.set(Shaper::LiquidMidPolarity, 1);
+    // Cutoff interpolates while resonance holds. The Liquid stage does the reverse.
+    rack.set(Shaper::modParam(Stage::Filter, Band::Mid, Shaper::PrimaryCurve), 1);
+    rack.set(Shaper::modParam(Stage::Liquid, Band::Mid, Shaper::SecondaryCurve), 1);
+    constexpr std::array<float, 8> cut{30, 70, 80, 50, 65, 70, 35, 40};
+    constexpr std::array<float, 8> res{20, 65, 50, 15, 40, 25, 10, 45};
+    constexpr std::array<float, 8> center{40, 60, 80, 90, 55, 30, 50, 75};
+    constexpr std::array<float, 8> feedback{10, 25, 60, 30, 40, 20, 65, 50};
+    for (int i = 0; i < 8; ++i) {
+        auto first = static_cast<Shaper::ModControl>(Shaper::Primary1 + i);
+        auto second = static_cast<Shaper::ModControl>(Shaper::Secondary1 + i);
+        const auto j = static_cast<std::size_t>(i);
+        rack.set(Shaper::modParam(Stage::Filter, Band::Mid, first), cut[j]);
+        rack.set(Shaper::modParam(Stage::Filter, Band::Mid, second), res[j]);
+        rack.set(Shaper::modParam(Stage::Liquid, Band::Mid, first), center[j]);
+        rack.set(Shaper::modParam(Stage::Liquid, Band::Mid, second), feedback[j]);
+    }
+    adi::dsp::AdiShaperFilter filter;
+    adi::dsp::AdiShaperLiquid liquid;
+    filter.prepare(48000);
+    filter.setMode(adi::dsp::AdiShaperFilter::Mode::LowPass6);
+    (void)liquid.prepare(48000);
+    liquid.setMode(adi::dsp::AdiShaperLiquid::Mode::Flange);
+    liquid.setPolarity(true);
+    double maxError = 0.0, effectPeak = 0.0;
+    for (std::size_t step = 0; step < 8; ++step) {
+        const auto next = (step + 1) % 8;
+        const float cutoff = cut[step] * .01f + .5f * (cut[next] * .01f - cut[step] * .01f);
+        const float fb = feedback[step] * .01f + .5f * (feedback[next] * .01f - feedback[step] * .01f);
+        rack.sync(0.5 * static_cast<double>(step) + 0.25, false);
+        for (int frame = 0; frame < 301; ++frame) {
+            const float a = static_cast<float>(std::sin(0.034 * frame));
+            const float b = static_cast<float>(std::cos(0.079 * frame) * 0.25);
+            const auto out = one(rack, a, b);
+            float l = a, r = b;
+            filter.process(l, r, cutoff, res[step] * .01f);
+            const float dryL = a + (0.5f * (80.f * .01f)) * (l - a);
+            const float dryR = b + (0.5f * (80.f * .01f)) * (r - b);
+            l = dryL;
+            r = dryR;
+            liquid.processStereo(l, r, center[step] * .01f, fb);
+            l = dryL + (0.5f * (60.f * .01f)) * (l - dryL);
+            r = dryR + (0.5f * (60.f * .01f)) * (r - dryR);
+            maxError = std::max({maxError, static_cast<double>(std::abs(out[0] - l)),
+                                 static_cast<double>(std::abs(out[1] - r))});
+            effectPeak = std::max(effectPeak, static_cast<double>(std::abs(l - a)));
+        }
+    }
+    check(maxError < 2.0e-6 && effectPeak > 0.1, "two independent contours feed each serial kernel at master times band blend");
+    rack.set(Shaper::FilterOn, 0);
+    rack.set(Shaper::LiquidOn, 0);
+    rack.set(static_cast<Shaper::Param>(Shaper::LiquidOn + 1), 3);
+    rack.set(static_cast<Shaper::Param>(Shaper::LiquidOn + 4), 2);
+    const auto bypass = one(rack);
+    check(bypass[0] == 0.375f && bypass[1] == 0.25f, "switching stages off bypasses their crossover and tail");
+}
+
+void modulationBands() {
+    for (const auto stage : {Stage::Filter, Stage::Liquid}) {
+        // First three copies process one wet band each. The fourth runs all
+        // three. At 6 dB/octave the shared dry transfer is exactly unity.
+        std::array<Shaper, 4> racks;
+        const auto on = stage == Stage::Filter ? Shaper::FilterOn : Shaper::LiquidOn;
+        for (std::size_t slot = 0; slot < racks.size(); ++slot) {
+            auto& rack = racks[slot];
+            rack.prepare(48000);
+            rack.set(on, 1);
+            rack.set(static_cast<Shaper::Param>(on + 1), 3);
+            for (int b = 0; b < 3; ++b) {
+                const auto band = static_cast<Band>(b);
+                const auto type = stage == Stage::Filter ? std::array{0, 3, 4} : std::array{1, 2, 5};
+                rack.set(Shaper::modParam(stage, band, Shaper::Type), static_cast<float>(type[static_cast<std::size_t>(b)]));
+                const float blend = slot == 3 || slot == static_cast<std::size_t>(b) ? 100.0f : 0.0f;
+                rack.set(Shaper::modParam(stage, band, Shaper::ModMix), blend);
+                for (int p = 0; p < 8; ++p) {
+                    const auto a = static_cast<Shaper::ModControl>(Shaper::Primary1 + p);
+                    const auto s = static_cast<Shaper::ModControl>(Shaper::Secondary1 + p);
+                    rack.set(Shaper::modParam(stage, band, a), static_cast<float>(50 * b));
+                    rack.set(Shaper::modParam(stage, band, s), static_cast<float>(100 - 50 * b));
+                }
+            }
+        }
+        double maxError = 0.0;
+        std::array<double, 3> bandEffect{};
+        bool finite = true;
+        for (int i = 0; i < 8192; ++i) {
+            const float l = static_cast<float>(.25 * std::sin(i * .0065) + .28 * std::sin(i * .095) + .37 * std::sin(i * .94));
+            const float r = -.83f * l;
+            std::array<float, 2> total{l, r};
+            for (std::size_t b = 0; b < 3; ++b) {
+                const auto solo = one(racks[b], l, r);
+                finite &= std::isfinite(solo[0]) && std::isfinite(solo[1]);
+                total[0] += solo[0] - l;
+                total[1] += solo[1] - r;
+                bandEffect[b] = std::max(bandEffect[b], static_cast<double>(std::abs(solo[0] - l)));
+            }
+            const auto wet = one(racks[3], l, r);
+            finite &= std::isfinite(wet[0]) && std::isfinite(wet[1]);
+            maxError = std::max({maxError, static_cast<double>(std::abs(total[0] - wet[0])),
+                                 static_cast<double>(std::abs(total[1] - wet[1]))});
+        }
+        check(finite && maxError < 2.0e-6 && *std::min_element(bandEffect.begin(), bandEffect.end()) > 0.01,
+              "three modulation bands retain independent stereo histories, modes, curves and wet amounts at extrema");
+    }
+}
 } // namespace
 
 int main() {
@@ -371,6 +486,8 @@ int main() {
     steepCrossovers();
     bypassAndInvalid();
     clockLimitsAndAliases();
+    modulationStack();
+    modulationBands();
     if (failures == 0) std::puts("ADi-SHAPER DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }

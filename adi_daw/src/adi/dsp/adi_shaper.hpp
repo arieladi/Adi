@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/dsp/adi_shaper_filter.hpp"
+#include "adi/dsp/adi_shaper_liquid.hpp"
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -13,17 +15,30 @@ class AdiShaper {
     static constexpr int bandParameterCount = 13;
     static constexpr int stageHeaderSize = 3;
     static constexpr int stageParameterCount = stageHeaderSize + 3 * bandParameterCount;
+    static constexpr int modHeaderSize = 6;
+    static constexpr int modBandParameterCount = 23;
+    static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
-                 VolumeHighSlope, WidthHighSlope, PanHighSlope, Count };
-    enum class Stage { Volume, Width, Pan };
+                 VolumeHighSlope, WidthHighSlope, PanHighSlope, FilterOn,
+                 LiquidOn = FilterOn + modStageParameterCount, LiquidLowPolarity = LiquidOn + modStageParameterCount,
+                 LiquidMidPolarity, LiquidHighPolarity, Count };
+    enum class Stage { Volume, Width, Pan, Filter, Liquid };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
     static constexpr Param bandParam(Stage stage, Band band, BandControl control) noexcept {
         return static_cast<Param>(VolumeBands + stageHeaderSize + stageParameterCount * static_cast<int>(stage)
                                   + bandParameterCount * static_cast<int>(band) + static_cast<int>(control));
+    }
+    enum ModControl { Type, ModMix, ModClock, ModCycle, ModRate, PrimaryCurve, SecondaryCurve,
+                      Primary1, Primary2, Primary3, Primary4, Primary5, Primary6, Primary7, Primary8,
+                      Secondary1, Secondary2, Secondary3, Secondary4, Secondary5, Secondary6, Secondary7, Secondary8 };
+    static constexpr Param modParam(Stage stage, Band band, ModControl control) noexcept {
+        const int start = stage == Stage::Liquid ? LiquidOn : FilterOn;
+        return static_cast<Param>(start + modHeaderSize + modBandParameterCount * static_cast<int>(band)
+                                  + static_cast<int>(control));
     }
 
     AdiShaper() noexcept;
@@ -37,14 +52,20 @@ class AdiShaper {
 
   private:
     struct Gain { float left = 1.0f, right = 1.0f; };
-    struct CurveBand {
+    struct Contour {
         std::array<float, 8> points{}, differences{};
+        bool linear = false, constant = true;
+        void update() noexcept;
+        [[nodiscard]] float at(std::uint64_t position) const noexcept;
+    };
+    struct CurveBand {
+        Contour primary, secondary;
         std::uint64_t phase = 0, step = 0;
         double beats = 4.0, hz = 1.0;
         float mix = 1.0f, blend = 1.0f;
-        bool hertz = false, linear = false, constant = true, active = false;
+        int type = 0;
+        bool hertz = false, active = false;
         std::array<Gain, 8> heldGains{};
-        [[nodiscard]] float valueAt(std::size_t sample) const noexcept;
     };
     struct Split {
         struct Integrator { double band = 0, low = 0; };
@@ -70,7 +91,7 @@ class AdiShaper {
         Split low, high;
         double lowHz = 200.0, highHz = 2000.0;
         int layout = 0;
-        bool active = false;
+        bool active = false, enabled = true;
     };
     static Gain gain(Stage kind, float amount, float mix) noexcept;
     void updateBand(Stage kind, CurveBand& band) const noexcept;
@@ -78,9 +99,16 @@ class AdiShaper {
     void updateStage(Stage kind) noexcept;
     void updateStep(CurveBand& band) const noexcept;
     void updateSplits(StageData& stage) const noexcept;
+    void layout(StageData& stage, int value) noexcept;
+    void slope(Split& split, float value) noexcept;
+    void clock(CurveBand& band, BandControl control, float value) const noexcept;
+    void setMod(Param id, float value) noexcept;
+    void restart(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, 3> stages_;
+    std::array<StageData, 5> stages_;
+    std::array<AdiShaperFilter, 3> filters_;
+    std::array<AdiShaperLiquid, 3> liquids_;
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
     float masterMix_ = 1.0f;
     bool playing_ = true;

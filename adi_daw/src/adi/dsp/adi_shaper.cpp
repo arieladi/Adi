@@ -39,10 +39,15 @@ void copyStereo(const float* inL, const float* inR, float* outL, float* outR,
 AdiShaper::AdiShaper() noexcept {
     for (std::size_t i = 0; i < stages_.size(); ++i) {
         const auto kind = static_cast<Stage>(i);
-        for (auto& band : stages_[i].bands)
-            band.points.fill(kind == Stage::Pan ? 0.0f : 1.0f);
+        stages_[i].enabled = kind < Stage::Filter;
+        for (auto& band : stages_[i].bands) {
+            band.primary.points.fill(kind == Stage::Pan ? 0.0f : kind == Stage::Liquid ? 0.5f : 1.0f);
+            band.secondary.points.fill(kind == Stage::Liquid ? 0.5f : 0.0f);
+            if (kind == Stage::Liquid) band.type = static_cast<int>(AdiShaperLiquid::Mode::Flange);
+        }
         updateStage(kind);
     }
+    for (auto& liquid : liquids_) liquid.setMode(AdiShaperLiquid::Mode::Flange);
     prepare(sampleRate_);
 }
 
@@ -51,6 +56,8 @@ void AdiShaper::prepare(double sampleRate) noexcept {
     sampleRate_ = sampleRate;
     quarterNotes_ = 0.0;
     playing_ = true;
+    for (auto& filter : filters_) filter.prepare(sampleRate);
+    for (auto& liquid : liquids_) (void)liquid.prepare(sampleRate);
     for (auto& stage : stages_) {
         stage.low.reset();
         stage.high.reset();
@@ -168,6 +175,7 @@ void AdiShaper::sync(double quarterNotes, bool playing) noexcept {
     playing_ = playing;
     quarterNotes_ = quarterNotes;
     for (auto& stage : stages_) {
+        if (!stage.enabled) continue;
         for (auto& band : stage.bands) {
             if (band.hertz) continue;
             band.phase = cyclePhase(quarterNotes / band.beats);
@@ -188,16 +196,17 @@ AdiShaper::Gain AdiShaper::gain(Stage kind, float amount, float mix) noexcept {
 }
 
 void AdiShaper::updateBand(Stage kind, CurveBand& band) const noexcept {
-    const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
-    band.constant = true;
+    band.primary.update();
     band.blend = masterMix_ * band.mix;
-    for (std::size_t i = 0; i < band.points.size(); ++i) {
-        const float difference = band.points[(i + 1) % band.points.size()] - band.points[i];
-        band.differences[i] = difference;
-        if (difference != 0.0f) band.constant = false;
-        band.heldGains[i] = gain(kind, band.points[i], band.blend);
+    if (kind >= Stage::Filter) {
+        band.secondary.update();
+        band.active = kind == Stage::Filter || band.type != static_cast<int>(AdiShaperLiquid::Mode::Off);
+        return;
     }
-    band.active = band.blend != 0.0f && (!band.constant || band.points[0] != neutral);
+    const auto neutral = kind == Stage::Pan ? 0.0f : 1.0f;
+    for (std::size_t i = 0; i < band.primary.points.size(); ++i)
+        band.heldGains[i] = gain(kind, band.primary.points[i], band.blend);
+    band.active = band.blend != 0.0f && (!band.primary.constant || band.primary.points[0] != neutral);
 }
 
 void AdiShaper::updateActivity(StageData& stage) noexcept {
@@ -212,6 +221,100 @@ void AdiShaper::updateStage(Stage kind) noexcept {
     updateActivity(stage);
 }
 
+void AdiShaper::layout(StageData& stage, int value) noexcept {
+    if (value == stage.layout) return;
+    stage.low.reset();
+    stage.high.reset();
+    stage.layout = value;
+    updateSplits(stage);
+    updateActivity(stage);
+}
+
+void AdiShaper::slope(Split& split, float value) noexcept {
+    const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
+    if (selected != split.slope) {
+        split.slope = selected;
+        split.reset();
+    }
+}
+
+void AdiShaper::clock(CurveBand& band, BandControl control, float value) const noexcept {
+    if (control == Clock) band.hertz = value >= 0.5f;
+    else if (control == Cycle) band.beats = std::clamp(value, 0.03125f, 128.0f);
+    else band.hz = std::clamp(value, 0.02f, 5240.0f);
+    if (control != Rate && !band.hertz) band.phase = cyclePhase(quarterNotes_ / band.beats);
+    updateStep(band);
+}
+
+void AdiShaper::restart(Stage kind) noexcept {
+    auto& stage = stages_[static_cast<std::size_t>(kind)];
+    stage.low.reset();
+    stage.high.reset();
+    for (auto& band : stage.bands) {
+        band.phase = band.hertz ? 0 : cyclePhase(quarterNotes_ / band.beats);
+        updateStep(band);
+    }
+    if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
+    if (kind == Stage::Liquid) for (auto& liquid : liquids_) liquid.reset();
+}
+
+void AdiShaper::setMod(Param id, float value) noexcept {
+    if (id >= LiquidLowPolarity) {
+        liquids_[static_cast<std::size_t>(id - LiquidLowPolarity)].setPolarity(value >= 0.5f);
+        return;
+    }
+    const auto kind = id < LiquidOn ? Stage::Filter : Stage::Liquid;
+    const int local = id - (kind == Stage::Filter ? FilterOn : LiquidOn);
+    auto& stage = stages_[static_cast<std::size_t>(kind)];
+    if (local < modHeaderSize) {
+        switch (local) {
+        case 0:
+            if (const bool on = value >= 0.5f; on != stage.enabled) {
+                stage.enabled = on;
+                if (on) restart(kind);
+            }
+            break;
+        case 1: {
+            const auto selected = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
+            if (selected != stage.layout) {
+                layout(stage, selected);
+                if (kind == Stage::Filter) for (auto& filter : filters_) filter.reset();
+                if (kind == Stage::Liquid) for (auto& liquid : liquids_) liquid.reset();
+            }
+            break;
+        }
+        case 2: stage.lowHz = std::clamp(value, 20.0f, 20000.0f); updateSplits(stage); break;
+        case 3: stage.highHz = std::clamp(value, 20.0f, 20000.0f); updateSplits(stage); break;
+        case 4: slope(stage.low, value); break;
+        case 5: slope(stage.high, value); break;
+        }
+        return;
+    }
+    const auto index = static_cast<std::size_t>((local - modHeaderSize) / modBandParameterCount);
+    auto& band = stage.bands[index];
+    const int control = (local - modHeaderSize) % modBandParameterCount;
+    switch (control) {
+    case Type:
+        band.type = static_cast<int>(std::round(std::clamp(value, 0.0f, kind == Stage::Filter ? 4.0f : 5.0f)));
+        if (kind == Stage::Filter) filters_[index].setMode(static_cast<AdiShaperFilter::Mode>(band.type));
+        else liquids_[index].setMode(static_cast<AdiShaperLiquid::Mode>(band.type));
+        break;
+    case ModMix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
+    case ModClock: clock(band, Clock, value); return;
+    case ModCycle: clock(band, Cycle, value); return;
+    case ModRate: clock(band, Rate, value); return;
+    case PrimaryCurve: band.primary.linear = value >= 0.5f; return;
+    case SecondaryCurve: band.secondary.linear = value >= 0.5f; return;
+    default:
+        if (control < Secondary1)
+            band.primary.points[static_cast<std::size_t>(control - Primary1)] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+        else
+            band.secondary.points[static_cast<std::size_t>(control - Secondary1)] = std::clamp(value, 0.0f, 100.0f) * 0.01f;
+    }
+    updateBand(kind, band);
+    updateActivity(stage);
+}
+
 void AdiShaper::set(Param id, float value) noexcept {
     if (id < MasterMix || id >= Count || !std::isfinite(value)) return;
     if (id == MasterMix) {
@@ -219,15 +322,14 @@ void AdiShaper::set(Param id, float value) noexcept {
         for (std::size_t i = 0; i < stages_.size(); ++i) updateStage(static_cast<Stage>(i));
         return;
     }
+    if (id >= FilterOn) {
+        setMod(id, value);
+        return;
+    }
     if (id >= VolumeLowSlope) {
         const auto index = static_cast<std::size_t>(id - VolumeLowSlope);
-        auto& stage = stages_[index % stages_.size()];
-        auto& split = index < stages_.size() ? stage.low : stage.high;
-        const int slope = static_cast<int>(std::round(std::clamp(value, 0.0f, 2.0f)));
-        if (slope != split.slope) {
-            split.slope = slope;
-            split.reset();
-        }
+        auto& stage = stages_[index % 3];
+        slope(index < 3 ? stage.low : stage.high, value);
         return;
     }
     const auto index = static_cast<std::size_t>(static_cast<int>(id) - 1);
@@ -236,12 +338,8 @@ void AdiShaper::set(Param id, float value) noexcept {
     const auto local = index % stageParameterCount;
     if (local < stageHeaderSize) {
         if (local == 0) {
-            const int layout = static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f)));
-            if (layout != stage.layout) {
-                stage.low.reset();
-                stage.high.reset();
-                stage.layout = layout;
-            }
+            layout(stage, static_cast<int>(std::round(std::clamp(value, 0.0f, 3.0f))));
+            return;
         }
         else if (local == 1) stage.lowHz = std::clamp(value, 20.0f, 20000.0f);
         else stage.highHz = std::clamp(value, 20.0f, 20000.0f);
@@ -251,25 +349,12 @@ void AdiShaper::set(Param id, float value) noexcept {
         const auto control = (local - stageHeaderSize) % bandParameterCount;
         switch (control) {
         case Mix: band.mix = std::clamp(value, 0.0f, 100.0f) * 0.01f; break;
-        case Clock:
-            band.hertz = value >= 0.5f;
-            if (!band.hertz) band.phase = cyclePhase(quarterNotes_ / band.beats);
-            updateStep(band);
-            return;
-        case Cycle:
-            band.beats = std::clamp(value, 0.03125f, 128.0f);
-            if (!band.hertz) band.phase = cyclePhase(quarterNotes_ / band.beats);
-            updateStep(band);
-            return;
-        case Rate:
-            band.hz = std::clamp(value, 0.02f, 5240.0f);
-            updateStep(band);
-            return;
-        case Curve: band.linear = value >= 0.5f; return;
+        case Clock: case Cycle: case Rate: clock(band, static_cast<BandControl>(control), value); return;
+        case Curve: band.primary.linear = value >= 0.5f; return;
         default: {
             const float lo = kind == Stage::Pan ? -100.0f : 0.0f;
             const float hi = kind == Stage::Width ? 200.0f : 100.0f;
-            band.points[control - Point1] = std::clamp(value, lo, hi) * 0.01f;
+            band.primary.points[control - Point1] = std::clamp(value, lo, hi) * 0.01f;
             break;
         }
         }
@@ -278,10 +363,19 @@ void AdiShaper::set(Param id, float value) noexcept {
     updateActivity(stage);
 }
 
-float AdiShaper::CurveBand::valueAt(std::size_t sample) const noexcept {
-    const auto p = phase + step * static_cast<std::uint64_t>(sample);
-    const auto index = static_cast<std::size_t>(p >> 61);
-    const float fraction = static_cast<float>((p >> 37) & 0xffffffU) * 0x1p-24f;
+void AdiShaper::Contour::update() noexcept {
+    constant = true;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        differences[i] = points[(i + 1) % points.size()] - points[i];
+        if (differences[i] != 0.0f) constant = false;
+    }
+}
+
+float AdiShaper::Contour::at(std::uint64_t position) const noexcept {
+    if (constant) return points[0];
+    const auto index = static_cast<std::size_t>(position >> 61);
+    if (!linear) return points[index];
+    const float fraction = static_cast<float>((position >> 37) & 0xffffffU) * 0x1p-24f;
     return points[index] + fraction * differences[index];
 }
 
@@ -300,22 +394,31 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
             r *= g.right;
         }
     };
-    auto applyBand = [&](const CurveBand& band, std::size_t i, float& l, float& r) {
-        Gain g;
-        if (band.constant) {
-            g = band.heldGains[0];
-        } else if (!band.linear) {
-            const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
-            g = band.heldGains[static_cast<std::size_t>(p >> 61)];
+    auto applyBand = [&](std::size_t index, std::size_t i, float& l, float& r) {
+        const auto& band = stage.bands[index];
+        const auto p = band.phase + band.step * static_cast<std::uint64_t>(i);
+        if constexpr (kind == Stage::Filter || kind == Stage::Liquid) {
+            const float dryL = l, dryR = r;
+            const float primary = band.primary.at(p), secondary = band.secondary.at(p);
+            if constexpr (kind == Stage::Filter) filters_[index].process(l, r, primary, secondary);
+            else liquids_[index].processStereo(l, r, primary, secondary);
+            if (band.blend == 0.0f) { l = dryL; r = dryR; }
+            else if (band.blend != 1.0f) {
+                l = dryL + band.blend * (l - dryL);
+                r = dryR + band.blend * (r - dryR);
+            }
         } else {
-            g = gain(kind, band.valueAt(i), band.blend);
+            Gain g;
+            if (band.primary.constant) g = band.heldGains[0];
+            else if (!band.primary.linear) g = band.heldGains[static_cast<std::size_t>(p >> 61)];
+            else g = gain(kind, band.primary.at(p), band.blend);
+            applyGain(g, l, r);
         }
-        applyGain(g, l, r);
     };
     if (stage.layout == 0) {
-        const auto& band = stage.bands[1];
-        if constexpr (kind != Stage::Width) {
-            if (band.constant) {
+        if constexpr (kind == Stage::Volume || kind == Stage::Pan) {
+            const auto& band = stage.bands[1];
+            if (band.primary.constant) {
                 for (std::size_t i = 0; i < frames; ++i) {
                     const float l = inL[i], r = inR[i];
                     outL[i] = l * band.heldGains[0].left;
@@ -326,7 +429,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         }
         for (std::size_t i = 0; i < frames; ++i) {
             float l = inL[i], r = inR[i];
-            applyBand(band, i, l, r);
+            applyBand(1, i, l, r);
             outL[i] = l;
             outR[i] = r;
         }
@@ -339,9 +442,9 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
         const float dryL = inL[i], dryR = inR[i];
         float midL = dryL, midR = dryR;
         float sumL = 0.0f, sumR = 0.0f;
-        auto accumulate = [&](const CurveBand& band, float l, float r) {
+        auto accumulate = [&](std::size_t index, float l, float r) {
             float wetL = l, wetR = r;
-            if (band.active) applyBand(band, i, wetL, wetR);
+            if (stage.bands[index].active) applyBand(index, i, wetL, wetR);
             if (flatPhase) {
                 sumL += wetL - l;
                 sumR += wetR - r;
@@ -361,16 +464,16 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 l.low = stage.high.align(l.low, 0);
                 r.low = stage.high.align(r.low, 1);
             }
-            accumulate(stage.bands[0], l.low, r.low);
+            accumulate(0, l.low, r.low);
         }
         if (hasHigh) {
             const auto l = stage.high.split(midL, 0);
             const auto r = stage.high.split(midR, 1);
-            accumulate(stage.bands[2], l.high, r.high);
+            accumulate(2, l.high, r.high);
             midL = l.low;
             midR = r.low;
         }
-        accumulate(stage.bands[1], midL, midR);
+        accumulate(1, midL, midR);
         outL[i] = !flatPhase ? sumL : (sumL == 0.0f ? dryL : dryL + sumL);
         outR[i] = !flatPhase ? sumR : (sumR == 0.0f ? dryR : dryR + sumR);
     }
@@ -385,6 +488,9 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     // filters still follow the input while dry so automation reopens them warm.
     auto run = [&]<Stage kind>() {
         auto& stage = stages_[static_cast<std::size_t>(kind)];
+        if constexpr (kind >= Stage::Filter) {
+            if (!stage.enabled) return;
+        }
         if (!stage.active && stage.layout == 0) return;
         render<kind>(stage, inL, inR, outL, outR, frames);
         inL = outL;
@@ -393,10 +499,14 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     run.template operator()<Stage::Volume>();
     run.template operator()<Stage::Width>();
     run.template operator()<Stage::Pan>();
+    run.template operator()<Stage::Filter>();
+    run.template operator()<Stage::Liquid>();
     copyStereo(inL, inR, outL, outR, frames);
-    for (auto& stage : stages_)
+    for (auto& stage : stages_) {
+        if (!stage.enabled) continue;
         for (auto& band : stage.bands)
             band.phase += band.step * static_cast<std::uint64_t>(frames);
+    }
     if (playing_) quarterNotes_ += (bpm_ / (60.0 * sampleRate_)) * static_cast<double>(frames);
 }
 
