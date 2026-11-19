@@ -10,6 +10,16 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DF-E23 native Windows hardware gate at 256 and 2,048 samples
+
+**PR requested** — `engine-win/dfe23-hardware-diagnostics`, `685fcf8fbf64ff9f91275b9abec7d6928ab3bee7`, based on cloud worker implementation `d96c97d7731fac88ea93350897b65fcac29fe2e4`. Opt-in device CLI diagnostics verify the actual driver grant, worker allocation and callback timing. The callback writes preallocated rows and the CLI saves them after the device closes. Strict native optimized x64 MSVC build and `adi_play_render_tests` passed. The diagnostics and scanner discovery branches overlap in the default-roots constructor and playback CLI; retain one scoped root option.
+
+**PR requested** — `engine-win/worker-measurement-kit`, `d07944a2094f67795135d00e8abd9f2d2e4be254`, stacked on `engine-win/acceptance-ci`. Adds the ADI-original fixture construction, native execution witness, controlled process sampler and paired statistics. All 87 asset checksums and 14 synthetic statistics checks pass. The kit contains only project-owned source and specifications. The director's research supplied the acceptance topology and buffer sizes.
+
+**MEASURED** — 52/52 accepted physical ASIO arms at 48 kHz, including 12 stress arms and 40 lighter arms. Real native VST3 traces verified 64 distinct instances, six processing threads for five workers on the independent topology, and one on the serial control. The first 6,000 offline frames of each topology were bit-identical between zero and five requested workers. The lighter independent graph at 2,048 samples had median run p99 of 28.179 to 6.507 ms and paired change −22.262 ms [−23.572, −20.953], with +25.277 points of process CPU [22.985, 27.569] on a one-logical-CPU scale. At 256, 3.834 to 1.050 ms, paired change −1.836 ms [−4.389, +0.718]. One five-worker arm at 256 reached 62.914 ms and all 22 over-budget callbacks for that mode. Worker-off had one over-budget callback across its five matched arms. Serial requests allocated zero workers, as the serial graph exposes no independent hosted levels. The driver granted 48 kHz and 2,048 samples again at close.
+
+**Decision** — keep the existing opt-in default. The high-buffer improvement is measured. The low-buffer tail, worker MMCSS verification, remaining buffer grants and complete ADR-0229 gate stay open. The driver supplied no native overload counter. These timing rows do not establish acoustic continuity or a comparative DAW ranking. Raw evidence stays off the repository.
+
 ## 2026-11-19 · Scanner timestamp range, discovery diagnostics and folded delivery names
 
 **PR requested** — `engine-win/scanner-time-counts` at `b93ee50b2ed2916fb9b6a631e8eee86e03a194d6`, based on win's #643 head `302b1126`. Title **Encode scanner file timestamps without range loss**.
