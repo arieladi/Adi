@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — DF-M54 one musical bar in Focus Scope
+
+Focus Scope now projects a complete heard bar from the actual device rate, project tempo and meter grid. The existing short preview covers the wait for a complete bar. Group columns are streamed from the existing short physical taps. The projection adds signed stereo samples before reducing them to extrema, so opposite polarity cancels. It retains early and late transients after the earlier audio has rolled out of both tap rings. The completed bar uses one grouped reader and zero FFT plans. Stop, hiding and full clipping release its demand. Timing and routing are unchanged.
+
+Fixture-only `6bdc4ded` reproduced two failures at 48 kHz: the old view did not cover the complete 96,000 samples and lost the early transient. Exact Windows x64 Release `16e845eec9e0d31f794ed5063a5f7ea4d68e01fd` passed that component gate, bar grid and grouped reader gates, 893 Mix View shell component checks and all three targeted CTests. The retest brief covers tempo and signature changes, cancellation, seek and loop, and the visible return from the short preview. Live comparison and CPU timing remain open. ZIP SHA-256 `fcb143cbc2eef90f12dbe14b09cdd64275b40f550251af541e9e3212593d4a02`; ADI.exe SHA-256 `06b1eb6649d6055f7c8010b546e141048f3ccfcf85cdf7a5f1a00ebd78b0638e`.
+
+**PR requested.** Include `mixview/focus-one-bar-20261119` after the Compare held-reference correction in the cumulative review.
+
 ### 19 November — DF-M55 retain Hold B through an invalid A selection
 
 A captured B stays held if A is unavailable or temporarily points to B. Compare releases both analysis subscriptions while there is no valid pair, then subscribes only to A and waits for fresh input when a valid A returns. B's bins and reference metadata stay identical. Replacing, removing or clearing B still drops the hold.
