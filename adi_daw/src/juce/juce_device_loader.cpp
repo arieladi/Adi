@@ -83,9 +83,15 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed))
                 result->report.cancelled=true;
             if(!result->report.complete || result->report.cancelled) {
-                const auto diagnostic=result->report.failures.empty() || result->report.failures.front().error.empty()
+                // Earlier rejected candidates remain in the report but did
+                // not stop the batch. Name its fatal cause in the headline.
+                const auto fatal=std::find_if(result->report.failures.begin(),result->report.failures.end(),[&](const auto& failure) {
+                    return result->report.cancelled?failure.state==scan::State::Cancelled:
+                        failure.state==scan::State::Unavailable || failure.state==scan::State::Invalid;
+                });
+                const auto diagnostic=fatal==result->report.failures.end() || fatal->error.empty()
                     ?(result->report.cancelled?std::string{"discovery cancelled"}:std::string{"discovery did not complete"})
-                    :result->report.failures.front().error;
+                    :fatal->error;
                 failed(diagnostic,
                     result->report.cancelled?scan::State::Cancelled:scan::State::Unavailable);
                 return result;

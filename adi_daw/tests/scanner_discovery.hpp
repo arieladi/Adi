@@ -39,6 +39,54 @@ inline bool missesWithoutDiscovery(device::JuceDeviceLoader& loader) {
     engine::DeviceRequest request;request.ref=&reference;std::string error;
     return !loader.fn()(request,error) && error.find("NeedsDiscovery")!=error.npos && loader.stats().scans==0;
 }
+// The existing scan-cache executable is also a controlled protocol helper.
+// These two cases exercise aggregate error policy, not a native plug-in factory.
+inline std::atomic<bool>* cancelAfterRejection=nullptr;
+inline unsigned rejectionClockCalls=0;
+inline std::int64_t rejectionClock() noexcept {
+    // A fresh candidate's admission is the first clock call. Its completed
+    // rejected-result transaction is the second; cancel before the next probe.
+    if(++rejectionClockCalls==2 && cancelAfterRejection)cancelAfterRejection->store(true,std::memory_order_relaxed);
+    return 123;
+}
+struct RejectionCancellation {
+    explicit RejectionCancellation(std::atomic<bool>& cancel){cancelAfterRejection=&cancel;rejectionClockCalls=0;}
+    ~RejectionCancellation(){cancelAfterRejection=nullptr;rejectionClockCalls=0;}
+};
+inline bool fatalHeadlines() {
+    using device::DiscoveryMode;using device::DiscoveryOutcome;bool passed=true;
+    for(const bool cancelCase:{false,true}) {
+        TempDirectory scratch("discovery_operation",cancelCase?"fatal_cancel":"fatal_deployment");
+        const auto root=scratch.path()/"modules";fs::create_directory(root);
+        const auto rejected=root/"a-rejected.clap",fatal=root/"b-fatal.clap";
+        {std::ofstream file(rejected,std::ios::binary);file<<"reject";}
+        {std::ofstream file(fatal,std::ios::binary);file<<"unsupported";}
+        scan::Config config;config.registry=scratch.path()/"registry.sqlite";config.executable=scratch.path()/"controlled-helper.exe";
+        fs::copy_file(media::pathFromUtf8(ADI_DISCOVERY_TEST_HELPER),config.executable);
+        std::atomic<bool> cancel{false};RejectionCancellation cancellation(cancel);
+        if(cancelCase){config.clock=rejectionClock;config.process.cancel=&cancel;}
+        std::string error;{auto registry=PluginRegistry::open(config.registry,error);require(static_cast<bool>(registry),"fatal-case empty registry");}
+        device::JuceDeviceLoader loader(false);loader.setScanConfig(config);loader.addSearchPath(juce::File(juce::String::fromUTF8(text(root).c_str())));
+        const auto accepted=loader.discover(DiscoveryMode::CacheOnly);
+        require(accepted && accepted->outcome==DiscoveryOutcome::Published && accepted->catalogue,"fatal-case baseline publication");
+        const auto result=loader.discover(DiscoveryMode::Incremental);
+        const auto launches=[](const fs::path& module) {std::ifstream file(media::pathFromUtf8(text(module)+".launches"));
+            return std::count(std::istreambuf_iterator<char>(file),std::istreambuf_iterator<char>{},'\n');};
+        const auto expectedState=cancelCase?scan::State::Cancelled:scan::State::Unavailable;
+        const auto expectedOutcome=cancelCase?DiscoveryOutcome::Cancelled:DiscoveryOutcome::Failed;
+        const bool sequence=result && result->outcome==expectedOutcome && !result->report.complete &&
+            result->report.failures.size()==2 && result->report.failures[0].state==scan::State::Failed &&
+            result->report.failures[1].state==expectedState && launches(rejected)==1 && launches(fatal)==(cancelCase?0:1) &&
+            result->catalogue==accepted->catalogue && accepted->report.complete;
+        const auto expected=cancelCase?std::string{"discovery cancelled"}:std::string{"scanner helper unavailable or scan cancelled"};
+        const bool headline=sequence && result->error==expected && result->error!=result->report.failures[0].error;
+        std::printf("DISCOVERY_FATAL %s\n",Json{{"case",cancelCase?"cancel_after_rejection":"unavailable_after_rejection"},
+            {"controlled_protocol_helper",true},{"sequence_verified",sequence},{"expected",expected},
+            {"actual",result?result->error:"no result"},{"passed",headline}}.dump().c_str());
+        passed=passed && headline;
+    }
+    return passed;
+}
 inline Json modes() {
     using device::DiscoveryMode;using device::DiscoveryOutcome;
     TempDirectory scratch("discovery_operation","modes");const auto root=scratch.path()/"modules";fs::create_directory(root);
@@ -163,7 +211,8 @@ inline void command() {
 } // namespace discovery_test_detail
 inline bool scannerDiscoveryContracts() {
     juce::ScopedJuceInitialiser_GUI initialize;
-    try {auto receipt=discovery_test_detail::modes();discovery_test_detail::cacheStates();discovery_test_detail::command();
+    try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
+        auto receipt=discovery_test_detail::modes();discovery_test_detail::cacheStates();discovery_test_detail::command();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
         std::printf("DISCOVERY_OPERATION %s\n",receipt.dump().c_str());return true;
     }catch(const std::exception& error){std::printf("DISCOVERY_OPERATION %s\n",discovery_test_detail::Json{{"passed",false},{"error",error.what()}}.dump().c_str());return false;}
