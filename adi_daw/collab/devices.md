@@ -100,7 +100,7 @@ Then the rest:
     then `reverb-defaults`, and `eq-eight`
 11. `compressor-core`, when you choose (the question below)
 
-Any order within a group merges cleanly. The trial's combined tree: all 18 branches merged onto bedee5ab (c7627437, a local trial, not pushed). It builds clean (MSVC Debug, /W4 /WX), and CTest passes 253/253.
+Any order within a group merges cleanly. Later, after 3 December (DF-E40): `pd-block-quantum` (b8ff1a6e) and `pd-midi-out` (stacked on it) now stand on `df-e36` as well, each with a merge commit that keeps both sides' new `PdPatchEngine` virtuals (CTest 246/246 each). The trial's combined tree: all 18 branches merged onto bedee5ab (c7627437, a local trial, not pushed). It builds clean (MSVC Debug, /W4 /WX), and CTest passes 253/253.
 
 **`clones/shaper-rollup`** still conflicts with this set, as expected, in `builtin_catalog.*`,
 `native_devices.cpp` and `builtin_host.cpp`. The resolution is in the review entry below: 20
