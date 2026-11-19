@@ -12,6 +12,17 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E21 plug-in input transport gated and pushed
+
+**PR requested** — branch `engine/df-e21-plugin-transport`, head `3c9961f861f3828240b197a6eb3bdb147e5a4d15`, base `origin/main` at `ae09f638`. Title **Send hosted plug-ins the transport at their audio input**. The remote head matches the gated commit.
+
+CLAP and VST3 receive signed transport at their graph-owned input arrival. The receiving device splits at its own loop wrap and at tempo and meter changes. Addressed parameter automation uses the same clock, and the note test verifies delivery at the original musical sample behind 1,024 samples of latency. Compensation off uses the global transport. Offline export, bounce, freeze and CLI render select plug-in offline mode.
+
+**Gate** — Debian Linux x86-64, GCC 14 Debug with Pure Data and warnings as errors, 58,079 checks across 241 suites. The four validators and spec-layout check passed. The Linux VST3 fixture passed 211 checks, including signed transport and matching setup and processing modes. Clang 19 compiled all changed translation units with warnings as errors. The six changed headless production objects and two changed test objects built by Clang passed 658 checks when linked with the remaining GCC objects. The missing CLAP transport and missing receiving loop-split faults failed their intended checks. Raw logs are under `/workspace/adi-engine-validation`.
+
+Next is DF-E20(a) and (b), stacked on DF-E21. The scanner and its catalogue remain engine-win's work under DF-E20(c).
+
+
 
 ## 2026-11-12 — M2 history fuzz gated and pushed; taking the seeded note-diff gate
 
