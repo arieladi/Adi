@@ -43,7 +43,14 @@ changed during a probe prevents publication. An identical helper copy does not
 invalidate the cache solely because its installation path differs.
 
 For a flat candidate, both file size and full native modification time are
-stamped. For a bundle, native module files (`.vst3`, `.clap`, `.dll`, `.so`,
+stamped. The time field is the exact decimal native file-clock tick count,
+retaining that platform's epoch and unit. It is not converted to nanoseconds or
+narrowed to 64 bits: current Windows counts would overflow signed nanoseconds,
+and some Apple libraries use a signed 128-bit representation. Bounded decimal
+conversion handles the signed minimum without negating the whole value and
+preserves the original Windows stamp bytes. This is a local stat fingerprint,
+not a normalized cross-platform timestamp format.
+For a bundle, native module files (`.vst3`, `.clap`, `.dll`, `.so`,
 `.dylib`, and files under `Contents/MacOS`) and `moduleinfo.json` are sorted and
 stamped individually with their relative and canonical paths, sizes and times.
 Directory modification time is not used. A bundle walk is sorted and bounded to

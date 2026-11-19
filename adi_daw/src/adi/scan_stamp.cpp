@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/scan_stamp.hpp"
+#include "adi/scan_stamp_decimal.hpp"
 #include "adi/plugin_scanner.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/media/blake3.hpp"
@@ -38,7 +39,9 @@ void appendFile(std::string& into,const std::filesystem::path& path,
     field(into,utf8(relative));
     field(into,utf8(fs::canonical(path)));
     field(into,std::to_string(fs::file_size(path)));
-    field(into,std::to_string(fs::last_write_time(path).time_since_epoch().count()));
+    // Preserve native ticks and epoch, including wide reps. Converting current
+    // Windows 100 ns ticks to signed 64-bit nanoseconds would overflow.
+    field(into,detail::tickDecimal(fs::last_write_time(path).time_since_epoch().count()));
 }
 } // namespace
 
