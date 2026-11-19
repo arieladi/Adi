@@ -11299,10 +11299,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             {
                 auto &mix = actual.mixViewPanel;
                 const auto savedBroker = actual.sharedAnalysis;
+                const auto mainTrack = actual.analysisTrack(actual.reader());
                 auto tap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
+                auto selectedTap = std::make_shared<engine::ScopeTap>(48000, SharedAnalysis::kTapSeconds);
                 int acquired = 0, released = 0;
+                // Only Main is fed by this fixture. The visible Info view may
+                // request the selected track, which has its own source.
                 auto broker = std::make_shared<SharedAnalysis>(
-                    [&](std::int64_t, engine::ScopePoint) { ++acquired; return tap; },
+                    [&](std::int64_t track, engine::ScopePoint) { ++acquired; return track == mainTrack ? tap : selectedTap; },
                     [&](std::int64_t, engine::ScopePoint) { ++released; }, SharedAnalysis::Mode::Manual);
                 actual.sharedAnalysis = broker;
                 mix.setSize(900, 650); mix.setAnalyzerDock(true); mix.frame(actual.reader());
@@ -11503,12 +11507,6 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     mix.frame(actual.reader());
                     detached->frame(broker, main, main);
                     const auto next = spectrum.snapshot();
-                    const auto other = detached->view.snapshot();
-                    if (transforms != 1 || !next || next == shared || next != other)
-                        std::printf("folded hop: transforms=%zu next=%lld initial=%lld detached=%lld consumers=%zu\n",
-                                    transforms, static_cast<long long>(next ? next->firstSequence : -1),
-                                    static_cast<long long>(shared ? shared->firstSequence : -1),
-                                    static_cast<long long>(other ? other->firstSequence : -1), broker->stats().consumers);
                     check(transforms == 1 && next && next != shared &&
                               next == detached->view.snapshot(),
                           "the next hop still yields one transform and the same immutable spectrum for both views");
