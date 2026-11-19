@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — TM-MD-05 native Opus feasibility
+
+A private strict x64 MSVC diagnostic decoded a newly generated Ogg Opus file directly through libopusfile. Eight checks passed, including a 312-sample pre-skip, 9,600 declared and decoded 48 kHz frames, bounded reads, and aligned finite PCM. The inputs were the pinned JUCE 9.0.5 distribution's Xiph sources. This establishes feasibility for one owned mono file. ADI still needs the product decoder, chained and multichannel policy, and its error/cancellation tests.
+
+The headless core cannot depend on a full JUCE checkout. The current JUCE build also defines the embedded Ogg, Vorbis and Opus symbols. Recommend one pinned standalone Xiph provider shared by core and JUCE, with the present JUCE readers and writers preserved and both build configurations gated. The existing license policy permits the BSD intake. No source import or decoder change was made in this slice.
+
 ## 2026-11-19 — DEV-25 native CLAP directory aliases
 
 **PR requested** — `engine-win/clap-discovery-aliases`, `e9b3fefa823bd26f05466556ad4b873b804bc2b1`, stacked on `engine-win/scanner-fatal-diagnostic`. CLAP folder discovery resolves native junctions and symbolic links, walks each resolved directory once, deduplicates module paths, and never descends inside a plug-in bundle. Two native Windows junctions to the same vendor folder plus a cycle back into the search root reproduced a failure on the original finder. The new finder sees one canonical module through the alias-only and overlapping roots. Strict x64 MSVC passed scanner (45 checks), CLAP (503 checks) and all 15 native VST3 sequence cases with the new junction test. This leaves shell shortcuts, Finder aliases and VST3 root traversal for their own work.
