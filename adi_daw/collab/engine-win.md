@@ -10,6 +10,24 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — EX-07 identity-bound replacement and Windows AAC gate
+
+**PR requested** — `engine-win/export-identity-replace`, `41b74d57f2e48e9c9fc25d1e8466d37fbda5b04c`, stacked on `engine-win/export-folded-collisions`. Explicit Replace captures the requested regular file's native identity, BLAKE3 and folded collision set at preflight. Publication checks the same binding with the replacement lease. If the target was absent at preflight the output still goes through atomic no-clobber. NI binds the final name before the Main render begins. Strict native x64 MSVC passed 515 checks covering project replacement, actual WAV, pre-audio preparation ordering and the NI shared publisher. The existing file APIs leave an external writer a last-check-to-rename race. Whole-group reservation, confirmation wiring and complete native NI encoding remain open. Integrate the separate settings branch's callable replacement validation and EX-09's shared validator when combining branches.
+
+**MEASURED** — The native AAC gate has a specific reproduction. For an ADI-generated 4,096-frame stereo WAV at 48 kHz and 256 kbit/s, Media Foundation emitted four 1,024-tick packets. Both media/movie headers reported 4,095 ticks at 48 kHz, and the track omitted the edit list. The existing transport check refused the one-sample inconsistency before alignment verification. Explicit priming is still required even if the duration mismatch is resolved. Raw owned evidence stays private.
+
+## 2026-11-19 — EX-09 export preset groups
+
+**PR requested** — `engine-win/render-preset-groups`, `63d8cdffd8663995dadf337939683cf6b9b1d562`, stacked on `engine-win/render-job-json`. Bounds and Output, Options and Format, or All build and validate a candidate before assigning it. Options and Format preserves the target destination, source and bounds. Project and runtime bindings remain target-owned. This slice requires matching project spelling for project-local source transfer and refuses ambiguous partial clock/layout transitions. Native strict x64 MSVC passed 351 checks. Preset persistence, source relocation and control API remain separate.
+
+## 2026-11-19 — PD-11 settings read failure safety
+
+**PR requested** — `engine-win/settings-read-failures`, `18d278d2d18476891e8fab7feb244ca082e6395e`, stacked on `engine-win/settings-step-migrations`. A native read-denied handle reproduced moving healthy preferences aside. A locked tail independently reproduced a valid prefix being read as though it were the complete document. The shared native reader now distinguishes EOF from read errors. Unavailable load status preserves the path and refuses edits or saves until a fresh successful load. A failed save on an already loaded store retains pending edits for retry. Strict x64 MSVC passed 449 checks across four suites. Corrupt-file move-aside races are a separate slice.
+
+## 2026-11-19 — TM-MD-04 Create Analysis Files
+
+**PR requested** — `engine-win/analysis-files-switch`, `b54f4c6a99b094d2df5f44a44ade9de6ba7946fe`, stacked on `engine-win/analysis-cache-budget`. File & Folder exposes Create Analysis Files, on by default to preserve ADI's existing behaviour. Off keeps drawing and reusing existing analysis while new waveform requests skip writing derived analysis files. Each worker takes the current setting when it begins a request. Strict native x64 MSVC passed the core settings, peaks and cache suites and linked the desktop integration against the debounced-settings branch. The analysis scheduler, combined quota, metadata extraction and persistent sample defaults are separate work.
+
 ## 2026-11-19 — DEV-25 common VST3 and CLAP native search
 
 **PR requested** — `engine-win/vst3-discovery-aliases`, `1fc06d661c61024a1d79db20022e8ffc20e6a599`, stacked on `engine-win/clap-discovery-aliases`. VST3 folder discovery shares canonical, cycle-safe module enumeration with CLAP. Root scans return one sorted canonical path per resolved module and stop at bundle boundaries. The dedicated child still owns all factory probing. Explicit VST3 hints keep their existing identity spelling and the loader's compatibility projection remains available. Strict x64 MSVC passed five suites, including both formats' native junction/cycle checks, 15 native VST3 sequence cases, the actual two-format discovery operation, and saved Session reopen. Windows shell shortcuts and Finder aliases remain open.
