@@ -43,6 +43,34 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-19, window-fn — DF-W28 and ED-03: clip moves placed by the engine's planner (PR requested)
+
+**What it does** (`src/juce/ui_shell.*`: `placeClips`; `ui_arrangement.cpp`): a clip dragged, several
+picked clips dragged together (across tracks too) and a clip moved by the arrow keys are each one
+placement by `edit_plan::prepareMove` under the user's edit policy (`capturePolicy`), where the window sent
+`clip.move`, which left the two clips stacked. A clip the move covers whole goes; one it covers in part
+keeps the rest (Live 12 manual 6.7); one undo step, named as before. Where the planner does not place yet
+(a track with an automation lane, AU-05; a frozen track; Delete Overlaps off or muted clips as deleted;
+clips that already overlap), the clips move as before, keeping what they land on, and the Status Bar says
+why, as a range edit already does.
+
+**Not in this branch:** a dropped file and a duplicate landing on a clip (DF-W28's second sentence; the
+drop goes through the import's own batch, the duplicate through the clipboard's prepares); the parity
+rows from a Live measurement the row asks for.
+
+**Review:** two dimensions, each finding checked by a skeptic: 5 confirmed, 3 refuted, all fixed in the
+branch's last commit. One shell test's expectation changed: a clip moved onto one it covers whole now
+removes it, as Live does (it had encoded the stacked result).
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites on main `88e2d94e` merged; `adi_ui_shell_tests` 2752 checks, 0 failures.
+
+**PR requested.** Branch `window-fn/clip-overlap` at `b40ceb93`. Title: **adi_daw: window-fn: DF-W28 and
+ED-03, clip moves placed by the engine's planner: the covered part goes, as Live**. Depends on nothing
+unlanded.
+
+---
+
 ## 2026-11-19, window-fn — MI-01 parked: the window's switch to note.applyDiff waits for one engine helper
 
 Tried and taken back: the Note Editor's batches turned into one `note.applyDiff` from the clip's stream as
