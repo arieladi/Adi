@@ -2,6 +2,9 @@
 
 ## FOR THE DIRECTOR
 
+- **Focus Hear What Is Removed.** Should it audition the currently selected recipient and stage, or the combined reduction across the group? I recommend the selected recipient and stage with a latency-aligned difference. This blocks the Removed monitor only. The native stage adapter and the visible Focus workspace can proceed.
+- **Focus Align Apply.** Should it commit a reversible timing offset to the selected recipient, or apply a phase change? I recommend an explicit timing offset in one Undo step and keeping phase rotation in the unmask tools. This blocks Align Apply only.
+
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
