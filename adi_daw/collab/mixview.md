@@ -8,6 +8,19 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M11 and main integration
+
+**PR requested.** `mixview/stack-main-integration-20261119` at `ead20df4`, after Stack persistence `8bb87bc3`, brings in main `4e11edd9`. The integration retains the schema 1.22 device-key path and its prepared PDC handover, combines it with arriving-audio transport for hosted plug-ins, and preserves the shared control sources, appearance settings and analyser refresh. This is the current forward base for subsequent Mix View work.
+
+Release gates: 854 software-peer checks and all 12 targeted gates, including actual DeviceBridge, device keys, native EQ pipeline, VST3 key and CLAP fixtures, graph processing, window state, settings and shared analysis. The older 17 November sidechain retest accepted the routing fix. The review package lets Claude verify the combined build and an audible CLAP key. Win and the engine seat still own route/schema and host review. DF-M12 is settled in the decision guide: Focus recalls consistent settings without hidden edit history. DF-M14 stays covered by the earlier deadline-miss regression.
+
+Review `ADI-MixView-Main-Integration-20261119-ead20df440-win64-Release`.
+- App SHA-256 `8cbf49097b2d0adb707405f82c2fc9cf91da73ae367096904bf0fffbbbe59b16`
+- ZIP SHA-256 `6d96f249472e62382eef512cb27f6517fcdc5e7adbcb949337a364046c7787ae`
+- Scanner SHA-256 `5a297bf023a757a1f2ad3a3facad1999da9ff4e164d88219b37a87517dc14c24`
+- Brief `ADI-Q-MixView-Main-Integration-20261119-ead20df4-CLAUDE-RETEST.txt`
+
+
 ## 19 November 2026 — DF-M10, Stack state across project reopen
 
 **PR requested.** `mixview/stack-view-state-20261119` at `8bb87bc3`, stacked on `2691319d`. Each window remembers search and base row height. Pins belong to the project and updates from separate windows preserve each other's choices. A restored channel keeps its pin after Undo. Presentation preferences create no project operation or Undo entry.
