@@ -5,6 +5,53 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## FOR THE DIRECTOR
+
+1. **Shifter's delay, compensated or not?** (DEV-22; blocks nothing.) Live 12.4 reports no
+   latency for Shifter and leaves its Pitch mode half a Window late, uncompensated (80 ms
+   Window: 40 ms late). ADI now does exactly that (`devices/shifter-latency`). The other
+   way would be an addition: report the half Window so the graph compensates it, with
+   Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
+   decide the addition only if you miss it in use.
+
+## 2026-11-19 — DEV-22: Shifter's Pitch mode as Live 12.4 measures it
+
+**`devices/shifter-latency` (`5bd1ec48`), from `origin/main`.** Files: `src/adi/dsp/shifter.*`,
+`pd/devices/Shifter.pd`, the two Shifter tests.
+
+- **The reading (DV-06, relayed in RESEARCH-INTAKE 6.2; private notes read again):**
+  Shifter's default preset, Pitch, Dry/Wet 100 %, a 0.5 impulse, 48 kHz offline export.
+  Status Bar latency 0 at Window 10, 80 and 350 ms; at 0 st the output is the impulse
+  alone, 240 / 1920 / 8400 samples late (half the Window), compensation on or off; Window
+  10..350 ms, default 80. At +7 st: onset +16 / +187 / +848, peak +337 (0.196) / +1469
+  (0.329) / +6454 (0.423), energy centre +263.5 / +1894.5 / +7043.4.
+- **ADI before:** a phase vocoder on a power-of-two window, the whole window reported as
+  latency, Window 5..170 ms at 40.
+- **ADI now:** a rotating-tap delay line (two taps sweeping 0..Window half a cycle apart,
+  sin² crossfades summing to one, resting at unison with one tap at Window/2). Unison is
+  Live's exactly: a clean copy 240 / 1920 / 8400 samples late; `latency()` 0; Window
+  10..350 ms at 80. Pitch accuracy under 0.04 cents from -12 to +12 st.
+- **Away from unison:** with a free sweep phase the same model put Live's +7 st onset and
+  peak within 1..5 samples at 10 and 80 ms (peak values 0.204 and 0.32 against 0.196 and
+  0.329). Live's phase reference is not in the export, so ADI's +7 st numbers are printed
+  by the test (onset +54 / +695 / +855 with ADI's rest phase), not claimed.
+- Plant: another rest phase fails all three unison checks. MSVC `/W4 /WX` clean; CTest
+  **242/242**.
+- **Readings still to take (one question each):** Dry/Wet below 100 % (is Live's dry path
+  delayed with the wet? ADI's is not); the sweep's phase reference (to claim the shape at
+  +7 st).
+
+**PR requested** — title "Shifter's Pitch mode as Live 12.4 measures it: no reported
+latency, half a Window late (DEV-22)"; head `devices/shifter-latency` at `5bd1ec48`; base
+`main`. Body: the commit message. A question on it is under FOR THE DIRECTOR.
+
+**The rest of RESEARCH-INTAKE 6.2's latency table against what is built:** EQ Eight HQ
+16 = Live's 16. **Saturator** reports 16 with High Quality, Live 3: ADI adds more delay
+than Live (against ADR-0203 d4), next. **Overdrive** 0 against Live's 5, **Redux** 0
+against 64, **Limiter** lookahead to check against 64 / 128 / 256 (+6 with True Peak):
+each its own branch after. Compressor, Glue, Gate, Corpus, Erosion, Vinyl, Spectral Time
+and Spectral Resonator are not built; their numbers wait for them.
+
 ## 2026-11-19 — DEV-21, step 1: OneShot's controls take Live 12.4's ranges, units and defaults
 
 **`devices/oneshot-live-params` (`95a4fe0b`), stacked on `devices/sampler`** (which stands
