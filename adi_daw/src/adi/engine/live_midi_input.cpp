@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/live_midi_input.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -105,8 +106,10 @@ void LiveMidiInput::deliver(const GraphHost::RenderBlock& block, const Route& ro
 }
 
 void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& io,
-                          std::span<const Route> routes) noexcept {
+                          std::span<const Route> routes, const Transport& transport,
+                          MidiInputCapture* capture) noexcept {
     const auto epoch = epoch_.load(std::memory_order_acquire);
+    if (capture) capture->beginSlice(io, transport, epoch);
     const auto generation = block.generation();
     for (const auto& route : routes) {
         if (generation != generation_)
@@ -131,11 +134,13 @@ void LiveMidiInput::render(const GraphHost::RenderBlock& block, const AudioIo& i
         if (item.epoch != epoch || item.sample >= end) break;
         auto event = item.event;
         event.frame = static_cast<std::int32_t>(std::max(item.sample - io.streamTimeSamples, std::int64_t{0}));
+        if (capture) capture->record(item.sample, event);
         for (const auto& route : routes)
             if (route.armedTrack && route.slot != kInvalidNode && !route.voices->flush)
                 deliver(block, route, event);
     }
     read_.store(next, std::memory_order_release);
+    if (capture) capture->endSlice();
 }
 
 }  // namespace adi::engine

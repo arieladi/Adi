@@ -71,6 +71,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -84,6 +85,7 @@ namespace adi::engine {
 
 class AudioInputRecorder;
 struct AudioRecordingSpec;
+class MidiInputCapture;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -335,6 +337,9 @@ public:
     /// Discard queued events and release held live notes on the next callback.
     /// Call when the producer disconnects or replaces its port configuration.
     void resetMidiInput() noexcept;
+    /// Owner only. Start a new capture with the listed armed MIDI tracks.
+    bool startMidiInputCapture(std::span<const std::int64_t> tracks, std::string& error);
+    [[nodiscard]] MidiInputCapture& midiInputCapture() noexcept { return *midiInputCapture_; }
 
     /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
     /// precision is a new graph, built and published as a format change is
@@ -492,6 +497,7 @@ private:
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
     std::unique_ptr<LiveMidiInput> midiInput_;
+    std::unique_ptr<MidiInputCapture> midiInputCapture_;
     std::map<std::size_t, std::shared_ptr<LiveMidiInput::Voices>> midiInputVoices_;
     std::unique_ptr<AudioInputRecorder> recording_;
     std::string recordingProject_;

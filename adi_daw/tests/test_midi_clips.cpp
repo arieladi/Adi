@@ -3,6 +3,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
+#include "adi/engine/midi_input_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
@@ -217,6 +218,122 @@ void liveInput() {
           inst.heard[0].e.noteId != inst.heard[1].e.noteId && inst.heard[3].clock == 110 &&
           inst.heard[3].e.noteId == inst.heard[0].e.noteId && inst.balance() == 1,
           "releasing the live same-pitch note leaves the Arrangement voice active");
+}
+void driverMidiCapture() {
+    Fixture f(48000, 64);
+    f.store->db().exec("UPDATE tracks SET record_armed=1 WHERE id=1;"
+        "INSERT INTO tracks(id,kind,name,index_in_parent,record_armed)"
+        " VALUES(3,'midi','Armed without instrument',2,1),(4,'midi','Unarmed',3,0)");
+    f.load();
+    auto& capture = f.session.midiInputCapture();
+    auto& transport = f.session.transport();
+    using Kind = MidiCapturePacket::Kind;
+    const std::array<std::int64_t,2> tracks{3,1};
+    std::string error;
+    const auto start = [&] { return f.session.startMidiInputCapture(tracks, error); };
+    const auto send = [&](std::int64_t sample, EventType type, std::uint64_t id, std::uint16_t dim = 60) {
+        return f.session.enqueueMidiInput(sample, {0,type,3,dim,id,0,0.5});
+    };
+    check(!f.session.startMidiInputCapture(std::array<std::int64_t,1>{4}, error) &&
+          !f.session.startMidiInputCapture(std::array<std::int64_t,2>{3,3}, error),
+          "capture rejects an unarmed or duplicate destination");
+    transport.play(false);
+    transport.loop(6,42,true);
+    transport.locate(36);
+    check(start() && capture.epoch() != 0 && capture.tracks().size() == 2 &&
+          capture.tracks()[0] == 3 && capture.tracks()[1] == 1 && capture.sampleRate() == 48000,
+          "capture freezes its epoch, rate and destination list including a track with no instrument");
+    const auto epoch = capture.epoch();
+    std::array<MidiCapturePacket,16> packets{};
+    f.render(16);
+    check(capture.state() == MidiCaptureState::Waiting && capture.drain(packets) == 0,
+          "stopped rendering does not start a recording span");
+    transport.play();
+    check(send(15, EventType::NoteOn, 500) && send(18, EventType::NoteOn, 501) &&
+          send(22, EventType::NoteExpression, 501, static_cast<std::uint16_t>(ExpressionDim::Pitch)) &&
+          send(59, EventType::NoteOff, 501), "queued input crosses two loop boundaries and includes a pre-epoch key");
+    f.render();
+    check(capture.state() == MidiCaptureState::Recording, "the first playable slice starts the epoch");
+    check(send(79, EventType::NoteOn, 502) && send(80, EventType::NoteOff, 502),
+          "a late packet and an on-time packet share the next driver's first frame");
+    f.render(16);
+    capture.stop();
+    f.render();
+    check(capture.state() == MidiCaptureState::Complete && !start(),
+          "stop leaves the completed epoch available until the consumer drains it");
+    const auto count = capture.drain(packets);
+    const auto span = [&](std::size_t i, std::uint64_t pass, std::int64_t stream,
+                          std::int64_t timeline, std::int32_t frames) {
+        const auto& p = packets[i];
+        return p.kind == Kind::Span && p.epoch == epoch && p.pass == pass &&
+               p.streamSample == stream && p.timelineSample == timeline && p.frames == frames;
+    };
+    const auto event = [&](std::size_t i, std::uint64_t pass, std::int64_t stream,
+                           std::int64_t timeline, std::int64_t input, std::int32_t frame,
+                           EventType type, std::uint64_t id) {
+        const auto& p = packets[i];
+        return p.kind == Kind::Event && p.epoch == epoch && p.pass == pass &&
+               p.streamSample == stream && p.timelineSample == timeline && p.inputSample == input &&
+               p.event.type == type && p.event.frame == frame && p.event.noteId == id && p.event.channel == 3;
+    };
+    check(count == 10 && span(0,0,16,36,6) && span(2,1,22,6,36) && span(4,2,58,6,22) &&
+          span(6,2,80,28,14) && span(9,3,94,6,2),
+          "capture emits exact loop spans including the silent final pass and a pass split across callbacks");
+    check(event(1,0,18,38,18,2,EventType::NoteOn,501) &&
+          event(3,1,22,6,22,0,EventType::NoteExpression,501) &&
+          event(5,2,59,7,59,1,EventType::NoteOff,501),
+          "input IDs carry held-note ownership across multiple wraps independently of the audible voice");
+    check(event(7,2,80,28,79,0,EventType::NoteOn,502) &&
+          event(8,2,80,28,80,0,EventType::NoteOff,502) &&
+          f.instrument->heard[0].e.noteId != 500,
+          "capture excludes the pre-epoch key and preserves the order and raw stamp of late input");
+    transport.locate(12);
+    check(start() && capture.epoch() == epoch + 1, "draining permits a new independent recording epoch");
+    f.render(12);
+    f.session.resetMidiInput();
+    capture.stop();
+    f.render(12);
+    check(capture.state() == MidiCaptureState::InputReset && capture.drain(packets) == 1,
+          "losing the source terminates the epoch without a partial next slice");
+    check(start(), "start a capture for the seek test");
+    f.render(8);
+    transport.locate(17);
+    f.render(8);
+    check(capture.state() == MidiCaptureState::Discontinuity && capture.drain(packets) > 0,
+          "a seek finishes the epoch with an explicit discontinuity");
+    check(start(), "start a capture for the physical stream gap");
+    f.render(8);
+    ++f.clock;
+    f.render(8);
+    check(capture.state() == MidiCaptureState::Discontinuity && capture.drain(packets) > 0,
+          "a missing driver frame cannot be joined onto the recording");
+    check(start(), "start and wait through count-in");
+    transport.locate(10);
+    transport.countIn(5);
+    const auto beforeLead = f.clock;
+    check(send(beforeLead+4,EventType::NoteOn,503) && send(beforeLead+5,EventType::NoteOn,504),
+          "count-in and first downbeat receive separate input stamps");
+    f.render(8);
+    check(capture.drain(packets) == 2 && packets[0].streamSample == beforeLead+5 &&
+          packets[0].timelineSample == 10 && packets[0].frames == 3 &&
+          packets[1].event.noteId == 504 && packets[1].event.frame == 0,
+          "count-in emits no packets and the first downbeat records the event at its exact sample");
+    capture.stop();
+    f.render(2);
+    check(capture.state() == MidiCaptureState::Complete, "stop the count-in epoch");
+    transport.loop(0,1,true);
+    transport.locate(0);
+    check(start(), "start shortest-loop overflow test");
+    for (int block = 0; block < 63; ++block) f.render();
+    f.render(63);
+    f.render(2);
+    std::vector<MidiCapturePacket> ring(4096);
+    check(capture.state() == MidiCaptureState::Overflow && capture.drain(ring) == 4095 &&
+          ring[4094].pass == 4094, "overflow publishes no partial slice and preserves the complete prefix");
+    check(start(), "restart after draining the failed capture");
+    f.session.release();
+    check(capture.state() == MidiCaptureState::DeviceStopped && capture.drain(packets) == 0,
+          "closing the audio device terminates even a capture waiting for its first slice");
 }
 void placement(){
     for(double rate:{44100.,48000.,88200.,96000.,176400.,192000.})for(int block:{64,128,256,512,1024,2048,4096}){
@@ -764,6 +881,8 @@ int main(int argc,char** argv){
     try { if (only == "all" || only == "take-lanes") takeLanePlayback(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try { if (only == "all" || only == "live-input") liveInput(); }
+    catch (const std::exception& e) { check(false, e.what()); }
+    try { if (only == "all" || only == "driver-capture") driverMidiCapture(); }
     catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
