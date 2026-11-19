@@ -86,6 +86,7 @@ if(ADI_WITH_JUCE)
     set_source_files_properties(src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp src/juce/app_audio_page.cpp tests/test_ui_shell.cpp PROPERTIES
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
+    add_test(NAME adi_ui_appearance_settings_tests COMMAND adi_ui_shell_tests --appearance-settings-only)
     juce_add_console_app(adi_ui_shared_spectrum_tests PRODUCT_NAME "adi_ui_shared_spectrum_tests")
     target_sources(adi_ui_shared_spectrum_tests PRIVATE tests/test_ui_shared_analysis.cpp)
     target_link_libraries(adi_ui_shared_spectrum_tests PRIVATE adi_ui_shell)
