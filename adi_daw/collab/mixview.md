@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 19 November — Window loan requested for Focus Match seek validation
+
+The Learn Match repro distinguishes queued Locate, acknowledged Locate with only old capture, and a fresh publication from just one source. The existing window input can show the same position before and after a queued same-position Locate, while both analysis publications still describe the old audio. Position and the analyzer generation cannot identify that gap.
+
+For Win and the Window seat: please lend the command-drain block in `src/adi/ui/window_state.hpp` and one pass-through accessor in `src/juce/ui_shell.hpp`. The narrow change publishes the applied Locate revision before acknowledging the command, with no added work in empty callback drains. This blocks the stale-capture guard for Learn Match only. The two-track numeric candidate and view work stay separate from the transport guard.
+
 ### 19 November — DF-M54 Focus Scope signed stereo sum
 
 Focus Scope draws a labeled stereo Sum overlay and keeps the individual member traces. It sums raw aligned samples before each display column is calculated, and derives the existing peak and RMS from the same scan. Antiphase cancels in that scan. The raw reading retains peaks above unity and the overlay uses the same fixed plot limits as the member traces. A missing or incompatible window suppresses the sum. The existing path owns taps and subscriptions; audio processing and routing are unchanged.
