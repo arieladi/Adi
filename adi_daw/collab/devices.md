@@ -30,8 +30,8 @@ device PRs do not conflict on one shared log file.
 - Test-only: built only when `third_party/libebur128` is fetched, never linked into the app;
   `ADI_REQUIRE_LOUDNESS_ORACLE=ON` makes its absence a configure error. Plant: the relative gate
   at −9.5 → 3 failures. Oracle **96** checks.
-- **Main's CPU cost** (the gate asks for it), `/O2`, one thread, 512-frame blocks, stereo, on the
-  director's research machine's 8-core desktop CPU: 48 kHz **0.33 % of one core** (35.6 µs a
+- **Main's CPU cost** (the gate asks for it), `/O2`, one thread, 512-frame blocks, stereo, on an
+  8-core desktop CPU: 48 kHz **0.33 % of one core** (35.6 µs a
   block), of which true peak 0.29 %; 96 kHz 0.41 %. `readings()` 0.01 µs. libebur128 doing the same
   (I, LRA, TP, histogram mode): 0.46 % and 0.71 %. Method: 120 s of noise, best of 5.
 
