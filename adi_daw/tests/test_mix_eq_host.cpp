@@ -374,6 +374,94 @@ template<class Sample>void continuousPrepare() {
     std::printf("Duplicate prepare %s: exact=%d peakDifference=%.17g\n",
                 std::is_same_v<Sample,float>?"f32":"f64",afterExact?1:0,peakDifference);
 }
+
+template <class Sample> void neutralSilenceCanBeOmitted() {
+    constexpr int frames = 64;
+    constexpr double rate = 48000.;
+    using Audio = std::array<std::array<Sample, frames>, 2>;
+    auto continuous = make(q::makeBackend());
+    auto parked = make(q::makeBackend());
+    check(continuous && parked, "neutral wake fixture constructs two real native EQs");
+    if (!continuous || !parked) return;
+    constexpr auto precision = std::is_same_v<Sample, float> ? engine::Precision::Float32 : engine::Precision::Float64;
+    for (auto *d : {continuous.get(), parked.get()}) {
+        d->willBeHanded(precision);
+        d->prepare(rate, frames);
+    }
+
+    const auto signal = [](std::uint64_t block) {
+        Audio input{};
+        for (std::size_t channel = 0; channel < input.size(); ++channel) {
+            for (std::size_t i = 0; i < input[channel].size(); ++i) {
+                const auto steps = 1 + (i * 13 + channel * 7 + block) % 31;
+                const double sample = static_cast<double>(steps) / 64.;
+                input[channel][i] = std::nextafter(static_cast<Sample>(channel == 0 ? sample : -sample), Sample{});
+            }
+        }
+        return input;
+    };
+    const auto render = [](device::DeviceInstance &d, const Audio &input, std::uint64_t block, bool silent) {
+        Audio output{};
+        const std::array<const Sample *, 2> in{input[0].data(), input[1].data()};
+        std::array<Sample *, 2> out{output[0].data(), output[1].data()};
+        engine::NodeIo io;
+        io.channels = 2;
+        io.sampleRate = rate;
+        io.renderBlock = block;
+        io.inputSilent = silent;
+        io.frames = 17;
+        if constexpr (std::is_same_v<Sample, float>) {
+            io.in = in.data();
+            io.out = out.data();
+        } else {
+            io.in64 = in.data();
+            io.out64 = out.data();
+        }
+        inAudio = true;
+        d.process(io);
+        io.blockOffset = 17;
+        io.frames = frames - 17;
+        d.process(io);
+        inAudio = false;
+        return output;
+    };
+    const auto exact = [](const Audio &a, const Audio &b) {
+        using Bits = std::array<unsigned char, sizeof(Sample)>;
+        for (std::size_t channel = 0; channel < a.size(); ++channel)
+            for (std::size_t i = 0; i < a[channel].size(); ++i)
+                if (std::bit_cast<Bits>(a[channel][i]) != std::bit_cast<Bits>(b[channel][i])) return false;
+        return true;
+    };
+
+    bool cleanPrelude = true;
+    for (std::uint64_t block = 1; block <= 4; ++block) {
+        const auto input = signal(block);
+        cleanPrelude &= exact(render(*continuous, input, block, false), input);
+        cleanPrelude &= exact(render(*parked, input, block, false), input);
+    }
+    check(cleanPrelude, "neutral EQ preserves the nonzero split-block prelude exactly");
+    const Audio silence{};
+    bool cleanSilence = true;
+    for (std::uint64_t block = 5; block <= 68; ++block)
+        cleanSilence &= exact(render(*continuous, silence, block, true), silence);
+    check(cleanSilence, "continuous neutral EQ emits exact silence during the omitted interval");
+
+    const auto resumed = signal(69);
+    const auto expectedFirst = render(*continuous, resumed, 69, false);
+    const auto actualFirst = render(*parked, resumed, 69, false);
+    check(exact(expectedFirst, resumed) && exact(actualFirst, expectedFirst) &&
+              continuous->latencySamples() == 0 && parked->latencySamples() == 0,
+          "omitting neutral silence preserves the entire first resumed block and zero latency");
+
+    const bool edited = set(*continuous, 3, .7) && set(*parked, 3, .7); // Output Gain
+    check(edited, "both native EQs accept the same subsequent owner edit");
+    if (!edited) return;
+    const auto next = signal(70);
+    const auto expectedEdited = render(*continuous, next, 70, false);
+    const auto actualEdited = render(*parked, next, 70, false);
+    check(!exact(expectedEdited, next) && exact(actualEdited, expectedEdited),
+          "the next owner gain edit changes audio and preserves the same initial transition after wake");
+}
 }
 int main() {
     check(!make({}),"factory refuses absent DSP backend");
@@ -383,6 +471,7 @@ int main() {
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
     publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
     prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
+    neutralSilenceCanBeOmitted<float>();neutralSilenceCanBeOmitted<double>();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;
