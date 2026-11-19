@@ -223,7 +223,6 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
     channels.onOpenInfo = [this] {
         if (!stack.model().capture()) root_.chooseMixViewTab(static_cast<int>(Tab::Analysis));
     };
-    addChildComponent(spectrum);
     addChildComponent(analysis);
     addChildComponent(analyzerDock);
     addAndMakeVisible(analyzerToggle);
@@ -258,6 +257,7 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
 void MixViewPanel::adoptViewState() {
     ownerReady_ = true;
+    shownStoredTab_ = -1;
     stack.adoptViewState();
     const auto &state = root_.state();
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
@@ -268,7 +268,6 @@ void MixViewPanel::adoptViewState() {
 }
 void MixViewPanel::applySpectrumSlope(SpectrumSlope slope) {
     analysis.detail.setSpectrumSlope(slope);
-    spectrum.setSpectrumSlope(slope);
     analyzerDock.spectrum.setSpectrumSlope(slope);
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
@@ -289,7 +288,7 @@ bool MixViewPanel::focusChannelSearch() {
 }
 MixViewPanel::Tab MixViewPanel::tab() const noexcept {
     const auto saved = static_cast<Tab>(std::clamp(root_.state().mixViewTab, 0, kTabCount - 1));
-    return saved == Tab::Cascade ? Tab::Analysis : saved;
+    return saved == Tab::Overview || saved == Tab::Cascade ? Tab::Analysis : saved;
 }
 juce::Rectangle<int> MixViewPanel::body() const noexcept {
     return appliedBody_;
@@ -333,9 +332,9 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         eye.setToggleState(root_.state().showReference, juce::dontSendNotification);
         repaint(strip());
     }
-    const int shown = static_cast<int>(tab());
-    if (shown != shownTab_) {
-        shownTab_ = shown;
+    const int stored = std::clamp(root_.state().mixViewTab, 0, kTabCount - 1);
+    if (stored != shownStoredTab_) {
+        shownStoredTab_ = stored;
         const bool editing = tab() == Tab::Stack || tab() == Tab::Focus;
         for (const auto page : pages) {
             const bool selected = page == tab() || (page == Tab::Analysis && !editing);
@@ -354,8 +353,12 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         if (!alive) return;
         focusPage.setVisible(tab() == Tab::Focus);
         if (!alive) return;
-        spectrum.setVisible(tab() == Tab::Overview);
-        if (!alive) return;
+        // Legacy Overview and Analysers share the same page. Only entering
+        // Overview selects Spectrum so later subpage choices remain local.
+        if (stored == static_cast<int>(Tab::Overview)) {
+            analysis.setPage(MixAnalysers::Page::Spectrum);
+            if (!alive) return;
+        }
         analysis.setVisible(tab() == Tab::Analysis || tab() == Tab::ScopePhase || tab() == Tab::Spectrogram);
         if (!alive) return;
         if (tab() == Tab::ScopePhase) analysis.setMode(SharedSpectrumView::Mode::Phase);
@@ -379,9 +382,6 @@ void MixViewPanel::frame(const SnapshotReader &reader) {
         stack.frame(reader);
         if (!alive) return;
     }
-    spectrum.present(root_.sharedAnalysis, root_.analysisTrack(reader));
-    spectrum.frame();
-    if (!alive) return;
     analysis.frame(root_.sharedAnalysis, reader, root_.analysisTrack(reader), root_.analysisTrack(reader, true),
                    root_.projectViewGeneration());
     if (!alive) return;
@@ -468,7 +468,7 @@ void MixViewPanel::resized() {
         content.removeFromRight(look::gap);
         if (!alive) return;
     }
-    const bool beside = tab() == Tab::Stack || tab() == Tab::Overview;
+    const bool beside = tab() == Tab::Stack;
     const bool fits = content.getWidth() >= kStackMinimumWidth + kDockGap + kDockMinimumWidth &&
                       content.getHeight() >= kDockMinimumHeight;
     analyzerDock.setVisible(appliedDock_ && beside && fits);
@@ -499,8 +499,6 @@ void MixViewPanel::resized() {
     } else {
         stack.setBounds(content);
     }
-    if (!alive) return;
-    spectrum.setBounds(content);
     if (!alive) return;
     analysis.setBounds(content);
 }

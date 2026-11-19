@@ -104,7 +104,6 @@ class MixViewPanel final : public juce::Component {
     std::unique_ptr<MixFocus> focusOwner_;
   public:
     MixFocus &focusPage;
-    SharedSpectrumView spectrum;
     MixAnalysers analysis;
     AnalysisDock analyzerDock;
     juce::ToggleButton analyzerToggle{"Analyzer dock"};
@@ -118,7 +117,6 @@ class MixViewPanel final : public juce::Component {
     static constexpr int kStackMinimumWidth = 320, kDockMinimumWidth = 240, kDockGap = 6;
     static constexpr int kDockMinimumHeight = 420;
     void suspendAnalysis(bool value) {
-        spectrum.suspend(value);
         analysis.suspend(value);
         analyzerDock.suspend(value);
         channels.preview.suspend(value);
@@ -128,7 +126,7 @@ class MixViewPanel final : public juce::Component {
 
   private:
     AdiRootComponent &root_;
-    int shownTab_ = -1;
+    int shownStoredTab_ = -1;
     bool layoutPending_ = false, appliedDock_ = false, ownerReady_ = false;
     int appliedWidth_ = 300;
     std::optional<ThemeId> appliedTheme_;
