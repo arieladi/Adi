@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Validate the op catalogue in docs/OPS.md against the contracts in OPS.md 1-8.
 
-    python adi_daw/tools/validate_ops.py
+    python adi_daw/tools/validate_ops.py [OPS.md]
 
 The catalogue is a spec, not prose, so its invariants get checked rather than
 asserted -- the same reason tools/validate_schema.py exists. An earlier draft of
-OPS.md claimed 152 ops when the tables held 174.
+OPS.md claimed 152 ops when the tables held 174. The optional argument checks
+another copy of OPS.md, so a row broken on purpose in a copy shows check 1
+failing without touching the real one.
 
 Checks:
-  1. Every catalogue row parses into (name, scope, engine, inverse, priority).
+  1. Every catalogue row parses into (name, scope, engine, inverse, priority),
+     and every line that looks like an op row is one that parses.
   2. Names are unique and match the rule in OPS.md 3, invariant 4.
   3. Every op has an inverse, or is explicitly non-undoable.
   4. Non-undoable ops live only in the ephemeral scopes (OPS.md 10).
@@ -35,6 +38,38 @@ ROW = re.compile(
     r"^\| `([a-z][a-zA-Z0-9]*\.[a-zA-Z0-9]+)` \| ([etsh]) \| (\*\*P\*\*|[NSGP]) \| ([^|]+?) \| (P[0-3]) \|$",
     re.M,
 )
+# What an op row looks like, loosely: a table line whose first cell is a
+# backticked dotted name, however the rest of it is spelled. ROW above is
+# strict, so a malformed row (no closing '|', a scope letter that is not one,
+# P4) does not match it and simply drops out of every count. While OPS.md wrote
+# its total down, the prose count was what noticed; it no longer writes one
+# (check 7), so check 1 now fails any such line that ROW cannot parse.
+OP_LIKE = re.compile(r"^\|\s*`[A-Za-z][^`|]*\.[^`|]*`\s*\|")
+# The header every op table has; a row in such a table is an op row whatever
+# its first cell holds (a name that lost its backticks still counts).
+OP_TABLE_HEADER = re.compile(r"^\|\s*Op\s*\|\s*S\s*\|\s*E\s*\|\s*Inv\s*\|\s*P\s*\|\s*$")
+# A retired op is struck through (check 8) and has no scope or priority.
+STRUCK = re.compile(r"^\|\s*~~`")
+SEPARATOR = re.compile(r"^\|[\s:|-]+$")
+
+
+def unparsed_op_rows(txt: str) -> list[tuple[int, str]]:
+    """Every line that is an op row by its look or by its table, and that ROW
+    does not parse, as (line number, line)."""
+    out = []
+    in_table = False
+    for no, line in enumerate(txt.splitlines(), 1):
+        if OP_TABLE_HEADER.match(line):
+            in_table = True
+            continue
+        if not line.startswith("|"):
+            in_table = False
+        if SEPARATOR.match(line):
+            continue
+        in_op_table = in_table and line.startswith("|") and not STRUCK.match(line)
+        if (OP_LIKE.match(line) or in_op_table) and not ROW.match(line):
+            out.append((no, line))
+    return out
 
 # OPS.md 4: every member is a stall the user hears, so the set is named here and
 # a new one has to be added deliberately in two places.
@@ -45,12 +80,13 @@ ALLOWED_PAUSE = {"project.setSampleRate"}
 EPHEMERAL_SCOPES = {"t"}
 
 
-def main() -> int:
-    if not OPS.exists():
-        print(f"not found: {OPS}")
+def main(argv: list[str]) -> int:
+    ops = pathlib.Path(argv[0]) if argv else OPS
+    if not ops.exists():
+        print(f"not found: {ops}")
         return 2
 
-    txt = OPS.read_text(encoding="utf-8")
+    txt = ops.read_text(encoding="utf-8")
     rows = ROW.findall(txt)
     problems = 0
 
@@ -67,6 +103,13 @@ def main() -> int:
         fail("no op rows matched -- did the table format change?")
         return 1
     ok(f"{len(rows)} op rows parsed")
+    unparsed = unparsed_op_rows(txt)
+    for no, line in unparsed:
+        fail(f"OPS.md line {no} is an op row that does not parse, so no check "
+             f"and no count sees it -- want | `domain.verb` | e/t/s/h | N/S/G/P "
+             f"| inverse | P0-P3 |: {line}")
+    if not unparsed:
+        ok("every line that looks like an op row, or sits in an op table, parses")
 
     names = [r[0] for r in rows]
 
@@ -163,4 +206,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
