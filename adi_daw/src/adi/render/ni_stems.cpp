@@ -130,6 +130,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         job.encoding.format = audio::WavFormat::Float32;
         job.encoding.dither = audio::WavDither::None;
         Control renderControl = control;
+        renderControl.publicationHooks = {}; // internal WAVs are private staging outputs
         renderControl.progress = [&](JobId current, std::uint64_t done, std::uint64_t total) {
             if (total > 999990ULL * 1024)
                 throw std::runtime_error("NI export exceeds AAC packet limit");
@@ -198,12 +199,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         audio::writeAacMovie(output, tracks, audio::makeStemManifest(labels), [&] { tick(control); });
         tick(control);
-        const auto published = media::publishFile(output, result.output);
-        if (published.status != media::PublishStatus::published)
-            throw std::runtime_error(published.status == media::PublishStatus::exists
-                                         ? "NI Stems destination already exists"
-                                         : published.error);
-        result.state = JobState::Completed;
+        detail::publishOutput(output, result, control.publicationHooks, "NI Stems destination already exists");
     } catch (const Cancelled &) {
         result.state = JobState::Cancelled;
     } catch (const std::exception &error) {

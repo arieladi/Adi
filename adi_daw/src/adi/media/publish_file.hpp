@@ -55,6 +55,7 @@ enum class PublishPolicy { VerifiedCopyFallback, AtomicOnly };
 struct PublishHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     void (*afterCopy)(const std::filesystem::path&) = nullptr;
+    std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
 };
 // Source is a private, closed staging file on the destination filesystem.
 // Never replaces a destination. Fallback becomes successful only after flush,

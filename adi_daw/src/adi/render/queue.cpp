@@ -6,6 +6,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -13,10 +14,13 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace adi::render {
 namespace fs = std::filesystem;
+static_assert(std::is_nothrow_move_assignable_v<Result>);
+static_assert(std::is_nothrow_move_assignable_v<std::string>);
 namespace {
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
@@ -137,6 +141,25 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
 void validateOutputName(const fs::path& output) {
     if (media::pathUtf8(output.filename()).size() > 200)
         throw std::invalid_argument("final export name exceeds 200 UTF-8 bytes");
+}
+
+void detail::publishOutput(const fs::path& stage, Result& result, media::PublishHooks hooks,
+                          const char* collisionMessage) {
+    // Reserve the fallback message before the irreversible commit point.
+    result.publication.emplace(PublicationReport{false, false,
+        "file published; durability could not be confirmed"});
+    auto published = media::publishFile(stage, result.output, hooks, media::PublishPolicy::AtomicOnly);
+    if (published.status != media::PublishStatus::published) {
+        result.publication.reset();
+        throw std::runtime_error(published.status == media::PublishStatus::exists
+                                     ? collisionMessage : published.error);
+    }
+    result.state = JobState::Completed;
+    auto& report = *result.publication;
+    report.durabilityConfirmed = published.durabilityConfirmed;
+    report.usedFallback = published.usedFallback;
+    if (!published.warning.empty()) report.warning = std::move(published.warning);
+    else if (report.durabilityConfirmed) report.warning.clear();
 }
 
 Result renderWav(Job job, engine::DeviceLoader loader, Control control,
@@ -299,10 +322,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         });
         else writer->close();
         cancellation(control);
-        const auto published = media::publishFile(staged, result.output);
-        if (published.status != media::PublishStatus::published)
-            throw std::runtime_error(published.status == media::PublishStatus::exists ? "export destination already exists" : published.error);
-        result.state = JobState::Completed; // publication is the commit point
+        detail::publishOutput(staged, result, control.publicationHooks, "export destination already exists");
     } catch (const Cancelled&) {
         result.state = JobState::Cancelled;
     } catch (const std::exception& e) {
@@ -347,6 +367,88 @@ bool Queue::retry(JobId id) {
     }
     return false;
 }
+
+std::string serializeRunManifest(const RunReport& run) {
+    using Json = nlohmann::json;
+    const auto stateName = [](JobState state) {
+        switch (state) {
+        case JobState::Pending: return "pending";
+        case JobState::Running: return "running";
+        case JobState::Completed: return "completed";
+        case JobState::Failed: return "failed";
+        case JobState::Cancelled: return "cancelled";
+        }
+        return "unknown";
+    };
+    const auto optionalNumber = [](const std::optional<double>& value) -> Json {
+        return value ? Json(*value) : Json(nullptr);
+    };
+    const auto sourceValue = [](const Source& source) -> Json {
+        return {{"track_id", source.trackId},
+                {"tap", source.tap == engine::OfflineTap::PreFader ? "pre_fader" : "post_fader"}};
+    };
+    Json manifest{{"version", 1}, {"planned_count", run.plannedCount},
+                  {"capture_complete", run.captureComplete}, {"members", Json::array()}};
+    for (const auto& member : run.members) {
+        Json item{{"id", member.id}, {"state", member.started ? stateName(member.state) : "unstarted"},
+                  {"removed_before_start", member.removedBeforeStart},
+                  {"job_capture", member.job ? (member.jobCapturedAtStart ? "job_start" : "run_entry") : "unavailable"},
+                  {"job", nullptr}, {"result", nullptr},
+                  {"journal_head", nullptr}, {"media_identities", nullptr}};
+        if (member.job) {
+            const auto& job = *member.job;
+            Json profile{{"sample_rate", job.session.sampleRate}, {"channels", job.session.channels},
+                {"max_frames", job.session.maxFrames},
+                {"processing_precision", job.session.precision == engine::Precision::Float64 ? "float64" : "float32"},
+                {"delay_compensation", job.session.delayCompensation},
+                {"external_tempo_bpm", optionalNumber(job.session.externalTempoBpm)},
+                {"container", job.niStems ? "ni_stems_mp4" : "wav"},
+                {"wav_encoding", job.encoding.format == audio::WavFormat::Float32 ? "float32" :
+                    (job.encoding.format == audio::WavFormat::Pcm16 ? "pcm16" : "pcm24")},
+                {"dither", job.encoding.dither == audio::WavDither::None ? "none" :
+                    (job.encoding.dither == audio::WavDither::Triangular ? "triangular" : "rectangular")},
+                {"dither_seed", job.encoding.ditherSeed},
+                {"normalization", {{"mode", job.normalization.mode == NormalizeMode::Off ? "off" :
+                    (job.normalization.mode == NormalizeMode::Peak ? "peak" : "loudness")},
+                    {"target_lufs", job.normalization.targetLufs},
+                    {"true_peak_ceiling_db", job.normalization.truePeakCeilingDb},
+                    {"channel_weights", job.normalization.channelWeights}}}};
+            if (job.niStems) {
+                profile["ni_stems"] = {{"bit_rate_per_stream", job.niStems->bitRate}, {"stems", Json::array()}};
+                for (const auto& stem : job.niStems->stems)
+                    profile["ni_stems"]["stems"].push_back({{"source", sourceValue(stem.source)},
+                        {"name", stem.name}, {"color", stem.color}});
+            }
+            item["job"] = {{"project", media::pathUtf8(job.project)}, {"directory", media::pathUtf8(job.directory)},
+                {"name_template", job.nameTemplate}, {"source", sourceValue(job.source)},
+                {"requested_range", {{"begin_sample", job.beginSample}, {"end_sample", job.endSample},
+                    {"region_id", job.regionId ? Json(*job.regionId) : Json(nullptr)}}},
+                {"requested_profile", std::move(profile)}};
+        }
+        if (member.result) {
+            const auto& result = *member.result;
+            Json value{{"output", media::pathUtf8(result.output)}, {"frames_written", result.framesWritten},
+                {"error", result.error}, {"publication", nullptr}, {"normalization", nullptr}};
+            if (result.publication) value["publication"] = {
+                {"durability_confirmed", result.publication->durabilityConfirmed},
+                {"used_fallback", result.publication->usedFallback}, {"warning", result.publication->warning}};
+            if (result.normalization) {
+                const auto& report = *result.normalization;
+                value["normalization"] = {{"source_lufs", optionalNumber(report.sourceLufs)},
+                    {"source_sample_peak_db", optionalNumber(report.sourceSamplePeakDb)},
+                    {"source_true_peak_db", optionalNumber(report.sourceTruePeakDb)},
+                    {"output_lufs", optionalNumber(report.outputLufs)},
+                    {"output_true_peak_db", optionalNumber(report.outputTruePeakDb)},
+                    {"applied_gain_db", report.appliedGainDb}, {"ceiling_limited", report.ceilingLimited},
+                    {"encoding_passes", report.encodingPasses}};
+            }
+            item["result"] = std::move(value);
+        }
+        manifest["members"].push_back(std::move(item));
+    }
+    return manifest.dump(2);
+}
+
 void Queue::run(engine::DeviceLoader loader, Control control) {
     if (running_) throw std::logic_error("export queue is already running");
     running_ = true;
@@ -355,12 +457,39 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
     // the next run, or edit/remove a not-yet-started job without invalidating us.
     std::vector<JobId> pending;
     for (const auto& e : jobs_) if (e.result.state==JobState::Pending) pending.push_back(e.id);
-    for (const auto id : pending) {
+    lastRun_ = {};
+    lastRun_.plannedCount = pending.size();
+    try {
+        lastRun_.members.reserve(pending.size());
+        for (const auto& entry : jobs_) {
+            if (entry.result.state != JobState::Pending) continue;
+            RunMember member;
+            member.id = entry.id;
+            try { member.job = entry.job; }
+            catch (...) { lastRun_.captureComplete = false; }
+            lastRun_.members.push_back(std::move(member));
+        }
+    } catch (...) {
+        lastRun_.members.clear();
+        lastRun_.captureComplete = false;
+    }
+    for (std::size_t index = 0; index < pending.size(); ++index) {
+        const auto id = pending[index];
         if (control.stop.stop_requested()) break;
+        auto* member = lastRun_.members.empty() ? nullptr : &lastRun_.members[index];
         const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
-        if (it==jobs_.end() || it->result.state!=JobState::Pending) continue;
+        if (it==jobs_.end() || it->result.state!=JobState::Pending) {
+            if (member) member->removedBeforeStart = it==jobs_.end();
+            continue;
+        }
         const Job job = it->job;
         it->result.state = JobState::Running;
+        if (member) {
+            member->started = true;
+            member->state = JobState::Running;
+            try { member->job = job; member->jobCapturedAtStart = true; }
+            catch (...) { member->job.reset(); lastRun_.captureComplete = false; }
+        }
         Result result;
         try {
             // The enqueue ordinal is stable across removal/retry. Reusing a
@@ -372,7 +501,18 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         } catch (...) {
             result.state = JobState::Failed; result.error = "cannot initialize export job";
         }
-        for (auto& e : jobs_) if (e.id==id) {e.result=std::move(result); break;}
+        for (auto& e : jobs_) if (e.id==id) {
+            e.result=std::move(result);
+            if (member) {
+                member->state = e.result.state;
+                try { member->result = e.result; }
+                catch (...) { member->result.reset(); lastRun_.captureComplete = false; }
+            }
+            break;
+        }
     }
+    for (auto& member : lastRun_.members) if (!member.started)
+        member.removedBeforeStart = std::none_of(jobs_.begin(), jobs_.end(),
+            [&](const Entry& entry) { return entry.id==member.id; });
 }
 } // namespace adi::render

@@ -5,6 +5,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -217,7 +218,7 @@ void cancellationAndFailures() {
     };
     collision=renderMasterWav(j,{},race);
     std::ifstream winner(j.directory/"race.wav"); std::getline(winner,kept);
-    check(collision.state==JobState::Failed && kept=="won race" && f.noStage(),"publication refuses a racing destination and cleans only its own stage");
+    check(collision.state==JobState::Failed && !collision.publication && kept=="won race" && f.noStage(),"publication refuses a racing destination without a success report and cleans only its own stage");
     j.nameTemplate="callback-failure";
     Control broken;
     broken.progress=[](JobId,std::uint64_t done,std::uint64_t) {if(done>0) throw std::runtime_error("fixture failure");};
@@ -602,9 +603,120 @@ void finalNamesAndCaseCollisions() {
     audio::WavReader retained(first.output);
     check(retained.frames()==866 && f.noStage(),"case-only publication leaves the first file intact and no stage");
 }
+std::error_code failDirectorySync(const fs::path&) { return std::make_error_code(std::errc::io_error); }
+std::error_code confirmDirectorySync(const fs::path&) { return {}; }
+std::error_code refuseRename(const fs::path&, const fs::path&) { return std::make_error_code(std::errc::operation_not_supported); }
+void publicationResults() {
+    Fixture f;
+    Control control;
+    control.publicationHooks.syncDirectory = failDirectorySync;
+    Queue queue;
+    queue.add(f.job("sync-warning"));
+    queue.run({}, control);
+    const auto result = queue.snapshot().front().result;
+    check(result.state==JobState::Completed && result.error.empty() && result.publication &&
+          !result.publication->durabilityConfirmed && !result.publication->usedFallback &&
+          result.publication->warning.find("directory sync")!=std::string::npos,
+          "post-publication sync error is a completed WAV with warning, not a failed job");
+    check(matches(read(result,866),137) && f.noStage(),"sync warning preserves fully published audio and cleans stage");
+    const auto manifest=nlohmann::json::parse(serializeRunManifest(queue.lastRun()));
+    const auto& member=manifest["members"][0];
+    check(member["state"]=="completed" && member["result"]["publication"]["warning"]==result.publication->warning &&
+          member["result"]["publication"]["durability_confirmed"]==false &&
+          member["result"]["publication"]["used_fallback"]==false &&
+          member["result"]["output"]==media::pathUtf8(result.output),
+          "run JSON retains exact warning, durability, fallback and output path");
+    check(!queue.retry(queue.snapshot().front().id),"warning does not make a committed job retryable");
+    control.publicationHooks.syncDirectory=confirmDirectorySync;
+    const auto confirmed=renderWav(f.job("sync-confirmed"),{},control);
+    check(confirmed.state==JobState::Completed && confirmed.publication && confirmed.publication->durabilityConfirmed &&
+          confirmed.publication->warning.empty(),"successful injected directory sync confirms publication durability");
+    control.publicationHooks.rename=refuseRename;
+    const auto refused=renderWav(f.job("atomic-refused"),{},control);
+    check(refused.state==JobState::Failed && !refused.publication &&
+          refused.error.find("atomic publication:")==0,
+          "authoritative render refuses rename failure without a fallback success report");
+    check(!fs::exists(refused.output) && f.noStage(),
+          "atomic-only refusal publishes no copy and cleans the private stage");
+    const auto collision=renderWav(f.job("sync-warning"),{},control);
+    check(collision.state==JobState::Failed && !collision.publication && matches(read(result,866),137),
+          "no successful publication is distinct from published-but-unconfirmed");
+    auto invalid=queue.lastRun();
+    invalid.members[0].job->nameTemplate=std::string(1,static_cast<char>(0xff));
+    bool threw=false;
+    try { (void)serializeRunManifest(invalid); } catch(const nlohmann::json::type_error&) { threw=true; }
+    check(threw && queue.snapshot().front().result.state==JobState::Completed && fs::exists(result.output),
+          "caller serialization failure cannot change committed queue state or delete output");
+    std::ofstream failedReport(f.dir.path()/"missing-parent"/"report.json");
+    check(!failedReport && queue.snapshot().front().result.state==JobState::Completed,
+          "caller-owned manifest persistence failure is separate from render success");
+}
+void runManifests() {
+    Fixture f;
+    Queue queue;
+    const auto first=queue.add(f.job("run-{counter}"));
+    const auto second=queue.add(f.job("run-{counter}"));
+    const auto removed=queue.add(f.job("run-{counter}"));
+    bool edited=false;
+    Control control;
+    control.progress=[&](JobId id,std::uint64_t,std::uint64_t) {
+        if (edited || id!=first) return;
+        edited=true;
+        auto changed=f.job("edited-{counter}"); changed.beginSample=200; changed.endSample=333;
+        check(queue.update(second,changed) && queue.remove(removed),"manifest fixture edits/removes pending members");
+        queue.add(f.job("later-{counter}"));
+    };
+    queue.run({},control);
+    const auto retained=queue.lastRun();
+    const auto doc=nlohmann::json::parse(serializeRunManifest(retained));
+    check(doc["capture_complete"]==true && doc["planned_count"]==3 && doc["members"].size()==3,
+          "manifest freezes original membership; callback-added job is excluded");
+    check(doc["members"][1]["job_capture"]=="job_start" &&
+          doc["members"][1]["job"]["requested_range"]["begin_sample"]==200 &&
+          doc["members"][1]["result"]["frames_written"]==133,
+          "manifest takes edited job values when that member actually starts");
+    check(doc["members"][2]["state"]=="unstarted" && doc["members"][2]["removed_before_start"]==true &&
+          doc["members"][2]["result"].is_null(),"removed pending member remains unstarted, without a fabricated result");
+    check(doc["members"][0]["journal_head"].is_null() && doc["members"][0]["media_identities"].is_null() &&
+          doc["members"][0]["job"]["requested_profile"]["container"]=="wav" &&
+          doc["members"][0]["job"]["requested_profile"]["sample_rate"]==48000,
+          "manifest captures requested format without inventing journal or media provenance");
+    queue.run();
+    check(queue.lastRun().plannedCount==1 && queue.lastRun().members.front().id==4 &&
+          retained.members.size()==3 && retained.members.front().state==JobState::Completed,
+          "next run includes only deferred pending job; caller's old report stays independent");
+    Queue cancelled;
+    const auto cancelledId=cancelled.add(f.job("cancel-{counter}"));
+    cancelled.add(f.job("cancel-{counter}"));
+    std::stop_source stop;
+    control={}; control.stop=stop.get_token();
+    control.progress=[&](JobId,std::uint64_t,std::uint64_t) { stop.request_stop(); };
+    cancelled.run({},control);
+    const auto cancelledDoc=nlohmann::json::parse(serializeRunManifest(cancelled.lastRun()));
+    check(cancelledDoc["members"][0]["state"]=="cancelled" &&
+          cancelledDoc["members"][0]["result"]["publication"].is_null() &&
+          cancelledDoc["members"][1]["state"]=="unstarted" &&
+          cancelled.snapshot()[1].result.state==JobState::Pending,
+          "cancelled attempted work and unstarted pending work are distinct in JSON and queue");
+    check(cancelled.retry(cancelledId),"run reporting preserves explicit cancelled retry");
+    const auto old=serializeRunManifest(cancelled.lastRun());
+    cancelled.run();
+    check(cancelled.lastRun().members.size()==2 && cancelled.lastRun().members[0].state==JobState::Completed &&
+          nlohmann::json::parse(old)["members"][0]["state"]=="cancelled", "retry starts a new report without rewriting old outcome");
+    Queue failed;
+    auto missing=f.job("missing"); missing.project=f.dir.path()/"absent.adi";
+    failed.add(missing); failed.add(f.job("after-missing")); failed.run();
+    const auto failedDoc=nlohmann::json::parse(serializeRunManifest(failed.lastRun()));
+    check(failedDoc["members"][0]["state"]=="failed" && !failedDoc["members"][0]["result"]["error"].get<std::string>().empty() &&
+          failedDoc["members"][1]["state"]=="completed", "failed member does not hide later completed work");
+    RunReport incomplete; incomplete.plannedCount=2; incomplete.captureComplete=false;
+    const auto incompleteDoc=nlohmann::json::parse(serializeRunManifest(incomplete));
+    check(incompleteDoc["planned_count"]==2 && incompleteDoc["capture_complete"]==false && incompleteDoc["members"].empty(),
+          "incomplete capture is explicit, never an apparently complete empty run");
+}
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions(); publicationResults(); runManifests();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

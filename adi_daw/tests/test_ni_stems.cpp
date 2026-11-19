@@ -211,7 +211,13 @@ void integration() {
     render::Queue queue;
     const auto id = queue.add(job);
     unsigned services = 0;
+    static unsigned publicationSyncs = 0;
+    publicationSyncs = 0;
     render::Control control;
+    control.publicationHooks.syncDirectory = [](const fs::path&) {
+        ++publicationSyncs;
+        return std::make_error_code(std::errc::io_error);
+    };
     control.serviceHost = [&] {
         if (++services == 2) {
             store->db().exec(
@@ -224,6 +230,14 @@ void integration() {
           result.error.empty() ? "NI queue job completes" : result.error.c_str());
     if (result.state != render::JobState::Completed)
         return;
+    check(publicationSyncs == 1 && result.publication && !result.publication->durabilityConfirmed &&
+              !result.publication->warning.empty(),
+          "NI hook runs only for final publication and keeps a sync warning without failing the job");
+    const auto runManifest = nlohmann::json::parse(render::serializeRunManifest(queue.lastRun()));
+    check(runManifest["members"][0]["state"] == "completed" &&
+              runManifest["members"][0]["result"]["publication"]["durability_confirmed"] == false &&
+              runManifest["members"][0]["job"]["requested_profile"]["container"] == "ni_stems_mp4",
+          "NI publication warning and format are retained in the run manifest");
     check(result.framesWritten == 10876 && result.output.filename() == "NI Export.stem.mp4" &&
               clean(dir.path()),
           "queue publishes exact cropped range and removes only its stage");
