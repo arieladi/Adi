@@ -177,7 +177,9 @@ public:
     }
     const DeviceIdentity& identity() const noexcept override {return identity_;}
     bool loaded() const noexcept override {return true;}
+    std::string_view processingIssue() const noexcept override {return backend_->processingIssue();}
     bool processesDouble() const noexcept override {return backend_->supportsDouble();}
+    void willBeHanded(engine::Precision width) override { handedWidth_=width; }
     void prepare(double rate,std::int32_t maximum) override {
         const ReactivationGate::Hold hold(gate_);
         if(!std::isfinite(rate)||rate<=0||maximum<=0)throw std::invalid_argument("Invalid EQ prepare format");
@@ -185,12 +187,12 @@ public:
         // That is not an authored reset: preserve its running filter/detector
         // history, pending latency plan and audio-side parameter application.
         // Explicit release and actual format changes still call Core.prepare.
-        if(prepared_&&rate==sampleRate_&&maximum==maximum_) {
+        if(prepared_&&rate==sampleRate_&&maximum==maximum_&&preparedWidth_==handedWidth_) {
             publishLatency(backend_->advertisedLatency());return;
         }
         prepared_=false;
         refresh();backend_->prepare(rate,maximum,channels_,settings(cached_));
-        sampleRate_=rate;maximum_=maximum;prepared_=true;publishLatency(backend_->advertisedLatency());
+        sampleRate_=rate;maximum_=maximum;preparedWidth_=handedWidth_;prepared_=true;publishLatency(backend_->advertisedLatency());
     }
     void release() override {const ReactivationGate::Hold hold(gate_);prepared_=false;backend_->release();}
     std::int32_t latencySamples() const noexcept override {return latency_.load(std::memory_order_acquire);}
@@ -340,6 +342,7 @@ private:
     }
     int channels_;double sampleRate_=0;std::int32_t maximum_=0;std::unique_ptr<mix::EqProcessingBackend> backend_;
     DeviceIdentity identity_;ReactivationGate gate_;bool prepared_=false;
+    engine::Precision handedWidth_=engine::Precision::Float32,preparedWidth_=engine::Precision::Float32;
     std::array<ParamDescriptor,count> descriptors_;std::array<std::atomic<float>,count> values_{};
     Values cached_{};std::uint64_t cachedRevision_=0;
     std::atomic<std::uint64_t> stateVersion_{0},revision_{0},latencyEpoch_{0};

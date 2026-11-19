@@ -465,7 +465,7 @@ std::unique_ptr<DeviceInstance> makeMixFunction(const engine::DeviceRequest& req
     try {
         const auto* info=request.ref?mix::functionForReference(request.ref->format,request.ref->uid):nullptr;
         if(!info){error="Unknown native mix function";return {};}
-        if(info->kind==mix::Function::Eq)return makeMixEqFunction(request,error,mix::eq::makeBackend());
+        if(info->kind==mix::Function::Eq)return makeMixEqFunction(request,error,mix::eq::makeBackend(request.exporting));
         if(info->kind==mix::Function::Compressor)return makeMixCompressorFunction(request,error);
         const auto available=mixFunctionAvailability(info->kind);
         if(!available.ready){error=available.reason;return {};}
