@@ -70,6 +70,10 @@ struct NameContext {
 // Strict brace expansion, {{ / }} for literals; returns one portable filename
 // component without an extension. Unknown/malformed tokens and empty names throw.
 [[nodiscard]] std::string resolveName(const std::string&, const NameContext&);
+// Check the 200 UTF-8 byte budget on the final filename component, after
+// resolveName's escaping and the actual output format's complete suffix.
+// Does not rename, truncate or otherwise change the resolved component.
+void validateOutputName(const std::filesystem::path&);
 struct Control {
     std::stop_token stop;
     // Work in sample frames; NI Stems spans five encoded streams.

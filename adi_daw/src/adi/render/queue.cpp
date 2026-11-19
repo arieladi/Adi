@@ -125,6 +125,9 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
     if (name.empty() || name == "." || name == "..") throw std::invalid_argument("export name is empty");
     if (name.size() > 200) throw std::invalid_argument("export name exceeds 200 UTF-8 bytes");
     auto stem = name.substr(0, name.find('.'));
+    // Windows ignores ASCII spaces immediately before the first extension
+    // when it recognises a reserved device name. Preserve the user's spelling.
+    while (!stem.empty() && stem.back() == ' ') stem.pop_back();
     for (char& c : stem) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
     const bool numberedDevice = (stem.starts_with("COM") || stem.starts_with("LPT")) &&
         ((stem.size() == 4 && stem[3] >= '1' && stem[3] <= '9') ||
@@ -132,6 +135,11 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
     if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" ||
         stem == "CONIN$" || stem == "CONOUT$" || numberedDevice) name = "_" + name;
     return name;
+}
+
+void validateOutputName(const fs::path& output) {
+    if (media::pathUtf8(output.filename()).size() > 200)
+        throw std::invalid_argument("final export name exceeds 200 UTF-8 bytes");
 }
 
 Result renderWav(Job job, engine::DeviceLoader loader, Control control,
@@ -184,6 +192,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         }
         const auto filename = resolveName(job.nameTemplate, names) + ".wav";
         result.output = job.directory / media::pathFromUtf8(filename);
+        validateOutputName(result.output);
         if (!fs::is_directory(job.directory)) throw std::runtime_error("export directory does not exist");
         if (fs::exists(result.output)) throw std::runtime_error("export destination already exists");
         const auto* graph = session.graph().currentGraph();

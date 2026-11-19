@@ -144,6 +144,7 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         result.framesWritten = rendered.framesWritten;
         result.output = stage.path.parent_path() / rendered.output.filename();
         result.output.replace_extension(".stem.mp4");
+        validateOutputName(result.output);
         if (fs::exists(result.output))
             throw std::runtime_error("NI Stems destination already exists");
         std::vector<audio::AacTrack> tracks;
