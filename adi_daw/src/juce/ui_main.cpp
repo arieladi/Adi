@@ -404,7 +404,9 @@ class AdiApplication final : public juce::JUCEApplication,
         root->devices.keyChoices=[this](const DevicePanelData& target){return document_->deviceKeyChoices(target);};
         root->devices.setKey=[this](const DevicePanelData& target,const DeviceKeyChoice& choice){
             const bool ok=document_->setDeviceKeyChoice(target,choice);
-            if(root_)root_->say(ok ? std::string{} : document_->error());return ok;
+            if(root_)
+                root_->say(ok ? std::string{} : document_->error());
+            return ok;
         };
         // A device's sample slot (D5): a file assigned, or the slot cleared; one undo step each.
         root->devices.assignSample = [this](std::int64_t device, std::int32_t slot, const std::string &path) {

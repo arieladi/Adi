@@ -556,8 +556,7 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // now hands this device the other width is a reactivation too.
     const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ &&
-        preparedKey_ == keyRequested_ && preparedShape_ == preparationShapeEpoch() &&
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_ && preparedKey_==keyRequested_ && preparedShape_==preparationShapeEpoch() &&
         inst_->isNonRealtime() == requestedOffline_) {
         return;
     }
@@ -616,6 +615,8 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     const auto* grantedMain=mainInputBus_>=0?inst_->getBus(true,mainInputBus_):nullptr;
     channels_=std::max(grantedMain?grantedMain->getNumberOfChannels():0,inst_->getMainBusNumOutputChannels());
     if(channels_<1)channels_=2;
+    // After the key layout is granted, not before: a refused key re-prepares
+    // the old state above, and that state includes the old realtime mode.
     inst_->setNonRealtime(requestedOffline_);
     inst_->setPlayHead(&playHead_);
     // The width, before `prepareToPlay`: it hands `setupProcessing`

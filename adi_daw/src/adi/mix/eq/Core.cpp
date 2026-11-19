@@ -137,6 +137,10 @@ Settings pinPlanSettings(Settings controls, const Settings &plan) noexcept {
             }
     return controls;
 }
+// Promise and token share one atomic so withdrawal and publication cannot both win.
+static constexpr std::uint64_t promisedLatencyBit = std::uint64_t{1} << 63;
+static constexpr std::uint64_t maxOfferSerial = (promisedLatencyBit >> 32) - 1;
+
 struct Core::Implementation {
     adi_eq_zlp::Controller controller;
     ADISharedEqSpectralDynamics spectralEngine;
@@ -162,19 +166,17 @@ struct Core::Implementation {
                             : 0);
     }
     void consider(const Settings &desired, bool canWithdraw = false) noexcept {
-        const auto currentOffer = pending.load(std::memory_order_relaxed);
-        if (currentOffer && !canWithdraw)
-            return;
-        if (samePlan(active, desired)) {
-            if (currentOffer)
-                pending.store(0, std::memory_order_release);
+        auto currentOffer = pending.load(std::memory_order_relaxed);
+        if (currentOffer) {
+            if (canWithdraw && !(currentOffer & promisedLatencyBit) && samePlan(active, desired))
+                pending.compare_exchange_strong(currentOffer, 0, std::memory_order_acq_rel);
             return;
         }
-        if (currentOffer)
+        if (samePlan(active, desired))
             return;
         offer = desired;
-        if (++offerSerial == 0)
-            ++offerSerial;
+        if (++offerSerial > maxOfferSerial)
+            offerSerial = 1;
         const auto samples = static_cast<std::uint32_t>(planLatency(desired));
         pending.store((offerSerial << 32) | samples, std::memory_order_release);
     }
@@ -456,8 +458,20 @@ std::int32_t Core::maximumLatencySamples() const noexcept {
     return implementation->prepared ? implementation->maximumLatency : 0;
 }
 LatencyChange Core::pendingLatencyChange() const noexcept {
-    const auto token = implementation->pending.load(std::memory_order_acquire);
+    const auto token = implementation->pending.load(std::memory_order_acquire) & ~promisedLatencyBit;
     return {token, static_cast<std::int32_t>(token & 0xffffffffU)};
+}
+LatencyChange Core::promiseLatencyChange() noexcept {
+    auto &pending = implementation->pending;
+    auto current = pending.load(std::memory_order_acquire);
+    if (!current) return {};
+    const auto token = current & ~promisedLatencyBit;
+    const auto promised = token | promisedLatencyBit;
+    if (current == promised ||
+        pending.compare_exchange_strong(current, promised, std::memory_order_acq_rel) ||
+        current == promised)
+        return {token, static_cast<std::int32_t>(token & 0xffffffffU)};
+    return {};
 }
 bool Core::requestConfiguration(const Settings &s) noexcept {
     auto &i = *implementation;
@@ -486,7 +500,7 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
         i.pending.store(0, std::memory_order_release);
     } else if (admitPending && configured == i.committedLatency.load(std::memory_order_relaxed)) {
         // The callback still uses the old PDC. Reverting to the active plan
-        // can withdraw its unused offer. A serial parent holding an offer
+        // can withdraw an offer before the owner advertises it. A serial parent holding an offer
         // passes admitPending=false and keeps its child token stable.
         canWithdraw = pending != 0;
     }
