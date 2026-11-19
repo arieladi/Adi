@@ -10007,7 +10007,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         madeAll = submitter.submit(std::move(r)).ok && madeAll;
     }
     check(madeAll, "Kick, Bass, Lead and Main");
-    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    auto rootFixture = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session, "mix");
+    auto &root = *rootFixture;
     root.setSize(1440, 900);
     root.mark(DirtySet::All);
     root.frame();
@@ -10461,7 +10462,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
     }
     // A second window keeps its own.
-    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
+    auto otherFixture = std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session, "mix-other");
+    auto &other = *otherFixture;
     other.setSize(1200, 720);
     other.frame();
     check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
@@ -10615,8 +10617,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
             }
             check(document->ops().submit(std::move(make)).ok && document->synchronise(),
                   "two actual ordered devices on one track");
-            AdiRootComponent actual(document->view(), document->ops(), document->mailbox(), commands,
-                                    document->views(), document->sessionState(), "mix-devices");
+            auto deviceFixture = std::make_unique<AdiRootComponent>(document->view(), document->ops(),
+                document->mailbox(), commands, document->views(), document->sessionState(), "mix-devices");
+            auto &actual = *deviceFixture;
             // This test peer overrides createNewPeer with UiFakePeer: no OS window, input or display.
             UiPeerRoot fake;
             // Keep both test controls visible with the Main meter and channel list docked.

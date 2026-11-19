@@ -1331,12 +1331,21 @@ void compareAndAveragePages() {
         auto *compare = pages.compareA.getParentComponent();
         if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
         juce::Image image(juce::Image::RGB, compare->getWidth(), compare->getHeight(), true, juce::SoftwareImageType{});
-        juce::Graphics graphics(image);
-        compare->paint(graphics);
+        {
+            juce::Graphics graphics(image);
+            compare->paint(graphics);
+        }
         const auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
             .reduced(look::gap).withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
         const auto hasSegment = [&](std::span<const float> bins, juce::Colour colour) {
             if (bins.size() <= 16) return false;
+            const auto colourDistance = [](juce::Colour a, juce::Colour b) {
+                return std::abs(a.getRed() - b.getRed()) + std::abs(a.getGreen() - b.getGreen()) +
+                    std::abs(a.getBlue() - b.getBlue());
+            };
+            // Software rendering can split a thin line across two pixels. Accept
+            // part of its colour, while still rejecting an unpainted plot column.
+            const int maximumDistance = colourDistance(colour, look::display) * 7 / 10;
             const auto x = [&](int bin) {
                 return plot.getX() + plot.getWidth() * static_cast<float>(std::log(bin * 48000. / 1024. / 20.) / std::log(1000.));
             };
@@ -1349,9 +1358,7 @@ void compareAndAveragePages() {
                 bool visible = false;
                 for (int dy = -2; dy <= 2; ++dy) {
                     const auto actual = image.getPixelAt(px, py + dy);
-                    const int distance = std::abs(actual.getRed() - colour.getRed()) +
-                        std::abs(actual.getGreen() - colour.getGreen()) + std::abs(actual.getBlue() - colour.getBlue());
-                    visible |= distance <= 72;
+                    visible |= colourDistance(actual, colour) <= maximumDistance;
                 }
                 if (!visible) return false;
             }
@@ -1403,9 +1410,14 @@ void compareAndAveragePages() {
     auto averageRequest = rawRequest;
     averageRequest.outputs = SharedAnalysis::Average1s;
     auto publishedAverage = broker->acquire(averageRequest);
-    write(*first, .8f, 3072, 4); broker->pump();
-    pages.frame(broker, original, main, guitar);
-    write(*first, .1f, 4096, 4); broker->pump();
+    // Prime the exponential average after its zero-state reset before comparing
+    // its response to a sudden drop with the latest unsmoothed window.
+    constexpr int warmBlocks = 64;
+    for (int block = 0; block < warmBlocks; ++block) {
+        write(*first, .8f, 3072 + block * 1024, 4); broker->pump();
+        pages.frame(broker, original, main, guitar);
+    }
+    write(*first, .1f, 3072 + warmBlocks * 1024, 4); broker->pump();
     pages.frame(broker, original, main, guitar);
     const auto average = publishedAverage.readAverage();
     const auto rawWindow = raw.read();
