@@ -5,6 +5,12 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — design step 3 row picker Release
+
+**PR requested.** Author branch `mixview/stack-picker-clean-20261119`, head `d1913d09`, after Stack cards `3d4904ae`. Each chain has a searchable add control with existing native functions shown as selected and unavailable for duplicate insertion. It uses the common device edit for compatible built-ins, VST3 and CLAP and opens external editors from named chips. A late picker cannot redirect a choice to another row. New inserts reserve past retained runtime IDs, including after removing the highest native function.
+
+Four targeted Release suites and 817 software-peer checks passed. The headless document gate opens a fake external runtime, verifies its path, parameters and stable identity, and exercises one Undo and Redo. Package `ADI-MixView-Row-Picker-20261119-d1913d09cc-win64-Release.zip`. ZIP SHA-256 `f369b8ec9034fc30423cd27037e2010f1f7b3869fda84361e41fbd2c5a8bf0d6`. ADI.exe SHA-256 `28bb46efa00ed00a4ebb73dd519c052e6e7e5817838f3b5809eba27922953fcb`. Scanner SHA-256 `6a0becb071631d746a4bc0b98fb3c7e51dacac02d849b2d9a3df532488bc4e0a`. Brief `ADI-Q-MixView-Row-Picker-20261119-d1913d09-CLAUDE-RETEST.txt`. Installed VST3/CLAP editor behavior and scanning stay in the live gate.
+
 ## 19 November 2026 — design step 2 Stack lens and cards Release
 
 **PR requested.** Author branch `mixview/stack-cards-clean-20261119`, head `3d4904ae`, after workspace `460ecdbf`. The Stack uses the sheet's continuous row lens and a Rows control. Channel names, colour, peak/RMS, Mute and Solo stay at the left. Native cards show the EQ curve, the visible device's post-EQ spectrum, a paired bell drag with one Undo, and real, demand-gated Limiter reduction. Compact folded pills can activate, unfold and remove the exact device through existing authority. The default Stack shows all channels. Third-party named chips and per-row insertion are the next design step.
