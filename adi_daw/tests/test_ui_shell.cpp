@@ -9465,6 +9465,7 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
     TransportMailbox mailbox;
     ViewStateStore persistence(*store);
     SessionState session(*store);
+    std::vector<engine::MainAudition> auditions;
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix-navigation");
     UiPeerRoot fake;
     fake.setSize(1200, 760);
@@ -9616,8 +9617,20 @@ void mixChannelNavigation(AppCommands &commands, const std::filesystem::path &di
               "choosing, refreshing and leaving Sounding now create no edit or Undo entry");
         root.mixer.meter = {};
     }
+    mix.mainMeter.setAuditionSink([&](engine::MainAudition mode) { auditions.push_back(mode); });
+    const auto countBeforeAudition = value(*store, "SELECT count(*) FROM ops");
+    for (int item = 2; item <= 5; ++item)
+        mix.mainMeter.listenBox.setSelectedId(item, juce::sendNotificationSync);
+    const std::vector expected{engine::MainAudition::Left, engine::MainAudition::Right, engine::MainAudition::Mid,
+                               engine::MainAudition::Side, engine::MainAudition::Stereo};
     check(root.setMixView(false, false) && !nav.preview.subscribed() && !mix.mainMeter.subscribed(),
           "closing the Mix View releases Info and Main meter demand immediately");
+    check(auditions == expected && mix.mainMeter.listenBox.getSelectedId() == 1 &&
+              value(*store, "SELECT count(*) FROM ops") == countBeforeAudition,
+          "closing returns the live owner to Stereo once and saves no monitor setting");
+    mix.mainMeter.listenBox.setSelectedId(2, juce::sendNotificationSync);
+    check(auditions == expected && mix.mainMeter.listenBox.getSelectedId() == 1,
+          "a delayed monitor selector while hidden cannot reacquire audition");
     nav.openInfo.onClick();
     check(!root.state().mixView, "a late Info callback cannot reopen the closed Mix View");
     fake.removeChildComponent(&root);

@@ -1618,6 +1618,7 @@ bool AdiRootComponent::setMixView(bool open, bool detached) {
         state_.mixViewDetached = wasDetached;
         return fail(error_);
     }
+    if (wasOpen != open) mixViewPanel.mainMeter.suspend(!open);
     if (wasOpen != open || wasDetached != detached) {
         mixViewPanel.song.cancelSeek();
         mixViewPanel.stack.cancelInteractions(); devices.cancelFunctionInteractions();

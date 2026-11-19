@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/engine/main_audition.hpp"
 #include "ui_analysis.hpp"
 
 namespace adi::ui {
 // Passive post-fader Main measurement, clocked by its visible owner.
 class MixOutputMeter final : public juce::Component, private juce::ComponentListener {
   public:
-    enum class Audition { Stereo, Left, Right, Mid, Side };
+    using Audition = engine::MainAudition;
     MixOutputMeter();
     ~MixOutputMeter() override;
     void frame(const std::shared_ptr<SharedAnalysis> &, std::int64_t mainTrack,

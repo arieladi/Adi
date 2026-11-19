@@ -380,6 +380,8 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Ephemeral monitoring choice for the live stereo device pair.
+    void setMainAudition(MainAudition mode) noexcept { cueMonitor_.setMainAudition(mode); }
     /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
     /// requestReset is an off-thread command consumed at the next callback.
     [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }

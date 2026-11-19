@@ -25,11 +25,11 @@ int checks=0,failures=0;
 void check(bool good,const char* name){++checks;if(!good){++failures;std::printf("FAIL: %s\n",name);}}
 bool near(double a,double b,double tolerance=1e-6){return std::abs(a-b)<tolerance;}
 struct Tone final:Node {
-    double value;std::int64_t frames=0;
+    double value; double rightFactor=1.; std::int64_t frames=0;
     explicit Tone(double v):value(v){}
     bool processesDouble() const noexcept override{return true;}
     void process(const NodeIo& io) noexcept override {
-        for(int c=0;c<io.channels;++c)for(int i=0;i<io.frames;++i)if(io.wide())io.out64[c][io.blockOffset+i]=value;else io.out[c][io.blockOffset+i]=static_cast<float>(value);
+        for(int c=0;c<io.channels;++c)for(int i=0;i<io.frames;++i)if(io.wide())io.out64[c][io.blockOffset+i]=value*(c?rightFactor:1.);else io.out[c][io.blockOffset+i]=static_cast<float>(value*(c?rightFactor:1.));
         frames+=io.frames;
     }
 };
@@ -69,8 +69,8 @@ struct Fixture {
         "INSERT INTO device_chains(id,track_id) VALUES(2,2),(9,9);"
         "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(2,2,0,1,'Reference FX'),(9,9,0,1,'Main FX')");masterDelay=delay;}
     int masterDelay=0;
-    bool load(Precision precision=Precision::Float32,bool performance=true){session.setSourcesFor([this](std::int64_t id){return id==1?std::vector<Node*>{&main}:id==2?std::vector<Node*>{&reference}:std::vector<Node*>{};});
-        SessionSpec spec;spec.maxFrames=512;spec.precision=precision;spec.performanceState=performance;
+    bool load(Precision precision=Precision::Float32,bool performance=true, bool exporting=false){session.setSourcesFor([this](std::int64_t id){return id==1?std::vector<Node*>{&main}:id==2?std::vector<Node*>{&reference}:std::vector<Node*>{};});
+        SessionSpec spec;spec.maxFrames=512;spec.precision=precision;spec.performanceState=performance;spec.exporting=exporting;
         return session.load(*store,[this](const DeviceRequest& request,std::string&){return std::make_unique<Effect>(request.device->id==2?2.0:0.1,request.device->id==9?masterDelay:0,request.device->id==2?refFrames:masterFrames);},spec);}
     void process(Block& b){session.process(b.io);}
 };
@@ -125,6 +125,12 @@ void soloAndCue() {
     check(near(b.wide[0][511],0.025),"Solo in Place off closes that return");
     check(f.op("cue.setOutput",{{"first",2}}) && f.op("cue.setMode",{{"on",true}}) && f.op("cue.setTrack",{{"id",1},{"on",true}}),"switch from Solo to Cue publishes");f.process(b);
     check(near(b.wide[0][511],0.1) && near(b.wide[2][511],0.25),"Cue selection leaves Main's mix open and hears PFL on headphones");
+    f.session.setMainAudition(MainAudition::Side);
+    f.process(b);
+    check(b.wide[0][511] == 0. && b.wide[1][511] == 0. &&
+              near(b.wide[2][511], .25) && near(b.wide[3][511], .25),
+          "Main Side affects its speaker pair while an audible separate stereo Cue pair is unchanged");
+    f.session.setMainAudition(MainAudition::Stereo);
     check(f.op("track.setMute",{{"id",1},{"muted",true}}) && f.op("mixer.setVolume",{{"id",1},{"db",-60.0}}),"mute/fader change on a cued track");f.process(b);
     check(near(b.wide[0][511],0.05) && near(b.wide[2][511],0.25),"PFL cue remains audible despite track mute and fader");
     check(f.op("cue.setTrack",{{"id",1},{"on",false}}),"Cue button releases");f.process(b);
@@ -143,7 +149,9 @@ void compensatedAndClick() {
 void offline() {
     Fixture f;f.effects();f.store->db().exec("UPDATE tracks SET muted=1 WHERE id=2");f.op("cue.setOutput",{{"first",2}});f.op("cue.setMode",{{"on",true}});f.op("cue.setTrack",{{"id",1},{"on",true}});
     f.op("cue.setReference",{{"on",true},{"id",2}});
-    check(f.load(Precision::Float64,false),"offline session loads saved Cue/reference choices");Block b;f.process(b);
+    check(f.load(Precision::Float64,false),"offline session loads saved Cue/reference choices");
+    f.session.setMainAudition(MainAudition::Side);
+    Block b;f.process(b);
     check(near(b.wide[0][511],0.0025) && b.wide[2][511]==0,"offline rendering excludes reference and ignores Cue audition/mode solo gates");
 }
 void selectionAndRole() {
@@ -195,6 +203,44 @@ void automationPlays() {
     lane(100,-12.041199826559248);check(f.session.refresh(*f.store),"changed reference lane publishes");f.process(b);f.session.tick(1000);
     check(near(b.wide[0][511],0.25),"newly published reference automation plays after the graph swap");
 }
+void mainListening(Precision precision, bool exporting) {
+    Fixture f;
+    f.store->db().exec("UPDATE mixer_strip SET volume_db=0 WHERE track_id=9");
+    f.main.rightFactor = -0.5;
+    f.reference.value = 0.;
+    check(f.load(precision, true, exporting), "Main listening fixture loads");
+    const auto tap = f.session.openScope(9, .25, ScopePoint::PostFader);
+    check(tap != nullptr, "Main post-fader tap observes the stored mix before the monitor pair");
+    f.session.transport().play();
+    Block block(128);
+    f.process(block);
+    const auto sample = [&](int channel, int i) {
+        const auto ch = static_cast<std::size_t>(channel), at = static_cast<std::size_t>(i);
+        return precision == Precision::Float32 ? static_cast<double>(block.narrow[ch][at]) : block.wide[ch][at];
+    };
+    const double l = sample(0,127), r = sample(1,127);
+    check(l > 0. && r < 0., "left and right contain different signed programme");
+    for (const auto mode : {MainAudition::Left, MainAudition::Right, MainAudition::Mid, MainAudition::Side, MainAudition::Stereo}) {
+        f.session.setMainAudition(mode);
+        allocations.store(0); countAllocations.store(true);
+        f.process(block);
+        countAllocations.store(false);
+        const double solo = mode == MainAudition::Left ? l : mode == MainAudition::Right ? r :
+                            mode == MainAudition::Mid ? 0.5*(l+r) : 0.5*(l-r);
+        const bool dry = exporting || mode == MainAudition::Stereo;
+        bool match = true;
+        for (int i=0;i<128;++i)
+            match = match && sample(0,i) == (dry?l:solo) && sample(1,i) == (dry?r:solo)
+                          && sample(2,i)==0. && sample(3,i)==0.;
+        check(match && !allocations.load(), "Main audition matrix is exact, physical pair only, export independent and allocation free");
+        std::array<float, 128> storedLeft{}, storedRight{};
+        std::int64_t stamp = 0;
+        check(tap && tap->read(storedLeft, storedRight, stamp) &&
+                  std::all_of(storedLeft.begin(), storedLeft.end(), [&](float x) { return x == static_cast<float>(l); }) &&
+                  std::all_of(storedRight.begin(), storedRight.end(), [&](float x) { return x == static_cast<float>(r); }),
+              "Main post-fader capture is identical in every monitor mode");
+    }
+}
 void inactiveBits() {
     CueMonitor monitor;CueSettings settings;monitor.publish(settings,48000,64,2,true);GraphHost graph;Block b(64);
     for(auto& channel:b.narrow)for(auto& sample:channel)sample=std::bit_cast<float>(std::uint32_t{0x80000000u});
@@ -218,5 +264,5 @@ void allocation() {
 }
 
 }
-int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
+int main(){try{settings();referenceSwap(Precision::Float32);referenceSwap(Precision::Float64);soloAndCue();compensatedAndClick();offline();selectionAndRole();defaultRole();for(auto precision:{Precision::Float32,Precision::Float64}) { mainListening(precision,false); mainListening(precision,true); }automationLifetime();automationPlays();inactiveBits();coldReference();allocation();}
     catch(const std::exception& e){check(false,e.what());}std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

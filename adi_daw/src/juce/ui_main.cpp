@@ -325,6 +325,11 @@ class AdiApplication final : public juce::JUCEApplication,
             }});
         root->infoSpectrum.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.mainMeterSource = mainMeterSource_;
+        const auto *auditionDocument = document_.get();
+        root->mixViewPanel.mainMeter.setAuditionSink([this, meterOwner, auditionDocument](engine::MainAudition mode) {
+            if (meterOwner && root_ == meterOwner.getComponent() && document_.get() == auditionDocument)
+                document_->session().setMainAudition(mode);
+        });
         root->mixViewPanel.analysis.view.setMainMeterSource(mainMeterSource_);
         root->mixViewPanel.analyzerDock.meters.setMainMeterSource(mainMeterSource_);
         root->devices.functionAvailability = device::mixFunctionAvailability;

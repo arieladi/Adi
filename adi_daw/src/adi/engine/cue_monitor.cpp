@@ -94,6 +94,7 @@ struct Scene final:Sequenced {
 
 }
 struct CueMonitor::Impl {
+    std::atomic<MainAudition> audition{MainAudition::Stereo};
     std::map<std::int64_t,std::unique_ptr<Feed>> feeds;
     std::set<std::int64_t> present,selected;
     std::shared_ptr<Buffers> buffers;
@@ -192,9 +193,45 @@ std::shared_ptr<const CueControlBatch> CueMonitor::prepareControls(const rows::M
     return result;
 }
 void CueMonitor::collect(){impl_->scenes.collect();for(auto& [id,feed]:impl_->feeds){(void)id;feed->gain.collect();}}
+void CueMonitor::setMainAudition(MainAudition mode) noexcept {
+    impl_->audition.store(mode, std::memory_order_relaxed);
+}
+namespace {
+template<class T> void auditionStereo(T* const* output, int frames, MainAudition mode) noexcept {
+    if (!output || !output[0] || !output[1] || output[0] == output[1]) return;
+    auto* left = output[0];
+    auto* right = output[1];
+    switch (mode) {
+    case MainAudition::Left:
+        std::copy_n(left, frames, right);
+        break;
+    case MainAudition::Right:
+        std::copy_n(right, frames, left);
+        break;
+    case MainAudition::Mid:
+    case MainAudition::Side: {
+        const T sign = mode == MainAudition::Mid ? T(0.5) : T(-0.5);
+        for (int i = 0; i < frames; ++i) {
+            const auto sample = left[i] * T(0.5) + right[i] * sign;
+            left[i] = right[i] = sample;
+        }
+        break;
+    }
+    case MainAudition::Stereo:
+        break;
+    }
+}
+}
 void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) noexcept {
     SnapshotPublisher<Scene>::AudioRead scene(impl_->scenes);
     if(!scene.valid() || !scene->enabled || io.frames<=0)return;
+    // Graph outputs and Main measurements have already been copied. Only the
+    // physical monitor pair changes here, before adding cue/reference/click.
+    const auto audition = impl_->audition.load(std::memory_order_relaxed);
+    if (audition != MainAudition::Stereo && !io.exporting && io.numOut >= 2 && scene->buffers->channels >= 2) {
+        auditionStereo(io.out, io.frames, audition);
+        auditionStereo(io.out64, io.frames, audition);
+    }
     const bool cueActive=std::any_of(scene->voices.begin(),scene->voices.end(),[](const Scene::Voice& voice){return voice.selected || voice.gate->current!=0;});
     if(!cueActive && !scene->settings.referenceOn && impl_->referenceMix.current==0 && !click.render) {
         impl_->volume={scene->gain,scene->gain,0,0};

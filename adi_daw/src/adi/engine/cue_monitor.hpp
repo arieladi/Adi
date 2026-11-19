@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/cue_settings.hpp"
+#include "adi/engine/main_audition.hpp"
 #include "adi/engine/host.hpp"
 #include "adi/engine/mixer.hpp"
 #include <memory>
@@ -32,6 +33,7 @@ public:
     [[nodiscard]] std::shared_ptr<const CueControlBatch> prepareControls(const rows::Model&,const CueSettings&,
         const std::shared_ptr<StripAutomation>&,bool enabled) const;
     void collect();
+    void setMainAudition(MainAudition mode) noexcept;
     struct Click {
         void* context=nullptr;
         void (*render)(void*,const AudioIo&) noexcept=nullptr;
