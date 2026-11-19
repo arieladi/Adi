@@ -389,6 +389,8 @@ class NamesBar final : public juce::Component {
     BarButton inOut, sends, returns, mixer, delay;
     BarButton height, width;
     BarButton automation, lock;
+    // Show's least width: "Show" and a few letters of the view.
+    static constexpr int kShowMin = 80;
     // What Automation Mode and Lock Envelopes say while they wait.
     static constexpr const char *kAutomationWaits =
         "Automation Mode waits for the engine's automation lanes (window log, N26).";

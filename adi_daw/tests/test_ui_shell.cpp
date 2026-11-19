@@ -2393,14 +2393,14 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // H and W, Automation Mode, Lock Envelopes.
     {
         auto &bar = root.namesBar;
-        int x = 0;
+        int edge = 0;
         bool ordered = true;
         for (juce::Component *c : std::initializer_list<juce::Component *>{
                  &bar.flip, &bar.show, &bar.inOut, &bar.sends, &bar.returns, &bar.mixer, &bar.delay, &bar.height,
                  &bar.width, &bar.automation, &bar.lock}) {
-            ordered = ordered && c->getX() >= x && c->getRight() <= bar.getWidth() && c->getWidth() > 0 &&
-                      c->getY() >= 0 && c->getBottom() <= bar.getHeight();
-            x = c->getRight();
+            ordered = ordered && c->isVisible() && c->getX() >= edge && c->getRight() <= bar.getWidth() &&
+                      c->getWidth() > 0 && c->getY() >= 0 && c->getBottom() <= bar.getHeight();
+            edge = c->getRight();
         }
         check(ordered && bar.show.getWidth() >= 60, "the bar's parts sit in the sheet's order, inside it");
         // H and W are Live's Optimize Arrangement Width and Height: what their commands do.
@@ -2412,11 +2412,14 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(geometry.scale == fitted, "W fits the song across the lanes, as Optimize Arrangement Width");
         root.command(AppCommands::OptimizeHeight);
-        const int tall = geometry.heightFor(1);
+        const auto measured = geometry.selection.track;
+        const int tall = geometry.heightFor(measured);
         root.command(AppCommands::ShrinkTracks);
+        const int shrunk = geometry.heightFor(measured);
         bar.height.onClick();
         root.frame();
-        check(tall > 0 && geometry.heightFor(1) == tall, "H fills the lanes, as Optimize Arrangement Height");
+        check(tall > 0 && shrunk != tall && geometry.heightFor(measured) == tall,
+              "H fills the lanes again after the selected track shrank, as Optimize Arrangement Height");
     }
     root.namesBar.returns.onClick();
     check(root.state().hideReturns && !root.namesBar.returns.getToggleState() &&
@@ -11530,6 +11533,20 @@ int main(int argc, char **argv) {
         check(!a.mixer.isVisible() && !a.strip.isVisible() &&
                   a.arrangement.getRight() == a.getWidth() - look::gap,
               "hidden track controls take the strip with them; the arrangement reaches the edge");
+        // The bar over the names alone keeps Flip and Show, Show wide enough to read, and leaves out
+        // what does not fit, every part it keeps inside it.
+        {
+            auto &bar = a.namesBar;
+            const auto names = a.arrangement.headers.getBounds() + a.arrangement.getPosition();
+            bool inside = true;
+            for (int i = 0; i < bar.getNumChildComponents(); ++i)
+                if (const auto *c = bar.getChildComponent(i); c->isVisible())
+                    inside = inside && c->getX() >= 0 && c->getRight() <= bar.getWidth();
+            check(bar.isVisible() && bar.getX() == names.getX() && bar.getWidth() == names.getWidth() &&
+                      bar.flip.isVisible() && bar.show.isVisible() && bar.show.getWidth() >= 60 &&
+                      !bar.lock.isVisible() && inside,
+                  "the bar over the names alone keeps Flip and Show (its view's name alone) and leaves out what does not fit");
+        }
         a.command(AppCommands::ToggleMixer);
         a.frame();
         a.namesBar.flip.onClick();

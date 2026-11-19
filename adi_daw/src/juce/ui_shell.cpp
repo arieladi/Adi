@@ -1371,7 +1371,8 @@ void AdiRootComponent::resized() {
             if (!r.isEmpty())
                 span = span.getUnionWith(r.getHorizontalRange());
         const int barY = top + arrangement.overviewHeight();
-        namesBar.setBounds(span.getStart(), barY, span.getLength(), ArrangementView::kRulerHeight);
+        // The sheet's row, 26 high: it ends above Set, which stands at the ruler's foot.
+        namesBar.setBounds(span.getStart(), barY, span.getLength(), ArrangementView::kRulerHeight - 3);
         strip.setHead(arrangement.overviewHeight() + ArrangementView::kRulerHeight);
     }
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer

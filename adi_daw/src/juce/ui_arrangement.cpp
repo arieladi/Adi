@@ -844,12 +844,15 @@ void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
     controls::chooser(g, r, {}, look::fontCaption);
     const auto font = look::font(look::fontCaption);
     constexpr const char *kShow = "Show";
-    const float label = juce::GlyphArrangement::getStringWidth(font, kShow);
+    // Narrower than the bar's least (the names alone), the view's name alone, with the arrow.
+    const bool labelled = getWidth() >= NamesBar::kShowMin;
+    const float label = labelled ? juce::GlyphArrangement::getStringWidth(font, kShow) : -4.f;
     const float left = r.getX() + 5.f, arrow = 13.f;
     g.setFont(font);
     g.setColour(over || down ? look::text : look::textDim);
-    g.drawText(kShow, juce::Rectangle<float>(left, r.getY(), label + 1.f, r.getHeight()),
-               juce::Justification::centredLeft, false);
+    if (labelled)
+        g.drawText(kShow, juce::Rectangle<float>(left, r.getY(), label + 1.f, r.getHeight()),
+                   juce::Justification::centredLeft, false);
     // The view chosen, cut plain before the arrow as the shared chooser cuts its text (Live 12
     // manual, Figure 6.1).
     const float from = left + label + 4.f;
@@ -935,7 +938,7 @@ NamesBar::NamesBar()
       mixer("M", "Mixer: the track controls' mixer.", true),
       delay("D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options).", true),
       height("H", "Optimize Arrangement Height (H).", true), width("W", "Optimize Arrangement Width (W).", true),
-      automation("Automation Mode", "Automation Mode (A)", false, automationGlyph),
+      automation("Automation Mode", "Automation Mode", false, automationGlyph),
       lock("Lock Envelopes", "Lock Envelopes", false, lockGlyph) {
     setOpaque(true);
     for (juce::Component *c : std::initializer_list<juce::Component *>{
@@ -948,40 +951,67 @@ NamesBar::NamesBar()
 void NamesBar::resized() {
     // The sheet's buttons (arrangement.png; its source, arrangement.html), 20 high and level in the
     // ruler's row, each a little narrower than drawn there, as the window's names and track controls
-    // are Live's width, narrower than the sheet's; Show takes what is left.
+    // are Live's width, narrower than the sheet's; Show takes what is left. A bar too narrow for every
+    // part (the track controls hidden, a small window) keeps Flip and Show, Show at least kShowMin wide,
+    // and leaves out from the end: Automation Mode and Lock Envelopes, then H and W, then the sections.
     constexpr int kEdge = 2, kGap = 3, kPad = 2, kFlip = 22, kCell = 18, kSize = 18, kAutomation = 22, kLock = 20;
     const int h = std::min(20, std::max(0, getHeight() - 4));
     const int y = (getHeight() - h) / 2;
     const int sectionsW = 5 * kCell + 2 * kPad, sizesW = 2 * kSize + 2 * kPad;
-    const int fixed = kEdge + kFlip + kGap + kGap + sectionsW + kGap + sizesW + kGap + kAutomation + kGap + kLock + kEdge;
+    const int base = kEdge + kFlip + kGap + kEdge;
+    const std::array<int, 3> extra{kGap + sectionsW, kGap + sizesW, kGap + kAutomation + kGap + kLock};
+    int parts = 3, fixed = base + extra[0] + extra[1] + extra[2];
+    while (parts > 0 && getWidth() - fixed < kShowMin) {
+        --parts;
+        fixed -= extra[static_cast<std::size_t>(parts)];
+    }
     const int showW = std::max(0, getWidth() - fixed);
     int x = kEdge;
     flip.setBounds(x, y, kFlip, h);
     x += kFlip + kGap;
     show.setBounds(x, y, showW, h);
-    x += showW + kGap;
-    sections_ = juce::Rectangle<int>(x, y, sectionsW, h).toFloat();
-    x += kPad;
-    for (auto *b : {&inOut, &sends, &returns, &mixer, &delay}) {
-        b->setBounds(x, y, kCell, h);
-        x += kCell;
+    x += showW;
+    for (auto *b : {&inOut, &sends, &returns, &mixer, &delay})
+        b->setVisible(parts >= 1);
+    for (auto *b : {&height, &width})
+        b->setVisible(parts >= 2);
+    for (auto *b : {&automation, &lock})
+        b->setVisible(parts >= 3);
+    sections_ = sizes_ = {};
+    if (parts >= 1) {
+        x += kGap;
+        sections_ = juce::Rectangle<int>(x, y, sectionsW, h).toFloat();
+        x += kPad;
+        for (auto *b : {&inOut, &sends, &returns, &mixer, &delay}) {
+            b->setBounds(x, y, kCell, h);
+            x += kCell;
+        }
+        x += kPad;
     }
-    x += kPad + kGap;
-    sizes_ = juce::Rectangle<int>(x, y, sizesW, h).toFloat();
-    height.setBounds(x + kPad, y, kSize, h);
-    width.setBounds(x + kPad + kSize, y, kSize, h);
-    x += sizesW + kGap;
-    automation.setBounds(x, y, kAutomation, h);
-    x += kAutomation + kGap;
-    lock.setBounds(x, y, kLock, h);
+    if (parts >= 2) {
+        x += kGap;
+        sizes_ = juce::Rectangle<int>(x, y, sizesW, h).toFloat();
+        height.setBounds(x + kPad, y, kSize, h);
+        width.setBounds(x + kPad + kSize, y, kSize, h);
+        x += sizesW;
+    }
+    if (parts >= 3) {
+        x += kGap;
+        automation.setBounds(x, y, kAutomation, h);
+        x += kAutomation + kGap;
+        lock.setBounds(x, y, kLock, h);
+    }
 }
 void NamesBar::paint(juce::Graphics &g) {
     // The ruler's band, and the two groups' boxes (part B: related buttons share one), H and W with
     // the line between them.
     g.fillAll(look::band);
-    controls::group(g, sections_);
-    controls::group(g, sizes_);
-    controls::separator(g, static_cast<float>(height.getRight()), sizes_.getY() + 3.f, sizes_.getHeight() - 6.f);
+    if (!sections_.isEmpty())
+        controls::group(g, sections_);
+    if (!sizes_.isEmpty()) {
+        controls::group(g, sizes_);
+        controls::separator(g, static_cast<float>(height.getRight()), sizes_.getY() + 3.f, sizes_.getHeight() - 6.f);
+    }
 }
 void ArrangementView::setTrackRows(TrackRows rows) {
     trackRows_ = std::move(rows);
@@ -1042,8 +1072,18 @@ void ArrangementView::leaveOut() {
     if (chosen == nullptr) {
         if (show.getButtonText() != ProjectViewButton::kAllGroups)
             show.setButtonText(ProjectViewButton::kAllGroups);
-    } else if (show.getButtonText() != juce::CharPointer_UTF8(chosen->name.c_str()))
-        show.setButtonText(juce::String::fromUTF8(chosen->name.c_str()));
+    } else if (chosen->name.empty() || chosen->name.front() != '#') {
+        if (show.getButtonText() != juce::CharPointer_UTF8(chosen->name.c_str()))
+            show.setButtonText(juce::String::fromUTF8(chosen->name.c_str()));
+    } else
+        // A name beginning with # shows the group's number, as its title and the menu show it (Live 12
+        // manual 18.2).
+        for (const auto row : geometry.rows(reader()))
+            if (row.track->id == group) {
+                const auto shown = juce::String::fromUTF8(displayName(chosen->name, row.position + 1).c_str());
+                if (show.getButtonText() != shown)
+                    show.setButtonText(shown);
+            }
     // Live's folded groups: what each holds, at any depth, down to the next row as shallow as
     // it. A group the project view leaves out folds nothing, so a view inside it still shows.
     geometry.foldedAway.clear();
