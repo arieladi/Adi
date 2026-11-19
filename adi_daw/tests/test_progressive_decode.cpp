@@ -165,6 +165,102 @@ void savedHashesOnSessionOpen() {
               job->snapshot().status == ProgressiveStatus::Complete && cold.sourceHashReads() == 3,
           "a matching cold source is checked at admission and before publishing its decode");
 }
+void changedSavedSourceDimensions() {
+    test::TempDirectory temp{"progressive", "saved-source-dimensions"};
+    const auto source = temp.path() / "source.flac";
+    fs::copy_file(fixture(ADI_DECODE_FIXTURES, "tone16.flac"), source);
+    const auto saved = media::blake3File(source);
+    const auto original = inspectPcm(source);
+    DecodeCache cache(temp.path() / "cache", {1ULL << 30, 0}, cacheHooks());
+    const auto target = cache.playable(source);
+    cache.release(target);
+    const auto cacheBytes = media::blake3File(target);
+    std::atomic<unsigned> checkpoints{0};
+    ProgressiveDecoder decoder(cache, {[&](std::uint64_t, std::stop_token) { ++checkpoints; }});
+    auto held = decoder.openSaved(source, original, saved.hex);
+    check(held->snapshot().status == ProgressiveStatus::Complete && decoder.sourceHashReads() == 0,
+          "saved-dimension fixture starts with a complete zero-digest lease");
+    StoreError error{};
+    auto store = Store::createEmpty(temp.path() / "project.adi", error);
+    if (!store) throw std::runtime_error("cannot create changed-source project");
+    store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1)");
+    clip_edit::ImportOptions options;
+    options.source = source; options.track = 1; options.clipId = 1; options.mediaId = 1; options.importedUtc = 123;
+    auto imported = clip_edit::prepareImportAudio(*store, options, 48000);
+    if (!imported.edit.ok || !clip_edit::commitMaterial(*store, imported).ok)
+        throw std::runtime_error("cannot import changed-source fixture");
+    // Replace the owned pathname with another complete, valid FLAC encoding:
+    // 9600 stereo frames at 48 kHz become 4410 mono frames at 44.1 kHz.
+    fs::copy_file(fixture(ADI_DECODE_FIXTURES, "tone24.flac"), source, fs::copy_options::overwrite_existing);
+    const auto changed = inspectPcm(source);
+    check(changed.frames != original.frames && changed.channels != original.channels &&
+              changed.sampleRate != original.sampleRate && media::blake3File(source).hex != saved.hex,
+          "changed-source fixture has real new encoded bytes and dimensions");
+    const auto stats = cache.stats();
+    std::string previousProblem;
+    for (unsigned phase = 0; phase != 2; ++phase) {
+        const auto hashes = decoder.sourceHashReads();
+        bool mismatch = false;
+        std::string problem;
+        try { (void)decoder.openSaved(source, changed, saved.hex); }
+        catch (const DecodeError& e) { mismatch = e.problem() == DecodeProblem::Unreadable; problem = e.what(); }
+        check(mismatch && problem.find("progressive source differs from its saved BLAKE3") != std::string::npos &&
+                  decoder.sourceHashReads() == hashes + 1,
+              "changed dimensions report the saved-source mismatch with and without complete cached PCM");
+        if (phase != 0) check(problem == previousProblem, "eviction does not change the source-mismatch diagnostic");
+        previousProblem = problem;
+        engine::Session live;
+        engine::SessionSpec spec{2, 48000, 64}; spec.progressiveDecoder = &decoder;
+        live.graph().setFadeFrames(0);
+        const bool loaded = live.load(*store, {}, spec);
+        const auto problems = loaded ? live.clips()->problems() : std::vector<std::string>{};
+        check(loaded && problems.size() == 1 &&
+                  problems.front().find("progressive source differs from its saved BLAKE3") != std::string::npos &&
+                  decoder.sourceHashReads() == hashes + 2,
+              "real Session records the same offline source mismatch before and after eviction");
+        std::array<float, 64> left{}, right{}; left.fill(9); right.fill(9);
+        float* output[]{left.data(), right.data()};
+        live.transport().play(); live.process({output, nullptr, 2, 0, 64, 0});
+        check(std::all_of(left.begin(), left.end(), [](float v) { return v == 0; }) &&
+                  std::all_of(right.begin(), right.end(), [](float v) { return v == 0; }),
+              "refused source produces silence rather than old or new PCM");
+        check(checkpoints == 0 && !fs::exists(cache.folder() / "progressive") &&
+                  cache.stats().hits == stats.hits && cache.stats().decodes == stats.decodes,
+              "source mismatch never starts a decode, creates a prefix or records a cache hit");
+        if (phase == 0) {
+            check(media::blake3File(target).hex == cacheBytes.hex && cache.entries().size() == 1,
+                  "warm refusal preserves the existing saved cache bytes and lease");
+            held.reset(); cache.setLimits({0, 0}); cache.trim();
+            check(!fs::exists(target) && cache.entries().empty(), "normal cache eviction removes the unpinned saved WAV");
+            cache.setLimits({1ULL << 30, 0});
+        } else check(cache.entries().empty(), "cold mismatch publishes no new cache entry");
+    }
+}
+void damagedSavedCacheDimensions() {
+    test::TempDirectory temp{"progressive", "saved-cache-dimensions"};
+    const auto source = fixture(ADI_DECODE_FIXTURES, "tone16.flac");
+    const auto saved = media::blake3File(source);
+    const auto info = inspectPcm(source);
+    DecodeCache cache(temp.path() / "cache", {1ULL << 30, 0}, cacheHooks());
+    const auto target = cache.playable(source); cache.release(target);
+    { WavWriter damaged(target, 44100, 1, WavFormat::Float32); std::array<float, 16> data{};
+      damaged.write(data.data(), static_cast<std::uint32_t>(data.size())); damaged.close(); }
+    const auto before = media::blake3File(target);
+    const auto stats = cache.stats();
+    std::atomic<unsigned> checkpoints{0};
+    ProgressiveDecoder decoder(cache, {[&](std::uint64_t, std::stop_token) { ++checkpoints; }});
+    bool cacheFault = false;
+    try { (void)decoder.openSaved(source, info, saved.hex); }
+    catch (const DecodeError& e) { cacheFault = e.problem() == DecodeProblem::CacheWrite &&
+        std::string_view(e.what()).find("cached progressive dimensions differ") != std::string_view::npos; }
+    check(cacheFault && decoder.sourceHashReads() == 1 && media::blake3File(source).hex == saved.hex,
+          "unchanged source with a wrong-dimension saved WAV remains CacheWrite after source verification");
+    check(checkpoints == 0 && !fs::exists(cache.folder() / "progressive") &&
+              cache.stats().hits == stats.hits && cache.stats().decodes == stats.decodes &&
+              cache.entries().size() == 1 && cache.entries().front().pins == 0 &&
+              media::blake3File(target).hex == before.hex,
+          "cache-fault diagnosis neither overwrites the damaged target nor starts work or leaks a pin");
+}
 void cancellationAndFailure() {
     test::TempDirectory temp{"progressive","failure"};DecodeCache cache(temp.path()/"cache",{1ULL<<30,0},cacheHooks());Pause pause;ProgressiveDecoder decoder(cache,pause.hooks());
     const auto source=temp.path()/"source.ogg";fs::copy_file(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),source);
@@ -322,4 +418,4 @@ void nativeAac() {
     session(movie,"aac_session");
 }
 }
-int main(){try{prefix();savedHashesOnSessionOpen();cancellationAndFailure();poolBounds();publication();conversionAndLoop();session(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),"ogg_session");nativeAac();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{prefix();savedHashesOnSessionOpen();changedSavedSourceDimensions();damagedSavedCacheDimensions();cancellationAndFailure();poolBounds();publication();conversionAndLoop();session(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),"ogg_session");nativeAac();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -172,7 +172,8 @@ struct ProgressiveDecoder::Impl {
         const auto stop=state.stop.get_token();cancelled(stop);
         std::lock_guard cacheLock(cache.mutex_);
         const auto target=cache.fileFor(state.hash);
-        const auto published=media::publishFile(state.path,target);
+        const auto published = media::publishFile(state.path, target, {},
+                                                  media::PublishPolicy::VerifiedCopyFallback);
         if(published.status==media::PublishStatus::exists) {
             if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
             WavReader actual(target);
@@ -185,7 +186,8 @@ struct ProgressiveDecoder::Impl {
         state.path=target;state.pinned=true;++cache.stats_.decodes;
         cache.evict(0,state.hash);cache.saveIndex();
     }
-    std::shared_ptr<ProgressiveFile> openComplete(const std::string& hash, const PcmStreamInfo& info) {
+    std::shared_ptr<ProgressiveFile> openComplete(const std::string& hash, const PcmStreamInfo& info,
+                                                 bool allowDimensionMiss = false) {
         // Admission is already locked. Declare the lease outside the index
         // lock so a failed pin can release it during unwinding.
         std::shared_ptr<ProgressiveFile> file;
@@ -196,8 +198,13 @@ struct ProgressiveDecoder::Impl {
             if (!fs::is_regular_file(fs::symlink_status(target)))
                 throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
             WavReader reader(target);
-            if (reader.frames() != *info.frames || reader.sampleRate() != info.sampleRate || reader.channels() != info.channels)
+            if (reader.frames() != *info.frames || reader.sampleRate() != info.sampleRate || reader.channels() != info.channels) {
+                // A saved lookup has only inspected the current source header.
+                // Verify its bytes before attributing this difference to the
+                // cache. The verified path below still refuses damaged PCM.
+                if (allowDimensionMiss) return {};
                 throw DecodeError(DecodeProblem::CacheWrite,"cached progressive dimensions differ");
+            }
             auto state = std::make_shared<ProgressiveFile::State>();
             state->info = info;
             state->hash = hash;
@@ -308,7 +315,7 @@ std::shared_ptr<ProgressiveFile> ProgressiveDecoder::openSaved(const fs::path& s
             if (auto file = match->second.lock(); file && file->snapshot().status == ProgressiveStatus::Complete &&
                 sameDimensions(file->info(), info)) return file;
         }
-        if (auto file = impl_->openComplete(hash, info)) return file;
+        if (auto file = impl_->openComplete(hash, info, true)) return file;
     }
     return openHashed(source, &info, digest, stop);
 }

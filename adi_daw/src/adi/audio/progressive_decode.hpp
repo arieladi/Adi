@@ -51,8 +51,9 @@ public:
     // stop governs admission/hash/probe only; use the returned file for job cancellation.
     [[nodiscard]] std::shared_ptr<ProgressiveFile> open(const std::filesystem::path&,std::stop_token={});
     // A complete owned cache entry addressed by the saved digest can serve
-    // the saved PCM after header inspection. A miss verifies the source bytes
-    // before sharing a pending job or starting another decode.
+    // the saved PCM after header inspection. A miss or dimension difference
+    // verifies the source bytes before sharing/starting work or diagnosing
+    // damaged cached PCM. The supplied info is the current inspected header.
     [[nodiscard]] std::shared_ptr<ProgressiveFile> openSaved(const std::filesystem::path&,
         const PcmStreamInfo&, std::string_view savedBlake3, std::stop_token={});
     // Whole-file source digests attempted by admission and worker threads.

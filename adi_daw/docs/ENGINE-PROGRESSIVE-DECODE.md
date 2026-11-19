@@ -74,11 +74,24 @@ never mistaken for complete entries. This change adds no startup orphan reaper.
 For a plain clip with a valid saved BLAKE3, Session first inspects the source
 header and can pin the complete named decode when rate, channels and frames
 agree. Those PCM bytes are the project's saved media. This warm route does no
-whole-source digest. If the original pathname now holds a same-shape file, the
-warm route still serves the saved cached audio. A cold route verifies the
-current bytes before sharing or starting a progressive job, then rechecks them
-at the end of decoding. An absent or legacy digest uses the ordinary hash path.
-This read policy leaves filesystem relink and Offline diagnostics separate.
+whole-source digest. A dimension difference falls through to source hashing
+before any cache hit, pin, eviction or job admission: changed bytes report
+`decode.unreadable: progressive source differs from its saved BLAKE3`, exactly
+as after the saved WAV is evicted. If the source hash still agrees, a wrong-size,
+wrong-rate or wrong-channel cache WAV remains a `decode.cache_write` failure;
+the damaged entry is neither overwritten nor treated as a source mismatch.
+A cold route verifies the current bytes before sharing or starting a progressive
+job, then rechecks them at the end of decoding. An absent or legacy digest uses
+the ordinary hash path. This read policy leaves filesystem relink and Offline
+diagnostics separate.
+
+**Remaining DF-E34(a)/TM-MD-03 boundary:** a same-shape edit at the original
+pathname still makes a plain warm clip play the saved cached audio, while Warp's
+`playableFile` path hashes and plays the current bytes. After eviction, the plain
+route refuses the changed source. The planned source-size/modification-time memo
+is needed to make these routes agree; this dimension-mismatch fix does not add
+that memo or claim same-shape mutation detection. Sources must remain stable
+during inspection, verification and decoding.
 
 Warp preparation and compressed sources without a cheap exact nonempty length
 still use complete decoding before playback. Warp also retains its existing
@@ -92,6 +105,10 @@ complete WAV, and exercises shared leases, queue/worker bounds, cancellation,
 source mutation, concurrent publication, disk limits, pins and callback I/O and
 allocation guards. The saved-digest acceptance opens 50 distinct FLAC sources
 with completed cache entries, checks zero whole-file source digests and matches
-the Session's first PCM block. It also checks the cold mismatch and verified
-publication paths. Platform execution and final gate details are in the engine
+the Session's first PCM block. It also replaces a saved source with a valid FLAC
+of different dimensions, verifies the same refusal and silent real Session output
+with a retained completed lease and after normal eviction, and checks that no
+prefix or cache hit is created. An unchanged-source/damaged-WAV control retains
+the cache-fault diagnosis after one digest. Cold verification and final verified
+publication remain covered. Platform execution and final gate details are in the engine
 lane log; Linux evidence does not establish Windows/macOS execution or Live parity.

@@ -1746,6 +1746,9 @@ target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collec
 add_executable(adi_analysis_cache_tests tests/test_analysis_cache.cpp)
 target_link_libraries(adi_analysis_cache_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analysis_cache_tests COMMAND adi_analysis_cache_tests)
+add_executable(adi_analysis_cache_trim_tests tests/test_analysis_cache_trim.cpp)
+target_link_libraries(adi_analysis_cache_trim_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_analysis_cache_trim_tests COMMAND adi_analysis_cache_trim_tests)
 
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
