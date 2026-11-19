@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
 #include "adi/builtin_catalog.hpp"
+#include "adi/row_capture.hpp"
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "knobs_device.hpp"
@@ -655,6 +656,89 @@ void replaceIdentityInOneJournalStep() {
               gain->getParam("420").normalized == oldValue,
           "one Undo restores the current generation's gesture without undoing the unrelated edit");
 }
+
+void replacePluginReferenceAtSameId() {
+    test::TempDirectory temp("mix_document", "legacy-same-reference-replacement");
+    auto doc = identityFixture(temp.path() / "project.adi");
+    if (!doc || !doc->addMixFunction(mix::Function::Compressor, 3)) {
+        check(false, "the same-reference fixture has an authored Compressor");
+        return;
+    }
+    doc->tick(0);
+    const auto original = matchingPanel(*doc, compressorUid, 3);
+    auto *compressor = original ? doc->session().resolveDevice(original->runtime) : nullptr;
+    const auto *entry = original ? doc->session().entryFor(original->id) : nullptr;
+    const auto *source = doc->session().entryFor(ordinarySource);
+    if (!compressor || !entry || !entry->resolvedPluginRef || !source || !source->resolvedPluginRef) {
+        check(false, "the native Compressor and ordinary reference are realised");
+        return;
+    }
+    const auto id = original->id;
+    const auto refId = *entry->resolvedPluginRef;
+    auto reference = detail::captureRow(doc->store().db(), "plugin_refs", "id", *source->resolvedPluginRef);
+    if (!reference || *source->resolvedPluginRef == refId) {
+        check(false, "the replacement reference image comes from a distinct existing row");
+        return;
+    }
+    (*reference)["id"] = refId;
+    (*reference)["format"] = "clap";
+
+    using Kind = engine::ParamEventKind;
+    const auto edit = [&](Kind kind, double value) {
+        return doc->parameterGestureExpected(id, "0", kind, value, original->runtime, original->instance);
+    };
+    constexpr double threshold = .375;
+    if (!edit(Kind::Begin, compressor->getParam("0").normalized) ||
+        !edit(Kind::Value, threshold) || !edit(Kind::End, threshold)) {
+        check(false, "the original Compressor has a nondefault authored value");
+        return;
+    }
+    const auto state = compressor->saveState("state");
+    check(!state.empty() && compressor->getParam("0").normalized == threshold,
+          "the original runtime state is observable before the reference replacement");
+    const auto before = OpJournal(doc->store()).headSeq();
+    const auto request = [](const char *type, Payload payload, const char *target, std::int64_t identity) {
+        OpRequest op;
+        op.opType = type;
+        op.payload = std::move(payload);
+        op.label = "Replace retained plug-in reference";
+        op.targetKind = target;
+        op.targetId = identity;
+        return op;
+    };
+    // The old reference is unused only after device.remove. The resolver never
+    // sees either numeric ID missing between the four supported journal ops.
+    const auto replaced = doc->ops().submit({
+        request("device.remove", {{"id", id}}, "device", id),
+        request("pluginRef.unregister", {{"id", refId}}, "plugin", refId),
+        request("pluginRef.register", {{"id", refId}, {"row", *reference}}, "plugin", refId),
+        request("device.insert", {{"id", id}, {"chain", original->chain}, {"ord", 0},
+                                  {"ref", refId}, {"name", "Replacement gain"}}, "device", id)});
+    if (!replaced.ok || !doc->synchronise()) {
+        check(false, "the legal replacement commits under unchanged device and reference IDs");
+        return;
+    }
+    doc->tick(1);
+    const auto replacement = matchingPanel(*doc, ordinaryUid, 3, id);
+    auto *gain = doc->session().instanceFor(id);
+    check(replacement && replacement->available && gain && gain != compressor &&
+              doc->session().resolveDevice(replacement->runtime) == gain &&
+              gain->identity().format == "clap" && gain->identity().uid == ordinaryUid &&
+              !doc->deviceTargetCurrent(id, original->runtime, original->instance),
+          "changed format and UID replace the realised device even with both IDs unchanged");
+
+    const bool undone = doc->ops().undo().ok && doc->synchronise();
+    doc->tick(2);
+    check(undone && OpJournal(doc->store()).headSeq() == before &&
+              doc->session().instanceFor(id) == compressor && compressor->identity().format == "internal" &&
+              compressor->identity().uid == compressorUid && compressor->saveState("state") == state,
+          "one Undo restores the original runtime and exact state at the same IDs");
+    const bool redone = doc->ops().redo().ok && doc->synchronise();
+    doc->tick(3);
+    check(redone && gain && gain != compressor && doc->session().instanceFor(id) == gain &&
+              gain->identity().format == "clap" && gain->identity().uid == ordinaryUid,
+          "one Redo restores the retained replacement at the same IDs");
+}
 }
 int main() {
     replaceHighestFunction();
@@ -667,6 +751,7 @@ int main() {
     createAfterHighestRemoval(DeviceCreation::LegacyId, "legacy-device-identity");
     pasteOnTrackWithoutChainAfterRemoval();
     replaceIdentityInOneJournalStep();
+    replacePluginReferenceAtSameId();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
     check(doc!=nullptr,"native function document opens");if(!doc)return 2;
