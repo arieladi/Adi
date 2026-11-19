@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -62,6 +63,7 @@ namespace adi::engine {
 class MixNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     /// A copy is exact at either width (ADR-0207 d2).
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
@@ -86,6 +88,9 @@ using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 /// graph that holds them (ADR-0122). A streamed source may instead supply a
 /// sourceLifetime() token retained by the realised graph (ADR-0151).
 using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
+/// nullopt snapshots the Node's standalone binding at prepare. An engaged
+/// empty binding explicitly suppresses it for this generation.
+using EventSourceFn = std::function<std::optional<EventSourceBinding>(const Node&)>;
 
 /// Where a send leaves its source (ADR-0203 d3): the node on `trackId`'s
 /// chain -- one of the nodes `devicesFor` gave that track -- that a send at
@@ -109,8 +114,19 @@ struct FeedbackNodes {
 };
 using FeedbackFn = std::function<FeedbackNodes(std::int64_t routingId)>;
 
+/// A monitor feed reuses a track's Post FX audio, then passes a private gain
+/// node and a latency-aligned sink. Main anchors only its sidechain clock;
+/// monitor audio never feeds Main. Caller owns both nodes across rebuilds.
+struct MonitorPoint {
+    std::int64_t trackId=0;
+    Node* source=nullptr; // null means the track junction
+    Node* gain=nullptr;
+    Node* aligned=nullptr;
+};
+
 struct RealizeOptions {
     std::int32_t channels = 2;
+    std::vector<MonitorPoint> monitors;
 
     /// Unset means every track is bare, which is the right behaviour for a
     /// project with no plugins and for every test that is about topology.
@@ -121,6 +137,7 @@ struct RealizeOptions {
     /// junction, so `inputFor` is unchanged by its presence: everything
     /// that feeds a track, from inside or upstream, meets at one node.
     SourceFn sourcesFor;
+    EventSourceFn eventSourceFor;
 
     /// Unset means every tap is the chain's tail.
     TapFn tapFor;
@@ -245,6 +262,7 @@ public:
         enum class Leg : std::uint8_t {
             Into,   ///< from a source into the track's junction
             Next,   ///< from the junction or a chain node to the next node
+            Monitor, ///< private cue feed, named by its persistent monitor node
             Send,   ///< from a tap into a send's node, named by its routing row
         };
         std::int64_t track = 0;

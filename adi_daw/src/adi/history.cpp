@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_state.hpp"
 
+#include "adi/applied_batches_detail.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/history.hpp"
+#include "adi/history_roots.hpp"
 
 #include "adi/store.hpp"
 
@@ -8,14 +12,36 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <stdexcept>
 
 namespace adi {
 
 namespace {
 
+bool mutationAllowed(const Store& store, std::string& error) {
+    if (detail::appliedDispatchActive(store)) {
+        error = "reentrant history mutation during applied-batch delivery";
+        return false;
+    }
+    if (!appliedSource(store).alive()) {
+        error = "project is closed";
+        return false;
+    }
+    return gesture::detail::mutationAllowed(store, error);
+}
+
+detail::PreparedAppliedDelivery finishApplied(detail::AppliedBatchBuilder& builder,
+    const Store& store, std::optional<std::int64_t> after) {
+    std::string error;
+    auto result = builder.finish(store, after, error);
+    if (!result) throw std::runtime_error("cannot capture applied history batch: " + error);
+    return std::move(*result);
+}
+
 /// One op as undo/redo needs it.
 struct ChainOp {
     std::int64_t seq = 0;
+    std::int64_t txnId = 0;
     std::optional<std::int64_t> parentSeq;
     std::string opType;
     std::vector<std::byte> payload;
@@ -32,13 +58,15 @@ std::vector<std::byte> blobOf(const SQLite::Column& c) {
 /// Every non-ephemeral op in a transaction, in seq order.
 std::vector<ChainOp> txnOps(SQLite::Database& db, std::int64_t txnId) {
     std::vector<ChainOp> out;
-    SQLite::Statement st(db,
+    SQLite::Statement st(
+        db,
         "SELECT seq, parent_seq, op_type, payload, inverse FROM ops "
-        "WHERE txn_id = ? AND tags <> 'ephemeral' ORDER BY seq ASC");
+        "WHERE txn_id = ? AND tags <> 'ephemeral' AND op_type<>'history.root' ORDER BY seq ASC");
     st.bind(1, txnId);
     while (st.executeStep()) {
         ChainOp o;
         o.seq = st.getColumn(0).getInt64();
+        o.txnId = txnId;
         if (!st.getColumn(1).isNull()) o.parentSeq = st.getColumn(1).getInt64();
         o.opType = st.getColumn(2).getString();
         o.payload = blobOf(st.getColumn(3));
@@ -58,18 +86,20 @@ std::vector<ChainOp> txnOps(SQLite::Database& db, std::int64_t txnId) {
 /// cannot disagree about which line is live.
 std::optional<std::int64_t> childOf(SQLite::Database& db,
                                     std::optional<std::int64_t> head) {
-    SQLite::Statement st(db,
-        "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND "
-        "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
-        "ORDER BY seq DESC LIMIT 1");
+    SQLite::Statement st(
+        db, "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
+            "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
+            "ORDER BY seq DESC LIMIT 1");
     if (head) { st.bind(1, *head); st.bind(2, *head); }
     else      { st.bind(1);        st.bind(2); }
     if (!st.executeStep()) return std::nullopt;
     return st.getColumn(0).getInt64();
 }
 
-bool applyOne(OpContext& ctx, const std::string& opType,
-              const std::vector<std::byte>& cbor, bool asInverse, std::string& err) {
+bool applyOne(OpContext& ctx, const ChainOp& recorded, bool asInverse, std::string& err,
+              detail::AppliedBatchBuilder* applied = nullptr) {
+    const auto& opType = recorded.opType;
+    const auto& cbor = asInverse ? recorded.inverse : recorded.payload;
     const auto* d = OpRegistry::instance().find(opType);
     if (!d) { err = "unknown op in log: " + opType; return false; }
 
@@ -86,13 +116,18 @@ bool applyOne(OpContext& ctx, const std::string& opType,
 
     auto payload = decodeFromLog(cbor, err);
     if (!payload) { err = "cannot decode payload for " + opType + ": " + err; return false; }
-    return target->apply(ctx, *payload, err);
+    OpContext replayContext{ctx.store, ctx.db};
+    replayContext.replay = OpReplayMetadata{recorded.opType, recorded.inverse,
+                                           recorded.hasInverse, asInverse};
+    if (!target->apply(replayContext, *payload, err)) return false;
+    return applied == nullptr || applied->append(ctx.store, opType, targetName, *payload,
+        recorded.seq, recorded.txnId, asInverse, err);
 }
 
 /// One op, by seq, as a move between points needs it.
 std::optional<ChainOp> opAt(SQLite::Database& db, std::int64_t seq) {
     SQLite::Statement st(db,
-        "SELECT seq, parent_seq, op_type, payload, inverse FROM ops WHERE seq = ?");
+        "SELECT seq, parent_seq, op_type, payload, inverse, txn_id FROM ops WHERE seq = ?");
     st.bind(1, seq);
     if (!st.executeStep()) return std::nullopt;
     ChainOp o;
@@ -102,6 +137,7 @@ std::optional<ChainOp> opAt(SQLite::Database& db, std::int64_t seq) {
     o.payload = blobOf(st.getColumn(3));
     o.inverse = blobOf(st.getColumn(4));
     o.hasInverse = !st.getColumn(4).isNull();
+    o.txnId = st.getColumn(5).getInt64();
     return o;
 }
 
@@ -141,9 +177,35 @@ std::optional<std::int64_t> tipOf(SQLite::Database& db, std::optional<std::int64
 /// them is whole transactions, and inverting its ops newest-first is exactly
 /// what undoing each transaction in turn would do.
 bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
-                 std::optional<std::int64_t> to, int& applied, std::string& err) {
+                 std::optional<std::int64_t> to, int& applied, std::string& err,
+                 detail::AppliedBatchBuilder* notice = nullptr) {
     std::vector<ChainOp> down, up;
     if (!chainOf(ctx.db, from, down, err) || !chainOf(ctx.db, to, up, err)) return false;
+    const auto sourceRoot = history_detail::rootForPoint(ctx.db, from);
+    const auto targetRoot = history_detail::rootForPoint(ctx.db, to);
+    if (sourceRoot != targetRoot) {
+        const auto hash = history_detail::storedRootHash(ctx.db, targetRoot);
+        if (!hash) {
+            err = "target history baseline is missing";
+            return false;
+        }
+        history_detail::installCheckpoint(
+            ctx.store, history_detail::readCheckpointContent(ctx.db, *hash), true);
+        for (std::size_t i = up.size(); i-- > 0;) {
+            if (up[i].seq == targetRoot)
+                continue;
+            if (up[i].opType == "history.root") {
+                err = "history line crosses stored baselines";
+                return false;
+            }
+            // ReplayBaseReset invalidates the old runtime; do not invent an op
+            // sequence for the full-state transition or its reconstruction.
+            if (!applyOne(ctx, up[i], false, err, nullptr))
+                return false;
+            ++applied;
+        }
+        return true;
+    }
 
     std::vector<std::int64_t> onDown;
     onDown.reserve(down.size());
@@ -163,14 +225,14 @@ bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
             err = "op " + std::to_string(o.seq) + " (" + o.opType + ") has no stored inverse";
             return false;
         }
-        if (!applyOne(ctx, o.opType, o.inverse, /*asInverse=*/true, err)) {
+        if (!applyOne(ctx, o, /*asInverse=*/true, err, notice)) {
             err = "rewinding " + o.opType + ": " + err;
             return false;
         }
         ++applied;
     }
     for (std::size_t i = k; i-- > 0;) {
-        if (!applyOne(ctx, up[i].opType, up[i].payload, /*asInverse=*/false, err)) {
+        if (!applyOne(ctx, up[i], /*asInverse=*/false, err, notice)) {
             err = "replaying " + up[i].opType + ": " + err;
             return false;
         }
@@ -218,6 +280,10 @@ std::optional<History::Step> History::nextUndo() const {
 
         const auto ops = txnOps(db, s.txnId);
         if (ops.empty()) return std::nullopt;
+        SQLite::Statement base(db, "SELECT base_seq FROM history_checkpoint WHERE id=1");
+        if (!history_detail::hasStoredRoots(db) && base.executeStep() &&
+            *h <= base.getColumn(0).getInt64())
+            return std::nullopt;
         s.firstSeq = ops.front().seq;
         s.lastSeq = ops.back().seq;
         s.opCount = static_cast<int>(ops.size());
@@ -261,6 +327,9 @@ std::optional<History::Step> History::nextRedo() const {
 
 History::Result History::undo() {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextUndo();
@@ -273,6 +342,7 @@ History::Result History::undo() {
         // them would leave the project changed and the head disagreeing, and
         // the next undo would then act on the wrong transaction.
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Undo, head());
 
         const auto ops = txnOps(db, step->txnId);
 
@@ -286,7 +356,7 @@ History::Result History::undo() {
                 return r;   // rolls back
             }
             std::string err;
-            if (!applyOne(ctx, it->opType, it->inverse, /*asInverse=*/true, err)) {
+            if (!applyOne(ctx, *it, /*asInverse=*/true, err, &applied)) {
                 r.error = "undoing " + it->opType + ": " + err;
                 return r;
             }
@@ -302,14 +372,18 @@ History::Result History::undo() {
             r.selBefore = decodeFromLog(blobOf(sel.getColumn(0)), err);
         }
 
-        if (!journal_.setHeadSeq(ops.front().parentSeq)) {
+        if (!journal_.writeHeadSeq(ops.front().parentSeq)) {
             r.error = "could not move the undo head";
             return r;
         }
 
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, ops.front().parentSeq);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -320,6 +394,9 @@ History::Result History::undo() {
 
 History::Result History::redo() {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextRedo();
@@ -329,27 +406,32 @@ History::Result History::redo() {
     OpContext ctx{store_, db};
     try {
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Redo, head());
 
         const auto ops = txnOps(db, step->txnId);
         // Forward order, forward payloads -- redo replays what was originally
         // done, it does not invert anything.
         for (const auto& o : ops) {
             std::string err;
-            if (!applyOne(ctx, o.opType, o.payload, /*asInverse=*/false, err)) {
+            if (!applyOne(ctx, o, /*asInverse=*/false, err, &applied)) {
                 r.error = "redoing " + o.opType + ": " + err;
                 return r;
             }
             ++r.opsApplied;
         }
 
-        if (!journal_.setHeadSeq(ops.back().seq)) {
+        if (!journal_.writeHeadSeq(ops.back().seq)) {
             r.error = "could not move the undo head";
             return r;
         }
 
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, ops.back().seq);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -371,6 +453,8 @@ std::vector<History::Branch> History::branches() const {
             if (!st.getColumn(2).isNull()) b.headSeq = st.getColumn(2).getInt64();
             b.isCurrent = st.getColumn(3).getInt() != 0;
             b.createdUtc = st.getColumn(4).getInt64();
+            if (b.headSeq)
+                b.storedStateHash = history_detail::storedRootHash(store_.db(), *b.headSeq);
             out.push_back(std::move(b));
         }
     } catch (const std::exception&) {
@@ -378,8 +462,107 @@ std::vector<History::Branch> History::branches() const {
     return out;
 }
 
-History::Result History::switchToBranch(std::int64_t branchId) {
+History::Result History::moveTo(std::optional<std::int64_t> target, std::int64_t nowUtc,
+                                StoredRestore access) {
     Result r;
+    if (!mutationAllowed(store_, r.error))
+        return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) {
+        r.error = navigation.status.message;
+        return r;
+    }
+    if (store_.readOnly()) {
+        r.error = "project is open read-only";
+        return r;
+    }
+    auto &db = store_.db();
+    try {
+        SQLite::Transaction txn(db);
+        // NULL is the original pre-edit state. Once roots are materialized its
+        // native address is the origin root, never a new head below a checkpoint.
+        if (!target && history_detail::hasStoredRoots(db)) {
+            target = history_detail::originRoot(db);
+            if (!target)
+                throw std::runtime_error("original history state is no longer retained");
+        }
+        auto boundary = [&](std::optional<std::int64_t> seq) {
+            if (!seq)
+                return;
+            SQLite::Statement row(db, "SELECT txn_id,tags,op_type FROM ops WHERE seq=?");
+            row.bind(1, *seq);
+            if (!row.executeStep() || row.getColumn(1).getString() == "ephemeral")
+                throw std::runtime_error("history target is not a retained edit boundary");
+            if (row.getColumn(2).getString() == "history.root") {
+                if (!history_detail::hasStoredRoots(db) ||
+                    !history_detail::storedRootHash(db, *seq))
+                    throw std::runtime_error("history target has no stored baseline metadata");
+                (void)history_detail::rootForPoint(db, seq);
+                return;
+            }
+            const auto group = txnOps(db, row.getColumn(0).getInt64());
+            if (group.empty() || group.back().seq != *seq)
+                throw std::runtime_error("history target splits an edit transaction");
+        };
+        const auto here = head();
+        boundary(here);
+        boundary(target);
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
+        if (here == target) {
+            r.ok = true;
+            return r;
+        }
+        OpContext ctx{store_, db};
+        detail::AppliedBatchBuilder applied(
+            store_, reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::HistoryMove,
+            here);
+        // Preserve the line beyond the current head too: it may contain undone
+        // work. Following redo from the destination preserves the same line
+        // without new metadata; otherwise keep an unheld departing tip once.
+        const auto tip = tipOf(db, here);
+        if (tip && tip != tipOf(db, target)) {
+            SQLite::Statement held(db,
+                                   "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
+            held.bind(1, *tip);
+            if (!held.executeStep()) {
+                SQLite::Statement keep(
+                    db, "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) "
+                        "VALUES('before history move',?,?,0,'system')");
+                keep.bind(1, *tip);
+                keep.bind(2, nowUtc);
+                keep.exec();
+            }
+        }
+        std::string error;
+        if (!moveBetween(ctx, here, target, r.opsApplied, error, &applied))
+            throw std::runtime_error(error);
+        if (!journal_.writeHeadSeq(target))
+            throw std::runtime_error("could not move the undo head");
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
+        txn.commit();
+        freeze::remember(store_);
+        r.ok = true;
+        delivery.publish();
+        return r;
+    } catch (const std::exception &error) {
+        r.error = error.what();
+        r.opsApplied = 0;
+        return r;
+    }
+}
+
+History::Result History::switchToBranch(std::int64_t branchId, StoredRestore access) {
+    Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -391,14 +574,26 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         if (!look.getColumn(0).isNull()) target = look.getColumn(0).getInt64();
 
         const auto here = head();
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
         if (here == target) {
             SQLite::Transaction txn(db);
+            detail::AppliedBatchBuilder applied(
+                store_,
+                (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::BranchSwitch), here);
             db.exec("UPDATE op_branches SET is_current = 0 WHERE is_current = 1");
             SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
             up.bind(1, branchId);
             up.exec();
+            auto delivery = finishApplied(applied, store_, target);
             txn.commit();
             r.ok = true;
+            delivery.publish();
             return r;
         }
 
@@ -407,8 +602,11 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         // reachable; switching back is the same move in the other direction.
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(
+            store_, (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::BranchSwitch),
+            here);
         std::string err;
-        if (!moveBetween(ctx, here, target, r.opsApplied, err)) {
+        if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {
             r.error = err;
             r.opsApplied = 0;
             return r;   // rolls back
@@ -417,8 +615,13 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
         up.bind(1, branchId);
         up.exec();
+        history_detail::syncCurrentRoot(store_);
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -451,9 +654,11 @@ std::string History::defaultSnapshotName(const std::string& projectName,
     return (projectName.empty() ? std::string("Untitled") : projectName) + " " + when;
 }
 
-History::SnapshotResult History::takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                              int utcOffsetMinutes, bool automatic) {
+History::SnapshotResult History::takeSnapshot(const std::string &name, std::int64_t createdUtc,
+                                              int utcOffsetMinutes, bool automatic,
+                                              const HistorySnapshotPolicy &policy) {
     SnapshotResult r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     try {
         auto& db = store_.db();
@@ -464,6 +669,10 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
                                                           : std::string{},
                                          createdUtc, utcOffsetMinutes);
         }
+        SQLite::Transaction transaction(db);
+        if (!history_detail::trimSnapshots(db, history_detail::snapshotLimit(policy), 1, std::nullopt,
+                                           r.error))
+            return r;
         SQLite::Statement st(db,
             "INSERT INTO history_snapshots(name, op_seq, branch_id, created_utc, auto) "
             "VALUES (?,?,?,?,?)");
@@ -474,6 +683,7 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
         st.bind(5, automatic ? 1 : 0);
         st.exec();
         r.id = db.getLastInsertRowid();
+        transaction.commit();
         r.ok = true;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -481,12 +691,38 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
     return r;
 }
 
+History::Result History::removeSnapshot(std::int64_t id) {
+    Result result;
+    if (!mutationAllowed(store_, result.error)) return result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        auto &db = store_.db();
+        SQLite::Transaction transaction(db);
+        SQLite::Statement remove(db, "DELETE FROM history_snapshots WHERE id=?");
+        remove.bind(1, id);
+        if (remove.exec() != 1) {
+            result.error = "no such snapshot";
+            return result;
+        }
+        history_detail::clearDailyReference(db, id);
+        transaction.commit();
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+
 History::Result History::renameSnapshot(std::int64_t snapshotId, const std::string& newName) {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     if (newName.empty()) { r.error = "a snapshot name cannot be empty"; return r; }
     try {
-        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ? WHERE id = ?");
+        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ?,auto=0 WHERE id = ?");
         st.bind(1, newName);
         st.bind(2, snapshotId);
         if (st.exec() == 0) { r.error = "no such snapshot"; return r; }
@@ -511,6 +747,8 @@ std::vector<History::Snapshot> History::listSnapshots() const {
             s.branchId = st.getColumn(3).getInt64();
             s.createdUtc = st.getColumn(4).getInt64();
             s.automatic = st.getColumn(5).getInt() != 0;
+            if (s.opSeq)
+                s.storedStateHash = history_detail::storedRootHash(store_.db(), *s.opSeq);
             out.push_back(std::move(s));
         }
     } catch (const std::exception&) {
@@ -519,8 +757,12 @@ std::vector<History::Snapshot> History::listSnapshots() const {
     return out;
 }
 
-History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc) {
+History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc,
+                                          StoredRestore access) {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -533,10 +775,20 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
         if (!look.getColumn(1).isNull()) target = look.getColumn(1).getInt64();
 
         const auto here = head();
+        const bool reset =
+            history_detail::rootForPoint(db, here) != history_detail::rootForPoint(db, target);
+        r.sessionReloadRequired = reset;
+        if (reset && access != StoredRestore::SessionReloadPrepared) {
+            r.error = "stored history point requires a prepared document reload";
+            return r;
+        }
         if (here == target) { r.ok = true; return r; }   // already there
 
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(
+            store_, (reset ? AppliedBatchKind::ReplayBaseReset : AppliedBatchKind::SnapshotRevert),
+            here);
 
         // ADR-0128 d2: nothing is lost by clicking. The line the head is on
         // may run past the head (undone work still redoable); its TIP is what
@@ -561,18 +813,22 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
         }
 
         std::string err;
-        if (!moveBetween(ctx, here, target, r.opsApplied, err)) {
+        if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {
             r.error = err;
             r.opsApplied = 0;
             return r;   // rolls back, the preserved branch row included
         }
-        if (!journal_.setHeadSeq(target)) {
+        if (!journal_.writeHeadSeq(target)) {
             r.error = "could not move the undo head";
             r.opsApplied = 0;
             return r;
         }
+        freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -582,3 +838,184 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
 }
 
 }  // namespace adi
+
+namespace adi {
+namespace history_detail {
+Payload checkpointAt(Store &store, std::optional<std::int64_t> seq) {
+    auto &db = store.db();
+    // A move across stored baselines installs a checkpoint, which turns
+    // defer_foreign_keys on. SQLite clears that flag only when the OUTERMOST
+    // transaction ends; ROLLBACK TO restores the deferred-violation counters
+    // but not the flag. Unrestored, it outlived this rolled-back probe and
+    // deferred every FK check (RESTRICT included) for the rest of the edit's
+    // commit. Restore it right after ROLLBACK TO, as validatedContent does:
+    // the counters are then back at their entry values, so nothing pending is
+    // erased.
+    const bool deferred = db.execAndGet("PRAGMA defer_foreign_keys").getInt() != 0;
+    const auto restore = [&] {
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        if (!deferred)
+            db.exec("PRAGMA defer_foreign_keys=OFF");
+    };
+    db.exec("SAVEPOINT adi_history_checkpoint");
+    try {
+        OpContext ctx{store, db};
+        int applied = 0;
+        std::string error;
+        if (!moveBetween(ctx, OpJournal(store).headSeq(), seq, applied, error))
+            throw std::runtime_error(error);
+        auto state = checkpointState(store);
+        restore();
+        return state;
+    } catch (...) {
+        restore();
+        throw;
+    }
+}
+} // namespace history_detail
+UndoCompactionResult History::setUndoRetentionPolicy(const UndoRetentionPolicy &policy) {
+    UndoCompactionResult result;
+    if (!mutationAllowed(store_, result.error)) return result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        history_detail::writeUndoPolicy(store_.db(), policy);
+        result = history_detail::compactUndo(store_, policy);
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+UndoCompactionResult History::compactUndo() {
+    UndoCompactionResult result;
+    if (!mutationAllowed(store_, result.error)) return result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        result = history_detail::compactUndo(store_, history_detail::undoPolicy(store_.db()));
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+namespace {
+History::ReplayBaseResult restoreReplayPoint(const Store &source, Store &target, bool current,
+                                             std::optional<std::int64_t> point) {
+    History::ReplayBaseResult result;
+    if (!mutationAllowed(target, result.error)) return result;
+    auto navigation = gesture::detail::beginNavigation(target);
+    if (!navigation.status.ok()) { result.error = navigation.status.message; return result; }
+    if (!appliedSource(source).alive()) { result.error = "source project is closed"; return result; }
+    if (target.readOnly()) {
+        result.error = "target is open read-only";
+        return result;
+    }
+    try {
+        if (&source == &target)
+            throw std::runtime_error("replay target must be a different project");
+        SQLite::Transaction transaction(target.db());
+        detail::AppliedBatchBuilder applied(target, AppliedBatchKind::ReplayBaseReset,
+                                             OpJournal(target).headSeq());
+        std::optional<detail::PreparedAppliedDelivery> delivery;
+        if (OpJournal(target).count() != 0)
+            throw std::runtime_error("replay target journal is not empty");
+        auto &sourceDb = const_cast<SQLite::Database &>(source.db());
+        const auto sourceHead = OpJournal(const_cast<Store &>(source)).headSeq();
+        if (current)
+            point = sourceHead;
+        std::vector<ChainOp> line;
+        std::string chainError;
+        if (!chainOf(sourceDb, point, line, chainError))
+            throw std::runtime_error(chainError);
+        const bool roots = history_detail::hasStoredRoots(sourceDb);
+        std::optional<Payload> state;
+        if (roots) {
+            result.baseSeq = history_detail::rootForPoint(sourceDb, point);
+            state = history_detail::readCheckpointContent(
+                sourceDb, *history_detail::storedRootHash(sourceDb, result.baseSeq));
+            if (result.baseSeq == history_detail::rootForPoint(sourceDb, sourceHead)) {
+                SQLite::Statement compatibility(
+                    sourceDb, "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+                std::string error;
+                if (!compatibility.executeStep() ||
+                    compatibility.getColumn(0).getInt64() != result.baseSeq)
+                    throw std::runtime_error("replay checkpoint baseline mismatch");
+                const auto legacy = decodeFromLog(blobOf(compatibility.getColumn(1)), error);
+                if (!legacy || *legacy != *state)
+                    throw std::runtime_error("replay checkpoint content mismatch");
+            }
+        } else {
+            SQLite::Statement row(sourceDb,
+                                  "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+            if (row.executeStep()) {
+                std::string error;
+                state = decodeFromLog(blobOf(row.getColumn(1)), error);
+                if (!state)
+                    throw std::runtime_error("invalid history checkpoint: " + error);
+                result.baseSeq = row.getColumn(0).getInt64();
+            }
+        }
+        if (state && !point)
+            throw std::runtime_error("snapshot precedes the available replay baseline");
+        for (std::size_t i = line.size(); i-- > 0;)
+            if (line[i].seq != result.baseSeq) {
+                if (line[i].opType == "history.root")
+                    throw std::runtime_error("unexpected replay baseline");
+                result.retainedSeqs.push_back(line[i].seq);
+            }
+        if (state) {
+            history_detail::copyCheckpointPools(source, target);
+            history_detail::installCheckpoint(target, *state, true);
+            delivery = finishApplied(applied, target, OpJournal(target).headSeq());
+        }
+        transaction.commit();
+        result.ok = true;
+        if (delivery) delivery->publish();
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+} // namespace
+History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
+    return restoreReplayPoint(source, target, true, std::nullopt);
+}
+History::ReplayBaseResult History::restoreStoredSnapshot(const Store &source, std::int64_t id,
+                                                         Store &target) {
+    ReplayBaseResult result;
+    if (!appliedSource(source).alive()) {
+        result.error = "source project is closed";
+        return result;
+    }
+    try {
+        SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
+                              "SELECT s.op_seq,r.seq FROM history_snapshots s LEFT JOIN "
+                              "history_roots r ON r.seq=s.op_seq WHERE s.id=?");
+        row.bind(1, id);
+        if (!row.executeStep())
+            throw std::runtime_error("no such snapshot");
+        if (row.getColumn(1).isNull())
+            throw std::runtime_error("snapshot is still in stepwise history");
+        std::optional<std::int64_t> point;
+        if (!row.getColumn(0).isNull())
+            point = row.getColumn(0).getInt64();
+        return restoreReplayPoint(source, target, false, point);
+    } catch (const std::exception &error) {
+        result.error = error.what();
+        return result;
+    }
+}
+} // namespace adi

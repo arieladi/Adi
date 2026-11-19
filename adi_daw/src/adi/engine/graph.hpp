@@ -26,17 +26,19 @@
 // No JUCE, no SQLite, no allocation after `prepare` (ADR-0010, ADR-0036). A
 // `Graph` is a `BlockProcessor`, so `DeviceCore` drives it with no adapter.
 //
-// WHAT THIS IS NOT, yet: one channel count for the whole graph, one input bus
-// and one output per node, and no parallelism across nodes. Each of those is a
-// real DAW requirement and none of them changes the decisions above; they are
-// left out because an untested generalisation is worse than a named limit.
+// One channel count for the whole graph; Main and Sidechain inputs and one
+// output per node. Optional persistent workers execute explicitly independent
+// nodes within dependency levels; source/forward/delivery hooks stay serialized.
+// Small blocks and callback-affine providers retain the serial path.
 
 #pragma once
 
 #include "adi/engine/events.hpp"
+#include "adi/engine/render_workers.hpp"
 #include "adi/engine/held_notes.hpp"
 #include "adi/engine/process.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -48,6 +50,17 @@
 namespace adi::engine {
 
 class ScopeTap;
+class StripLaneBindings;
+class EventSource;
+
+/// Fixed-format staging preserves compatible nodes already prepared by a
+/// graph. A mismatch refuses staging; it never re-prepares a live plug-in.
+enum class NodePreparePolicy { PrepareAll, PreservePrepared };
+
+struct EventSourceBinding {
+    EventSource* source = nullptr;
+    std::shared_ptr<void> owner;
+};
 
 /// Never skip this node, however quiet it is. `IAudioProcessor::getTailSamples`
 /// uses the same convention and this is deliberately the same value.
@@ -73,6 +86,11 @@ struct TransportInfo {
     std::int64_t bar = 1;             ///< one-based, as in the text projection
     std::int64_t beat = 1;            ///< one-based, in the signature's beat unit
     std::int64_t ticksInQuarter = 0;  ///< absolute musical ticks modulo ADI_PPQ
+    /// Immutable scalar automation bindings retained by this graph publication;
+    /// null keeps the legacy owner-configured strip bindings.
+    const StripLaneBindings* stripLanes = nullptr;
+    /// Driver-applied transport identity; seeks can be discontinuous even at equal stamps.
+    std::uint64_t transportRevision = 0;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -121,6 +139,12 @@ struct NodeIo {
     double* const* out64 = nullptr;
     const double* const* sidechain64 = nullptr;
 
+    /// One physical callback, shared by every transport/event segment, including stopped
+    /// callbacks and seeks. No device/SDK query is needed at the processing boundary.
+    std::uint64_t renderBlock = 0;
+    std::int32_t configuredLatency = 0; ///< this graph publication's cached slot latency
+    bool exporting = false; ///< explicit quality intent, not inferred from transport state
+
     /// This call is at full width: `out64` is the buffer to write.
     [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
 };
@@ -141,8 +165,8 @@ enum class EventFlow : std::uint8_t {
 };
 
 /// Addressed events generated FOR a node, once per block (ADR-0165): the
-/// automation of a plug-in's parameters. Set on the node by the session, called
-/// by the graph on the audio thread before forwarding and splitting, so each
+/// automation of a plug-in's parameters. Bound to a graph slot by the owner,
+/// called on the audio thread before forwarding and splitting, so each
 /// event lands on its own segment boundary like any pushed event (ADR-0042).
 class EventSource {
 public:
@@ -166,6 +190,9 @@ public:
 
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+    /// Owner-side shape admission for staged graphs. DeviceNode forwards its
+    /// instance's shape epoch. Native fixed-shape nodes retain zero.
+    [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return 0; }
 
     /// Optional source ownership token, queried ONLY by the realiser off the
     /// callback. A graph keeps streamed pages/workers alive until reclamation;
@@ -174,6 +201,13 @@ public:
 
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
+    /// Owner queried at prepare. Opt in only if this instance's process,
+    /// suspension/tail/tap hooks and private render state can run on any audio
+    /// worker, independently of other nodes. Source/forward/delivery hooks
+    /// remain serialized on the callback. Default protects host/device thread
+    /// affinity. Opted-in nodes restore any FP control state they change.
+    /// Duplicate pointers in a graph are always callback-only.
+    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
     /// graph precision, including while the node is active, and owns its
@@ -189,14 +223,22 @@ public:
     /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
 
-    /// Session retains every tap until audio stops, including after close.
-    void setInputTap(ScopeTap* tap) noexcept { inputTap_.store(tap, std::memory_order_release); }
+    /// Capture ports have a lifetime independent of the node. A retired graph can release
+    /// its node before a later callback detaches its old scope publication safely.
+    struct ScopePorts {
+        std::atomic<ScopeTap*> input{nullptr}, output{nullptr};
+    };
+    [[nodiscard]] std::shared_ptr<ScopePorts> scopePorts() const { return scopePorts_; }
+    void setInputTap(ScopeTap* tap) noexcept { scopePorts_->input.store(tap, std::memory_order_release); }
     [[nodiscard]] ScopeTap* inputTap() const noexcept {
-        auto* tap = inputTap_.load(std::memory_order_relaxed);
-        // Off is one relaxed load. On, synchronize the tap's construction
-        // with setInputTap's release before reading its non-atomic capacity.
-        if (tap) std::atomic_thread_fence(std::memory_order_acquire);
-        return tap;
+        // Synchronize construction directly with the publishing release.
+        // One acquire load also gives worker-thread race tools the same
+        // happens-before edge, without a separate conditional fence.
+        return scopePorts_->input.load(std::memory_order_acquire);
+    }
+    void setOutputTap(ScopeTap* tap) noexcept { scopePorts_->output.store(tap, std::memory_order_release); }
+    [[nodiscard]] ScopeTap* outputTap() const noexcept {
+        return scopePorts_->output.load(std::memory_order_acquire);
     }
 
     /// Prepared source events, once per block BEFORE forwarding/splitting.
@@ -204,10 +246,29 @@ public:
     virtual void sourceEvents(EventList&, std::int32_t) noexcept {}
     /// After processing, a note-off reached a consuming node or graph output.
     /// Sources retain ownership until this acknowledgement, across PDC queues.
+    /// Sources retaining queued events are acknowledged after every accepted
+    /// copy on a consumer/output path has left the graph's delay queues.
     virtual void noteOffDelivered(const Event&) noexcept {}
     /// Forwarding refused an off; its source must retain and retry ownership.
     virtual void noteOffRejected(const Event&) noexcept {}
-
+    /// An on reached a consumer/output, or was refused by a forwarding queue.
+    /// Kept separate from off ownership so a new source generation can tell a
+    /// sounding voice from an on still waiting in a retired graph's PDC queue.
+    virtual void noteOnDelivered(const Event&) noexcept {}
+    virtual void noteOnRejected(const Event&) noexcept {}
+    // Explicit opt-in to retaining queued source events across graph swaps.
+    // Graph prepares reachable source lists on the owner; these audio hooks
+    // validate immutable authorship/shared ownership without allocating.
+    virtual bool retainsQueuedSourceEvents() const noexcept { return false; }
+    virtual bool canRetainPendingEvent(const Event&) const noexcept { return false; }
+    virtual void pendingEventRetained(const Event&) noexcept {}
+    virtual bool retainedEventsStillValid(const Event&) const noexcept { return false; }
+    // Immutable owner-assigned prefix; zero means no controller acknowledgements.
+    virtual std::uint32_t controllerSourcePrefix() const noexcept {
+        return 0;
+    }
+    virtual void controllerDelivered(const Event &) noexcept {}
+    virtual void controllerRejected(const Event &) noexcept {}
 
     /// How long this node keeps producing after its input goes quiet.
     /// `kInfiniteTail` means never suspend — the right answer for a feedback
@@ -331,20 +392,18 @@ public:
     [[nodiscard]] HeldNotes& heldNotes() noexcept { return held_; }
     [[nodiscard]] const HeldNotes& heldNotes() const noexcept { return held_; }
 
-    /// ADR-0165: what generates this node's addressed events each block, and
-    /// what keeps it alive. Message thread, before the graph that plays it is
-    /// published. ON THE NODE, like the held notes: a device outlives every
-    /// graph, and no device class has to know automation exists.
+    /// Standalone addressed-source setup, before Graph::prepare. Each prepared
+    /// graph captures its own binding and owner. Changing this does not mutate
+    /// already prepared graphs; a realizer may supply an explicit binding.
     void setEventSource(EventSource* source, std::shared_ptr<void> keepAlive) noexcept {
         eventSourceOwner_ = std::move(keepAlive);
         eventSource_.store(source, std::memory_order_release);
     }
-    /// Audio thread.
+    /// Standalone setup inspection. Graph processing uses its captured slot.
     [[nodiscard]] EventSource* eventSource() const noexcept {
         return eventSource_.load(std::memory_order_acquire);
     }
-    /// Message thread: the realiser keeps it with the graph, so a source a
-    /// retired graph may still call is never freed under it.
+    /// Owner: Graph::prepare captures it with the pointer for its own slot.
     [[nodiscard]] const std::shared_ptr<void>& eventSourceLifetime() const noexcept {
         return eventSourceOwner_;
     }
@@ -353,8 +412,16 @@ protected:
     Node() = default;
 
 private:
+    friend class Graph;
+    struct Preparation {
+        double sampleRate = 0.0;
+        std::int32_t maxFrames = 0, channels = 0;
+        Precision precision = Precision::Float32, handed = Precision::Float32;
+        std::uint64_t shape = 0, revision = 0;
+        bool known = false, ready = false;
+    } preparation_;
     HeldNotes held_;
-    std::atomic<ScopeTap*> inputTap_{nullptr};
+    const std::shared_ptr<ScopePorts> scopePorts_ = std::make_shared<ScopePorts>();
     std::atomic<EventSource*> eventSource_{nullptr};
     std::shared_ptr<void> eventSourceOwner_;
 };
@@ -375,6 +442,9 @@ struct GraphStats {
     /// Mix-point segments summed in double (ADR-0207 d2): two or more inputs
     /// that could each add something. One live input needs no sum at all.
     std::int64_t wideMixes = 0;
+    std::int64_t parallelLevels = 0;
+    std::int64_t workerNodeBlocks = 0;
+    std::int64_t workerFallbacks = 0;
 };
 
 /// A fixed delay, applied to one input edge so that two paths of unequal
@@ -421,6 +491,8 @@ public:
         inFilled_ = o.inFilled_;
         quiet_ = o.quiet_;
         ran_ = o.ran_;
+        graphSequence_ = o.graphSequence_;graphTarget_ = o.graphTarget_;
+        graphWarmTarget_ = o.graphWarmTarget_;graphActiveTarget_=o.graphActiveTarget_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
@@ -480,7 +552,8 @@ public:
     [[nodiscard]] bool gliding() const noexcept {
         return gliding_.load(std::memory_order_relaxed);
     }
-    /// The delay last asked for: by `setDelay`, a glide, or an offered ring.
+    /// Active target. A standalone glide/offer publishes it immediately;
+    /// graph-managed requests become active with a complete physical PDC plan.
     [[nodiscard]] std::int32_t target() const noexcept {
         return target_.load(std::memory_order_relaxed);
     }
@@ -542,12 +615,13 @@ public:
     /// long, or those samples are never heard (see `Graph::runNode`).
     [[nodiscard]] std::int32_t reach() const noexcept {
         std::int32_t r = delay_;
+        if(graphSequence_ && graphWarmTarget_>r)r=graphWarmTarget_;
         if (gliding_.load(std::memory_order_acquire)) {
             const std::int32_t t = target_.load(std::memory_order_relaxed);
             if (t > r) r = t;
         }
         const Grow g = grow_.load(std::memory_order_acquire);
-        if ((g == Grow::Priming || g == Grow::Fading) && targetDelay_ > r) r = targetDelay_;
+        if ((g == Grow::Priming || g == Grow::Ready || g == Grow::Fading) && targetDelay_ > r) r = targetDelay_;
         return r;
     }
 
@@ -560,7 +634,12 @@ public:
     /// Anything that spans a block is in progress, so the caller must not take
     /// a shortcut. One predicate rather than two, because the fast path in
     /// `Graph::accumulate` forgot `gliding()` once already.
-    [[nodiscard]] bool busy() const noexcept { return gliding() || growing(); }
+    [[nodiscard]] bool busy() const noexcept {
+        // Keep already-ready history alive while another line still warms.
+        // Releasing the zero-delay fast path early would forget it and let
+        // staggered lines alternate forever behind the complete-plan barrier.
+        return gliding() || growing() || (graphSequence_ && graphWarmTarget_>0);
+    }
 
     // --- per-edge state, shared across channels ----------------------------
 
@@ -582,7 +661,9 @@ public:
 private:
     enum class Grow : std::uint8_t {
         Idle,      ///< one ring
+        Offered,   ///< graph resource, not admitted until a physical boundary
         Priming,   ///< two rings; writing both, reading the old
+        Ready,     ///< graph resource has history, still reads the old target
         Fading,    ///< two rings; crossfading old tap to new
         Spent,     ///< swapped; the old buffer is parked for collection
     };
@@ -684,12 +765,26 @@ public:
     /// it fades the onset in, or plays it at the old alignment while it
     /// waits.
     [[nodiscard]] bool due() const noexcept {
+        if(graphSequence_) {
+            const auto g=grow_.load(std::memory_order_acquire);
+            if(graphWarmTarget_>0 || (g!=Grow::Idle&&g!=Grow::Spent))return true;
+        }
         if (gliding_.load(std::memory_order_acquire)) return true;
         const std::int32_t r = reach();
         return quiet_ < (filled_ < r ? filled_ : r);
     }
 
 private:
+    friend class Graph;
+    void manageGraph(std::atomic<std::uint64_t>* sequence,std::atomic<std::int32_t>* target) noexcept {
+        graphSequence_=sequence;graphTarget_=target;graphWarmTarget_=0;
+    }
+    void publishGraphTarget(std::int32_t) noexcept;
+    void admitGraphResource() noexcept;
+    void warmGraphTarget(std::int32_t d) noexcept {graphWarmTarget_=(std::min)((std::max)(0,d),capacity_);}
+    [[nodiscard]] bool canApplyGraphTarget(std::int32_t) const noexcept;
+    void applyGraphTarget(std::int32_t) noexcept;
+    [[nodiscard]] std::int32_t appliedTarget() const noexcept {return graphSequence_?graphActiveTarget_:delay_;}
     template <typename T>
     [[nodiscard]] static T tapAt(const T* hist, std::int32_t w,
                                  std::int32_t ring, std::int32_t d) noexcept {
@@ -715,6 +810,12 @@ private:
                std::int32_t fromWrite, std::int32_t k) noexcept;
 
     std::vector<float> buf_;        ///< channels * ring_, at 32
+    // Set only during graph preparation. Owner stages targets; audio alone
+    // controls active glides/history and resource admission at callback boundaries.
+    std::atomic<std::uint64_t>* graphSequence_ = nullptr;
+    std::atomic<std::int32_t>* graphTarget_ = nullptr;
+    std::int32_t graphWarmTarget_ = 0; // audio only
+    std::int32_t graphActiveTarget_ = 0; // configured target, audio only
     std::int32_t capacity_ = 0;     ///< the largest delay that fits
     std::int32_t ring_ = 0;         ///< capacity_ + 1; see graph.cpp
     std::int32_t delay_ = 0;
@@ -764,9 +865,11 @@ private:
 };
 
 /// A DAG of nodes, scheduled per block.
+class RenderWorkers;
 class Graph final : public BlockProcessor {
+    friend struct GraphPdcTestAccess;
 public:
-    Graph() = default;
+    Graph();
     ~Graph() override;
 
     // --- construction, message thread only ---------------------------------
@@ -775,6 +878,15 @@ public:
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
     NodeId addNode(Node& node);
+    /// Construction only. An explicit null binding suppresses a node's legacy
+    /// source. Owners are retired with the graph, never on the callback.
+    bool setEventSource(NodeId, EventSourceBinding);
+    void setNodePreparePolicy(NodePreparePolicy policy) noexcept {
+        nodePreparePolicy_ = policy;
+        prepared_ = false;
+    }
+    /// Owner-only admission immediately before publishing a ready graph.
+    [[nodiscard]] bool preparationCurrent() const noexcept;
 
     /// `from` feeds `to`. Multiple edges into one node are SUMMED, which is
     /// what makes a group a node with no device rather than a special case
@@ -814,6 +926,23 @@ public:
     }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
 
+    /// Build-time alignment policy. Intrinsic device latency and delayed dry
+    /// bypass remain intact. Change by building/publishing a new graph.
+    void setDelayCompensation(bool on) noexcept {
+        if(on!=delayCompensation_)prepared_=false;
+        delayCompensation_=on;
+    }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
+
+    /// Owner only, then prepare before rendering. Zero workers preserves the
+    /// serial path. Nonzero uses at most 16 persistent participants; frames
+    /// and eligible level width must meet the explicit measured thresholds.
+    /// No implicit platform heuristic is hidden in the callback.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr) noexcept;
+    [[nodiscard]] std::uint32_t renderWorkerCount() const noexcept;
+
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
     /// Per-node event capacity. Zero -- the default -- DERIVES it at `prepare`
@@ -848,8 +977,9 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
-    /// Offline owner only, between process calls with no concurrent rendering,
-    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// Processing owner only, after process and before the next process.
+    /// The graph must remain prepared/alive; GraphHost::copyRenderedOutput
+    /// provides publication lifetime inside a callback. Copies at graph precision;
     /// out64 retains double samples and extra destination channels are silence.
     /// False (and clears output) for an invalid node, stale/unprepared graph or
     /// a frame count different from the last successful process call.
@@ -899,21 +1029,26 @@ public:
         return latencyHeadroom_;
     }
 
-    /// Re-read every node's `latencySamples()` and move the taps to match,
-    /// crossfaded across the next block. MESSAGE THREAD, while the audio
-    /// thread runs.
+    /// Read each node's `latencySamples()` once and publish one pending plan
+    /// containing metadata and every main/side/dry target. MESSAGE THREAD.
+    /// Audio admits it only at a physical callback boundary after its rings
+    /// hold the required history; all logical slices retain the previous plan.
     ///
     /// Returns false when some edge needs more delay than its ring holds. That
     /// is not a failure to handle here: it is the signal that this change
     /// needs new buffers, which means building a schedule off-thread and
-    /// publishing it (ADR-0019). Everything that DID fit has already been
-    /// moved, because a partial correction is closer than none.
+    /// publishing it (ADR-0019). No partial metadata or target change is exposed:
+    /// the previous complete plan remains active until the new one is ready.
     bool retapLatency() noexcept;
+    /// Audio owner: admit one coherent metadata/delay plan at the physical
+    /// callback boundary. Repeated logical slices with this ID retain that plan.
+    /// Prepared storage only, bounded reads, no locks/allocation/refcounting.
+    void pinPhysicalPdc(std::uint64_t renderBlock) noexcept;
 
-    /// ADR-0085. For every edge whose required delay does not fit its ring,
-    /// ALLOCATE a bigger one here -- on the message thread -- and hand it over.
-    /// The audio thread primes it against the old one and switches when it
-    /// genuinely holds the history. Returns how many edges were grown.
+    /// ADR-0085. Allocate insufficient edge capacity here, on the owner. Audio
+    /// admits offers at a physical boundary, carries the current audible tap
+    /// into the larger ring, then primes the pending target's history before
+    /// admitting the complete PDC plan. Returns how many offers were accepted.
     ///
     /// This is the escalation ADR-0079 decision 4 named. It is per EDGE and
     /// not per graph: growing one ring leaves every other edge's history
@@ -951,6 +1086,9 @@ public:
     /// the probe's pattern of feeding a graph and re-preparing it after a
     /// rebuild would hit on the first swap.
     [[nodiscard]] DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) noexcept;
+    [[nodiscard]] const DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) const noexcept {
+        return const_cast<Graph*>(this)->edgeLine(from,to,bus);
+    }
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
@@ -1008,11 +1146,56 @@ public:
     /// retain their identity across rebuilds; the matching table is sorted
     /// during prepare, so this walk allocates nothing.
     std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+    /// Transfer accepted queued events to the same retained target/arrival,
+    /// preserving their remaining delay before the old publication is retired.
+    std::int32_t adoptEventHistory(const Graph& old) noexcept;
 
 private:
     void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
+    // Private scratch per executing participant; immutable inputs/splits and
+    // independently written Slot outputs are the only data shared by jobs.
+    struct RenderState {
+        // Per-input idleness, and 64-bit accumulators for each main/side mix.
+        std::vector<std::uint8_t> asleep_;
+        std::vector<float> mixBuf_;         ///< summed main inputs for the node in hand
+        std::vector<float*> mixPtrs_;
+        std::vector<float> sideBuf_;        ///< summed sidechain inputs
+        std::vector<float*> sidePtrs_;
+        std::vector<double> mixWide_;
+        std::vector<double*> mixWidePtrs_;
+        std::vector<double> sideWide_;
+        std::vector<double*> sideWidePtrs_;
+        std::vector<float> delayScratch_;   ///< one channel of one segment
+        std::vector<double> delayScratch64_; ///< the same at 64
+        GraphStats stats;
+    };
+    RenderState render_;
+    void prepareRenderState(RenderState&);
+    void collectRenderStats(const RenderState&) noexcept;
+    struct LevelWork {std::vector<NodeId> parallel,serial;};
+    struct Dispatch {
+        Graph* graph=nullptr;
+        const LevelWork* work=nullptr;
+        std::int32_t frames=0,nsplit=0;
+        const TransportInfo* transport=nullptr;
+        std::size_t stride=1;
+        bool reverse=false;
+    };
+    static void executeWorker(void*,std::size_t) noexcept;
+    void runPartition(const Dispatch&,std::size_t partition,RenderState&) noexcept;
+    void runLevel(std::size_t,std::int32_t,std::int32_t,const TransportInfo*) noexcept;
+    std::unique_ptr<RenderWorkers> workers_;
+    std::vector<RenderState> workerRenders_;
+    std::vector<LevelWork> levelWork_;
+    std::uint32_t requestedWorkers_=0,parallelMinimumNodes_=4;
+    std::int32_t parallelMinimumFrames_=256;
+    RenderWorkers::Initializer workerInitializer_=nullptr;
+    void* workerInitializationContext_=nullptr;
     struct Slot {
         Node* node = nullptr;
+        EventSourceBinding eventSource;
+        bool explicitEventSource = false;
+        std::uint64_t preparationRevision = 0;
         bool hasBypass = false;
         DelayLine dryDelay;
         std::vector<NodeId> inputs;
@@ -1033,6 +1216,9 @@ private:
         bool doubles = false;
         std::vector<Event> eventStore;
         EventList events;
+        // Forwarding precedes event sorting, so these parallel origins can be
+        // carried through further delayed hops without changing Event's ABI.
+        std::vector<Node*> eventOrigins;
 
         /// ADR-0091: note events delayed past the end of this block, by a
         /// node's latency or an edge's compensation, keyed by the absolute
@@ -1041,9 +1227,12 @@ private:
         struct Pending {
             std::int64_t due = 0;
             Event e;
+            Node* retainedSource = nullptr; // provider in THIS graph only
         };
         std::vector<Pending> pending;
         std::int32_t pendingCount = 0;
+        std::vector<Node*> pendingSources; // owner-prepared reachable providers
+        bool deliversNoteStream = false; // a consumer/output is reachable through Through nodes
 
         std::int64_t tailRemaining = 0;
         bool silent = true;
@@ -1075,7 +1264,7 @@ private:
     /// processing is 32-bit; the SUM is 64-bit and converted once, as Live
     /// sums every mix point (ADR-0207 d2, Audio Fact Sheet 38.2.4). `wide` is
     /// the double accumulator for this bus.
-    bool mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+    bool mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
              std::vector<float*>& dst, std::vector<double*>& wide,
              std::int32_t begin, std::int32_t frames) noexcept;
 
@@ -1093,14 +1282,14 @@ private:
     /// the sum: at 32, `float` when at most one input is live and `double`
     /// otherwise; at 64, `double` always.
     template <typename Src, typename Acc>
-    void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
+    void accumulate(RenderState& r, std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first,
                     bool asleep) noexcept;
 
     /// `mix` for a graph at 64: every source, delay line and sum is double,
     /// and the sum is left in `wide` for the node (or narrowed by the caller
     /// for a node that does not process double).
-    bool mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+    bool mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
                  std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept;
 
     /// One segment of a double sum, converted to the float a node reads.
@@ -1112,16 +1301,16 @@ private:
     [[nodiscard]] static T* const* outputOf(const Slot& s) noexcept;
     /// One channel of one segment, at the width `T`, for a delayed edge.
     template <typename T>
-    [[nodiscard]] T* scratch() noexcept;
+    [[nodiscard]] T* scratch(RenderState& r) noexcept;
 
     /// The last live input of a double sum: added to `wide` and converted
     /// into `dst` in the same pass, so the sum is narrowed once and read once.
-    void accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+    void accumulateLast(RenderState& r, std::vector<float*>& dst, const std::vector<double*>& wide,
                         const Slot& src, DelayLine& delay, std::int32_t begin,
                         std::int32_t frames) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
-    void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
+    void runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t nsplit,
                  const TransportInfo* transport) noexcept;
 
     /// ADR-0091, before the splits are computed: carry each slot's note events
@@ -1136,32 +1325,30 @@ private:
     std::int32_t computeSplits(std::int32_t frames) noexcept;
 
     std::vector<Slot> slots_;
-    /// Each slot's `latencySamples()` as last asked on the message thread
-    /// (prepare, retap), for the audio thread to read when it forwards events
-    /// (ADR-0123). Sized at prepare, never resized on the audio thread.
+    std::vector<std::pair<Node*,NodeId>> eventNodes_;
+    std::vector<std::pair<std::uint32_t, Node *>> controllerSources_;
+    void acknowledgeController(const Event &, bool delivered) noexcept;
+    [[nodiscard]] bool hasPendingNoteOff(std::uint64_t noteId) const noexcept;
+
+    /// Public diagnostic mirrors of the audio-applied plan. Callback processing
+    /// reads the plain audio-owned arrays below, not these per-node atomics.
     std::vector<std::atomic<std::int32_t>> slotLatency_;
-    /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
-    /// audio thread stamps an input tap with it.
+    /// Each slot's applied arrival, likewise.
     std::vector<std::atomic<std::int32_t>> slotArrival_;
-    /// `idle` per input of the mix in hand, sized at prepare to the most
-    /// inputs any slot has.
-    std::vector<std::uint8_t> asleep_;
+    // One owner writer publishes atomic scalar cells under an even/odd sequence.
+    // Layout: node latencies, arrivals, every main/side/dry target, graph latency.
+    std::vector<std::atomic<std::int32_t>> pdcPending_;
+    std::vector<std::int32_t> pdcOwner_,pdcCandidate_,pdcScratch_,pdcActiveLatency_,pdcActiveArrival_;
+    std::vector<DelayLine*> pdcLines_;
+    std::atomic<std::uint64_t> pdcSequence_{0};
+    std::uint64_t pdcApplied_=0,pdcCandidateVersion_=0,pdcPhysical_=0; // audio only
+    void preparePdcStorage();
+    bool computePdcOwner() noexcept;
+    void publishPdcOwner() noexcept;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
-    std::vector<float> mixBuf_;         ///< summed main inputs for the node in hand
-    std::vector<float*> mixPtrs_;
-    std::vector<float> sideBuf_;        ///< summed sidechain inputs
-    std::vector<float*> sidePtrs_;
-    // ADR-0207 d2: the 64-bit accumulators the two buffers above are
-    // converted from, once per segment, when two or more inputs are live.
-    std::vector<double> mixWide_;
-    std::vector<double*> mixWidePtrs_;
-    std::vector<double> sideWide_;
-    std::vector<double*> sideWidePtrs_;
     std::vector<std::vector<NodeId>> levels_;
-    std::vector<Event> mixEventStore_;
-    EventList mixEvents_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare
     std::vector<std::uint8_t> frameMark_; ///< one byte per frame: an event lands here
 
@@ -1169,29 +1356,30 @@ private:
     /// delay that crosses any number of block boundaries needs no bookkeeping
     /// beyond one subtraction.
     std::int64_t now_ = 0;
-    std::vector<float> delayScratch_;   ///< one channel of one segment
-    std::vector<double> delayScratch64_; ///< the same at 64
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
+    bool delayCompensation_ = true;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
     std::int32_t eventCapacity_ = 0;      ///< 0 = derive at prepare
     std::int32_t maxPolyphony_ = 16;
     std::int32_t floor_ = 64;
-    // ATOMIC, because `retapLatency` writes it from the message thread while
-    // the transport may be reading it to compensate the playhead. A torn read
+    // Audio publishes the applied total when a coherent plan is admitted;
+    // owner diagnostics and transport may read it concurrently. A torn read
     // is not the real risk on the platforms we target; the data race is, and
     // an int32 costs nothing to do properly.
     std::atomic<std::int32_t> graphLatency_{0};
-    // How many retaps have started glides (`retapLatency`), released after
-    // the glides it started: a sleeping node that sees it unmoved since its
+    // Audio-applied resource/plan generation: a sleeping node that sees it unmoved since its
     // lines were checked need not check them again (`Slot::dozeGlides`).
     std::atomic<std::uint64_t> glides_{0};
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    NodePreparePolicy nodePreparePolicy_ = NodePreparePolicy::PrepareAll;
     std::int32_t renderedFrames_ = 0;
+    std::uint64_t renderBlock_ = 0;
+    bool exporting_ = false;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;
@@ -1208,6 +1396,7 @@ private:
 class SumNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "sum"; }
@@ -1226,6 +1415,7 @@ public:
 
     void prepare(double, std::int32_t) override { gain_ = 1.0f; gain64_ = 1.0; }
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }

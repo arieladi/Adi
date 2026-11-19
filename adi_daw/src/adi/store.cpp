@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/media/publish_file.hpp"
+#include "adi/audio/io_audit.hpp"
+#include "adi/gesture_navigation_detail.hpp"
+#include "adi/applied_batches_detail.hpp"
+#include "adi/track_recording.hpp"
 
 #include "adi/schema_sql.hpp"  // generated from docs/format/schema.sql
 #include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <random>
@@ -15,6 +21,11 @@
 
 namespace adi {
 namespace {
+
+std::string sqlitePath(const std::filesystem::path& path) {
+    const auto bytes=path.generic_u8string();
+    return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
 
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
@@ -77,6 +88,23 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
+        // 1.10 (N25): literal marker notes/prompts.
+        {10, {"marker_details"}},
+        // 1.11: Split Stereo Pan, additive settings (ADR-0203 d9).
+        {11, {"mixer_pan_settings"}},
+        {12, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {13, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
+        // 1.14: per-track Rec-Q / Play-Q and monitoring-latency policy.
+        {14, {"track_recording_options"}},
+        // 1.15: persistent return-owned send taps (ADR-0203 d3).
+        {15, {"return_send_taps"}},
+        {16, {"clip_properties"}},
+        {17, {"frozen_renders"}},
+        {18, {"frozen_groups"}},
+        // 1.19 (ADR-0203 d13): retained undo root and replay checkpoint.
+        {19, {"history_checkpoint"}},
+        {20, {"history_state_rows", "history_state_manifests", "history_checkpoint_content"}},
+        {21, {"history_roots", "history_origin_root"}},
     };
     return steps;
 }
@@ -204,8 +232,11 @@ bool isClientId(const std::string& id) {
 }
 }  // namespace
 
-Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro)
-    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {}
+Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro,
+             std::shared_ptr<media::ProjectFileLease> lease)
+    : fileLease_(std::move(lease)), db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {
+    appliedDomain_ = detail::makeAppliedDomain(*this);
+}
 
 bool Store::setClientId(std::string id) {
     if (!isClientId(id)) return false;
@@ -217,7 +248,9 @@ Store::~Store() {
     // Best effort. close() is where the result can actually be reported, which
     // is why it is public and why callers who care should call it.
     try {
-        close();
+        gesture::detail::invalidateSource(*this);
+        detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+        closeFinalized();
     } catch (...) {
     }
 }
@@ -245,48 +278,90 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
         store->db().exec("INSERT INTO project(id,name) VALUES(1,'Untitled')");
         return store;
     } catch (const SQLite::Exception&) {
+        const auto lease=store->fileLease_;
         store.reset();
         std::error_code ec;
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
 }
 
 std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err) {
+    return createNewProject(path,err,"1/16",true);
+}
+std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err,
+    std::string_view recordChoice,bool keepMonitoringLatency) {
+    std::vector<OpRequest> captured;
+    try {captured=trackRecordingDefaults(0,recordChoice,keepMonitoringLatency);}
+    catch(const std::exception&){err=StoreError::CannotCreate;return nullptr;}
     auto store = create(path, err);
     if (!store) return nullptr;
     try {
         SQLite::Transaction root(store->db());
         // ADR-0209 section 10 d10 keeps Live's default Set. Templates such as
         // CTZ are separate; New does not silently choose the CTZ hierarchy.
+        // Returns use compiled built-in identities (N15), wet-only, with the
+        // regular tracks' sends at the mixer's -infinity floor, Post by default.
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
-            "(1,'master','Main',4),(2,'midi','1 MIDI',0),(3,'midi','2 MIDI',1),"
-            "(4,'audio','3 Audio',2),(5,'audio','4 Audio',3);"
+            "(1,'master','Main',6),(2,'midi','1 MIDI',0),(3,'midi','2 MIDI',1),"
+            "(4,'audio','3 Audio',2),(5,'audio','4 Audio',3),"
+            "(6,'return','A Reverb',4),(7,'return','B Delay',5);"
             "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
+            "INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES"
+            "(1,'internal','org.adidaw.builtin.reverb','ADI','Reverb','1','effect'),"
+            "(2,'internal','org.adidaw.builtin.delay','ADI','Delay','1','effect');"
+            "INSERT INTO device_chains(id,track_id,name) VALUES(1,6,'Devices'),(2,7,'Devices');"
+            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(1,1,1,'Reverb'),(2,2,2,'Delay');"
+            "INSERT INTO plugin_params(device_id,param_id,name,normalized_value,real_value,display,unit) VALUES"
+            "(1,'31','Mix',1.0,100.0,'100 %','%'),(2,'25','Mix',1.0,100.0,'100 %','%');"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pre_fader,enabled) "
+            "SELECT (t.id-2)*2+(r.id-5),'track',t.id,'track',r.id,'send',r.id-6,-150.0,0,1 "
+            "FROM tracks t CROSS JOIN tracks r WHERE t.id BETWEEN 2 AND 5 AND r.id IN(6,7);"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
+        SQLite::Statement recording(store->db(),
+            "INSERT INTO track_recording_options(track_id,record_enabled,record_grid,keep_monitoring_latency) "
+            "SELECT id,?,?,? FROM tracks WHERE id BETWEEN 2 AND 5");
+        recording.bind(1,captured.front().payload.at("on").get<bool>()?1:0);
+        recording.bind(2,captured.front().payload.value("grid",std::string("1/16")));
+        recording.bind(3,keepMonitoringLatency?1:0);recording.exec();
         root.commit();
         return store;
     } catch (const SQLite::Exception&) {
+        const auto lease=store->fileLease_;
         store.reset();
         std::error_code ec;
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
 }
 
+namespace {
+std::atomic<bool> failNextCreate{false};
+}  // namespace
+
+void Store::failNextCreateBeforeCommitForTest() noexcept {
+    failNextCreate.store(true, std::memory_order_relaxed);
+}
+
 std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, StoreError& err) {
+    if(audio::onAudioThread){err=StoreError::CannotCreate;return nullptr;}
     std::error_code ec;
+    std::shared_ptr<media::ProjectFileLease> lease;
     if (std::filesystem::exists(path, ec)) {
         err = StoreError::AlreadyExists;
         return nullptr;
     }
 
     try {
+        if(!path.empty() && path!=std::filesystem::path(":memory:")){
+            lease=media::ProjectFileLease::createShared(path,ec);
+            if(!lease){err=ec==std::errc::file_exists?StoreError::AlreadyExists:StoreError::CannotCreate;return nullptr;}
+        }
         auto db = std::make_unique<SQLite::Database>(
-            path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+            sqlitePath(lease?lease->path():path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
 
         // SPEC §3.1. page_size must be set before the first write, so it goes
         // first — after any table exists it is silently ignored, which is the
@@ -296,6 +371,18 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
         db->exec("PRAGMA application_id = " + std::to_string(kApplicationId));
         db->exec("PRAGMA user_version = " + std::to_string(kUserVersion));
         db->exec("PRAGMA foreign_keys = ON");
+
+        // ONE transaction for the schema and its seed. Before this, each of the
+        // schema's ~100 statements committed on its own, in the rollback
+        // journal with synchronous=FULL (WAL starts below), so a new project
+        // cost ~100 journal create/flush/delete cycles. On Windows that was
+        // most of every store-making test suite's time: adi_mixer_tests, which
+        // makes 71 stores, spent 112 of its 145 s waiting on the disk. Same
+        // bytes either way, and a create that fails part-way now leaves no
+        // half-built schema behind. foreign_keys is set above because that
+        // pragma is a no-op inside a transaction (schema.sql repeats it; that
+        // repeat is harmless).
+        SQLite::Transaction create(*db);
 
         // The DDL is the generated copy of docs/format/schema.sql, so there is
         // exactly one source of truth and the validator tests the same bytes.
@@ -315,9 +402,18 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             meta.bind(2, k);
             meta.exec();
         }
+        if (failNextCreate.exchange(false, std::memory_order_relaxed))
+            throw SQLite::Exception("injected create fault (test seam)", 1 /* SQLITE_ERROR */);
+        create.commit();
 
-        auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false));
+        auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false,lease));
         if (!store->applySessionPragmas()) {
+            // As the catch below: no schema-only file left at the user's path.
+            // Close SQLite first (on Windows it holds the file without
+            // FILE_SHARE_DELETE); removeCreated still keeps a file another
+            // reader has already opened.
+            store.reset();
+            if(lease)(void)lease->removeCreated(ec);
             err = StoreError::SqlError;
             return nullptr;
         }
@@ -325,7 +421,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
         return store;
     } catch (const SQLite::Exception&) {
         // Do not leave a half-built file behind for someone to open later.
-        std::filesystem::remove(path, ec);
+        if(lease)(void)lease->removeCreated(ec);
         err = StoreError::CannotCreate;
         return nullptr;
     }
@@ -333,10 +429,17 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
 std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError& err,
                                    bool readOnly) {
+    if(audio::onAudioThread){err=StoreError::CannotOpen;return nullptr;}
+    std::shared_ptr<media::ProjectFileLease> lease;
+    std::error_code leaseError;
+    if(!path.empty() && path!=std::filesystem::path(":memory:")){
+        lease=media::ProjectFileLease::openShared(path,leaseError);
+        if(!lease){err=StoreError::CannotOpen;return nullptr;}
+    }
     std::unique_ptr<SQLite::Database> db;
     try {
         db = std::make_unique<SQLite::Database>(
-            path.string(), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
+            sqlitePath(lease?lease->path():path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
     } catch (const SQLite::Exception&) {
         err = StoreError::CannotOpen;
         return nullptr;
@@ -374,7 +477,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     if (major > kSchemaMajor) {
         if (!readOnly) {
             try {
-                db = std::make_unique<SQLite::Database>(path.string(), SQLite::OPEN_READONLY);
+                db = std::make_unique<SQLite::Database>(sqlitePath(path), SQLite::OPEN_READONLY);
             } catch (const SQLite::Exception&) {
                 err = StoreError::CannotOpen;
                 return nullptr;
@@ -417,7 +520,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
         }
     }
 
-    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly));
+    auto store = std::unique_ptr<Store>(new Store(std::move(db), path, effectiveReadOnly,lease));
     store->major_ = major;
     store->minor_ = openedMinor;
     store->upgradedFrom_ = upgradedFrom;
@@ -430,11 +533,27 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
 }
 
 bool Store::close() {
+    if (detail::appliedDispatchActive(*this)) {
+        lastError_ = "reentrant Store close during applied-batch delivery";
+        return false;
+    }
+    if (closed_ || !db_) return true;
+    auto change = gesture::detail::beginSourceChange(*this);
+    if (!change.status.ok()) { lastError_ = change.status.message; return false; }
+    const auto finished = gesture::detail::finishSourceChange(change.permit);
+    if (!finished.ok()) { lastError_ = finished.message; return false; }
+    gesture::detail::invalidateSource(*this);
+    detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+    return closeFinalized();
+}
+
+bool Store::closeFinalized() {
     if (closed_ || !db_) return true;
     closed_ = true;
 
     if (readOnly_) {
         db_.reset();
+        fileLease_.reset();
         return true;
     }
 
@@ -457,6 +576,7 @@ bool Store::close() {
         ok = false;
     }
     db_.reset();
+    fileLease_.reset();
     return ok;
 }
 
@@ -549,6 +669,9 @@ Store::getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimensio
 bool Store::putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                               std::span<const std::byte> blob) {
     try {
+        SQLite::Statement ranges(*db_,"SELECT 1 FROM automation_segment_ranges r JOIN automation_data d ON d.id=r.data_id WHERE d.lane_id=? AND d.clip_id IS ? LIMIT 1");
+        ranges.bind(1,laneId);if(clipId)ranges.bind(2,*clipId);else ranges.bind(2);
+        if(ranges.executeStep()){lastError_="replace automation with its captured curve ranges";return false;}
         SQLite::Statement st(*db_,
             "INSERT INTO automation_data(lane_id, clip_id, data) VALUES (?,?,?) "
             "ON CONFLICT(lane_id, IFNULL(clip_id,-1)) DO UPDATE SET data = excluded.data");

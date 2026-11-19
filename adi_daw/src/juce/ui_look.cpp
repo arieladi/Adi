@@ -29,12 +29,13 @@ void triangle(juce::Graphics &g, juce::Rectangle<float> r, float angle, juce::Co
     g.setColour(c);
     g.fillPath(p, juce::AffineTransform::rotation(angle, r.getCentreX(), r.getCentreY()));
 }
-LiveLook::LiveLook() {
+LiveLook::LiveLook() { setColours(); }
+void LiveLook::setColours() {
     setColour(juce::ResizableWindow::backgroundColourId, frame);
     setColour(juce::TextButton::buttonColourId, chooser);
     setColour(juce::TextButton::buttonOnColourId, accent);
     setColour(juce::TextButton::textColourOffId, text);
-    setColour(juce::TextButton::textColourOnId, text);
+    setColour(juce::TextButton::textColourOnId, ink);
     setColour(juce::ComboBox::backgroundColourId, chooser);
     setColour(juce::ComboBox::textColourId, text);
     setColour(juce::ComboBox::outlineColourId, outline);
@@ -51,14 +52,14 @@ LiveLook::LiveLook() {
     setColour(juce::Slider::trackColourId, value);
     setColour(juce::Slider::backgroundColourId, chooser);
     setColour(juce::Slider::thumbColourId, text);
-    setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xff1a1a1a));
-    setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xff6a6a6a));
+    setColour(juce::Slider::rotarySliderFillColourId, knobRing);
+    setColour(juce::Slider::rotarySliderOutlineColourId, knobNeedle);
     setColour(juce::PopupMenu::backgroundColourId, field);
     setColour(juce::PopupMenu::textColourId, text);
     setColour(juce::PopupMenu::highlightedBackgroundColourId, selection);
     setColour(juce::PopupMenu::highlightedTextColourId, text);
-    setColour(juce::ScrollBar::thumbColourId, juce::Colour(0xff6a6a6a));
-    setColour(juce::TooltipWindow::backgroundColourId, juce::Colour(0xfff5f5d0));
+    setColour(juce::ScrollBar::thumbColourId, knobTrack);
+    setColour(juce::TooltipWindow::backgroundColourId, tooltip);
     setColour(juce::TooltipWindow::textColourId, text);
     setColour(juce::TooltipWindow::outlineColourId, outline);
     setColour(juce::ToggleButton::textColourId, text);
@@ -106,7 +107,7 @@ juce::Font LiveLook::getTextButtonFont(juce::TextButton &b, int buttonHeight) {
     // Live's box text: 12 pt in a 13 pt box, smaller only in smaller boxes.
     if (const auto *size = b.getProperties().getVarPointer("live.font"))
         return font(static_cast<float>(static_cast<double>(*size)));
-    return font(std::min(12.f, static_cast<float>(buttonHeight) - 1) -
+    return font(std::min(fontField, static_cast<float>(buttonHeight) - 1) -
                 (b.getProperties()["live.small"] ? 1.f : 0.f));
 }
 void LiveLook::drawToggleButton(juce::Graphics &g, juce::ToggleButton &b, bool highlighted,
@@ -117,7 +118,7 @@ void LiveLook::drawToggleButton(juce::Graphics &g, juce::ToggleButton &b, bool h
     const juce::Rectangle<float> sq(r.getX() + 1, r.getCentreY() - s / 2, s, s);
     box(g, sq, b.getToggleState() ? value : chooser);
     if (highlighted || down)
-        g.fillAll(juce::Colours::white.withAlpha(0.04f));
+        g.fillAll(textBright.withAlpha(0.04f));
     if (b.getButtonText().isNotEmpty()) {
         g.setColour(text);
         g.setFont(font());
@@ -143,6 +144,10 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
     if (style == juce::Slider::LinearBar || style == juce::Slider::LinearBarVertical) {
         // Live's value box: light, filled in blue up to the value.
         box(g, r.reduced(0.5f), chooser);
+        // A value field dragged up or down (the Track Delay's, manual 18.7): the number alone in
+        // the box, as Live's figure shows it; JUCE's vertical bar gives it Live's drag axis.
+        if (s.getProperties()["live.valueField"])
+            return;
         g.setColour(value);
         const auto inner = r.reduced(1.f);
         if (style == juce::Slider::LinearBarVertical)
@@ -161,7 +166,7 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
     }
     if (s.isHorizontal()) {
         const float cy = r.getCentreY();
-        g.setColour(juce::Colour(0xff6a6a6a));
+        g.setColour(knobTrack);
         g.fillRect(r.getX(), cy - 1, r.getWidth(), 2.f);
         g.setColour(text);
         g.fillRect(r.getX(), cy - 1, pos - r.getX(), 2.f);
@@ -178,7 +183,7 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
     } else {
         // A fader: a thin slot and a flat cap, as Live's mixer.
         const float cx = r.getCentreX();
-        g.setColour(juce::Colour(0xff3a3a3a));
+        g.setColour(knobRim);
         g.fillRect(cx - 1, r.getY(), 2.f, r.getHeight());
         g.setColour(text);
         juce::Path cap;
@@ -188,8 +193,8 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
 }
 void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, float pos,
                                 float start, float end, juce::Slider &s) {
-    // Live's knob: a thick dark ring open at the foot, blue from its start to the
-    // value, and a dark needle from the centre that stops short of the ring.
+    // Live's knob: a thick ring open at the foot (knobRing), blue from its start to the value,
+    // and a needle from the centre that stops short of the ring (knobNeedle).
     const auto b = juce::Rectangle<int>(x, y, w, h).toFloat();
     const float r = std::min(b.getWidth(), b.getHeight()) / 2 - 3.f;
     const float cx = b.getCentreX(), cy = b.getCentreY();
@@ -207,7 +212,7 @@ void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, f
         g.setColour(value);
         g.strokePath(fill, stroke);
     }
-    g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId));
+    g.setColour(s.findColour(juce::Slider::rotarySliderOutlineColourId));
     juce::Path needle;
     needle.startNewSubPath(cx, cy);
     needle.lineTo(cx + 0.72f * r * std::sin(a), cy - 0.72f * r * std::cos(a));
@@ -229,7 +234,7 @@ juce::Label *LiveLook::createSliderTextBox(juce::Slider &s) {
 juce::Font LiveLook::getLabelFont(juce::Label &l) {
     // A value box's number is Live's box text, whatever the slider set.
     if (dynamic_cast<juce::Slider *>(l.getParentComponent()) != nullptr)
-        return font(12.f);
+        return font(fontField);
     return l.getFont().getHeight() > 0 ? l.getFont() : font();
 }
 void LiveLook::fillTextEditorBackground(juce::Graphics &g, int w, int h, juce::TextEditor &e) {
@@ -240,7 +245,7 @@ void LiveLook::drawTextEditorOutline(juce::Graphics &g, int w, int h, juce::Text
     g.setColour(e.hasKeyboardFocus(true) ? accent : outline);
     g.drawRect(0, 0, w, h, 1);
 }
-juce::Font LiveLook::getPopupMenuFont() { return font(12.f); }
+juce::Font LiveLook::getPopupMenuFont() { return font(fontField); }
 void LiveLook::drawPopupMenuBackground(juce::Graphics &g, int w, int h) {
     g.fillAll(field);
     g.setColour(outline);
@@ -248,16 +253,37 @@ void LiveLook::drawPopupMenuBackground(juce::Graphics &g, int w, int h) {
 }
 void LiveLook::drawScrollbar(juce::Graphics &g, juce::ScrollBar &, int x, int y, int w, int h,
                              bool vertical, int thumbStart, int thumbSize, bool, bool) {
-    g.setColour(juce::Colour(0xff6a6a6a));
+    g.setColour(knobTrack);
     if (vertical)
         g.fillRoundedRectangle(static_cast<float>(x + 2), static_cast<float>(thumbStart),
-                               static_cast<float>(w - 4), static_cast<float>(thumbSize), 3.f);
+                               static_cast<float>(w - 4), static_cast<float>(thumbSize), radiusThumb);
     else
         g.fillRoundedRectangle(static_cast<float>(thumbStart), static_cast<float>(y + 2),
-                               static_cast<float>(thumbSize), static_cast<float>(h - 4), 3.f);
+                               static_cast<float>(thumbSize), static_cast<float>(h - 4), radiusThumb);
 }
 LiveLook &liveLook() {
     static LiveLook look;
     return look;
+}
+namespace {
+ThemeId currentTheme = ThemeId::Dark;
+DensityId currentDensity = DensityId::Compact;
+} // namespace
+ThemeId themeId() noexcept { return currentTheme; }
+DensityId densityId() noexcept { return currentDensity; }
+bool apply(ThemeId theme, DensityId density) {
+    const bool changed = theme != currentTheme || density != currentDensity;
+    currentTheme = theme;
+    currentDensity = density;
+    const auto &t = themeFor(theme);
+#define ADI_LOOK_SET_COLOUR(name) name = juce::Colour(t.name);
+    ADI_THEME_ROLES(ADI_LOOK_SET_COLOUR)
+#undef ADI_LOOK_SET_COLOUR
+    const auto &d = densityFor(density);
+#define ADI_LOOK_SET_SIZE(name) name = d.name;
+    ADI_DENSITY_ROLES(ADI_LOOK_SET_SIZE, ADI_LOOK_SET_SIZE)
+#undef ADI_LOOK_SET_SIZE
+    liveLook().setColours();
+    return changed;
 }
 } // namespace adi::ui::look

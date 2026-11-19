@@ -1,0 +1,398 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/device_copy.hpp"
+#include "adi/digest.hpp"
+#include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
+#include "adi/store.hpp"
+#include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
+#include <cstdio>
+#include <limits>
+#include <stdexcept>
+namespace {
+using namespace adi;
+int checks=0,failures=0;
+void check(bool ok,const char* what){++checks;if(!ok){++failures;std::printf("FAIL %s\n",what);}}
+struct Fixture {
+    test::TempDirectory temporary{"device_copy","stored"};
+    std::unique_ptr<Store> store;
+    std::string hash;
+    Fixture() {
+        StoreError error{};store=Store::create(temporary.path()/"song.adi",error);
+        if(!store)throw std::runtime_error(toString(error));
+        auto& db=store->db();
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Source'),(2,'audio','Destination')");
+        db.exec("INSERT INTO device_chains(id,track_id,name) VALUES(10,1,'Source chain'),(20,2,'Destination')");
+        db.exec("INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype,path_hint,is_shell,shell_id) VALUES(30,'clap','test.uid','Vendor','Original','1.2','effect','not-loaded.clap',1,0)");
+        db.exec("INSERT INTO remote_hosts(id,name,host,port) VALUES(50,'LAN','localhost',55000)");
+        db.exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,enabled,is_rack,rack_kind,preset_name,latency_samples,remote_host_id,always_process,missing) VALUES(40,10,9223372036854775806,30,'Renamed',0,0,NULL,'Preset',5000000000,50,1,1),"
+            "(51,20,5,30,'Before',1,0,NULL,'',0,NULL,0,0),(52,20,5,30,'Target',1,0,NULL,'',0,NULL,0,0),(53,20,9,30,'After',1,0,NULL,'',0,NULL,0,0)");
+        db.exec("INSERT INTO plugin_params(device_id,param_id,name,normalized_value,real_value,display,unit,flags) VALUES(40,'tone','Tone',0,NULL,'Zero','Hz',9223372036854775806)");
+        const std::vector<std::byte> bytes={std::byte{0},std::byte{255},std::byte{1}};
+        hash=media::blake3Bytes(bytes).hex;
+        SQLite::Statement blob(db,"INSERT INTO state_blobs(hash_blake3,data,size_bytes) VALUES(?,?,?)");
+        blob.bind(1,hash);blob.bind(2,bytes.data(),static_cast<int>(bytes.size()));blob.bind(3,static_cast<std::int64_t>(bytes.size()));blob.exec();
+        SQLite::Statement state(db,"INSERT INTO plugin_state(device_id,stream_role,state_hash,format_hint) VALUES(40,'state',?,'opaque')");
+        state.bind(1,hash);state.exec();
+        db.exec("INSERT INTO device_panels(device_id) VALUES(40);INSERT INTO device_panel_params(device_id,ord,param_id) VALUES(40,1,'unknown'),(40,0,'tone')");
+        db.exec("INSERT INTO device_expression_routes(device_id,route) VALUES(40,'mpe_midi')");
+    }
+};
+void reads() {
+    Fixture f;auto& db=f.store->db();const auto before=db.execAndGet("SELECT count(*) FROM ops").getInt();
+    const auto copy=readDeviceCopy(*f.store,40);
+    check(copy.ok && !copy.hasNestedChains && copy.insert.at("id")==40 && copy.insert.at("chain")==10,"read captures native device identity without a live host");
+    check(copy.insert.at("ord")==std::numeric_limits<std::int64_t>::max()-1 && copy.insert.at("latency")==5000000000LL,"read retains full 64-bit native order and latency");
+    check(copy.insert.at("name")=="Renamed" && copy.insert.at("enabled")==false && copy.insert.at("always")==true && copy.insert.at("missing")==true && copy.insert.at("preset")=="Preset","device state flags and user name are distinct from plug-in metadata");
+    check(copy.reference && copy.reference->id==30 && copy.reference->uid=="test.uid" && copy.reference->format=="clap" &&
+          copy.reference->name=="Original" && copy.reference->pathHint=="not-loaded.clap" && copy.reference->isShell && copy.reference->shellId==0,"read includes the referenced plug-in metadata and explicit shell zero");
+    check(copy.insert.at("rackKind").is_null() && copy.insert.at("remoteHost")==50,"native nullable rack and remote host metadata are retained");
+    check(copy.insert.at("params")[0].at("norm")==0 && copy.insert.at("params")[0].at("real").is_null() &&
+          copy.insert.at("params")[0].at("flags")==std::numeric_limits<std::int64_t>::max()-1,"stored params preserve zero, absent real value and full-width flags");
+    check(copy.insert.at("state")[0].at("hash")==f.hash && copy.insert.at("state")[0].at("hint")=="opaque" &&
+          f.store->getStateBlob(f.hash)->size()==3,"copy carries state hashes without inlining opaque pool bytes");
+    check(copy.insert.at("panel")==Payload::array({"tone","unknown"}) && copy.insert.at("route")=="mpe_midi","configured panel order and expression route are readable");
+    check(db.execAndGet("SELECT count(*) FROM ops").getInt()==before,"copy read appends no op");
+    check(!readDeviceCopy(*f.store,999).ok,"missing device is refused");
+    StoreError error{};auto readonly=Store::open(f.temporary.path()/"song.adi",error,true);
+    check(readonly && readDeviceCopy(*readonly,40).ok,"read-only project supports device inspection");
+    auto refused=prepareDevicePaste(*readonly,copy,70,20,52);
+    check(!refused.ok,"read-only project refuses paste preparation");
+    OpRequest edit;edit.opType="device.setParam";edit.payload={{"dev",40},{"param","tone"},{"norm",0.75}};
+    check(OpJournal(*f.store).commit(edit).ok && readDeviceCopy(*f.store,40).insert.at("params")[0].at("norm")==0.75 &&
+          copy.insert.at("params")[0].at("norm")==0,"new read reflects journal edit while retained clipboard remains immutable");
+}
+void pasteAndUndo() {
+    Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
+    const auto prepared=prepareDevicePaste(*f.store,copy,70,20,52);
+    check(prepared.ok && prepared.options.expectHead && !prepared.options.expectHead->has_value(),"paste captures an expected empty undo root");
+    const auto result=commitDevicePaste(*f.store,prepared);
+    if(!result.ok)std::printf("paste: %s\n",result.error.c_str());
+    check(result.ok,"ordered paste commits its moves and insertion as one batch");
+    check(db.execAndGet("SELECT group_concat(id,',') FROM (SELECT id FROM devices WHERE chain_id=20 ORDER BY ord,id)").getString()=="51,70,52,53","paste is immediately before the selected device, including legacy order ties");
+    const auto pasted=readDeviceCopy(*f.store,70);
+    check(pasted.ok && pasted.insert.at("params")==copy.insert.at("params") && pasted.insert.at("state")==copy.insert.at("state") &&
+          pasted.insert.at("panel")==copy.insert.at("panel") && pasted.insert.at("route")==copy.insert.at("route"),"pasted device has exact stored params, state hashes, panel and route");
+    check(pasted.insert.at("latency")==5000000000LL && pasted.insert.at("remoteHost")==50,"paste preserves full-width fields and remote host reference");
+    check(History(*f.store).undo().ok && db.execAndGet("SELECT count(*) FROM devices WHERE id=70").getInt()==0 &&
+          db.execAndGet("SELECT ord FROM devices WHERE id=51").getInt64()==5 &&
+          db.execAndGet("SELECT ord FROM devices WHERE id=52").getInt64()==5 &&
+          db.execAndGet("SELECT ord FROM devices WHERE id=53").getInt64()==9,"one undo removes the copy and restores every exact original order value");
+    check(History(*f.store).redo().ok && readDeviceCopy(*f.store,70).insert.at("params")==copy.insert.at("params"),"redo uses captured identity and stored values");
+    const auto append=prepareDevicePaste(*f.store,copy,71,20);
+    check(append.ok && commitDevicePaste(*f.store,append).ok &&
+          db.execAndGet("SELECT id FROM devices WHERE chain_id=20 ORDER BY ord DESC,id DESC LIMIT 1").getInt64()==71,"null selection appends to the chosen chain");
+}
+void refusals() {
+    Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
+    check(!prepareDevicePaste(*f.store,copy,40,20).ok && !prepareDevicePaste(*f.store,copy,51,20).ok,"paste refuses source identity and occupied IDs");
+    check(!prepareDevicePaste(*f.store,copy,70,999).ok && !prepareDevicePaste(*f.store,copy,70,20,40).ok,"paste refuses missing chain and selection in another chain");
+    for(const char* field:{"remoteHost","flags"}) {
+        auto invalid=copy;
+        if(std::string(field)=="flags")invalid.insert["params"][0]["flags"]=std::numeric_limits<std::uint64_t>::max();
+        else invalid.insert[field]=std::numeric_limits<std::uint64_t>::max();
+        const auto invalidPaste=prepareDevicePaste(*f.store,invalid,70,20,52);
+        const auto refusedInteger=commitDevicePaste(*f.store,invalidPaste);
+        check(!refusedInteger.ok && db.execAndGet("SELECT count(*) FROM devices WHERE id=70").getInt()==0 &&
+              db.execAndGet("SELECT ord FROM devices WHERE id=51").getInt64()==5,"out-of-range integers roll back insertion and all earlier order moves");
+    }
+    const auto prepared=prepareDevicePaste(*f.store,copy,70,20,52);
+    OpRequest rename;rename.opType="device.rename";rename.payload={{"id",40},{"name","Newer"}};
+    check(OpJournal(*f.store).commit(rename).ok,"intervening edit fixture");
+    const auto stale=commitDevicePaste(*f.store,prepared);
+    check(!stale.ok && stale.stale && db.execAndGet("SELECT count(*) FROM devices WHERE id=70").getInt()==0 &&
+          db.execAndGet("SELECT ord FROM devices WHERE id=51").getInt64()==5,"stale paste refuses all order changes and insertion");
+    Fixture other;check(!prepareDevicePaste(*other.store,copy,70,20).ok,"clipboard cannot confuse state pools or plug-in refs from another project");
+    db.exec("UPDATE devices SET is_rack=1,rack_kind='audio_effect',remote_host_id=NULL WHERE id=40");
+    db.exec("INSERT INTO device_chains(id,parent_device_id,name) VALUES(60,40,'Nested')");
+    const auto rack=readDeviceCopy(*f.store,40);
+    check(rack.ok && rack.hasNestedChains && rack.insert.at("rackKind")=="audio_effect" && rack.insert.at("remoteHost").is_null(),"reader exposes rack metadata and nested-chain limitation");
+    const auto refused=prepareDevicePaste(*f.store,rack,70,20);
+    check(!refused.ok && refused.error.find("nested chain image")!=std::string::npos,"nested rack copy refuses rather than dropping its contents");
+}
+void reusedReferenceIds() {
+    Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
+    check(copy.remoteHost && copy.remoteHost->id==50 && copy.remoteHost->host=="localhost" &&
+          copy.remoteHost->port==55000 && copy.remoteHost->protocol=="audiogridder","clipboard captures remote endpoint identity without opening it");
+    // Simulates ID reuse after undoing the original reference creation.
+    db.exec("UPDATE plugin_refs SET uid='different.plugin' WHERE id=30");
+    const auto wrong=prepareDevicePaste(*f.store,copy,70,20);
+    check(!wrong.ok && wrong.error.find("identity changed")!=std::string::npos,"same project and row ID cannot select a different plug-in from an old clipboard");
+    db.exec("UPDATE plugin_refs SET uid='test.uid',name='Updated label',path_hint='moved.clap' WHERE id=30");
+    check(prepareDevicePaste(*f.store,copy,70,20).ok,"plug-in label and binary relocation keep the same identity");
+    db.exec("UPDATE remote_hosts SET host='other-machine' WHERE id=50");
+    const auto remote=prepareDevicePaste(*f.store,copy,70,20);
+    check(!remote.ok && remote.error.find("identity changed")!=std::string::npos,"reused remote endpoint ID cannot redirect a copied device");
+    db.exec("UPDATE remote_hosts SET host='localhost',name='New label' WHERE id=50");
+    check(prepareDevicePaste(*f.store,copy,70,20).ok,"remote endpoint label does not change its identity");
+}
+
+void emptyTrack(Fixture &f) {
+    f.store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(3,'audio','Empty')");
+}
+void pasteToEmptyTrack() {
+    Fixture f;
+    emptyTrack(f);
+    auto &db = f.store->db();
+    const auto copy = readDeviceCopy(*f.store, 40);
+    const auto before = digestProject(*f.store).text;
+    const auto prepared = prepareDevicePasteForTrack(*f.store, copy, 70, 3);
+    check(prepared.ok && prepared.chainId == 21 && prepared.requests.size() == 2 &&
+              prepared.requests.front().opType == "chain.create" &&
+              prepared.requests.back().opType == "device.insert",
+          "track paste stages the missing chain before the device");
+    check(digestProject(*f.store).text == before &&
+              db.execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+          "track paste preparation changes neither project nor journal");
+    const auto result = commitDevicePaste(*f.store, prepared);
+    check(result.ok &&
+              db.execAndGet("SELECT count(*) FROM device_chains WHERE id=21 AND track_id=3 AND "
+                            "ord=0 AND name='Devices'")
+                      .getInt() == 1 &&
+              db.execAndGet("SELECT count(*) FROM devices WHERE id=70 AND chain_id=21 AND ord=0")
+                      .getInt() == 1,
+          "one commit creates a real destination chain and its pasted device");
+    check(db.execAndGet("SELECT count(*) FROM ops").getInt() == 2 &&
+              db.execAndGet("SELECT count(DISTINCT txn_id) FROM ops").getInt() == 1,
+          "chain creation and device insertion share one undo transaction");
+    const auto pasted = readDeviceCopy(*f.store, 70);
+    check(pasted.ok && copy.ok && pasted.insert.at("params") == copy.insert.at("params") &&
+              pasted.insert.at("state") == copy.insert.at("state") &&
+              pasted.insert.at("panel") == copy.insert.at("panel") &&
+              pasted.insert.at("route") == copy.insert.at("route"),
+          "empty-track paste retains exact parameter/state/panel/route bytes");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before &&
+              db.execAndGet("SELECT count(*) FROM device_chains WHERE track_id=3").getInt() == 0,
+          "one undo restores the exact project with no destination chain");
+    const auto redone = History(*f.store).redo();
+    const auto again = readDeviceCopy(*f.store, 70);
+    check(redone.ok && again.ok && pasted.ok && again.insert == pasted.insert,
+          "redo restores the same chain identity and stored device image");
+    check(!commitDevicePaste(*f.store, prepared).ok &&
+              db.execAndGet("SELECT count(*) FROM device_chains WHERE track_id=3").getInt() == 1,
+          "a completed track packet cannot create a second chain");
+}
+void appendToTrackAndSubmitPacket() {
+    Fixture f;
+    const auto copy = readDeviceCopy(*f.store, 40);
+    OpRequest rename;
+    rename.opType = "device.rename";
+    rename.payload = {{"id", 40}, {"name", "Changed after copy"}};
+    check(OpJournal(*f.store).commit(rename).ok, "track append captures a non-root undo head");
+    const auto before = digestProject(*f.store).text;
+    const auto prepared = prepareDevicePasteForTrack(*f.store, copy, 70, 2);
+    check(prepared.ok && prepared.chainId == 20 &&
+              std::none_of(prepared.requests.begin(), prepared.requests.end(),
+                           [](const auto &op) { return op.opType == "chain.create"; }),
+          "track paste reuses the existing top-level chain");
+    check(OpJournal(*f.store).commit(prepared.requests).ok &&
+              f.store->db()
+                      .execAndGet("SELECT group_concat(id,',') FROM (SELECT id FROM devices WHERE "
+                                  "chain_id=20 ORDER BY ord,id)")
+                      .getString() == "51,52,53,70",
+          "ordinary outside-engine submission carries the complete prepared append");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before,
+          "undo of a track append retains its original chain and exact tied orders");
+}
+void topLevelTrackChainChoice() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO device_chains(id,track_id,ord,name) VALUES(25,2,-1,'First')");
+    const auto before = digestProject(*f.store).text;
+    const auto prepared = prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 2);
+    check(
+        prepared.ok && prepared.chainId == 25 && commitDevicePaste(*f.store, prepared).ok &&
+            f.store->db()
+                    .execAndGet("SELECT count(*) FROM devices WHERE id=70 AND chain_id=25")
+                    .getInt() == 1 &&
+            f.store->db()
+                    .execAndGet("SELECT count(*) FROM devices WHERE chain_id=20 AND ord=5")
+                    .getInt() == 2,
+        "track append chooses the first top-level chain by order and leaves its sibling untouched");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before,
+          "undo retains both pre-existing top-level chains");
+}
+void fullWidthTrackChainIdentity() {
+    Fixture f;
+    emptyTrack(f);
+    SQLite::Statement last(f.store->db(), "INSERT INTO device_chains(id,track_id) VALUES(?,1)");
+    last.bind(1, std::numeric_limits<std::int64_t>::max() - 1);
+    last.exec();
+    const auto before = digestProject(*f.store).text;
+    const auto prepared = prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+    check(prepared.ok && prepared.chainId == std::numeric_limits<std::int64_t>::max() &&
+              commitDevicePaste(*f.store, prepared).ok,
+          "track paste keeps a chain identity at the full int64 boundary");
+    check(History(*f.store).undo().ok && digestProject(*f.store).text == before,
+          "undo of a full-width chain identity restores the exact project");
+}
+void staleTrackPacket(Fixture &f, const PreparedDevicePaste &prepared, const char *label) {
+    const auto before = digestProject(*f.store).text;
+    const auto ops = f.store->db().execAndGet("SELECT count(*) FROM ops").getInt64();
+    const auto result = commitDevicePaste(*f.store, prepared);
+    check(!result.ok && result.stale && digestProject(*f.store).text == before &&
+              f.store->db().execAndGet("SELECT count(*) FROM ops").getInt64() == ops,
+          label);
+}
+void trackPasteGuards() {
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        f.store->db().exec("INSERT INTO device_chains(id,track_id,name) VALUES(99,3,'External')");
+        staleTrackPacket(f, prepared,
+                         "same-head added destination chain refuses the staged empty-chain packet");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        f.store->db().exec("UPDATE tracks SET name='Changed' WHERE id=3");
+        staleTrackPacket(f, prepared,
+                         "same-head changed destination track refuses before chain creation");
+    }
+    {
+        Fixture f;
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 2);
+        f.store->db().exec("UPDATE devices SET ord=17 WHERE id=53");
+        staleTrackPacket(f, prepared,
+                         "same-head destination order edit is not overwritten by captured moves");
+    }
+    {
+        Fixture f;
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 2);
+        f.store->db().exec("INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) "
+                           "VALUES(100,20,7,30,'External')");
+        staleTrackPacket(f, prepared,
+                         "same-head inserted destination device is covered by the row-set guard");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        f.store->db().exec(
+            "INSERT OR REPLACE INTO device_chains(id,track_id,name) VALUES(21,1,'Occupied')");
+        staleTrackPacket(
+            f, prepared,
+            "reserved chain identity reuse is a stale-target refusal without partial rows");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        f.store->db().exec(
+            "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(70,10,0,30,'Reused')");
+        staleTrackPacket(f, prepared,
+                         "same-head new device identity reuse refuses before any chain write");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        f.store->db().exec("UPDATE plugin_refs SET uid='different.plugin' WHERE id=30");
+        staleTrackPacket(
+            f, prepared,
+            "same-head plug-in reference reuse cannot redirect a prepared track paste");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        OpRequest change;
+        change.opType = "device.rename";
+        change.payload = {{"id", 40}, {"name", "Newer"}};
+        check(OpJournal(*f.store).commit(change).ok,
+              "intervening edit before ordinary track-packet submission");
+        const auto before = digestProject(*f.store).text;
+        const auto result = OpJournal(*f.store).commit(prepared.requests);
+        check(!result.ok && result.stale && digestProject(*f.store).text == before,
+              "ordinary submission cannot drop the captured expected undo head");
+    }
+}
+void trackPasteAtomicRefusals() {
+    {
+        Fixture f;
+        emptyTrack(f);
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        auto partial = prepared;
+        if (!partial.requests.empty())
+            partial.requests.erase(partial.requests.begin());
+        check(!commitDevicePaste(*f.store, partial).ok &&
+                  f.store->db()
+                          .execAndGet("SELECT count(*) FROM device_chains WHERE track_id=3")
+                          .getInt() == 0,
+              "an incomplete outside-engine packet refuses without a chain");
+        check(commitDevicePaste(*f.store, prepared).ok,
+              "invalid partial offer does not poison the authentic complete packet");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        auto invalid = readDeviceCopy(*f.store, 40);
+        const auto before = digestProject(*f.store).text;
+        if (invalid.ok && invalid.insert.contains("params") &&
+            invalid.insert.at("params").is_array() && !invalid.insert.at("params").empty())
+            invalid.insert["params"][0]["flags"] = std::numeric_limits<std::uint64_t>::max();
+        const auto prepared = prepareDevicePasteForTrack(*f.store, invalid, 70, 3);
+        const auto result = commitDevicePaste(*f.store, prepared);
+        check(
+            !result.ok && digestProject(*f.store).text == before &&
+                f.store->db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+            "failed device insertion rolls back the earlier real chain.create and all audit rows");
+        const auto retry =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        check(retry.ok && retry.chainId == 21 && commitDevicePaste(*f.store, retry).ok,
+              "a fresh packet can reuse identities after atomic rollback");
+    }
+    {
+        Fixture f;
+        emptyTrack(f);
+        SQLite::Statement max(f.store->db(), "INSERT INTO device_chains(id,track_id) VALUES(?,1)");
+        max.bind(1, std::numeric_limits<std::int64_t>::max());
+        max.exec();
+        const auto prepared =
+            prepareDevicePasteForTrack(*f.store, readDeviceCopy(*f.store, 40), 70, 3);
+        check(!prepared.ok && prepared.error.find("exhausted") != std::string::npos &&
+                  f.store->db()
+                          .execAndGet("SELECT count(*) FROM device_chains WHERE track_id=3")
+                          .getInt() == 0,
+              "chain identity exhaustion refuses without signed overflow or writes");
+    }
+    {
+        Fixture f;
+        const auto copy = readDeviceCopy(*f.store, 40);
+        check(!prepareDevicePasteForTrack(*f.store, copy, 70, 999).ok,
+              "track paste refuses a missing destination");
+        Fixture other;
+        check(!prepareDevicePasteForTrack(*other.store, copy, 70, 2).ok,
+              "track paste keeps the same-project clipboard identity check");
+    }
+}
+}
+int main() {
+    try {
+        reads();
+        pasteAndUndo();
+        refusals();
+        reusedReferenceIds();
+        pasteToEmptyTrack();
+        appendToTrackAndSubmitPacket();
+        topLevelTrackChainChoice();
+        fullWidthTrackChainIdentity();
+        trackPasteGuards();
+        trackPasteAtomicRefusals();
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
+    std::printf("%d checks, %d failures\n", checks, failures);
+    return failures ? 1 : 0;
+}

@@ -2730,11 +2730,22 @@ void testScopeTaps() {
         check(m.session.openScope(77) == nullptr, "no tap for a track the graph does not have");
         check(ta->latency() == -100 && tb->latency() == 0,
               "A's tap knows it is heard 100 samples late (the delay as -100 latency); B's, on time");
+        const auto settleTaps = [&] {
+            for (int attempt = 0; attempt < 4; ++attempt) {
+                const auto pending = m.session.scopeStats();
+                if (!pending.awaitingAudio && !pending.deferredPlans) return true;
+                { auto boundary = m.session.beginRender(); static_cast<void>(boundary); }
+                m.session.collectScopeTaps();
+            }
+            const auto pending = m.session.scopeStats();
+            return !pending.awaitingAudio && !pending.deferredPlans;
+        };
+        check(settleTaps() && ta->written() == 0 && tb->written() == 0 && m.session.transport().position() == 0,
+              "both taps adopt at empty callback boundaries before the first heard sample");
         m.session.transport().play();
         for (int k = 0; k < 8; ++k) m.render(512);
         auto stepStamp = [](const ScopeTap& t) {
-            // Everything written so far: a session's first block after a
-            // publish may go to the graph before the tap is attached.
+            // The empty callback boundaries attached both taps before rendering.
             const auto n = static_cast<std::size_t>(std::min<std::int64_t>(t.written(), t.capacity()));
             std::vector<float> x(n), y(n);
             std::int64_t first = 0;
@@ -2748,10 +2759,13 @@ void testScopeTaps() {
                     static_cast<long long>(sb));
         check(sb == 1000 && sa == 1100,
               "B's step is heard at 1000 and A's, delayed, at 1100: matching stamps is matching what is heard");
+        const std::int64_t before = ta->written(), openBefore = tb->written();
         m.session.closeScope(1);
-        const std::int64_t before = ta->written();
+        check(settleTaps() && ta->written() == before && tb->written() == openBefore,
+              "closed demand adopts without consuming samples from either tap");
         m.render(512);
-        check(ta->written() == before && tb->written() > before - 1, "a closed tap is written no more; the open one is");
+        check(ta->written() == before && tb->written() == openBefore + 512,
+              "a closed tap stays closed while the open tap captures the complete next callback");
     }
 }
 
@@ -2931,15 +2945,26 @@ void testOverride() {
 #define ADI_TEST_MASTER_SUMMING 0
 #endif
 
-int runMixerSuites(bool masterOnly) {
+#ifndef ADI_TEST_GROUP_SUMMING
+#define ADI_TEST_GROUP_SUMMING 0
+#endif
+
+// MSVC's checked Debug iterators make the console sweeps much slower than
+// ordinary mixer checks. Separate ctest entries keep each within the existing
+// timeout; every render and assertion still runs exactly once.
+int runMixerSuites(bool masterOnly, bool groupOnly) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf(masterOnly ? "adi_master_summing_tests -- master console summing (ADR-0203 d14)\n\n" :
-                            "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
+                            (groupOnly ? "adi_group_summing_tests -- group consoles and send levels (ADR-0174)\n\n" :
+                                         "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n"));
     try {
         if (masterOnly) {
             testGroupSumming(true, Precision::Float32);
             testGroupSumming(true, Precision::Float64);
             testNestedMasterSumming();
+        } else if (groupOnly) {
+            testGroupSumming();
+            testSendsHoldTheirLevel();
         } else {
             testPanLaws();
             testASendNode();
@@ -2956,9 +2981,7 @@ int runMixerSuites(bool masterOnly) {
             testTheFeedbackLoop();
             testTheLoopsRing();
             testSendsPlay();
-            testSendsHoldTheirLevel();
             testPreSendsAndTheSendsPan();
-            testGroupSumming();
             testScopeTaps();
         }
     } catch (const std::exception& e) {
@@ -2968,4 +2991,4 @@ int runMixerSuites(bool masterOnly) {
     return g_failures ? 1 : 0;
 }
 
-int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0); }
+int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0, ADI_TEST_GROUP_SUMMING != 0); }

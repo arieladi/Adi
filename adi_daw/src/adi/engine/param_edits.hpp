@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <utility>
 #include <vector>
+
+namespace adi::gesture::detail { class ProducerFence; }
 
 namespace adi::engine {
 
@@ -25,8 +28,21 @@ struct ParamEdit {
     bool implicit = false;
 };
 
+enum class ParamActivityKind : std::uint8_t { Begin, Value, End, QuietEnd, Absorbed, Echo, Ignored };
+/// Owned-consumer observation of one event or a synthetic quiet completion.
+/// Its fence remains pinned by this capture until every prefix is transferred.
+struct ParamActivity {
+    ParamActivityKind kind = ParamActivityKind::Ignored;
+    ParamEvent event;
+    double before = 0, after = 0;
+    bool implicit = false, afterNavigation = false;
+    gesture::detail::ProducerFence* fence = nullptr;
+};
+
 /// ADR-0122 d11 / ADR-0110: capture only, never plugin calls or store ops.
-/// Exactly one producer calls push (thread handover requires external sync).
+/// One producer may publish at a time. A ring-owned bounded atomic admission
+/// refuses concurrent SDK entry and latches its source fault; it never waits.
+/// This admission is shared by every retained binding that names this ring.
 /// All other methods, including stats(), belong to a single consumer thread.
 /// Caller supplies monotonic milliseconds. Events carry no timestamp: their
 /// lastValueMs is the drain time at which the consumer observes them.
@@ -40,9 +56,23 @@ public:
     // Negative capacity or negative/NaN settings throw invalid_argument.
     explicit ParamEditCapture(std::int32_t capacity);
     bool push(const ParamEvent&) noexcept;
+    bool push(const ParamEvent&, gesture::detail::ProducerFence*) noexcept;
+    /// Owner only, before publishing a binding that supplies this raw fence.
+    void retainFence(std::shared_ptr<gesture::detail::ProducerFence>);
+    std::size_t drainLifecycle(std::int64_t nowMs, std::vector<ParamEdit>&,
+                               std::vector<ParamActivity>&, bool absorb = false);
     void seed(std::int64_t deviceId, std::int32_t paramIndex, double value);
     void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value,
                     std::int64_t nowMs);
+    /// Consumer: a UI drag can send several values before an asynchronous
+    /// plug-in answers. Keep up to 256 recent expected echoes within the TTL.
+    /// expectEcho retains its original replace/rearm contract.
+    void expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
+                              double value, std::int64_t nowMs);
+    void cancelEcho(std::int64_t deviceId, std::int32_t paramIndex);
+    /// Consumer: cancel already-drained gesture state. Queued producer events
+    /// remain queued. ParamOps uses this for its synchronous UI capture only.
+    void cancel(std::int64_t deviceId, std::int32_t paramIndex);
     std::size_t drain(std::int64_t nowMs, std::vector<ParamEdit>& out);
     /// ADR-0142: the drain for an interval in which the plugin signalled a
     /// state change (a preset load). Explicit gestures that END in it are
@@ -69,19 +99,33 @@ public:
     // called: a pointer held across pushes reads stale values (ADR-0141).
     // pushed counts accepted events. dropped counts rejected push attempts.
     [[nodiscard]] const Stats& stats() const noexcept;
+    /// Consumer-only snapshot: events published after a drain's boundary may
+    /// already be included in stats().pushed while still waiting in the ring.
+    [[nodiscard]] bool hasPendingEvents() const noexcept {
+        return read_.load(std::memory_order_relaxed) != write_.load(std::memory_order_acquire);
+    }
 
 private:
     struct Parameter {
+        struct Echo { double value = 0.0; std::int64_t armedMs = 0; };
         bool known = false, open = false, implicit = false, hasValue = false;
         bool guarded = false;
         double last = 0.0, before = 0.0, after = 0.0, echo = 0.0;
         std::int64_t lastValueMs = 0, armedMs = 0;
+        std::vector<Echo> echoes; // consumer only; never inspected by push
     };
     using Key = std::pair<std::int64_t, std::int32_t>;
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);
-    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb);
-    std::vector<ParamEvent> ring_; // one additional sentinel slot
+    std::size_t drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out, bool absorb, std::vector<ParamActivity>* activity = nullptr);
+    struct Slot {
+        ParamEvent event;
+        gesture::detail::ProducerFence* fence = nullptr;
+        bool afterNavigation = false;
+    };
+    std::vector<Slot> ring_; // one additional sentinel slot
+    std::vector<std::shared_ptr<gesture::detail::ProducerFence>> fenceOwners_;
     std::atomic<std::size_t> read_{0}, write_{0};
+    std::atomic_flag producerActive_ = ATOMIC_FLAG_INIT;
     // Only the producer writes these counters; no contended RMW or retry loop.
     std::atomic<std::int64_t> pushed_{0}, dropped_{0};
     std::map<Key, Parameter> parameters_;

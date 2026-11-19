@@ -68,6 +68,10 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
     if (status >= 0xF0) return 0;             // system messages are not ours
 
     const std::uint8_t type  = static_cast<std::uint8_t>(status & 0xF0);
+    const std::int32_t needed=type==0xD0?2:
+        (type==0x80 || type==0x90 || type==0xB0 || type==0xE0)?3:0;
+    if(needed==0 || n<needed)return 0;
+    for(std::int32_t index=1;index<needed;++index)if(bytes[index]>=0x80)return 0;
     const std::uint8_t chan1 = static_cast<std::uint8_t>((status & 0x0F) + 1);
     ChannelState& cs = chan(chan1);
     const bool member = zone_.isMember(chan1);
@@ -94,10 +98,11 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 // Anchored to the note that is actually sounding on this
                 // channel. A note-off for a key we are not holding gets no
                 // id rather than a wrong one.
-                e.noteId  = (cs.key == key && cs.noteId != 0) ? cs.noteId : 0;
+                e.noteId  = member ? ((cs.key == key && cs.noteId != 0) ? cs.noteId : 0) : cs.plainNotes[key];
                 e.dim     = key;
                 e.value   = cc7ToUnit(vel);
-                if (cs.key == key) { cs.noteId = 0; cs.key = 0; }
+                if(!member)cs.plainNotes[key]=0;
+                if (e.noteId==cs.noteId && e.noteId!=0) { cs.noteId = 0; cs.key = 0; }
                 if (emit(sink, ctx, e)) ++emitted;
                 return emitted;
             }
@@ -113,6 +118,7 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
                 e.value   = cc7ToUnit(vel);    // velocity as a DOUBLE, 0..1
                 cs.noteId = e.noteId;
                 cs.key    = key;
+                if(!member)cs.plainNotes[key]=e.noteId;
                 ++notesStarted_;
                 if (emit(sink, ctx, e)) ++emitted;
             }
@@ -157,6 +163,16 @@ int MpeParser::feed(const std::uint8_t* bytes, std::int32_t n,
             const std::uint8_t val = static_cast<std::uint8_t>(bytes[2] & 0x7F);
             cs.cc[cc] = val;
             cs.ccSeen[cc] = true;
+
+            // Only member-channel CC74/106 is MPE timbre. Ordinary controls,
+            // including master-channel pedals and plain MIDI timbre, retain
+            // their address rather than disappearing or becoming expression.
+            if(!member || (cc!=kTimbreCcMsb && cc!=kTimbreCcMsb+32)) {
+                Event e;e.type=EventType::Controller;e.frame=frame_;
+                e.channel=static_cast<std::uint8_t>(chan1-1);e.paramId=cc;e.value=cc7ToUnit(val);
+                if(emit(sink,ctx,e))++emitted;
+                return emitted;
+            }
 
             // An LSB completing a high-resolution pair. This is the branch the
             // whole mandate rests on: taking the MSB alone would hand

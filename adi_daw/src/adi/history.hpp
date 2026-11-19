@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include "adi/history_compaction.hpp"
+#include "adi/history_policy.hpp"
 #include "adi/ops.hpp"
 
 #include <cstdint>
@@ -33,6 +35,9 @@ class Store;
 class History {
 public:
     explicit History(Store&);
+    // A cross-baseline restore invalidates stateful runtime consumers. The
+    // caller explicitly prepares a stopped/reloadable Session, then reloads it.
+    enum class StoredRestore { Refuse, SessionReloadPrepared };
 
     /// What Ctrl-Z / Ctrl-Y would act on. Describes a whole transaction, since
     /// that is the unit both operate on.
@@ -60,6 +65,7 @@ public:
         /// Purely a UI hint -- restoring it is the view's business, and ignoring
         /// it is always correct.
         std::optional<Payload> selBefore;
+        bool sessionReloadRequired = false;
     };
 
     Result undo();
@@ -74,13 +80,46 @@ public:
         std::optional<std::int64_t> headSeq;
         bool isCurrent = false;
         std::int64_t createdUtc = 0;
+        std::optional<std::string> storedStateHash = std::nullopt;
     };
     [[nodiscard]] std::vector<Branch> branches() const;
+
+    /// Restore a retained whole-edit boundary in one transaction and one
+    /// applied delivery. NULL means the original pre-edit state (the stored
+    /// origin root after compaction). A transaction interior or ephemeral seq
+    /// refuses; an unchanged target writes/notifies nothing. Departing redo
+    /// tips remain reachable, with a system branch stamped by caller nowUtc
+    /// when necessary; zero is permitted when no timestamp is supplied.
+    /// Cross-baseline moves retain the same stop/fence/reload requirement as
+    /// switchToBranch. Result counts all inverse/forward operations; txnId is
+    /// zero because several original transactions may be traversed.
+    Result moveTo(std::optional<std::int64_t> seq, std::int64_t nowUtc = 0,
+                  StoredRestore = StoredRestore::Refuse);
 
     /// Move to another branch's head. The project is rewound to the common
     /// ancestor and replayed forward, so this is a real navigation, not a label
     /// change. The branch left keeps its head, so nothing becomes unreachable.
-    Result switchToBranch(std::int64_t branchId);
+    Result switchToBranch(std::int64_t branchId, StoredRestore = StoredRestore::Refuse);
+
+    // Caps are project metadata. Setting a policy also compacts atomically.
+    UndoCompactionResult setUndoRetentionPolicy(const UndoRetentionPolicy &);
+    UndoCompactionResult compactUndo();
+    struct ReplayBaseResult {
+        bool ok = false;
+        std::int64_t baseSeq = 0;
+        std::string error;
+        std::vector<std::int64_t> retainedSeqs; // current ancestry, oldest first
+    };
+    // Hold a source read transaction across this call and retained-log reads.
+    // Restore the source checkpoint into a journal-empty target, preserving its
+    // UI metadata. Replay exactly retainedSeqs in order; other roots/branches
+    // and the current redo tail are not part of the materialized current state.
+    static ReplayBaseResult restoreReplayBase(const Store &source, Store &target);
+    // Open an archived snapshot into an empty target without modifying the
+    // source, including a read-only source. A point still in stepwise history
+    // is refused; it uses ordinary copy/navigation. No retained replay is needed.
+    static ReplayBaseResult restoreStoredSnapshot(const Store &source, std::int64_t snapshotId,
+                                                  Store &target);
 
     // --- snapshots (ADR-0128, SPEC 8.6) ---------------------------------------
     //
@@ -98,7 +137,36 @@ public:
         std::int64_t branchId = 0;           // current when taken; a record, not a pointer
         std::int64_t createdUtc = 0;         // microseconds, UTC
         bool automatic = false;
+        std::optional<std::string> storedStateHash = std::nullopt;
     };
+
+    struct TimelineStep {
+        Step step; // whole transaction, label/actor from its first edit op
+        std::optional<std::int64_t> parentSeq; // before this transaction
+        std::int64_t createdUtc = 0;
+        bool applied = false; // on the current head's ancestry
+        bool onCurrentLine = false; // ancestry plus the redo line Ctrl-Y follows
+        std::vector<std::int64_t> branchIds;
+        std::vector<std::int64_t> snapshotIds;
+    };
+    struct Timeline {
+        std::vector<TimelineStep> steps; // newest lastSeq first, every branch; excludes the checkpoint root
+        std::vector<Branch> branches; // id order; current head moves with undo
+        std::vector<Snapshot> snapshots; // newest createdUtc/id first, including root
+        std::optional<std::int64_t> headSeq, currentBranchId;
+        std::int64_t baseSeq = 0; // retained structural root; zero when history has not compacted
+        std::string error; // no partial data on failure
+    };
+
+    /// Message-thread metadata read, outside journal mutations. One consistent
+    /// read transaction; only structural hash payloads are decoded, never edit
+    /// payloads, inverses or full-state blobs. Ephemeral
+    /// performance/session ops and the checkpoint root are excluded from steps.
+    /// Root snapshots remain in snapshots, including anchors exactly at baseSeq;
+    /// branch heads and step parents retain their stored sequence values.
+    /// branchIds names stored-head ancestry; the current branch also includes
+    /// its redo line. No branch/snapshot metadata or undo head is changed.
+    [[nodiscard]] Timeline readTimeline() const;
 
     struct SnapshotResult {
         bool ok = false;
@@ -110,11 +178,14 @@ public:
     /// Names the current head. An empty `name` becomes
     /// defaultSnapshotName(project name, createdUtc, utcOffsetMinutes), the
     /// local time being UTC plus the offset the CALLER supplies (ADR-0128 d4).
-    SnapshotResult takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                int utcOffsetMinutes, bool automatic = false);
+    SnapshotResult takeSnapshot(const std::string &name, std::int64_t createdUtc, int utcOffsetMinutes,
+                                bool automatic = false, const HistorySnapshotPolicy &policy = {});
 
-    /// Renames in place. Not an op and not undoable (ADR-0128 d5). An empty name
-    /// is refused rather than defaulted: a rename is always a typed name.
+    /// Explicit user removal of snapshot metadata; never an undo operation.
+    Result removeSnapshot(std::int64_t snapshotId);
+
+    /// Renames in place and promotes automatic points to named. Not an op and
+    /// not undoable (ADR-0128 d5). An empty name is refused.
     Result renameSnapshot(std::int64_t snapshotId, const std::string& newName);
 
     /// Every snapshot, oldest first (created_utc, then id).
@@ -125,7 +196,8 @@ public:
     /// across branches. Whatever the head's line held beyond that point stays
     /// reachable: if no other branch already holds its tip, a branch named
     /// "before revert to '<name>'" is created for it, stamped `nowUtc`.
-    Result revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc);
+    Result revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc,
+                            StoredRestore = StoredRestore::Refuse);
 
     /// "<Project Name> <YYYY-MM-DD HH:MM>" at UTC + `utcOffsetMinutes`. An
     /// unnamed project is "Untitled". Pure: exposed so the format is testable.

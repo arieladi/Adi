@@ -45,14 +45,12 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
     // out of order, a point between two grid lines would be compared with the
     // later line's value and skipped as unchanged, and a step would land on
     // the grid instead of where it is drawn.
-    const std::vector<PlacedPoint>& pts = lane.program->points;
-    auto point = std::upper_bound(pts.begin(), pts.end(), first,
-                                  [](std::int64_t s, const PlacedPoint& p) { return s < p.sample; });
+    auto point = automationBoundaryAfter(*lane.program, first);
     const std::int64_t last = first + (end - frame);   // one past the run's last sample
     std::int32_t grid = (frame / interval_ + 1) * interval_;
     for (;;) {
-        const std::int32_t atPoint = (point != pts.end() && point->sample < last)
-                                         ? frame + static_cast<std::int32_t>(point->sample - first)
+        const std::int32_t atPoint = point < last
+                                         ? frame + static_cast<std::int32_t>(point - first)
                                          : end;
         const std::int32_t next = std::min(grid, atPoint);
         if (next >= end) break;
@@ -60,7 +58,7 @@ void DeviceAutomation::run(Lane& lane, EventList& out, std::int32_t frame, std::
         if (next == grid) grid += interval_;
         if (next == atPoint) {
             // Several points on one sample (a step) are one offer.
-            while (point != pts.end() && point->sample == first + (next - frame)) ++point;
+            point = automationBoundaryAfter(*lane.program, first + (next - frame));
         }
     }
 }

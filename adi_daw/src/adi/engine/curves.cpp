@@ -70,4 +70,12 @@ double curveValue(double v0, double v1, double x, std::uint8_t curve, double ten
     return v0 * (1.0 - u) + v1 * u;
 }
 
+double curveSliceValue(double v0,double v1,double x,std::uint8_t curve,double tension,const CurveSlice* slice) noexcept {
+    if(!slice)return curveValue(v0,v1,x,curve,tension);
+    if(!(x>0))return v0;
+    if(x>=1)return v1;
+    const double source=slice->begin+(slice->end-slice->begin)*x;
+    return curveValue(slice->sourceFirst,slice->sourceLast,source,curve,tension);
+}
+
 }  // namespace adi::engine

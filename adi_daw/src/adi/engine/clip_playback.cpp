@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/clip_fade.hpp"
+#include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/progressive_decode.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -12,6 +16,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <stdexcept>
@@ -47,30 +52,22 @@ std::int64_t samples(double seconds, double rate) {
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
 }
-// One curve at either width: float at 32, as always; double at 64 (ADR-0207 d2).
-template <typename T>
-T fade(T x, std::int64_t curve) noexcept {
-    x = std::clamp(x, T{0}, T{1});
-    switch (curve) {
-    case 0: return x >= 1 ? T{1} : T{0};
-    case 2: return x*x;
-    case 3: return std::sqrt(x);
-    case 4: return x*x*(T{3}-T{2}*x);
-    default: return x;
-    }
-}
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
-    // acquire ownership BEFORE reading even the page number; no seqlock over
-    // non-atomic samples, no concurrent overwrite and no audio-side retry loop.
+    // acquire ownership BEFORE trusting the page number (an unowned peek is
+    // only a filter); no seqlock over non-atomic samples, no concurrent
+    // overwrite and no audio-side retry loop.
     std::atomic<int> state{0};
     std::atomic<std::int64_t> number{-1};
     std::vector<float> data;
 };
+struct PrefixPending {};
 struct Clip {
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
     std::int64_t inCurve = 1, outCurve = 1;
+    std::optional<double> inTension,outTension;
+    std::array<std::optional<std::int64_t>,4> fadeClock;
     std::uint64_t sourceStart = 0, sourceLength = 0;
     std::uint32_t sourceRate = 0, rate = 0;
     std::int64_t pageFrames = 8192;
@@ -80,6 +77,9 @@ struct Clip {
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
+    std::shared_ptr<const audio::PreparedWarp> warped;
+    std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool failed = false; // page worker only
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
     // the decoded copy again, so without this a session's decoded files stayed
@@ -94,6 +94,10 @@ struct Clip {
         try { audio::defaultDecodeCache().release(pinned); } catch (...) {}
     }
     std::array<Page, slots> pages;
+    // Single request producer/renderer only. Admission is a real lease: a
+    // worker must not even temporarily claim a page until rendering releases
+    // or supersedes it. No callback allocation or shared ownership operation.
+    std::array<Page*,slots> admitted{};
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
@@ -101,20 +105,18 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length ? n : -1;
+        return n < length && n < playEnd ? n : -1;
     }
-    float envelope(std::int64_t time) const noexcept {
-        float g = gain;
-        if (fadeIn > 0) g *= fade(static_cast<float>(time-start)/static_cast<float>(fadeIn),inCurve);
-        if (fadeOut > 0) g *= fade(static_cast<float>(end-1-time)/static_cast<float>(fadeOut),outCurve);
-        return g;
+    template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
+        const auto local=time-start+offset;
+        if(fadeClock[0])gainValue*=clipFadeShape(static_cast<V>(local-*fadeClock[0])/static_cast<V>(*fadeClock[1]-*fadeClock[0]),inCurve,inTension);
+        else if(fadeIn>0)gainValue*=clipFadeShape(static_cast<V>(time-start)/static_cast<V>(fadeIn),inCurve,inTension);
+        if(fadeClock[2])gainValue*=clipFadeShape(static_cast<V>(*fadeClock[3]-1-local)/static_cast<V>(*fadeClock[3]-*fadeClock[2]),outCurve,outTension);
+        else if(fadeOut>0)gainValue*=clipFadeShape(static_cast<V>(end-1-time)/static_cast<V>(fadeOut),outCurve,outTension);
+        return gainValue;
     }
-    double envelopeWide(std::int64_t time) const noexcept {
-        double g = gainWide;
-        if (fadeIn > 0) g *= fade(static_cast<double>(time-start)/static_cast<double>(fadeIn),inCurve);
-        if (fadeOut > 0) g *= fade(static_cast<double>(end-1-time)/static_cast<double>(fadeOut),outCurve);
-        return g;
-    }
+    float envelope(std::int64_t time)const noexcept {return shaped(time,gain);}
+    double envelopeWide(std::int64_t time)const noexcept {return shaped(time,gainWide);}
     /// One output channel's sample of this clip at `sample` (a frame of the
     /// file), by the clip's channel mode. A fold of the channels is a sum, in
     /// double (ADR-0207 d2), rounded to `V` once.
@@ -131,13 +133,16 @@ struct Clip {
         if(c<channels) return sample[c];
         return V{0};
     }
-    std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames) const noexcept {
+    std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
         if (!t.playing()) return out;
         std::size_t used = 0;
         auto sourceRange = [&](std::int64_t from, std::int64_t count) {
-            if(from<0 || from>=length || count<=0) return;
-            const auto last=std::min(length,from+count)-1;
+            // sourceAt never reads at or past End, so no page there is wanted.
+            // A looped clip has playEnd==length.
+            const auto audible=std::min(length,playEnd);
+            if(from<0 || from>=audible || count<=0) return;
+            const auto last=std::min(audible,from+count)-1;
             for(auto p=from/pageFrames;p<=last/pageFrames && used<slots;++p)
                 if(std::find(out.begin(),out.end(),p)==out.end()) out[used++]=p;
         };
@@ -169,7 +174,7 @@ struct Clip {
         // Mandatory current-block pages first, then two scaled pages: at least
         // 16384/48000 seconds of lead at every session rate.
         horizon(frames);
-        horizon(pageFrames*2);
+        if(lookAhead)horizon(pageFrames*2);
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -177,14 +182,45 @@ struct Clip {
         for(std::size_t i=0;i<slots;++i) requests[i].store(w[i],std::memory_order_seq_cst);
         requestSeq.fetch_add(1,std::memory_order_seq_cst);
     }
+    void releaseAdmission() noexcept {
+        for(auto& page:admitted)if(page){auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);}
+    }
+    void trimAdmission(const std::array<std::int64_t,slots>& wantedPages) noexcept {
+        for(auto& page:admitted)if(page && std::find(wantedPages.begin(),wantedPages.end(),page->number.load(std::memory_order_relaxed))==wantedPages.end()){
+            auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);
+        }
+    }
+    void release(Page* page) noexcept {
+        if(std::find(admitted.begin(),admitted.end(),page)==admitted.end())page->state.store(2,std::memory_order_release);
+    }
     Page* acquire(std::int64_t number) noexcept {
+        for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return page;
         for (auto& p : pages) {
+            // Unowned peek as a filter only, so the worker never sees a slot
+            // this reader does not want as transiently taken; the number is
+            // checked again once the slot is owned.
+            if(p.state.load(std::memory_order_acquire)!=2 || p.number.load(std::memory_order_relaxed)!=number) continue;
             int ready=2;
             if (!p.state.compare_exchange_strong(ready,3,std::memory_order_acquire)) continue;
-            if(p.number==number) return &p;
+            if(p.number.load(std::memory_order_relaxed)==number) return &p;
             p.state.store(2,std::memory_order_release);
         }
         return nullptr;
+    }
+    bool reserve(std::int64_t number) noexcept {
+        for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return true;
+        for(auto& page:admitted)if(!page){page=acquire(number);return page!=nullptr;}
+        return false;
+    }
+    void readSource(std::uint64_t first,float* out,std::uint32_t count) {
+        if(progressive) {
+            const auto result=progressive->read(first,std::span(out,static_cast<std::size_t>(count)*channels));
+            if(result==audio::ProgressiveRead::Pending)throw PrefixPending{};
+            if(result!=audio::ProgressiveRead::Frames)throw std::runtime_error("progressive source failed: "+progressive->error());
+        }else {
+            reader->seek(first);
+            if(reader->read(out,count)!=count)throw std::runtime_error("short WAV source read");
+        }
     }
     std::vector<float> renderRange(std::int64_t first, std::int64_t count, std::uint32_t currentRate) {
         if (currentRate == sourceRate) {
@@ -192,11 +228,8 @@ struct Clip {
             const auto readBegin = std::max<std::int64_t>(0, first);
             const auto readEnd = std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength), first + count);
             if (readEnd > readBegin) {
-                reader->seek(sourceStart + static_cast<std::uint64_t>(readBegin));
                 auto* dst = buf.data() + static_cast<std::size_t>(readBegin - first) * channels;
-                if (reader->read(dst, static_cast<std::uint32_t>(readEnd - readBegin)) != readEnd - readBegin) {
-                    throw std::runtime_error("short conversion read");
-                }
+                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             return buf;
         }
@@ -236,8 +269,7 @@ struct Clip {
         std::fill(p.data.begin(),p.data.end(),0.0f);
         const auto count=std::min(pageFrames,length-first);
         if (rate==sourceRate) {
-            reader->seek(sourceStart+static_cast<std::uint64_t>(first));
-            if (reader->read(p.data.data(),static_cast<std::uint32_t>(count))!=count) throw std::runtime_error("short WAV read");
+            readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
         } else if (static_cast<double>(rate) / sourceRate > 256.0) {
             std::vector<float> res = renderRange(first, count, rate);
             std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
@@ -258,9 +290,8 @@ struct Clip {
             const auto readBegin=std::max<std::int64_t>(0,begin);
             const auto readEnd=std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength),begin+inputCount);
             if (readEnd>readBegin) {
-                reader->seek(sourceStart+static_cast<std::uint64_t>(readBegin));
                 auto* dst=input.data()+static_cast<std::size_t>(readBegin-begin)*channels;
-                if(reader->read(dst,static_cast<std::uint32_t>(readEnd-readBegin))!=readEnd-readBegin) throw std::runtime_error("short conversion read");
+                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             SRC_DATA data{};
             data.data_in=input.data(); data.data_out=output.data();
@@ -273,12 +304,24 @@ struct Clip {
         }
         p.number=number;
     }
-    bool service() {
+    bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe) {
+        if(failed)return false;
+        if(progressive) {
+            const auto status=progressive->snapshot().status;
+            if(status==audio::ProgressiveStatus::Failed || status==audio::ProgressiveStatus::Cancelled) {
+                failed=true;errors.fetch_add(1,std::memory_order_relaxed);return false;
+            }
+        }
         std::array<std::int64_t,slots> w;
         const auto seq=requestSeq.load(std::memory_order_seq_cst);
         if ((seq&1u)!=0) return false;
         for(std::size_t i=0;i<slots;++i) w[i]=requests[i].load(std::memory_order_seq_cst);
         if(requestSeq.load(std::memory_order_seq_cst)!=seq) return false;
+        struct CompletedProbe {
+            const ClipPlayback::RequestSnapshotProbeForTest* probe;
+            ~CompletedProbe(){if(probe && probe->afterService)probe->afterService(probe->context);}
+        } completed{probe};
+        if(probe && probe->afterSnapshot)probe->afterSnapshot(probe->context,w.front());
         bool worked=false;
         for(const auto number:w) {
             if(number<0) continue;
@@ -291,12 +334,28 @@ struct Clip {
             for(auto& p:pages) {
                 int state=p.state.load(std::memory_order_relaxed);
                 if(state!=0 && state!=2) continue;
-                if(!p.state.compare_exchange_strong(state,1,std::memory_order_acquire)) continue;
-                if(state==2 && std::find(w.begin(),w.end(),p.number.load(std::memory_order_relaxed))!=w.end()) {
-                    p.state.store(2,std::memory_order_release); continue;
+                const auto oldPage=p.number.load(std::memory_order_relaxed);
+                // Never claim, even briefly, a ready page of this same request:
+                // a reader inside that claim would see a cached page as missing.
+                // Only this worker writes number, so the unowned read is exact.
+                if(state==2 && std::find(w.begin(),w.end(),oldPage)!=w.end()) continue;
+                if(probe && probe->beforePageClaim)probe->beforePageClaim(probe->context,oldPage,number);
+                const bool claimed=p.state.compare_exchange_strong(state,1,std::memory_order_acquire);
+                if(probe && probe->afterPageClaimAttempt)probe->afterPageClaimAttempt(probe->context,oldPage,number,claimed);
+                if(!claimed)continue;
+                // The audio driver can replace the request while this worker
+                // is walking an older snapshot. Recheck AFTER owning the page:
+                // a ready query that acquired/released this page after posting
+                // its request synchronizes with this claim, so stale work cannot
+                // evict a page it just admitted. If we claimed first, the query
+                // sees worker-owned state and refuses instead.
+                if(requestSeq.load(std::memory_order_seq_cst)!=seq) {
+                    p.state.store(state,std::memory_order_release);
+                    return worked;
                 }
                 try { fill(p,number); }
-                catch(...) { errors.fetch_add(1,std::memory_order_relaxed); p.number=-1; }
+                catch(const PrefixPending&) { p.number=-1;p.state.store(0,std::memory_order_release);break; }
+                catch(...) { failed=true;errors.fetch_add(1,std::memory_order_relaxed); p.number=-1; }
                 p.state.store(p.number>=0?2:0,std::memory_order_release);
                 worked=true; break;
             }
@@ -330,7 +389,10 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing()) return;
+        if(!transport.playing()){
+            for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
+            return;
+        }
         // One clip is not a sum: its samples go straight out, bit for bit.
         // Two or more may overlap, and then every sample is summed in double:
         // at 32 into `wide`, converted once at the end; at 64 the output is
@@ -344,15 +406,22 @@ public:
             return wide[static_cast<std::size_t>(c)*static_cast<std::size_t>(maxFrames)+static_cast<std::size_t>(io.blockOffset+i)];
         };
         if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i) at(c,i)=0.0;
-        for(auto* clip:clips) {
-            if(io.blockOffset==0) clip->request(clip->wanted(transport,maxFrames));
+        // Raw indices avoid MSVC Debug vector-iterator ownership locks.
+        for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
+            auto* clip=clips[clipIndex];
+            if(io.blockOffset==0){
+                const auto required=clip->wanted(transport,maxFrames,false);
+                clip->trimAdmission(required);
+                clip->request(clip->wanted(transport,maxFrames));
+                for(const auto number:required)if(number>=0)(void)clip->reserve(number);
+            }
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
             for(std::int32_t i=0;i<io.frames;++i) {
                 const auto time=transport.sampleAt(io.blockOffset+i);
                 const auto n=clip->sourceAt(time);
                 if(n<0) continue;
                 if(n/clip->pageFrames!=number) {
-                    if(page) page->state.store(2,std::memory_order_release);
+                    if(page) clip->release(page);
                     number=n/clip->pageFrames; page=clip->acquire(number);
                 }
                 if(!page) { ++missing; continue; }
@@ -370,7 +439,7 @@ public:
                         out[c][io.blockOffset+i]+=gain*clip->valueOf<double>(sample,c);
                 }
             }
-            if(page) page->state.store(2,std::memory_order_release);
+            if(page) clip->release(page);
             if(missing) clip->underruns.fetch_add(missing,std::memory_order_relaxed);
         }
         if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i)
@@ -386,12 +455,13 @@ struct ClipPlayback::Impl {
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
     std::atomic<bool> stalled{false};
+    std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     std::jthread worker;
     Impl(Transport& t,std::int32_t f):transport(t),maxFrames(f){}
     ~Impl() { worker.request_stop(); if(worker.joinable()) worker.join(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
-                           double rate,std::int32_t channels,std::int32_t maxFrames)
+                           double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder)
     :impl_(std::make_shared<Impl>(transport,maxFrames)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
@@ -407,9 +477,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(a->warpEnabled) throw std::runtime_error("warp unsupported; silent");
             if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
-            if(a->transposeSemis!=0 || a->formantShift!=0) throw std::runtime_error("pitch/formant shift unsupported; silent");
+            if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
@@ -419,15 +488,37 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // WavReader sniffs RIFF/RF64/BW64; no decoder on the callback.
-            // Any other format is decoded here, off it, into the cache (ADR-0156).
-            const auto file=audio::playableFile(clip->path);
-            if(file!=clip->path) clip->pinned=file; // pinned by the cache; released in ~Clip
-            clip->reader=std::make_unique<audio::WavReader>(file);
-            clip->channels=clip->reader->channels(); clip->sourceRate=clip->reader->sampleRate(); clip->rate=static_cast<std::uint32_t>(rate);
-            if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000) throw std::runtime_error("source format outside supported bounds; silent");
-
-            if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>clip->reader->frames() || static_cast<std::uint64_t>(a->srcLenFrames)>clip->reader->frames()-static_cast<std::uint64_t>(a->srcStartFrames)) throw std::runtime_error("source window outside WAV; silent");
+            // A muted clip opens no media. Its decode job would be cancelled
+            // when it is dropped here, yet stay queued against the decoder's
+            // job and space budgets ahead of the clips that do play.
+            if(row.muted) continue;
+            // Direct WAV remains unchanged. Plain compressed clips consume a
+            // shared worker's flushed prefixes; Warp still needs its complete
+            // offline render and unknown-length sources retain the full path.
+            fs::path file=clip->path;
+            std::uint64_t sourceFrames=0;
+            try {clip->reader=std::make_unique<audio::WavReader>(file);}catch(const std::exception&){}
+            if(!clip->reader && !a->warpEnabled) {
+                const auto info=audio::inspectPcm(clip->path);
+                if(info.frames && *info.frames) {
+                    auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
+                    clip->progressive=service.open(clip->path);
+                    clip->channels=static_cast<std::uint16_t>(clip->progressive->info().channels);
+                    clip->sourceRate=clip->progressive->info().sampleRate;
+                    sourceFrames=*clip->progressive->info().frames;
+                }
+            }
+            if(!clip->reader && !clip->progressive) {
+                file=audio::playableFile(clip->path);
+                if(file!=clip->path)clip->pinned=file;
+                clip->reader=std::make_unique<audio::WavReader>(file);
+            }
+            if(clip->reader) {
+                clip->channels=clip->reader->channels();clip->sourceRate=clip->reader->sampleRate();sourceFrames=clip->reader->frames();
+            }
+            clip->rate=static_cast<std::uint32_t>(rate);
+            if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000)throw std::runtime_error("source format outside supported bounds; silent");
+            if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>sourceFrames || static_cast<std::uint64_t>(a->srcLenFrames)>sourceFrames-static_cast<std::uint64_t>(a->srcStartFrames))throw std::runtime_error("source window outside audio; silent");
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
@@ -438,6 +529,28 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
                 return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
             };
+            if(row.contentOffsetTicks<0)throw std::runtime_error("negative clip content offset");
+            const auto sourceOrigin=origin-row.contentOffsetTicks;
+            auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
+            if(a->warpEnabled) {
+                if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
+                const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
+                if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
+                audio::WarpRenderPlan spec;spec.source=file;spec.workFolder=fs::temp_directory_path()/"adi-warp";
+                spec.sourceStart=clip->sourceStart;spec.sourceFrames=clip->sourceLength;spec.outputRate=clip->rate;
+                spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
+                const auto mode=audio::parseWarpMode(a->warpMode);if(!mode)throw std::runtime_error("warp mode is not available");
+                spec.mode=*mode;
+                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
+                if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
+                spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
+                auto prepared=audio::prepareWarp(spec);
+                if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
+                clip->reader.reset();
+                clip->warped=std::move(prepared.prepared);clip->reader=std::make_unique<audio::WavReader>(clip->warped->file);
+                clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
+                clip->length=static_cast<std::int64_t>(clip->warped->frames);
+            }
             clip->start=samples(startSeconds,rate);
             std::int64_t endTicks=origin;
             double endSeconds=startSeconds;
@@ -448,26 +561,59 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 endSeconds=tempo.ticksToSeconds(endTicks);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                if(nanos<0) throw std::runtime_error("invalid clip duration");
-                endSeconds+=static_cast<double>(nanos)*1e-9;
+                const auto begin=row.posNs.value_or(0);
+                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                    throw std::runtime_error("invalid clip duration");
+                // Preserve the stored absolute endpoint before conversion: a
+                // separately converted begin + duration can miss a sample tie.
+                endSeconds=static_cast<double>(begin+nanos)*1e-9;
                 endTicks=tempo.secondsToTicks(endSeconds);
             }
             // Quantise both absolute endpoints once. Rounding a duration and
             // adding it to a rounded start can lose or add a sample.
-            clip->end=samples(endSeconds,rate); clip->offset=duration(row.contentOffsetTicks);
+            clip->end=samples(endSeconds,rate);
+            auto fixedTime=[&](std::int64_t nanos) {
+                if(nanos<0)throw std::runtime_error("negative source clock");
+                return samples(static_cast<double>(nanos)*1e-9,rate);
+            };
+            clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
+            if(!row.loopEnabled) {
+                if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
+                else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
+            }
+            const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
+            for(std::size_t i=0;i<4;i+=2) {
+                if(fadeClock[i].has_value()!=fadeClock[i+1].has_value())throw std::runtime_error("incomplete fade clock");
+                if(fadeClock[i]) {
+                    const auto first=a->warpEnabled?sourceDuration(*fadeClock[i]):fixedTime(*fadeClock[i]);
+                    const auto last=a->warpEnabled?sourceDuration(*fadeClock[i+1]):fixedTime(*fadeClock[i+1]);
+                    if(last<=first)throw std::runtime_error("fade clock has no sample extent");
+                    clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
+                }
+            }
+            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
+            if (!row.loopEnabled && row.endMarkerTicks) {
+                if (*row.endMarkerTicks <= row.contentOffsetTicks)
+                    throw std::runtime_error("invalid audio clip End marker; silent");
+                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
+            }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
             clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
+            if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
+               (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
+                throw std::runtime_error("invalid fade tension; silent");
+            clip->inTension=row.fadeInTension;clip->outTension=row.fadeOutTension;
             if(row.loopEnabled) {
                 const auto loopTicks=row.loopLenTicks.value_or(0);
                 if(loopTicks<0 || row.loopStartTicks<0 || row.loopStartTicks>std::numeric_limits<std::int64_t>::max()-loopTicks) throw std::runtime_error("invalid loop ticks");
-                clip->loopBegin=duration(row.loopStartTicks);clip->loopLength=duration(row.loopStartTicks+loopTicks)-clip->loopBegin;
+                clip->loopBegin=!a->warpEnabled && row.loopBeginNs?fixedTime(*row.loopBeginNs):sourceDuration(row.loopStartTicks);
+                clip->loopLength=!a->warpEnabled && row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:sourceDuration(row.loopStartTicks+loopTicks)-clip->loopBegin;
                 if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
             clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
-            if(row.muted) continue;
             for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
             if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
@@ -479,7 +625,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     impl_->worker=std::jthread([p=impl_.get()](std::stop_token stop){
         while(!stop.stop_requested()) {
             bool work=false;
-            if(!p->stalled.load(std::memory_order_acquire)) for(auto& c:p->clips) { if(stop.stop_requested()) break; work=c->service()||work; }
+            if(!p->stalled.load(std::memory_order_acquire)) for(auto& c:p->clips) {
+                if(stop.stop_requested()) break;
+                work=c->service(p->requestProbe.load(std::memory_order_acquire))||work;
+            }
             if(!work) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
@@ -491,20 +640,95 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
+void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
+    impl_->requestProbe.store(probe,std::memory_order_release);
+}
 std::uint32_t ClipPlayback::underrunSamples() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->underruns.load();return n; }
 std::uint32_t ClipPlayback::readErrors() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->errors.load();return n; }
+std::vector<std::string> ClipPlayback::decodeProblems() const {
+    if(audio::onAudioThread)return {};
+    std::vector<std::string> result;
+    for(const auto& clip:impl_->clips)if(clip->progressive) {
+        const auto status=clip->progressive->snapshot().status;
+        if(status==audio::ProgressiveStatus::Failed || status==audio::ProgressiveStatus::Cancelled)
+            result.push_back(clip->progressive->error());
+    }
+    return result;
+}
 bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
-    const auto until=std::chrono::steady_clock::now()+timeout;
-    for(auto& c:impl_->clips)c->request(c->wanted(impl_->transport,impl_->maxFrames));
+    if(audio::onAudioThread)return false;
+    return primeAt(impl_->transport,timeout);
+}
+ClipPlayback::Readiness ClipPlayback::readiness() const {
+    if(audio::onAudioThread)return {};
+    return [held=impl_](const Transport& snapshot,std::int32_t frames) noexcept {
+        if(frames<1 || frames>held->maxFrames)return false;
+        // One producer, the audio driver. This fixed target is shared by the
+        // admission check and the source immediately rendered after it.
+        const Transport target=snapshot;
+        // No checked vector iterators on the callback (MSVC Debug can lock
+        // their shared proxy). Source generations have a fixed clip count.
+        const auto releaseAll=[&]()noexcept{for(std::size_t i=0;i<held->clips.size();++i)held->clips[i]->releaseAdmission();};
+        releaseAll();
+        for(std::size_t i=0;i<held->clips.size();++i) {
+            auto& clip=held->clips[i];clip->request(clip->wanted(target,frames));
+        }
+        for(std::size_t i=0;i<held->clips.size();++i) {
+            auto& clip=held->clips[i];
+            if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+            for(const auto number:clip->wanted(target,frames,false)) {
+                if(number<0)continue;
+                if(!clip->reserve(number)){releaseAll();return false;}
+            }
+        }
+        return true;
+    };
+}
+bool ClipPlayback::primeAt(const Transport& snapshot,std::chrono::milliseconds timeout) {
+    return primeTargets(snapshot,nullptr,timeout);
+}
+bool ClipPlayback::primeAt(const Transport& snapshot,const Transport& alternate,std::chrono::milliseconds timeout) {
+    return primeTargets(snapshot,&alternate,timeout);
+}
+bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout) {
+    if(audio::onAudioThread || timeout.count()<0)return false;
+    // One stable request for the entire wait. In particular, a driver advancing
+    // the live Transport cannot move a candidate's readiness target mid-wait.
+    const Transport target=snapshot;
+    const Transport other=alternate?*alternate:Transport{};
+    auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
+        pages=clip.wanted(target,impl_->maxFrames);
+        if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames)) {
+            if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;
+            const auto empty=std::find(pages.begin(),pages.end(),-1);
+            if(empty==pages.end())return false;
+            *empty=number;
+        }
+        return true;
+    };
+    const auto started=std::chrono::steady_clock::now();
+    std::array<std::int64_t,slots> pages;
+    // Refuse the complete preparation before posting any partial union.
+    for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
+    const auto releaseAll=[&]()noexcept{for(auto& clip:impl_->clips)clip->releaseAdmission();};
+    releaseAll();
+    for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
-        for(auto& c:impl_->clips) for(const auto n:c->wanted(impl_->transport,impl_->maxFrames)) {
-            if(n<0)continue;
-            if(auto* p=c->acquire(n))p->state.store(2,std::memory_order_release);else ready=false;
+        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
+        for(auto& clip:impl_->clips) {
+            (void)wanted(*clip,pages);
+            for(const auto number:pages) {
+                if(number<0)continue;
+                if(!clip->reserve(number))ready=false;
+            }
         }
         if(ready)return true;
+        // Compare elapsed milliseconds rather than adding an arbitrary timeout
+        // to a nanosecond time_point, which can overflow for a large duration.
+        if(std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now()-started)>=timeout){releaseAll();return false;}
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    } while(std::chrono::steady_clock::now()<until);
-    return false;
+    } while(true);
 }
 }

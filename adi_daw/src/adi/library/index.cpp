@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "index.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
@@ -11,13 +12,46 @@
 #include <deque>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <system_error>
 #include <thread>
 namespace adi::library {
 namespace fs = std::filesystem;
 using Json = nlohmann::json;
 namespace {
 using Key = std::pair<std::string, std::string>;
+struct ScanCancelled {};
+constexpr std::size_t maxLibraryJsonBytes=256*1024*1024;
+class LibraryJsonGuard final:public nlohmann::json_sax<Json> {
+    struct Context {bool object=false;std::set<std::string> keys;};
+    std::vector<Context> stack_;
+    std::size_t tokens_=0;
+    bool token(){return ++tokens_<=16000000;}
+    bool begin(bool object){if(stack_.size()>=16 || !token())return false;stack_.push_back({object,{}});return true;}
+    bool end(bool object){if(stack_.empty() || stack_.back().object!=object || !token())return false;stack_.pop_back();return true;}
+public:
+    bool null()override{return token();}
+    bool boolean(bool)override{return token();}
+    bool number_integer(number_integer_t)override{return token();}
+    bool number_unsigned(number_unsigned_t)override{return token();}
+    bool number_float(number_float_t,const string_t&)override{return token();}
+    bool string(string_t& value)override{return value.size()<=kMaxSampleWarpBytes*2+65536 && token();}
+    bool binary(binary_t&)override{return false;}
+    bool start_object(std::size_t)override{return begin(true);}
+    bool key(string_t& value)override{return !stack_.empty() && stack_.back().object && value.size()<=256 && token() && stack_.back().keys.insert(value).second;}
+    bool end_object()override{return end(true);}
+    bool start_array(std::size_t)override{return begin(false);}
+    bool end_array()override{return end(false);}
+    bool parse_error(std::size_t,const std::string&,const nlohmann::detail::exception&)override{return false;}
+};
+Json libraryJson(const std::string& text) {
+    if(text.size()>maxLibraryJsonBytes)throw std::length_error("library JSON exceeds 256 MiB");
+    LibraryJsonGuard guard;
+    if(!Json::sax_parse(text,&guard))throw std::invalid_argument("invalid, duplicate, excessively deep or oversized library JSON");
+    return Json::parse(text);
+}
+
 std::string normalized(const std::string& s, bool sensitive) {
     utf8proc_uint8_t* data = nullptr;
     const auto flags = static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPOSE | (sensitive ? 0 : UTF8PROC_CASEFOLD));
@@ -43,11 +77,26 @@ auto systemTime(std::chrono::time_point<Clock, Duration> value) {
     }
 }
 struct Metadata { std::int64_t size, time; };
-Metadata metadata(const fs::path& path) {
-    const auto size = fs::file_size(path);
+// True when the entry vanished after enumeration; every other error throws.
+bool vanished(const std::error_code& ec, const char* operation, const fs::path& path) {
+    if (!ec) return false;
+    if (ec == std::errc::no_such_file_or_directory) return true;
+    throw fs::filesystem_error(operation, path, ec);
+}
+// Empty when the file was deleted or renamed after enumeration.
+std::optional<Metadata> presentMetadata(const fs::path& path) {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (vanished(ec, "file_size", path)) return std::nullopt;
     if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())) throw std::runtime_error("file too large");
-    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(systemTime(fs::last_write_time(path)).time_since_epoch()).count();
-    return {static_cast<std::int64_t>(size), time};
+    const auto written = fs::last_write_time(path, ec);
+    if (vanished(ec, "last_write_time", path)) return std::nullopt;
+    const auto time = std::chrono::duration_cast<std::chrono::nanoseconds>(systemTime(written).time_since_epoch()).count();
+    return Metadata{static_cast<std::int64_t>(size), time};
+}
+Metadata metadata(const fs::path& path) {
+    if (const auto found = presentMetadata(path)) return *found;
+    throw fs::filesystem_error("file metadata", path, std::make_error_code(std::errc::no_such_file_or_directory));
 }
 bool sameTime(std::int64_t a, std::int64_t b) {
     // Avoid signed subtraction overflow for malformed/extreme timestamps.
@@ -176,32 +225,89 @@ void Index::waitIdle() {
     impl_->cv.wait(lock,[&]{return impl_->queue.empty() && !impl_->active;});
 }
 WorkerStats Index::stats() const { std::lock_guard lock(impl_->mutex); return impl_->counts; }
-ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
+ScanResult Index::scan(const Volume &volume, const fs::path &relativeFolder, std::stop_token stop,
+                       ScanObserver observer) {
     ScanResult result;
+    ScanProgress progress;
+    const auto checkpoint = [&] {
+        if (stop.stop_requested())
+            throw ScanCancelled{};
+    };
+    const auto report = [&] {
+        checkpoint();
+        if (observer) {
+            try {
+                observer(progress);
+            } catch (const std::exception &e) {
+                throw std::runtime_error(std::string("Library scan progress observer failed: ") +
+                                         e.what());
+            } catch (...) {
+                throw std::runtime_error("Library scan progress observer failed");
+            }
+        }
+        checkpoint();
+    };
     try {
+        checkpoint();
         if (volume.id.empty()) throw std::runtime_error("volume identity is empty");
         const auto folder = relativeText(relativeFolder);
         const auto root = fs::canonical(volume.root);
         const auto start = folder.empty() ? root : root / media::pathFromUtf8(folder);
         auto componentPath = root;
         for (const auto& part : media::pathFromUtf8(folder)) {
+            checkpoint();
             componentPath /= part;
             if (fs::is_symlink(fs::symlink_status(componentPath))) throw std::runtime_error("content folder traverses symlink");
         }
         struct Item { std::string path,key; Metadata meta; };
         std::vector<Item> items; std::set<std::string> keys;
+        report();
         for (const auto& file : fs::recursive_directory_iterator(start)) {
-            if (file.is_symlink() || !file.is_regular_file()) continue;
+            checkpoint();
+            ++progress.visited;
+            std::error_code ec;
+            const bool isLink = file.is_symlink(ec);
+            const bool gone = vanished(ec, "is_symlink", file.path());
+            const bool regular = !gone && !isLink && file.is_regular_file(ec);
+            if (gone || isLink || vanished(ec, "is_regular_file", file.path()) || !regular) {
+                report();
+                continue;
+            }
             const auto path = file.path(); const auto rel = media::pathUtf8(path.lexically_relative(root));
-            if (rel == ".adi-volume-id" || rel.starts_with(".adi-volume-probe-")) continue;
+            if (rel == ".adi-volume-id" || rel.starts_with(".adi-volume-probe-")) {
+                report();
+                continue;
+            }
             const auto full = media::pathUtf8(path);
             const auto database = media::pathUtf8(impl_->path);
-            if (full == database || full == database+"-wal" || full == database+"-shm") continue;
+            if (full == database || full == database + "-wal" || full == database + "-shm") {
+                report();
+                continue;
+            }
             const auto key = normalized(rel,volume.caseSensitive);
+            // A file gone since enumeration stays out of keys: publication marks it missing.
+            const auto meta = presentMetadata(path);
+            if (!meta) {
+                report();
+                continue;
+            }
             if (!keys.insert(key).second) throw std::runtime_error("ambiguous normalized filenames: " + rel);
-            items.push_back({rel,key,metadata(path)});
+            items.push_back({rel,key,*meta});
+            ++progress.files;
+            report();
         }
-        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db);
+        progress.phase = ScanProgress::Phase::Publishing;
+        report();
+        std::unique_lock lock(impl_->mutex, std::defer_lock);
+        if (stop.stop_possible()) {
+            while (!lock.try_lock()) {
+                checkpoint();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        } else
+            lock.lock();
+        checkpoint();
+        SQLite::Transaction tx(*impl_->db);
         {
             SQLite::Statement existing(*impl_->db,"SELECT case_sensitive FROM volumes WHERE id=?"); existing.bind(1,volume.id);
             if (existing.executeStep() && (existing.getColumn(0).getInt()!=0) != volume.caseSensitive) throw std::runtime_error("volume case behavior changed; explicit rebuild needed");
@@ -214,6 +320,7 @@ ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
         SQLite::Statement change(*impl_->db,"INSERT INTO files(volume,path_key,rel_path,size,mtime) VALUES(?,?,?,?,?) ON CONFLICT(volume,path_key) DO UPDATE SET rel_path=excluded.rel_path,size=excluded.size,mtime=excluded.mtime,hash=NULL,error='',present=1,generation=files.generation+1");
         std::vector<Key> pending;
         for (const auto& item : items) {
+            checkpoint();
             ++result.files; old.reset(); old.clearBindings(); old.bind(1,volume.id); old.bind(2,item.key);
             const bool found = old.executeStep();
             const bool unchanged = found && !old.getColumn(2).isNull() && old.getColumn(0).getInt64()==item.meta.size && sameTime(old.getColumn(1).getInt64(),item.meta.time);
@@ -238,13 +345,27 @@ ScanResult Index::scan(const Volume& volume, const fs::path& relativeFolder) {
         if (!prefix.empty()) { prior.bind(2,prefix); prior.bind(3,upper); }
         SQLite::Statement missing(*impl_->db,"UPDATE files SET present=0 WHERE volume=? AND path_key=?");
         while (prior.executeStep()) {
+            checkpoint();
             const auto key=prior.getColumn(0).getString();
             if (!keys.contains(key)) { missing.reset(); missing.bind(1,volume.id); missing.bind(2,key); missing.exec(); }
         }
+        checkpoint();
         tx.commit();
         for (const auto& key : pending) impl_->enqueue(key);
         result.ok=true; impl_->cv.notify_all(); return result;
-    } catch (const std::exception& e) { result.error=e.what(); return result; }
+    } catch (const ScanCancelled &) {
+        // The transaction and mutex have already unwound. These are committed
+        // counts: cancelled publication never advertises queued/hash work.
+        result.files = result.unchanged = result.queued = 0;
+        result.cancelled = true;
+        result.error = "Library scan cancelled";
+        return result;
+    } catch (const std::exception &e) {
+        // A failed publication rolled back: no rows were committed or queued.
+        result.files = result.unchanged = result.queued = 0;
+        result.error = e.what();
+        return result;
+    }
 }
 std::vector<Entry> Index::entries() const {
     std::lock_guard lock(impl_->mutex); std::vector<Entry> result;
@@ -252,21 +373,91 @@ std::vector<Entry> Index::entries() const {
     while(q.executeStep()) result.push_back({q.getColumn(0).getString(),q.getColumn(1).getString(),q.getColumn(4).getString(),q.getColumn(5).getString(),static_cast<std::uintmax_t>(q.getColumn(2).getInt64()),q.getColumn(3).getInt64(),q.getColumn(6).getInt()!=0});
     return result;
 }
+SampleSettingsResult Index::sampleSettings(const std::string& hash) const {
+    if(audio::onAudioThread)return {SampleSettingsProblem::Realtime,{},{}};
+    if(!validHash(hash))return {SampleSettingsProblem::Invalid,"invalid sample content hash",{}};
+    try {
+        std::lock_guard lock(impl_->mutex);
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(!query.executeStep())return {SampleSettingsProblem::Missing,{},{}};
+        const auto field=query.getColumn(0);
+        if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)return {SampleSettingsProblem::Resource,"sample annotation exceeds bounds",{}};
+        const auto payload=libraryJson(field.getString());
+        if(!payload.is_object())return {SampleSettingsProblem::Invalid,"invalid library annotation",{}};
+        if(!payload.contains("sample_settings"))return {SampleSettingsProblem::Missing,{},{}};
+        return decodeSampleSettings(payload.at("sample_settings"));
+    }catch(const std::bad_alloc&){return {SampleSettingsProblem::Resource,{},{}};}
+    catch(const std::exception& e){return {SampleSettingsProblem::Database,e.what(),{}};}
+}
+SampleSettingsProblem Index::saveSampleSettings(const std::string& hash,const SampleSettings& settings,std::string& error) {
+    if(audio::onAudioThread)return SampleSettingsProblem::Realtime;
+    if(!validHash(hash)){error="invalid sample content hash";return SampleSettingsProblem::Invalid;}
+    const auto valid=validateSampleSettings(settings,error);if(valid!=SampleSettingsProblem::None)return valid;
+    try {
+        const auto encoded=encodeSampleSettings(settings);
+        std::lock_guard lock(impl_->mutex);SQLite::Transaction transaction(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
+        Json payload={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(query.executeStep()) {
+            const auto field=query.getColumn(0);
+            if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+            payload=libraryJson(field.getString());if(!payload.is_object()){error="invalid library annotation";return SampleSettingsProblem::Invalid;}
+            if(payload.contains("sample_settings")) {
+                const auto old=decodeSampleSettings(payload.at("sample_settings"));
+                if(!old){error="existing sample settings are not editable: "+old.error;return old.problem;}
+                if(payload.at("sample_settings")==encoded){transaction.commit();error.clear();return SampleSettingsProblem::None;}
+            }
+        }
+        payload["sample_settings"]=encoded;
+        SQLite::Statement put(*impl_->db,"INSERT INTO annotations(hash,payload) VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload");const auto serialized=payload.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+        put.bind(1,hash);put.bind(2,serialized);put.exec();transaction.commit();error.clear();return SampleSettingsProblem::None;
+    }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
+    catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
+}
+SampleSettingsProblem Index::clearSampleSettings(const std::string& hash,std::string& error) {
+    if(audio::onAudioThread)return SampleSettingsProblem::Realtime;
+    if(!validHash(hash)){error="invalid sample content hash";return SampleSettingsProblem::Invalid;}
+    try {
+        std::lock_guard lock(impl_->mutex);SQLite::Transaction transaction(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(query.executeStep()) {
+            const auto field=query.getColumn(0);
+            if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+            auto payload=libraryJson(field.getString());if(!payload.is_object()){error="invalid library annotation";return SampleSettingsProblem::Invalid;}
+            if(payload.erase("sample_settings")) {
+                SQLite::Statement update(*impl_->db,"UPDATE annotations SET payload=? WHERE hash=?");update.bind(1,payload.dump());update.bind(2,hash);update.exec();
+            }
+        }
+        transaction.commit();error.clear();return SampleSettingsProblem::None;
+    }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
+    catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
+}
 std::string Index::exportJson() const {
+    if(audio::onAudioThread)return {};
     std::lock_guard lock(impl_->mutex); Json media = Json::object();
     SQLite::Statement q(*impl_->db,"SELECT hash,payload FROM annotations ORDER BY hash");
-    while(q.executeStep()) media[q.getColumn(0).getString()] = Json::parse(q.getColumn(1).getString());
-    return Json{{"version",1},{"media",media}}.dump(2);
+    bool sampleDefaults=false;
+    while(q.executeStep()) {
+        auto payload=libraryJson(q.getColumn(1).getString());sampleDefaults=sampleDefaults || payload.contains("sample_settings");media[q.getColumn(0).getString()]=std::move(payload);
+    }
+    auto encoded=Json{{"version",sampleDefaults?2:1},{"media",media}}.dump(2);
+    if(encoded.size()>maxLibraryJsonBytes)throw std::length_error("library JSON export exceeds 256 MiB");
+    return encoded;
 }
 bool Index::importJson(const std::string& text,std::string& error) {
+    if(audio::onAudioThread)return false;
     try {
-        const auto document=Json::parse(text);
-        if (!document.is_object() || document.size()!=2 || document.at("version")!=1 || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
-        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db);
+        const auto document=libraryJson(text);
+        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() || (document.at("version")!=1 && document.at("version")!=2) || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
+        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
         for (const auto& [hash, incoming] : document.at("media").items()) {
             if (!validHash(hash) || !incoming.is_object()) throw std::runtime_error("metadata must be keyed by BLAKE3 hash");
             Json merged={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
-            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?"); old.bind(1,hash); if(old.executeStep()) merged=Json::parse(old.getColumn(0).getString());
+            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
+            if(old.executeStep()) {
+                const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                merged=libraryJson(field.getString());
+            }
             for(const auto& [key,value] : incoming.items()) {
                 if (key=="tags") {
                     if(!value.is_array()) throw std::runtime_error("tags must be an array");
@@ -279,9 +470,17 @@ bool Index::importJson(const std::string& text,std::string& error) {
                 } else if(key=="rating") {
                     if(!value.is_null() && (!value.is_number_integer() || value.get<std::int64_t>()<0 || value.get<std::int64_t>()>5)) throw std::runtime_error("invalid rating");
                     merged[key]=value;
+                } else if(key=="sample_settings") {
+                    if(document.at("version")!=2)throw std::runtime_error("sample defaults require library JSON version 2");
+                    const auto decoded=decodeSampleSettings(value);if(!decoded)throw std::runtime_error("invalid imported sample defaults: "+decoded.error);
+                    if(merged.contains(key)) {
+                        const auto oldSettings=decodeSampleSettings(merged.at(key));if(!oldSettings)throw std::runtime_error("existing sample defaults are not editable by this version");
+                    }
+                    merged[key]=encodeSampleSettings(*decoded.data);
                 } else throw std::runtime_error("unknown metadata field");
             }
-            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); put.bind(1,hash); put.bind(2,merged.dump()); put.exec();
+            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+            put.bind(1,hash);put.bind(2,serialized);put.exec();
         }
         tx.commit(); error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); return false; }

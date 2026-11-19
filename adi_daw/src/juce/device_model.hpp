@@ -24,6 +24,7 @@
 #pragma once
 
 #include "adi/engine/graph.hpp"
+#include "juce/device_editor.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "adi/engine/param_edits.hpp"
 
@@ -31,9 +32,12 @@
 #include <atomic>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace adi::gesture::detail { class ProducerFence; class StateProducerFence; }
 
 namespace adi::device {
 
@@ -139,6 +143,24 @@ struct ParamDescriptor {
     /// so compacting the list would silently repoint every held index at a
     /// different parameter.
     bool          missing = false;
+    // Optional native function pages. Empty keeps the existing ordinary panel layout.
+    // Page selection is presentation only; enabling a page is this real parameter's
+    // common automation/undo gesture, never a private UI bypass flag.
+    std::string   groupId{}, groupName{};
+    bool          groupEnableControl = false;
+    /// Explicit owner-thread configuration opt-in. Permits a common undoable
+    /// UI gesture without making this setting eligible for automation. Other
+    /// non-automatable parameters remain read-only unless they opt in.
+    bool          configurable = false;
+    /// Optional native function presentation metadata. A stable band number is
+    /// independent of descriptor order; -1 denotes a global control. Sections
+    /// let compact views expose one manageable control set without changing IDs.
+    std::int32_t  bandIndex = -1;
+    std::string   sectionId{}, sectionName{};
+    /// Optional exact captions for discrete values, in normalized step order.
+    /// Empty entries retain the ordinary numeric fallback. Construct once;
+    /// these are presentation data, not another value-to-parameter mapping.
+    std::vector<std::string> choiceLabels{};
 };
 
 /// Enough to find the plugin again, and to tell the user what is missing when
@@ -165,6 +187,16 @@ struct DeviceIdentity {
 /// the difference. The set of virtuals is deliberately small: anything a
 /// particular format cannot do is answered conservatively here rather than
 /// leaking a capability query upward.
+/// Owner-allocated immutable callback identity. The callback borrows one raw
+/// binding while its DeviceInstance announcement is held. Owners are reclaimed
+/// only by the message thread after a zero-announcement observation.
+struct DeviceCaptureBinding {
+    std::int64_t deviceId = 0;
+    std::shared_ptr<engine::ParamEditCapture> parameters;
+    std::shared_ptr<gesture::detail::ProducerFence> parameterFence;
+    std::shared_ptr<gesture::detail::StateProducerFence> stateFence;
+};
+
 class DeviceInstance {
 public:
     virtual ~DeviceInstance() = default;
@@ -184,6 +216,14 @@ public:
     // build never shows.
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+
+    /// Explicit mode: CLAP's native floating window follows ADR-0076; Hosted
+    /// supplies content for ADR-0180's FloatingHost, never for the device strip.
+    [[nodiscard]] virtual std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) {
+        error = "This device has no plug-in editor";
+        return {};
+    }
+
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
@@ -260,6 +300,10 @@ public:
     /// (ADR-0123 item 6). A per-device epoch is the signal that guard should
     /// always have used.
     [[nodiscard]] virtual std::uint64_t shapeEpoch() const noexcept { return 0; }
+    /// Owner-side equality stamp for reusing an already prepared instance.
+    /// Backends may expose an exact shape fingerprint without changing their
+    /// public monotonic notification counter.
+    [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return shapeEpoch(); }
 
     /// A counter that increases every time this device asks to be restarted
     /// without saying why. ADR-0179.
@@ -360,6 +404,9 @@ public:
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.
     virtual bool setParam(const std::string& paramId, const ParamValue& v);
+    /// Message thread: an accepted control is still waiting for processing.
+    /// State recall must supersede it even if the serialized chunk is equal.
+    [[nodiscard]] virtual bool hasPendingParamChanges() const noexcept { return false; }
 
     // --- opaque state (ADR-0038) -------------------------------------------
 
@@ -380,8 +427,31 @@ public:
     /// unhooking, because a push may be in flight.
     void setParamSink(engine::ParamEditCapture* capture, std::int64_t deviceId) noexcept;
     [[nodiscard]] bool hasParamSink() const noexcept {
-        return sink_.load(std::memory_order_acquire) != nullptr;
+        return captureBinding_.load(std::memory_order_acquire) != nullptr || sink_.load(std::memory_order_acquire) != nullptr;
     }
+    /// Session-bound capture owns the complete binding. Allocation occurs before
+    /// publication; detach itself never allocates. A zero reader observation is
+    /// required before retired callback owners may be destroyed.
+    void installCaptureBinding(std::shared_ptr<const DeviceCaptureBinding>);
+    void detachCaptureBinding() noexcept;
+    bool collectCaptureBindings() noexcept;
+    void reportCaptureFault() noexcept;
+    [[nodiscard]] bool captureCallbacksQuiescent() const noexcept;
+    class StateSignal {
+    public:
+        ~StateSignal();
+        StateSignal(const StateSignal&) = delete;
+        StateSignal& operator=(const StateSignal&) = delete;
+    private:
+        explicit StateSignal(DeviceInstance&) noexcept;
+        DeviceInstance* owner_ = nullptr;
+        const DeviceCaptureBinding* binding_ = nullptr;
+        bool reserved_ = false;
+        friend class DeviceInstance;
+    };
+    /// SDK adapter holds this stack token across its unmuted state epoch
+    /// publication. It performs no allocation or shared-owner transition.
+    [[nodiscard]] StateSignal beginStateSignal() noexcept { return StateSignal(*this); }
 
 protected:
     DeviceInstance() = default;
@@ -405,6 +475,12 @@ protected:
 private:
     std::atomic<engine::ParamEditCapture*> sink_{nullptr};
     std::atomic<std::int64_t> sinkDevice_{0};
+    const DeviceCaptureBinding* acquireCaptureBinding(bool& admitted) noexcept;
+    void releaseCaptureBinding() noexcept;
+    std::atomic<const DeviceCaptureBinding*> captureBinding_{nullptr};
+    std::atomic<std::uint64_t> captureReaders_{0};
+    std::vector<std::shared_ptr<const DeviceCaptureBinding>> captureOwners_;
+    std::array<std::atomic<std::uint64_t>, kAutomatedWords> gesturing_{};
 };
 
 // ---------------------------------------------------------------------------
@@ -509,6 +585,9 @@ public:
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {
         return inst_ != nullptr && inst_->processesDouble();
+    }
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
+        return inst_ != nullptr ? inst_->preparationShapeEpoch() : 0;
     }
     void willBeHanded(engine::Precision width) override {
         handed_ = width;

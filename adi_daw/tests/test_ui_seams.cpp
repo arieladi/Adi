@@ -16,6 +16,8 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/automation_lanes.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -29,6 +31,10 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/meter_edits.hpp"
+#include "adi/ui/momentary_latch.hpp"
+#include "adi/ui/tap_tempo.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -41,6 +47,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -391,6 +398,52 @@ void everyWriteRefreshesTheView() {
     check(ui::SnapshotReader{view.current()}.trackCount() == 1, "and the track is back");
 }
 
+void aSubmitterFollowsTheSessionsOverrides() {
+    section("N26: every refresh the submitter makes carries the session's overridden lanes");
+    adi::test::TempDirectory temp("ui_seams", "overrides");
+    auto store = freshProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(sub.submit(trackCreate(1, "Drums")).ok, "a track to own a lane");
+    automation::LaneSpec spec;
+    spec.id = 7;
+    spec.ownerKind = "track";
+    spec.ownerId = 1;
+    spec.paramRef = "volume";
+    spec.paramName = "Volume";
+    spec.valueDomain = "real";
+    spec.unit = "dB";
+    check(sub.submit(automation::createLane(spec)).ok, "and a lane on its volume");
+    auto overriddenInView = [&] {
+        const auto current = view.current();
+        const auto* lane = current ? current->findAutomationLane(7) : nullptr;
+        return current && current->automationOverridden && lane && lane->overridden;
+    };
+    check(view.current() && view.current()->findAutomationLane(7) != nullptr && !overriddenInView(),
+          "without a session's set, the offline view: nothing overridden");
+
+    // The set stands for the session's own (Session::overriddenLanes), read at each refresh.
+    std::set<std::int64_t> overridden{7};
+    sub.followOverrides(overridden);
+    check(!overriddenInView(), "following the set rebuilds nothing by itself (the document reconciles)");
+    check(sub.submit(trackCreate(2, "Bass")).ok && overriddenInView(),
+          "the next commit's refresh marks the snapshot and the lane overridden");
+    check(sub.undo().ok && overriddenInView(), "so does an undo's refresh");
+    check(sub.redo().ok && overriddenInView(), "and a redo's");
+    overridden.clear();
+    check(sub.submit(trackCreate(3, "Keys")).ok && !overriddenInView() && view.current()->findAutomationLane(7) != nullptr,
+          "the set cleared (Re-Enable Automation): the next refresh reads nothing overridden, the lane still there");
+    OpRequest bad;
+    bad.opType = "track.create";
+    bad.payload = {{"id", 4}};
+    overridden.insert(7);
+    const auto generation = view.generation();
+    check(!sub.submit(bad).ok && view.generation() == generation && !overriddenInView(),
+          "a refused write refreshes nothing, so the set is not read either");
+}
+
 void aFrameKeepsItsSnapshot() {
     section("ADR-0201: a snapshot a frame holds never changes under it");
     adi::test::TempDirectory temp("ui_seams", "frame");
@@ -416,6 +469,221 @@ void aFrameKeepsItsSnapshot() {
     const ui::SnapshotReader nextFrame{view.current()};
     check(nextFrame.trackCount() == 2, "the next frame sees both");
     check(!frame.sameAs(nextFrame), "and is a different publication");
+}
+
+
+// --- A2: a prepared batch through the submitter (ADR-0153) -------------------
+//
+// The engine prepares an edit as ops plus the head it expects, and its own
+// helper commits it. The submitter's part is what `submit` does around a
+// commit: the stamp, the refresh, `stale` and `headFound`. These checks pin
+// that, and the one op of the window's own that may ride on the end.
+
+// A project with one audio clip, as test_clip_edit.cpp builds it. Store::create
+// seeds the project row and the tempo map a clip edit reads.
+constexpr std::int64_t kClipTicks = 5765760;
+constexpr std::int64_t kHalfTicks = kClipTicks / 2;
+
+std::unique_ptr<Store> clipProject(const fs::path& p) {
+    StoreError err = StoreError::Ok;
+    auto st = Store::create(p, err);
+    if (!st) return st;
+    st->db().exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Guitar')");
+    st->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,21,'audio',0,5765760)");
+    return st;
+}
+
+/// The clip's length in ticks, or -1 when there is no such clip.
+std::int64_t clipLength(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT length_ticks FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() ? st.getColumn(0).getInt64() : -1;
+}
+
+bool clipMuted(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT muted FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() && st.getColumn(0).getInt64() != 0;
+}
+
+/// Split clip 7 in half; the right part becomes clip `rightId`.
+clip_edit::PreparedEdit splitInHalf(Store& s, std::int64_t rightId) {
+    return clip_edit::prepareSplit(s, 7, rightId, {0, kHalfTicks}, 48000);
+}
+
+/// How many ops of transaction `txnId` are stamped agent/adi-vst, as the
+/// agent submitter above stamps them.
+std::size_t stampedRows(Store& s, std::int64_t txnId) {
+    SQLite::Statement st(s.db(),
+                         "SELECT COUNT(*) FROM ops WHERE txn_id = ? AND actor = ? AND actor_detail = 'adi-vst'");
+    st.bind(1, txnId);
+    st.bind(2, std::string(toString(Actor::Agent)));
+    return st.executeStep() ? static_cast<std::size_t>(st.getColumn(0).getInt64()) : 0;
+}
+
+void aPreparedBatchCommitsAsOneStep() {
+    section("A2: a prepared batch whose head still matches commits as ONE step and refreshes once");
+    adi::test::TempDirectory temp("ui_seams", "prepared");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(view.generation() == 0, "nothing published before the first write");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    check(split.options.expectHead.has_value(), "with the head it expects (ADR-0153)");
+    const auto prepared = split.requests.size();
+    check(prepared > 0, "and it is more than nothing");
+
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(r.ok, "committed");
+    check(!r.stale, "not stale");
+    check(r.txnId != 0, "in a transaction");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(view.generation() == 1, "the commit refreshed the view once");
+    check(r.generation == 1, "and the result reports the generation it produced");
+    check(clipLength(*store, 7) == kHalfTicks, "the clip was cut at the split");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
+
+    const auto step = sub.nextUndo();
+    check(step.has_value(), "the history can describe it");
+    check(step && step->txnId == r.txnId, "as the transaction we committed");
+    check(step && static_cast<std::size_t>(step->opCount) == prepared, "ONE undo step covering the batch");
+    check(sub.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and the clip is whole again");
+    check(view.generation() == 2, "undo refreshed the view");
+}
+
+void aPreparedBatchTakesOneOpOfTheWindows() {
+    section("A2: the window's one op rides on the end of the batch, stamped like the rest");
+    adi::test::TempDirectory temp("ui_seams", "appended");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+
+    // E1's case: 0 over a clip's right edge splits it and deactivates the part
+    // inside, in one undo step. The deactivation is the window's own op.
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", 17}, {"muted", true}};
+    mute.label = "Deactivate Clip";
+    mute.targetKind = "clip";
+    mute.targetId = 17;
+    const auto r = agent.commitPrepared(std::move(split), &clip_edit::commitPrepared, std::move(mute));
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared + 1, "the split's ops plus the window's, in one transaction");
+    check(clipLength(*store, 17) == kHalfTicks, "the right part is a clip");
+    check(clipMuted(*store, 17), "and it is deactivated");
+    check(!clipMuted(*store, 7), "the left part is not");
+    check(stampedRows(*store, r.txnId) == prepared + 1,
+          "every op of the transaction, the window's included, is stamped as submit stamps");
+
+    const auto step = agent.nextUndo();
+    check(step && static_cast<std::size_t>(step->opCount) == prepared + 1, "ONE undo step");
+    check(agent.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and takes both back together");
+}
+
+void aHelperOwnedBatchIsStampedThroughItsRequests() {
+    section("A2: a batch the helper owns is stamped through its requests, detail included (E5's form)");
+    adi::test::TempDirectory temp("ui_seams", "owned");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    // commitMaterial's shape: the helper takes the edit it was given, not a
+    // batch the submitter hands it. The requests are in reach, so they are
+    // stamped before the helper runs, as `MaterialEdit::edit.requests` will be.
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+    const auto r = agent.commitPrepared(split.requests, [&split](Store& s, Actor a) {
+        return clip_edit::commitPrepared(s, split, a);
+    });
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(stampedRows(*store, r.txnId) == prepared,
+          "every row of the transaction carries the agent and its detail");
+    check(r.generation == 1 && view.generation() == 1, "the commit refreshed the view once");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
+}
+
+void aStalePreparedBatchIsRefused() {
+    section("A2: with the head moved, a prepared batch is refused as stale; nothing written or refreshed");
+    adi::test::TempDirectory temp("ui_seams", "stale");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+
+    // Another edit lands first, as a second window or an agent would.
+    const auto moved = sub.submit(trackCreate(22, "Bass"));
+    check(moved.ok, "an intervening edit committed");
+    check(view.generation() == 1, "and refreshed the view");
+
+    // The helper-only form, for a batch whose ops the helper keeps.
+    const auto r = sub.commitPrepared([&split](Store& s, Actor a) { return clip_edit::commitPrepared(s, split, a); });
+    check(!r.ok, "refused");
+    check(r.stale, "as stale");
+    check(r.headFound.has_value(), "with the head it found");
+    check(r.headFound && !moved.seqs.empty() && *r.headFound == moved.seqs.back(),
+          "which is the intervening edit's last op");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "and did NOT refresh the view");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "nothing was written");
+    const auto step = sub.nextUndo();
+    check(step && step->txnId == moved.txnId, "the history's top is still the edit that moved the head");
+}
+
+void aHelpersRefusalLeavesTheView() {
+    section("A2: a helper's refusal (another source file) leaves the view as it was");
+    adi::test::TempDirectory temp("ui_seams", "elsewhere");
+    auto here = clipProject(temp.path() / "here.adi");
+    auto there = clipProject(temp.path() / "there.adi");
+    if (!here || !there) { check(false, "stores created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*here, view);
+    check(sub.submit(trackCreate(22, "Bass")).ok, "a first edit here");
+    check(view.generation() == 1, "published the view");
+
+    // Prepared on the other project, committed against this one: the helper's
+    // own check, not the journal's.
+    auto split = splitInHalf(*there, 17);
+    check(split.ok, "the engine prepared the split there");
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(!r.ok, "refused");
+    check(!r.error.empty(), "and said why");
+    check(r.stale && !r.headFound,
+          "stale with no head found: the file, not the head, so E1 can word the two apart");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "the view is as it was");
+    check(clipLength(*here, 17) == -1 && clipLength(*there, 17) == -1, "neither project was written");
+
+    // A prepared batch with nothing in it is a no-op, as an empty submit is:
+    // success, no transaction, no refresh.
+    auto empty = splitInHalf(*here, 17);
+    check(empty.ok, "a batch prepared here");
+    empty.requests.clear();
+    const auto none = sub.commitPrepared(std::move(empty), &clip_edit::commitPrepared);
+    check(none.ok, "an empty prepared batch reports success");
+    check(none.seqs.empty() && none.txnId == 0, "opened no transaction");
+    check(none.generation == 0 && view.generation() == 1, "and did not refresh the view");
+    check(clipLength(*here, 7) == kClipTicks, "the clip is untouched");
 }
 
 }  // namespace
@@ -654,6 +922,92 @@ void groupAndUngroupAsBatches() {
           "tracks in different groups are refused, with the reason");
     check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
 
+    // Live's track drag (the Arrangement View: "dragging them above or below other tracks"; 18.3:
+    // "dragged into or out of the group"): one batch, one step.
+    const Order before{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}};
+    auto moved = ui::moveTracks(view.current()->tracks, {4}, {0, 2});
+    check(moved.refusal.empty() && sub.submit(std::move(moved.ops)).ok &&
+              order() == Order{{4, 0}, {2, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "Bass dragged above Kick: first, one step named Move Track; Main stays last");
+    check(sub.undo().ok && order() == before, "undo puts Bass back");
+    auto into = ui::moveTracks(view.current()->tracks, {2}, {6, 0});
+    check(into.refusal.empty() && into.ops.front().opType == "track.setParent" && into.ops.front().payload["parent"] == 6 &&
+              sub.submit(std::move(into.ops)).ok && order() == Order{{6, 0}, {3, 1}, {2, 1}, {4, 0}, {1, 0}},
+          "Kick dragged into the group: after Snare in it, routed by track.setParent");
+    check(sub.undo().ok && order() == before, "undo takes Kick out again");
+    auto out = ui::moveTracks(view.current()->tracks, {3}, {0, 0});
+    check(out.refusal.empty() && out.ops.front().payload["parent"].is_null() && sub.submit(std::move(out.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {4, 0}, {3, 0}, {1, 0}},
+          "Snare dragged out of the group below the last track: at the top level, before Main");
+    check(sub.undo().ok && order() == before, "undo puts Snare back in its group");
+    auto pair = ui::moveTracks(view.current()->tracks, {4, 2}, {0, 6});
+    check(pair.refusal.empty() && sub.submit(std::move(pair.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Tracks",
+          "Kick and Bass selected and dragged above the group: side by side, in their order, one step");
+    check(sub.undo().ok && order() == before, "undo");
+    auto whole = ui::moveTracks(view.current()->tracks, {3, 6}, {0, 0});
+    check(whole.refusal.empty() && sub.submit(std::move(whole.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}},
+          "the group dragged below Bass, Snare selected with it: Snare goes with its group");
+    check(sub.undo().ok && order() == before, "undo");
+    check(ui::moveTracks(view.current()->tracks, {2}, {0, 2}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {2}, {0, 6}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {3}, {6, 0}).ops.empty(),
+          "dropped where they stand, nothing moves and no step is made");
+    // Live's Insert Track (manual 18.2): right after the selected track, in its group; the tracks
+    // after it move down one, in the same step.
+    auto inserted = ui::insertTrack(view.current()->tracks, 2, false);
+    check(inserted.refusal.empty() && inserted.select == 7 && inserted.ops.front().payload["index"] == 1 &&
+              inserted.ops.front().payload["parent"].is_null() && sub.submit(std::move(inserted.ops)).ok &&
+              order() == Order{{2, 0}, {7, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}} &&
+              sub.nextUndo()->label == "Insert Audio Track",
+          "an audio track inserted with Kick selected: right after Kick, the group and Bass after it, one step");
+    check(sub.undo().ok && order() == before, "undo removes it");
+    auto inGroup = ui::insertTrack(view.current()->tracks, 3, true);
+    check(inGroup.ops.front().payload["parent"] == 6 && sub.submit(std::move(inGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {7, 1}, {4, 0}, {1, 0}} &&
+              view.current()->findTrack(7)->kind == "midi" && sub.nextUndo()->label == "Insert MIDI Track",
+          "a MIDI track inserted with Snare selected: in Snare's group, after it");
+    check(sub.undo().ok, "undo");
+    for (const std::int64_t selected : {std::int64_t{1}, std::int64_t{0}}) {
+        auto last = ui::insertTrack(view.current()->tracks, selected, false);
+        check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {7, 0}, {1, 0}},
+              selected == 1 ? "with Main selected, after the last track, before Main"
+                            : "with nothing selected, after the last track");
+        check(sub.undo().ok && order() == before, "undo");
+    }
+    check(ui::moveTracks(view.current()->tracks, {6}, {6, 0}).refusal == "A group can't go inside itself." &&
+              ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main stays last." &&
+              ui::moveTracks(view.current()->tracks, {2}, {4, 0}).refusal == "Tracks go into a group track only." &&
+              ui::moveTracks(view.current()->tracks, {}, {0, 0}).refusal == "Select a track to move.",
+          "a group into itself, Main, a track that is not a group and nothing are refused, with the reason");
+
+    // The returns are reordered among themselves, at the foot (Live drags them as it drags tracks).
+    bool returnsMade = true;
+    for (const auto& [id, name] : {std::pair{20, "A Return"}, std::pair{21, "B Return"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "return"}, {"name", name}, {"index", id}};
+        r.label = "Insert Return Track";
+        returnsMade = sub.submit(std::move(r)).ok && returnsMade;
+    }
+    const Order withReturns{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}};
+    check(returnsMade && order() == withReturns, "two returns, after the tracks, before Main");
+    auto swapped = ui::moveTracks(view.current()->tracks, {21}, {0, 20});
+    check(swapped.refusal.empty() && sub.submit(std::move(swapped.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "B dragged above A: first of the returns, one step; the tracks and Main stay");
+    check(sub.undo().ok && order() == withReturns, "undo");
+    auto last = ui::moveTracks(view.current()->tracks, {20}, {0, 0});
+    check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}},
+          "A dragged below the last return: after B, before Main");
+    check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
+          "B dropped where it stands: no step");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
+              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track, or into a group, is refused, with the reason");
+    check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
+
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
     OpRequest solo;
     solo.opType = "track.setSolo";
@@ -712,13 +1066,27 @@ void sendsAsBatches() {
               ui::sendOn(*kick, nullptr) && !ui::sendOn(*reverb, nullptr),
           "without a row: fully down; a track's send on, a return's off until Enable Send");
 
+    // A routing row of another kind, which the snapshot's `sends` leave out: a sidechain from Kick into
+    // the group, with an id above every send's. A new send's id comes from the highest routing id of
+    // any kind, `Snapshot::maxRoutingId` (#403, N39), never from the sends alone.
+    auto sidechain = [&sub](std::int64_t id) {
+        OpRequest r;
+        r.opType = "routing.connect";
+        r.payload = {{"id", id}, {"srcKind", "track"}, {"src", 2}, {"dstKind", "track"}, {"dst", 3}, {"kind", "sidechain"}};
+        r.label = "Connect";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(sidechain(500) && view.current()->maxRoutingId == 500 && view.current()->sends.empty(),
+          "a sidechain row, id 500: the highest routing id, and no send");
+
     // Turning Kick's send A up writes the row, then its level: one undo step.
-    auto edit = ui::setSend(view.current()->sends, 2, 10, -12);
+    auto edit = ui::setSend(*view.current(), 2, 10, -12);
     check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
               edit.ops[0].payload["kind"] == "send" && edit.ops[0].payload["src"] == 2 &&
               edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
               edit.ops[1].payload["id"] == edit.ops[0].payload["id"] && edit.ops[1].payload["db"] == -12.0,
           "a new send: the row, then its level");
+    check(edit.ops.size() == 2 && edit.ops[0].payload["id"] == 501, "its id is one past the highest routing id, past the sidechain's");
     check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == 2 &&
               sub.nextUndo()->label == "Change Send Level",
           "one undo step, named");
@@ -729,23 +1097,23 @@ void sendsAsBatches() {
     const auto first = send != nullptr ? send->id : 0;
 
     // A row that exists: its level only. The bottom stop writes silence; the top stays at 0 dB.
-    auto again = ui::setSend(view.current()->sends, 2, 10, ui::kSendFloorDb);
+    auto again = ui::setSend(*view.current(), 2, 10, ui::kSendFloorDb);
     check(again.ops.size() == 1 && again.ops[0].opType == "routing.setGain" && again.ops[0].payload["id"] == first &&
               again.ops[0].payload["db"] == ui::kSendSilenceDb,
           "fully down writes silence (-150 dB), on the same row");
     check(sub.submit(std::move(again.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == ui::kSendSilenceDb,
           "and lands");
-    check(ui::setSend(view.current()->sends, 2, 10, -90).ops.empty() &&
-              ui::setSend(view.current()->sends, 3, 10, ui::kSendFloorDb).ops.empty(),
+    check(ui::setSend(*view.current(), 2, 10, -90).ops.empty() &&
+              ui::setSend(*view.current(), 3, 10, ui::kSendFloorDb).ops.empty(),
           "a level that would not change writes nothing: no empty undo step, no row left fully down");
-    auto top = ui::setSend(view.current()->sends, 2, 10, 6);
+    auto top = ui::setSend(*view.current(), 2, 10, 6);
     check(top.ops.size() == 1 && top.ops[0].payload["db"] == ui::kSendTopDb, "past the top stays at 0 dB");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == -12.0, "undo brings -12 dB back");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
 
     // A second send gets the next id.
-    auto second = ui::setSend(view.current()->sends, 3, 11, -6);
+    auto second = ui::setSend(*view.current(), 3, 11, -6);
     check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
               ui::findSend(view.current()->sends, 3, 11) != nullptr &&
               ui::findSend(view.current()->sends, 3, 11)->gainDb == -6.0,
@@ -753,58 +1121,154 @@ void sendsAsBatches() {
 
     // A return's send: off until Enable Send, which makes the row fully down; Enable Send again
     // (unticked) switches it off; a return may send to itself.
-    auto enable = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto enable = ui::enableSend(*view.current(), 10, 11, true);
     check(enable.refusal.empty() && enable.ops.size() == 2 && enable.ops[0].opType == "routing.connect" &&
               enable.ops[1].payload["db"] == ui::kSendSilenceDb && sub.submit(std::move(enable.ops)).ok &&
               sub.nextUndo()->label == "Enable Send",
           "Enable Send on A's send B: the row, fully down, one step");
     const auto* ab = ui::findSend(view.current()->sends, 10, 11);
     check(ab != nullptr && ab->enabled && ui::sendOn(*view.current()->findTrack(10), ab), "A's send B is on");
-    check(ui::enableSend(view.current()->sends, 10, 11, true).refusal == "The send is on already." &&
-              ui::enableSend(view.current()->sends, 10, 10, false).refusal == "The send is off already.",
+    check(ui::enableSend(*view.current(), 10, 11, true).refusal == "The send is on already." &&
+              ui::enableSend(*view.current(), 10, 10, false).refusal == "The send is off already.",
           "nothing to do is said, not written");
-    auto off = ui::enableSend(view.current()->sends, 10, 11, false);
+    auto off = ui::enableSend(*view.current(), 10, 11, false);
     check(off.ops.size() == 1 && off.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(off.ops)).ok &&
               !ui::findSend(view.current()->sends, 10, 11)->enabled &&
               !ui::sendOn(*view.current()->findTrack(10), ui::findSend(view.current()->sends, 10, 11)),
           "unticked: the row switched off, kept");
-    auto on = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto on = ui::enableSend(*view.current(), 10, 11, true);
     check(on.ops.size() == 1 && on.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(on.ops)).ok &&
               ui::findSend(view.current()->sends, 10, 11)->enabled,
           "ticked again: the same row back on");
-    auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
+    auto loop = ui::enableSend(*view.current(), 10, 10, true);
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
 
-    // A return's Pre/Post (ADR-0203 d3): one switch on the return, every send into it moved.
-    check(!ui::returnPre(view.current()->sends, 10) && !ui::returnPre(view.current()->sends, 12),
-          "a return reads Post; one no send reaches reads Post too");
-    auto pre = ui::setReturnPre(view.current()->sends, 10, true);
-    check(pre.refusal.empty() && pre.ops.size() == 2 && pre.ops[0].opType == "routing.setPreFader" &&
-              pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
-              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 2 &&
-              ui::returnPre(view.current()->sends, 10) && ui::findSend(view.current()->sends, 2, 10)->preFader,
-          "Pre moves both sends into A before the fader, one undo step");
-    auto newPre = ui::setSend(view.current()->sends, 3, 10, -9);
-    check(newPre.ops.size() == 3 && newPre.ops[1].opType == "routing.setPreFader" && sub.submit(std::move(newPre.ops)).ok &&
-              ui::findSend(view.current()->sends, 3, 10)->preFader && ui::returnPre(view.current()->sends, 10),
-          "a new send into a Pre return taps before the fader too");
-    check(ui::setReturnPre(view.current()->sends, 12, true).refusal ==
-              "No track sends to this return yet, so there is nothing to switch.",
-          "a return no send reaches has nothing to switch, and says so");
-    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
+    // A return's Pre/Post (ADR-0203 d3) is the return's own (#405, N42): one switch on the return, read
+    // from `TrackNode::returnSendTap`, written as one `return.setSendTap` that the engine spreads over
+    // every send into the return; it holds with no send, and a send made afterwards follows it.
+    const auto *reverbTap = view.current()->findTrack(10)->returnSendTap ? &*view.current()->findTrack(10)->returnSendTap : nullptr;
+    check(reverbTap != nullptr && !reverbTap->explicitChoice && !ui::returnPre(view.current()->tracks, 10) &&
+              !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
+              !ui::returnPre(view.current()->tracks, 12),
+          "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file: every send into A written Pre by the per-send op with no choice on the return
+    // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
+    // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
+    // `prepareSendToReturn` adds it. Undone again before the return's own switch is thrown.
+    {
+        std::vector<OpRequest> older;
+        for (const auto id : {first, ui::findSend(view.current()->sends, 10, 10)->id}) {
+            OpRequest r;
+            r.opType = "routing.setPreFader";
+            r.payload = {{"id", id}, {"pre", true}};
+            r.label = "Older file";
+            older.push_back(std::move(r));
+        }
+        check(sub.submit(std::move(older)).ok && ui::returnPre(view.current()->tracks, 10) &&
+                  !view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+                  ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+              "an older file's sends into A all Pre with no choice written: the return reads Pre without holding it");
+        auto inherited = ui::setSend(*view.current(), 3, 10, -9);
+        check(inherited.ops.size() == 3 && inherited.ops[0].opType == "routing.connect" &&
+                  inherited.ops[1].opType == "routing.setPreFader" &&
+                  inherited.ops[1].payload["id"] == inherited.ops[0].payload["id"] && inherited.ops[1].payload["pre"] == true &&
+                  inherited.ops[2].opType == "routing.setGain",
+              "a new send into it carries routing.setPreFader, as the engine's prepareSendToReturn does");
+        check(sub.submit(std::move(inherited.ops)).ok && sub.nextUndo()->opCount == 3 &&
+                  ui::findSend(view.current()->sends, 3, 10)->preFader && sub.undo().ok &&
+                  ui::findSend(view.current()->sends, 3, 10) == nullptr && sub.undo().ok &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "it lands before the fader as one step; undone, and the older file's Pre with it");
+    }
+    auto pre = ui::setReturnPre(10, true);
+    check(pre.refusal.empty() && pre.ops.size() == 1 && pre.ops[0].opType == "return.setSendTap" &&
+              pre.ops[0].payload["id"] == 10 && pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 10) && view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+              ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+          "Pre on A: one op, one undo step; the return holds the choice and both sends into it tap before the fader");
+    auto newPre = ui::setSend(*view.current(), 3, 10, -9);
+    check(newPre.ops.size() == 2 && newPre.ops[0].opType == "routing.connect" && newPre.ops[1].opType == "routing.setGain" &&
+              sub.submit(std::move(newPre.ops)).ok && ui::findSend(view.current()->sends, 3, 10)->preFader &&
+              ui::returnPre(view.current()->tracks, 10),
+          "a new send into a Pre return taps before the fader, with nothing added to its batch: the row reads the return's choice");
+    // A third return, C, that no send reaches: Pre is one op and holds; a send made afterwards follows it.
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok && view.current()->findTrack(12)->returnSendTap &&
+                  !view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::returnPre(view.current()->tracks, 12),
+              "C Return, no send into it: Post, no choice held");
+    }
+    auto emptyPre = ui::setReturnPre(12, true);
+    check(emptyPre.refusal.empty() && emptyPre.ops.size() == 1 && sub.submit(std::move(emptyPre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 12) && view.current()->findTrack(12)->returnSendTap->explicitChoice,
+          "Pre on a return no send reaches: one op, one undo step, and the return holds it");
+    auto later = ui::setSend(*view.current(), 2, 12, -3);
+    check(later.ops.size() == 2 && sub.submit(std::move(later.ops)).ok && ui::findSend(view.current()->sends, 2, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 2, 12)->preFader && ui::returnPre(view.current()->tracks, 12),
+          "a send made afterwards taps before the fader");
+    auto post = ui::setReturnPre(12, false);
+    check(post.ops.size() == 1 && sub.submit(std::move(post.ops)).ok && !ui::returnPre(view.current()->tracks, 12) &&
+              view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 12)->preFader,
+          "Post again moves the send after the fader; the choice stays the return's");
+    check(sub.undo().ok && ui::returnPre(view.current()->tracks, 12) && ui::findSend(view.current()->sends, 2, 12)->preFader &&
+              sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 12) && sub.undo().ok &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: Pre again, the send gone, C back to Post, then C gone");
+    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 10) &&
+              !view.current()->findTrack(10)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+          "undo puts A back to Post, its choice gone and its sends after the fader");
 
     // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
-    // down, one step; again, nothing to do.
+    // down, one step; again, nothing to do. A second sidechain row, above every send's id again: the
+    // batch's ids are consecutive from the highest routing id.
+    check(sidechain(700) && view.current()->maxRoutingId == 700, "a second sidechain row, id 700, above every send's");
     const std::vector<std::int64_t> both{10, 11};
-    auto all = ui::enableAllSends(view.current()->sends, 11, both);
+    auto all = ui::enableAllSends(*view.current(), 11, both);
     check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
-              all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
+              all.ops[2].opType == "routing.connect" && all.ops[0].payload["id"] == 701 && all.ops[2].payload["id"] == 702 &&
               sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
-              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
-          "Enable All Sends: B to A and B to itself, two new rows, one undo step");
-    check(ui::enableAllSends(view.current()->sends, 11, both).refusal == "Every send of this return is on already.",
+              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr &&
+              view.current()->maxRoutingId == 702,
+          "Enable All Sends: B to A and B to itself, two new rows with consecutive ids past the sidechain's, one undo step");
+    check(ui::enableAllSends(*view.current(), 11, both).refusal == "Every send of this return is on already.",
           "again: every send is on already");
+
+    // No id left: a routing row at INT64_MAX. A new send, from a knob, Enable Send or Enable All Sends,
+    // is refused with the reason and writes nothing; an existing row's level still moves. The row
+    // undone, the next send takes the id after the highest again.
+    constexpr auto lastId = std::numeric_limits<std::int64_t>::max();
+    check(sidechain(lastId) && view.current()->maxRoutingId == lastId, "a routing row at INT64_MAX: the highest id the file can hold");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return again, which no send of B reaches");
+    }
+    auto noId = ui::setSend(*view.current(), 2, 11, -6);
+    check(noId.ops.empty() && noId.refusal == ui::kSendNoIdLeft, "a new send from a knob is refused: no routing id is left");
+    auto noIdEnable = ui::enableSend(*view.current(), 3, 10, true);
+    check(noIdEnable.ops.empty() && noIdEnable.refusal == ui::kSendNoIdLeft, "Enable Send on a send without a row: refused the same");
+    auto noIdAll = ui::enableAllSends(*view.current(), 11, {10, 11, 12});
+    check(noIdAll.ops.empty() && noIdAll.refusal == ui::kSendNoIdLeft,
+          "Enable All Sends needing one new row: refused whole, nothing switched on");
+    auto level = ui::setSend(*view.current(), 2, 10, -20);
+    check(level.refusal.empty() && level.ops.size() == 1 && sub.submit(std::move(level.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 10)->gainDb == -20.0,
+          "an existing row's level still moves");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the level, C Return and the INT64_MAX row");
+    auto after = ui::setSend(*view.current(), 2, 11, -6);
+    check(after.refusal.empty() && after.ops.size() == 2 && after.ops[0].payload["id"] == 703 && sub.submit(std::move(after.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 11) != nullptr && ui::findSend(view.current()->sends, 2, 11)->id == 703,
+          "the next send takes 703, one past the highest again, and commits");
 }
 
 void audioDropAsOneStep() {
@@ -883,6 +1347,103 @@ void audioDropAsOneStep() {
           "no audio, or a MIDI track, is refused with the reason");
 }
 
+void rangeEditsSplitCrossingClips() {
+    section("E1: Delete over half a clip trims it; 0 over a clip's right edge, or inside it, splits it and deactivates the part inside");
+    {
+        adi::test::TempDirectory temp("ui_seams", "range-delete");
+        auto store = clipProject(temp.path() / "p.adi");
+        if (!store) { check(false, "store created"); return; }
+        engine::ProjectView view;
+        ui::OpSubmitter sub(*store, view);
+        view.refresh(*store);
+        // The selection: the clip's second half, on its track.
+        const auto content = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks, kClipTicks);
+        check(content.inside.empty() && content.crossing == 1 && content.crossers.size() == 1 &&
+                  content.crossers.front()->id == 7,
+              "half a clip selected: no clip inside, the one clip crossing the selection's start");
+        clip_edit::RangeSelection range{{21}, {0, kHalfTicks}, {0, kClipTicks}};
+        auto prepared = clip_edit::prepareDeleteRange(*store, range, 48000);
+        check(prepared.ok && prepared.options.expectHead.has_value(), "the engine prepared the delete, with the head it expects");
+        const auto ops = prepared.requests.size();
+        const auto r = sub.commitPrepared(std::move(prepared), &clip_edit::commitPrepared);
+        check(r.ok && r.txnId != 0 && r.seqs.size() == ops, "committed in one transaction, every prepared op");
+        check(clipLength(*store, 7) == kHalfTicks, "the outside half stays as a clip");
+        const auto step = sub.nextUndo();
+        check(step && step->txnId == r.txnId && static_cast<std::size_t>(step->opCount) == ops, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks, "undo makes the clip whole again");
+    }
+    {
+        adi::test::TempDirectory temp("ui_seams", "range-zero");
+        auto store = clipProject(temp.path() / "p.adi");
+        if (!store) { check(false, "store created"); return; }
+        engine::ProjectView view;
+        ui::OpSubmitter sub(*store, view);
+        view.refresh(*store);
+        // From the clip's middle past its end: the right edge is inside the selection.
+        const auto content = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks, kClipTicks + kHalfTicks);
+        const auto split = ui::edgeSplit(content, kHalfTicks, kClipTicks + kHalfTicks);
+        check(split && split->clip == 7 && split->at == kHalfTicks && split->insideIsRight,
+              "the split falls at the selection's start, the right part inside it");
+        const auto right = ui::audio_drop_detail::newClipId(*view.current());
+        auto prepared = clip_edit::prepareSplit(*store, 7, right, {0, kHalfTicks}, 48000);
+        OpRequest mute;
+        mute.opType = "clip.setMute";
+        mute.payload = {{"id", right}, {"muted", true}};
+        mute.label = "Deactivate Clip";
+        mute.targetKind = "clip";
+        mute.targetId = right;
+        const auto ops = prepared.requests.size() + 1;
+        const auto r = sub.commitPrepared(std::move(prepared), &clip_edit::commitPrepared, std::move(mute));
+        check(r.ok && r.seqs.size() == ops, "the split and the window's deactivation in one batch");
+        check(clipLength(*store, 7) == kHalfTicks && clipLength(*store, right) == kHalfTicks && !clipMuted(*store, 7) &&
+                  clipMuted(*store, right),
+              "the left part plays, the right part is deactivated");
+        const auto step = sub.nextUndo();
+        check(step && static_cast<std::size_t>(step->opCount) == ops, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, right) == -1 && !clipMuted(*store, 7),
+              "undo puts the whole clip back, playing");
+        // A selection inside the clip (both edges in it): the two-point split, the middle deactivated,
+        // one batch.
+        view.refresh(*store);
+        const auto inside = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks / 2, kHalfTicks);
+        const auto two = ui::edgeSplit(inside, kHalfTicks / 2, kHalfTicks);
+        check(two && two->clip == 7 && two->at == kHalfTicks / 2 && two->second == kHalfTicks,
+              "a selection inside one clip cuts at both of its edges");
+        const auto middle = ui::audio_drop_detail::newClipId(*view.current());
+        auto both = clip_edit::prepareSplit(*store, 7, middle, middle + 1, {0, kHalfTicks / 2}, {0, kHalfTicks}, 48000);
+        OpRequest off;
+        off.opType = "clip.setMute";
+        off.payload = {{"id", middle}, {"muted", true}};
+        off.label = "Deactivate Clip";
+        const auto count = both.requests.size() + 1;
+        const auto r2 = sub.commitPrepared(std::move(both), &clip_edit::commitPrepared, std::move(off));
+        check(r2.ok && r2.seqs.size() == count, "the two cuts and the deactivation in one batch");
+        check(clipLength(*store, 7) == kHalfTicks / 2 && clipLength(*store, middle) == kHalfTicks / 2 &&
+                  clipLength(*store, middle + 1) == kClipTicks - kHalfTicks && clipMuted(*store, middle) &&
+                  !clipMuted(*store, 7) && !clipMuted(*store, middle + 1),
+              "three pieces, the middle one deactivated");
+        const auto step2 = sub.nextUndo();
+        check(step2 && static_cast<std::size_t>(step2->opCount) == count, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, middle) == -1,
+              "undo puts the whole clip back");
+        // Over the edges of two clips, or of one beside a whole one: no split; the note says why.
+        engine::ClipNode first, second, whole;
+        first.id = 1, first.posTicks = 0, first.lengthTicks = 100;
+        second.id = 2, second.posTicks = 150, second.lengthTicks = 100;
+        whole.id = 3, whole.posTicks = 110, whole.lengthTicks = 20;
+        ui::RangeContent pair;
+        pair.crossing = 2;
+        pair.crossers = {&first, &second};
+        check(!ui::edgeSplit(pair, 50, 200), "0 over two clips' edges: no split");
+        ui::RangeContent beside;
+        beside.crossing = 1;
+        beside.crossers = {&first};
+        beside.inside = {&whole};
+        check(!ui::edgeSplit(beside, 50, 140), "0 over one clip's edge beside a whole clip: no split");
+        check(ui::range_edits_detail::crossingNote(1).find("one clip") != std::string::npos,
+              "the note names the limit: one clip, no whole one beside it");
+    }
+}
 void rangeEditsAsBatches() {
     section("A time selection across tracks: Delete and 0 on its whole clips, one step each (Live 12 manual 6.9)");
     adi::test::TempDirectory temp("ui_seams", "range");
@@ -939,7 +1500,8 @@ void rangeEditsAsBatches() {
               sub.nextUndo()->label == "Deactivate Clips",
           "one undo step, named");
     auto on = ui::deactivateRange(view.current()->tracks, all, 0, 2 * bar);
-    check(on.ops.size() == 2 && on.ops[0].payload["muted"] == false && on.ops[0].label == "Activate Clips",
+    check(on.ops.size() == 2 && on.ops[0].payload["muted"] == false && on.ops[0].label == "Activate Clips" &&
+              sub.submit(std::move(on.ops)).ok, // submitted: undo restores a deleted clip exactly, muted included (chain)
           "0 again, every one deactivated: activates them");
     auto gone = ui::deleteRange(view.current()->tracks, all, 0, 2 * bar);
     check(gone.ops.size() == 2 && gone.ops[0].opType == "clip.delete" && sub.submit(std::move(gone.ops)).ok &&
@@ -977,6 +1539,198 @@ void rangeEditsAsBatches() {
     }
     check(ui::SessionState(*store).selection().picked == std::vector<std::int64_t>{3, 4},
           "and read back with them");
+
+    // Clips picked with Ctrl/Cmd+click (Live's "Select Multiple Items", §42.5): the geometry counts
+    // them, Delete and 0 act on them all, and the session keeps them.
+    geo.selection = {};
+    geo.selection.clip = 1;
+    geo.selection.pickedClips = {3, 1};
+    check(geo.clipSelected(1) && geo.clipSelected(3) && !geo.clipSelected(2) &&
+              geo.selectedClips() == std::vector<std::int64_t>{1, 3},
+          "the clicked clip and the one picked besides it are selected, the clicked one first");
+    auto quiet = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(quiet.refusal.empty() && quiet.ops.size() == 2 && quiet.ops[0].label == "Deactivate Clips" &&
+              sub.submit(std::move(quiet.ops)).ok && view.current()->findTrack(1)->clips[0]->muted &&
+              view.current()->findTrack(3)->clips[0]->muted && !view.current()->findTrack(2)->clips[0]->muted,
+          "0 deactivates both picked clips, one step; the third stays");
+    auto loud = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(loud.ops.size() == 2 && loud.ops[0].label == "Activate Clips" && loud.ops[0].payload["muted"] == false,
+          "0 again, both off: activates them");
+    auto one = ui::deactivateClips(view.current()->tracks, {2});
+    check(one.ops.size() == 1 && one.ops[0].label == "Deactivate Clip", "one clip is named as one");
+    auto both = ui::deleteClips(view.current()->tracks, geo.selectedClips());
+    check(both.ops.size() == 2 && both.ops[0].label == "Delete Clips" && sub.submit(std::move(both.ops)).ok &&
+              view.current()->findTrack(1)->clips.empty() && view.current()->findTrack(3)->clips.empty() &&
+              view.current()->findTrack(2)->clips.size() == 1,
+          "Delete removes both picked clips, one step");
+    check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1 &&
+              !view.current()->findTrack(1)->clips[0]->muted,
+          "two undos bring them back, active");
+    check(ui::deleteClips(view.current()->tracks, {99}).refusal == "Select a clip to delete.",
+          "no clip left to act on: refused, with the reason");
+    // Dragged together (§6.7): each keeps its track, by the same offset; none before the start.
+    auto later = ui::moveClips(view.current()->tracks, {1, 3}, bar);
+    check(later.ops.size() == 2 && later.ops[0].label == "Move Clips" && later.ops[0].payload["to"] == bar &&
+              later.ops[0].payload["track"] == 1 && later.ops[1].payload["to"] == bar + bar / 2 + bar &&
+              later.ops[1].payload["track"] == 3 && sub.submit(std::move(later.ops)).ok &&
+              view.current()->findTrack(1)->clips[0]->posTicks == bar,
+          "two clips moved a bar later together, each on its own track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips[0]->posTicks == 0, "undo");
+    auto early = ui::moveClips(view.current()->tracks, {2, 3}, -2 * bar);
+    check(early.ops.size() == 2 && early.ops[0].payload["to"] == 0 && early.ops[1].payload["to"] == bar / 2,
+          "moved earlier than the start allows: the offset stops where the earliest reaches bar 1");
+    check(ui::moveClips(view.current()->tracks, {1}, -bar).ops.empty() &&
+              ui::moveClips(view.current()->tracks, {99}, bar).refusal == "Select a clip to move.",
+          "a clip already at the start moves nowhere; a missing one is refused");
+    // Across tracks, each by the same rows, while every one lands on a track that can take it.
+    const std::vector<std::int64_t> lanes{1, 2, 3};
+    const auto down = ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 1);
+    check(down && *down == ui::ClipTracks{{1, 2}, {2, 3}}, "two clips a row down: track 1's to 2, track 2's to 3");
+    check(!ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 2) &&
+              !ui::clipsAcross(view.current()->tracks, {1, 2}, {3}, 0) &&
+              ui::clipsAcross(view.current()->tracks, lanes, {1}, 0)->empty(),
+          "past the last lane, or from a track not in the lanes: none moves across; no rows: none changes track");
+    auto lower = ui::moveClips(view.current()->tracks, {1, 2}, 0, *down);
+    check(lower.ops.size() == 2 && lower.ops[0].payload["track"] == 2 && lower.ops[1].payload["track"] == 3 &&
+              sub.submit(std::move(lower.ops)).ok && view.current()->findTrack(1)->clips.empty() &&
+              view.current()->findTrack(3)->clips.size() == 2,
+          "moved a row down with no change of time: each on the next track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1, "undo");
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.clip = 1;
+        chosen.pickedClips = {3};
+        std::string why;
+        check(session.select(chosen, why), "a selection with picked clips is kept");
+    }
+    check(ui::SessionState(*store).selection().pickedClips == std::vector<std::int64_t>{3}, "and read back with them");
+}
+
+// Undo of Delete Track and of Ungroup Tracks brings the track, or the group, back WHOLE: the
+// engine's `track.delete` captures the subtree and its children (OPS.md §6.3; #401, window log
+// N37). The window's two batches are unchanged by that; this pins what they rely on, through the
+// window's own requests: Delete Track as `AdiRootComponent::deleteTrack` sends it, Ungroup as
+// `ungroupTrack` builds it. Live 12 manual 18.2 ("Tracks are deleted using the Edit menu's Delete
+// command"), 18.3 (Ungroup Tracks), 41.5 (Undo, Ctrl/Cmd+Z). Parity-7.3 row 33.
+void deleteTrackAndUngroupComeBackWhole() {
+    section("Delete Track and Ungroup Tracks undone: the track, or the group, comes back whole (OPS.md 6.3, N37)");
+    adi::test::TempDirectory temp("ui_seams", "whole");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    // A device's plug-in reference is the catalogue's row, not an op (as test_ui_document.cpp seeds it).
+    store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(1,'internal','test','Test effect')");
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    auto request = [](const char* type, Payload payload, const char* label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = true;
+    for (const auto& [id, kind, name, index] : {std::tuple{1, "master", "Main", 0}, std::tuple{2, "return", "A Reverb", 0},
+                                                std::tuple{3, "midi", "Lead", 0}, std::tuple{4, "audio", "Kick", 1}})
+        made = sub.submit(request("track.create", {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}},
+                                  "Create track"))
+                   .ok &&
+               made;
+    check(made, "Main, A Reverb, Lead and Kick");
+    const auto track = [&view](std::int64_t id) { return view.current()->findTrack(id); };
+    // The devices a track holds, read from the file: the snapshot carries no devices.
+    auto devicesOn = [&store](std::int64_t id) {
+        SQLite::Statement st(store->db(), "SELECT COUNT(*), COALESCE(MAX(d.name), '') FROM devices d "
+                                          "JOIN device_chains c ON d.chain_id = c.id WHERE c.track_id = ?");
+        st.bind(1, id);
+        std::pair<std::int64_t, std::string> out{-1, ""};
+        if (st.executeStep()) out = {st.getColumn(0).getInt64(), st.getColumn(1).getString()};
+        return out;
+    };
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto& p : built.places()) out.emplace_back(p.id, p.depth);
+        return out;
+    };
+    using Order = std::vector<std::pair<std::int64_t, std::uint32_t>>;
+
+    // Lead dressed: a clip, a device, a colour and a send into A Reverb, as one step.
+    constexpr std::int64_t bar = 4 * textproj::kPPQ;
+    std::vector<OpRequest> dress;
+    dress.push_back(request("clip.create", {{"id", 1}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", bar}},
+                            "Dress Lead"));
+    dress.push_back(request("chain.create", {{"id", 1}, {"track", 3}, {"ord", 0}, {"name", "Devices"}}, "Dress Lead"));
+    dress.push_back(request("device.insert",
+                            {{"id", 1}, {"chain", 1}, {"ord", 0}, {"ref", 1}, {"name", "Test effect"}, {"latency", 0}},
+                            "Dress Lead"));
+    dress.push_back(request("track.setColor", {{"id", 3}, {"color", 26}}, "Dress Lead"));
+    auto send = ui::setSend(*view.current(), 3, 2, -6.0);
+    check(send.refusal.empty() && send.ops.size() == 2, "the send's row and its level");
+    for (auto& r : send.ops) dress.push_back(std::move(r));
+    check(sub.submit(std::move(dress)).ok, "Lead dressed");
+    // Lead as dressed, under `parent` (0 at the top; the group, once it is in one), first in it.
+    auto leadWhole = [&](std::int64_t parent) {
+        const auto* lead = track(3);
+        const auto* toReverb = ui::findSend(view.current()->sends, 3, 2);
+        return lead != nullptr && lead->kind == "midi" && lead->name == "Lead" && lead->parent == parent &&
+               lead->indexInParent == 0 && lead->color && *lead->color == 26 && lead->clips.size() == 1 &&
+               lead->clips[0]->id == 1 && devicesOn(3) == std::pair<std::int64_t, std::string>{1, "Test effect"} &&
+               toReverb != nullptr && toReverb->gainDb == -6.0 && toReverb->enabled;
+    };
+    check(leadWhole(0), "Lead holds its clip, its device, colour 26 and a send into A Reverb at -6 dB");
+    check(order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}}, "Lead, Kick, A Reverb, then Main");
+
+    // Delete Track, the window's one request (ui_shell.cpp, AdiRootComponent::deleteTrack).
+    check(sub.submit(request("track.delete", {{"id", 3}}, "Delete Track")).ok && track(3) == nullptr &&
+              devicesOn(3).first == 0 && ui::findSend(view.current()->sends, 3, 2) == nullptr &&
+              order() == Order{{4, 0}, {2, 0}, {1, 0}} && sub.nextUndo() && sub.nextUndo()->label == "Delete Track" &&
+              sub.nextUndo()->opCount == 1,
+          "Delete Track takes Lead, its device and its send; one step, named as the Edit menu names it");
+    check(sub.undo().ok && leadWhole(0) && order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}} && sub.nextRedo() &&
+              sub.nextRedo()->label == "Delete Track",
+          "undo brings Lead back whole, where it stood: clip, device, colour and send");
+    check(sub.redo().ok && track(3) == nullptr && sub.undo().ok && leadWhole(0), "redone and undone again, still whole");
+    check(track(4) != nullptr && track(4)->indexInParent == 1 && devicesOn(4).first == 0, "Kick untouched throughout");
+
+    // A group with a device, a colour and its strip's settings; Ungroup; undo.
+    auto grouped = ui::groupTrack(view.current()->tracks, 3);
+    check(grouped.refusal.empty() && grouped.select == 5 && sub.submit(std::move(grouped.ops)).ok &&
+              order() == Order{{5, 0}, {3, 1}, {4, 0}, {2, 0}, {1, 0}},
+          "Lead grouped: the group where Lead stood");
+    std::vector<OpRequest> strip;
+    strip.push_back(request("chain.create", {{"id", 2}, {"track", 5}, {"ord", 0}, {"name", "Devices"}}, "Dress Group"));
+    strip.push_back(request("device.insert",
+                            {{"id", 2}, {"chain", 2}, {"ord", 0}, {"ref", 1}, {"name", "Group effect"}, {"latency", 0}},
+                            "Dress Group"));
+    strip.push_back(request("mixer.setVolume", {{"id", 5}, {"db", -3.5}}, "Dress Group"));
+    strip.push_back(request("mixer.setPan", {{"id", 5}, {"pan", 0.25}}, "Dress Group"));
+    strip.push_back(request("track.setColor", {{"id", 5}, {"color", 7}}, "Dress Group"));
+    check(sub.submit(std::move(strip)).ok, "the group dressed");
+    auto groupWhole = [&] {
+        const auto* g = track(5);
+        const auto* lead = track(3);
+        return g != nullptr && g->kind == "group" && g->parent == 0 && g->indexInParent == 0 && g->volumeDb == -3.5f &&
+               g->pan == 0.25f && g->color && *g->color == 7 &&
+               devicesOn(5) == std::pair<std::int64_t, std::string>{1, "Group effect"} && lead != nullptr &&
+               lead->parent == 5;
+    };
+    check(groupWhole(), "the group holds a device, colour 7, its fader at -3.5 dB and its pan at 0.25, Lead inside it");
+
+    auto ungroup = ui::ungroupTrack(view.current()->tracks, 5);
+    check(ungroup.refusal.empty() && sub.submit(std::move(ungroup.ops)).ok && track(5) == nullptr &&
+              devicesOn(5).first == 0 && track(3) != nullptr && track(3)->parent == 0 &&
+              order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}} && sub.nextUndo()->label == "Ungroup Tracks",
+          "Ungroup Tracks puts Lead where the group stood and removes the group, device and strip with it");
+    check(sub.undo().ok && groupWhole() && leadWhole(5) && order() == Order{{5, 0}, {3, 1}, {4, 0}, {2, 0}, {1, 0}},
+          "undo brings the group back whole, Lead inside it, Lead itself untouched");
+    check(sub.redo().ok && track(5) == nullptr && sub.undo().ok && groupWhole(), "redone and undone again, still whole");
 }
 
 void returnsStandBeforeMain() {
@@ -1064,6 +1818,250 @@ void referenceTapAndHold() {
     ref.press(4000);
     ref.release(5000);
     check(!ref.on(), "latched, then held and let go: off");
+}
+
+void meterGrid() {
+    section("the editing grid in the project's meters: from each bar line, bars of the meter (Live 12 manual 6.10)");
+    const auto q = textproj::kPPQ;
+    ui::ArrangementGeometry geo;
+    geo.scale = 60;
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 4; // 1 Bar
+    check(geo.snap(5 * q, false) == 4 * q && geo.snap(5 * q, true) == 8 * q, "no meters: 1 Bar is four quarters");
+    const std::vector<textproj::Meter> plain{{0, 4, 4}};
+    geo.meters = &plain;
+    check(!geo.metered() && geo.snap(5 * q, true) == 8 * q, "4/4 throughout: the same");
+    const std::vector<textproj::Meter> threeFour{{0, 3, 4}};
+    geo.meters = &threeFour;
+    check(geo.metered() && geo.snap(4 * q, false) == 3 * q && geo.snap(4 * q, true) == 6 * q && geo.snap(6 * q, true) == 6 * q,
+          "3/4: 1 Bar is three quarters");
+    geo.grid.fixedQuarters = 2; // 1/2
+    check(geo.snap(5 * q / 2, false) == 2 * q && geo.snap(5 * q / 2, true) == 3 * q && geo.snap(4 * q, true) == 5 * q,
+          "a half in 3/4 runs from each bar line: 0, 2, 3, 5, 6");
+    std::vector<std::int64_t> lines;
+    geo.forEachGridLine(0, 6 * q, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, 2 * q, 3 * q, 5 * q, 6 * q}, "the lines drawn are the same");
+    check(geo.nextGridLine(3 * q, true) == 5 * q && geo.nextGridLine(3 * q, false) == 2 * q, "the arrows step by them");
+    geo.grid.fixedQuarters = 8; // 2 Bars
+    check(geo.snap(4 * q, true) == 6 * q && geo.snap(7 * q, false) == 6 * q && geo.snap(7 * q, true) == 12 * q,
+          "2 Bars in 3/4: every second bar line from bar 1");
+    geo.grid.fixedQuarters = 4;
+    geo.grid.triplet = true;
+    check(geo.snap(q, true) == 2 * q && geo.snap(5 * q, false) == 4 * q, "1 Bar triplet in 3/4: two thirds of a bar, two quarters");
+    geo.grid.triplet = false;
+    const std::vector<textproj::Meter> changing{{0, 4, 4}, {6 * q, 3, 4}};
+    geo.meters = &changing;
+    check(geo.snap(5 * q, true) == 6 * q && geo.snap(7 * q, true) == 9 * q && geo.snap(10 * q, false) == 9 * q,
+          "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
+    check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
+          "bar 2 is cut short; the next is bar 3");
+}
+
+void positionsTyped() {
+    section("Arrangement Position fields: a typed position in the project's meters (Live 12 manual 6.1)");
+    const auto q = textproj::kPPQ;
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    using P = ui::BarPosition;
+    for (const auto &[text, ok, bar, beat, sixteenth] :
+         {std::tuple<const char *, bool, int, int, int>{"5", true, 5, 1, 1}, {"5.2", true, 5, 2, 1}, {"5.2.3", true, 5, 2, 3},
+          {" 5 2 3 ", true, 5, 2, 3}, {"5:2,3", true, 5, 2, 3}, {"5 . 2", true, 5, 2, 1}, {"", false, 0, 0, 0},
+          {"5.", false, 0, 0, 0}, {"0.1.1", false, 0, 0, 0}, {"5.2.3.4", false, 0, 0, 0}, {"5x", false, 0, 0, 0},
+          {"123456", false, 0, 0, 0}}) {
+        const auto at = ui::parsePosition(text);
+        check(at.has_value() == ok && (!ok || *at == P{bar, beat, sixteenth}), text);
+    }
+    check(ui::tickOf(P{1, 1, 1}, meters) == 0 && ui::tickOf(P{2, 3, 2}, meters) == 4 * q + 2 * q + q / 4,
+          "4/4: bar 2, beat 3, sixteenth 2");
+    check(ui::tickOf(P{3, 1, 1}, meters) == 8 * q && ui::tickOf(P{3, 4, 2}, meters) == 8 * q + 3 * q / 2 + q / 4,
+          "6/8 from bar 3: its beats are eighths, of two sixteenths each");
+    check(!ui::tickOf(P{3, 7, 1}, meters) && !ui::tickOf(P{3, 1, 3}, meters), "6/8 has no beat 7, nor an eighth a third sixteenth");
+    check(ui::tickOf(P{4, 2, 1}, meters) == 11 * q + q / 2 && !ui::tickOf(P{4, 3, 1}, meters),
+          "bar 4, cut short by the 5/4 on quarter 12: beat 2 there, beat 3 past it");
+    check(ui::tickOf(P{5, 1, 1}, meters) == 12 * q && ui::tickOf(P{7, 5, 4}, meters) == 22 * q + 4 * q + 3 * q / 4,
+          "5/4 from bar 5, on and on");
+    for (const auto tick : {std::int64_t{0}, 7 * q, 11 * q + q / 2, 30 * q + q / 4})
+        check(ui::tickOf(ui::barPosition(tick, meters), meters) == tick, "tickOf undoes barPosition");
+}
+
+void fragmentaryBars() {
+    section("fragmentary bars: a change before the previous bar is complete cuts it short (Live 12 manual 6.5)");
+    const auto q = textproj::kPPQ;
+    // 4/4 from the start; 6/8 at bar 3 (a whole bar line); 5/4 a quarter into 6/8's second bar.
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    std::vector<std::pair<std::int64_t, std::int64_t>> found;
+    ui::forEachFragmentaryBar(meters, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found == std::vector<std::pair<std::int64_t, std::int64_t>>{{11 * q, 12 * q}},
+          "6/8's bars are three quarters: its second bar, from quarter 11, is cut at the 5/4 on 12");
+    check(ui::fragmentAt(11 * q, meters) == std::pair<std::int64_t, std::int64_t>{11 * q, 12 * q} &&
+              ui::fragmentAt(12 * q, meters).first == -1 && ui::fragmentAt(8 * q, meters).first == -1,
+          "the fragment holds its start, not the change");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{{0, 4, 4}, {8 * q, 3, 4}},
+                              [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "a change on a bar line cuts nothing");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{}, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "no meters: none");
+}
+
+void tapTempo() {
+    section("Tap Tempo: the tempo follows the taps, from a run's second (Live 12 manual 9.1.2)");
+    ui::TapTempo taps;
+    check(!taps.tap(1000) && taps.taps() == 1, "the first tap gives no tempo yet");
+    const auto second = taps.tap(1500);
+    check(second && std::abs(*second - 120) < 1e-9, "a second half a second later: 120 BPM");
+    taps.tap(1980);
+    const auto fourth = taps.tap(2500);
+    check(fourth && std::abs(*fourth - 120) < 1e-9 && taps.taps() == 4,
+          "uneven taps are averaged over the run: 1.5 s over three beats, 120");
+    check(!taps.tap(5000) && taps.taps() == 1, "after a pause of more than two seconds, a new run");
+    std::optional<double> last;
+    for (std::int64_t t = 5600; t <= 5000 + 600 * 30; t += 600)
+        last = taps.tap(t);
+    check(last && std::abs(*last - 100) < 1e-9 && taps.taps() == 17, "a long run keeps its last sixteen intervals: 100 BPM");
+    check(!taps.tap(5000 + 600 * 30) && taps.taps() == 1, "a tap at the same moment starts again");
+}
+
+void tempoField() {
+    section("the control bar's Tempo field: 20 to 999 BPM, at the play location (Live 12 manual 9.1.1)");
+    for (const auto &[text, ok, bpm] :
+         {std::tuple<const char *, bool, double>{"128", true, 128}, {"97.5", true, 97.5}, {" 97.55 ", true, 97.55},
+          {"20", true, 20}, {"999", true, 999}, {"97.555", false, 0}, {"19.99", false, 0}, {"1000", false, 0},
+          {"12a", false, 0}, {".5", false, 0}, {"", false, 0}, {"-120", false, 0}}) {
+        const auto value = ui::parseTempo(text);
+        check(value.has_value() == ok && (!ok || std::abs(*value - bpm) < 1e-9), text);
+    }
+    const auto q = textproj::kPPQ;
+    const std::vector<engine::TempoEvent> plain{{0, 120., 0}};
+    check(!ui::tempoSurelyStored(plain) && ui::tempoSurelyStored({{0, 128., 0}}) && ui::tempoSurelyStored({{0, 120., 1}}),
+          "the start's 120 jump may be the snapshot's own; any other is stored");
+    const auto inserted = ui::setTempoAt(plain, 3 * q, "128", false);
+    check(inserted.ops.size() == 1 && inserted.ops[0].opType == "project.insertTempoEvent" &&
+              inserted.ops[0].payload.at("pos").get<std::int64_t>() == 0 &&
+              std::abs(inserted.ops[0].payload.at("bpm").get<double>() - 128) < 1e-9 && inserted.ops[0].label == "Change Tempo",
+          "none stored: the start's tempo inserted, \"Change Tempo\"");
+    const auto replaced = ui::setTempoAt(plain, 0, "128", true);
+    check(replaced.ops.size() == 2 && replaced.ops[0].opType == "project.removeTempoEvent", "stored: replaced");
+    check(ui::setTempoAt(plain, 0, "120.00", false).ops.empty() && ui::setTempoAt(plain, 0, "120", false).refusal.empty(),
+          "the same tempo: no edit");
+    check(!ui::setTempoAt(plain, 0, "1000", false).refusal.empty(), "out of range: refused with the reason");
+    const std::vector<engine::TempoEvent> ramp{{0, 120., 0}, {8 * q, 140., 1}};
+    const auto later = ui::setTempoAt(ramp, 9 * q, "150", false);
+    check(later.ops.size() == 2 && later.ops[1].payload.at("pos").get<std::int64_t>() == 8 * q &&
+              later.ops[1].payload.at("curve").get<int>() == 1,
+          "past a tempo change: that change takes the value, its curve kept");
+}
+
+void meterMarkers() {
+    section("time signature markers: Insert, Edit and Delete, one step each (Live 12 manual 6.5)");
+    for (const auto &[text, ok, num, den] :
+         {std::tuple<const char *, bool, int, int>{"3/4", true, 3, 4}, {" 7 , 8 ", true, 7, 8}, {"12.16", true, 12, 16},
+          {"5   4", true, 5, 4}, {"6 / 8", true, 6, 8}, {"99/1", true, 99, 1}, {"34", false, 0, 0},
+          {"0/4", false, 0, 0}, {"100/4", false, 0, 0}, {"3/3", false, 0, 0}, {"3/32", false, 0, 0},
+          {"3//4", false, 0, 0}, {"3/4x", false, 0, 0}, {"", false, 0, 0}, {"/4", false, 0, 0}}) {
+        const auto value = ui::parseMeter(text);
+        check(value.has_value() == ok && (!ok || (value->numerator == num && value->denominator == den)), text);
+    }
+    adi::test::TempDirectory temp("ui_seams", "meters");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    const auto bar = textproj::kWhole;
+    auto meters = [&view] { return ui::SnapshotReader(view.current()).meters(); };
+    check(meters().size() <= 1 && ui::markerAt(meters(), 0) == 0, "no marker yet");
+    const auto atStart = ui::insertMeter(meters(), 0, "3/4");
+    check(atStart.ops.empty() && !atStart.refusal.empty(), "at the start: the control bar's, refused with the reason");
+    const auto badText = ui::insertMeter(meters(), 2 * bar, "3/5");
+    check(badText.ops.empty() && badText.refusal.find("3/4") != std::string::npos, "a value Live takes not: refused");
+    auto inserted = ui::insertMeter(meters(), 2 * bar, "3/4");
+    check(inserted.ops.size() == 1 && inserted.ops[0].label == "Insert Time Signature Change" &&
+              sub.submit(std::move(inserted.ops)).ok,
+          "Insert Time Signature Change at bar 3, one op");
+    check(meters().size() == 2 && meters()[1].start_ticks == 2 * bar && meters()[1].numerator == 3 &&
+              ui::markerAt(meters(), 2 * bar) == 1 && sub.nextUndo()->label == "Insert Time Signature Change",
+          "a 3/4 marker at bar 3, one step");
+    auto again = ui::insertMeter(meters(), 2 * bar, "6/8");
+    check(again.ops.size() == 2 && again.ops[0].label == "Edit Time Signature" && sub.submit(std::move(again.ops)).ok &&
+              meters().size() == 2 && meters()[1].numerator == 6 && meters()[1].denominator == 8,
+          "inserted where a marker stands: it takes the value, as an edit");
+    check(ui::editMeter(meters(), 2 * bar, "6 8").ops.empty() && ui::editMeter(meters(), 2 * bar, "6 8").refusal.empty(),
+          "the same value is no edit");
+    check(!ui::editMeter(meters(), bar, "2/4").refusal.empty() && !ui::editMeter(meters(), 0, "2/4").refusal.empty(),
+          "no marker there, or the start's: Edit is refused");
+    auto edited = ui::editMeter(meters(), 2 * bar, "5/4");
+    check(sub.submit(std::move(edited.ops)).ok && meters()[1].numerator == 5 && meters()[1].denominator == 4 &&
+              sub.nextUndo()->label == "Edit Time Signature" && sub.nextUndo()->opCount == 2,
+          "Edit Time Signature: 5/4, one step of two ops");
+    check(sub.undo().ok && meters()[1].numerator == 6 && meters()[1].denominator == 8, "undo: 6/8 again");
+    check(!ui::deleteMeter(meters(), bar).refusal.empty() && !ui::deleteMeter(meters(), 0).refusal.empty(),
+          "no marker there, or the start's: Delete is refused");
+    auto removed = ui::deleteMeter(meters(), 2 * bar);
+    check(removed.ops.size() == 1 && removed.ops[0].label == "Delete Time Signature Change" &&
+              sub.submit(std::move(removed.ops)).ok && meters().size() == 1,
+          "Delete: the marker gone, one step");
+    check(sub.undo().ok && meters().size() == 2 && meters()[1].numerator == 6, "undo: it is back");
+    // Moved by the mouse or the arrow keys: its value kept, one step; not onto the start nor onto
+    // another marker; in place, no edit.
+    auto other = ui::insertMeter(meters(), 5 * bar, "7/8");
+    check(sub.submit(std::move(other.ops)).ok && meters().size() == 3, "a 7/8 at bar 6 besides");
+    check(!ui::moveMeter(meters(), bar, 3 * bar).refusal.empty(), "no marker there: Move is refused");
+    check(ui::moveMeter(meters(), 2 * bar, 2 * bar).ops.empty() && ui::moveMeter(meters(), 2 * bar, 2 * bar).refusal.empty(),
+          "in place: no edit");
+    check(!ui::moveMeter(meters(), 2 * bar, 0).refusal.empty() && !ui::moveMeter(meters(), 2 * bar, 5 * bar).refusal.empty(),
+          "onto the start, or onto another marker: refused with the reason");
+    auto moved = ui::moveMeter(meters(), 2 * bar, 3 * bar + bar / 4);
+    check(moved.ops.size() == 2 && moved.ops[0].label == "Move Time Signature Change" && sub.submit(std::move(moved.ops)).ok &&
+              meters().size() == 3 && meters()[1].start_ticks == 3 * bar + bar / 4 && meters()[1].numerator == 6 &&
+              meters()[1].denominator == 8 && sub.nextUndo()->opCount == 2,
+          "6/8 moved a bar and a quarter later, its value kept, one step of two ops");
+    check(sub.undo().ok && meters()[1].start_ticks == 2 * bar, "undo: back at bar 3");
+    // The control bar's field (manual 6.5): the signature in force at the play location.
+    check(!ui::startSurelyStored(meters()), "the start's 4/4 may be the snapshot's own");
+    const auto inMarker = ui::setMeterAt(meters(), 2 * bar + 1, "2/4", false);
+    check(inMarker.ops.size() == 2 && inMarker.ops[0].opType == "project.removeTimeSignature" &&
+              inMarker.ops[0].payload.at("pos").get<std::int64_t>() == 2 * bar,
+          "past bar 3: the 6/8 marker's edit");
+    auto first = ui::setMeterAt(meters(), bar, "3/4", false);
+    check(first.ops.size() == 1 && first.ops[0].opType == "project.insertTimeSignature" && sub.submit(std::move(first.ops)).ok &&
+              meters()[0].numerator == 3 && ui::startSurelyStored(meters()),
+          "before it, with none stored: the start's 3/4 inserted, and now surely stored");
+    check(ui::setMeterAt(meters(), 0, "3/4", true).ops.empty(), "the same value: no edit");
+    check(!ui::setMeterAt(meters(), 0, "3/5", true).refusal.empty(), "a value Live takes not: refused");
+    auto replaced = ui::setMeterAt(meters(), 0, "4/4", ui::startSurelyStored(meters()));
+    check(replaced.ops.size() == 2 && sub.submit(std::move(replaced.ops)).ok && meters()[0].numerator == 4 &&
+              !ui::startSurelyStored(meters()),
+          "stored: replaced, 4/4 again, which may again be either");
+    auto clash = ui::setMeterAt(meters(), 0, "2/4", false);
+    check(!sub.submit(std::move(clash.ops)).ok && meters()[0].numerator == 4,
+          "a stored 4/4 refuses the insert, and nothing changes");
+}
+
+void momentaryLatch() {
+    section("momentary latching: a key held 500 ms or more goes back on release (Live 42.25)");
+    ui::MomentaryLatch latch;
+    check(!latch.held() && !latch.release('s', 0), "nothing held: an up changes nothing");
+    check(latch.press('s', 7, 1000) && latch.held() && latch.key() == 's', "down: the first press acts");
+    check(!latch.press('s', 7, 1030) && !latch.press('s', 7, 1400), "a repeat while held does nothing");
+    latch.made(42);
+    check(!latch.release('s', 1499) && !latch.held(), "up within 500 ms: a tap stays");
+    check(latch.press('s', 7, 2000), "down again: it acts again");
+    latch.made(43);
+    const auto back = latch.release('s', 2500);
+    check(back && back->command == 7 && back->step == 43 && !latch.held(),
+          "up after 500 ms: back from the command and the step it made");
+    check(latch.press('z', 9, 3000) && !latch.release('s', 4000) && latch.held(),
+          "another key's up lets nothing go");
+    check(latch.press(1, 11, 3100) && latch.key() == 1, "another key's press takes over");
+    const auto zoom = latch.release(1, 3700);
+    check(zoom && zoom->command == 11 && zoom->step == 0, "a press that made no step goes back with none");
+    check(!latch.release('z', 3800), "the first key, taken over, stays as it is");
+    latch.press('s', 7, 5000);
+    latch.made(44);
+    latch.letGo();
+    check(!latch.held() && !latch.release('s', 6000) && latch.press('s', 7, 6000),
+          "let go unseen: nothing goes back, and the next press acts");
 }
 
 // Live's MIDI track: no audio mixer until it holds an instrument (look-live11 difference row 3); what
@@ -1159,6 +2157,97 @@ void soloRules() {
           "Main refused; the step named as before");
 }
 
+// Live's Undo History (manual 5.4.2; A5): a step restored is undone or redone to, or its branch
+// switched to, and the view is refreshed once.
+void undoHistoryRestores() {
+    section("the Undo History restores a step with one refresh");
+    adi::test::TempDirectory temp("ui_seams", "history");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    view.refresh(*store);
+    ui::OpSubmitter sub(*store, view);
+    std::vector<std::int64_t> txns;
+    for (std::int64_t id = 1; id <= 4; ++id)
+        txns.push_back(sub.submit(trackCreate(id, ("T" + std::to_string(id)).c_str())).txnId);
+    auto timeline = sub.timeline();
+    check(timeline.error.empty() && timeline.steps.size() == 4 && timeline.steps[0].step.txnId == txns[3] &&
+              timeline.steps[3].step.txnId == txns[0] && timeline.steps[0].applied,
+          "the timeline lists the four steps newest first, all applied");
+    auto generation = view.generation();
+    auto r = sub.restore(timeline.steps[2].step.txnId); // the third from the top: T2
+    check(r.ok && countTracks(*store) == 2 && view.generation() == generation + 1 &&
+              view.current()->tracks.size() == 2,
+          "restoring the third step from the top undoes two, and refreshes once");
+    timeline = sub.timeline();
+    check(!timeline.steps[0].applied && !timeline.steps[1].applied && timeline.steps[2].applied &&
+              timeline.steps[0].onCurrentLine,
+          "the two undone are greyed (not applied) and still on the current line");
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    check(r.ok && countTracks(*store) == 4 && view.generation() == generation + 1,
+          "restoring a greyed step redoes down to it, one refresh");
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    check(r.ok && view.generation() == generation, "restoring the head moves nothing and refreshes nothing");
+    // A new edit after two undos starts a branch; T4 is then on the other one.
+    sub.undo();
+    sub.undo();
+    const auto t5 = sub.submit(trackCreate(5, "T5")).txnId;
+    timeline = sub.timeline();
+    const History::TimelineStep* four = nullptr;
+    for (const auto& s : timeline.steps)
+        if (s.step.txnId == txns[3]) four = &s;
+    check(t5 != 0 && four != nullptr && !four->onCurrentLine && !four->branchIds.empty() && timeline.branches.size() >= 2,
+          "after an edit on undone steps, T4 is on another branch");
+    const auto branchBefore = timeline.currentBranchId;
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    timeline = sub.timeline();
+    check(r.ok && countTracks(*store) == 4 && view.current()->findTrack(4) != nullptr &&
+              view.current()->findTrack(5) == nullptr && timeline.currentBranchId != branchBefore &&
+              view.generation() == generation + 1,
+          "a step on another branch switches to that branch, one refresh");
+    r = sub.restore(txns[1]);
+    check(r.ok && countTracks(*store) == 2, "and undoes along it to an earlier step");
+    r = sub.restore(t5);
+    check(r.ok && countTracks(*store) == 3 && view.current()->findTrack(5) != nullptr,
+          "and back to T5's branch");
+    generation = view.generation();
+    r = sub.restore(0);
+    check(r.ok && countTracks(*store) == 0 && !sub.canUndo() && view.generation() == generation + 1,
+          "the root (0) undoes every step on the line, one refresh");
+    r = sub.restore(999999);
+    check(!r.ok && !r.error.empty(), "a step not in the history is refused, with a reason");
+}
+
+// The registry's recording defaults ride the new-track batch (#397, N31): Insert MIDI Track's batch
+// carries Rec-Q and Keep Monitoring Latency as the settings name them, one undo step.
+void recordingDefaultsRideTheBatch() {
+    section("a new track's batch carries the registry's recording defaults");
+    ui::SnapshotTracks none;
+    const ui::RecordingDefaults defaults{"1/8", false};
+    const auto edit = ui::insertTrack(none, 0, true, &defaults);
+    bool record = false, keep = false, labelled = true;
+    for (const auto &op : edit.ops) {
+        labelled = labelled && op.label == "Insert MIDI Track";
+        if (op.opType == "track.setRecordQuantize")
+            record = op.payload.at("on").get<bool>() && op.payload.at("grid").get<std::string>() == "1/8";
+        if (op.opType == "track.setKeepMonitoringLatency")
+            keep = !op.payload.at("on").get<bool>();
+    }
+    check(edit.ops.front().opType == "track.create" && record && keep && labelled,
+          "Insert MIDI Track: the track, then Rec-Q 1/8 and Keep Monitoring Latency off, one label");
+    const ui::RecordingDefaults free{"off", true};
+    bool off = false;
+    for (const auto &op : ui::insertTrack(none, 0, false, &free).ops)
+        if (op.opType == "track.setRecordQuantize")
+            off = !op.payload.at("on").get<bool>() && !op.payload.contains("grid");
+    check(off, "record.quantize off: Rec-Q Free");
+    check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -1173,18 +2262,35 @@ int main() {
     stampsTheActor();
     aRefusedOpWritesNothing();
     everyWriteRefreshesTheView();
+    aSubmitterFollowsTheSessionsOverrides();
     aFrameKeepsItsSnapshot();
+    aPreparedBatchCommitsAsOneStep();
+    aPreparedBatchTakesOneOpOfTheWindows();
+    aHelperOwnedBatchIsStampedThroughItsRequests();
+    aStalePreparedBatchIsRefused();
+    aHelpersRefusalLeavesTheView();
     projectViewTree();
     projectViewRowsFromTheSnapshot();
     metersCountBars();
     groupAndUngroupAsBatches();
+    deleteTrackAndUngroupComeBackWhole();
     returnsStandBeforeMain();
     sendsAsBatches();
     audioDropAsOneStep();
     rangeEditsAsBatches();
+    rangeEditsSplitCrossingClips();
     referenceTapAndHold();
+    momentaryLatch();
+    meterGrid();
+    positionsTyped();
+    fragmentaryBars();
+    tapTempo();
+    tempoField();
+    meterMarkers();
     midiTrackMixer();
     soloRules();
+    undoHistoryRestores();
+    recordingDefaultsRideTheBatch();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

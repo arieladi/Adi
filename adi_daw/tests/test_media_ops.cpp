@@ -195,8 +195,10 @@ void captureDecodeAndDedup() {
           media::mediaRow(f.store->db(),20).at("rel_path")=="sample.wav","reusing moved media captures a relink without applying it");
     check(OpJournal(*f.store).commit(duplicate).ok && media::mediaRow(f.store->db(),20).at("rel_path")=="moved.wav",
           "the captured relink repairs playback paths to matching imported content");
-    {audio::CallbackScope scope;
-        check(!media::prepareImport(*f.store,source,23,4,duplicate).ok && duplicate.opType.empty(),"capture refuses the audio callback before file access");}
+    const auto preserved=duplicate.payload;bool callbackRefused=false;
+    {audio::CallbackScope scope;callbackRefused=!media::prepareImport(*f.store,source,23,4,duplicate).ok;}
+    check(callbackRefused && duplicate.opType=="media.relink" && duplicate.payload==preserved,
+          "capture refuses the callback before file access or clearing caller-owned requests");
 }
 void atomicAttachmentFailure() {
     Fixture f;const auto source=f.folder()/"sample.wav";

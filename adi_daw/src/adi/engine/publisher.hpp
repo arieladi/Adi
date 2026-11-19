@@ -47,6 +47,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <vector>
 
 namespace adi::engine {
@@ -81,6 +82,21 @@ public:
     /// Makes `s` the snapshot the audio thread will pick up on its next block.
     /// Takes ownership. The previous snapshot is retired, not freed.
     void publish(std::unique_ptr<T> s) {
+        publishPrepared(s);
+    }
+
+    /// Owner-only preserving form for a ready generation. Any allocation or
+    /// lock failure occurs before consuming s or changing the publication.
+    /// After exchange only nonthrowing stores into reserved storage remain.
+    void publishPrepared(std::unique_ptr<T>& s) {
+        if (!s) return;
+        std::lock_guard lock(retiredMutex_);
+        T* previous = current_.load(std::memory_order_relaxed);
+        if (previous != nullptr) {
+            if (retired_.size() == retired_.max_size())
+                throw std::length_error("snapshot retirement capacity exhausted");
+            retired_.reserve(retired_.size() + 1);
+        }
         s->seq = ++nextSeq_;
         T* raw = s.release();
 
@@ -89,10 +105,7 @@ public:
         // reader can see the pointer before the data it points at.
         T* old = current_.exchange(raw, std::memory_order_release);
 
-        if (old) {
-            std::lock_guard lock(retiredMutex_);
-            retired_.push_back(old);
-        }
+        if (old) retired_.push_back(old);
     }
 
     /// Frees every retired snapshot the audio thread has demonstrably moved
@@ -103,9 +116,14 @@ public:
         // did before publishing this value happens-before what we do after.
         const std::uint64_t inUse = inUse_.load(std::memory_order_acquire);
 
-        std::vector<T*> freeable;
+        // Counted construction: MSVC Debug allocates the iterator proxy here, and the
+        // default constructor is noexcept, so a failure there would terminate.
+        std::vector<T*> freeable(std::size_t{0});
         {
             std::lock_guard lock(retiredMutex_);
+            // No erased raw pointer may be stranded if a later push allocates.
+            // Reserve before the first erase; destructors remain outside lock.
+            freeable.reserve(retired_.size());
             for (auto it = retired_.begin(); it != retired_.end();) {
                 // STRICTLY greater. See the comment at the top of this file --
                 // >= frees a snapshot the audio thread is inside.

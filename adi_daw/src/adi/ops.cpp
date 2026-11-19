@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
+#include "adi/gesture_navigation_detail.hpp"
+#include "adi/applied_batches_detail.hpp"
 
+#include "adi/history_compaction.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -9,6 +16,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <regex>
 #include <stdexcept>
 
@@ -186,27 +195,170 @@ std::span<const OpDescriptor> OpRegistry::all() const { return ops_; }
 // Validation and codec
 // ---------------------------------------------------------------------------
 
-std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
-    std::vector<ValidationIssue> out;
-    if (!p.is_object()) {
-        out.push_back({"", "payload is not an object"});
-        return out;
-    }
+namespace {
 
-    for (const auto& f : d.fields) {
-        const std::string key(f.key);
-        if (!p.contains(key)) {
+std::string renderBound(double v) {
+    if (std::isfinite(v) && std::floor(v) == v && std::fabs(v) < 9.0e15)
+        return std::to_string(static_cast<long long>(v));
+    char text[40];
+    std::snprintf(text, sizeof text, "%.17g", v);
+    return text;
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out);
+
+/// The remote bounds inside an open value: an Object with no declared
+/// members, or an element of an Array with no declared items. Nothing names
+/// what it holds, so the profile's defaults hold all the way down: text,
+/// member names included, at most kRemoteMaxTextLength characters, and
+/// arrays and objects at most kRemoteMaxArrayItems members. The depth is the
+/// wire's (WireLimits::maxDepth), and JSON has no non-finite number. Stops at
+/// the first issue, so a hostile value costs one issue, not one per member.
+bool checkOpen(const Payload& v, const std::string& key, std::vector<ValidationIssue>& out) {
+    if (v.is_string()) {
+        if (utf8CodePoints(v.get_ref<const std::string&>()) <= kRemoteMaxTextLength) return true;
+        out.push_back({key, "longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
+        return false;
+    }
+    if (!v.is_array() && !v.is_object()) return true;
+    if (v.size() > kRemoteMaxArrayItems) {
+        out.push_back({key, "more than " + std::to_string(kRemoteMaxArrayItems) + " items"});
+        return false;
+    }
+    if (v.is_array()) {
+        std::size_t i = 0;
+        for (const auto& element : v)
+            if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) return false;
+        return true;
+    }
+    for (auto it = v.begin(); it != v.end(); ++it) {
+        if (utf8CodePoints(it.key()) > kRemoteMaxTextLength) {
+            out.push_back({key, "a member name longer than " + std::to_string(kRemoteMaxTextLength) + " characters"});
+            return false;
+        }
+        if (!checkOpen(it.value(), key + "." + it.key(), out)) return false;
+    }
+    return true;
+}
+
+/// One present, non-null value against its Field: the type, then (only when
+/// the type matched) every declared constraint and the profile's defaults.
+void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::string& key,
+                std::string_view opName, std::vector<ValidationIssue>& out) {
+    const bool typed = typeMatches(f.type, v);
+    if (!typed) out.push_back({key, "expected " + std::string(typeName(f.type))});
+    // Non-finite floats have no single encoding and no musical meaning.
+    // Letting one through would put a NaN in a project file.
+    if (v.is_number_float() && !std::isfinite(v.get<double>()))
+        out.push_back({key, "value is not finite"});
+    if (!typed) return;
+
+    switch (f.type) {
+        // An Int is an int64. Only a field marked fullUint64 (a note's
+        // persisted id, ANOT) may also be an unsigned value above INT64_MAX;
+        // every other handler reads int64, which would wrap it to a negative.
+        // Checked exactly: (double)INT64_MAX is 2^63, so a double bound would
+        // let 2^63 and its neighbours through.
+        case FieldType::Int:
+        case FieldType::Real: {
+            if (f.type == FieldType::Int && !f.fullUint64 && v.is_number_unsigned() &&
+                v.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)) {
+                out.push_back({key, "above the maximum 9223372036854775807"});
+                break;
+            }
+            if (!f.minimum && !f.maximum) break;
+            if (v.is_number_float() && !std::isfinite(v.get<double>())) break;
+            // Compared as double: a declared bound is a small number, and the
+            // 64-bit range itself is checked above, exactly.
+            const double x = v.is_number_float() ? v.get<double>()
+                           : v.is_number_unsigned() ? static_cast<double>(v.get<std::uint64_t>())
+                                                    : static_cast<double>(v.get<std::int64_t>());
+            if (f.minimum && x < *f.minimum)
+                out.push_back({key, "below the minimum " + renderBound(*f.minimum)});
+            if (f.maximum && x > *f.maximum)
+                out.push_back({key, "above the maximum " + renderBound(*f.maximum)});
+            break;
+        }
+        case FieldType::Text: {
+            const auto& s = v.get_ref<const std::string&>();
+            if (!f.enumValues.empty() &&
+                std::none_of(f.enumValues.begin(), f.enumValues.end(),
+                             [&](std::string_view e) { return e == s; })) {
+                std::string list;
+                for (const auto e : f.enumValues) {
+                    if (!list.empty()) list += ", ";
+                    list += e;
+                }
+                out.push_back({key, "must be one of: " + list});
+            }
+            const std::optional<std::size_t> cap =
+                f.maxLength ? f.maxLength
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxTextLength)
+                                           : std::nullopt;
+            if (cap && utf8CodePoints(s) > *cap)
+                out.push_back({key, "longer than " + std::to_string(*cap) + " characters"});
+            break;
+        }
+        case FieldType::Array: {
+            const std::optional<std::size_t> cap =
+                f.maxItems ? f.maxItems
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxArrayItems)
+                                           : std::nullopt;
+            if (cap && v.size() > *cap) {
+                out.push_back({key, "more than " + std::to_string(*cap) + " items"});
+                if (f.items.empty()) break;
+            }
+            if (f.items.empty()) {
+                if (bounds == Bounds::Remote) {
+                    std::size_t i = 0;
+                    for (const auto& element : v)
+                        if (!checkOpen(element, key + "[" + std::to_string(i++) + "]", out)) break;
+                }
+                break;
+            }
+            std::size_t i = 0;
+            for (const auto& element : v) {
+                const std::string at = key + "[" + std::to_string(i++) + "]";
+                if (!element.is_object()) {
+                    out.push_back({at, "expected object"});
+                    continue;
+                }
+                checkObject(f.items, element, bounds, at + ".", opName, out);
+            }
+            break;
+        }
+        case FieldType::Object:
+            if (!f.items.empty()) checkObject(f.items, v, bounds, key + ".", opName, out);
+            else if (bounds == Bounds::Remote) checkOpen(v, key, out);
+            break;
+        case FieldType::Bool:
+            break;
+    }
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out) {
+    for (const auto& f : fields) {
+        const std::string key = prefix + std::string(f.key);
+        const auto it = p.find(std::string(f.key));
+        if (it == p.end()) {
             if (f.required) out.push_back({key, "required field missing"});
             continue;
         }
-        const auto& v = p.at(key);
-        if (v.is_null() && !f.required) continue;   // explicit null clears an optional
-        if (!typeMatches(f.type, v))
-            out.push_back({key, "expected " + std::string(typeName(f.type))});
-        // Non-finite floats have no single encoding and no musical meaning.
-        // Letting one through would put a NaN in a project file.
-        if (v.is_number_float() && !std::isfinite(v.get<double>()))
-            out.push_back({key, "value is not finite"});
+        // A key that starts with '_' is the op's own: its inverse's way to
+        // erase a row or restore a value the forward checks would refuse
+        // (split pan's _erase and _restore, clip.setFades' _restore). A
+        // caller across the control boundary may not say it, and the remote
+        // schema does not show it.
+        if (bounds == Bounds::Remote && f.key.starts_with('_')) {
+            out.push_back({key, "internal field, not accepted from a caller"});
+            continue;
+        }
+        if (it->is_null() && !f.required) continue;   // explicit null clears an optional
+        checkValue(f, *it, bounds, key, opName, out);
     }
 
     // Closed schema. An unknown field from a CALLER is a typo or a version
@@ -214,10 +366,33 @@ std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Pay
     // they did not. (An unknown field read back from the LOG is a different
     // thing entirely and is preserved -- see decodeFromLog.)
     for (auto it = p.begin(); it != p.end(); ++it) {
-        const bool known = std::any_of(d.fields.begin(), d.fields.end(),
+        const bool known = std::any_of(fields.begin(), fields.end(),
                                        [&](const Field& f) { return f.key == it.key(); });
-        if (!known) out.push_back({it.key(), "unknown field for " + std::string(d.name)});
+        if (!known) out.push_back({prefix + it.key(), "unknown field for " + std::string(opName)});
     }
+}
+
+}  // namespace
+
+std::size_t utf8CodePoints(std::string_view text) noexcept {
+    std::size_t n = 0;
+    for (const char c : text)
+        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
+    return n;
+}
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
+    return validateSubmission(d, p, Bounds::Local);
+}
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p,
+                                                Bounds bounds) {
+    std::vector<ValidationIssue> out;
+    if (!p.is_object()) {
+        out.push_back({"", "payload is not an object"});
+        return out;
+    }
+    checkObject(d.fields, p, bounds, "", d.name, out);
     return out;
 }
 
@@ -250,10 +425,42 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
 }
 
 CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOptions& options) {
+    std::shared_ptr<const OpCapturedTransaction> captured;
+    for (const auto& request : reqs) {
+        if (request.capturedTransaction) { captured = request.capturedTransaction; break; }
+    }
+    if (!captured) return commitImpl(reqs, options, nullptr, nullptr);
+    CommitResult result;
+    if (!CapturedTransactionAccess::begin(captured, reqs, store_, options, result.error)) return result;
+    auto guarded = options;
+    guarded.expectHead.emplace(captured->expectedHead());
+    result = commitImpl(reqs, guarded, &captured->source(), &captured->inputs());
+    if (!result.ok) CapturedTransactionAccess::refuse(captured, result.error);
+    return result;
+}
+
+CommitResult OpJournal::commitCaptured(std::span<const OpRequest> reqs, const AppliedSource& source,
+    const CommitOptions& options, const OpTransactionInputs& inputs) {
+    CommitResult result;
+    if (!options.expectHead) { result.error = "captured commit requires expected head"; return result; }
+    for (const auto& request : reqs) {
+        if (request.capturedTransaction) {
+            result.error = "sealed captured packets must use their own transaction admission"; return result;
+        }
+    }
+    return commitImpl(reqs, options, &source, &inputs);
+}
+
+CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const CommitOptions& options,
+    const AppliedSource* expectedSource, const OpTransactionInputs* inputs) {
     CommitResult r;
-    if (reqs.empty()) { r.ok = true; return r; }
+    if (detail::appliedDispatchActive(store_)) { r.error = "reentrant journal commit during applied-batch delivery"; return r; }
+    if (!gesture::detail::mutationAllowed(store_, r.error)) return r;
+    if (!appliedSource(store_).alive()) { r.error = "project is closed"; return r; }
+    if (reqs.empty() && !expectedSource) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
+    const bool frozenWasValid = freeze::validated(store_);
     const auto& reg = OpRegistry::instance();
 
     // Validate everything BEFORE opening a transaction. A batch that cannot
@@ -282,13 +489,33 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         // partially-applied batch cannot survive describing itself as complete.
         SQLite::Transaction txn(db);
 
+        std::optional<std::int64_t> head = headSeq();
+        if (expectedSource && (!expectedSource->alive() || !expectedSource->sameConnection(appliedSource(store_)))) {
+            r.error = "captured commit source changed"; return r;
+        }
+        if (options.expectHead && head != *options.expectHead) {
+            r.stale = true; r.headFound = head; r.error = "stale: the undo head moved"; return r;
+        }
+        if (inputs) {
+            if (!detail::validateOpPresentationImage(store_, inputs->presentationImage, r.error) ||
+                !detail::validateOpRowGuards(store_, inputs->rowGuards, r.error) ||
+                !detail::validateOpRowSetGuards(store_, inputs->rowSetGuards, r.error)) {
+                r.stale = true; r.headFound = head; return r;
+            }
+            if (reqs.empty() && !inputs->stateBlobs.empty()) {
+                r.error = "empty captured commit has state resources"; return r;
+            }
+            if (!detail::installOpResources(store_, reqs, *inputs, r.error)) return r;
+        }
+        if (reqs.empty()) { r.ok = true; return r; }
+
         const std::int64_t txnId =
             db.execAndGet("SELECT IFNULL(MAX(txn_id), 0) + 1 FROM ops").getInt64();
         r.txnId = txnId;
         const std::int64_t ts = nowUtcMicros();
 
         // Where we are in the tree. New ops hang off this.
-        std::optional<std::int64_t> head = headSeq();
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Commit, head);
 
         // ADR-0161: this Store's client, and the clock its ops continue from.
         // One more than every clock in the file, and than every seq, because
@@ -307,12 +534,6 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
 
         // ADR-0153: the caller's expected head, checked HERE, inside the
         // transaction, so nothing can move it between the check and COMMIT.
-        if (options.expectHead && head != *options.expectHead) {
-            r.stale = true;
-            r.headFound = head;
-            r.error = "stale: the undo head moved";
-            return r;   // Transaction dtor rolls back
-        }
 
         // SPEC §8.2: "Undoing and then doing something new does not destroy the
         // branch you left; it forks."
@@ -324,7 +545,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         // becomes unreachable the moment the new op takes its place in redo.
         {
             SQLite::Statement kids(db,
-                "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND "
+                "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
                 "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
                 "ORDER BY seq DESC LIMIT 1");
             if (head) { kids.bind(1, *head); kids.bind(2, *head); }
@@ -336,7 +557,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
                 std::int64_t tip = kids.getColumn(0).getInt64();
                 for (;;) {
                     SQLite::Statement nxt(db,
-                        "SELECT seq FROM ops WHERE parent_seq = ? AND tags <> 'ephemeral' "
+                        "SELECT seq FROM ops WHERE parent_seq = ? AND tags <> 'ephemeral' AND op_type<>'history.root' "
                         "ORDER BY seq DESC LIMIT 1");
                     nxt.bind(1, tip);
                     if (!nxt.executeStep()) break;
@@ -422,16 +643,29 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             clock.bind(2, store_.clientId());
             clock.bind(3, ++lamport);
             clock.exec();
+            if (!applied.append(store_, q.opType, d->name, q.payload, seq, txnId, false, err, q.runtimeProof)) {
+                r.error = "cannot capture applied operation: " + err;
+                r.seqs.clear();
+                return r;
+            }
             if (!d->ephemeral) head = seq;   // the chain advances; ephemeral does not
         }
 
         // The head move is in the SAME transaction as the mutations it
         // describes. Otherwise a crash between them leaves the project changed
         // and the head saying otherwise, which undo would then get wrong.
-        if (!setHeadSeq(head)) {
+        if (!writeHeadSeq(head)) {
             r.error = "could not advance the undo head";
             return r;
         }
+
+        // ADR-0213: optional compaction has its own savepoint. Its failure
+        // reports a warning and cannot discard the edit or its applied batch.
+        const auto retention = history_detail::tryCompactUndo(store_);
+        if (!retention.ok)
+            r.retentionWarning = "history compaction: " + retention.error;
+        else if (retention.protectedHistory)
+            r.retentionWarning = "history remains above its undo budget; protected content retained";
 
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {
@@ -443,8 +677,27 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             }
         }
 
+        freeze::validate(
+            store_,
+            !(frozenWasValid && !options.beforeCommit && freeze::liveControlBatch(reqs) &&
+              freeze::groupControlsLive(db, reqs) &&
+              db.execAndGet(
+                    "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE "
+                    "NOCASE IN ('tracks','mixer_strip','project') UNION ALL SELECT 1 FROM sqlite_temp_master "
+                    "WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('tracks','mixer_strip','project'))")
+                      .getInt() != 0));
+        std::string appliedError;
+        auto delivery = applied.finish(store_, headSeq(), appliedError);
+        if (!delivery) {
+            r.error = "cannot capture applied batch: " + appliedError;
+            r.seqs.clear();
+            return r;
+        }
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
+        if (!reqs.empty()) CapturedTransactionAccess::durable(reqs.front().capturedTransaction, r.txnId);
+        delivery->publish(); // noexcept; observer failure cannot falsify SQL success
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -461,9 +714,9 @@ std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
         SQLite::Statement st(store_.db(), clocks
             ? "SELECT o.seq, o.txn_id, o.ts_utc, o.actor, o.actor_detail, o.op_type, o.label, "
               "o.payload, o.inverse, o.parent_seq, o.tags, c.client_id, c.lamport "
-              "FROM ops o LEFT JOIN op_clocks c ON c.seq = o.seq ORDER BY o.seq DESC LIMIT ?"
+              "FROM ops o LEFT JOIN op_clocks c ON c.seq = o.seq WHERE o.op_type<>'history.root' ORDER BY o.seq DESC LIMIT ?"
             : "SELECT seq, txn_id, ts_utc, actor, actor_detail, op_type, label, "
-              "payload, inverse, parent_seq, tags FROM ops ORDER BY seq DESC LIMIT ?");
+              "payload, inverse, parent_seq, tags FROM ops WHERE op_type<>'history.root' ORDER BY seq DESC LIMIT ?");
         st.bind(1, limit);
         while (st.executeStep()) {
             LoggedOp o;
@@ -525,11 +778,38 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 }
 
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) return false;
+    auto& db=store_.db();bool active=false;
+    try{
+        db.exec("SAVEPOINT adi_history_head");active=true;
+        if(history_detail::hasStoredRoots(db) && (!seq ||
+           history_detail::rootForPoint(db,seq)!=history_detail::rootForPoint(db,headSeq())))
+            throw std::runtime_error("head move crosses a stored baseline");
+        if(!writeHeadSeq(seq))throw std::runtime_error("cannot move history head");
+        db.exec("RELEASE adi_history_head");return true;
+    }catch(...){
+        if(active){try{db.exec("ROLLBACK TO adi_history_head");db.exec("RELEASE adi_history_head");}catch(...){}}
+        return false;
+    }
+}
+
+bool OpJournal::writeHeadSeq(std::optional<std::int64_t> seq) {
+    if (detail::appliedDispatchActive(store_) || !appliedSource(store_).alive()) return false;
     try {
+        if(history_detail::hasStoredRoots(store_.db())){
+            if(!seq)return false;
+            (void)history_detail::rootForPoint(store_.db(),seq);
+        }else{
+            SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
+            if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))return false;
+        }
+
         SQLite::Statement st(store_.db(),
             "UPDATE op_branches SET head_seq = ? WHERE is_current = 1");
         if (seq) st.bind(1, *seq); else st.bind(1);
-        return st.exec() > 0;
+        if(st.exec()<=0)return false;
+        history_detail::syncCurrentRoot(store_);return true;
     } catch (const std::exception&) {
         return false;
     }

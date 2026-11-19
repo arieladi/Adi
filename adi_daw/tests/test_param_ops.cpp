@@ -845,13 +845,21 @@ void testTheStateLoopThroughTheJournal() {
     std::vector<OpRequest> out;
     eqi(static_cast<long long>(ops.drain(1000, out)), 2, "opener and snapshot");
     OpJournal j(*store);
-    const CommitResult bad = j.commit(out);
-    check(!bad.ok, "committed WITHOUT the blobs, the foreign key refuses it: " + bad.error);
-    std::string err;
-    check(ops.writeBlobs(*store, err), "the blobs are written: " + err);
-    // `writeBlobs` took them; the refused commit left the requests intact.
+    auto legacy = out;
+    for (auto& request : legacy) request.capturedTransaction.reset();
+    const CommitResult bad = j.commit(legacy);
+    check(!bad.ok && rowHash() == "(none)", "raw legacy state packet without blobs still refuses its foreign key: " + bad.error);
     const CommitResult res = j.commit(out);
-    check(res.ok, "then the transaction commits: " + res.error);
+    check(res.ok && !out.empty() && out.front().capturedTransaction &&
+              out.front().capturedTransaction->phase() == CapturedSubmissionPhase::Durable,
+          "session-bound typed packet atomically installs its owned blobs without writeBlobs: " + res.error);
+    const auto committedCount = j.count();
+    const auto committedHead = j.headSeq();
+    const CommitResult repeated = j.commit(out);
+    check(!repeated.ok && j.count() == committedCount && j.headSeq() == committedHead,
+          "the same Durable captured preset cannot submit a second transaction");
+    std::string err;
+    check(ops.writeBlobs(*store, err), "legacy staging bridge remains valid after atomic commit: " + err);
     const std::string presetHash = hashOfState(live);
     check(rowHash() == presetHash, "the row holds the preset's chunk");
 

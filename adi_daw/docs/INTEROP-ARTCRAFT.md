@@ -1,5 +1,9 @@
 # Interoperability with the storytold ArtCraft suite
 
+> **Cancelled by the director on 11 November 2026 (ADR-0234).** ADI does not plan on any work
+> from storytold, so the bridge, the FilmCraft time base and the link tables are gone. This file
+> is kept as history only. OTIO, AAF and timecode continue on their own (PLAN TM-IC-01, TM-IC-04).
+
 **Status:** design, nothing built; recorded as ADR-0206 (2026-10-25). This file is the design the
 entry points at: the facts verified in the ArtCraft repositories, the four subsystems of the bridge
 corrected against those facts, what ADI offers the other way, and the priorities. It contains no

@@ -41,6 +41,7 @@
 #pragma once
 
 #include "juce/device_model.hpp"
+#include "adi/plugin_scanner.hpp"
 #include "juce/vst3_events.hpp"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -68,9 +69,14 @@ public:
     /// Where the OS keeps VST3s. Read from JUCE rather than hardcoded.
     [[nodiscard]] juce::FileSearchPath defaultSearchPaths() const;
 
-    /// Blocking scan. Message thread; a plugin's factory runs arbitrary code
-    /// and some of them are slow.
-    void scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into);
+    /// Blocking owner discovery, always in the dedicated child with quarantine.
+    /// Directory enumeration is filesystem-only. No in-process fallback.
+    scan::Report scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into,
+                      const scan::Config& config = {});
+    /// Same boundary for a project's explicit path hint. Replaces `into` only
+    /// after a completed scan; failed/cancelled service retains the old list.
+    scan::Report scanFile(const juce::String& file, juce::KnownPluginList& into,
+                          const scan::Config& config = {});
 
     /// Instantiate, or return nullptr and set `error`.
     ///
@@ -106,6 +112,8 @@ public:
 
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return inst_ != nullptr; }
+
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
@@ -187,6 +195,14 @@ public:
     /// Set by the same notification. A change of parameters, programs or
     /// anything else the plugin declares dirty (SPEC 7.3's boundary list).
     /// Not moved by our own `loadState` or `setParam` (ADR-0142).
+    /// Exact owner-side channel-shape stamp. Equality preserves prepare's
+    /// existing total-channel guard without disturbing an already live node.
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
+        if(!inst_)return 0;
+        const auto input=static_cast<std::uint32_t>(inst_->getTotalNumInputChannels());
+        const auto output=static_cast<std::uint32_t>(inst_->getTotalNumOutputChannels());
+        return (static_cast<std::uint64_t>(input)<<32)|output;
+    }
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
     }
@@ -222,6 +238,9 @@ public:
     /// Parameter changes refused: no free queue, or a full one. MpeMidi's
     /// IMidiMapping path lands here as well as ordinary automation.
     [[nodiscard]] std::int64_t paramsDropped() const noexcept { return paramChanges_.dropped(); }
+    [[nodiscard]] std::uint32_t unsupportedControllers() const noexcept {
+        return unsupportedControllers_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
         return events_.outOfRange() + routedOutOfRange_;
     }
@@ -276,7 +295,9 @@ private:
     /// True while `setParam` runs. JUCE tells its listeners about the value
     /// we just set, synchronously, on this thread; that is not an edit
     /// (ADR-0124). A plugin that re-broadcasts later is the echo guard's.
-    bool settingFromHost_ = false;
+    struct HostMutationScope;
+    [[nodiscard]] bool hostMutationOnCurrentThread() const noexcept;
+    std::atomic<std::uint32_t> hostMutations_{0};
     /// JUCE's parameter index -> ours. `readParameters` skips null entries,
     /// so the two are not the same list.
     std::vector<std::int32_t> juceToOurs_;
@@ -291,6 +312,7 @@ private:
 
     void readParameters();
 
+    std::weak_ptr<DeviceEditor> editor_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
@@ -318,6 +340,7 @@ private:
     std::vector<engine::MpeOut> routedStore_;
     engine::MpeOutList routed_;
     std::int64_t routedOutOfRange_ = 0;
+    std::atomic<std::uint32_t> unsupportedControllers_{0};
     std::atomic<std::uint8_t> requestedRoute_{0};    ///< engine::RouteChoice
     std::uint8_t appliedRoute_ = 0;                  ///< audio thread only
     std::atomic<std::uint8_t> routeInUse_{0};        ///< engine::ExpressionRoute

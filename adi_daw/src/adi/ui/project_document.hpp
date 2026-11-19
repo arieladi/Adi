@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/builtin_catalog.hpp"
+#include "adi/device_copy.hpp"
+#include "adi/sample_slots.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
+#include "adi/mix_functions.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/material_commands.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/import_choices.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/shared_analysis.hpp"
+#include "adi/ui/track_edits.hpp"
+#include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -20,10 +30,15 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // There is no Save: every op is committed as it happens (ADR-0003, ADR-0203 d13),
 // and the store is closed into one file when the document goes. Ctrl/Cmd+S takes
 // a named snapshot instead, a point in the history that copies nothing.
+struct WaveformSource; // project_document.cpp
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    ~ProjectDocument() override;
+    // New (`create`) captures the registry's recording defaults for its four tracks in the history's
+    // root (`Store::createNewProject`'s four-argument form, #397, N31) when `defaults` is given.
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
-                                                 engine::DeviceLoader, std::string &error);
+                                                 engine::DeviceLoader, std::string &error,
+                                                 const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
@@ -31,6 +46,34 @@ class ProjectDocument final : public engine::BlockProcessor {
     // What the Take Snapshot prompt is pre-filled with: the project's name and the time.
     std::string snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const;
     const std::string &name() const noexcept { return name_; }
+    // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the store copies the project into a
+    // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
+    // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
+    // The store never overwrites, so an existing destination is refused and `error()` says why,
+    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // switched the save stands and is true, a warning the store reports, or a session that
+    // failed to re-read the new file, in `warning()`.
+    bool saveAs(const std::filesystem::path &);
+    const std::string &warning() const noexcept { return warning_; }
+    // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    bool saveCopy(const std::filesystem::path &);
+    // Live's Collect All and Save (manual 5.7): every outside media file the project and its
+    // history use is copied into `audio/` beside it and the project points at the copies
+    // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
+    // store collects them all. Not an undo step; the view and the session read the project again.
+    bool collectAllAndSave();
+    // ADI's Collect and Export (MR 1.6, 11.3): a portable `.zip` of the project and every file it
+    // uses (`media::collectExport`, #411, behind `Store::collectAndExport`), of the project as committed,
+    // the open one left as it is. Prepared here on the message thread: the destination is refused
+    // when it exists, and the job names the project's file. Run anywhere: `runCollectAndExport` reads
+    // the file on a short read-only connection of its own (SPEC §3.8), so the app runs it on a worker
+    // it owns and the window keeps working; a project replaced meanwhile does not wait for it.
+    struct ExportJob {
+        std::filesystem::path project, zip;
+    };
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;
@@ -46,19 +89,117 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
-    bool parameterGesture(std::int64_t, const std::string &, engine::ParamEventKind, double);
+    void setParameterDemand(const void *consumer, const std::vector<std::int64_t> &devices);
+    const std::shared_ptr<SharedAnalysis> &analysis() const noexcept { return analysis_; }
+    // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
+    // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
+    // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
+    // the engine's own window producer (`ParamOps::uiEvent`). A value nothing brackets closes on
+    // the drain's quiet timer, in `tick()`. False when THIS event was refused (a device that is
+    // not loaded, a missing or read-only parameter, a value the plug-in did not take), with
+    // `error()` saying which. An older gesture the producer's own drain completed on the way to
+    // judging the value is committed by this call; a device, parameter or value the producer
+    // refuses outright drains nothing, and the older gesture commits on the timer's next frame.
+    bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
+                          double normalized);
+    // Explicitly configurable descriptors use the same gesture/undo path,
+    // but stay non-automatable and never override an automation lane.
+    // Retained multi-track surfaces edit the exact runtime they presented. A stale row ID
+    // must never redirect a gesture to a replacement instance.
+    bool parameterGestureExpected(std::int64_t id, const std::string &param, engine::ParamEventKind,
+                                  double normalized, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    bool deviceTargetCurrent(std::int64_t id, const engine::DeviceRuntimeToken &, std::uint64_t instance);
+    // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
+    // this run follows its envelope again, from the playhead at once, and the snapshot's
+    // `automationOverridden` and each lane's `overridden` follow in the same call. Not an op and
+    // not an undo step: the override is session state (ADR-0162), and so is its end. True with
+    // nothing overridden too; false with `error()` when the session's rebuild failed.
+    bool reenableAutomation();
+    // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
+    // button is on becomes automation. The session's switch, on in a new Set as Live's. The window
+    // does not record yet, so the session is never told that recording is on.
+    void setAutomationArmed(bool armed) noexcept;
+    bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
+    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // document's. Paste puts a new device, with the next free id and the copy's stored state, in
+    // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
+    // engine's refusals (a rack with nested chains, a copy from another project) come back in
+    // `error()`.
+    bool copyDevice(std::int64_t id, DeviceCopy &out);
+    bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
+    // the app moves a held copy over to the new file, the same project under a new name.
+    std::string deviceCopyIdentity() const;
+    // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
+    // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
+    // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    bool addMixFunction(mix::Function, std::int64_t track);
+    bool moveMixFunction(const DevicePanelData &expected, std::int64_t track,
+                         std::optional<std::int64_t> before);
+    // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
+    // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
+    // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
+    // engine's refusals (a device this build cannot run, an undeclared slot, a file that is not
+    // audio) come back in `error()`. Preparation decodes on the calling thread.
+    bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
+    bool clearSample(std::int64_t device, std::int32_t slot);
+    // The parameter glue's counters (for the tests: a sample's state reached the live device).
+    const engine::ParamOps::Stats &parameterStats() const noexcept { return parameterOps_.stats(); }
+    std::vector<engine::PendingParameterGesture> pendingParameterGestures() const {
+        return parameterOps_.pendingGestures();
+    }
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    // An audio file imported with the prompt's choices (E5; Live 12 manual 9.2; ADR-0132 d6): Warp,
+    // Create Fades on Clip Edges, the file copied into the project. The engine's material import
+    // (`clip_edit::prepareImportAudio`, #393) reads, hashes and analyses the file and stages its copy
+    // without writing the project, so it runs off the message thread: `materialJob` captures what it
+    // needs here (the project's file, the ids, the rate), `prepareMaterial` runs anywhere on a
+    // connection of its own, and `commitMaterial` lands it here as one undo step, or refuses as
+    // stale when the project changed meanwhile, leaving nothing behind.
+    struct MaterialJob {
+        std::filesystem::path project, source;
+        std::int64_t track = 0, clipId = 0, mediaId = 0, atTicks = 0, importedUtc = 0;
+        ImportChoices choices;
+        double rate = 48000.0;
+    };
+    MaterialJob materialJob(const std::string &utf8Path, std::int64_t track, std::int64_t atTicks,
+                            const ImportChoices &, std::int64_t nowUtc) const;
+    static clip_edit::MaterialEdit prepareMaterial(const MaterialJob &, std::stop_token = {});
+    // The new clip's id when it landed; 0 with `error()` saying why when it did not.
+    std::int64_t commitMaterial(clip_edit::MaterialEdit &, const MaterialJob &);
+    // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
+    // project through its own read-only store (`Store::open(path, error, true)`), never this one.
+    WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);
+    // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
+    // and for a gesture, so a gesture's quiet timer and its End agree.
+    static std::int64_t captureNowMs() noexcept;
+    // What the drain and a gesture both do with the requests the capture appended: the state
+    // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
+    // is nothing done. False with `error()` set when the store refused.
+    bool commitCaptured(std::vector<OpRequest> &requests);
+    // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
+    // value, in that order.
+    std::string refusalReason(std::int64_t id, const std::string &param);
+    // The snapshot follows the session's overridden lanes (ADR-0162, N26): the session finds an
+    // override when it re-reads the rows, after the submitter's refresh, or a live gesture sets one
+    // with no op at all, and Re-Enable clears them. The view is rebuilt only when the two disagree,
+    // so a frame that changes nothing builds nothing; the rows did not move, so the session has
+    // nothing to re-read after it.
+    void followOverrides();
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
@@ -67,9 +208,22 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState sessionState_;
     engine::Session session_;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
+    struct SurfaceGesture {
+        std::uint64_t instance = 0;
+        std::shared_ptr<const gesture::OwnerToken> owner;
+    };
+    std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
+    double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
+    struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
+    std::map<engine::ScopeSource, AnalysisSource> analysisSources_;
+    std::shared_ptr<SharedAnalysis> analysis_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
-    std::string error_;
+    std::string error_, warning_;
+    // Last, so its worker stops before anything else goes; it touches nothing of the above.
+    // Where the document's file is now, for the waveform worker: Save As moves it.
+    std::shared_ptr<WaveformSource> waveformSource_;
+    WaveformCache waveforms_;
 };
 } // namespace adi::ui

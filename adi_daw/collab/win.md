@@ -6,6 +6,564 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18, evening — the research is read whole and taken in (ADR-0245); a hosted plug-in is to be told the transport; a return may live inside a group
+
+**For the seats — read first.**
+- **Engine seat.** A new prompt, first in your queue: `collab/prompts/2026-11-18-engine-fx-channels.md`. Three pieces the director ruled today: a hosted plug-in is told the transport at the time of the audio at its own input (DF-E21; on main it is told nothing), a return may live inside a group and sum before the group's devices (DF-E22), and one send may take Pre FX, Post FX or Post Mixer. Your compensation is the base and is not to be rebuilt. New rows for you from two audits and an outside review: DF-E18, DF-E19, DF-E20.
+- **Window lane.** DF-W32: the mixer strip should take the engine's held peak once a frame through one owner; it reads the running peak today. DF-W33 is your part of returns inside groups, after the engine gives the fields, with a sheet for the director first. `peakSpan` was wrong for bins past full scale and is fixed (#639); nothing in your pictures moves.
+- **Mix View seat.** DF-M59, from the same outside review: the spectrogram's history loses about two columns in three once its byte budget is full and a pass takes several hops; the limiter meter's momentary reading can stand above its own maximum.
+- **Every seat.** `docs/RESEARCH-INTAKE.md` §6 is the relay of the director's research: what Live 12.4 was measured doing, row by row. A reading there is the plan's working value (ADR-0245 d3). TM-SV-01 and AU-03 are corrected from it. Windows is first when an order has to be chosen (d2). Cables on screen belong to the Grid tier's editor and nowhere else (d5).
+
+**What happened.**
+- The director had the whole of his research copied to this machine and asked win to read it. Seven readers took a part each; every claim about ADI was read again on main. What it is: Live 12.4 measured at a 2,048 buffer; REAPER's engine measured with a test plug-in; Cubase's scanner run 16 times; everything else read from manuals and files, with no case run.
+- His rulings of the day are ADR-0245: no second plan, Windows first, planned around and proved after the build, racks are Live's Rack and the Grid is the Grid, cables only in the Grid, the list of sources for the analysers, clips drawn as Live 12 (#636, #637; "your last photo is good").
+- He brought a proposal for FX channels. Win's reading: the alignment of every path is built; the gaps are the plug-in transport and returns inside groups. He took win's option: both, with Live's three taps on a send, Bitwig's way for the group return.
+- An outside review of five small bundles, in a format a script can check: every quoted line was real. Three findings were in win's `peakSpan` (#639); the rest are DF-M59 and DF-E18.
+
+**Ruled the same evening.** A look-ahead engine is not taken (ADR-0245 d12): the measurements at 2,048 samples agree with his doubt. DEV-23 moves ahead of its milestone (d13, DF-E23): no hosted plug-in may run on a graph worker yet, which is what limits many channels at a large buffer. Engine seat: it is the fourth piece of your new prompt.
+
+**Owed by win.** The pitch-editing row ADR-0241 still lacks; the registry rows for the theme and density settings.
+
+## 2026-11-18, later — the round is closed and the seats have their prompts; seven engine requests win had missed are landed; an outside review found four defects in win's own Note Editor logic
+
+**For the seats — read first.**
+- **Every seat.** The director closed the design round on 18 November and released the prompts. The window lane's is `collab/prompts/2026-11-18-window-lane.md`, the engine seat's `collab/prompts/2026-11-18-engine-lane-codex.md`; the Mix View seat's comes from the director. The sheets' drawing sources are in `collab/window/design/src/` (#629): every size and colour on a sheet is a number there.
+- **Engine seat.** Seven of your requests of 11 and 12 November had never been opened: win's miss. They are on main as one chain, #630 (`9db1d820`): automation-splice, automation-splice-store, row-ids, history-move-to, relative-mixer-gestures, quiet-gesture-end, history-retention-fuzz. All 21 checks passed on the first run, MSVC and Apple included; nothing was changed on your branches. Win's two merge resolutions: the CMake source list keeps `row_ids.cpp` beside both `automation_splice*.cpp`; `test_gesture_playback.cpp`'s case list keeps main's `countInAcrossGesture` beside your three relative cases. `engine/log` has main merged in (`ac8db667`): cut from it. **Three new rows are yours, DF-E13 to DF-E15,** from the outside review below: read, not yet probed, all minor.
+- **Window lane.** Your E5 was pushed without a PR; win opened it as #628 and it is on main (`be9642d1`). `note_edits.hpp` changed with #631: `chopNotes` refuses past its cap, `makeChords` makes its notes through `piece`, `withOverlaps` has a `placed` flag. Pull before you push.
+- **Mix View seat.** The window lane builds the theme and density tables in `src/adi/ui` first (DF-W24) and you use them; the Arrangement | Mix View switch is one control on `ToggleMixView`, whichever of you lands first adds it.
+
+**The outside review (the director's Gemini), 22 claims over five bundles, each checked against the code.**
+- **Real, in win's Note Editor logic, fixed in #631** (`b18f261e`; `adi_ui_note_edits_tests` 233 checks): Chop Notes past 4,096 ops stopped part way, leaving the note it had reached cut to its first piece and every later note the same; Make Chords dropped the root's release velocity, channel, chance, tuning and deactivation, and two roots could add one chord note twice; Delete Overlaps and Restrict Polyphony could lengthen a note shorter than a 128th; two notes one batch carries to the same key and start stayed two.
+- **Real or plausible, in the engine chain, registered and not blocking:** DF-E13 (a redundant range row beside a splice; the start guard's value when two kept points share the begin sample; a missing test case), DF-E14 (`moveTo` writes a branch for a childless stored root; a low-level refusal on a legacy checkpoint), DF-E15 (`QuietSession` and the `Cancelling` state).
+- **False:** five, among them the report's first finding, marked "certain", which quotes an expression that is in no file and on no branch, and three that cite functions the Note Editor does not have. **Not defects:** seven (Live's own behaviour, callers that cannot produce the input, or the code's stated design).
+- **The lesson for the next round:** the bundles now carry line numbers and the prompt discards a finding whose quoted lines are not there. A second round of five went to the director the same day: the Arrangement's edit logic, the track and mixer logic, the commit path, and the Mix View's dynamics, EQ and focus cores.
+
+**Win's own miss, and the rule.** The engine's requests sat six days because the session of the 12th to the 17th never compared `origin/engine/*` and `origin/window/*` against the open PRs. That comparison is now the first act of every session, before anything else.
+
+**Merged today:** #627 (the five sheets, ADR-0244), #629 (the prompts and the sheets' sources), #630 (the engine chain), #628 (the window's import prompt), #631 (the Note Editor fixes).
+
+**Suites at this entry.** Note edits 233 checks; 244 ADRs.
+
+## 2026-11-18 — the first design round closes on five sheets; a cloned tool looks like its source (ADR-0244)
+
+**For the seats — read first.**
+- **Every seat.** The sheets are in `collab/window/design/`: the design language, the Arrangement (with the Browser, the Info box and the Device View), and the Mix View's Stack, Focus and Analysers. Read that folder's README before any look work; where its words and a picture differ, the words win. A sheet changes only by the director's word.
+- **Every seat, the rule for clones.** Whatever ADI clones looks like its source: bx_meter, SPAN, VISU, BluPrint, s(M)exoscope, OScope, PsyScope Pro, FUSER, Trackspacer. "they should look the same as the plugins we are cloning (about the same at least)". Take the source's layout, read-outs and way of drawing; do not design another look. ADI draws it: no other maker's bitmaps, logos or fonts. The scope is s(M)exoscope's own display and controls from its source.
+- **Mix View seat.** Your look work is DF-M49 to DF-M55, in that order unless the director says otherwise: the layout that takes the window, the lens rows, the "+" and the plug-in chips, Sounding now, the meter, Focus, the Analysers. The director still holds everything addressed to you, the paste-back of the 17 November retest included (DF-M43 to DF-M46), until he says the round is closed; your prompt comes from him.
+- **Window lane.** DF-W24 (the design language in the window, the Control Bar first), DF-W25 (the Arrangement's group lines and the buttons over the track names), DF-W26 (the Device View showing the Mix View's EQ, compressor and limiter panels). Each Pd device still needs its own sheet before its panel is restyled (DF-W23).
+- **Engine seat.** Nothing of yours moved.
+
+**How the round went.** Thirteen pictures in two days: the language twice, the Arrangement twice, the Stack six times, Focus twice, the Analysers once. What turned the Stack was his video of Pro-Q 4's instance list: the list is a lens round the pointer, not a row that pops out. What he corrected most often was the drawing of things ADI clones (the meter, the spectrogram), which is where the rule above comes from.
+
+**Left open with him (DF-W27).** Two readings of his answers on Focus are win's and are marked so on the sheet; the contents of a channel's name tag in the Mix View wait for his own use of it.
+
+**Done with this entry.** ADR-0244; `collab/window/design/` with five pictures; DF-W24 to DF-W27 and DF-M49 to DF-M55; DF-W22 and DF-W23 brought up to date.
+
+**Suites at this entry.** Window 2,681 checks (no code moved); 244 ADRs.
+
+## 2026-11-17, later — the director does not accept the look; it is settled with him one surface at a time (ADR-0243)
+
+**For the seats — read first. This changes what each of you may build.**
+- **Every seat.** The director saw the pictures of today's retest and the window as it stands, and does not accept the look: "it looks like an attempt to put the qualities of what i want into the most generic looking things possible". From now the look of each surface is settled with him first and written as a sheet under `collab/window/design/`; a seat builds a surface's look only from its agreed sheet (ADR-0243 d1, DF-W20). What a surface does, its ops, its engine side and its tests, goes on as before.
+- **Mix View seat.** The Mix View is to take the window, with no Browser and no Device View beside it (DF-M47), and its function panels are to look like the devices in Pro-Q 4's instance list, the limiter from ADI-L's own design (DF-M48). Do not restyle anything yet: the sheets come first. The paste-back of today's retest (DF-M43 to DF-M46, all function, none look) is held by the director for now; win has asked him whether it may go.
+- **Window lane.** The Q and L buttons are gone from every strip and row with this PR: `MixerStrip::switches()` is three long, `kMixerTop` is 19, and the track row's delay box stands one row higher. Seven golden pictures were rewritten. Pull before you push. New look work waits for its sheet; function work goes on.
+- **Engine seat.** Nothing of yours moved.
+
+**The working rules win proposed to him** (his to change):
+1. One surface per round. Win shows the surface as built, beside his reference where there is one, and asks in order: what it is for and what must be seen first; layout and sizes; each control's shape and its states (resting, hover, pressed, on, off, disabled, selected); colour and type; what moves.
+2. Win answers each round with a drawn picture of what was agreed, to scale, before any code: he reacts to a picture, not to a description. The round ends when he says the picture is right.
+3. The first round is the design language itself, on one small picture that holds every kind of control, because every later surface is made of those parts.
+4. The agreed picture and its measures become the sheet; the build is then shown to him against it, side by side.
+5. Order after the language: the Arrangement with its clips (DF-W21); the track rows and the Mixer; the Info box (DF-W22); the Device View and one native panel, the limiter against ADI-L (DF-W23); the Mix View (DF-M47, DF-M48); the Clip View; the Browser; the Control Bar; menus, dialogs and Settings.
+
+**Done with this entry.** The Q and L buttons removed (ADR-0243 d2); ADR-0243; DF-W20 to DF-W23, DF-M47, DF-M48.
+
+**Suites at this entry.** Window 2,681 checks; 243 ADRs.
+
+## 2026-11-17 — the Clip View's menus, panels and scrolling; the device-key candidate passes its live retest, with four new rows
+
+**For the seats — read first.**
+- **Mix View seat.** Win's live retest of your candidate of 17 November (source `dc5b123b`) is done, and the report with its paste-back went to the director for you. Passed, heard in the running app: the device key on a VST3 and on the native Limiter, from every tap; the taps' content; latency after and before the target and before the source tap; stop, start, a jump and a reopen; target and source deletion with one Undo each; your EQ ducking setup with a routed key; every item of the five parameter menus from the Device View and from STACK tiles, keyboard included; the third-party gain plug-in's panel; the Undo titles, the Clip page's own title, the readable refusals, a new key beside an unavailable one, the popup across a project hand-over, the preset choosers on a fresh profile, and the set and function loads. DF-M40, DF-M41 and DF-M42 close when the PR lands. New from the same retest: **DF-M43** (a function added after a removed one shows the removed one's panel, every control "(missing)"), **DF-M44** (the EQ with External Sidechain on and no key routed listens to the programme; the Limiter does not), **DF-M45** (two gaps of about 10 ms when a key is set or removed while playing), **DF-M46** (smaller: the folded pill, the stored latency, CLAP still unheard). #579, #580 and #548 wait as before.
+- **Window lane.** `AppCommands` grew with #621 to #623: the ids after `DeleteFades` run through `FitToTimeRange`, the names table follows, and the Edit, View, Options and Navigate lists changed. Pull before you push.
+- **Engine seat.** Nothing of yours moved.
+
+**The Clip View, #615 to #624, in the order it landed.**
+- #615: time inside the clip; Pitch and Time as Live's; MIDI Note Stretch markers.
+- #616: the Note Editor's settings are kept with the window.
+- #617: several clips shown at once, paste across them, the title bar's menu, the Clip View Selector's drag, the editor's context menu.
+- #618: the Velocity lane's divider; note spelling from the piano's menu.
+- #619: a double-click on the title folds the panels.
+- #620: the Edit menu reaches the Note Editor while it has the keyboard; the first Mix View retest's findings registered.
+- #621: the Edit, View and Options menus reach the Note Editor through one table that also builds its context menu. Edit > Delete no longer deletes the selected track while the editor is in use.
+- #622: the panels side by side, stacked, or by the Clip View's height (three View entries, a pull on the panels' edge, the title's menu); Navigate > Clip View on Alt+3; Ctrl+F9 to F12 for the four Set buttons.
+- #623: Fit to Time Range (Ctrl+Alt+J, the context menu, the Edit menu, the Duration chooser).
+- #624: a stacked column higher than the view scrolls under the clip's title: the wheel, a thumb, and a field that opens comes whole into view.
+
+**How they landed.** Each stack through its top PR alone, the lower ones' queued runs cancelled; #622 carried #621. Every one passed its 21 checks at the first attempt.
+
+**Left open, each written in the parity list** (`collab/window/parity-7.7-clip-view.md`): the Clip View in its own window; Join Notes, Deactivate Note(s) and Duplicate Loop as Edit entries of their own; Loop Selection and Select Loop inside the editor; Alt+Shift+P and Alt+8; the rest of the editor's keys in the manual's table. Points to check on Live are beside their rows: where Live keeps the folds and Highlight Scales in its menus, the default panel arrangement and its switching height, the Duration chooser's Time Range entry, and whether Live's stacked column scrolls with its title standing.
+
+**Suites at this entry.** Window 2,681 checks; note edits 227; note geometry 52; window state 70; 242 ADRs.
+
+## 2026-11-16 to 17 — win builds the Clip View: Live's note editor, piece by piece, and the first additions from Cubase
+
+**For the seats — read first.**
+- **Window lane.** The Clip View is win's by the director's word of 16 November (ADR-0240); your list is `collab/prompts/2026-11-16-window-lane.md`, with the Plug-Ins browser first (DF-W9: a MIDI clip is silent until an instrument can be put on its track from the window). Win's Clip View work touched three shared places since your last pull: `ui_shell.cpp` (`selectionText` reads the Note Editor first; `toggleClipViewFull`), `ui_shell.hpp` (the same two), and `window_state.hpp` (the Clip View's default height is 278). No command id was added after `DeleteFades`. Pull before you push.
+- **Mix View seat.** Nothing of yours moved in this stretch. #579 still waits for DF-M32, #580 for DF-M33, #548 for DF-M29 and DF-M30.
+- **Engine seat.** The window now leans on these of yours every day: `readClipDetails`, `note.insert/delete/move/resize/setVelocity/setMute/quantize`, `clip.setLoop/setStartMarker/setEndMarker/setScale/setTimeSignature`. Three things the editor cannot do until notes carry more: Velocity Deviation and probability groups (MI-09), per-note expression (MI-08).
+
+**The rulings.** ADR-0240: the Clip View of 28 October is approved and win builds it. ADR-0241: audio pitch editing is P1 after warp markers; four note-editor tools from Cubase; per-note gain and pan with the MPE tab; Bitwig's operators, P2. ADR-0242: win's picks of the candidates are taken, slide notes and a drum editor are not, the rest is taken on condition that none impairs a function of Live's; Live's own clip editing was audited against our list (`collab/window/live-clip-view-audit-2026-11-16.md`), and it found that editing several clips together was one "later" row against some thirty behaviours in the manual. That was built first.
+
+**What is on main, in the order it landed (#586 to #612).** The frame and the read-only notes; creating a MIDI clip; adding, moving, resizing and deleting notes; the Main panel's fields and Set buttons; Pitch and Time's first tools; Fold, Draw Mode, zoom; chord editing, line tools, the trim tool and handles on velocities (ADR-0241 d2); several clips in one editor, each in its colour, with Focus; note cut, copy and paste and the insert marker; Live's overlap rule as the director measured it; Quantize, Split, Chop, Join; the Functions tab (velocity functions, Delete Doubles, Restrict Polyphony); time selection, the insert marker's keys and walking the notes by keys; the loop brace and the Start and End markers dragged; the Velocity lane as Live's, with Draw Mode in it; Randomize and Ramp; Scale Mode with Highlight Scale and Fold to Scale; the Status Bar's note readout.
+
+**In CI or waiting behind it.** #613 carries four steps in one PR: Find and Select Notes, the Quantize settings with swing, note colours, and getting about (Page keys, W and H, ruler and piano drags, the grid's keys and chooser, Follow, full height). Two more are committed and wait for it: time inside the clip (Crop Clip, Duplicate, Delete and Insert Time, Duplicate Loop), and Pitch and Time as Live's (Interval and Add Interval, the Stretch control, Duration and Set Length), which moves ADI's chord and overlap tools to a third tab, Chords.
+
+**How the work is checked.** Every rule that can live without a window does: `adi/ui/note_edits.hpp`, `note_filters.hpp`, `clip_edits.hpp`, `note_geometry.hpp`, tested by `adi_ui_note_edits_tests` (219 checks) and `adi_ui_note_geometry_tests` (49). The window suite drives the real components headless (2,547 checks) and still counts allocations in a steady frame: zero. Nothing was driven on the director's desktop.
+
+**The macOS runner.** Jobs shown as "cancelled" with no log were never run: the annotation reads "the job was not acquired by Runner of type hosted", GitHub's macOS arm64 capacity. One run per stacked PR starved it. The stack now lands through its top PR alone (`land_top.sh` in win's scratch: it re-runs cancelled jobs, stops on a real failure, retargets to main, merges, and closes the lower PRs as landed). #607 to #609 landed through #609, #610 to #612 through #612.
+
+**Left open, each written in the parity list beside its row** (`collab/window/parity-7.7-clip-view.md`): points to check on Live (which modifier walks the notes on Windows: the manual's text says Ctrl, its shortcut table Alt, and ADI follows the table; whether Up is the previous note; the units of the Time and Duration filters; what a note crossing a time selection's edge does in the time commands); points to read on Cubase (the trim tool's start side, the handles' formulas, the chord list, swing's range). Not built because the engine has no home for it yet: Velocity Deviation, the Chance lane and probability groups, the MPE tab, hearing a note as it is clicked. Not built yet at all: Humanize, the MIDI Tools, the Envelopes tab, the Sample Editor beyond its waveform, Note Stretch markers, the Clip View's own window.
+
+**Suites at this entry.** Window 2,547 checks; note edits 219; note geometry 49; 242 ADRs.
+
+## 2026-11-13 to 16 — the register; the Mix View's first functions and its analyser stack land; the seat turned toward what a user can reach; the window lane's next list
+
+**For the seats — read first.**
+- **Mix View seat.** #548 stays open for DF-M29 (the EQ goes dry after a processing-precision switch) and DF-M30 (a latency-neutral plan edit lands 2 to 32 blocks late and offline render does not wait). The compressor, gate and de-esser cores (#552 to #573) stay open for DF-M16, DF-M17 and DF-M18. #579 and #580 are in CI; win reviews them next.
+- **Window lane.** The next list is `collab/prompts/2026-11-16-window-lane.md`: group E's rest, recording from the window, C7, B6 and B7, the Delay Compensation item, F3, then the surfaces that landed with the engine's stack. The Mix View seat is working in `ui_devices.*`, `ui_stack.*` and the `mix_*` files.
+- **Engine seat (away).** DF-E9 (automation Undo deletes and re-inserts rows) and DF-E10 (the Link session tests under parallel ctest) are new since your last entry. #530 is still held for DF-E2.
+- **Control seat.** DF-C5 is new: `device.insert` does not check one function of each kind per channel.
+
+**The register (13 November).** The director asked that nothing postponed be left to memory. Every postponed item is now a row in `docs/DEFERRED.md` with an owner and a trigger, and a row closes only with a PR. It reached main with #512 on 16 November. The same day he answered the control slice's two open questions; they are ADR-0239 (the session token both ways, the user choosing; standalone first). He also said he does not merge: win merges, and brings him the options with a recommendation.
+
+**The control slice, #512, is merged.** Its last head was `5c976cae`, 21 of 21 checks. The outside security round on the MCP server was verified finding by finding and fixed in `ddd704bd` and `bb97ce23` (DF-C4, done). The director gave his go on 16 November and win merged it (`729892e2`). The fence on `ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.*` and `src/main.cpp` is lifted, and `docs/DEFERRED.md`, ADR-0233 and ADR-0239 are on main.
+
+**The Mix View, 13 to 15 November.**
+- Merged: #537 and #540 (13 November); #541 to #546 (15 November), each with its review findings fixed first. On main a user can add an EQ and a Limiter (with Clip) from the device area's +, see them as tabs, move and remove them with Undo, and see compact rows in the Mix View. Nobody has run that path in the app yet (DF-M1).
+- **The analyser stack landed as one merge, #578 (`ac5050bd`).** Twelve stacked PRs (#551, #553, #554, #556, #557, #559, #563, #565, #568, #569, #571, #574) had been checked against old bases. Win merged their two tips onto current main in one branch, ran the 21 checks once on the real result, merged it, and closed the twelve as landed. Changing a PR's base does not re-run its checks; a branch that merges the tips does.
+- **A decision-by-decision check of ADR-0236 and ADR-0237 against the code (15 November).** The foundation is on track. The drift: of 25 open PRs, twelve were compressor, gate and de-esser parts no user can load, and five were analyser parts nothing on screen uses. The seat's log said those functions wait for device sidechain keys; the Clean compressor does not need them. The findings are rows DF-M20 to DF-M28. The seat was asked to put a complete compressor a user can add first, then presets, adding from the Mix View and one meaning for a function's switch, then the keys. It resumed on 16 November with #579 (a usable Clean compressor) and #580 (adding from the Mix View; the remove switches unified).
+- **#548 reviewed and held.** Two regressions against main, both reproduced: DF-M29 and DF-M30. DF-M31 (a failure text naming a reload that does not exist) may follow.
+
+**CI and outside reviews.**
+- #575: `fetch_external.sh` stops on a failed or mismatched submodule (from the round on #518, #528 and #516; #518 was clean, #516 became DF-E9).
+- #576: the Python 3.9 validators run on ubuntu-24.04. #577: GCC 15's dangling-pointer warning in `test_note_overlap`.
+- `adi_link_session_tests` failed once on ubuntu arm64 on #548 and passed on re-run (DF-E10).
+
+**The window lane.** #549 (E2: Cut, Copy, Paste and Duplicate for clips and ranges) merged on 14 November; 24 of the worklist's 37 items are on main. The Clip View's picture (`window/clip-view`, 28 October) was put to the director again on 16 November; G1 to G3 start on his yes. C5's picture is asked of the lane. Win still owes the lane N10's home for `midi.port.remote` and N38's `tracks.role` column (the column can go ahead now that #512 is merged), and its three notes of 10 November (the ZIP's progress, the sidebar's labels, the place of Rec-Q and Play-Q).
+
+**DF-R1.** The director ruled on 15 November to continue as is. The row stays; no work on it is planned.
+
+**Next ADR is 0240.** DF-M27's two answers of the director's go into it.
+
+---
+
+## 2026-11-12 (afternoon) — #530 held for the engine seat; the Mix View foundation reviewed
+
+**For the engine seat — read first (#530, `engine/clip-trim`, now at `da1de8db`; fetch first).**
+- **Win added two commits.**
+  - `f1d64d3e`: main merged in.
+  - `da1de8db`: `sampleAtNs` puts linear clip envelope endpoints in exact integer samples. Your new check "linear clip envelope retains its native absolute end through a left-edge change" failed only on ubuntu arm64. It sits on a long-double half-sample tie (35 ms at 44.1 kHz is 1543.5), and long double is a different width on each platform.
+- **Held: #530 against main's #535.** #535's `silentAfterEnd` (adi_clip_candidate_ready_tests) fails with this branch on every leg. Its clip is what an import followed by moving Start leaves: `end_marker_ticks` = 40,000 samples, and `source_end_ns` still pinned at the whole file (2 s).
+  - On main, the End marker limits `playEnd`.
+  - On this branch, an unwarped clip with a physical clock applies only the ns pin and ignores the tick End. So the clip plays past the End the user sees.
+  - Decide which End wins when they disagree. Either way, make `clip.setStartMarker` and `clip.setEndMarker` keep `source_end_ns` and `end_marker_ticks` in sync, so the two cannot disagree. Then align the rule or #535's fixture. The note is on #530 too.
+
+**The Mix View seat's foundation, #537** (draft): STACK on the real device chains, and one shared Main spectrum for the Info box and OVERVIEW. Win's four-lens review confirmed 11 findings and refuted 5. They are posted on #537:
+- JUCE moved 9.0.2 → 9.0.5 inside the feature commit with no ADR. That waits for the director; win recommends yes, as its own ADR.
+- The first spectrum frame after a reopen or seek is mostly old audio.
+- An orphan tap is left attached when acquire throws.
+- An explicit gesture is left open when the Begin's commit is refused.
+- The analyser is unavailable after a rate change (deferred to MX-30).
+- Two test gaps.
+
+#537 merges after the fixes and his answer. The seat had stopped at its live-test gate; the live check now trails its work.
+
+**Merged since the morning entry:** #538 (window E1: Split and range edits), #535, #533, #536.
+
+---
+
+## 2026-11-12 — two outside reviews verified and fixed; the Mix View seat and ADiJ ruled; #512 green and still held
+
+**For the engine seat — read first.**
+- **Win pushed onto three of your branches.** Fetch before touching them again.
+  - `engine/clip-trim` (#530): `ffeec650` on your `e9712ecb`. It covers three things:
+    - `captureSampleDefaults` measures a linear clip from `pos_ns` and clamps the tick fallback at 0, because the ns→tick round trip could give −1 and refuse the save;
+    - `trimFrozenStart` treats a left extension of a clip already at source zero as a true no-op;
+    - it refuses `begin >= end`, and refuses a Start at or past an unlooped MIDI or warped clip's End marker.
+  - `engine/library-scan-cancel` (#533): `56d976cb` on your `953e15cd`. A file that vanishes between enumeration and stat is skipped, not a failed scan. A publication that throws reports no counts.
+  - `engine/transport-start` (#527, merged): a device stop (`Session::release`) cancels a pending count-in.
+- **Merged into `engine/log`** (`783f7c66`): main with #515 to #533, #527, #529 and ADR-0235 to 0237. Your next branches include them.
+- **Yours to take, verified but not fixed by win:**
+  1. **End-marker rounding.** `TempoMap::secondsToTicks` truncates, and `ticksToSeconds`/`nanos` round, so a linear clip's End that lands exactly on a tick can come back one tick short (the outside review's B1, found on #531). Summing `pos_ns + length_ns` as int64 in `defaultEnd`/`readClipDetails` fixes only some tempos. The real fix is in the conversion: snap when within a few ulps, or convert exactly for step maps. Also compute ClipPlayback's pinned `playEnd` from absolute endpoints, not a rounded duration: about 12.5 % of arbitrary linear clips lose their tail sample on a pinned End today.
+  2. `clip.setStartMarker` should clear or recompute `source_end_ns` when it pins End, so End and the source-end pin cannot disagree.
+  3. `ProgressiveDecoder`: when the last lease of a still-queued job goes, drop the job and release its admission at once.
+  4. `Index::scan`: a throw after `tx.commit()` (in the post-commit enqueue) is reported as a rollback with zero counts. And a subdirectory that vanishes mid-walk still fails the scan; walk it with `increment(ec)`.
+  5. #530's linear B2 test uses a zero ns offset, so it proves only the clamp. Add a case with a one-sample offset.
+  6. Count-in clicks are not on the latency-compensated clock (outside review 3.2), so with a latency-reporting plug-in, bar 1 lands that many samples after the count-in's grid. When the latency exceeds a beat, it needs a decision: extend the count-in, or let the metronome emit count-in beats. Measure Live first.
+
+**The outside reviews (Gemini via Antigravity), each claim checked twice against the code with probes:**
+- **Round 2,** on #520, #522 and #527: 8 claims; 5 real or partly real (all minor), 1 false, 2 harmless. Fixed in #529 (deferred foreign keys leaking out of compaction's rolled-back probe; leftover files on a failed project creation) and on #527 (count-in on device stop).
+- **Round 3,** on #515 and #530 to #533: 17 claims; 15 real or partly real (all minor), 2 false.
+  - #535 fixes #515's follow-ups: the worker no longer claims a ready page of its own request; reservations stop at End; a muted clip opens nothing; three tests now prove what they say.
+  - #530 and #533 are fixed on their branches.
+  - Not changed: A3 (not reachable), A4 and B5 (false), B6 (unreachable now, and a full-row guard would over-refuse).
+
+**Merged today:** #519, #520 (with win's Windows replace fix), #515–#518, #521–#529, #531, #532, #534 (ADR-0235 ADiJ stays light; ADR-0236 the Mix View seat; ADR-0237 his first Mix View answers; the Fable reviewer prompt for Sunday).
+
+**The Mix View seat.** It is a local Codex Pro session, with its mission in the director's private prompts folder. It builds the Mix View across the lanes, starting with a decision guide. Its branches are `mixview/…` and its log is `collab/mixview.md` on `mixview/log`.
+
+**#512** (the control MCP slice): main merged in (`ca55ceb1`, the ADR count now 237), all 21 checks green. Still held for the director's Q-O ruling, consent before AGT-03, and his go.
+
+---
+
+## 2026-11-11 (afternoon) — the MCP slice waits for the director; FilmCraft cancelled; six engine PRs; a Windows replace fix; the runner outage
+
+**For the engine seat — read first.**
+- **`engine/project-replace` moved: win pushed `501bc849` on top of your `a052a897` (#520).** On
+  MSVC, 8 of the 34 project-replace checks failed: `replaceFile` holds the destination's exclusive
+  lease handle while it renames over it, and `MoveFileExW` / `std::filesystem::rename` refuse any
+  replace target with an open handle, even one sharing delete. Windows now renames through
+  `FileRenameInfoEx` with `REPLACE_IF_EXISTS | POSIX_SEMANTICS`. That replaces a target held only by
+  delete-sharing handles (our lease) and still refuses one held by SQLite or a Store's shared lease.
+  A volume without POSIX rename (SMB, FAT/exFAT) reports `operation_not_supported` once, rather than
+  retrying a classic rename the lease itself refuses. `renameReplacing` is now in `publish_file.hpp`,
+  and the test's `delayed` hook calls it. POSIX code is unchanged. Fetch before you touch that
+  branch again.
+- **A race in `poolBounds` (test_progressive_decode.cpp), already on main.** It failed once on
+  ubuntu arm64 in #517, which does not touch decoding. After `files.clear()` the test sets
+  `release=true` at once. A fake codec that sees `release` before its stop request is visible leaves
+  its loop without counting a stop, so `stops==2` misses. Please make the check independent of that
+  ordering, e.g. set `release` only after the stops are observed, or count stops by the token alone.
+
+**Engine PRs opened and retargeted to main (all independent; every pair, and each with #512,
+merges cleanly):** #515 clip-page admission, #516 automation range Undo, #517 history cap, #518 strip
+held peak (N48), #519 window-state spec, #520 project replace (N45). #519 was green and is merged.
+The rest land when green. #517 also touches `ops.hpp`/`ops.cpp`, but only for `CommitResult` and
+compaction, so #512's schema export is unaffected. Window #514 (Color Cab's Impulse tile) is merged.
+
+**The runner outage.** From about 14:00 UTC, GitHub's hosted Ubuntu runners could not resolve
+`azure.archive.ubuntu.com` (actions/runner-images#15297, #15296; `archive.ubuntu.com` too).
+Every job that installs packages with apt failed on every PR and on main: the GUI shell on Ubuntu,
+i386 ILP32, the s390x big-endian guard, and the fuzz job. These are infrastructure failures, not
+code; win reruns them as the mirror recovers and merges nothing on a red leg.
+
+**#512, the control MCP slice (ADR-0233), is held for the director.** Its head `5eab55a4` passes
+every leg that ran, apart from the outage legs above. It waits for his rulings on Q-O (where the token lives)
+and on consent before AGT-03 (ADR-0233 d8), and for his go. His Antigravity (Gemini) round was
+verified claim by claim: the real findings are fixed in `5eab55a4`; the rest were misreadings.
+
+**FilmCraft (ADR-0234, #513).** At the director's word, the FilmCraft integration plans are
+cancelled: ADI cannot rely on another project doing work for it. Kept from ADR-0206: d6 only,
+i.e. OTIO/AAF interchange with a clean-room AAF writer and the integer time base with SMPTE.
+
+---
+
+## 2026-11-09 to 11 — the lanes split; the chain of nine and the window seat's screens land; CI runs in parallel; a scanner race
+
+**The director's lane split (9 November).** He stopped the Codex engine seat because it had drained
+his weekly limit, and ruled: no new engine work until the Codex work seat is available again on
+11 November, while the window lane continues on his separate Claude **work seat**. Win is not a work
+seat: it opens and merges that seat's PRs and proves them on MSVC, and does not run window batches
+itself. An earlier "hold the window lane" the same day was a question, not an order. The engine
+seat logged the pause after HI-01 and started nothing new.
+
+**The engine chain of nine is on main (#486 to #494, through #494).** Integration found one blocker
+in the auto-merge of Link with the gesture session: `GestureRuntime::generation` set no spec,
+`sourceReadiness` or `stripLanes`, so buffers longer than 512 frames went silent. That and the
+review's majors are fixed in 5a31b901; the conflicting range-survivor test kept both `main()` lists
+(its dropped braces fixed in 18e563a3). MSVC passed 33,840 checks across 206 suites. One behaviour
+for the director: a Link tempo change during a gesture is applied when the gesture ends.
+
+**The window seat's screens, all on main:**
+- 9 November: C2 metronome and Arrangement Loop (#495), C4 waveforms (#496), A5 Undo History (#498),
+  the seat's log (#499), and A4 Save a Copy and Collect (#500).
+- 10 November: D1 browser Samples and Places (#501), C6 Rec-Q and Play-Q (#503), the log (#504),
+  D2 device Cut, Copy, Paste and Duplicate (#505), D3 plug-in windows (#506), and D4 the browser's
+  Audio Effects and ADI's devices (#508).
+
+#496, #503 and #505 conflicted with main and were stacked by integration runs (gate, independent
+review, push); #496's run also found and fixed two locator bugs.
+
+**CI.** #501's Windows Debug tests ran past 90 minutes, so #502 raised the bound to 150. The window
+seat's chip "run the Windows CI tests in parallel" became #507: ctest runs `--parallel <nproc>`,
+every test with its own `ADI_HOME`, and the two Link suites share a resource lock. Its first run
+timed out 13 suites on Windows, and its session found why: `Store::createEmpty` ran the schema's
+~100 statements in autocommit under the rollback journal with `synchronous=FULL`, so every new store
+cost ~100 journal flushes (adi_mixer_tests makes 71). One transaction around schema and seed
+(PRAGMAs outside it; a test proves foreign keys and WAL are on and a failed create leaves nothing)
+took the Windows step from 3,883–3,991 s to 528 s, macOS from 508–639 s to 109 s, Linux from
+337–481 s to 81–110 s. #507 merged from 5376d15f although its branch had moved on to 8d552b89
+(comments, and the bound 150 → 45); that commit went in as #510.
+
+**A real race, exposed by the parallel load (#509).** Main's macOS hardened leg then failed
+`adi_scan_process_tests` "repeated children preserve exact stdout". `runProcess` drained the pipe,
+then checked for the child's exit, and finished when the drain had found it empty; a child that wrote
+and exited between the two lost its output from a successful result. Both loops (Windows and POSIX)
+now observe the exit first, then drain. An independent review found the fix sound and no regression.
+The earlier one-off macOS failure of `adi_plugin_scanner_tests` may share the cause. Main is green
+at 23190435 on every leg.
+
+**Earlier on the 10th:** a macOS job "cancelled" after 15 minutes with "not acquired by Runner" is
+GitHub's arm64 capacity, not code; rerun the failed jobs. `land_queue.sh` once cancelled main's
+own proof run; it now cancels only runs of older heads.
+
+**Gemini, the standing arrangement.** A Gemini chat review (on a truncated upload) found one real
+engine bug, confirmed by reading the code: `automation_lanes.cpp` captures and restores a lane without
+its `automation_segment_ranges`, so undoing any lane operation loses the lane's curve shapes, and
+`clearLane` and the point operations in `automation_edits.cpp` leave stale `record_index` rows.
+A paid API pass gave three claims, all false. The director's ruling: when a Gemini check would help,
+win gives him a plain-text file and a ready prompt (at most five pairs at a time), he runs them in
+his own Gemini chat and pastes the report back, and win verifies every claim. Gemini is dropped if
+two rounds in a row confirm nothing.
+
+**The engine seat resumes (11 November).** `collab/prompts/2026-11-11-engine-lane-codex.md` is the
+Codex seat's prompt:
+1. the automation undo bug;
+2. N45, N46 and N48;
+3. HI-02's part inside authority;
+4. the M0 items.
+
+Between items, two intermittents to find: the clip-candidate PCM check on Ubuntu clang, and the
+plug-in scanner on macOS. The prompt also flags #507's `store.cpp` change.
+
+**Night instance-list rounds** stayed blocked both nights by the director's open Cubase session;
+IL-Q23 (an idle Cubase counted as absent, or closed on test nights) and IL-Q3 (the clipboard steps)
+are his.
+
+**Landing tools** used all along are now in `collab/win/tools/` (see its README).
+
+---
+
+## 2026-11-08 (Sunday) — the chain of twenty lands; the M0 records and the catalogue resync; eleven window surfaces in one day
+
+**6 and 7 November were the usage-limit pause:** the weekly limit fell on the evening of the 5th, took
+every running workflow with it, and nothing was pushed on either day; Sunday's reset relaunched all of
+it. The engine seat has not logged since 04:02 UTC on the 5th and has requested no PR: idle, not stuck.
+
+**The chain of twenty is on main (#457, e24c7b07).** Its top had failed three CI jobs this machine
+cannot run: GCC's `-Wmisleading-indentation` on a one-line helper win itself had written into
+`test_analysis_cache.cpp` during the merge; the GUI shell on GCC, where `adi_plugin_scanner` compiled
+a JUCE header under `-Werror=conversion` (the scanner no longer applies `adi_warnings` to JUCE
+translation units, as the other JUCE targets do not); and JUCE-on MSVC, where the child-process
+scanner rejected the fixture VST3 until its quarantine ran out, because on Windows JUCE expands a
+bundle path to its DLL and the description no longer matched the path asked for (the child now
+rebinds descriptions to the requested bundle path). The chain was rebuilt on main at 7e411503, tested
+on MSVC, pushed as twenty fast-forwards with 38 intermediate runs cancelled, and #457 retargeted to
+main once more because its CI had taken the chain's old `ci.yml` from its base. On the merge, #438 to
+#456 were closed as landed and `engine/log` (#421, still open) got main merged in. Main at abb1971a
+measures 15,554 checks across 188 suites on MSVC (README count #475); its full run, both heavy macOS
+legs included, is green.
+
+**The M0 records (#464, #466) and the catalogue they exposed (#469).** #464 records ADR-0212 to
+ADR-0232: the director's ruling of the 5th in his words (0212), the seventeen ADRs within win's
+authority from `docs/PLAN.md` §8, the lane texts and the three seat prompts (devices, control API,
+clones pointer). #466 is part two: the registry rows the records call for, with eighteen tests, and
+the other texts of PLAN §8.4 (SETTINGS-CATALOGUE, AI-AGENT, AWAITING, the window's N44 to N46, LANES
+§3 and §3b). Writing those cells showed `docs/SETTINGS-CATALOGUE.md` six weeks behind its source (211
+rows against 236; the v1.0 to v1.2 rulings missing), and `test_settings.cpp` keys `catalogue.cpp`'s
+rows on the Markdown rows, so regenerating the document alone breaks the test. #469 brings the three
+together: 25 rows added, two new pages (Export, Scripts), `catalogue.cpp` at 152 answered and 84
+absent, ordered as the Settings window lays Live's tabs out. A doc refresh would have been the wrong
+fix; code and doc never drift silently.
+
+**The StackModel (#463):** W1, the Mix View's STACK interaction model, 478 checks, the three-lens
+review applied before the merge; its one open item (O4, the engine's per-instance token) becomes a
+needs row with W2.
+
+**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on ORC-VST since
+the 3rd, so win ran the 5 November work list (#459) as a batch: one agent per surface, each with its
+gate, picture and PR, a poller landing them in stack order. On main tonight: #465 A1 Save As (N3's
+window half), #467 A2 the batch commit, #470 A3 one undo step per strip drag (N7), #472 C1 Automation
+Arm (N26), #473 B1 a return's own Pre/Post (N42), #474 B2 send ids (N39), #476 B5 Solo in Place (N23),
+#477 F1 Delete Track undone whole (N37), #478 F2 New's two returns in the parity notes (N41), #479 B3
+strip meters on the engine's scalar meter (N9; the ballistics are the window's placement until the
+Live 12 readings say, and a held peak per strip becomes N48), #480 B4 Track Delay (N22); #471 is the
+window's log, its N44 renumbered to N47 because the records took N44 to N46. Four lessons for batch 2.
+#465's MSVC leg timed out at 60 minutes with ten suites left and all passing, so the test step's bound
+is 90 minutes (#468; the 3 November argument). A collab-only PR gets no CI since #460, so a waiter
+that lands on green checks waits forever: #478 was merged by hand, and docs-only window PRs are merged
+directly from now on. #480 failed three Track Delay checks on the macOS GUI shell leg only: Apple
+clang's FMA contraction made a typed 10 ms read 10.000000000000021, the test now compares within
+1e-9, proven through mac-probe with JUCE on (#481, #482). Two of the eleven died mid-way (an API
+outage, a stash of uncommitted fixes) and a second workflow finished them: a batch plans its
+finisher from the start.
+
+**The Live 12 readings, first checkpoint.** His seats on SALON-TV ran the brief of the 5th: measured
+the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
+its undo; read the build, the settings census and the export census; the rest not run, the true-peak
+method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
+readings, part A for the Claude seat, part B for Codex, on his account with the manual's defaults.
+
+**ADI-View combined, the headless round.** Group 1 of the plan of the 5th ran while the builds ran:
+all four references measured passive, bit-identical, latency 0; the fixture set is in place; the
+handoff to Codex gained the measured section. The instance-list round's dry gate is clean; its live
+steps need the desktop free and the window lane's builds quiet, so they go to a night window.
+
+**Next.** Window batch 2 (B6 to B8, C2 to C6, A4, A5, D1 to D3) is scheduled for the morning of the
+9th after the night window. The devices and control API seats have their prompts (#464) and wait on
+the director. The engine seat is idle since the 5th; `engine/log` (#421) stays open until it moves.
+
+---
+
+## 2026-11-05 — The stacks land through their tops; main's heavy macOS legs red and fixed; the director's ruling on his plug-ins; the plan
+
+**Landing a stack through its top.** GitHub serves this account one macOS job at a time, and forty
+stacked PRs had queued 75 runs. Every intermediate state is a subset of the top and nothing lands at
+an intermediate state, so a stack lands through its top feature PR: #382 merged on its own green CI,
+the runs of #383 to #419 were cancelled, and #420 (all forty) merged at 23:19 UTC on the 4th
+(d87fa8cf); the PRs below were closed as landed, since GitHub cannot retarget a PR with no new commits
+(the #360 precedent). The Codex seat's ten landed the same way through #430 (ca0290c2, 02:02 UTC).
+Never through `engine/log` (#421): the seat pushes there continually and each push restarts its CI.
+Two things the night found. A bare `cmake --build --parallel` hands make a bare `-j`, one compiler per
+source file; with the stack nearly doubling adi_core, GCC ran the Linux runners out of memory ("The
+runner has received a shutdown signal" a minute into the core library, while clang passed); fixed on
+#420's branch, every build step takes one compiler per processor, as the probe step already did. And a
+single-base merge can misplace an insertion silently in a criss-cross link (send-automation's two lines
+landed after the loop and after the next function; MSVC caught it), so the chain's `placement_check.py`
+now flags any branch line whose neighbour changed.
+
+**The chain of twenty, built today, landed on the 8th.** The Codex seat's next ten (#438 to #447) were
+cut from main's base, schema 1.9, not from the stacked trunk, so each needed the whole stack merged in;
+once that pass was green its top went into `engine/log`, so the seat's next cut starts from the trunk.
+MSVC then found what GCC and Clang had not: a signed/unsigned compare in `test_aac_import.cpp` (C4389
+under `/WX`); nine "zero allocation" checks counting the Debug iterator proxy's allocations as the
+code's; an injected allocation failure in analysed-cache landing on SQLite's query copy instead of the
+code under test; two progressive-decode checks whose mid-decode source mutation never happened on
+Windows, because `_wfopen_s` denies other writers (the reader now opens with `_wfsopen(_SH_DENYNO)`,
+like the POSIX readers, and the re-hash catches the change); sample-defaults' refusal moved before it
+built the named result. Each fix is its own commit on its branch. The engine's four further requests
+were opened (#454 transport-generation, #455 external-tempo, #456 link-session with Ableton Link 3.1.5
+pinned, #457 sample-defaults), pre-checked clean on MSVC, and the chain extended to twenty: 14,923
+checks across 187 suites at 6ce651cc, twenty fast-forwards, each base its predecessor, #441 on main,
+#457 the top.
+
+**Main red on its heavy macOS legs, fixed by noon (#461, 5a6ae08b).** Since the stacks landed, the
+universal build and the apple clang strict leg failed on main: `adi_project_files_tests` 9 of 44 (Save
+As and relocated media), `adi_collect_export_tests` 8 of 97, `adi_mp4_aac_tests` and
+`adi_ni_stems_tests` on a CoreAudio priming mismatch. No PR runs the heavy legs since the 3rd; this is
+what LANES §2 is for: win's, at the head of the queue. First a tool, #458: `mac-probe.yml`,
+dispatch-only, builds named targets with the strict leg's hardening and runs the matching suites on a
+Mac in minutes rather than three hours. Then two causes. On macOS `/var` is a symlink to
+`/private/var`; the bundled SQLite's unix VFS resolves symlinks, so `projectFolder()` read the
+`/private/var` spelling while Save a Copy and Collect rebased media onto `fs::absolute(output)`'s
+`/var` spelling; the fix rebases toward `media::projectFolder(destination)` (a `const Database&`
+overload; the Store overload delegates), with symlink checks that skip on Windows only. And CoreAudio
+writes an M4A with no edit list, its priming in `iTunSMPB` and the packet table; `encodeAac` read the
+priming from ADI's `elst`-only parser (0 against 2112) and threw; it now reads
+`kExtAudioFileProperty_PacketTable`. All four suites proven on mac-probe, hardened, `-Werror`; main
+green at 10:37 UTC. Two CI changes beside it: #460, `ci.yml` and `ui.yml` skip `adi_daw/collab/**`
+(`ci.yml` keeps `collab/README.md`, read by validate_schema check 8), so a log push no longer takes the
+macOS runner; and #459, the window's needs table brought up to the landed stacks (25 rows struck, N16
+among them by the ruling below; seven partly open) with `collab/window/worklist-2026-11-05.md`, 36
+unblocked surfaces in seven groups.
+
+**The director's rulings.** In the morning, three messages: no reserved slots; no separate built-in
+ADI-Q or ADI-L devices; when all his plug-ins are finished their source is reworked into one unified
+built-in feature with a device-like window, openable from the track and from the Mix View; that
+feature never hosts the VST3; his VST3 and CLAP builds stay ordinary plug-ins; "don't waste time on
+this now", he will post the list of plug-ins to rework. The integration redesign stopped where it
+stood. Recorded in his words as ADR-0212 (#464) and placed in `docs/PLAN.md` §6.2 P-6. At 11:00: the
+window screens and the instance list pause until the plan (both resumed in the afternoon). And the
+drone is retired: no standing drone work; a GPU only for a concrete GPU-shaped job he approves. The
+251 jobs queued that morning were dropped.
+
+**The plan (#462, 3b0a83ef).** `docs/PLAN.md` and `docs/RESEARCH-INTAKE.md`, opened as a proposal and
+merged at 14:24 UTC once he had answered: Q-A (a), the undo cap and Live's Backup folder; Q-B (a), in
+his words, STACK as each track's own devices until his list; Q-C (a), the control API now on a seat of
+its own (ADR-0232). M0 started at once: the records (landed on the 8th as #464 and #466) and W1, the
+StackModel, whose PR #463 opened in the evening.
+
+**The Live 12 readings and ADI-View.** The readings brief is written,
+`NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
+on SALON-TV; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
+current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
+references, with a standalone test app to be built by Codex; the plan is in
+`NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
+evidence index, three mock-ups, decisions D1 to D13): group 1 headless tonight while Codex builds,
+group 2's CPU cells once the machine is quiet.
+
+---
+
+## 2026-11-04 — The engine's forty PRs become one stack; the Codex work seat; five compilers' worth of fixes
+
+**Why the forty could not merge as they stood.** The engine's #382 to #421 (3 November, below) were
+each cut from main on their own, and five of them each took schema minor 1.10 with its own
+`history/schema-1.9.sql` freeze, `migrationSteps()` row and `kSchemaMinor`; four more stood on a
+branch of their own. The first to merge would have made every other one a conflict on the same
+lines, and the merger stops at the first. So today win rebuilt them as one stack, in the engine's
+own order: each branch now contains its predecessor (a merge commit, "the engine stack of
+4 November"), the minors are renumbered in merge order, 1.10 markers, 1.11 split stereo pan, 1.12
+and 1.13 phase C editing, 1.14 track recording options, 1.15 return send taps, 1.16 clip
+properties, 1.17 and 1.18 freeze, 1.19 history compaction, each with its predecessor's `schema.sql`
+frozen byte for byte, and every PR's base is its predecessor's branch. The first keeps main. The
+chain heads replaced the branches on origin as fast-forwards; nothing of the engine's was
+rewritten, only merged into.
+
+**What the merge needed, beyond resolving the same lines forty times.** The rules are in the
+session's `chain_step.py`, kept because every one of them will recur as long as lanes cut from
+main independently: a `snapshot.cpp` early `return` on a project without remarks (snapshot-remarks)
+became a guarded block, because every later item appends sections after it and the sample-slot
+suite crashed on the first one skipped; a test that creates a table another branch owns
+(`automation_segment_ranges`, `clip_properties`, `clip_playback_details`) now creates it only if it
+is missing and tolerates the native table's CHECK and UNIQUE, or skips when the native table is
+there; a test that "reconstructs the frozen predecessor" by dropping its own table and marking the
+file 1.9 now drops everything `tablesAddedAfter(9)`, because the migration steps are plain
+`CREATE TABLE` and a 1.19 file marked 1.9 with one table missing cannot migrate; clip-properties'
+play-end limit, set right after the unwarped source length, moved below phase C's warp length, or
+a warped clip stopped at its unwarped end (the three warp "heard" suites); phase C's
+`captureDeleted` restores a deleted clip's row exactly on undo, as Live does, where main's inverse
+recreated it without its muted state, and the window's seams test had leaned on that loss
+(it deactivated two clips, computed but never submitted their reactivation, deleted and undid
+them, and expected them back active; it now submits what it computed); and the engine's
+default-returns answered the window's N41 while the window's #330 wrote New's tests for a
+five-track Set, so those tests count Live's seven, A Reverb and B Delay before Main, and add their
+own track as id 8. The migrate suite's fixture, kTables count and `test_migrate` expectations are
+regenerated at every link rather than merged.
+
+**Five compilers.** The engine builds on GCC and Clang on Linux; CI's other legs found, on nine
+branches: Apple arm64's `long double` is 64-bit, so an `int64` operand in a `long double`
+expression is an error there (explicit casts in `auto_warp.cpp`, `warp_projection.cpp`,
+`warp_commands.cpp`, `freeze_commands.cpp`, `session.cpp`); MSVC 14.51's C4245 on a Media
+Foundation enum against DWORD and C4456 shadowing (`aac_windows.cpp`); and MSVC's Debug CRT, which
+turns a vector subscript out of range in a test into a modal dialog that stalls `test_all.sh` (the
+process stays alive holding its exe, so the next link fails with LNK1168). Each fix is its own
+commit on the branch, measured in its message. The stack builds on MSVC with `/WX` and passes the
+whole suite on this machine before it is pushed; CI proves the rest per PR.
+
+**The Codex work seat.** The engine lane's cloud seat is now a Codex seat (the director, this
+morning). Its first run reported, correctly, that it is a Linux sandbox without the GitHub API or
+MSVC, so the cloud seat's rules apply unchanged and win opens its PRs; it also saw that `engine/log`
+did not yet carry the stack and based its work so that nothing depended on it. It stopped after
+one item because win's prompt said "one heavy mission, report once", and again after four for a
+"context checkpoint"; the director's order is that it never stops unless a really good reason
+needs it, named in its log, so the prompt
+(`collab/prompts/2026-11-04-engine-lane-codex.md`, #429) now says so. Its PRs of today, #424 to #428 and
+#430 to #434 (automation point edits, lane lifecycle, shape insertion, Automation Arm capture, the
+Session write policy, clip envelopes, send automation, retrospective audio and MIDI memory and
+its capture), are open, each on the branch it declares as its dependency, and queue behind the
+stack in that order.
+
+**The duty, restated.** Opening the engine's PRs the day they are requested is what keeps this
+from recurring: a PR opened the same day is one merge, a week of them is a stack. Win reads
+`origin/engine/log` at the start of every session and after every seat report.
+
+---
+
+## 2026-11-03 (evening) — The table count leaves the README (the director's ruling)
+
+**Ruled this evening: the README states no table count.** `validate_schema.py` check 7 had compared
+the README's hand-written "N tables" with `docs/format/schema.sql`. That made every PR that adds a
+table red until win re-typed the number (LANES.md §6: the count is win's), and because every such
+branch then changed the same line to a different number, each one conflicted with main after the
+previous one merged. Six engine PRs went red on it in one day (#385, #393, #413, #416, #419 and
+their stacks), each a merger stop and a CI re-queue behind the macOS runner. The number was derived
+and hand-written; it now lives where it is generated, in `schema.sql` itself and in the Master
+Reference. Check 7 now fails if the README states a table count again, and still holds the ADR count
+to `DECISIONS.md`, whose numbers are win's alone. The six branches that carry win's count edits get
+main merged in once this lands; the one-line conflict on each is resolved to main's text in that pass.
+
+---
+
 ## 2026-11-03 (afternoon) — CI: the two heavy macOS legs leave the PR gate; the engine's 41 unopened PRs
 
 **The director said go on the macOS gate change (proposed this morning, below).** GitHub serves this

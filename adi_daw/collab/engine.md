@@ -1,14 +1,3410 @@
 # engine — log
 
-The engine lane (ADR-0207, `docs/LANES.md` §3): Claude Max, Opus 5.5. This session runs in a
-Claude Code cloud container on Linux (GCC and Clang; no MSVC here, so `/WX` is win's leg), one
-branch per item cut from `origin/main`, `engine/<topic>`. Only the engine lane writes to this file.
+The engine lane (ADR-0207, `docs/LANES.md` §3): this seat is Codex in a Linux cloud environment
+(GCC 14 and Clang 19; no MSVC here, so `/WX` is win's leg), one branch per item,
+`engine/<topic>`, cut from `origin/engine/log` as directed on 8 November. Only the engine lane writes to this file.
 Newest entry at the top.
 
 **Why this log has its own branch and PR (`engine/log`).** Every item PR prepending an entry here
 would make each merge conflict the next open PR on this file, the failure `collab/README.md` rule
 3 exists to prevent. So the item PRs never touch this file; this one does, and win merges it
 whenever convenient. Each entry names its PR, so nothing is lost if this merges late.
+
+---
+
+
+## 2026-11-12 — SRF02 manual quiet End gated and pushed; taking the M2 retention fuzz gate
+
+**PR requested:** head **`engine/quiet-gesture-end` `ff6659f2a0b0bf8e7a5e6bac11c3affc2443280c`**, independent base **engine/log `5067a9c3ff86673f5bdd7ea6e849aab1240699be`**. Title: **End common gestures after an explicit source quiet interval**. Five owned files, remote verified; win opens/merges and runs MSVC. Six protected control files byte-identical to base; remote main still ecbc7f24, #512 absent/held. N45 win501bc849 retained, Link4.1.1/Asio1.38.2 pins clean. No UI/schema/opcode/feature-log edit or main checkout/commit.
+
+**Source/window handoff:** `QuietSession(freshCommonSession, explicitQuietMilliseconds)` is one owner-side end detector. Call update(input,monotonicSourceMs) and poll(now) on that Session's source owner thread; successful Values alone renew activity. At exact expiry, poll returns the ordinary common CommitOutcome once. Late Value is Busy until old End/new Begin, so delayed polling cannot merge separate runs. Explicit End/Cancel/destruction, failed-End retry, source invalidation and post-COMMIT presentation remain common lifecycle paths. Backwards clocks/callback/foreign thread refuse before timer mutation, elapsed uint64 subtraction avoids overflowing deadline addition. There is no background timer, default300ms op merge, Undo/recommit or implicit automation write. Source bindings must poll their owner loop. ParamOps keeps its own owned150ms UI-capture path; this is SRF02's manual engine end-detector slice, **not AU03's write pass, Track Delay preview or a claim of window/surface binding**.
+
+**Final gate ff6659f2:** GCC14 Debug/PD/Werror **34,643 checks /210 suites**, gate.exit0, every row/aggregate audited, four validators/layout clean. New native176: real float32/64 volume Values1/10/20 heard before End, pan and send heard/committed/Undone, Cancel PCM restoration, frozen label/no per-value durable writes, latest accepted quiet deadline, no-op/one-shot/explicit End, late/rejected Value, clock regression/ceiling (including an unrepresentable future deadline), callback/foreign thread clock nonmutation, caller-SQL and actual SQL-trigger refusal/retry, source loss before expiry and constructor/empty-run admission. Strict GCC extra Wshadow/Clang19 **1 prod /4 test units**, clean; Clang **2,350** (176 quiet,778 gesture,426 native playback,970 live replay). Initial full review plus targeted final quiet-test recompile for strengthened ceiling/source-loss assertions; old source/object/executable/log preserved. Serialized full build220 exit0, final changed-test rebuild2 exit0. Initial fixture's nonexistent Transport.stop corrected to actual play(false); no product waiver. No warning/deadline/decoder guard change, sanitizer/GUI/Live/platform claim.
+
+**Compiled controls:** **18 /348 ordinary failures**, each complete final176, no survivor/crash/exception/shortening credit. Zero/previewed admission; rejected Value, first Value and poll clock renewal; late Values; exact/half/never/no-input expiry; overflowing absolute deadline; clock/callback/thread admission; delayed source loss; Cancel instead of End; reoffered completed End; lost failed-End retry. Helpers isolate/cancel expected failure states so a caught defect cannot poison later fixture admission.
+
+**Evidence:** `/workspace/adi-cloud/quiet-gesture-end/` has exact commands/frozen inputs and source/core hashes, every version, final gate, **AUDITED ff6659f2**, release-audit.json, feature.patch, decompressed-SHA-verified **23-file native GCC bundle**, five completed Clang executables and13 remaining core/objects. All18 control gzip streams reconstructed exactly/native-member verified into52,862,976 bytes before removing724,539,633 originals. Older scanner archive79 members retained with exact gzip reconstruction326,600,185→42,696,504 bytes. Archive jobs finished before full gate; preflight3,424,055,296 free bytes, unchanged2GiB decoder reserve. No evidence or Debug data discarded.
+
+**Next immediately, same turn:** independent **`engine/history-retention-fuzz`** from this log successor: PLAN M2 explicitly gates seeded history fuzz over compaction and a **3,000-step project with a snapshot on day one staying under the cap**. Current history tests contain small fixed cases and no seeded/3000 sequence. Use the landed HI02 public APIs, independent literal material oracle/owned typed SQL sentinel rows, whole transactions, Undo/Redo/forks/snapshots/stored restores under small caps, plus the default2000 cap/day-one named state over3000 edits. No renderer attached for explicit SessionReloadPrepared test restores; no dependency on pending HI03 or MX23/quiet source. Gate/demonstrate compiled faults, fix any real owned-source defect found, never weaken cap/admissions. Retain/hash-check obsolete quiet executable from its native bundle before removing it from this independent branch's glob. Then continue remaining M2/queue; AU05/Crop policy questions remain named/open, and Clip View UI awaits its picture. Never stop for CI/context or queue length: gate, push, log, next.
+
+
+## 2026-11-12 — quiet-window End active: native176/Clang2350, compiled controls running; no seat stop
+
+**Active:** uncommitted independent **`engine/quiet-gesture-end`**, base **engine/log `5067a9c3ff86673f5bdd7ea6e849aab1240699be`**, `/workspace/wt-engine-project-replace`. Five owned files: CMake, new quiet_gesture.hpp/.cpp, test_quiet_gesture.cpp, ENGINE-QUIET-GESTURE.md. Previous MX23 e10dcbcd is pushed/logged, not included as a source dependency. No protected control edit, no UI/schema/opcode, no main checkout. SDK Link4.1.1/Asio1.38.2 unchanged.
+
+`QuietSession` owns a fresh common gesture Session and explicit nonzero millisecond interval; source owner calls update/poll with monotonic source time. Accepted Values alone renew the clock. Poll ordinary End once at exact expiry; late Value refuses Busy until old End/new Begin, so delayed owner polling cannot merge separated runs. Explicit End/Cancel/destruction/source invalidation remain common lifetime paths; failed End retains the intent/reservation for explicit retry or Cancel. Callback/foreign thread/regressing clock refuse before timer mutation; uint64 elapsed comparison does not add an overflowing deadline. No background timer, op merge/Undo-recommit or implicit automation write. ParamOps' existing owned150ms UI end detection remains its own capture path; AU03/Delay/window binding remain open.
+
+**Evidence so far, not final gate:** native **176/0**, real float32/64 volume movement (1st/10th/20th Value heard), pan and send previews/End/Undo, Cancel restoring actual PCM, frozen label, no per-value durable writes, exact/late deadlines, rejected input not extending activity, clock regression, callback/foreign-thread refusal with unchanged owner clock, caller-SQL refusal/retry, late trigger rollback/retry, explicit release, source loss before expiry, empty source and constructor admissions. Clock ceiling case now includes a mathematically unrepresentable future deadline, not just exact UINT64MAX expiry. Initial fixture used nonexistent Transport.stop; corrected to actual play(false), no product change. Initial native142, expanded172, final176 all raw logs retained.
+
+Strict GCC extra Wshadow/Clang19 **1 prod /4 tests**, clean: final Clang **2,350** (176 quiet,778 gesture,426 existing native playback,970 live replay). Initial full strict review preceded the final ceiling/source-loss fixture strengthening; targeted final test recompile/link/run on both compilers updated frozen inputs, preserved old source/object/executable/log. Final commands therefore include initial five compiles plus one final changed-test compile per mode. GCC full build220 exit0 followed by serialized final test-only rebuild2 exit0 and native176. Source/core hashes frozen in `/workspace/adi-cloud/quiet-gesture-end/review/`. **18 compiled controls running**, first seven ordinary-fail complete176 (zero/adopted-preview admission, accepted-only/last-value renewal, poll renewal, late Value, exact expiry). None yet claimed as full closure; full native test_all/validators and final audit/push still pending.
+
+Five completed Clang executables (including pre-ceiling quiet) decompressed-SHA retained; objects/core stay for controls. Older plugin-scanner-review79 native members retained by exact old gzip reconstruction326,600,185→42,696,504 bytes, saved283,903,681; manifest/restore preserved. No evidence/debug data discarded. Keep archiving completed/paused and about3GiB free before decoder-containing full gate, unchanged2GiB reserve.
+
+**Continue immediately in this turn:** finish all18 controls against final176, investigate any survivor without credit; retain proof, full native gate/four validators/layout, audit five-file scope/all six control fences, commit/push/log then next M2/queue item. Current proof scripts/logs in `/workspace/adi-cloud/quiet-gesture-end/`; active source is already in the named worktree, not the older /tmp drafts. No context/CI/directed-policy wait or seat stop.
+
+
+## 2026-11-12 — MX23 relative selection gated and pushed; taking quiet-window End
+
+**PR requested:** head **`engine/relative-mixer-gestures` `e10dcbcd3442cdf4f07dddba00719df7f2402918`**, independent base **engine/log `f546c277d7ff6ca46a9021f565df546b421f80b0`**. Title: **Add origin-based relative mixer selection gestures**. Four owned files, remote verified; win opens/merges and runs MSVC. All six protected control files byte-identical to base; #512 absent/held, main still ecbc7f24. N45 win501bc849 preserved; SDK Link4.1.1/Asio1.38.2 matches source. No feature log/UI/schema/opcode edit, no main checkout or commit.
+
+**Native/window handoff:** `relativeScalarProducer(RelativeScalarSelection{kind,driver,literalSelectedIds,ScalarControlDomain})` plus `RelativeScalarInput(latestAbsoluteControlCoordinate)` use the existing common coordinator. Driver selected means the fixed whole selection, otherwise driver alone. Each latest total offset derives from Begin's original driver and member values, never preview deltas or mutable selection; per-member clipping reverses back to original offsets. Explicit caller control metadata: pan inside[-1,1], summing drive[-12,24], gain may map display floor to its existing lower stored silence sentinel. Other gains originally at/below floor stay parked; driver can leave it; newly floored members recover on reversal. Returning to Begin keeps exact raw values, including noncanonical raw display-floor/silence values. All eight existing scalar adapters reused, with every endpoint claimed and existing typed row/topology guards and ordinary ops. Single-control producers unchanged. One final common batch/Undo, empty End no history, Cancel current committed truth; changed send identity/late failing member refuses the whole packet. This is MX23's selection engine slice, **not full SRF02/AU03, Track Delay preview or window binding**.
+
+**Final gate e10dcbcd:** GCC14 Debug/PD/Werror **34,596 checks /209 suites**, gate.exit0, every row/aggregate audited, four validators plus layout. Native actual playback555 (float32/64 grouped gain/pan during movement, reversal, no-op, Cancel, one Undo/Redo, unrelated same-row pan rebase, future BLOB kind preservation, second-member SQL rollback); all mappings/floor/domain/identity arithmetic also tested explicitly as raw Proposals, not misclaimed as sealed admission. Strict GCC extra Wshadow/Clang19 **1 prod /3 tests**, clean; Clang **2,303** (555 playback,778 gesture,970 live replay). Serialized full build320 exit0, successive final test-only rebuilds2 exit0; final source/core/native artifacts frozen and hash checked. No warning/deadline/decoder guard changed, no sanitizer/GUI/Live/platform claim.
+
+**Adversarial closure:** **15 compiled variants /194 ordinary failures**, every final555 runner, no crash/exception/shortened credit. Drop selection member/claims/packets, wrong driver, absolute-as-delta, lost member offset, both saturations, same value for all, silence/floor parking, canonicalized unchanged raw value, swallowed retargeted member, missing input/native-domain bounds. Initial canonicalization control survived553 because the driver was already canonical silence; two new raw-floor driver assertions made555. Bounds control then survived because a reused arithmetic fixture had changed a member's kind and topology refusal masked the missing range guard. Final invalid-input checks use the unchanged single target and explicitly require InvalidInput. All15 compiled variant objects re-linked/run with the final SHA-identified555 test object (13 extracted with verified member SHA, one surviving object copied byte-identically, final domain variant freshly compiled). Production did not change during those fixture corrections. Initial normal535/4 expectations also corrected to admitted empty-End result shape and preview-only rebuild counting; all raw versions/survivors retained, no false control credit.
+
+**Evidence/retention:** `/workspace/adi-cloud/relative-mixer-gestures/` has exact commands/inputs, all fixture/compiler/control versions, full gate, **AUDITED e10dcbcd**, release-audit.json, feature.patch and decompressed-SHA-verified **21-file GCC native bundle**. Three completed Clang executables retained per reviewed generation; final13 core/objects/native survivor retained; identical initial/final cold core deduplicated only after final archive member SHA verification, reference manifest preserved. Initial9/control-before-domain13/final15 gzip sets reconstructed byte-for-byte/member-hashed into solid archives (381,602,325→37,969,004;551,173,841→46,074,740;635,973,915→49,215,552 bytes). Five older generated native archives retain157 members with exact old gzip reconstruction,1,994,155,780→232,334,792 bytes; original manifests/restore tools remain. All archive jobs completed before full gate; resource preflight3,959,500,800 free bytes, unchanged2GiB decoder reserve; playback481 passed first full run. No evidence/debug data discarded.
+
+**Next immediately, same turn:** cut independent **`engine/quiet-gesture-end`** from this log successor. SRF02's remaining manual unbracketed-source end detector adopts a fresh common Session and explicit monotonic source clock/nonzero quiet interval, renews only on accepted Value, polls ordinary End once, refuses a late value until old End/fresh Begin, keeps failure retry/Cancel/source loss in the common lifecycle. No background timer, merge/Undo-recommit or implicit automation write; ParamOps already has its own owned150ms UI-capture end detection and is not replaced by raw scalar state. Private drafts `/tmp/adi-quiet-gesture.hpp/.cpp`, `/tmp/adi-test-quiet-gesture.cpp` are preparation, not yet compiled/gated. AU03 armed write-pass, Track Delay preview, AU05 material policy and Crop geometry stay explicitly open; continue remaining M2/queue after this item. Never wait for CI or context; gate, push, log, next.
+
+
+## 2026-11-12 — MX23 relative selection active: focused555, final controls rerunning; no seat stop
+
+**Active:** uncommitted `engine/relative-mixer-gestures`, independent base **engine/log `f546c277d7ff6ca46a9021f565df546b421f80b0`**, `/workspace/wt-engine-project-replace`. Four owned files: gesture_producers.hpp/.cpp, native test_gesture_playback.cpp, new ENGINE-RELATIVE-MIXER-GESTURES.md. Public relativeScalarProducer takes one copied driver/selection/domain, latest absolute coordinate; reuses all eight existing scalar adapters, their captured typed rows, topology guards, claims and ordinary ops through the existing common coordinator. No UI, schema/opcode, new recorder/timer/Delay DSP. All six protected control files byte-identical to base; remote main still ecbc7f24, #512 absent/held. Explicit ls-remote confirms prior HI03/log heads despite stale engine/log tracking ref from this worktree's fetch mapping.
+
+**So far:** first focused553/0, actual grouped gain/pan PCM float32/64, reversal, fixed selection, no-op End, one Undo/Redo, foreign same-row pan composition, opaque future BLOB preservation, claims on every member and late second-member SQL rollback. Strict GCC extra Wshadow/Clang1 prod/3 tests clean; initial Clang2301 (553 native,778 gesture,970 live replay). Native full build320 targets exit0. Two fixture expectations corrected: empty End has an admitted successful durable result, and ordinary refresh/Undo rebuilding is distinct from preview rebuilding; raw initial535/4 retained. Nine initial compiled controls ordinary-fail the full553, but **canonicalize-unchanged-silence survived553**: the driver fixture was already canonical -150, so did not prove the exact raw -70 driver case. No credit for that control. Added raw-floor unchanged/leave-floor cases, native and Clang **555/0**, serialized final rebuild2 targets exit0. Final strict review/15 controls rerun on the new object; production unchanged. Initial commands/inputs/artifacts remain in review-initial; final review frozen separately, identical cold core hard-linked for proof without a second disk copy. Full test_all still pending; no release/PR claim yet.
+
+**Retention/resource:** exact reconstructed old gzip + member SHA verified for sample-defaults28, stem-results32 and external-tempo24 archives; manifests beside each in /workspace/engine-review. No evidence/debug data discarded. Additional analysis archive repack in progress; finish/pause all archival jobs and restore about3GiB headroom before decoder-containing gate, keep unchanged2GiB guard. Current evidence `/workspace/adi-cloud/relative-mixer-gestures/`: both fixture/build versions, strict reviews, initial surviving control and final controls. Do not count initial controls as final-input closure.
+
+**Continue in this turn:** final controls/strict review, retain immutable proof, full native gate + four validators/layout, release audit, commit/push/log. Then SRF02's remaining unbracketed quiet-window end detection through the same existing common session (explicit source clock/window, no merge/undo-recommit and no implicit automation writes). AU03 write-pass, Track Delay preview, AU05 material policy and Crop geometry remain explicitly open. No waiting for CI/director, no main checkout, no seat stop.
+
+
+
+
+
+
+
+
+## 2026-11-12 — HI03 atomic moveTo gated and pushed; taking MX23 relative mixer selection
+
+**PR requested:** head **`engine/history-move-to` `2be4cc9cd0f76354a312e2ba53096552a4454c29`**, independent base **engine/log `45c06316219418ddd5a51548fdf7ec49639135b9`** (required mainecbc7f24 already merged). Title: **Restore retained history points in one transaction**. Six owned files, pushed/remote verified; win opens/merges and runs MSVC. No UI, opcode/schema or protected control edit; all6 fenced files byte-identical to base. Link4.1.1/Asio1.38.2 pins match source. N45 win501bc849 retained.
+
+**Window handoff / behavior:** `History::moveTo(optionalSeq, nowUtc=0, StoredRestore::Refuse)` accepts a retained whole-edit tail from TimelineStep.step.lastSeq; NULL addresses the original state, canonicalized to its materialized stored origin after compaction. Both current and requested heads must be valid boundaries: transaction interiors, ephemeral/missing points and unmapped roots refuse. One existing common-ancestor inverse/forward path, one SQL transaction and one post-COMMIT **HistoryMove** receipt; original op payloads/inverses are untouched, no synthetic log step. `opsApplied` counts the path and txnId is0. Same target under normal navigation admission writes/notifies nothing. Unheld departing tips, including undone future work, receive one system branch stamped by caller nowUtc (default0); already held tips do not duplicate. No ambient clock, UI binding or redo-policy change.
+
+The same source/gesture navigation permit lasts through publication. Producer reservations, callback, readonly and reentrant applied-event mutations refuse. Late inverse **and late forward** SQL failures roll document/head/preserved-branch rows back with no partial event; retry after the real cause is removed succeeds. Cross-baseline navigation retains HI02's explicit stop/fence/reload contract: default returns sessionReloadRequired before SQL; SessionReloadPrepared installs only the target baseline/retained ancestry and emits one empty ReplayBaseReset. Window must reload its Session before resuming audio. Same-baseline ParamOps receives one owned FIFO receipt on its ordinary owner drain, inverse/forward state loads occur exactly once in order on the same actual attached instance, no journal echo or fake full-state reset.
+
+**Final source 2be4cc9c gate:** GCC14 Debug/PD/Werror **34,516 checks /210 suites**, explicit gate.exit0, every row/aggregate and four validators plus layout audited. Playback481 and new navigation49 pass; no decoder guard, warning or deadline changed. Strict GCC extra Wshadow/Clang19 **2 production /8 tests**, zero warnings; Clang **2,394** (49 move,95 history,73 compaction,74 list,73 stored,282 applied batches,970 live replay,778 gesture). Full imported build352 targets finished; an overlapped tail/focused target build was followed by a **serialized full no-work build.exit0**, final focused49 and frozen source/core/artifact hashes. The earlier synchronous-runtime assertion and NULL transport payload were fixture mistakes fixed to normal owner drain/closed {} schema; raw failures retained, no production waiver. No GUI/Live/platform/sanitizer claim.
+
+**Compiled controls:** **15 variants /65 ordinary named failures**, every full49 runner: bypass capture admission; admit transaction interiors/corrupt current heads/ephemeral targets; bypass stored reload or omit its hint/reset kind; keep current head instead of undone future tip; drop departing-line preservation; write an unchanged move; omit head publication, event or executed-op records; reverse navigation; omit stored-origin canonicalization. No compiler/crash/exception/shortened credit. Tests isolate invalid-target fixtures so a caught corruption cannot poison later evidence.
+
+**Retention / evidence:** `/workspace/adi-cloud/history-move-to/` holds all versions, exact commands/inputs, serialized receipt, all compiler/control outputs, resource preflight, frozen release audit **AUDITED 2be4cc9c**, full feature.patch and decompressed-SHA-verified **32-file native bundle**. Eight completed Clang binaries separately retained; remaining **21** objects/core compressed/verified, audit hashes the cold core directly from archive. All15 control gzip archives were exactly reconstructed/native-member checked into43,567,204 bytes before removing629,621,475 originals. Three older generated engine-review archives retained **147 native members**, exact original gzip1,639,533,153→196,539,536 bytes (saved1,442,993,617), restore manifests beside them; no evidence or Debug symbols discarded. Archival jobs completed/paused before native gate, free space3,359,240,192 bytes at entry; no low-space retry in this item.
+
+**Next immediately, same turn:** independent **`engine/relative-mixer-gestures`** from this log successor, **MX23's missing multi-selection producer** through the existing common gesture session. Inspection found `gesture_producers.hpp/.cpp::scalarProducer` already supplies the eight single scalar adapters: extend/reuse it, do not invent another owner or SQL/window batch path. Capture a literal driver/selection, derive each latest relative value from its original native control, clamp to the declared existing control domain and retain one claimed batch/Undo with real EnginePresentation hearing. Keep existing singles and track-switch semantics. Explicitly name the remaining SRF02 unbracketed-timer/automation-write-pass and Track Delay preview gaps; do not claim those delivered by this producer. Then continue the remaining engine queue and revisit AU05/Crop when win pins their already logged material policy/geometry. #512 still absent/held; its named spots remain fenced. Never main; gate, push, log, next.
+
+
+## 2026-11-12 — HI03 moveTo active: serialized build/focused49 pass, compiler review running; no seat stop
+
+**Active work:** uncommitted **`engine/history-move-to`**, independent base **engine/log `45c06316219418ddd5a51548fdf7ec49639135b9`**, `/workspace/wt-engine-project-replace`. This base imports required landed mainecbc7f24 via fc3ec031; #512 still absent, its named spots remain fenced. Source/SDK now Link4.1.1 5ba907ae /Asio8806a680, clean. Six owned files: CMake, applied_batches.hpp, history.cpp/.hpp, new test_history_move.cpp and ENGINE-HISTORY-MOVE.md. No source commit/feature PR requested until final gate/audit.
+
+`History::moveTo(optionalSeq, nowUtc=0, StoredRestore)` reuses existing moveBetween with one whole-transaction boundary-validated transaction, preserved departing/undone tips and one post-COMMIT HistoryMove delivery. No-op writes/notifies nothing; invalid/interior/current-corrupt/ephemeral points, readonly/callback/reentry and pending producer reservations refuse. Stored origins canonicalize NULL and require the existing SessionReloadPrepared opt-in/empty ReplayBaseReset. Source consumer notifications enqueue; real ParamOps owner drain replays inverse/forward state bytes exactly once on the same attached device without a journal echo. Late inverse and late forward SQL-trigger failures restore document, head, preserved branches and source receipt sequence together.
+
+**Evidence so far, not final closure:** native focused **49/0**. Initial37 fixture wrongly expected synchronous runtime state loads; fixed to the actual owner drain, then added admissions/future-tip/forward-rollback cases. Initial43/1 fixture supplied NULL rather than {} for transport.play's empty schema; fixed, not production. Those raw outputs remain. Full GCC14 Debug/PD/Werror imported build352 targets finished. I overlapped its tail with the final focused build (different target outputs), acknowledged the mistake, then ran a serialized full rebuild: explicit **build.exit0**, Ninja no work, final focused49/0. Final source will be frozen/hash checked with its actual core/objects before closure. Strict Clang/GCC extra Wshadow review **2 prod /8 tests** is running via `/workspace/adi-cloud/history-move-to/review.py`; native full test_all and15 compiled controls remain. Prepared controls in faults.py only; none credited yet. No warning, deadline or decoder2GiB guard relaxed.
+
+**Resource retention, before further fixture gates:** exact old gzip reconstruction plus every native-member SHA verified: progressive-review53 members595,115,623→71,871,404 bytes (saved523,244,219), AAC47 members558,324,671→74,368,776 (saved483,955,895), sample-settings47 members486,092,859→50,299,356 (saved435,793,503). Native-solid manifests/restore commands beside each older engine-review archive; all original retained-binaries.json manifests remain valid after restore. Utility `/workspace/adi-cloud/repack-native.py`; logs in history-move-to. No evidence discarded or binary/debug flags changed. Keep at least about3GiB free and pause archival jobs before the decoder-containing full gate; the preceding allocator's low-disk witness explained why this matters.
+
+**Continue immediately in this turn:** finish compiler review; compile/run15 controls (full49 ordinary assertions, no exception/shortened credit); retain review artifacts if needed to restore headroom, then full native test_all/validators/layout on final source, audit, commit/push/log. Next remaining M2 engine work, with AU05 material-policy and Crop geometry questions still with win. Current scripts/evidence `/workspace/adi-cloud/history-move-to/`, draft `/tmp/adi-history-move.inc` is superseded by actual source. Never main; no CI/report/context/usage-protection pause.
+
+
+## 2026-11-11 — needed main merged for HI03; continuing on the landed stored-baseline contract
+
+**Source merge:** engine/log **`fc3ec031658eb4d15b443822823dee491baf261a`** merges **origin/main `ecbc7f24`** after the allocator completion50e89b9b. No conflict or manual source rewrite. HI03 needs #522's actual stored-root APIs and replay reset semantics; the source log base had not yet imported them. All existing engine log entries survived. The imported changes in ops.hpp/ops.cpp/ops_catalog are the already landed HI02 retentionWarning/compaction/root/fork/head handling and registration, as logged above; no Field, validateSubmission, routing.connect/track.create field-array, changeset or main.cpp change. #512 still absent/held for director Q-O; its named spots remain fenced. N45 includes win501bc849 and is preserved.
+
+**Environment now follows this source:** Link4.1.1 **5ba907ae027a8c2ec8824463e37296dcefc5e9be**, Asio1.38.2 **8806a6803cde7054c3049d3666d3ec36786568c5** restored from clean local objects, matching the merged pin. Prior independent allocator/adapter artifacts remain archived against their original source/SDK. No main checkout/commit, no CI wait, no seat stop.
+
+**Next immediately:** cut **`engine/history-move-to`** from this log successor. Reuse actual `moveBetween`, StoredRestore::SessionReloadPrepared and empty ReplayBaseReset on cross-baseline navigation. Window must stop/fence/reload its Session, as the landed contract says; the earlier log's helper names are not exported in this landed source, so no nonexistent helper is promised. Draft `/tmp/adi-history-move.inc` remains preparation until adapted/compiled/tested on this base. One transaction and one applied delivery, whole-transaction targets, preserved departing tips, exact no-op/refusal/rollback, no UI or protected control edits. AU05/Crop questions remain with win; continue the queue.
+
+
+## 2026-11-11 — shared SQL row allocator gated and pushed; taking HI03 moveTo
+
+**PR requested:** head **`engine/row-ids` `dc2c025bf33523b1af4084ab5296e4f68cd3da01`**, independent base **`engine/log` `d3d14cd1`**. Title: **Share owner allocation of persistent SQL row IDs**. Twelve owned files, remote verified; win opens/merges and runs MSVC. All6 protected source files remain byte-identical to base. No UI, opcode/schema, binary-stream ID format or feature-log edit.
+
+**Native API / window handoff:** `RowIds ids(db)` under one owner read snapshot; pass that noncopyable context by reference for the whole prepared batch. `ids.next(table)` uses native int64 positive append above zero/maximum/reservations, with checked exhaustion; `reserve(table,id)` includes literal intent identities without lowering the high water. Metadata/MAX are captured once per table. Names are bound/quoted; only one INTEGER PRIMARY KEY named id is admitted. Allocation and reservation write no SQL or journal and refuse the callback even with a cached table. Existing captured row/absence/head admission still publishes the prepared packet; this is not a durable/concurrent reservation service or distributed-ID design.
+
+CopyIds retains its supported-child admission and delegates to this implementation; built-in plugin-ref/chain/device insertion, sample-slot media import, controller creation, MIDI Capture's whole CC/notes batch and new note streams use it. **Preserved exceptions:** controllers alone retain FirstPositiveGap at the signed ceiling, skipping explicit and unpublished reservations; ordinary calls still refuse exhaustion. Historical scalar-note replay keeps its literal MAX+1 negative/zero compatibility. Snapshot's maxRoutingId is a read-only capture. IDs inside binary streams remain their declared full-width namespace. Window's two `ui/project_document.cpp` MAX+1 sites are still window-owned: bind them to this common native API, sharing a context across each batch. This closes the engine consolidation, not that binding or future distributed IDs.
+
+**Final gate / audit:** GCC14 Debug/PD/Werror **34,057 checks /207 suites**, explicit gate.exit0; all rows/aggregate and four validators plus layout audited. Strict GCC extra Wshadow and Clang19 **7 production /9 test units**, zero warnings; Clang **1,893** (33 IDs,54 controllers,41 Capture,99 built-ins,28 sample slots,271 scalar compatibility,362 note diff,395 clip edit,610 planner). Real controller fixture with another notes row at INT64MAX prepares/commits positive gap1, preserves old bytes and Undo/Redo identities. Native integer precision above2^53, negative-only keys, high/low/MAX reservations, repeated unpublished append/gaps, quoted names, unsupported keys and callback refusal covered. Source frozen dc2c025b; release audit checks all6 protected files, source/core hashes and native artifacts. No timeout/warning/decoder guard change, sanitizer or Live/platform claim.
+
+**Faults:** **13 compiled variants /51 ordinary assertions**, every full33-check runner: unadvanced append, narrowed native maximum, missing positive floor, ignored/lowered reservations, forgotten unpublished append/gaps, ignored reserved gaps, relaxed ordinary exhaustion, skipped first gap, unsupported key admission, callback allocation, and the actual controller caller losing its exceptional fallback. No exception/crash/shortened/compile credit.
+
+**Initial disk failure, retained and investigated:** first full run34055/207 had clip-playback479/1. The harness discards all but the last line, so its original error text is unavailable. Independent full playback481/0 passed. With unchanged source/config/2GiB guard/deadlines, a controlled disk reservation reproduced normal decoded-pins5/0 →3/1 with explicit `decode.no_space: progressive jobs would consume minimum free space` at2,113,925,120 free bytes, matching the missing-two-check signature. This corroborates the observed disk-pressure explanation; it is not a recovered original body or a code/race fix claim. After decompressed-SHA retention restored about3GiB headroom and archival jobs were paused, the complete fresh native34057/207, including playback481, passed. Initial output/witness and both gate receipts remain. Parent session retrieval reported1 despite the explicit final gate.exit0; every full row/aggregate and immutable audit establish the gate result, as for the preceding adapter.
+
+**Evidence:** `/workspace/adi-cloud/row-ids/` has both gates, controlled low-space/normal pins, exact commands/inputs, compiler/fault outputs, release-audit and full patch. **40-file native bundle** is decompressed-SHA verified. Eight completed Clang binaries were separately retained; remaining **34** review artifacts/core were compressed and verified before removal, and audit re-hashes the retained cold core directly. All13 control gzip archives were reconstructed byte-for-byte/member-SHA checked into41,604,980 solid bytes before removing500,921,831 originals (restore manifest retained). The two obsolete independent-branch splice test binaries were retained/hash-verified before removal from this source build; no stale unregistered target was counted.
+
+**Next immediately, same turn:** **HI03 `engine/history-move-to`**, independent from this log successor after merging required landed main into it. Its actual prerequisite is HI02's stored roots/SessionReloadPrepared/ReplayBaseReset from #522 on main5bcc6781, absent in this log's source base; latest mainecbc7f24 also carries the already gated M0/Link4.1.1 fixes, so its SDK pins must be adopted before building. This is the Nov11 prompt's needed-main merge, not an edit around the pending control slice: main's imported ops changes are retentionWarning, root/fork/compaction/head handling and root-op registration; Field, both validateSubmission overloads/implementation, routing.connect/track.create field arrays, changeset and main.cpp are unchanged. #512 still absent, its stated spots remain fenced. Supply moveTo's whole-transaction boundary validation, one common-ancestor rewind/replay transaction, preserved departing tips, one applied event, no-op/rollback and stored-baseline reload admission. AU05/Crop questions remain with win; no seat stop. Never main; gate, push, log, next.
+
+
+## 2026-11-11 — AU05 native storage adapter gated and pushed; taking the shared allocator
+
+**PR requested:** head **`engine/automation-splice-store` `b680966d9a954998f300079c75253ef35e84d39e`**, dependent base **`engine/automation-splice` `b65f94154b7ad67a331e3fe1c34f3c25d5f7381b`**. Title: **Capture automation replacement with exact native storage and Undo**. Six owned files; pushed and remote verified. Win opens/merges and runs MSVC. No opcode, schema, UI, item-log or protected control source change. Full AU05 remains open: the material planner still refuses unlocked relevant automation; clear-hole/target-map/tempo-translation questions are in6bd141ac below, and the seat proceeds on the next M2 item.
+
+**Native owner contract:** `automation::prepareEnvelopeSplice(Store&, laneId, begin, end, ownedNativeReplacement, actualSessionRate, budget)` prepares one sealed existing arranger.splice. Incoming includes both exact native boundaries; projection uses one captured tempo map/rate. Outside original point IDs (uint64MAX and legacy0), header flags, opaque trailer, complete data/range SQL rows and extension storage kinds survive. Guards/copied incoming get distinct positive IDs, skipping every original ID including removed points. A split old range keeps its row ID on only one piece and copies opaque columns to the fresh piece; SQL IDs use existing CopyIds. Optional incoming CurveSlices persist. Future AAUT versions/strides/flags, conflicting clocks, malformed values, budgets and unavailable identities refuse read-only, without partial packets. Clip-owned lanes refuse; clip-scoped streams stay exact. Absent global streams use explicit old-default guards and Undo to absence.
+
+**Publication / Undo:** ordinary journal and prepared submitters enforce the existing sealed live-source/head and complete lane/data-set/range-set/tempo/allocated-absence guards inside the transaction. Same-head mutation, insertion/removal and ID reuse refuse before any prefix write. Tamper/wrong-source offers do not poison an authentic group; a durable packet cannot repeat; a real SQL trigger failure rolls rows/history back and needs fresh preparation. One Undo/Redo/Undo restores exact typed streams, rows, ranges, allocated IDs and absence. Unrelated track-name changes do not falsely stale this lane.
+
+**Final gate, audited b680966d:** GCC14 Debug/PD/Werror **35,542 checks /208 suites**, explicit gate.exit0, every row/aggregate and all four validators plus layout clean. Strict GCC extra Wshadow and Clang19 cover **2 production /3 test units**; Clang **1,162** (206 splice-store,778 gesture,178 param_ops). The final public fixture uses audible tick/ns spans with tempo changes, all6 curve families, custom opaque native column values different from defaults, old-domain endpoints/trailer, low and removed-ID collisions, stale rows/head/source and real rollback. New output/front accesses are size-guarded for MSVC Debug. Initial203-check version35539/208 exit0 is retained separately; final206 source was refreshed in both compilers before closure. Parent session receipt retrieval reported1 despite the final recorded gate.exit0; complete208 rows/aggregate and immutable source/core audit establish the actual gate result; no shortened run or hidden retry is claimed.
+
+**Compiled controls:** **14 variants /105 ordinary assertion failures**, every complete **208-check** private runner: omit lane/data-set/range-set/tempo guards, remove packet seal, reuse incoming/outside/removed IDs, forget reservations/trailer, accept future/conflicting clocks, omit incoming domain and replace old range extension values with defaults. Private Clang208 adds a distinct valid native range ID inserted after capture, proving set-absence beyond per-PK before-images. All controls compile and ordinary-fail; no crashes, exceptions, shortened runners or compile credit. No warning, timeout or decoder2GiB guard relaxed; no Live/other-platform/sanitizer claim.
+
+**Evidence:** `/workspace/adi-cloud/automation-splice-store/` holds exact sources/commands, both gate versions, final compiler refresh,14 per-variant verified native archives, private208 source/output, full feature.patch and frozen release audit **AUDITED b680966d**. Native **22-file bundle** is decompressed-SHA verified; review binaries/objects/core are being verified into retained-binaries before expanded removal. Prior trim18/17 control sets saved629,267,445/579,217,040 bytes with exact original gzip reconstruction plus native-member hashes; foundation17 controls saved612,557,088 bytes, all restore manifests retained. Source/status unchanged by retention.
+
+**Next immediately, same turn:** **`engine/row-ids`**, independent from this engine/log successor: one owner allocator for current positive SQL IDs/reservations, migrate the engine's new-producer MAX(id)+1 sites and CopyIds; preserve controller exhaustion gap fallback and scalar historical-note replay semantics. No UI helper or Snapshot's read-only max-routing capture change; expose the common native API for window to bind. Then remaining M2/PLAN queue and return to AU05/Crop when win pins their material geometry. Private allocator drafts in /tmp are preparation only, not part of this item. Latest mainecbc7f24, #512 still absent; all6 fenced source files byte-identical, N45 win501bc849 untouched. Never main; gate, push, log, next.
+
+
+## 2026-11-11 — AU05 storage adapter in gate; specific material-policy question for win, queue continues
+
+**Active:** uncommitted `engine/automation-splice-store`, dependent `engine/automation-splice` b65f9415, `/workspace/wt-engine-project-replace`. Foundation and log7f87fcd9 are pushed. The new owner adapter prepares one sealed existing arranger.splice, projects native points/cuts under one captured tempo/rate, preserves complete typed data/range rows and AAUT header/trailer, fresh point/row IDs, exact Undo/Redo and source/head/lane/data-set/range-set/tempo/allocated-absence admission. Initial native test203 passed; review strengthened low-ID/removed-point reservation and custom opaque-column values, final focused/Clang206 pass, gesture778/param_ops178 pass. Full gate and compiled controls are running; this is not a final PR request. No protected control source changed. Main fetched ecbc7f24 adds #524/#526/#528; #512 still absent, so no main merge.
+
+**Question to win before choosing AU05's user-visible material policy:** PLAN fixes replacement at the destination and guards at both source/destination edges. It does not name the value left *inside a vacated source interval* after Move/Delete (held incoming value, lane default or a new join), nor the mapping of source device/send lanes on a cross-track paste when those device/route identities have no destination counterpart. A ticks↔ns move across tempo steps also needs the agreed native/sample translation rule: integer tick conversion alone cannot promise sample accuracy at this PPQ/rate boundary. Please pin these rules or supply the Live reading/measurement extract (AT-10 and replacement/delete readings remain NOT RUN). The pure splice/storage APIs deliberately take explicit incoming values; they do not claim those policies or silently batch automation in the window. Existing unlocked relevant-automation admission remains closed until the material binding is correct.
+
+**No seat stop:** finish this adapter's gates/controls, push/log it, then take the shared allocator (XC22, next M2 item) while this question and the prior Crop geometry question are with win. Return to the material binding as soon as its source-hole and target-map contract is pinned. No director question/CI/report/context pause, no invented measured Live claim. Decoder2GiB guard and all compiler warnings/deadlines unchanged; older controls were exact-gzip/member-SHA verified into solid archives before expanded removal to retain disk headroom.
+
+
+## 2026-11-11 — AU05 pure guarded envelope splice gated and pushed; taking its storage adapter
+
+**PR requested:** head **`engine/automation-splice` `b65f94154b7ad67a331e3fe1c34f3c25d5f7381b`**, independent base **`engine/log` `ea59c631c5ca85debadc200c4fd020b2fef288dd`**. Title: **Preserve outside automation curves during bounded replacement**. Five owned files; remote verified. Win opens/merges and runs MSVC. This is a pure AU05 foundation, not the material binding: the planner still refuses unlocked relevant automation. All six #512 fenced source files remain byte-identical to base.
+
+`automation::planEnvelopeSplice` takes owned decoded lane-native/sample knots, explicit replacement including both boundaries, old default and point budget. It preserves the actual old renderer outside [begin,end), incoming inside, stable coincident steps, held/default regions and both nonlinear outside subdomains, including pre-existing CurveSlices. Provenance distinguishes old uint64MAX/legacy-zero point IDs from new guards and identifies a range split twice; the owner must allocate/preserve persistent IDs, complete native rows/header/trailer and the single guarded transaction. No Store/SQL/files/transport/callback or user-visible clear-hole policy is hidden in this kernel. Unknown stream layouts/tails remain an owner validation responsibility.
+
+**Final gate:** GCC14 Debug/PD/Werror **35,336 checks /207 suites**, explicit gate.exit0; all suite rows/aggregate and all four validators plus layout audited. Strict GCC extra Wshadow and Clang19 compile the new production/test units; Clang completes **1,312**. All6 curves ×5 tensions ×old/new subdomains ×3 cuts, exact steps, quantization, defaults, bounded clocks including native int64MAX, malformed inputs and budgets; tests use the actual engine::valueAt, not a duplicate interpolation. Inputs remain immutable. Vector/index accesses guarded for MSVC Debug.
+
+**Faults / composed oracle:** **17 compiled negatives /2,955 ordinary assertion failures**, each full1,312. Private seed0xa005c017,40 composed replacements: per-step inside/outside actual-renderer oracle plus original raw-record/ordinal preservation, **1,472 each GCC/Clang**; compiled prefix-domain control completes1,472/310 and trips27/40 outside oracles. Initial ignore-clock-projection private plant failed compilation from generated indentation; source/log retained, not credited. Reformatted plant compiles and fails the ordinary full runner. No exceptions, crashes, compiler failures or shortened runs credited; no warning, timeout or decoder2GiB guard relaxed, no Live/platform/sanitizer claim.
+
+**Evidence:** `/workspace/adi-cloud/automation-splice/` holds source/core hashes, exact commands, private sequence and controls, frozen release audit **AUDITED b65f9415**, full patch, and decompressed-SHA-verified17-file native bundle. Review binaries/core/objects are being compressed and verified before expanded removal. To retain earlier evidence within disk limits, clip-trim's24 final per-control gzip archives were solid-packed into175,773,464 bytes: every original compressed SHA was reconstructed exactly and every native member SHA checked before removing1,027,462,459 old bytes. Restore recipe/manifest in `clip-trim/review-last/faults/solid-retention.json`; no evidence discarded.
+
+**Next immediately, same turn:** dependent **`engine/automation-splice-store`** from b65f9415: current-layout AAUT storage adapter, outside IDs/range rows and opaque native fields, fresh guards/copied incoming IDs, captured lane/data/range/tempo/absence read sets and exact one-step Undo/Redo. Then bind AU05 material intents, shared allocator and remaining queue; Crop question remains with win, no seat stop. Latest main5bcc6781 / #512 director hold, N45 win501bc849 untouched. Never main; gate, push, log, next.
+
+
+## 2026-11-11 — ED-04 anchored left trim gated and pushed; taking AU-05's envelope replacement foundation
+
+**PR requested:** head **`engine/clip-trim` `e9712ecbafece15686a78048cccdd7792f839590`**, dependent base **`engine/linear-audio-endpoint` `4548c7d851de73f8ffe0c1a86104e1f0e3c452c8`**. Title: **Add anchored left trim and honor independent source clocks**. Seventeen owned files. Remote head verified; win opens/merges and runs MSVC. No UI, schema/library version, opcode, protected control source or item-log change. This supplies anchored left trim; Crop remains open under the precise question in checkpoint25404ca9 below.
+
+**PR body / window handoff:** `edit_plan::prepareTrim(Store&, scope, Trim{id, begin}, Options{actualSessionRate, capturedPolicy})` is the owner-thread left-edge intent; `prepareResizeEnd` remains the right-edge intent. `begin` uses the explicit scope clock. Commit the returned packet through `clip_edit::commitPrepared`/the existing prepared submitter. Preparation writes no rows; the captured filename/head and full typed delta guard its single `arranger.splice`. The preview describes the actual native extent after clamping. Keep the exact native end and source/child identities, advance source ticks and the unwarped pinned sample offset together, and clamp audio extension at zero of its captured immutable read window. MIDI can expose a bounded signed source prefix. A clamp back to the original begin produces no clock row, SQL write or history step. Loop bounds and opaque ANOT/expression/controller bytes stay exact; Crop is a different content operation. Existing explicit scope, overlap, frozen-track, alias and AU05 automation admission apply.
+
+Authored fades clamp to the new span: incoming follows the new source start with its old duration, outgoing keeps its anchored source end and clamps its beginning. Inactive inherited domains remain inherited. Update only the active source type's domains: Warp uses musical ticks and preserves ignored old ns pins; unwarped audio uses its physical clock and preserves dormant Warp domains. The renderer and MIDI/controller/clip-envelope compilers admit the corresponding signed offsets, with all bounds retained. No callback allocation/file I/O or source-file rewrite is introduced.
+
+**Independent-clock corrections required by this intent (SPEC9.2):** the audio renderer formerly applied a second tempo-relative End limit after its physical/Warp source bound; it now uses the already resolved source end. It compares Start/End ticks only for Warp or wholly legacy audio, so valid pinned audio is not silenced by stale display ticks after a tempo relocation. Real compiled probes caught both failures (two precision failures at the second limit; one full31-check endpoint-probe failure at the tick-order guard). Save Sample Defaults also re-clamped a copied End pin: it now retains that pin and canonicalizes only a negative unused tick fallback for the unchanged portable library format, without writing the project. The old legacy-marker fixture uses the actual `clip.setEndMarker` op to clear the old pin; every old assertion remains, plus new cross-tempo PCM and signed-offset cases. Initial full34115 exposed that defaults65/1 regression; final defaults74 pass. Linear endpoint sums use native integer endpoints before conversion; MIDI's existing nextafter already protects the simple old-arithmetic witness, so that missed mutant455/0 is explicitly not credited as a regression caught.
+
+**Final gate, frozen source e9712ecb:** GCC14 Debug/PD/Werror **34,136 checks /206 suites**, every row and aggregate audited, all four validators plus layout clean. Strict GCC extra Wshadow/Clang19 cover8 production and8 test units. All8 Clang suites are linked/run against the final frozen core: **2,064** (653 planner,509 audio playback,455 MIDI,94 controllers,51 clip envelopes,143 Warp playback,85 clip properties,74 sample defaults). Unchanged objects were reused only after exact source/header and archived-object hashes matched; both changed clock units and their two tests were freshly compiled in both modes. No warning, deadline or decoder guard relaxed; no sanitizer, other-platform or Live measurement claim. Earlier34124/34134 outputs belong to intermediate versions and interrupted parent sessions; the final complete34136 log and immutable source/core audit close this version. A later exec-server disconnect prevented retrieval of those old session receipts; fresh commands, the complete logs and remote verification work, so it does not stop the seat.
+
+**Tests / faults:** native geometry in ticks/ns; looped source-zero and exact marker-aligned Warp trimming; preserved dormant clocks; signed MIDI note-on/off and controller/envelope phase; sample-exact resampled PCM at both widths; pinned End and tick-order cases across tempo; exact typed Undo/Redo/Undo; stale head, an actual SQL publication rollback and authentic retry. New vector/front accesses are size-guarded for MSVC Debug. **24 final compiled negative variants /81 ordinary assertion failures**, each completes its full runner (653/509/455/94/51/143/74). They cover tick/physical offsets, fixed end, one-sample clamp error, fade handles/domains, signed readers/marker ops, End clocks, dormant metadata and portable defaults. No crash, exception, compiler or shortened-run credit. Seed **0xed04d217**,40 mixed trim/resize transactions: independent phase/no-overlap oracle after each edit and victim split, exact typed undo-all/redo-all; **853 each** under GCC and Clang. Its compiled offset fault completes853/51 and trips all40 oracle checks. These extra runs are separate from the full-gate count.
+
+**Evidence / retention:** `/workspace/adi-cloud/clip-trim/` has all intermediate/final gates, exact commands/sources, frozen hashes, witnesses,24 per-variant verified binary archives, both seeded runs/control, release-audit and full feature.patch. The final **39-file native bundle** is decompressed-SHA verified; final review objects/core/binaries are being compressed/verified before reuse. Earlier44/6/43 review artifacts were already retained. Also retained clean inactive scale-context506/10, scale-timeline509/10 and audio-memory-capture511/11 builds: **1,526 artifacts /31 verified chunks**, source/git status unchanged, manifests/restore commands under retained-old-builds. Decoder2GiB guard unchanged. README remains win-owned.
+
+**Next immediately, same turn:** **`engine/automation-splice`**, independent from the engine/log successor. Crop's selection/arrangement/rebasing/crossing-note contract question is with win (checkpoint25404ca9); its public manual fetch returned403 and the research's M6 reading is NOT RUN. Proceed on the decided **AU05 guarded replacement foundation**: a pure owner-independent envelope splice with explicit incoming values, old-curve guards at both joins, nonlinear subdomains preserved, provenance for one shared allocator, then bind it into the material planner's single captured transaction. No window-side point batching or full AU05 claim before that binding. Then the allocator/rest of PLAN, and return to Crop when its geometry is pinned. Latest main5bcc6781; #512 remains held, all6 fenced files byte-identical to the source base, N45 win501bc849 untouched. Never main; no CI/report/context stop.
+
+## 2026-11-11 — ED-04 anchored trim in progress: independent source clocks reviewed; no seat stop
+
+**Active work:** uncommitted `engine/clip-trim`, base **`engine/linear-audio-endpoint` `4548c7d851de73f8ffe0c1a86104e1f0e3c452c8`**, `/workspace/wt-engine-project-replace`. Seventeen owned files; no feature push/PR requested until the final gate. The endpoint prerequisite and its earlier log are pushed. All six protected #512 source files remain unchanged; latest fetched main5bcc6781 still carries win's director hold, so no main merge.
+
+`prepareTrim` now keeps the native end, advances source ticks and the unwarped pinned sample clock, clamps audio to the captured source window's zero, admits bounded signed MIDI prefixes, clamps authored fades and preserves inactive inherited domains. Tick/ns, audio/MIDI, exact typed Undo/Redo, actual transaction rollback/stale head, looped SRC PCM and both processing widths are covered. Warp uses its musical source clock and ignores/preserves obsolete ns pins. The real stale-pin extension tests pass143; edit-plan653. Current source/tests remain WIP until the gate below closes.
+
+**Why this item grew:** SPEC9.2's source pins must stay independent of placement tempo. Actual renderer probes exposed the second End tick clamp (two precision failures), then a tick-order refusal despite valid physical pins (31-check probe/one ordinary failure); both are corrected, and the latter now passes31. Save Sample Defaults repeated the End clamp; it now keeps the copied source pin and canonicalizes only a negative unused tick fallback. Its legacy marker fixture now uses `clip.setEndMarker`, which clears the prior pin, preserving every old assertion. Defaults74 pass with new cross-tempo PCM and signed-offset cases. No library/project format change or relaxed warning, deadline, decoder guard or assertion.
+
+**Evidence so far, not final closure:** initial full34115/206 reported one defaults failure, reproduced65/1 and fixed as above. Subsequent full outputs34124 and34134/all validators are retained as intermediate versions; their parent commands were interrupted as review continued, so the final source must run a new complete clean gate. Strict GCC/Clang initially7prod/7tests1978, then the defaults unit/test74, then refreshed all8 Clang suites2062 after the Warp review. Unchanged objects were reused only after source/header hashes and archive-object hashes matched; changed units were rebuilt. Latest physical-order change still needs its final renderer/test refresh. Eighteen compiled intermediate controls/68 assertion failures, plus4 defaults controls/8, finish full runners; an original separated MIDI-clock mutant passes455 because existing nextafter protects the simple tie, and is explicitly not credited. Independent seed0xed04d217:40 mixed edge edits, phase/no-overlap oracle, exact typed undo-all/redo-all; GCC and Clang853 each; an offset fault trips all40 oracle checks (full853/51). `/workspace/adi-cloud/clip-trim/` holds all versions, commands, sources, private witnesses, archives and restart logs. Final release/audit/PR/log, then next item, remain in this same turn.
+
+**Crop — question to win before choosing a user-visible geometry:** PLAN ED04 fixes the source bounds (unlooped Start→End; looped min(Start,LoopStart)→LoopEnd; selection overrides), MIDI outside removal and no audio file write. It does not resolve whether the selection is in source or arrangement coordinates, whether Crop keeps the arrangement span and rebases the source window or trims that span, or what happens to a crossing note's original duration/expression domain. Live must be read/measured, not recalled (PLAN evidence rule); the public Live12 Clip View manual fetch returned403 here, the research bundle is not in this checkout, and M6-A6M033 remains NOT RUN. Please pin those geometry/crossing rules or supply the manual extract. I will not present an inferred rebasing/truncation policy as measured Live behavior. This question does not hold the seat: after trim's gate/push/log, take the fully specified **AU05 guarded automation replacement foundation**, then its planner binding and the allocator, while Crop's contract is clarified. No Crop implementation is claimed or left in the source tree.
+
+## 2026-11-11 — ED-04 prerequisite: native linear audio endpoints gated; continuing anchored left trim
+
+**PR requested:** head **`engine/linear-audio-endpoint` `4548c7d851de73f8ffe0c1a86104e1f0e3c452c8`**, independent base **`engine/log` `6b37221e978ef5ad3e12f2fea14566e237f0de3d`**. Title: **Preserve exact linear audio endpoints before conversion**. Three owned files; pushed for win to open/merge and run MSVC. No protected control source, UI, schema, op, DSP or item-log edit. ED-04 remains open; this is its demonstrated audio prerequisite, not a Crop/trim delivery.
+
+**Reproduced / change:** at44.1kHz a clip starting5ns with duration34,999,995ns must have the same exact35ms end as start0/duration35,000,000ns. Separate double conversions give1543.4999999999998 and lose the last sample. The real Session regression against unchanged production completes **483 checks /1 ordinary failure**; fixed passes483. Sum the stored int64 endpoints before seconds conversion in ClipPlayback and the frozen source/fade-clock helper; the renderer checks signed addition overflow. No source audio is rewritten. New test uses constant PCM and verifies samples1542/1543 and silence1544, with a size guard. Current MIDI/controller/envelope equivalents and signed MIDI offsets are evaluated in the next trim item.
+
+**Gate:** GCC14 Debug/PD/Werror full **34,026 checks /206 suites**, every row/aggregate audited, all four validators plus layout clean. Strict Clang19 two production/four test units, **1,596** checks (483 playback,395 clip-edit,610 edit-plan,108 precision). GCC extra Wshadow passes both changed production units, changed playback test and two related unchanged tests. The optional unchanged precision test's extra Wshadow pass fails its pre-existing `in` shadow at1094 over1066; retained in review.log, no warning suppression or unrelated source change. Native GCC standard Werror full precision108 and Clang extra Wshadow precision108 pass. No sanitizer/hardware/other-platform claim.
+
+**Faults:** **3 compiled negatives /32 ordinary assertion failures**, each completes483: separate conversions1, rounded duration plus rounded start2, truncated absolute end29. No crash, exception, compile or shortened-run credit. Evidence `/workspace/adi-cloud/linear-audio-endpoint/`: old/full controls, compiler commands/frozen inputs and cold core, gates, per-variant sources/output and verified binary archives, release-audit, full patch and **22-file SHA-verified native bundle**. N51's remaining review objects/core/binaries were archived and decompressed-hash verified before expanded removal. An inactive clean Scala build was retained as **509 artifacts /10 verified chunks** under retained-old-builds/scala-import; source and git status unchanged. Decoder2GiB guard unchanged.
+
+**Next immediately, same turn:** dependent **`engine/clip-trim`** from4548c7d8. Implement `prepareTrim` with anchored native end, matching tick and pinned ns source offsets, audio source-zero clamp and MIDI signed source prefix, fade clamping and captured placement/Undo. Then dependent Crop (MIDI notes/expression, selection override, no audio file write), AU-05, allocator and remaining PLAN queue. Private draft helper `/tmp/adi-left-trim-helper.inc` is preparation only, not compiled/delivered yet. Latest fetched main5bcc6781, win's #512 director hold persists; all six fenced files byte-identical to base. Never main; no CI/report/context stop.
+
+## 2026-11-11 — N51 device paste creates its destination chain atomically; taking ED-04
+
+**PR requested:** head **`engine/device-paste-track` `f52e00b32f16513270c774a6470a856273ef5c2e`**, independent base **`engine/log` `f98c3eb7b537654de596d73663a8fca12862fe06`**. Title: **Paste stored devices onto tracks with atomic chain creation**. Four owned files. Branch pushed; win opens/merges and runs MSVC. No UI, registry/new opcode, schema/minor, protected control source or item-log change. OPS adds the native clipboard contract without changing its opcode counts.
+
+**PR body / window handoff:** use **`prepareDevicePasteForTrack(Store&, copy, newDeviceId, track)`** for an append with no selected device. It reuses the first top-level destination chain by(ord,id), or captures **`chain.create` before `device.insert` in one batch** when no chain exists. Preparation writes no project/journal rows. `PreparedDevicePaste::chainId` reports the existing/staged identity. `commitDevicePaste` remains the commit helper; normal journal/submitter submission also carries the complete captured packet. The existing chain/before-device function retains its behavior. The window can replace its empty-chain refusal with this append API, then refresh Session/ProjectView normally; no window binding is claimed here.
+
+The track packet is sealed through the **existing** captured submission path with its source connection/current undo head and exact destination guards: the track row, complete top-level-chain set including absence, reserved chain/device identities, complete destination-device set and plug-in-reference row. Same-head raw target/ref/ID reuse refuses before any move/prefix write. Submit the packet intact: partial/tampered/appended groups refuse, an invalid partial offer does not poison its authentic group, and a durable group cannot be offered twice. Actor stamps remain supported; arbitrary beforeCommit additions are not part of a sealed packet. Existing file identity, copied format/UID/shell and remote-endpoint validation stay. Parameters, state hashes, panel and route are copied from the immutable stored clipboard; no live host call, cross-project import or nested-rack widening.
+
+**Atomicity/identities:** one Undo removes both new device and newly created chain and returns the exact musical digest; Redo restores identical IDs/bytes. Reusing an existing chain leaves it and restores its original tied/large order values on Undo. A failing insert rolls back the actual preceding chain and audit rows; fresh preparation can retry its IDs. Native MAX+1 allocation is bounded and refuses exhaustion, preserving the full int64 boundary; the one-allocator M2 consolidation must include this new site. No allocator-policy widening or row reservation outside the captured transaction.
+
+**Gate:** final GCC14 Debug/PD/Werror **34,056 checks /206 suites**, all rows/aggregate audited, all four validators and layout clean. Device-copy **67** (35+32): actual empty/existing/multiple top-level chains, exact state/params/panel/route and digest round trips, ordinary outside-engine packet submission, non-root head, partial/authentic packets, actual insertion rollback, same-head changes to track/chains/order/device set/new IDs/ref, missing/foreign target, int64 MAX and exhaustion. New vector/front accesses are size-guarded for MSVC Debug. First full pass at65 checks/34,054 is retained; added two permanent new-device-ID/ref reuse cases and reran the complete final gate. Strict GCC extra Wshadow and Clang19 compile one production/three test units; Clang **448** (67 copy,99 built-ins,282 applied batches). No warnings/deadlines/disk guards relaxed or sanitizer claim for this owner-side read/journal composition.
+
+**Faults:** **14 compiled negative variants /39 ordinary assertion failures**, all completing67: omit prefix12; omit sealing8; wrong new-chain track2; drop params3/state1; reverse chain choice2; narrow chain ID2; wrong captured head2; omit chain-ID1/device-ID1/ref1/chain-set1/device-set2/track-row1 guards. No crash, exception, compilation or shortened-run credit; no invented old-main API regression claim. `/workspace/adi-cloud/device-paste-track/` retains both gates, exact commands/sources, frozen core/input hashes, per-variant outputs and byte-verified object/executable archives, release-audit, full feature.patch and verified **19-file native bundle**. N50's remaining6 artifacts were archived/verified. Also reclaimed an inactive old tuning build: **509 ELF/.a artifacts in11 decompressed-hash-verified chunks**, source and git status unchanged; head/paths/restore manifests `/workspace/adi-cloud/retained-old-builds/tuning-edits/`. No source/WIP or evidence discarded; decoder2GiB guard unchanged. README remains win-owned.
+
+**Coordination / next immediately:** latest main **5bcc6781**, with #522 stored states, #523 tuning guard and #525 NI refusal now landed; other source features remain separate as their PRs gate. #512's old control ref is still not an ancestor and its director hold remains the latest coordination record. All six protected sources are byte-identical to this PR's base. This item uses no new main-only API, so its independent source base is preserved; merge main when #512 lands, or a specific needed change requires it. N45's win501bc849 stays untouched.
+
+N49, N50 and N51 are now supplied; no new need appears afterN51 in fetched window.md. Continue **M2 / ED-04**, the anchored left trim and Crop intents: edit_plan.hpp currently exposes only prepareResizeEnd and explicitly keeps left trim/Crop separate. Read ADR-0217/PLAN ED-04, the existing frozen-image/time-map arithmetic and low-level clip properties/notes before implementation. Then AU-05's Lock Envelopes planner, the allocator and the remaining milestone queue, keeping actual open/green PR work out of duplicate takes. Never main; no reporting/CI/context stop.
+
+## 2026-11-11 — N50 cancellable library scan with safe progress gated and pushed; taking N51
+
+**PR requested:** head **`engine/library-scan-cancel` `953e15cd8746abc6cb4f4177f911668e0c10dee9`**, independent base **`engine/log` `91c0adba44fa311d86148a68c4904d6efa782c41`**. Title: **Add cooperative cancellation and progress to library metadata scans**. Four owned files; branch pushed, win opens/merges and runs MSVC. No UI, project op/minor, application-library DDL/version change or item-log edit.
+
+**PR body / window handoff:** call `Index::scan(volume, relativeFolder, stopToken, observer)`. Existing one/two-argument calls retain their defaults. A pre-cancelled token refuses before validating/accessing a missing volume and emits no progress. Discovery checks between entries and immediately around observer delivery; a stop inside one folder ends without visiting another entry, marking unseen files missing or queuing hashes. Stoppable database-mutex acquisition polls stop; default unstoppably-tokened calls keep ordinary locking. The metadata publication transaction checks file rows, missing rows and its commit boundary. On observed cancellation it rolls back/releases the mutex before returning `ok=false`, `cancelled=true`, a named message and zero committed/queued counts. A stop after commit is completion; hashing publication is retained. `Index::cancel()` still stops its separate hash worker, so cancelling one metadata scan does not cancel unrelated hashing.
+
+The optional observer runs synchronously on the scan thread **outside the database mutex**, with Discovering visited/files counts and one Publishing announcement before entering the transaction. It can read `entries()` or request stop; no recursive scan/mutation. Exceptions, including nonstandard ones, become named failures before publication. No observer runs after durable commit: the returned result is completion, avoiding a callback error misreporting a committed scan as failed. Progress is discovery/staging, not an in-transaction percentage. Caller retains Index and joins its scan task before destruction; the window forwards/coalesces progress and supplies its stop token. Cancellation is cooperative between filesystem/SQLite calls, not interruption of an OS call already blocked. ENGINE-LIBRARY-INDEX records the contract. No UI binding is claimed.
+
+**Native gate:** GCC14 Debug/PD/Werror **34,041 checks /206 suites**, every row/aggregate audited, all four validators and layout clean. Library **65** (48+17), including a stop at the second file inside one folder, exact old rows/missing flags/hashes retained, no later hash jobs, read-only progress queries without deadlock, a successful scoped rescan, pre-publication stop, pre-cancelled nonexistent input and both observer exception kinds. All inherited entries[0] uses were guarded/replaced to keep failed fixtures safe on MSVC Debug. Strict GCC extra Wshadow and Clang19 compile one production/three test units; selected Clang **183** (library65, sample settings53, sample defaults65). No diagnostic, deadline or decoder2GiB guard relaxed; no sanitizer/other-platform claim for this off-callback owner SQL change. README remains win-owned.
+
+**SQL cancellation evidence / faults:** private verification copies insert a deterministic observer after actual file/missing-row updates or just before commit, requesting the **real public stop token**. There is **no repository/public test hook**. The full permanent65-check driver plus15 private SQL checks completes **80 /0** as the matched instrumented control. It proves the token was requested, another row was not processed, real partial updates/missingness rolled back, and later hashing sees no queued work. **8 compiled negative variants /42 ordinary assertion failures**, each completing80: ignore all stop21; omit pre-validation1, file-row1, missing-row1 or pre-commit3; lose cancelled flag6; expose rolled-back counts3; commit partial work on stop6. No crash, compilation, exception or shortened-run credit. No fabricated old-main API regression claim: the API is new. Private harness preparation first needed its formatted namespace anchor corrected; no failed preparation was credited.
+
+**Evidence:** `/workspace/adi-cloud/library-scan-cancel/` full/focused/compiler logs, all native/public and private SQL sources/commands/outputs, source/core hashes, release-audit, complete feature.patch and **19-file native bundle**, decompressed-hash verified. Each completed SQL variant's object/executable is separately tarred/verified before expanded removal; Clang7 artifacts likewise retained. The preceding decoder fixture's remaining5 artifacts were compressed/verified to preserve disk headroom. Source annotations, path/collision confinement and library version1 remain intact; project/control sources, all six protected files, are byte-identical to the PR base.
+
+**Next immediately, same turn:** **N51**, device Paste onto a track with no device_chains row. Prepare a captured native `chain.create` before the ordinary device insertion, in the same undoable batch as built-in insertion already does; preserve existing-chain and before-device semantics, actual state/parameters, stale/ref/identity validation and exact Undo/Redo. Read device_copy/builtin_insert and current transaction-resource guards before the API choice. Then the remaining M2/PLAN queue (anchored trim/Crop/Lock Envelopes/allocator and onward). Disk is tight from older generated build trees; preserve/compress/hash-verify those inactive build artifacts before expanded removal, never their source/WIP, and never relax decoder admission. Latest main7cdc3005; #512 explicitly held for the director, fence persists. N45's win501bc849 stays untouched. Never main; no report/CI/context stop.
+
+## 2026-11-11 — Decoder pool cancellation fixture race reproduced and gated; taking N50
+
+**PR requested:** head **`engine/progressive-pool-order` `6c777726c173cfeb8ff6f389cd2508d2e5c3f332`**, independent base **`engine/log` `0f418affd7c4d41d722af3e9116d7e6d6f7a2815`**. Title: **Make decoder pool cancellation assertions independent of queue interleaving**. One test file,13 additions/3 deletions; branch pushed, win opens/merges and runs MSVC. No production, UI, dependency, op, schema or item-log change. This takes win's afternoon7cdc3005 report from #517, not a decoder timeout increase or a flaky label.
+
+**Cause reproduced:** the fake codec counted every stop checkpoint but `poolBounds` expected exactly2. Dropping32 public leases is sequential; as each active job stops, a worker may begin a still-leased queued job before its lease is dropped. That later checkpoint is another legitimate cancellation, so the total can exceed2. In a compiled copy of fetched main's actual test, a legal preemption schedule (drop each lease,5ms spacing) gives **entered32/stops32**, then the original full runner completes **93 /1 ordinary failure** at the reported assertion. The fixed full runner under that same pattern passes93 with later jobs entering and exactly2 initial acknowledgments. This is direct evidence of the queue interleaving; no unsupported claim that request_stop's visibility itself is broken.
+
+**PR body / behavior:** each checkpoint receives its atomic entry ticket, and only the first two—the two participants already verified as blocked—acknowledge the initial stop count. Later queued jobs remain subject to the worker/capacity/cache/drain assertions but cannot corrupt that identity count. The fixture keeps `release=false` until both initial stop tokens are actually observed. On a failed15-second wait it still releases the fake codec for cleanup, while retaining the failed observation in the assertion. Original1ms hook polling and15s waits are unchanged; retry admission, empty unpublished cache and maximum2 workers remain real assertions. No decoder contract is weakened and no application/window call changes.
+
+**Gate / stress:** full GCC14 Debug/PD/Werror **34,024 checks /206 suites**, every row/total audited, all four validators and layout clean. Strict GCC extra Wshadow and Clang19 compile the sole changed test and each pass the complete **93-check** suite. The actual isolated pool function (private argc-guarded harness, no other fixture rewrite) passes **600 runs /4,800 checks**, zero failures:200 ordinary and100 scheduled runs per compiler. Every scheduled stress run admitted all32 checkpoints and acknowledged exactly the two initial tokens. Full scheduled/ordinary positive controls also pass93. No TSAN or other-platform claim for this fixture-only atomic observation change over unchanged production workers.
+
+**Compiled controls:** fetched-main/scheduled old test93/1; restoring the all-hook count93/1; suppressing the initial acknowledgments93/1 despite cleanup. **3 complete compiled negative variants /3 ordinary assertion failures**, no exception, compilation, crash or shortened-run credit. The last control proves cleanup does not turn a failed cancellation wait green. Private5ms lease-drop spacing controls workload interleaving; it does not change a production/test timeout.
+
+**Evidence:** `/workspace/adi-cloud/progressive-pool-order/` gate/build/compiler logs, full control outputs/diagnostic counts, exact commands/sources, all600 stress outputs and summary, frozen core/source hashes, feature.patch and release-audit. Selected native artifacts are decompressed-hash verified in a **16-file bundle**;14 completed control objects/binaries are separately archived/verified and four stress executables retained. N49's remaining29 artifacts were compressed/verified before expanded removal; its Clang21 and native27 bundles were already retained. No evidence or decoder2GiB free-space guard was discarded/relaxed. All six protected source files remain byte-identical to this PR's base; main latest7cdc3005 and #512 remains held for the director. N45's win501bc849 is untouched.
+
+**Next immediately, same turn:** **N50**, cancellable library metadata scanning inside a single folder, with progress the window can poll and cancellation preserving the last complete index/missingness/hash queue. Read Index::scan's metadata walk and single publication transaction; add an explicit stop token and safe progress state without observer callbacks under its database mutex. Native/compilers/compiled faults, push/log, then **N51** paste onto an empty device chain, then the remaining M2/PLAN queue. Private next notes `/workspace/adi-cloud/library-scan-cancel/plan.md`. Never main; no reporting/CI/context stop.
+
+## 2026-11-11 — N49 saved song start and sample-exact recording Count-In gated and pushed; taking the decoder-test race
+
+**PR requested:** head **`engine/transport-start` `342abd48cdbc8c5a3d6c9c49575949ccf2ba6245`**, independent base **`engine/log` `13520c6bcd88adea36d69aefa6131d171aab77a4`**. Title: **Persist transport start policy and render sample-exact record count-in**. Twelve owned files; no item-log, schema minor, UI, DSP or protected control-slice change. Win opens/merges and runs MSVC. OPS adds two P1 rows; when combining with the independent `engine/m0-owned-records`15ee9907 removal of two retired freeze rows, keep both changes and the resulting211-row total (71P0/84P1/53P2/3P3), rather than either branch's standalone headline.
+
+**PR body / window handoff:** `transport.setCountIn {bars}` saves None/1/2/4 as0/1/2/4; `transport.setSongStart {on,start?}` saves an exact nonnegative tick or clears the override. Both use existing session_state, are audited ephemeral/Snapshot operations, stay outside Undo/musical digests, roll back atomically in a failed batch, reopen read-only and appear in `Snapshot::transport`. Malformed/nonintegral/out-of-range stored values fall back independently. No DDL or new format allocation. SPEC and OPS describe the representation and calls.
+
+The window marshals **`Session::RenderBlock::startPlayback(insertMarkerTick, recording)` to the single driver between slices**. The pinned generation's saved song point wins over the insert-marker/selection fallback. Ordinary Play is immediate; a record start alone uses Count-In. Prepare the armed recorder on its owner first and stop/finalize it there. Count-In holds the located timeline, processes the stopped graph for monitoring, captures no input frames, and clicks through the existing Cue bus/volume with the launch's effective tempo/meter even if the ordinary metronome is off. The crossing callback renders a prefix and suffix on the **same pinned graph**, offsets all input/output pointers and the physical stream clock, and starts the actual take on the exact target sample. Ordinary post-start click follows its saved switch. Stop, explicit Play, locate or a device format change cancels the lead-in. Direct locate/play remains the explicit-seek path; offline performanceState=false ignores these saved choices. The owner allocates pointer scratch for64 inputs (existing recorder limit) and max(64,graph width) outputs; invalid bounds or a negative/overflowing whole stream interval clear/refuse before either half. No callback heap/refcount/SQL/file/lock work is added. This supplies the native contract; UI bindings, anchor-menu interaction readings, punch/hardware latency and measured Live parity are not claimed.
+
+**Review correction:** structural gesture previews have their own TimingView factory. The new native test ran against its actual pre-fix implementation and completed **440 /6 ordinary failures**; its three matching owner-side scratch allocations now cover preview and restored generations. Both factories are tested. A late clock review strengthened validation from the prefix to the whole physical interval, covering -1, MAX and a suffix-only overflow before any partial render. The first full34,143 pass is retained as initial evidence; final checks below include both corrections.
+
+**Final gate:** GCC14 Debug/PD/Werror **34,165 checks /206 suites**, every row/aggregate verified, all four validators plus layout clean. Transport settings **176** (was49), gesture playback **440** (was426). Actual Float32 WAV takes at both graph widths preserve exact post-lead-in PCM/placement/stream continuity; meter3/8 at60BPM, all four choices, saved-point precedence, active loops, independent metronome, dual output pointers, cancellation/offline and malformed/batched metadata are covered. The crossing callback's new/delete/file-I/O counters stay unchanged. Test vector accesses have size guards for MSVC Debug. Strict GCC extra Wshadow and Clang19 compile **five production/eight test units**; selected Clang **1,526 checks** (176 settings,59 recording,96 external tempo,39 transport generation,139 Link playback,96 Cue,481 clip playback,440 gesture). The copied review script first requested nonexistent cue instead of cue_monitor; fixed the target and resumed both compilers, no source failure or diagnostic suppression. No sanitizer claim for driver-only countdown/owner initialization over the existing publication protocol.
+
+**Faults/evidence:** **7 compiled variants /33 ordinary assertions**, full176- or440-check drivers: ignore saved start8, omit split6, wrong input suffix2, wrong stream suffix4, ordinary-metronome gating6, Count-In during ordinary Play1, missing gesture scratch6. No compile/crash/short-run credit. `/workspace/adi-cloud/transport-start/` retains final/initial gates, compiler/plant logs, exact commands and variants, frozen sources/core, release-audit, feature.patch and decompressed-hash-verified **27-file native bundle**. Initial regression core and final Clang21 binaries/objects are separately compressed and byte-verified; Link4 review24 artifacts and tuning final32 likewise retained before expanded removal. No deadline, warning or decoder2GiB guard relaxed; README remains win-owned. Shared dependency checkout matches this independent base's exact SDK3.1.5/Asio gitlink; Link4 is a separately gated feature, not an undeclared source change here.
+
+**Next immediately, same turn:** take win's **progressive-decoder poolBounds fixture race** as an independent interlude, then N50 cancellable library scan and N51 paste onto an empty track, then the remaining milestones. Actual destructor/worker review also shows queued jobs can reach the checkpoint while leases are destroyed one by one, so verify the two initially blocked tokens by identity rather than treating every later checkpoint as one of those two. Keep release only as a post-acknowledgment/failure-cleanup escape, retain strict worker/admission/cache assertions, compile a scheduled-interleaving control and stress it. Notes `/workspace/adi-cloud/progressive-pool-order/plan.md`. Latest main7cdc3005; #512 held for the director, fence persists. Five protected files byte-identical and both routing.connect/track.create field arrays byte-identical to this PR's base. N45's win501bc849 already landed and remains untouched. No main checkout/commit; no report/CI/context stop.
+
+## 2026-11-11 — Same-turn checkpoint: N49 final gate in flight; win's new decoder-test race received
+
+Seat continues; **no stop**. Link1282a008 is pushed/logged above. Working branch **`engine/transport-start`**, independent base **`engine/log` `13520c6bcd88adea36d69aefa6131d171aab77a4`**, worktree `/workspace/wt-engine-project-replace`,12 uncommitted owned files. Saved Count-In/song-start ops and snapshot values are implemented in existing session metadata, without a schema minor; native driver start holds the timeline, clicks through Cue and splits exactly before recording the input suffix. Normal Play/explicit seek/offline policy are distinct. No UI binding or measured Live/hardware claim. Partial work is concrete in `/workspace/adi-cloud/transport-start/plan.md`, scripts, sources and logs; **not PR-requested before its final gate**.
+
+First complete build/test pass: **34,143 /206**, validators/layout clean. Review then found the structural-preview factory also constructs TimingView and needed the new owner-allocated slice scratch. New native gesture test completes **440 /6 ordinary failures** against the actual pre-fix factory; adding its three allocations fixes that path. Final whole-stream timestamp validation now rejects negative, MAX and suffix-overflow clocks before either half, with tests. Final GCC/native gate is rerunning, alongside strict Clang/GCC selected units; fault plants and final artifact/audit remain before commit/push/log. Existing initial logs remain separate. Shared SDK is restored to the independent base's exact3.1.5/Asio gitlink; Link4's feature is separately pinned/gated, so this branch is not tested against an undeclared dependency.
+
+**Win's main log7cdc3005 read and acknowledged:** N45's Windows `FileRenameInfoEx` fix501bc849 has landed through #520; do not push the old N45 head over it. #512 is explicitly held for the director (actual reported head5eab55a4); the protected Field/validator, routing/track field arrays, changeset cap/diff and main.cpp fence stays. Main is not checked out or committed. **New intermittent queued next:** `test_progressive_decode.cpp::poolBounds` sets release before observing both stop tokens, a genuine test ordering race reported on ubuntu arm64/#517. Take its independent fix/stress between N49 and N50, retaining failure cleanup and the real cancellation assertions; then N50, N51 and the remaining milestone queue. No CI, reporting or context stop.
+
+## 2026-11-11 — M0 Link-4.1.1 musical-only re-pin gated and pushed; taking N49
+
+**PR requested:** head **`engine/link-4.1.1` `1282a008397fcf2370ecf3e5d4b632b5a522b048`**, independent base **`engine/log` `12ef50d259c807850edc2e3534ff226a05831ba0`**. Title: **Pin Link SDK 4.1.1 with musical-only integration guards**. Five files. Branch pushed; win opens/merges and runs MSVC. The old #456 stack has already landed through #457; this is its current native adapter's M0/XC-31 follow-up, not a revived old branch. No item-log, UI, schema, opcode, public SDK type or wrapper algorithm change.
+
+**PR body / handoff:** fetch_external now pins official **Link-4.1.1 `5ba907ae027a8c2ec8824463e37296dcefc5e9be`**, including its exact Asio gitlink **`8806a6803cde7054c3049d3666d3ec36786568c5`** (Asio1.38.2). Actual SDK/submodule checkouts and GPL/Boost license files inspected. CMake checks the moved Asio include tree and scopes the SDK configuration: upstream now assigns CMAKE_CXX_STANDARD17, which otherwise silently downgrades later ADI targets. Actual std::span probe builds at20 through the scoped import; the unscoped control selects17 and fails compilation. Private adapter commands use C++20 and the namespaced Asio flags; later MIDI Capture test commands stay C++20 without leaking those flags.
+
+**Link Audio off:** the private translation unit refuses LINK_AUDIO before/after the SDK include and statically requires the exact musical SessionController type. Both YES and0 macro injections refuse; the frozen core has no ableton::link_audio symbols. These are compile/type/pin integration checks, not runtime assertion credit. Networking/start-stop stay separately off by default. Existing capture/edit/commit, audible-latency timestamping and performed-history/held-note-identity consumer remain in use. ENGINE-LINK now links that already-built consumer instead of its obsolete first-adapter limitation. No Link Audio setting/API, PTP clock, Live/LinkHut/hardware-onset, macOS/MSVC or sanitizer claim.
+
+**Gate:** complete GCC14 Debug/PD/Werror build; **34,024 checks /206 suites**, every row/aggregate audited, all four validators plus layout pass. Strict GCC extra Wshadow and Clang19 compile one production/five test units. Selected Clang **703 checks**: LinkSession38, LinkPlayback139, TransportGeneration39, MIDI clips448, scale context39. Actual network-enabled SDK peer suites run sequentially and pass **50 /147**, preserving8-second deadlines and callback allocation/free/file-I/O/lock audit assertions (10k mutating and20k enabled-peer captures). Restricted-sandbox multicast discovery initially failed40/1; its log is retained, and network access resolves it without loosening/skipping a test. Intermediate commentary totals803/144 were arithmetic/provisional mistakes; the retained runner outputs and this entry give the verified totals703/147.
+
+**Faults / evidence:** three compiled wrapper variants omit output latency, omit audio commit, or observe beat/phase at callback time instead of first-audible time. Each completes all38 checks with1,4,6 ordinary failures: **3 variants /11 assertions**, no crash/compile/short-run credit. No new runtime behavior is introduced, so no fabricated old-SDK regression claim. `/workspace/adi-cloud/link-4.1.1/` retains full/focused/peer/compiler/fault logs, actual SDK CMake control probes, audio fences, frozen core/source hashes, exact commands, feature.patch, release-audit and decompressed-hash-verified **20-file native artifact bundle**. Old tuning initial-review32 binaries/objects/archives compressed and verified before expanded removal; no decoder2GiB guard, warning or deadline relaxed. README count remains win-owned.
+
+**Next immediately, same turn:** M0 engine-owned fixes/records, held-note identity and old rebases are now delivered; win's R-c placements/remaining merges remain his. LANES§3 expressly places new window needs before the remaining milestones (and overrides old brief ordering): take **N49**, saved Count-In and Set Song Start Time Here with the native driver following them, then **N50** cancellable library scan and **N51** device paste into an empty track. Continue M2's remaining anchored trim/Crop/Lock Envelopes/allocator and the milestones afterward. Read native transport/recorder code now; private working notes `/workspace/adi-cloud/transport-start/plan.md`. Latest fetch main **`fab2c4c2`** (#520 N45); control **`9ae76e2`** still unmerged. All six protected files byte-identical to this feature's base. Merge main when #512 lands; never checkout/commit main. No report/CI/context stop.
+
+## 2026-11-11 — M0 tuning reference guard gated and pushed; taking Link-4.1.1 with Link Audio off
+
+**PR requested:** head **`engine/tuning-reference-guard` `abde2fcad338f405b0f91408000044ee619b0642`**, independent base **`engine/log` `9d8cea89f193d5a4ea1f94bca86c63a07e52b4ba`**. Title: **Guard Scala import against unsupported ASCL reference pitches**. Four files. Branch pushed; win opens/merges and runs MSVC. This is PLAN M0/TU-01's temporary safety fence under ADR-0227, **not** TU-02's source/reference store or M6's full acceptance gate. No item-log, schema, opcode, UI or changed public result layout/signature.
+
+**Problem / behavior:** `parseScala` skipped every comment, including active ASCL `REFERENCE_PITCH`, so an explicit source reference could disappear into a relative C-anchored definition. The existing single line cursor now recognizes that safety-relevant directive after the declared pitches, validates three optional-quoted numeric arguments (octave-2..8, authored zero-based degree, positive finite Hz), and refuses an offset the current12-TET anchor cannot preserve. Degree uses its actual authored cents, not degree×100: aligned12/24-EDO and an already aligned31-EDO reference retain the same definition. The tolerance is0.0001cent for numeric-printing roundoff, not retuning. Shifted31-EDO references (degree23 at440Hz, degree0 at263.0921Hz) refuse with their physical directive line, even through BOM/CRLF and later comments. Duplicate, premature or malformed active references refuse without a partial definition. An extra `!` disables the directive; unrelated descriptive comments remain comments. Explicit non-octave reference mapping also waits for the map/reference store; plain relative tritaves remain accepted.
+
+**Scope:** the pure relative-SCL API still guesses no absolute tonic/default keyboard map, performs no I/O/SQL and does not persist a second pitch truth. Passing the fence does not certify complete ASCL encoding/range/source fidelity. Full source-byte preservation, ASCL/KBM/default mapping and reference storage remain TU-02. The official documentary rows A6F-001 to005 and ADR-0227 informed the fence; the31-EDO inputs are labelled synthetic mathematical fixtures, **not execution of tuning6 or installed Live**. Its M6 source/Live readings remain NOT RUN. ENGINE-SCALA-IMPORT documents the accepted/refused scope and line semantics. The cursor keeps the existing input/count/line budget order and callback early refusal.
+
+**Gate:** final GCC14 Debug/PD/Werror **34,059 checks across206 suites; all four validators and layout pass**. Scala suite **60** (25 existing +35), preserving ordinary ratios, tritaves, maximum-degree budget, native ANOT/MIDI handoff and callback-allocation checks. Strict Clang19 **613 checks /5 suites** (Scala60, tuning ops38, scale context39, scale timeline28, MIDI clips448); changed parser and all five test units also compile with GCC extra `-Wshadow`. No warning/deadline/free-space-guard relaxation or sanitizer claim for this owner parser. The first full pass was already green; before push I caught missing vector-size checks in new and inherited test expressions, hardened them for MSVC Debug (including the native redo optional/vector), then reran the final native/compiler/fault checks. The assertions remain60; no malformed fixture is allowed to become a CRT dialog. Formatting expands the old compressed source/test; there is no extra functional scope.
+
+**Faults:** fetched main's actual old parser with the new tests completes **60 /24 ordinary failures**. Six other compiled variants (degree-as-semitone, EOF error line, premature metadata accepted, non-octave reference ignored, disabled directive enabled, printing tolerance too small) complete60 each with2,20,1,1,1,4 failures: **7 variants /53 assertions**. No compilation/crash/short-run credit. Evidence: `/workspace/adi-cloud/tuning-reference-guard/` final gate/build/compiler/fault logs, release-audit, exact commands, frozen core/sources, all variants, feature.patch and verified **20-file native bundle**. `gate-initial.log`/`review-initial` retain the earlier pre-bounds pass separately. The previous HI-02 review90 binaries/objects/archives were compressed and decompressed-hash verified before expanded removal; their source/log manifests remain. No evidence was discarded to gain disk space.
+
+**Next immediately, same turn:** PLAN M0 item5 / XC-31, re-pin the existing official Link SDK from3.1.5 to **Link-4.1.1**, **Link Audio off**, preserving the performed-history consumer and its held-note identity. Read the SDK/API change and update the actual dependency fetch pin, implementation/tests/docs as needed, gate/push/log, next. Old rebase requests have landed through #457; no new UI or Link Audio work. Latest fetch main **`a75c3641`**, control **`9ae76e2`** still unmerged. All six fenced source files are byte-identical to this PR's base. Merge main when #512 lands. Never main, no report/CI/context stop.
+
+## 2026-11-11 — Remaining owned M0 records gated and pushed; taking the tuning reference-pitch guard
+
+**PR requested:** head **`engine/m0-owned-records` `15ee9907ce00b27382b911f166bb056a6cab7237`**, base **`engine/ni-stems-normalization` `06d94707073a627d618fb882e20f4c2ba82f5d97`**. Title: **Align engine records with gesture, freeze and comping contracts**. Three documentation files; branch pushed. The NI parent supplies the newly recorded export refusal; merge it first. Win opens/merges. No item-log, executable, schema, UI, FEATURES, ADR, LANES, Master Reference or README change.
+
+**PR body / scope:** OPS §6.4 now records ADR-0216/HI-01's origin and absolute-input lifetime, live-value versus rolled-back structural preview, one actual commit with inverses from the committed state being replaced, foreign-base reapplication/suspension, owned cancellation retry, durability separate from runtime failure and navigation/capture fences. The quiet detector ends release-less input; it does not merge already committed operations or undo/recommit. `coalescable` stays a symmetric-inverse capability, not the never-built300ms timer. ENGINE-GESTURES links to that completed record instead of reserving a future M0 rewrite. Surface/control clients must adopt the lifetime when bound; no unbuilt binding is claimed.
+
+The obsolete unregistered `track.freeze`/`track.unfreeze` rows are removed; both user commands compose the implemented `track.setFreeze`, with `group.setFreezeScope` for groups. Catalogue totals become **209 /71 P0,82 P1,53 P2,3 P3**. Its introduction now distinguishes intended rows from implemented/registered vocabulary: the current parent runtime lists142 registrations, so the earlier universal implementation and replay-coverage language was wrong. NI export records its enforced normalization-Off limitation. SPEC §6.2 follows ADR-0225: main-lane copies, NULL main-lane address, take audition as session state; it explicitly says the current engine lacks CT-01's common playback lane filter, and does not claim comping or Live boundary parity is built/measured.
+
+**Gate:** required GCC/PD/Werror build reports **no work to do** (no C++ changes); full native run **34,080 checks across206 suites, all four validators plus layout pass**. Native `adi_tool ops` proves the implemented freeze names and absence of the retired spellings. Existing OPS validation passes209 rows and rejects an intentionally stale211 headline. A stale freeze spelling alone passes the generic validator; the separate native-vocabulary comparison rejects it, so no false validator-coverage claim is made. No new permanent test or C++/Clang/sanitizer/fault-plant claim for prose. The initial copied-validator fixture omitted its required catalogue source; discarded that incomplete result, supplied the source, reran all three probes. Evidence, frozen docs/hashes, exact scope assertion, fact-audit, probes, build/gate and feature.patch: `/workspace/adi-cloud/m0-owned-records/`. Parent NI native17 artifacts remain verified and its binaries unchanged.
+
+**R-c coordination to win, not a director question or a seat stop:** PLAN's old “1.20 is roles alone” reservation conflicts with the pending, gated HI-02 foundation1.20 and stored-state1.21. SPEC on this parent remains1.19 and has no minor register. Before opening/merging those format PRs, reconcile the actual allocation and stale PLAN line in one register; I have neither invented role DDL nor silently renumbered frozen schemas here. R-a/R-b's win-owned records/ADRs/registry work already landed as #464/#466; this PR does not redo them. Other independent M0 work continues while that integration placement is settled.
+
+**Next now, same turn:** M0 item4's TU-01 reference-pitch safety guard in the existing Scala import path, under ADR-0227; refuse an active ASCL reference the current 12-TET-anchored definition cannot honour, with its physical source line, instead of silently ignoring it. Full source/keyboard-map fidelity remains TU-02/M6. Read the ASCL documentary rows and actual parser first; keep ordinary relative SCL behavior explicit rather than inventing a default absolute tonic. Then the explicit Link-4.1.1/Link Audio off re-pin; old stack rebases have landed (#457), and held-note identity is already in the performed-history work. Latest fetch main **`a75c3641`** (#519 window-state spec), control **`9ae76e2`** still not its ancestor; protected spots untouched. Merge main after #512 lands. Never main, never stop for report/CI/context.
+
+## 2026-11-11 — M0 NI Stems normalization refusal gated and pushed; taking the remaining owned records
+
+**PR requested:** head **`engine/ni-stems-normalization` `06d94707073a627d618fb882e20f4c2ba82f5d97`**, independent base **`engine/log` `359b980d9c4831f3258ae5851257f1c8d4f9f855`**. Title: **Refuse NI Stems normalization before encoded audio verification**. Four files; branch pushed, win opens/merges and runs MSVC. This completes PLAN §M0 item2's temporary EX-10 refusal; verification after AAC and the full EX-10 export ability remain M5 work. No item-log, schema, opcode or UI change.
+
+**Behavior / PR body:** an NI Stems job with Peak or Loudness normalization now receives a named invalid-argument refusal from shared `validateNiStems`, before codec checks, source opening, host servicing or staging. Queue add consumes no identity and inserts nothing; a refused Queue update keeps the pending job's name/mode/state. Direct `renderNiStems` returns Failed with the same explanation and no output/frames/callbacks/files. The error offers normalization Off; Off NI jobs remain valid and normal WAV Peak/Loudness still work. Nothing silently ignores the requested normalization or claims the missing encoded-AAC check. ENGINE-NI-STEMS and ENGINE-EXPORT-NORMALIZATION document this limitation.
+
+**Gate:** GCC14 Debug/PD/Werror full build and **34,080 checks across206 suites; all four validators plus layout pass**. Added56 deterministic validation checks outside the codec-dependent integration: Peak/Loudness ×44.1/48kHz ×32/64-bit sessions, all entry paths, immutable queue refusal and ordinary-WAV acceptance. NI suite now **99**; existing real AAC export/import/cancel/collision tests still pass. Strict Clang19 one changed production unit and two selected suites: **99 NI +211 render queue =310**, all pass; the same three units also compile with GCC extra `-Wshadow`. No warning/deadline/free-space-guard relaxation. No sanitizer claim for this offline validation predicate.
+
+**Regression/fault evidence:** actual fetched main's NI production source with the new tests completes **99 checks /48 ordinary failures**. Three further compiled variants (only Peak refused, only Loudness refused, guard in direct rendering alone) complete99 each with24,24,32 ordinary failures: **4 variants /128 assertions**, no compile/crash/short-run credit. `/workspace/adi-cloud/ni-stems-normalization/` has exact compiler/link commands, frozen source/core hashes, per-suite logs, all variants, release-audit, feature.patch and a verified **17-file native artifact bundle**. This independent base's core was frozen after its own rebuild; no old-layout test was linked against HI-02's newer CommitResult/core. The previous stored-state test binary was removed only after its native retention hash verified, since this sibling's CMake does not declare it; no stale207th suite entered this206-suite gate. README stays win-owned.
+
+**Next, now in this same turn:** the remaining engine-owned M0 records. Win's Nov8 entry confirms #464/#466 already landed the ruling/ADRs/lane and registry texts; do not redo his files. OPS §6.4 still proposes300ms coalescing despite ADR-0216/HI-01; the catalogue still names unregistered `track.freeze`/`track.unfreeze` although producers use `track.setFreeze`/`group.setFreezeScope`; SPEC §6.2 still promises active-region comping despite ADR-0225's main-lane copies. Bring the owned texts to the recorded contracts, include the now-enforced NI refusal where export records place it, then gate/push/log, next M0 item (tuning reference guard before the Link re-pin per the plan). R-c's old PLAN reservation of1.20 for roles also needs reconciliation with the pending HI-02 foundation1.20/stored1.21 when win opens those PRs; current SPEC has no such register. Do not invent role DDL or silently renumber frozen formats: record the actual pending allocation and hand the stale PLAN line to win. Main remains `b4a5fac2`, #512 unmerged; all six protected source files are byte-identical to this PR's base. Merge main once that control slice lands. No main checkout/commit, no CI wait or seat stop.
+
+## 2026-11-11 — Same-turn context checkpoint: HI-02 pushed; M0 NI Stems refusal in flight
+
+**No stop.** HI-02 feature `a68a928bb8edb928b07a78bdda97f3eb8b6a7168` and the full handoff below are pushed; its native39 artifact bundle is now decompressed-hash verified. The first open M0 engine item is being implemented immediately: PLAN §M0 item2 / EX-10, refuse NI Stems normalization until after-AAC verification exists. Active worktree `/workspace/wt-engine-project-replace`, branch **`engine/ni-stems-normalization`**, independent base **`engine/log` `359b980d9c4831f3258ae5851257f1c8d4f9f855`**. Four files are uncommitted: shared `render/ni_stems.cpp` validator, `test_ni_stems.cpp`, ENGINE-EXPORT-NORMALIZATION and ENGINE-NI-STEMS. Guard refuses every non-Off normalization with a named error before codec/source/staging/host work. Fifty-six new deterministic checks (Peak/Loudness, both rates and precisions) exercise shared validation, add identity/no entry, atomic update refusal, direct failure/no callbacks/files and ordinary WAV acceptance; they run before the codec-dependent integration. **Not gated or pushed yet.**
+
+**Resume the running work, do not replan:** `/workspace/adi-cloud/ni-stems-normalization/plan.md`, configure/build/gate and strict compiler logs, review.py. Full GCC/Werror/PD build then test_all is running (tool session94665); strict Clang one changed production unit and two test units, then GCC extra-Wshadow compilation, is running (61991). Freeze/link this independent branch's core only after its archive is stable; do not link these old-layout tests against HI-02's newer CommitResult/core. Then run selected Clang NI/render-queue, actually compile old production with the new tests and meaningful predicate plants, full native gate, push the feature, log PR requested, next M0 item. The obsolete ignored HI-02 stored-test executable was removed only after verifying its retained native bundle hash, so this base's206-suite gate cannot include that stale207th binary. Current main `b4a5fac2`; #512 still unmerged. Keep its named control spots untouched and merge main after it lands. No main checkout/commit, no CI wait, no final report/seat stop. Native39 retention is finished; the build workspace may be reused.
+
+## 2026-11-11 — HI-02 stored named states/dead ends gated and pushed; taking M0 now
+
+**PR requested:** head `engine/history-stored-states` at **`a68a928bb8edb928b07a78bdda97f3eb8b6a7168`**, base **`engine/history-cap` (`3e99cfa0d10fbc4f43ffc591f575ef9fe0c1d206`)**. Title: **Preserve named history states beyond the active undo cap**. This is the immediately dependent consumer of the preceding foundation PR; merge that first. Twenty-six files, including the frozen 1.20 schema; no item-log edit. Branch pushed. Win opens/merges and runs MSVC. **The HI-02 engine storage/navigation contract is complete; window must adopt the explicit reload handoff below to navigate stored points in the running app.** Taking the first open M0 item immediately in this same turn, in PLAN order; no CI wait or seat stop.
+
+**Problem and result:** named snapshots, null-origin snapshots, branch heads and old forks no longer pin the active log above budget. Following the director's recorded ADR-0213 answer A, compaction captures and actually restores/validates every required point before rewriting the graph or pruning any real edits. Named states and dead ends survive as row/hash-deduplicated baselines; an unheld redo/dead-end tip gets a system branch before its old bridge is removed. Retention still counts all retained real-edit transactions across branches, cuts only complete oldest groups towards 90% low water, retains the newest complete group, respects the contiguous upload acknowledgement and embedded-media guard, and never lets a recoverable retention failure reject an edit. Daily automatic points remain compactable. A malformed anchor that splits a transaction refuses compaction atomically.
+
+**Storage:** additive schema **1.21**, frozen **1.20**. `history_roots(seq,state_hash)` and `history_origin_root` reference the foundation's immutable BLAKE3 row/manifests. A boundary can become internal `history.root` hash metadata; a saved original null origin gets one migration-attributed metadata record with normal client/clock provenance. These are structural records, never accepted journal submissions or user undo steps. All roots are hidden from `recent`, Undo/Redo and timeline steps; exact-root Branch/Snapshot DTOs expose `storedStateHash`. Synthetic origin sequences can be newer than their real descendants; only a root-parent edge permits that ordering. The current compatibility image/hash follows its line's root before the previous legacy FK can be pruned. Unreferenced old root records are reclaimed while preserving a synthetic maximum clock floor; immutable-content collection/total file size is outside this active-log cap. Older checkpoints are normalized/restore-validated into schema21 before their steps are crossed. Original domain/head/UI state never escapes capture savepoints.
+
+**Window/runtime handoff (required):** same-baseline navigation keeps the existing inverse/forward operation batches. Across baselines, `switchToBranch`/`revertToSnapshot` defaults to refusal **before changing SQL/history**, with `Result::sessionReloadRequired`. The window must stop/fence its live Session, call with **`History::StoredRestore::SessionReloadPrepared`**, and reload the Document/Session before resuming audio. A successful transition installs verified content and reconstructs only the target's retained ancestry, publishing **one empty `ReplayBaseReset`**, not invented operations. Existing ParamOps correctly invalidates; that notification alone does **not** rehydrate plugins. The native test proves invalidation and a fresh Session loading the exact archived opaque bytes. No UI implementation or automatic hydration is claimed. In-place restore merges/collision-checks the immutable `state_blobs` pool so later branches' hashes remain available. UI/session metadata stays outside the restored domain.
+
+**Replay and media handoff:** hold a source read transaction across `restoreReplayBase` and log reads, and replay **exactly `ReplayBaseResult::retainedSeqs`, in returned order**. Numeric `seq > baseSeq` or all `recent` rows is incorrect for independent roots, redo tails and synthetic origins. `restoreStoredSnapshot(source,id,emptyTarget)` opens an archived point from a writable/read-only source without moving it; it needs no retained replay. Points still inside stepwise history use ordinary copy/navigation and are explicitly refused by this archived-only helper. Save As/Copy, Collect All and Export visit all distinct root states, including media absent from current rows and retained ops, updating hashes, root payloads and the compatibility image together. A native archived-only-media fixture resolves after copy and after export/collection with its original removed. Future content/media GC must mark these root references.
+
+**Gate:** GCC14 Debug, `ADI_WERROR=ON`, PD on, JUCE off: **34,167 checks across 207 suites; all four validators and the layout check pass**. New stored-state suite **73**, compaction **73**, timeline **74**, migration **326**; existing corruption/whole-batch tests retained with the new stored-anchor semantics. Strict extra `-Wshadow` compilation covers **12 changed production units and 13 test units**. Selected Clang19 uses all those changed production units over the frozen unchanged native core/dependencies: **2,823 checks in 13 suites**, all pass (including parameter live replay970, gesture playback426, applied batches282, text projection243, project files53, collect/export105). CLI helpers remain the native GCC build; this is not a whole Clang/platform claim. No TSAN claim: this slice changes owner-thread SQL/history storage, not a callback algorithm.
+
+**Compiled faults:** **12 qualified compiled variants / 35 ordinary assertion failures**, each completing its full73-check driver: pinned named history, absent low water, accumulated old roots, metadata shown as steps, implicit cross-root restore, ordinary-event notification instead of reset, dropped future state blobs, ignored pool collision, reversed replay ancestry, current-root-only media visitation, trusted content hash and missing optional-maintenance rollback. A thirteenth compiled media-payload variant reached the export integrity refusal and ended at61 checks with an exception; **not credited**. The attempt batch exits1 for that excluded variant; `plants-audit.json` records exactly the12 qualified results. No compile failure, crash or shortened run is counted as an assertion proof.
+
+**Evidence/corrections:** `/workspace/adi-cloud/history-stored-states/`: final build/gate, exact command JSONL, frozen source/core hashes, feature.patch, release-audit, per-suite Clang logs, strict GCC objects, all13 variant sources/binaries/logs and `plants-audit.json`. Native selected binaries/objects/linked archives are being retained with decompressed SHA verification (`retain-gcc.py/log`, `gcc-native-artifacts.*`); verify completion before replacing build outputs. Initial native compile errors were a duplicate/then missing local Node member from a scripted edit, misleading cleanup indentation and the new ZIP fixture's private-header include; corrected. The first runtime fixture used an invalid plugin format and omitted its master; corrected to a valid VST3/master fixture. Final native and cross-compiler tests above pass. The first review-freeze helper confused test target/source tuple order; corrected and all26 frozen inputs/native core hashes verified. Foundation review79 artifacts were compressed and verified before expanded binaries were removed. No deadline, decoder free-space guard or warning flag was relaxed. README count stays win-owned.
+
+**Control fence / next:** fetched main **`b4a5fac2`**, control **`9ae76e2dbafd8eb677ce4be80fbdd3fb0eda49b5`** still not merged. `ops.hpp` unchanged from this PR's base, `validateSubmission` byte-identical, and `ops_catalog.cpp` differs only by the new root include/append hook; protected routing/track field arrays, changeset cap/diff and `src/main.cpp` untouched. Merge main after #512 lands as directed. Read the open M0 rows now, take the first, gate/push/log, next. Never touch main.
+
+## 2026-11-11 — HI-02 foundation gated and pushed; archived-state restore is next, HI-02 remains open
+
+**PR requested:** head `engine/history-cap` at **`3e99cfa0d10fbc4f43ffc591f575ef9fe0c1d206`**, base `engine/log` (**`c9c59d933fb0ba8e5473b22a4b0a1e028e14a3f1`**). Title: **Make undo compaction best effort and deduplicate checkpoint rows**. Branch pushed; win opens/merges and runs MSVC. Twenty files including the required frozen 1.19 schema; no item-log edit or opcode/payload change. **This is the transaction/storage foundation of HI-02, not closure of the cap item. The immediately following dependent slice restores archived named snapshots/dead ends before their anchors can be passed; do not move to M0 first.**
+
+**PR body / window handoff:** recoverable compaction failure rolls back its own savepoint and returns a successful edit with `CommitResult::retentionWarning`. Journal/clock rows, beforeCommit hook and applied delivery survive; the caller hook can still reject the entire outer transaction. An inability to open the optional savepoint is also a warning. Protected content leaving the budget exceeded reports a warning instead of rejecting an edit. A pass triggers above the hard cap and targets 90% of both limits (integer floor, minimum one), default **1,800 transactions / 900 decimal MB**, preserving complete transactions and the newest transaction. Automatic daily snapshots never protect the prefix, and compacted automatic metadata/daily references are removed. Named/root snapshots, branches/forks, unuploaded collaboration history and legacy embedded data are still protected in this foundation, so `protectedHistory` can remain true until the next stored-state consumer slice. The window can surface the warning without treating the edit as failed.
+
+**Content/format:** additive schema **1.20** introduces immutable BLAKE3-keyed typed row objects, canonical state manifests and the current checkpoint's content reference. Repeated complete states share their manifest, unchanged rows share exact CBOR bytes, and a repeated intern causes no SQL changes. Both reads and interning verify existing bytes against their hash. Integer/REAL/TEXT/BLOB (including empty)/NULL and future table/column data are retained. The one legacy format-1 whole-state checkpoint stays for older replay readers. New history metadata is excluded from musical digests and the text projection. The coverage list now deduces its array length. Frozen schema 1.19, migration registration, pragmas, validator and SPEC §8.3/OPS commit-result text move together.
+
+**Connected restore-path fix:** Save As/Copy, collection and export now visit checkpoint media as well as the live pool and retained op payloads. Changing a checkpoint's locations refreshes its content identity alongside its compatibility image; the source's state/hash stays unchanged. Actual main-schema table checks preserve older read-only backups lacking the new content tables. This closes the existing checkpoint-relative-path gap before archived states add more references. The new copy test restores both the legacy and row-hashed image beside a relocated copy and verifies actual media resolution and equal musical digests.
+
+**Final gate:** complete GCC 14 Debug/PD/Werror build and test_all **34,074 checks / 206 suites**, four validators and binary layout clean; every suite row/aggregate audited. Focused native compaction **70**, project files **53**, timeline **77**. Strict GCC plus Wshadow and Clang 19 compile **seven production/eleven test** units. All eleven selected Clang suites pass **1,760** checks: compaction 70, project files 53, migration 312, history 95, timeline 77, policy 38, snapshots 65, applied batches 282, gesture playback 426, collection 105, text projection 237. **Twelve actually compiled faults / 28 ordinary assertion failures**, every run completing all 70 compaction or 53 project-file checks; no compile error, crash, exception or shortened run credited. Faults cover edit rejection on optional failure, partial rollback omission, hard-cap-only trimming, daily anchoring/cleanup, corrupt object trust, missing hash checks, rewriting reused content, missing content links, both relocation omissions and savepoint setup outside the catch. No TSAN claim for owner-only SQL work. No warnings, timeouts, budgets or disk-admission guards weakened.
+
+**Gate corrections/evidence:** the first complete run exposed old timeline fixtures assuming the hard cap rather than the low-water target, and missing explicit text-projection coverage for the three new tables. Updated whole-batch/Undo/Redo expectations while preserving all corruption cases (their fixture budget now reaches the same real root), then reran the complete gate. A Clang attempt caught the old fixed coverage-array bound after adding entries; deduced array length fixes it. Initial failed logs remain. Hash-corruption tests use valid, same-shape typed CBOR with a changed project value, so format rejection cannot substitute for hash verification. `/workspace/adi-cloud/history-cap/` has revised-build.log, gate-final.log, per-suite compiler logs, plants.py/log/summary, release-audit.json, frozen inputs/patch and exact binaries/objects. Native selected artifacts/linked archives are being retained and byte-verified before the build workspace is replaced (`retain-gcc.py/log`, `gcc-native-artifacts.*`). Earlier evidence is retained in verified compressed bundles; extract with the recorded feature source/base when rerunning. README remains win-owned.
+
+**Control fence / next in the same turn:** audit proves ops.hpp differs only by the CommitResult warning, and ops.cpp only by its compaction block; the Field/validateSubmission declarations/implementation are byte-identical. ops_catalog.cpp, changeset.hpp/.cpp and main.cpp are untouched. Latest fetched main **`b4a5fac2`**; #512 still open. Keep those spots fenced and merge main after it lands. Next branch **`engine/history-stored-states`**, PR base **`engine/history-cap`**, starts now from this pushed foundation. ADR-0213 records director Q-A1 answer A: preserve every named snapshot and dead end as a row/hash-deduplicated state, openable/revertible beyond the step cap. Generalize replay roots/navigation, applied/gesture delivery and media relocation/collection before pruning their anchors; gate/push/log it, then M0 and the remaining queue. Concrete state/commands/evidence `/workspace/adi-cloud/history-cap/plan.md`; build workspace still `/workspace/wt-engine-project-replace`. Main was never checked out/committed. No seat stop.
+
+---
+
+## 2026-11-11 — N48 reader-consumed held strip peak gated and pushed; taking HI-02
+
+**PR requested:** head `engine/strip-held-peak` at **`c3501ecc9c8b48d4456e2472ec8c4ca78de5391c`**, base `engine/log` (**`4b5d76cb4478102fbc1492598fc1e8b1cbdbe9d6`**). Title: **Retain per-strip peaks until the frame consumes them**. Branch pushed; win opens/merges and runs MSVC. Four files, no item log, op, schema or UI edit; independent of N45 and N46.
+
+**PR body / window handoff:** `const StripMeter::takePeak()` returns the highest linear post-fader peak published since the last take and atomically clears that held value. Consume once per strip and fan the result out to its widgets. Existing `peak`/`rms` remain the current callback's independent scalar readouts; consuming the hold does not change them. Unread transients survive quieter callbacks, mute, silence, stop and graph preparation. Both widths publish each processing segment's own peak: a frame reading between parts cannot cause a later quiet part to resurrect an already consumed transient through the cumulative callback peak. NaN contributes zero and unbounded magnitudes are clamped only in the readout, preserving actual audio. The window can now use this value for the Peak Level pill/peak line; ballistics, dB conversion, hold duration and visible reset remain its placement. Input monitoring/MX-09 is separate. ENGINE-STRIP-METER documents the API and single consuming reader contract.
+
+**Render bound:** a private held float atomic, one render producer, readers exchanging only zero. A loaded maximum already covering the new value linearizes at that load. If a first strong CAS fails, the reader has cleared to zero; another clear cannot disturb a second strong CAS with zero. At most two strong CAS calls, no callback retry loop, allocation, refcount, mutex, I/O or logging. Existing atomic<float> always-lock-free requirement stands. Device stop still clears callback peak/RMS, but only the reader clears the hold.
+
+**Final gate:** GCC 14 full Debug/PD/Werror build and test_all **34,062 checks / 206 suites**, four validators and layout clean, every row and total independently audited. Meter suite **66** (was 28), both widths: missed callbacks, reads between parts, later segments, stop/mute/sleep/preparation, finite bounds/recovery, independent strips and concurrent producer/reader over 50,000 buffers per width. Strict GCC+Wshadow and Clang 19: **one production/seven test** units; selected Clang **1,008** checks (66 meter, 233 mixer, 69 pan, 24 lane bindings, 94 slices, 426 gesture playback, 96 cue). **Eight compiled faults / 80 ordinary assertion failures**, every mutant completing all 66 checks; the old production mixer compiled against the new reader API adds **24** ordinary failures. No compile failure, crash or shortened run counts.
+
+**Sanitizer scope, precisely:** full-mixer GCC TSAN/Werror refuses the existing unchanged scope-tap atomic_thread_fence calls (`tsan-full-mixer-unsupported-fence.log`). No diagnostic demotion or suppression was added. Extracted the exact writeMeter template into a separate test translation unit, explicitly instantiated both widths, and instrumented it, inline hold and the reader test, leaving processing/taps/other engine/dependencies cold. Verified both linked publication functions' disassembly contains TSAN reads and exactly two strong-CAS call sites. This isolated build passes **50 × 66 = 3,300 checks**, zero reports, with five million stress callback buffers across both widths. It does not certify the cold remainder or whole mixer under TSAN. No new source failure was concealed; full native and both ordinary strict compilers pass unchanged.
+
+**Evidence:** `/workspace/adi-cloud/strip-held-peak/` build/gate/clang/shadow/tsan/plants logs, release-audit.json, frozen-inputs, feature.patch, exact variants, binaries and frozen cold core; `review/tsan/` isolated source, both disassemblies and instrumentation-audit.json. Native selected binaries/linked archives are being retained with decompressed hash verification before this shared build workspace is reused for HI-02 (`retain-gcc.py/log`, `gcc-native-artifacts.*`). Review core is an independent copy, safe from Ninja replacement. No test deadline, decoder guard or warning flag changed. README remains win-owned.
+
+**Next now, same turn:** HI-02 on `engine/history-cap` from engine/log. ADR-0213 has **the director's recorded Q-A1 answer A** (decided 5 November, recorded 8 November), superseding the prompt's conservative-until-answered condition: named snapshots and dead ends remain openable/revertible as row/hash-deduplicated stored states while stepwise history can compact past them; daily automatic snapshots never stop compaction. Implement best-effort failure reporting that does not reject an edit, low-water marks and content-hash checkpoints, update SPEC §8.3, schema/migrations/tests as required; then open M0 and the standing queue. Reading/implementation continue while native evidence is retained; do not start a replacing build until that retention verifies. Latest fetch main **`b4a5fac2`**; #512 is still open. N48 touched none of its protected files. In HI-02 keep the named Field/validateSubmission, routing.connect/track.create, changeset cap/diff and main.cpp spots fenced; merge main after it lands. No main checkout/commit; no seat stop.
+
+---
+
+## 2026-11-11 — Post-#509 scanner stress: no second failure reproduced; taking N48
+
+Read #509 **`b184686b28572f103258378ae185ca919adf923b`**: both native runProcess loops now observe child exit before the final pipe drain. Previously a child could write/exit between an empty drain and the exit observation and lose its output. That fix is integrated in this seat's base. The specifically requested scanner assertion is `test_plugin_scanner.cpp`'s **late native block refuses successful metadata publication**, not the separate process-runner suite. Its callback stores a new explicit registry block before successful metadata could clear the original ticket.
+
+**Post-fix evidence:** freshly compiled `scan_process.cpp`, `plugin_scanner.cpp`, `plugin_registry.cpp` and `test_plugin_scanner.cpp` with GCC 14 and Clang 19, both Werror plus Wshadow; linked each selected production set ahead of a frozen copy of the final base archive. Ran **100 complete scanner suites per compiler, four concurrent processes at a time**, every one **42 checks / zero failures**, **8,400 checks total**. Per-run exit/count and all 200 logs independently audited. Existing helper and CLAP fixture binaries are the GCC native build; this is selected Clang production/test coverage with cold unchanged remainder, not an entirely Clang-built host/dependency stack. No deadline/guard/assertion changed and no failure was called flaky. No additional failure reproduced on Linux after #509; this does not prove the hardened macOS libc++ leg or establish that its original sighting had only this cause. No source change, new fix, PR or TSAN claim. N46's full gate also included scanner 42 and process-runner 27 checks.
+
+**Evidence:** `/workspace/adi-cloud/scanner-post-509/`: manifest.json (source/core hashes), actual-commands.json, frozen-inputs, review.py/log, release-audit.json, both strict binaries/objects, per-mode summary.json and 100 run logs each. Base tested `baf23d79` (N46's documentation-only branch); its production code is engine/log's integrated #507/#509 base. The frozen core is independent of subsequent Ninja relinks.
+
+**Next immediately, same turn:** N48 on `engine/strip-held-peak` from engine/log, reusing the existing build workspace without taking N46's independent SPEC patch. Implement the segment-level maximum retained between callbacks and cleared through const StripMeter's reader API, preserve the callback peak/RMS fields and window ballistics, gate/push/log, then HI-02 and M0. Plan `/workspace/adi-cloud/strip-held-peak/plan.md`. Latest fetch main `b4a5fac2`; #512 still not landed. Protected control spots untouched; merge main once it lands. No main checkout/commit; no seat stop.
+
+---
+
+## 2026-11-11 — N46 window-place storage note gated and pushed; scanner interlude then N48
+
+**PR requested:** head `engine/window-state-spec` at **`baf23d79df88d17206e62a1fd95e64309731a0c6`**, base `engine/log` (**`0d7f6f40df8d0b7d39e11505ad0e45422bd951a4`**). Title: **Clarify application and project window placement storage**. Branch pushed; win opens/merges. Independent of N45; one file, SPEC §8.4, +12/-3. Item branch never edits this log.
+
+**PR body / window handoff:** SPEC now places main and Settings window records in app-scoped `window.places` (`display`, `area`, `rect`, `fullScreen`), floating and plug-in windows in project `ui_view` with monitor identity and display area, and marks `window_state` reserved with no current writer. It distinguishes the assigned storage from WIN-02's window placement/display-change implementation. The existing **readers MUST clamp** requirement stands verbatim. This follows N46, the registry row and PLAN's WIN-02 placement; no window code, schema or op changes and no claim that WIN-02 itself is implemented.
+
+**Gate:** full GCC 14 Debug/PD/Werror rebuild on the independent engine/log production base, then test_all **34,024 checks across 206 suites**, four validators and binary layout clean; every suite row and aggregate audited. Documentation-only: no changed C++ units, new Clang unit or fault-plant claim. Evidence `/workspace/adi-cloud/window-state-spec-build.log`, `window-state-spec-gate.log`, and `window-state-spec/{release-audit.json,SPEC.md,feature.patch,audit.py}`. A startup transition interrupted the waiting tool handle but the original shell/test process continued unchanged; final summary, all rows and validators were verified after reconnection. No test was skipped or timeout changed. Reused `/workspace/wt-engine-project-replace` as the build workspace by switching to this independent branch after N45's artifacts were retained; its obsolete N45-only test executable was removed from the discovery directory so this gate includes precisely this base's 206 suites. N45 evidence is preserved in its verified 23-file GCC archive and **52-file review archive**, each with hashes/restoration manifest; extract before rerunning archived review scripts. Old compiler evidence is also retained in verified per-directory archives, leaving over 15 GB free without changing decoder admission limits.
+
+**Next immediately:** the permitted between-item post-#509 scanner interlude (`adi_plugin_scanner_tests`, late native block). #509 `b184686b` has been read and is in this engine/log base; stress both native GCC and selected strict Clang, retain outputs, investigate any failure without widening deadlines or calling it flaky. Then N48, a per-strip maximum consumed by the reader, followed by HI-02 (read ADR-0213's recorded Q-A answer A), M0 and the standing queue. N48 implementation notes are `/workspace/adi-cloud/strip-held-peak/plan.md`: retain segment peaks across callbacks, never republish an earlier consumed segment through the cumulative callback meter, and use bounded strong CAS. No seat stop. Latest fetch main **`b4a5fac2`**; #512 remains open and every protected spot remains untouched. Merge main when it lands; never check out or commit main.
+
+---
+
+## 2026-11-11 — N45 confirmed project replacement gated and pushed; taking N46 immediately
+
+**PR requested:** head `engine/project-replace` at **`a052a89716693765ab4ee4e84b4f42fba5c55533`**, base `engine/log` (**`a52071995542a6ea31717ec09bb76fb77ac9b527`**, including main's #507 transaction and #509 scanner fix). Title: **Support confirmed atomic replacement for project Save As and Copy**. Branch pushed; win opens/merges and runs MSVC. Nine files; no item-log edit, op or schema change.
+
+**PR body / window handoff:** `Store::saveCopy(path, StoreFileCollision::ReplaceConfirmed)` and `saveAs(path, ...)` now replace a closed regular destination after the caller has obtained replacement consent. One-argument calls still refuse existing files. The private SQLite backup retains the existing media/history relocation, is checkpointed and closed, synced, then published by the authoritative `media::replaceFile`; there is no visible copy fallback. The active file and aliases, other live Stores (read-only included), nonregular endpoints and any destination WAL/SHM/rollback journal refuse replacement without cleanup of recovery material. Save As keeps the same Store/writer/history, existing gesture and applied-source fences, moves its native lease with the database, and verifies the reopened file identity. A directory-sync failure after rename is published with a warning, not an unchanged-file failure. The window can now replace after its confirmation dialog and display warnings as today; no UI code was changed. SPEC §3.7 and ENGINE-PROJECT-REPLACE document the contract.
+
+**Native boundaries:** shared Store leases preserve the existing SQLite reader/writer policy; exclusive publication leases exclude replacement while a cooperating Store is open. POSIX locks separate private per-user lease inodes by device/inode, never unlinks them, and uses stat-only database identity: closing an extra database FD could drop this process's SQLite fcntl locks. Windows uses reserved-byte LockFileEx and no-delete Store handles; rename retries are bounded at seven, 10/20/40/80/160/200/200 ms, for errors 5/32/33. Stage/file and directory sync use the platform primitive, including Apple's F_FULLFSYNC. This is local same-user cooperating-Store protection, not PD-05 ownership or protection against raw SQLite/external tools, other users or remote machines. This supplies N45 and the authoritative PD-04 foundation, not session markers/dead-stage recovery or every other file writer. Linux process-exit tests do not claim power-cut persistence. Native Windows/macOS remain unrun; no TSAN claim for this owner-thread/OS-lock change.
+
+**Final gate:** full GCC 14 Debug/PD/Werror build; test_all **34,067 checks across 207 suites**, all four validators and layout clean. Independently audited every suite row and sum, including `adi_tests_textproj`. The new native suite has **43** checks: real replacement/default refusal, readonly/writer exclusion, aliases, recovery material, Unicode, same-Store history and identity, lease transfer/release, pre-publication failure, truthful post-publication warning, fixed retries, RT refusal, another process's lease and release, a fresh exec'd writer proving existing raw-reader SQLite locks survive lease opens/closes/failed replacement, and process exit just after rename. Existing project-files **47** still pass. Strict GCC plus Wshadow and Clang 19 compile **three production/seven test** units; all seven Clang suites pass **1,005** checks (43 replacement, 47 project-files, 105 collection, 72 store, 30 bootstrap, 426 gesture playback, 282 applied batches). **Nine compiled faults, 39 ordinary assertion failures**, every run completing all 43 checks; no crash/exception/compile-failure credit. No deadlines, free-space limits or warnings were weakened.
+
+**Evidence/corrections:** `/workspace/adi-cloud/project-replace/` has release-audit.json, frozen-inputs, feature.patch, final-build/gate/clang/shadow logs and all plant sources/results. `gcc-native-artifacts.tar.gz` retains 23 byte-verified native binaries/objects/linked archives plus exact commands; the review binaries/objects/cold core are being retained in their own verified bundle before reuse of this build workspace. The initial factory cleanup compile error was corrected; initial test assumptions about SQLite header counters and in-memory Save Copy were corrected (in-memory creation remains supported; media saves already require disk backing). A Clang harness object-name collision was corrected and the whole selected review rerun. One plant needed a newline to compile under Werror; only its final compiled failure counts. The first audit regex omitted the differently named textproj suite; its 187 checks are included in the final row/sum audit. Old compiler evidence is being compressed with decompressed SHA-256 verification before expanded copies are removed (`/workspace/adi-cloud/old-review-retention.log`), preserving decoder headroom and every recorded artifact.
+
+**Next in the same turn:** N46, SPEC §8.4's app-scoped main/Settings placement and project ui_view floating/plugin placement; then N48's reader-cleared held peak, post-#509 scanner stress, HI-02 and open M0. This is a gate/log handoff, not a seat stop. Latest fetch main **`b4a5fac2`** (#514); #512 is **still open** (control head not an ancestor). All six protected files remain unchanged by this item; keep the fence and merge main after it lands. Main was never checked out or committed.
+
+---
+
+## 2026-11-11 — N45 factory base integrated; control fence remains in force
+
+N45 needs the Store creation/open lifecycle to refuse replacement of an open project, including aliases and other readers. The 11 November prompt requires retaining #507's schema/seed transaction before touching createEmpty. Merged current main **`e9d397ef`** into engine/log as **`38cb5ec2`**, without checking out or committing main. An explicit diff verified that this imported change touches **none** of the protected files (`ops.hpp`, `ops.cpp`, `ops_catalog.cpp`, `changeset.hpp/.cpp`, `src/main.cpp`). #512 remains open; those named spots stay fenced and main must be merged again after it lands. #509's scanner exit-before-drain fix is now in this base; post-fix scanner stress remains to run between items.
+
+Next/current workspace will be `/workspace/wt-engine-project-replace`, branch `engine/project-replace`, cut from this refreshed engine/log successor. No N45 source change or gate claim yet. Implement explicit confirmed replacement from a closed staged SQLite backup, a real authoritative replace primitive (not cache replacement), and native open-file/source/gesture identity protections. Keep one-argument APIs refusing collisions, preserve SourceChange/applied-domain behavior, and update SPEC §3.7. The later complete PD-04 crash-reaper/session-marker program is not part of this need. Continue N45 now, then N46/N48/HI-02/M0 without ending the turn. Concrete implementation notes and disk/evidence state: `/workspace/adi-cloud/project-replace/plan.md`.
+
+---
+
+## 2026-11-11 — Actual clip-page admission race fixed and gated; taking N45
+
+**PR requested:** head `engine/clip-page-admission` at **`440bb200cd0c18fe6be58a6ae9856589c70d979e`**, base `engine/log` (**`c52a3f14bbade5d476fa15cf355368b8265bfddc`**). Title: **Retain admitted clip pages until native rendering consumes them**. Branch pushed; win opens/merges the PR and runs MSVC. Independent of the automation Undo fix and control slice. Four changed files, no item-log edit, opcode, schema or new test target.
+
+**Root cause / handoff:** the page worker changed ready state 2 to worker-owned state 1 before rechecking its request sequence and page membership. The old callback readiness query released a page immediately after checking it. An already admitted page could therefore become temporarily unavailable to the renderer even though the worker subsequently restored it untouched. The request sequence protected against eviction, not against that temporary ownership gap. This is an actual logic race without a non-atomic data race: partial TSAN reproduced it before the fix, and diagnostics showed an admitted 128-frame buffer becoming entirely zero, not a deadline miss. No timeout was increased or assertion weakened.
+
+**PR body / native contract:** each source Clip now keeps at most eight driver-owned raw page reservations in its already bounded cache. Successful callback admission and owner prime retain actual reader ownership; native rendering reuses those pages through loop revisits and processing parts. Superseding requests, failed admission and owner timeout release their reservations, stopped processing releases remaining ones, and normal rendering trims obsolete reservations before requesting its next range. A full cache cannot keep later ordinary playback permanently starved. The worker sees held pages as present and cannot claim them. No allocation, shared ownership/refcount operation, waits, mutex, file I/O or logging is added to the callback. Callback Clip-vector walks use raw bounded indices, avoiding MSVC Debug iterator ownership machinery. ENGINE-LINK-PLAYBACK documents the strengthened readiness contract. The two added immutable test probes run only on the worker and are null normally.
+
+**Nonvacuous regression:** the original worker/readiness protocol linked against the complete final native suite fails **73 checks / 8 ordinary named failures** at both widths. Controlled worker pauses surround its actual page-claim attempt; the audio driver renders while that attempt remains paused. Cases cover callback admission and owner prime, one physical buffer and a loop return across **48/80-frame** parts. The source emits the real independently authored float WAV, with exact expected PCM and zero underruns required. A separate test primes all eight slots with two looped adoption positions, then requests an uncached ordinary-playback page without another prime/readiness rescue: the worker must regain capacity and the subsequent actual PCM must be exact. Existing 192 distant/crossing requests, source-lifetime closure, unavailable retry, loop heads, both widths and callback allocation/free/I/O audits remain included.
+
+**Final gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build, zero warnings; `tools/test_all.sh` **33,985 checks / 206 suites**, every row and sum independently audited, all four validators and SPEC binary layout clean. This independent source base contributes 33,953/206; the existing native candidate suite grows **41 to 73**. Legacy native clip playback **481**, progressive decoding **93**, Link native **139**, gesture playback **426**, render slicing **94** and paired generation **39** all pass in the full run. Strict GCC/Wshadow and Clang19 compile the production unit and all seven focused tests, eight configurations each; Clang passes **1,345 checks** against a frozen validated GCC cold archive. **Six isolated compiled plants reach 18 ordinary assertion failures**: callback check without reservation, owner prime without reservation, obsolete reservations retained, ownership consumed before last use, reservations released after the first part, and the wrong second-part source clock. No crash/exception or uncompiled plant credit.
+
+**Concurrency gate and limits:** strict partial GCC TSAN instruments the complete changed production unit and the entire 73-check native candidate suite; **50 final-source runs / 3,650 checks**, all pass with zero race reports and no warning demotion or runtime suppression. The unchanged dependencies/remaining engine are not claimed wholly instrumented. Before the fix, 50 ordinary runs passed but partial TSAN failed run 2; external diagnostics failed run 28 in 2.783 seconds with width64/iteration126/target16401/frame0 expected0.439453125, actual0 and underruns128. The deterministic regressions now cover that ownership interval directly. The first 50 passing TSAN runs before the final MSVC iterator audit are superseded by the final 50. No whole-project Clang, MSVC/macOS execution, hardware or measured Live parity claim.
+
+**Historical gate correction / evidence:** compiler artifacts exhausted the workspace's decoder headroom: the first full run and one focused Clang playback run correctly refused with `decode.no_space: progressive jobs would consume minimum free space` (479 checks/one failure). Freed only obsolete generated builds; preserved the obsolete local Link WIP source/diff separately and retained completed feature evidence. No disk-admission limit or test deadline changed. The final complete gates above pass after reclamation. A first plant-script whitespace anchor was rejected before compilation and receives no credit. Evidence: `/workspace/adi-cloud/clip-page-admission/` final-build/gate/clang/shadow/plants/tsan logs, `release-audit.json`, retained GCC/final Clang/TSAN/plant binaries and source inputs. `review/cold-core.json` freezes the cold archive, reverified unchanged; final variants use their own complete production object ahead of it. Earlier actual failure/diagnostic artifacts remain in `/workspace/adi-cloud/clip-candidate-investigation/`; no-space-full-gate.log and no-space-clang.log retain the environment failures. README stays win-owned.
+
+**Next immediately:** N45, Save As/Save a Copy over an explicitly confirmed existing destination, through a real atomic replace from the closed stage; never replace an open project or alias. Then N46, N48, HI-02 and the open M0 rows. The replacement primitive is not yet present (`replaceCacheFile` is cache-only); implement the authoritative primitive and native workflow, including source identity/gesture protections and SPEC §3.7, without claiming the whole later PD-04 crash-reaper/session-marker program. Read #509 already; the separate post-fix scanner stress still needs integration of that main change. This gate/log handoff continues the same turn; no seat stop.
+
+**Control/main fence on this fetch:** main `e9d397ef`; #512 `control/mcp-slice` landed: **no**. The named Field/validateSubmission, routing.connect/track.create arrays, changeset and main.cpp spots remain untouched. Merge main after the control slice lands as directed. If N45 needs factory changes first, retain #507's transaction as the 11 November prompt explicitly requires; make no edit around it or to the control slice.
+
+---
+
+## 2026-11-11 — Automation curve-range Undo fixed and gated; taking the reproduced page-admission race
+
+**PR requested:** head `engine/automation-range-undo` at **`3634c8805bd57e2c325ee859ddd98cda7d1436e7`**, base `engine/log` (**`c52a3f14bbade5d476fa15cf355368b8265bfddc`**). Title: **Preserve automation curve ranges through Undo and point edits**. Branch pushed; win opens/merges the PR and runs MSVC. Independent of the control/MCP slice. Six changed files; item branch does not touch this log.
+
+**Handoff / PR body:** deleting, clearing, enabling, showing or setting a lane default now captures and restores each data row's complete typed `automation_segment_ranges` rows alongside its exact AAUT bytes. Undo/Redo/Undo preserves range IDs, nullable clip addresses, source values/progress intervals and unknown SQLite columns, including empty BLOBs, embedded-NUL text and wide integers. Clear removes all owned arrangement/clip range rows. Point write/delete/move/curve operations retain slices by actual original point and successor identity, reindex untouched slices after sorting, and discard replaced adjacency, changed endpoint values or outgoing curve/tension. Time-only movement preserves the nonlinear source domain. Both inverse paths restore their own complete inverse under the existing journal transaction. New restoration validates range ownership and explicit identity; a missing ID cannot ask SQLite to allocate one. No new opcode, schema/minor or public producer signature; OPS documents the extended nested capture.
+
+**Compatibility and failure behavior:** existing legacy byte-only inverse packets remain readable, but cannot reconstruct metadata they never captured; data restoration clears potentially stale ordinals in that case. Point editing refuses existing invalid range addresses/ordinals atomically, while Clear can remove them and its Undo restores their exact legacy image. Native captured deletion continues preserving malformed/future AAUT bytes without new creation validation. Late caller refusal, a malformed later clip stream, and a SQL trigger refusing the second range reinsertion all roll back stream bytes and every range row, including unrelated lanes.
+
+**Final gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build, zero warnings; `tools/test_all.sh` **34,040 checks / 207 suites**, all rows and sum independently audited, all four validators and SPEC binary layout clean. New native suite **87**, existing lane **39** and point edit **46**; actual compiled nonlinear automation values also survive the lane Undo/Redo/Undo cycle. Strict focused GCC/Wshadow and Clang19 compile both production units plus all three focused tests; Clang passes **172** checks against validated GCC cold dependencies. **10 isolated compiled fault plants produce 119 ordinary assertion failures**; the final 87-check suite linked against both unchanged original production units produces **48 ordinary failures**, no exception/crash credit. Initial 68/84-check runs are superseded. Review caught a newly introduced omitted-ID allocation hole; its 87-check pre-correction run failed exactly that assertion, and the final explicit-ID plant independently reproduces it. No new thread protocol or automation sanitizer claim. No whole-project Clang, MSVC/macOS execution or measured Live parity claim; README remains win-owned.
+
+**Evidence:** `/workspace/adi-cloud/automation-range-undo/`: `final-build.log`, `final-gate.log`, `final-clang.log`, `final-shadow.log`, `final-plants.log`, `gate-audit.json`, `plant-audit.json`, `frozen-inputs.json`, original production source and retained GCC/Clang/plant executables. The six final changed inputs and final core archive hashes were rechecked unchanged before commit. The first independent row-count auditor assumed test names ended in tests and missed `adi_tests_textproj`; corrected before release, the explicit 207 rows sum to 34,040. This was an audit-tool correction, not a hidden product failure.
+
+**Interlude next immediately, as the 11 November prompt allows:** the reported `adi_clip_candidate_ready_tests` failure is reproduced, not dismissed as flaky. Ordinary suite stress passed **50 x 41** checks in 116.905 seconds under build load. Strict partial GCC TSAN instruments `clip_playback.cpp` and the entire native candidate test: run 1 passed, run 2 failed the actual 192-request admission/PCM assertion with no sanitizer race report. An external diagnostic test reproduces again on run **28**, in **2.783 s**: width64, iteration126, target16401, frame0/channel0 actual **0**, expected **0.439453125**, underruns **128**. This is a fully admitted buffer hole, not its 2 s admission deadline. A worker briefly CASes a ready page to worker-owned before checking whether its old snapshot is stale or the page should be protected; the existing post-claim sequence check prevents overwrite but cannot prevent transient unavailability after admission. The audio driver had released its admission check's page rather than retaining it.
+
+**Current race workspace / concrete WIP:** `/workspace/wt-engine-clip-page-admission`, `engine/clip-page-admission`, cut independently from `c52a3f14`. Changes are uncommitted, not ready. Two immutable worker probe hooks deterministically pause before and after the actual page claim attempt. The native test fails **53 checks / 4 ordinary failures** against the old protocol at both widths, including a loop return across 48/80-frame parts. Fixed-slot driver page reservations currently pass the same **53** focused checks against the validated cold engine. Admission/owner prime retains actual pages in reader-owned state; rendering retains needed pages across parts/revisits, and superseding requests, partial refusal, timeout or stop release reservations. No callback waits/allocations/frees/file I/O. These are focused preflights only: run the branch's own full build, legacy source/Link/gesture tests, Clang, stress, TSAN and plants before any gate/push claim. Evidence and exact diagnostic in `/workspace/adi-cloud/clip-candidate-investigation/` (`finding.md`, `tsan/`, `diagnostic/`, transient-baseline-expanded and transient-fixed-expanded). Next after that gate: **N45, N46, N48, HI-02, open M0, then the prompt's queue**.
+
+**Resume/integration constraints:** the fresh fetched chain of nine is the base, not the obsolete local Link WIP at `bac6a0d9`, which remains preserved. Read #509's actual scanner fix (`b184686b`): exit is observed before final pipe drain. It is on current main but not this source base; no post-#509 scanner stress is claimed yet. PR **#512 `control/mcp-slice` remains open on the last fetch** (main `e9d397ef`); the user's named Field/validateSubmission, routing.connect/track.create arrays, changeset and main.cpp spots remain untouched. Merge main after it lands as directed, retaining #507's createEmpty transaction. No main checkout/edit or PR merge by this seat. This is a completed item/log handoff and continuation, not a seat stop.
+
+---
+
+## 2026-11-09 — HI-01 / N44 gesture ownership gated; queue paused at the director's request
+
+**PR requested:** head `engine/gesture-session` at **`347c8bcf3ba26ac23735f7a0fdaafa78f1613212`**, base `engine/param-live-replay` (**`2b080e0e534907f38bb29ad93ab2b349100f460c`**). Title: **Own gesture previews and captured commits (HI-01 / N44)**. Branch pushed; win opens/merges and runs MSVC. Cut from freshly fetched `origin/engine/log` at `4a3753c6ef9971d2d4dff83daa4713b07398f36f`, then merged only gated N47. Merge N47 first; no pending placement/note stack imported, and no feature-branch engine-log edits.
+
+**Handoff / PR body:** `GestureSession` and its source coordinator own one immutable origin, absolute input, current committed base and exact completion. Native live values and ProjectView follow mixer/send/summing controls and activation/solo latches. Structural evaluation runs the real handlers, captures owned data, rolls SQL back, then prepares/publishes the native generation. Concrete adapters cover clip loops, an existing tempo event for Tap Tempo, absent-position tempo insertion and explicit automation-point moves. Source/head, exact typed rows/sets and the complete native material/schema image are checked at final publication and real commit. A stale same-head image cannot publish. Commit writes one transaction/label with the actual pre-commit inverse; a guarded no-op writes none. Cancel removes only its owner's intent and preserves current committed truth. Foreign commits rebase or suspend, including receipt adoption after every gesture has ended. Durable SQL success remains distinct from delayed/refused presentation and is never resubmitted.
+
+**ParamOps and unchanged document path:** callback/UI/state capture joins the same ownership protocol. Accepted input, first-touch baselines and opaque bytes survive discarded vectors, SQL refusal, failed cancellation and frontend loss. A transient private `capturedTransaction` seals the exact whole offered vector; ordinary OpJournal admits its guards and state resources atomically. Session-bound `writeBlobs` stages with zero SQL. Mixed/partial/altered/superseded/Durable groups refuse, and arbitrary beforeCommit hooks refuse on sealed groups. Existing submitter actor stamps remain compatible. Completed gestures keep FIFO order; an unfinished disjoint scalar may remain open, while completed offers/refusals and overlapping targets block their suffix. An unresolved offer can be reoffered with the identical capability. Explicit pending/retry/cancel APIs retain failures. Private typed durable receipts protect newer accepted input; standalone raw N47 proofs remain separate. Automation starts from the actual live value, labels use descriptor names, and a quiescent same-instance attachment can renew its token after audio preparation without restamping an active gesture.
+
+**Lifetime and audio boundary:** undrained callback reservations and open gestures fence existing History navigation, replay-base changes, close and Save As, including same-head shortcuts. Naming/removing snapshots and non-material retention maintenance remain available. Input accepted during a Save As copy prevents final source replacement; the copy can be saved while the original stays active. Successful finalization physically closes the old database. Immutable callback bindings survive announced detach/rebind; source-specific faults cannot be cleared by an unrelated producer. Owned graph/event/automation/control storage survives retirement; reused devices pass whole-candidate format/shape admission without another prepare. Native controls, manual automation overrides, reference audition and ordinary PFL are covered. Read-only playback and ProjectView inspection work while editing gestures refuse. HI-03's future moveTo must use this fence.
+
+**Scope:** no opcode, schema or ANOT layout change. The existing tempo pair accepts optional literal ID/tension and captures them in its inverse. Width without a native consumer, unsupported topology/format changes, frozen structural material and simultaneous structural/scalar composition return named refusals. Placement/note-editor clients still integrate their own pending planners; no duplicate kernel or window binding is introduced. OPS §6.4's consolidated rewrite remains in the explicitly requested M0 owned-documents PR. `ENGINE-GESTURES.md` describes the API and recovery contract.
+
+**Correctness gate:** full GCC14 Debug/Werror build, zero warnings; `tools/test_all.sh` **18,169 checks / 193 suites**, all four validators and SPEC layout clean. The final core/graph/native suites pass **778 / 125 / 328** checks; parameter live replay **970**, ParamOps **178**, capture rings **377**, UI capture **47**, unchanged document **99**, CLAP **503**. Actual GCC and mixed-Clang VST3 probes each pass **208** checks plus **16** editor checks, including all **15** HI-01 checks. Both probe logs contain the same existing negative editor fixture's JUCE assertion (`hasEditor` true while deliberate createEditor refusal returns null); this diagnostic is recorded, not claimed absent. No whole-project Clang, MSVC/macOS, hardware or measured Live M-LIVE-UNDO claim.
+
+**Compiler / sanitizer / adversarial gate:** Strict headless GCC and Clang each passed **59 compile configurations** (26 production and 33 test configurations; 57 distinct .cpp files), zero warnings. The 33 scoped Clang suites passed **6,069 checks**. The separate actual JUCE host/probe pair passed strict GCC syntax and Clang object/link checks; JUCE modules carry no target-wide adi_warnings. Partial **ASAN+UBSAN and TSAN each passed 3,564 checks / 10 suites**, with 41 strict compile configurations each and no sanitizer/race reports. Only the listed ADI/test units are instrumented; unlisted ADI and dependency archives remain coherent GCC. All **21 isolated compiled fault plants** reached **145 ordinary named assertion failures**; independent audit confirmed every intended single substitution and required assertion. No crashes or fixture exceptions received credit. The 705 frozen source/header inputs, 12 linked archives, 33 GCC counterparts and 141 Clang/sanitizer objects remained unchanged; verified compressed archives and all 25 retained artifact bundles/binaries are indexed in `gesture-review/retained-artifacts.json`. Final core SHA-256 `44d9ce8c415fab3a1c548fcb593f3e54532b320cf992e890c54df6161b77bd95`. Release evidence: `/workspace/adi-cloud/gesture-session-release-347c8bcf/manifest.json` (SHA-256 `3dafbd71d1a724dbb508676e018da596266f19133d920d551f879b0fe02ee6c2`), with committed source, prerequisite diff, key GCC binaries and compiler/runtime/fault evidence; no optional binary omissions. External retained bundles remain referenced by hash..
+
+**Historical findings:** the first build exposed ParamOps const database access, signed counter and unused/shadowed-helper issues. Runtime checks exposed post-seal proof mutation, completed-owner receipt loss, automation origin/label/quiet-completion issues, stale quiescent attachment tokens, redundant view publication and empty retired attachment admission. Full regression then found read-only rendering refused by editable endpoint registration; corrected without weakening read-only gesture refusal. Fixture corrections preserve their oracles: explicit reference designation is cleared before ordinary PFL, raw literal replay starts from a distinct runtime value, exact offered-vector repetition is handled once, and commit-failure injection targets actual journal insertion rather than scratch preview. Failed/crashed historical runs remain separate and receive no fault-plant credit.
+
+**Pause, as requested on 9 November:** the director asked to finish work already started and wait on new work to retain weekly capacity for plug-in diagnosis. HI-01 is finished and logged; the queue is paused deliberately. No new item branch was started. On a later instruction to resume, re-fetch engine/log and read the oldest open needs: N45, N46 and N48 follow N44; HI-02 is independent, while the existing pending-stack limits still apply to dependent M2 work. Preserve MI-01 replay provenance and Link's Session/continuity changes when integrating.
+
+---
+
+## 2026-11-09 — N47 live parameter replay gated; taking full HI-01
+
+**PR requested:** head `engine/param-live-replay` at **`2b080e0e534907f38bb29ad93ab2b349100f460c`**, base `engine/log` (**`863a950d9ed944f5015ada4827f47e301005fe7e`**). Title: **Replay committed parameters and state into live plug-ins**. Branch pushed; win opens/merges the PR and runs MSVC. Dedicated worktree `/workspace/wt-engine-param-live-replay`, cut from freshly fetched origin/engine/log, no unmerged source prerequisite. No feature-branch engine-log edits, new opcode, schema change, saved proof, window source edit or retention-policy change.
+
+**N47 handoff / PR body:** `applied_batches.hpp` publishes immutable actual execution only after the real SQL transaction commits. Normal commits/Redo carry forwards; Undo carries the actual inverse handler name and packet in execution order, including the opener clear; branch switches and snapshot reverts preserve both legs. Same-head branch metadata can emit an empty notice; replay-base installation emits an explicit reset, never invented ops. Collection precedes compaction and temporary checkpoint replay has no collector. Capture owns payloads, original seq/txn/direction, state bytes, typed device/reference definitions and complete typed final parameter rows for state-touched devices. Failed handlers, inverse/commit hooks, validation and SQL transactions publish nothing. Observers can revoke self/others safely; additions during delivery begin next time; throws fault only that subscription. Post-success delivery cannot falsely report SQL rollback. Reentrant same-Store journal/history/file-source changes refuse before empty/same-head fast paths.
+
+**Existing window path:** Session exposes the current revocable source and lifetime; the existing `ParamOps::attachSession` subscribes without UI changes. Callbacks only queue owned receipts; `drain(nowMs)` / `uiEvent` retry them on the owner before producer capture, or an owner calls `retryApplied` explicitly. Ordered actual parameter/state replay is followed by this transaction's final parameter projection. Example: Undo restores row `.35`, then recalls an older chunk containing `.9`; final captured rows restore audible `.35`, as reopening does. A delayed retry never substitutes newer SQL rows or looks up a state blob that may have gone away. Failed runtime delivery retains its exact operation/projection cursor; suffixes/later batches wait and capture pauses. Equal and clear are successful bookkeeping outcomes. Only actual receipts assert recorded row presence; public runtime-only `applied` keeps its compatibility behavior. The opener clear removes first-touch state, and Redo acknowledges a nonclear row even when its value is already equal.
+
+**Own submissions and real-time boundary:** a private immutable witness stamps transient `runtimeProof` on the complete emitted interval for one device, covering multiple completed gestures and a preset in one drain. The normal Commit receipt carries it; payloads, saved history and every History receipt do not. The owner verifies exact whole ordered material, source/next publication, actual instance and its captured runtime witness. Unknown/changed/partial/stale proof cannot skip literal delivery. This preserves already heard own values without replaying openers or reloading old/new presets. Newer UI/callback input and state signals remain live; the bounded consumer `hasPendingEvents()` closes the drain-to-witness counter race. No callback SQL, plug-in calls or allocations are introduced by the feed. Backend parameter/refusal work remains on the owner.
+
+**Lifetime and Save As:** source tokens own immutable identity plus a weak connection domain; close/successful Save As revoke the old source before teardown/swap. Session lifetime tokens protect session-owned instance pointers. Existing target receipts bind their actual instance; unrealised targets require exact realised source admission or explicit invalidation, not a numeric ID/row-equality guess. `isReplacementOf` proves one direct successful Save As predecessor with weak identity only, never reopen, reverse, self or transitive lineage. A healthy empty FIFO with complete observed sequence and zero observer failures can follow that exact successor only before its first new publication, retaining attachments, rings, capture state and pending effective-state acknowledgement. Discarded receipts/faults/gaps or an unrelated same-Session source remain Invalidated even after refresh/reattach; a fresh Session loads stored truth. The window can finish committed delivery through `retryApplied` before Save As and handle any refusal first. No healthy status is manufactured while a retained instance disagrees because a pending receipt was discarded.
+
+**Correctness gate:** Full GCC 14.2 Debug/Werror build passed with zero warnings; `tools/test_all.sh` passed **16,749 checks across 190 suites**, all four validators and SPEC layout clean. The eight relevant suites in that full run total **1,594 checks**, including **282** applied-batch owner checks and **782** native live-replay checks. Native assertions render literal independent PCM in both widths through real retained Session instances, and one unchanged ProjectDocument `parameterGesture`/ops/tick/process path. They cover first-touch Undo/Redo/Undo and next opener, equal-value receipt acknowledgement, agent/editor edits, state/row ordering, delayed getter/echo queues, actual branches/revert, SQL rollback silence, own intervals and rejected proofs, newer input during proof capture, exact FIFO/projection refusal retry, pinned state bytes, attachment/replacement/retirement, source teardown, clean and invalidated Save As, unseen successor commits and same-path reopen. Owner assertions cover literal interleaved execution and paired inverse names, unknown historical fields, exact typed SQL storage, immutable resource ownership, compaction and replay-base behavior, every guarded History entry, observer failure/revocation/sequence/lifetime, and direct replacement provenance. No fixture exception or crash counts as correctness evidence.
+
+**Compiler/adversarial gate:** Strict GCC and Clang passed **31 translation units each** (8 production, 23 tests), zero warnings; **3,064 checks / 23 scoped Clang suites** passed. **31 isolated compiled plants** (13 bus, 18 native) reached **150 ordinary named assertion failures**, with no crash or caught fixture exception credited. The 689 frozen inputs, 13 linked archives, 31 Clang objects, 23 baseline binaries and 54 GCC counterpart artifacts remained unchanged; all 13 cold archives have verified retained copies. Evidence under `/workspace/adi-cloud/param-live-replay-*` and `param-replay-review/`. First build exposed four string/JSON comparison errors, corrected with explicit text reads. First focused runtime exposed the deferred effective-state cache and public-applied row-presence regression, plus a branch-ID fixture assumption; corrected rather than counted as passing. A later read-only review found false healthy rebinding after pending Save As delivery was discarded, so exact replacement provenance and before-next-edit PCM/status tests were added. Clang then caught a shadowed Save As callback argument; its local rename was recompiled, with unchanged successful units retained by their hashes. Historical build/focus/compiler records remain separate from the final source gate. Release evidence: `/workspace/adi-cloud/param-live-replay-release-2b080e0e/manifest.json`; core SHA-256 `423bb6b2a2841e66d296707c0ff47b158592e0deffcc76d8c345f31f6cb31950`. No whole-project Clang, sanitizer, MSVC/macOS, hosted GUI, hardware or measured Live parity claim; README remains win-owned.
+
+**Limits and next immediately:** a Session without ParamOps is not a parameter sink. A first-ever raw parameter packet whose inverse only clears an absent row has no recorded prior audible value; its producer must supply the opener when that restoration is required. Deferred effective-state hashes settle only after pending values clear, expected values still match and the state epoch remains unchanged; a signal before that quiet observation remains eligible for actual preset capture, because a generic backend cannot prove it is an old echo. Caller-discarded captured request vectors after failed SQL commits remain HI-01/window work. Take full **HI-01 / N44** now on a fresh origin/engine/log branch, explicitly merge only this gated N47 prerequisite, and keep the two-deep rule. Implement origin-derived gesture lifecycle, real ProjectView/Session preview, navigation leases and ParamOps client ownership together, with window bindings named separately. ED-04 remains blocked on the pending ED-01→ED-03 source stack. Preserve MI-01 handler replay provenance and Link Session changes at integration. Continue this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-09 — MI-02 versioned note-overlap kernel gated; taking N47 before HI-01
+
+**PR requested:** head `engine/note-overlap` at **`9b4856639d5434643c797ba80dea32fad652ccfd`**, base `engine/log` (**`b8b9eac02d1d368a0c0765fdec914378fae075f3`**). Title: **Preview and apply complete versioned note-overlap effects**. Branch pushed; win opens and merges the PR and runs MSVC. Created from refreshed origin/engine/log, then merged only gated MI-01 `engine/note-apply-diff` at `71949e5406ab327abf245a89b4818fc1ffb88f48`; merge MI-01 first. No feature-branch engine-log edits, new opcode, schema or ANOT layout change.
+
+**Window/producer handoff / PR body:** `note_overlap.hpp` supplies pure `prepareOverlapDiff` and owner `commitOverlapDiff`. The immutable prepared value owns source/head, normalized intent, complete effective records, all collisions and induced effects; sealing constructs the exact matching request once. Version 1 stages every incoming driver first, excludes moved originals and explicit removals, and resolves by stored key only, across channel/cents/inactive flags. A driver covering a victim's original start removes it; otherwise the earliest incoming start strictly inside shortens its end. Touching does nothing. Incoming and surviving IDs remain literal; no second fragment or hidden ID is invented. Swaps and reversed positive final spans retain the selected identities. Other preexisting overlaps stay untouched. The preview exposes every induced shortening/removal before the same value commits once.
+
+**Transactional validation and replay:** the existing `note.applyDiff` has a closed versioned `overlap` envelope containing intent and exact complete retained-expression guards, including empty sets. The handler validates the whole intent before composition, recomputes all effects, compares the complete outer mutation and guard sets, and reuses its final stream plan for one actual ANOT write. An induced removal cannot conceal a malformed superseded requested change. Full flags/tails/trailer and surviving expression rows stay opaque; removals carry their complete typed rows through Undo. Whole-stream/row/old-byte, source/head, captured inverse, poststate and actual row-change-count checks remain in force. Metadata may change actor/detail/label and advisory first-request selection only. A no-op still checks its captured null/non-null head. Old literal packets and scalar wrappers keep their replay behavior; Undo restores exact historical material without resolution. Versioned Redo recomputes its stored rule and agrees with its captured material delta. An equivalent valid raw intent, or a raw packet with its entire optional envelope removed, may remain a legal literal edit; preview binding is promised for the immutable producer, not arbitrary altered packets.
+
+**Admission and parity:** intersecting same-key incoming drivers refuse with `IncomingOverlap` until precedence is established. The indexed resolver counts every original victim/driver collision, including those superseded by an earlier effect; pair 100001 returns `CollisionLimitExceeded` with no partial mutation or preview. This bound and the rule are fixed for version 1. The table is the documentary interpretation of PLAN MI-02, ADR-0203 d1/d7 and the repository's manual-derived A-M03 record. The current official manual was not retrieved because the enforced cloud allowlist rejects ableton.com; no policy was changed. Live boundary/channel/curve parity is NOT RUN. Retained expression rows are not cropped after shortening; intentional stretch expression scaling and simultaneous incoming precedence remain narrow follow-ups. This is not gesture lifetime, recording, audition, a full stretch tool or the window editor.
+
+**Correctness gate:** Full GCC Debug/Werror build passes without warnings; `tools/test_all.sh` passes **18,803 checks across 193 suites**, all four validators and SPEC layout clean. Pure planning passes **1,414 checks**, including a literal relation matrix at five integer origins, 128 independent occupancy/permutation cases, signed/above-2^53/end-boundary validation, unsigned identity order, swaps/copies/reversal, future bytes and the exact 100000/100001 diagnostic boundary. Owner/storage passes **299 checks**: 10,000 actual overlaps produce 5,000 removals and 5,000 shortenings with exactly one stream write on commit/Undo/Redo; 48 actual nonempty independently modeled edits across three clips undo all to exact typed rows/digest, reopen/Redo and traverse a real fork. Typed SQL tags distinguish INTEGER/REAL and exact floating bits. Stale empty/nonempty expression guards, unrelated-data controls, isolated nonempty head admission, literal defaults/identity under row pressure, malformed/superseded intent, equivalent and contradictory replay, and late trigger/affinity failures are covered.
+
+**Native gate:** sixteen actual Session fixtures pass **530 checks**, four families in both widths and regular/irregular callback partitions. They commit the real prepared overlap and refresh actual playback, check delivered release/chase after shortening/removal, static channel/cents values under key-only collision, signed source tails, loop prefix/repeats and source-offset boundaries, then Undo/Redo and refresh. Complete event counts, off-before-on ordering, per-voice identity pairing, separate stored-ID checks, consumer retention and callback segment/width/drop/allocation/file-I/O audits pass. The unaffected note begins after the live refresh, so this gate does not demand the unrelated-voice retrigger removed by pending Link continuity. No synthetic scheduler, audio resampling or hosted-plugin/Live inference is used as the event oracle.
+
+**Compiler/adversarial gate:** Strict GCC and Clang each pass 18 translation units (two production, sixteen tests) with zero warnings. Sixteen focused Clang suites pass **3,885 checks**, zero failures. All **23 compiled fault plants** are detected by **1,158 ordinary named failures**, with no crashes or caught fixture exceptions counted; all 698 frozen inputs, thirteen linked archives and 34 GCC counterpart objects/binaries remain unchanged. Evidence: `/workspace/adi-cloud/note-overlap-focused-summary.json`, `note-overlap-complete-build.log`, `note-overlap-complete-gate.log`, `note-overlap-complete-gate-audit.json`, `note-overlap-review/`. The first owner run exposed a test statement surviving database reopen, and the next isolated a probe that counted rolled-back generic journal bookkeeping as musical writes. The corrected gate scopes statement lifetime, requires zero musical writes before refusal, and compares complete typed journal-control rows for rollback; the failed raw runs are preserved and not counted as passing evidence. Release artifacts and final core hash `a487e1aefe8a9a46bee00a52d69a63d9142190e7dd5a051c1e95fb195e6ddcd9` are preserved in `/workspace/adi-cloud/note-overlap-release-9b485663/manifest.json`. No whole-project Clang, sanitizer, MSVC/macOS, hardware or measured Live parity claim; README remains win-owned.
+
+**Next immediately: N47 live plug-in replay**, on a fresh origin/engine/log branch independent of both pending source stacks, then HI-01 / N44 on its second level. N47 is the older open row directly above N44 and supplies the ordered post-commit feed and opener bookkeeping required by the gesture's audible commit/cancel path. Deliver actual inverses in Undo order and forward payloads on commit/Redo to existing instances, with lifetime-safe ownership and honest live-delivery failure reporting, without window edits. Then implement the full origin-derived gesture lifecycle, coherent always-rolled-back preview, navigation guard, exact commit/cancel boundary and real engine preview adapters; name remaining window bindings. ED-04 still needs the pending ED-01→ED-03 material stack; the standing prompt's hard two-deep rule remains in force. Recheck fresh source ancestry before the next cut. Continue in this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-09 — MI-01 captured note diff gated; taking MI-02
+
+**PR requested:** head `engine/note-apply-diff` at **`71949e5406ab327abf245a89b4818fc1ffb88f48`**, base `engine/log` (**`815a4f5a5328ec3691c0010de23136a00e2b1b79`**). Title: **Apply captured MIDI note differences with one exact stream write**. Branch pushed; win opens and merges the PR and runs MSVC. Independent branch cut from refreshed origin/engine/log, with no pending ED-01/ED-03, Link, N29 or N17 source merged. No feature-branch engine-log edits.
+
+**Window/producer handoff / PR body:** `note_diff.hpp` supplies immutable owner capture, pure full-record preparation and one expected-head `note.applyDiff` commit. The canonical row ID, whole-stream BLAKE3, exact old records and complete removed expression sets guard staleness independently of the journal head. Full uint64 note identities and signed SQL identities are retained. First creation uses a caller-owned literal stream ID and one captured complete default row; the op never allocates an ID. One stream INSERT/UPDATE carries all added/removed/changed notes, including a 10,000-note edit. Removal deletes every owned expression dimension in the same transaction; Undo restores exact typed rows, opaque flags/tails/trailer, original ordering and original stream absence. Native or caller-supplied future tails only; unsupported synthesis refuses. Numeric bounds and checked signed endpoints refuse before narrowing. Preview effects are literal values; changing the MI-01 request invalidates that mutable informational preview. MI-02 supplies the bound overlap preview next.
+
+**Historical compatibility and admission:** the five P0 note editors use the same kernel while retaining descriptor names, insert/delete inverse pairs and scalar velocity coalescing. Generic borrowed `OpReplayMetadata` lets History expose recorded inverse provenance without op-specific History logic. Valid historical scalar insert/delete replay preserves the expression rows those old inverses depend on. New captured Redo recomputes original forward intent against recorded typed rows and literal creation defaults/identity; row-ID pressure or a contradictory forward cannot silently change them. INTEGER and REAL guards differ; NaN, affinity drift, changed canonical/expression sets, and extra/missing trigger writes refuse and roll back. Post-apply total row changes must equal the planned delta. No schema/ANOT layout change; OPS adds one P0 op (211 total: 71 P0, 84 P1, 53 P2, 3 P3).
+
+**Signed origins:** the Clip View reader retains valid notes starting before relative zero. Native playback admits signed starts within its retained ±2^50 tick bound, chases a crossing tail with its original end, and skips notes already ended without silencing the clip. Forty actual Session fixtures cover both widths, regular/irregular partitions, source offsets, explicit End, loop prefix/repeats, touching boundaries and both arithmetic-domain endpoints; callback allocation/file I/O and dropped-note checks stay zero. This preserves the existing playback bound; it does not claim the entire int64 storage range is playable.
+
+**Full gate:** full GCC14 Debug/Werror/Pd-on/JUCE-off build, zero warnings; `test_all.sh` **16,560 checks / 190 suites**, every row and sum audited, zero failures, all four validators and binary layout clean. The independent baseline was 15,685/188: **875 added checks / two suites**. New note diff **362**, compatibility **271**; native MIDI **412** (240 new), Clip View **30**, replay **69**. The new note-diff and compatibility suites cover 72 successful nonempty edits across three clips with an independent raw-byte model, Undo-all digest and reopen/Redo; real SQLite write hooks, full IDs, future layouts/columns/defaults, pure preparation after Store close, coherent WAL capture, independent stale guards, empty expression sets, all five old editors, literal historical logs/orphans/negative stream allocation, coalescing, typed values and late rollback. The full run initially exposed a stale equal-time pitch-order assumption in the Clip View fixture; changing it to a genuinely earlier move exposed the signed-origin reader/consumer restrictions corrected above. The preserved failed run is not counted as the final gate.
+
+**Compiler/adversarial gate:** twenty strict GCC/Clang translation units (seven production and thirteen tests), zero warnings; thirteen Clang suites pass **1,642 checks**, zero failures, against the validated GCC cold archives. Sixteen isolated compiled plants trigger **207 ordinary named assertion failures**, no crash or exception counted. Plants cover whole-stream and old-record guards, future tails/flags, full-width expression identity/removal, original absence, historical inverse pairing/expression behavior, captured Redo intent/creation identity, SQL storage classes, actual stream-write counts and both signed-origin consumers. All 680 frozen inputs, core, production/test objects and baseline binaries retain their hashes. Artifacts: `/workspace/adi-cloud/note-diff-focused-tests.json`, `note-diff-complete-build-final.log`, `note-diff-complete-gate.log`, `note-diff-complete-gate-audit.json`, `note-diff-review/`. Final GCC core, settings archive and thirteen focused binaries are preserved with hashes at `/workspace/adi-cloud/note-diff-release-71949e54/manifest.json`. No whole-project Clang, sanitizer, MSVC/macOS, hardware or measured Live parity claim; README remains win-owned.
+
+**Merge handoff and next:** combine native MIDI test dispatch additions additively with N17/Link, retaining Link's stored-identity/continuity changes alongside this bounded signed-start admission. This closes MI-01's mutation kernel, not note overlap, gesture lifetime, recording/overdub, curve transforms or the window editor. ED-04 still needs the two-level pending ED-01→ED-03 source stack; do not add a third level. **Next immediately: MI-02**, from fresh origin/engine/log with only this exact gated MI-01 prerequisite if still absent. Its versioned key-only interval resolver will expose every truncation/removal before one commit; prior literal note operations keep their replay semantics. Continue in this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-09 — ED-03 material planner gated; native document latency measured; taking MI-01
+
+**PR requested:** head `engine/edit-scope-placement` at **`c58de5be2ad7b9f86510a7ee6178ca4a30189b5f`**, base `engine/log` (**`a3b4001e6e3031ed3a09c153eeccda73674fbc10`**). Title: **Add captured material scope and shared clear-before-place planning**. Branch pushed; win opens and merges the PR and runs MSVC. Created from refreshed origin/engine/log, then merged the sole gated prerequisite, ED-01 `engine/range-survivor-identity` at `84c43f15eba955fe45c6ef481bf7fe79dc5ce556`; merge ED-01 first. No engine-log edits are included. This is the material foundation of ED-03, not closure of its producer, automation or window/drop gates.
+
+**Window handoff / PR body:** `edit_plan.hpp` supplies owned literal `EditScope`, captured policy and descriptions, prepared group moves and anchored-start end resizing. Capture every source first, clear the union of every same-lane destination with relocated originals excluded, then place all incoming material in one expected-head `arranger.splice`. Swaps retain both identities; gaps between destinations survive; sole or leftmost survivors keep original root/child IDs and later fragments allocate only the identities actually needed. The pure interval resolver has no Store/SQL/settings access; image capture, source-clock transforms and typed row planning remain in the owner adapter. Ordinary clip/range paste, duplicate, cut and delete share the material planner. Dedicated whole-Set Time commands retain their existing all-lane path. Settings are captured once by the `adi_settings` bridge; core receives owned values. No schema or opcode change.
+
+**Material and admission:** physical-nanosecond resolution and directed interior tick conversion prevent rounded touching from hiding real overlap, while native outer endpoints, pinned source phase, loops, source-end markers, authored/inherited fades, opaque children, aliases and typed future columns survive Undo/Redo. Description is bound to the captured source/head and semantic op prefix; actor/label stamping and explicitly described appended requests remain possible. Main-lane/frozen/policy boundaries refuse by name. Default Lock-off edits with affected global track, recursively owned device or send automation explicitly refuse until AU-05; explicit Lock keeps those rows fixed. Unsupported modes do not silently become a different edit. No media, bounce, recording, MIDI Capture, stem or raw-window-producer migration; no AU-05/AT-10, left-trim/Crop, ripple or Live parity closure.
+
+**Correctness gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build with zero warnings; `test_all.sh` **27,554 checks / 191 suites**, every row and sum audited, all four validators and binary layout clean. ED-01 base was 15,933/188. New pure placement **10,566**, owner planning **610**, native playback **445** checks. The native owner gate commits 40 actual nonempty edits across three tracks, independently checks physical overlap after every commit, undoes all to the exact typed rows and initial digest, then reopens and replays. Pure algebra has a separate seeded occupancy/permutation oracle. Thirty-six native Session fixtures cover both widths, 44.1/48 kHz source rates, tick/ns placement, Warp, tempo changes, source offsets, loops, sparse victims, inherited split fades and active end fades; callback allocation/file-I/O checks remain zero. Existing clip-edit, native audio, Time, row, material and MIDI suites remain green.
+
+**Compiler and adversarial evidence:** fifteen strict GCC/Clang translation units (five production, nine tests, benchmark compile-only), zero warnings. Nine Clang suites pass **12,942 checks**, no failures, using validated GCC cold archives. Nine isolated compiled plants trigger **185 ordinary named assertion failures**, no crashes or uncaught exceptions: alias detachment (2), unlocked automation admission (13), description payload binding (1), outside-mask filtering (8), actual owner relocation exclusion (95), pinned source phase (8), sole survivor identity (11), pure moved-ID removal reporting (26) and union gaps (21). The moved-ID reporting plant is not claimed as the actual swap test; the owner plant covers that boundary independently. Final benchmark CLI amendment changed only its tool TU, recompiled strictly with both compilers; production/test inputs and 23 unaffected Clang artifacts stayed hash-identical. No whole-project Clang, sanitizer, MSVC/macOS or hardware claim.
+
+**Measured native document path:** Sixteen individual observations (one fresh and one primed per width/path/member-count), Linux GCC14 Debug, 100 material tracks plus Main, 200 starting clips, 100 synthetic native devices, 48 kHz/256 frames. Prepared capture took **6.12–8.37 ms for one clip** and **38.99–43.86 ms for eight**. Whole document synchronisation took **21,570.67–27,208.28 ms** across the raw and prepared paths; owner totals were 21,647.99–27,215.12 ms. All edits retain 100/100 devices with no loader call, one rebuild and one publication, zero ordinary callback allocations/file I/O and no source/decode read errors. The run nevertheless records **2,763 callback execution-budget exceedances / 70,438 blocks** and **290,560 missing source frames** across new generations. These are process-duration and per-source counters, not hardware xruns. Aggregate nonzero output after adoption does not measure edited-source readiness. Raw moves retain victims while prepared placement removes them, so these are the same intent with different row effects; no distribution, controlled hardware, Release or window-drop claim. Static inspection finds 66 fresh full-source Re-Pitch renders per raw rebuild (6,336,000 stereo output frames), with no prepared-result reuse; this is a profiling lead, not measured timing attribution. ADR-0217 d5 actual window/drop validation remains open. Raw JSON SHA256 `a412656d9be19803d551871db6d6be0bb8babf6ac75bfc7b0b374787930da02e`.
+
+**Reproduction and merge notes:** code measured at `00c0a9aabcd0ec8363fb9e7405a1c3453da00a23`; the final commit adds only the report/raw observations. `ENGINE-EDIT-PLACEMENT.md` describes the API; `ENGINE-EDIT-PLACEMENT-MEASURE.md` contains the sixteen individual observations, provenance and limits, with full raw JSON. Local evidence: `/workspace/adi-cloud/placement-review/summary.json`, `placement-full-gate-audit.json`, `placement-complete-build.log`, `placement-complete-gate.log`, `placement-measure/run-bounded/`, and `placement-measure/static-synchronise-audit.md`. The measured core SHA256 is `015955505711fea2300b1457c463d8bc4b2dfdc2b1dd0c946d2f026379d49e54`. Preserve N17 and ED-01 test dispatch additions additively when their independent branches meet; the existing opaque-copy fixture now chooses Lock explicitly and free destination space. No README/FEATURES counts changed.
+
+**Blocked next item — ED-04:** origin/engine/log is still `a3b4001e`; ED-01 and ED-03 are two pending source levels. ED-04 explicitly depends on ED-03 (PLAN's ED-04 card), so another dependent branch would exceed this seat's two-level limit. No waiting for PRs or CI: take independent **MI-01, `note.applyDiff`**, immediately on `engine/note-apply-diff` cut from fresh origin/engine/log. Preserve full-stride note bytes, flags and expression rows; one stream write per diff, stale-stream guard, exact inverse and historical P0 inverse dispatch. Revisit ED-04 once its base lands. The measured synchronisation workload and actual window/drop validation remain explicit follow-ups, not evidence that the latency gate passed.
+
+---
+
+## 2026-11-09 — ED-01 range survivors and lane scope gated; taking ED-03
+
+**PR requested:** head `engine/range-survivor-identity` at **`84c43f15eba955fe45c6ef481bf7fe79dc5ce556`**, base `engine/log` (**`ade4ea0c2def33126d9e79b3d367a16ecf71759d`**). Title: **Preserve range survivor identities and distinguish material from Time scope**. Branch pushed; win opens and merges the PR and runs MSVC. This finishes ED-01's remaining engine range-kernel work after N17's two-point split. Cut directly from origin/engine/log; no pending N17 source or log edits are included in this feature branch.
+
+**Window handoff / PR body:** existing material-range preparation APIs now select and clear only main-lane clips (`lane_id IS NULL`). Copy/Cut/Delete/Paste/Duplicate ignore independent take material, including unsupported/nonfinite take metadata. Shared cut math trims a sole left or right survivor in place, preserving original root/material-child IDs, external aliases, source phase, loop and fade domains; a two-survivor erase keeps the left ID and allocates exactly one independent right piece. Neither an unused tail nor a discarded middle consumes IDs. Captured `arranger.splice`, expected-head commits and public signatures stay unchanged. The dedicated whole-Set Copy/Cut/Delete/Insert Time paths explicitly retain all-track/all-lane scope; Range's insertTime option copies main-lane material while still inserting time across the Set. Delete Time relocates the staged trimmed root and source-clock rows rather than reloading old values. ENGINE-EDIT-COMMANDS and header comments specify the boundaries.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build, zero warnings, and `test_all.sh` **15,933 checks / 188 suites**, every row/sum audited, zero failures, all four validators and binary layout clean. Independent source baseline **15,685/188**; this item adds **248** checks: clip edits **296** (124 new), native audio **375** (124 new). Time edits **413**, row edits **36**, native MIDI **172** and material commands **29** remain green. Both-clock interval cases cover disjoint/touching/full/prefix/suffix/interior erasures, exact typed Undo/Redo, opaque child/parent/alias preservation, pinned-zero and absent clocks across a tempo change, main-lane versus whole-Set scope, exhausted IDs and the single remaining ID. Twelve actual PCM cases at both widths and source rates prove material deletion only silences its selected span, Time deletion shifts the original suffix by precisely the removed duration, and original source/loop/fade phase plus identities survive one Undo/Redo. Callback allocation and file-I/O audits remain zero.
+
+**Compiler, adversarial and compatibility evidence:** strict GCC and Clang19 compile clip_commands.cpp plus all six focused test units with actual flags and Wshadow/Werror, zero warnings. Clang passes **1,321 checks**, zero failures, against validated GCC cold dependencies. Eight isolated compiled plants trigger **52 ordinary assertion failures**: sole-tail recreation (15), lost source offset (24, actual PCM), omitted main-lane filter (5), writer-only all-lane scope (2), Time-copy main-only scope (2), Time-erase main-only scope (2), discarded sole-prefix clone (1), and discarded interior allocation (1). No crash/exception counted; source/archive/baseline hashes stay unchanged. Supplementary external combined production code uses this refactor with the exact pushed N17 overload/header and preserved N17 validator/test objects: **271 core + 357 audio + 208 MIDI = 836 checks**, zero failures. This verifies the pending two-cut behavior without stacking its implementation into this branch. Evidence: `/workspace/adi-cloud/ed01-review/summary.json`, `range-survivor-focused-tests.log`, `range-survivor-complete-build.log`, `range-survivor-build-recovered.log`, `range-survivor-complete-gate.log`.
+
+**Merge handoff and limits:** when combining this and N17, retain both branches' core/audio test dispatch calls additively; the compatibility run used N17's preserved test objects, not a merged dispatcher. Complete deletion still captures/detaches external aliases for referential integrity, including a take alias outside selection; independent take rows remain protected. Existing pasted-Time material still lands on the main lane; this does not add take-lane clipboard placement, audition, EditScope, global automation-follow, ripple or frozen-track policy. Exhaustion fixtures exhaust root and child IDs together, not child-only limits independently. No whole-project Clang, sanitizer, MSVC/macOS execution or measured Live parity claim; README remains win-owned.
+
+**Next immediately: ED-03**, the shared EditScope/placement planner, with captured scope and descriptions, clear-before-place algebra, group moves and anchored end resizing, then the rest of M2 in the director's order. Cut the next branch from refreshed origin/engine/log, never main; explicitly name any gated range-kernel prerequisite rather than claiming its code is already merged. Continue in this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-09 — N17 two-point split gated; taking the remaining ED-01 range kernel
+
+**PR requested:** head `engine/clip-two-point-split` at **`bf51597e23826b744cfc4bc6147ec406736fbfa4`**, base `engine/log` (**`a09d67cd80d59ca2b469a4681fb98ad25a4c973a`**). Title: **Split one clip at two points in one undo step**. Branch pushed; win opens and merges the PR and runs MSVC. This closes N17's remaining engine request; the window owns its row and bindings. Independent of the pending N29 and Link source changes, cut directly from origin/engine/log.
+
+**Window handoff / PR body:** call `clip_edit::prepareSplit(store, sourceId, middleId, rightId, begin, end, referenceRate)` on the Store owner, then `commitPrepared` once. Both cuts are made in memory from one coherent captured image with one shared child-ID allocator, returning one `clip.split` request. The left piece keeps sourceId, the selected interior is middleId, and the right piece uses rightId. The caller can append `clip.setMute` for middleId so both cuts and only the selected span's mute share one expected-head check, transaction and Undo. Endpoints use one explicit input clock and must remain ordered and strictly inside the stored clip after conversion; identities must be distinct and unused. One-cut preparation remains available; ordinary zero/negative caller IDs accepted by the existing schema/history remain supported. Split/join validation accepts one or two distinct new pieces, keeps their track/kind/time base and the existing ownership/inverse guards. OPS and ENGINE-EDIT-COMMANDS document the extension; no schema, new opcode or window change.
+
+**Material and atomicity:** source media, loop phase, pinned unwarped clocks and original fade domains stay intact; new edges create no fades. Opaque notes/expression/automation data, full-width stored identities, future typed BLOB/NULL columns and automation-parent links survive both clones and captured Undo/Redo. Original child IDs and external aliases stay with the original. Reversed/edge/outside/clock-collapsed selections, occupied/repeated IDs, foreign stores and stale null/non-null heads refuse; a bad appended op rolls back the entire edit. This is the bounded two-cut producer, not the later EditScope/overlap planner or arbitrary joining.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build, zero warnings, and `test_all.sh` **15,926 checks / 188 suites**, every row/sum audited, zero failures and all four validators/layout clean. Added **241 checks**: core clip edits **271** (99 new), native audio **357** (106 new), native MIDI **208** (36 new); Time edits **413** and row edits **36** remain green. Eight unwarped source-rate/width/loop variants plus two Warp variants compare exact audible PCM before the split and after split/one Undo/one Redo, with nonzero source/placement offsets, cuts inside active fades and a tempo junction. Native MIDI checks explicit original/split schedules, boundary off-before-chase ordering, overlapping same-key voice ownership, tuning, exclusive endpoints and retained ANOT identities in both widths and regular/irregular callback partitions. Callback allocation and file-I/O audits remain zero. Core fixtures cover all four stored/input-clock combinations, read-only preparation, exact typed rows, optional-row absence, appended mute, atomic refusals and malformed captured packets.
+
+**Compiler/adversarial gate:** strict GCC and Clang19 compile both changed production units and five focused test units with actual flags plus Wshadow/Werror, zero warnings. Clang passes **1,285 checks**, zero failures, using validated GCC cold dependencies. Six isolated compiled plants trigger **76 ordinary assertion failures**: omitted right image (17), lost right source phase (20, actual native PCM), omitted middle children (16), two-piece time-base validation bypass (4, otherwise SQL-valid alternate-clock rows), unshared child allocator (11), and omitted expected head only in the new overload (8). All exit normally with named test failures; no crash or exception counted. Source/core/baseline object/binary hashes remain unchanged.. Artifacts: `/workspace/adi-cloud/n17-review/`, `n17-preflight.log`, `n17-core-tests.log`, `n17-complete-build.log`, `n17-complete-build-final.log`, `n17-complete-gate.log`. No whole-project Clang, sanitizer, MSVC/macOS execution or measured Live parity claim. New native MIDI split cases use constant tempo without clip looping; crossing notes release/chase at independent clip boundaries, with no new tie behavior promised. README counts remain win-owned.
+
+**Next immediately:** the remaining ED-01 range kernel, on `engine/range-survivor-identity` cut from refreshed origin/engine/log: keep the original root/child identities when only a tail survives, and constrain ordinary material-range reads/clears to the main lane while preserving dedicated whole-Set Time edits across all lanes. Then ED-03's EditScope/placement planner and the rest of M2 in the director's order. Continue in this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-09 — N29 checkpoint timeline gated; taking N17
+
+**PR requested:** head `engine/history-checkpoint-timeline` at **`57fe7aa8bde039b7b261dcc278fd72c8500ffcb2`**, base `engine/log` (**`36fcfdef6a7736a5740181c44c39c7ebe903277c`**). Title: **Expose the History checkpoint base without a false undo step**. Branch pushed; win opens and merges the PR and runs MSVC. This closes N29's remaining engine integration; the window owns striking its needs row. Independent of the pending Link consumer, cut directly from origin/engine/log.
+
+**Window handoff / PR body:** `History::readTimeline()` now returns `Timeline::baseSeq`, zero before compaction and the retained structural root's sequence afterwards. It reads the checkpoint metadata in the same read transaction, validates the retained root, and omits that root from public `steps`. The window can indicate that older steps were compacted without offering an impossible Undo. The base stays in internal ancestry, so branch heads and named/automatic snapshot anchors exactly at the base remain visible with their stored sequences; `headSeq` and a first visible step's parent may equal the base. At that head no visible step is applied and the current redo line remains usable. Broken checkpoint metadata returns an explicit error and no partial timeline. No schema, operation, navigation or retention-policy change; ENGINE-HISTORY-LIST.md and ENGINE-HISTORY-RETENTION.md document the read contract.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build, zero warnings; `test_all.sh` **15,733 checks / 188 suites**, every row/sum audited, zero failures, all four validators and binary layout clean. This adds **48** assertions to the existing History list suite (**77**); compaction **49**, history **95**, snapshots **65** and policy **38** remain green. Real commits/compaction exercise base advancement, whole transactions, exact-base snapshots and fork navigation, Undo/Redo, held values, read-only reopen, zero SQL changes, opaque checkpoint/payload bytes and eight malformed metadata cases. Strict GCC and Clang19 compile history_list.cpp and all five focused test units with actual flags plus Wshadow/Werror, zero warnings; Clang passes **324 checks**, zero failures, against the validated GCC archive.
+
+**Adversarial evidence and limits:** four isolated compiled production plants trigger **36 ordinary assertion failures**: visible structural root (8), zeroed public base (14), lost exact-base snapshot (2), severed internal base ancestry (12). Each exits normally with test failure; no crash or exception counted. Source/core/baseline object/binary hashes stay unchanged. Evidence: `/workspace/adi-cloud/n29-review/summary.json`, `n29-complete-build.log`, `n29-complete-gate.log`. The environment briefly reported starting during the full run, then returned ready with the same files and original test process; its final log is the completed original run. No whole-project Clang, sanitizer, MSVC/macOS execution or measured Live parity claim. HI-02's capped retention/stored-state changes and HI-03's moveTo remain separate queue items; README remains win-owned.
+
+**Next immediately: N17**, the two-point split of one clip as one captured operation, with caller-known middle identity so the window can append its mute in the same transaction. New branch `engine/clip-two-point-split` from the refreshed origin/engine/log, never main. Then the M2 edit kernel in the director's order; continue in this same turn without waiting for PR creation or CI.
+
+---
+
+## 2026-11-08 — Native Link playback consumer gated; taking N29
+
+**PR requested:** head `engine/link-playback` at **`228f7b300c8563149e0b102a6d08f6d8fd49dab6`**, base `engine/log` (**`5ab36bcfb5b01693c9ead28331933a21e507c49f`**). Title: **Connect Link timing to native playback**. Branch pushed; win opens and merges the PR and runs MSVC. This completes the dated Link-consumer exception in LANES §3 item 1. No main changes or GitHub API calls; this log is not part of the feature branch.
+
+**Window/driver handoff / PR body:** `LinkPlayback` joins the SDK adapter to the real native `Session`. The single driver calls `process(io, buffer, command)` with physical output latency only; the consumer pins one graph, adds its compensation once, captures one SDK state, and splits native rendering at quantized start/stop offsets. The driver carries `Result::preparation` through its owner mailbox; the serialized document owner calls `prepare(store, packet, nowMicros)`. `setLaunchTick` chooses the next start position. Results expose waiting, start/stop offsets and phase error. Start Stop Sync remains independently optional, newer Play cancels an obsolete scheduled Stop, and late starts chase the corresponding musical position. Private performed tempo maps preserve elapsed sample time and authored project/history; device instances remain loaded. The driver never constructs graphs or reads Store/files. `ENGINE-LINK-PLAYBACK.md` specifies ownership, admission, clocks and bounds. No window or JUCE driver wiring is included.
+
+**Coherence and continuity:** one physical callback retains its graph, clock, audio source generation, strip/send/Reference automation and device-parameter event-source pointer/lifetime through every slice, even across two concurrent owner publications and collection. Stored note identity, exact authored contents and actual instrument path govern voice adoption; this covers XC-25's held-note identity requirement. Accepted delayed MIDI events retain remaining arrival and source ownership through multiple delay hops. Fan-out releases keep ownership until all relevant delayed copies complete; partial rejection retries, dead-end Stop paths cannot hold voices, and an incomplete or canceled on/off pair cannot resurrect a voice. Source readiness is checked immediately before launch, with owner priming at the current position and loop head and a worker sequence guard against stale eviction. Phase correction adjusts private effective tempo by at most 0.5 percent; fractional loop beats do not accumulate false drift. Backward seeks and loops repair old performed-history segments at their exact musical boundary. Linear input recording stays sample-continuous.
+
+**Full gate:** GCC 14 Debug/Werror, PD on, JUCE off; final complete build and `tools/test_all.sh` **16,095 checks / 193 suites**, every row and sum inspected, zero failures, all four validators and binary-layout check clean. Base was **15,685 / 188**; this item adds **410 checks / 5 suites**. Focused native suites: render slices **94**, MIDI continuity **109**, page readiness **41**, consumer **139**, immutable strip bindings **24**, SDK **38**; existing external tempo **96**, paired publication **39**, Main loudness **44** and MIDI controllers **90** also pass. Actual two-participant SDK runs, executed exclusively, pass **50 SDK + 147 native-consumer checks**, including real peer tempo preparation and captured start/stop timestamps reaching PCM and MIDI. Both output widths, a nonzero graph delay, distant ramp PCM against independent native Warp, recording, delayed owner preparation, repeated loops, seeks, opt-out, retained device ownership and unchanged project/history are exercised. The empty-callback meter reset remains supported; the direct-source controller fixture now acknowledges delivered ons as the real graph does, with its assertions unchanged.
+
+**Compiler, sanitizer and adversarial gate:** strict GCC and Clang 19 compile **11 changed production units + 10 focused test units** with actual flags plus `-Wshadow -Werror`, zero warnings. Clang, ASan/UBSan and TSAN each pass **714 checks**, zero failures or sanitizer reports. Sanitizers instrument those units/tests against validated uninstrumented GCC cold dependencies; no whole-program coverage claim. Matching nothrow hooks complete test allocation probes without disabling leak/mismatch checks. Debian Clang TSAN uses its packaged shared runtime to preserve those hooks; the static-runtime duplicate-symbol attempt is not counted as a runtime gate. An overlapping network test attempt was disclosed and superseded by an exclusive **177-check TSAN Link rerun** and the exclusive GCC peer runs above. **34 isolated compiled fault plants** produce ordinary assertion failures (**238 expected failed assertions**), no crash/exception counted: 11 render/publication/source-lifetime plants, 13 MIDI identity/queue/fan-out plants, 9 consumer timing/intent/preparation plants and the deterministic stale-page-worker plant. Review artifacts are under `/workspace/adi-cloud/link-review/`, `render-slices-plants/`, `midi-plants/`, `link-consumer-plants/` and `clip-readiness-review/`; final GCC log `link-complete-gate.log`. The final core and ten GCC binaries are archived with hashes at `/workspace/adi-cloud/link-release-228f7b30/`.
+
+**Limits and next:** performed history caps at 4096 boundaries; stale preparations refuse after two seconds, and a failed candidate retains the last valid graph. The bounded fan-out queue scan has no saturated-large-graph timing benchmark here. No hardware latency, measured Live parity, whole Clang build or MSVC/macOS execution is claimed. Link remains on the merged 3.1.5 pin; the explicit `Link-4.1.1`, Link Audio off re-pin is the separate queued XC-31/M0 item in the director's order. README counts remain win-owned. **Next immediately: N29**, expose the retained checkpoint base through the read-only timeline and omit its structural root from undo steps while preserving exact-base branch/snapshot anchors; then N17's two-point split and M2. Continue in this same turn, without waiting for PR creation or CI.
+
+---
+
+## 2026-11-05 — Context checkpoint: native Link playback consumer in flight, seat continues
+
+**Continue this item; no stop or PR-ready claim.** Worktree `/workspace/wt-engine-link-playback`, branch `engine/link-playback`, clean merge base **`bac6a0d96f3070d8b7d02ed6ca81258e80f48a74`** combines three independently gated prerequisites: SDK `6c3d1b25`, external-tempo preparation `dffe13a9` and paired graph/clock publication `0f705682`. It stands at depth two above engine/log, never main. Current integration changes remain local/uncommitted until their full gate; no integration push yet.
+
+**Concrete WIP already building/running:** GraphHost/Session scoped RenderBlock APIs retain one publication through multiple physical-buffer slices. A per-acquisition serial invalidates old handles even if the graph pointer repeats; expired calls zero both widths without dereferencing retired state. Session's block owns CallbackScope through acquisition, queries its actually pinned spec/tempo/tick/sample/latency, and advances native transport only for processed parts. Stack-only AudioIoSlice offsets both output widths, input channels and streamTimeSamples with bounds/overflow/null-channel checks. Session owner setExternalTempo updates through ordinary refresh while retaining device instances; new setExternalTempoAt preserves performed tempo before a musical boundary, replaces its future and keeps elapsed sample time continuous. Private history caps at 4096 boundaries and never enters the project. Integer tick conversion has its ordinary sub-sample quantization: the 100→200 BPM test permits two ticks while requiring the exact same sample frame. The Link SDK frame now queries a peer-aware transport launch on a copy of the same captured state, without committing a phase change; launchBeat is an explicit query in LinkBuffer.
+
+**Actual consumer:** new engine/link_playback.hpp/.cpp owns no threads/Store on callback. One driver combines physical output latency with the pinned graph's compensation, captures the actual SDK frame, retains native graph identity across launch/stop slices, honors independent Start Stop Sync, returns owned preparation/status packets, and leaves graph construction to owner prepare(). Owner packets have a stale-time guard; constant reset serves a start while performed-boundary updates serve live tempo changes. The public processCaptured path is a consumer of an already captured frame (used by controlled native timing tests); process() is the actual SDK path and needs the next real-network test. No UI wiring, whole-output resampling or completed continuous Live-follow claim.
+
+**Evidence so far, not a final gate:** GCC Werror core and focused native tests pass. `adi_render_slices_tests` **31** proves actual concurrent owner publication between 17/47-frame slices, stable old graph/clock/format through both parts, new format next callback, expired handle refusal, retained **actual one device instance/load**, bounds/pointer/stream-clock handling, callback zero allocation/free/file I/O, and a real armed input recording across slicing plus a 100→200 BPM performed boundary: **all 128 stereo input frames** are bit-exact in the actual WAV with continuous project placement. The fixture initially omitted record arm, and a too-strict inverse-tick equality was corrected to native tick quantization; neither old failure is a gate. Merged prerequisite suites passed **39 paired + 96 external + 35 SDK** before the latest additions; newer basic source query/core builds also pass slices31 + SDK35. New `adi_link_playback_tests` **26** uses controlled captured frames with actual Session Warp audio, native MIDI/instrument, both widths, a frame-17 start, frame-23 stop of the following buffer, exact audible/on/off boundaries, callback metrics, opt-out, no project/history changes, owner preparation/device preservation, stale owner rejection and late start/seek/chase. This is meaningful native signal/event evidence but **not a substitute for an actual SDK-peer consumer test**. Latest logs `/tmp/link-playback-native-build.log`, native.log, history-test3.log, coordinator-build.log, coordinator-slices.log, coordinator-sdk.log, prerequisites.log; source integration has no Clang/fault/TSAN/full gate yet. CMake adds render_slices and link_playback tests; no source under UI/DSP/plugins was edited.
+
+**Next immediately:** extend test_link_playback.cpp with optional --peers actual SDK→native consumer integration, run outside the restricted no-route sandbox as already approved for SDK tests (default test_all must not silently enable networking). Poll two real participants, establish tempo, prepare owner generation, trigger real peer start/stop, and compare actual native event/PCM boundary against that exact frame's launch time with graph+hardware latency. Then add actual held-note tempo-change tests. Current MidiClips increments generation on every rebuild and flushes/re-chases all voices; preserve active voice identity across a true clock-only rebuild, with authored identity validation, bounded owner-built lookup and proper off/controller retry semantics, rather than hiding that retrigger. Do not simply resample the whole mix; fixed unwarped clocks are independent. Stable-rate drift/phase correction, disabling Link back to authored tempo, seek/loop and candidate page readiness before live publication still need explicit behavior/tests. Current consumer reports phaseErrorFrames and avoids a seek for two-frame tick rounding; it does not yet implement full continuous drift correction. Keep that limit visible until corrected. A clock change must preserve linear recording time: use a performed tempo event at the current musical boundary rather than resetting the map from zero and jumping elapsed sample time. Update/reset history on a new start appropriately. Finish native signal/lifecycle gates, then full GCC/Werror/test_all/validators, focused Clang, normal-failure fault plants and relevant sanitizer stress; push/log/next. D11 latency switches and remaining brief follow; model weights/Drive handover remain separately named dependencies. This checkpoint is only a log entry. Continue in the same turn through compaction, never end to report or ask.
+
+---
+
+## 2026-11-05 — Paired graph/transport publication gated; taking native Link playback integration
+
+**PR requested:** head `engine/transport-generation` at **`0f7056827cb41a5763ea19c3e3237e51ce59f7a2`**, base `engine/log` (`ec9a4a7b`). Title: **Publish transport metadata with the graph that actually renders it**. Independent of SDK/tempo preparation; final integration can combine all three prerequisites at depth two. Win opens the PR; main remains untouched.
+
+**Window/host handoff / PR body:** GraphHost's optional owned `GraphTransportState` is part of the PublishedGraph itself. One acquired audio publication adopts history, announces its identity, invokes that graph's beginBlock exactly once, then passes its matching metadata to every actual node. There is no independent clock acquisition that can race to a different generation. Failed graph preparation publishes neither graph nor clock. DeviceHost's RebuildSpec forwards the context through initial and shape/coalescer builds. `renderedTransportState()` is single-audio-reader inspection after process and before the next process, protected by the actual last-rendered publication; future owner publications cannot change that value early. Omitted state retains the caller's original AudioIo transport. Graph destruction precedes its retained clock's destruction, and owner reclamation retires both together, including unheard/skipped generations. Callback access is raw-pointer only: no shared_ptr copy/release, allocation/free, SQL or I/O. The provider's beginBlock has the normal noexcept/no-lock/no-I/O callback contract. Session prepares its TimingView inside this graph context, removes its separate clock publisher/collector, and uses the actually rendered state for node BPM, loop application and metronome/post-graph consumers. A safe type query accepts a caller-installed foreign graph context without interpreting it as native metronome storage. ENGINE-TRANSPORT-GENERATION.md documents ownership/lifetime/thread boundaries. No persisted setting, schema/opcode or UI change; no Link network/tempo/start-stop implementation claimed yet.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **14,119 checks / 168 suites**, every row/sum inspected, zero failures, validators/layout clean. Integrated base 14,080/167; this item adds **39**. Actual graph nodes/PCM at both widths prove context identity, exactly one begin, multiple unheard publications, last-rendered accessor after future publications, old-reader protection, exact owner retirement, refusal retaining the old complete pair, legacy caller metadata and safe foreign context. Real DeviceHost shape-epoch/coalescer rebuilding retains the clock. Native Session render runs concurrently with **200 actual Store tempo edits/refreshes per width**, and explicitly proves both tagged source generations were heard, every source's real node BPM matches its actual graph and callback allocation/free/file I/O remains zero. Existing host **124**, transport-info **131**, transport-settings/click **49**, Session **214**, cue **96** passed a focused preflight and remain green in the final full gate. Focused Clang19 compiles all three production CPP units (host, device_host, Session) and final test with actual conversion/Wshadow flags, and passes **39** against validated GCC cold dependencies. Four actual GCC Ninja Wshadow checks pass. Initial 35/37-check baselines are superseded by the final 39 including nonvacuous dual-generation observation and deterministic last-rendered identity.
+
+**Adversarial/concurrency evidence:** **9 compiled plants**, normal assertion failures: graph context not retained (19), DeviceHost forwarding missing (4), native Session attachment missing (2), clock applied after DSP (13), accessor takes newest owner publication rather than last-rendered graph (2), accessor loses rendered context (9), clock begun twice (4), native clock BPM shifted (2), and legacy caller metadata discarded (2). GCC TSAN instruments all three changed production units and the complete 39-check native suite, including concurrent real Session refresh/render: **39 checks, zero reports**, strict warning flags retained without compile-warning demotion or runtime suppression. Cold dependencies/remaining engine are not claimed wholly instrumented. Review `/workspace/engine-review/transport-generation-review`, script transport-generation-review.py; logs `/tmp/transport-generation-full-build.log`, full-gate.log, focused3.log, legacy.log, clang.log, shadow.log, plants.log, tsan.log (transport-generation- prefix each). No whole Clang/MSVC/macOS/hardware/measured Live claim; README remains win-owned.
+
+**Next immediately / integration workspace:** `/workspace/wt-engine-link-playback`, branch `engine/link-playback`, starts at `engine/log` (`37e22468`). It already cleanly merges the actual SDK prerequisite `6c3d1b25` and external-tempo prerequisite `dffe13a9`; current merge head `7ebb7e11`. Merge this paired-publication prerequisite next, then build the actual native transport/playback consumer. No integration gate/ready claim yet. Required direction: pinned graph generation across sub-buffer processing for exact quantum launch/stop; derive first audible time from Link's monotonic clock plus physical output latency; immutable actual prepared clock drives Warp/MIDI/automation and loop conversion; owner preparation/rebuild never occurs on callback and preserves device instances. AudioIo currently has raw audio pointers/frame count/streamTimeSamples and no MIDI-event span, so sub-buffer pointer/count/stream-clock handling needs actual source/recording validation. A callback must not acquire a different graph halfway through a split buffer. Current Session::spec() is owner inspection only; actual callback preparation identity must come from the pinned graph clock, not a racing owner field. No whole-output resampling shortcut: unwarped fixed source clocks have independent semantics.
+
+**Known integration work to prove, not hide:** MidiClips currently increments its generation on every rebuild and releases/re-chases held notes on that transition; do not claim seamless Live held-note behavior without an actual held-note tempo-change test and the necessary correction. Rebuilding audio source readers also needs ready pages for the desired musical position before publication, with the old valid graph retained during owner preparation. SDK beat/phase magnitudes are local while quantum phase is shared, transport intent may arrive for a past/future timestamp, and ordinary host timestamp/rate drift must be distinguished from an explicit locate. Preserve native monitoring/input/recording semantics across any slice. Finish and gate concrete native launch/stop/follow behavior, then D11 Keep Monitoring Latency/Reduced Latency/Delay Compensation switches and the rest of the brief. Existing model-weight/Drive handover dependencies remain named open, not a seat stop. Continue this same turn through compaction; this is a gate/log checkpoint, not an end.
+
+---
+
+## 2026-11-05 — Coherent native external-tempo preparation gated; taking paired graph/transport publication
+
+**PR requested:** head `engine/external-tempo` at **`dffe13a90fe2593e9a8ff9e3fe10b00807ee1cee`**, base `engine/log` (`361f2807`). Title: **Prepare coherent external tempo generations without changing authored project clocks**. Independent of the actual Link SDK adapter (`engine/link-session`), designed to merge as a separate prerequisite rather than stacking three deep. Win opens the PR; main remains untouched.
+
+**Window/owner handoff / PR body:** an owner-selected `SessionSpec::externalTempoBpm` prepares a constant-tempo performance generation without changing authored tempo automation, native rows, history or the raw `Session::model()` projection. Its private playback model supplies the same tempo to audio/Warp preparation, MIDI placement, automation compilation, instrument TransportInfo and saved musical-loop conversion. Driver rate re-preparation and refresh retain that selection even when authored tempo events change. Omitting it keeps normal authored-tempo behavior. Finite 20..999 BPM and performanceState=true are required; accidental offline use refuses, leaving a failed preflight available for valid retry. Absolute-time fingerprinted frozen caches explicitly require unfreezing rather than silently playing the wrong musical timing. Session load now refuses callback entry before diagnostics, allocation/free, SQL or I/O. ENGINE-EXTERNAL-TEMPO.md specifies that the option belongs to an immutable prepared generation, not a callback tempo mutation or complete continuous Link implementation. No UI/schema/opcode change, automatic Link network/rebuild queue or whole-output resampling.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **14,176 checks / 168 suites**, all rows/sum inspected, zero failures, validators/layout clean. Integrated base 14,080/167; this native integration adds **96**. Actual Session Re-Pitch PCM plus fader automation match an otherwise identical native project authored at 60 BPM while the source preserves 120/240 BPM events. Both widths and 44.1/48 kHz prove one-second placement, two-second Warp duration, exact native note-on at 1.25 seconds/off at 1.75, instrument transport BPM past the authored change and ready callback PCM. Actual driver changes 44.1↔48 kHz preserve those note boundaries and audio. Refresh after authored BPM changes to 333 still matches the constant-tempo reference; a native musical-loop op and subsequent refresh wrap at the external tempo's exact sample window and repeat matching audio. Digest, SQLite total_changes and journal count prove preparation/playback leave project state untouched. Invalid values/offline use and later valid retry are checked. A native SQLite statement trace plus new/delete/file-I/O counters prove callback load refusal and unchanged diagnostics. An actual Freeze capture/prepare/commit installs a valid fingerprinted cache, then external load refuses without changing it. Initial fixture compile error (HashResult rather than its checked .hex) and missing NOT NULL fixture hash were corrected before the 96-check gate; neither is counted as product success. Focused Clang19 compiles Session production and the final workflow test with actual conversion/Wshadow flags and passes **96** against validated GCC cold dependencies. Both actual GCC Ninja Wshadow checks pass.
+
+**Adversarial evidence:** **10 compiled plants**, normal assertion failures only: clock display/loop uses authored tempo (12), playback override removed (32), MIDI alone uses authored tempo (12), automation alone uses authored tempo (16), Warp alone uses authored tempo (20), private override also mutates raw model (4), stale frozen audio admitted (1), offline authority admitted (1), 1000 BPM admitted beyond the chosen contract (2), and callback load admitted (1). These separate consumer mutants prove actual timing/audio/event consumption rather than a DTO or one BPM field. Review `/workspace/engine-review/external-tempo-review`, script external-tempo-review.py; logs `/tmp/external-tempo-full-build.log`, full-gate.log, focused4.log, clang.log, shadow.log and plants.log (external-tempo- prefix on each). No new thread ownership or sanitizer claim here; existing live graph/transport tests remain in the full gate. No whole Clang/MSVC/macOS/hardware/measured Live claim; README remains win-owned.
+
+**Next immediately / necessary live-follow publication fix:** static prepared generation coherence does not alone make a live clock switch atomic. Existing Session separately publishes the prepared graph and TimingView; an intervening audio callback could acquire one generation's musical resources and another's metadata. Before native Link following, bind the clock to the graph's own publication. Independent worktree `/workspace/wt-engine-transport-generation`, branch `engine/transport-generation`, base `engine/log` (`ec9a4a7b`), already has local WIP: a graph-owned `GraphTransportState`, optional owner context passed through DeviceHost's RebuildSpec, and GraphHost's one acquired publication invokes its matching beginBlock before nodes. Session builds a shared TimingView into that graph context, removes the separate clock publisher, and uses the actually rendered context for metronome/post-graph consumers. Context retires with the graph off callback; no shared_ptr operations occur on the callback. Core build is in progress, **not gated/ready**. Write real graph/clock identity, failed publication, skipped generations/lifetime, coalescer and concurrent Session tests, preserving legacy host/transport/click behavior and zero callback allocation/free/locks/I/O; then gate/push/log it. This is an independent prerequisite so final Link playback can combine SDK, tempo generation and paired publication at depth two, preserving device instances and generation lifetimes rather than changing only a displayed BPM. Then implement quantized native transport scheduling/following and continue D11 monitoring/delay switches and the remaining brief. Earlier model-weight/Drive handover blockers remain named dependencies, not a seat stop. Continue the same turn through compaction; this gate/log entry is not a stop.
+
+---
+
+## 2026-11-05 — Actual Link SDK adapter gated; taking coherent external-tempo playback generations
+
+**PR requested:** head `engine/link-session` at **`6c3d1b254f9beb2eee6e4fa26ae3817a86594bf4`**, base `engine/log` (`0fbc1a7a`). Title: **Integrate pinned Ableton Link SDK through an audited audio driver boundary**. Independent of sample settings/analysed/progressive branches. Win opens the PR; no main checkout/edit or PR merge by this seat.
+
+**Window/driver handoff / PR body:** `engine::LinkSession::create(initialTempo, error)` owns an actual SDK participant, whose private implementation exposes no third-party headers. Networking starts off; owner `enable(true)` explicitly opens it, while `enableStartStopSync(true)` separately selects transport sharing. A single audio driver calls `process(LinkBuffer, LinkCommand)` to capture one SDK audio snapshot, optionally edit tempo/transport/requested beat, observe it at callback-clock time plus physical output latency, then commit through the SDK audio API. Returned owned `LinkFrame` carries actual beat/phase/tempo/peers, enabled/start-stop flags, transport intent/change time, audible time and a peer-aware requested launch timestamp. Invalid bounds refuse the whole command before any SDK mutation; owner construction/configuration refuses callback use without diagnostic mutation. No blocking app-state API is used. The owner retains the participant through its last driver callback and retires it off callback. ENGINE-LINK.md gives the handoff and the distinction between future launch and immediate play intent.
+
+**Dependency and bounds:** official upstream tag **Link-3.1.5 / 45931b8bd2a7066f1950f2a0beab81a0c51f28fe**, LICENSE.md explicitly GPL-2.0-or-later; its Asio gitlink **231cb29bab30f82712fcd54faaea42424cc6e710**, Boost-1.0 license read. fetch_external.sh --build-only successfully verifies all pins and fetches the exact submodule. CMake requires both header trees, privately links the SDK target and keeps dependency headers SYSTEM. EXTERNAL-CODE.md moves Link from reference-only to compiled dependency and corrects the old one-submodule description. No third-party source patch, Link Audio, PTP/sample-clock implementation or UI/schema/opcode change. Adapter bounds: finite 20..999 BPM, zero tempo command meaning leave alone, quantum 1/1024..256, finite beat requests +/-1e9, callback time +/-2^50 us and nonnegative output latency up to ten seconds. SDK transport intent is separate from scheduled launch; its musical timeline keeps advancing while stopped. Beat magnitudes can differ between peers while phase synchronizes. Network BPM uses integer microseconds-per-beat precision.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **14,115 checks / 168 suites**, all rows/sum inspected, zero failures and all validators/layout clean. The refreshed integrated topic base contributes 14,080/167; this adapter adds **35**. Default native tests use the actual SDK with networking off: invalid construction/commands, real monotonic clock, first-audible timestamp, tempo continuity, stopped timeline, negative phase, owner/driver boundaries and 10,000 actual capture/edit/commit callbacks with zero allocation/free/file I/O/direct linked pthread mutex lock or trylock. Linux lock wrapping audits calls in linked code, not hidden locks inside shared system libraries. Focused Clang19 compiles production and final test with actual conversion/Wshadow flags and passes **35** against validated GCC cold dependencies; both actual GCC Ninja Wshadow checks pass.
+
+**Actual network evidence:** final GCC and focused Clang executables each pass **47 checks** with `--peers`, explicitly enabling two actual participants: real multicast discovery (one peer each), shared tempo and phase at the same audible timestamp, future quantum launch with retained running shared phase, Start Stop Sync delivery, opt-out independence, and 20,000 enabled-peer captures with zero audited allocation/free/file I/O/direct mutex calls. The ordinary restricted sandbox exposes only an inactive loopback/no routes and fails discovery (37 checks/1 failure); it is not counted as a product success or silently skipped. Automatic review allowed the local peer test outside that restriction, where discovery works. The first unrestricted test's exact-BPM tolerance failed because SDK wire tempo is quantized to integer us/beat; corrected to 0.001 BPM, final GCC/Clang both pass 47. Logs `/tmp/link-session-peers.log`, peers-final.log, gcc-peers-final.log and clang-peers.log retain the distinction (all with link-session- prefix). No physical network/hardware or measured Live claim.
+
+**Adversarial/concurrency evidence:** **10 compiled plants**, normal assertion failures: blocking application capture (4), application commit (1), output latency omitted/doubled (1 each), audio commit omitted (3), unsupported quantum admitted (2), invalid transport enum admitted (2), callback construction admitted (1), callback configuration admitted (1), and shared phase rudely forced at launch (1, actual two-peer 47-check executable). Review `/workspace/engine-review/link-session-review`, scripts link-session-review.py/link-session-tsan.py; logs `/tmp/link-session-plants.log`, plant-phase.log, clang.log, shadow.log, full-build.log, full-gate.log and fetch.log. Focused GCC TSAN instruments the adapter **and SDK header implementation**, 30,000 actual audio commands concurrent with owner start-stop/network-off configuration: **2 checks, zero reports**, 32 actual owner configuration passes. GCC initially refuses compilation at Werror because its TSAN cannot model Asio atomic_thread_fence; only the external sanitizer harness demotes `-Wtsan` to a retained warning (`-Wno-error=tsan`), without changing production flags/vendor sources or suppressing runtime reports. `/tmp/link-session-tsan2.log` retains those unsupported-fence warnings and the successful stress. This is limited observational TSAN evidence, not proof of Asio fence protocols or whole-SDK race freedom. Original compile failure is not a passed test. No whole Clang/MSVC/macOS/hardware claim; README remains win-owned.
+
+**Next immediately / no false D11 completion:** the adapter alone does not change native Session tempo, prepared Warp/MIDI/automation, transport scheduling or settings. New independent worktree `/workspace/wt-engine-external-tempo`, branch `engine/external-tempo`, base `engine/log` (`361f2807`), prepares the required coherent generation without depending on this SDK PR. Current local WIP adds optional owner-selected SessionSpec externalTempoBpm, preserves raw authored model/store rows, replaces only the private playback model's tempo, and builds TimingView from that same playback tempo. Existing Warp, MIDI and automation already compile from that private owned model, so use the same tempo instead of replacing only the displayed BPM. Offline use/invalid bounds refuse at load; existing frozen absolute-time caches explicitly need unfreezing rather than silently playing stale rendered timing. Core build is in progress, tests not yet written/gated; no ready claim. Finish native playback/clock/loop/automation tests at both widths/rates, refresh/prepare/project immutability, failure and callback boundaries, then gate/push/log it. Combine the independent SDK and coherent-tempo prerequisites for native quantized transport/playback integration at depth two; then D11 monitoring/delay switches and the remaining brief. Model weights and Drive clone handover remain their recorded open dependencies, not a seat stop. Continue in this same turn through compaction; a checkpoint is a log entry, not a reason to end.
+
+---
+
+## 2026-11-05 — Native sample Save/Recall gated; taking the Link SDK audio-driver adapter
+
+**PR requested:** head `engine/sample-defaults` at **`02bf7226`**, base `engine/sample-settings` (`28f6e2ab`). Title: **Save native sample defaults and recall them through material imports**. Explicit dependency on the persistent authored-settings library, depth two; independent of analysed/progressive decode branches. Win opens the PR and merges the prerequisite first; main remains untouched.
+
+**Window/worker handoff / PR body:** on the serialized Store owner, `clip_edit::captureSampleDefaults(store, clipId, referenceRate)` captures an actual audio clip and complete source identity/dimensions in one read transaction. `saveSampleDefaults(..., libraryIndex, error)` Saves under its native BLAKE3 without changing project rows/history, even from a read-only project. It reuses `copyClip` source/fade freezing, retains future AWRP bytes exactly, and folds a legacy unwarped musical End into fixed source time without extending an earlier pin. The explicit four-argument `prepareImportAudio(..., libraryIndex)` Recalls authored settings by the freshly imported/deduplicated source hash, requires exact source dimensions and refuses unsupported/invalid data instead of silently discarding user choices. Authored Warp-off overrides automatic Warp analysis. Missing defaults retain ordinary import; the existing three-argument API deliberately consults no library. Existing native clip/media operations carry owned settings, so library closure/changes after preparation cannot affect commit, undo/redo, CBOR replay or Session playback. Requested placement/ids/track survive; intrinsic source/loop extent defines the initial rectangle. Normal stale-head/source-store checks, staged copy publication, transaction rollback/retry and one-group history remain native material responsibilities. ENGINE-SAMPLE-DEFAULTS.md gives the callable contract. No UI, schema or opcode change.
+
+**Source clocks and boundaries:** unwarped offset/loop/End/fade pins keep their source times at another tempo; legacy handle coordinates are re-expressed for the destination tempo, and Ns-only loops receive usable fallback handles. Warp projects authored musical clocks at the destination tempo. Signature codec bounds now match the existing native schema (numerator 1..255, power-of-two denominator 1..128), correcting the prerequisite's overly narrow 64/64 limit. Direct aliases require existing alias resolution; clip/device automation refuses as nonportable; unknown native audio/playback/fade/property fields refuse rather than drop authored controls. Name/color/placement/local scale context are project choices. Save requires an existing complete native media identity but can work offline; it does not physically rehash an unavailable source. Import retains actual source verification. The application owns its library/lifetime; no UI/application-lifecycle wiring or measured Live parity is claimed.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **13,804 checks / 159 suites**, all rows and sum inspected, zero failures and all validators/layout clean. This integration adds **65**; inherited sample-settings 53, library 48 and material commands 29 remain green. Actual native stores exercise read-only Save, cache cleanup/library reopen, library closure before commit, source trims, native signature extremes, two tempos, 44.1/48 kHz and both precisions, curved fade PCM equality, Ns-only loop repetition, fixed source End, future Warp bytes and Re-Pitch at half frequency/double duration. Actual history undo/redo and journal CBOR replay work with no library. Late SQL COMMIT failure rolls back clip/media/ops, retires only the newly published copy and permits the same captured import to retry; source and persistent settings survive. Deduplicated existing-media Recall and opaque future annotation preservation are tested. Callback Save/capture/import refuses with zero allocation/free/file I/O and unchanged caller diagnostic; actual Session render callbacks are audited too. Focused Clang19 compiles all three changed production CPP units plus the final workflow test with actual conversion/Wshadow flags and passes **65** against validated GCC cold dependencies. Four actual GCC Ninja Wshadow checks pass, final test repeated.
+
+**Adversarial evidence:** **11 compiled plants**, each normal assertion failures: capture callback (1), Save callback (1), import callback (1), source dimensions (1), unknown source fields (1), future AWRP normalized/lost (1), End source clock shifted (3), source start discarded (11), gain discarded (7), import consumer skips Recall entirely (15), unsupported authored version silently ignored (1). The first no-consumer run escaped through a missing-row fixture exception; the fixture now asserts missing signature/map attachments safely and the final plant fails normally. That initial exception is not counted. Review `/workspace/engine-review/sample-defaults-review`, script sample-defaults-review.py; logs `/tmp/sample-defaults-full-build.log`, full-gate.log, final-focused.log, clang.log, clang-final-test.log, shadow.log, shadow-final-test.log, plants.log and plants-last.log (all with sample-defaults- prefix). No new cross-thread ownership was introduced here; the prior library stress evidence and SQLite-WAL caveat remain as recorded, without a new blanket TSAN claim. No whole Clang/MSVC/macOS/hardware/Live claim; README remains win-owned.
+
+**Remote topic integration / next immediately:** win advanced remote engine/log to `0fbc1a7a` while this gate ran, bringing its main/stack merge and the corrected second-issue Linux prompt. Fast-forwarded only the engine/log worktree; no main checkout or direct main edit. The next independent worktree `/workspace/wt-engine-link-session`, branch `engine/link-session`, starts at that topic head. Official upstream Link-3.1.5 resolves to `45931b8bd2a7066f1950f2a0beab81a0c51f28fe`; LICENSE.md explicitly GPL-2.0-or-later, and its Asio gitlink is `231cb29bab30f82712fcd54faaea42424cc6e710`. Both fetched; the SDK is not copied from reference and Link Audio remains outside scope. Local WIP adds a private SDK adapter and reproducible fetch/CMake pin: networking defaults off, owner enable/start-stop controls, one audio capture/edit/observe/commit snapshot at first audible buffer time, bounded commands and returned beat/phase/transport/quantized launch timestamp. Core build and actual-SDK tests are in progress, **not gated or PR-ready**. Finish the SDK adapter gate, then its native transport integration and remaining D11 latency switches before advancing the brief. Clock sync is not PTP/audio streaming or project collaboration. Model weights and actual Drive clone handover remain specifically open, not a reason to stop this seat. Gate, push, log, next continues in this same turn through compaction.
+
+---
+
+## 2026-11-05 — Authored sample-settings library gated; taking native Save/Recall/import integration
+
+**PR requested:** head `engine/sample-settings` at **`28f6e2abdb1537a0a9182dd92e0c5d6339bde1f7`**, base `engine/log` (`de697f8e`). Title: **Persist authored sample Warp and clip defaults in the native library**. Independent of analysed/progressive branches; existing library SQLite version remains 1, no project schema/opcode change. Win opens the PR; main remains untouched.
+
+**Window/worker handoff / PR body:** the application-scoped persistent `library::Index` now offers owned `sampleSettings(hash)`, `saveSampleSettings(hash, settings, error)` and explicit `clearSampleSettings(hash, error)`. Source hash is the identity, never path, mounted volume or a file-index row. Authored source/window, Warp mode/enable and original AWRP bytes, pitch/formant/gain/channel/reverse, mute/loop/content/end clocks, musical/ns fades/curves/tensions and time signature live alongside tags/BPM/rating in the existing annotations JSON. No cache cleanup path touches that data database. Native AWRP coverage/order validates against the source window, and readable future record tails/version/trailer survive **byte-for-byte** rather than being re-encoded from known fields. Unsupported existing settings refuse overwrite; unrelated tag updates and export preserve their opaque JSON. Explicit clear removes only that hash's defaults. Save/import/clear use immediate read/merge/write transactions, preventing concurrent annotation updates from being silently lost; identical saves perform no persistent update. No UI or audio-renderer change is claimed from storage.
+
+**Exchange/bounds:** legacy-only export stays `{version:1, media:...}`; records containing sample_settings export version 2. Import accepts both, and authored settings require envelope 2. Codec version 1 has 34 exact fields, strict integers/booleans/finite numeric values, source-window bounds and canonical nullable clocks. Original marker bytes use lowercase hex (32 MiB raw maximum); annotation size is bounded to twice that plus 64 KiB. A bounded SAX pass checks depth 16, 16 million events, 256-byte keys, strings and 256 MiB documents **before** DOM parsing, rejecting duplicate/escaped-duplicate keys. A bad later row rolls back earlier real changes; future data never silently drops. Stored excessive/deep data refuses editing without deletion. New settings/exchange callbacks refuse before allocation/free/SQL/I/O/locking or diagnostic mutation. ENGINE-SAMPLE-SETTINGS.md specifies ownership and limits. Existing library indexing/lifecycle keep their separate worker contract; database version/application-id guards remain unchanged.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **13,739 checks / 158 suites**, all rows/sum inspected, zero failures, validators/layout clean. This independent item adds **53**; legacy library remains **48**. Settings round trips cover all nondefault controls and exact doubles; native text exchange/reopen/path-independent copy, unknown version/fields, future native bytes, unsigned overflow/float coercion, actual out-of-source window, malformed Warp coverage, source-clock pairs, nonfinite values, idempotent no-write data_version, callback metrics, future-data tag merges/refused overwrite/explicit clear, late SQL trigger failure/retry, and invalid later imports with an **actually changed earlier rating** are exercised. A deep stored future-metadata field that the typed loader otherwise accepts proves the SAX depth guard independently of the exchange envelope check. Focused Clang19 compiles both production CPP units and both tests with actual conversion/Wshadow flags and passes **53 + 48** against validated GCC cold dependencies. Four actual GCC Ninja Wshadow checks pass; a pre-existing legacy lambda's stop parameter was renamed token to remove its real shadow warning. Final focused tests also assert callback refusal throws nothing; initial fault-harness compile/escaping-exception failures were not counted as caught plants.
+
+**Adversarial evidence:** **17 compiled plants**, normal assertion failures only: encode/decode/validate callback guards (1 each), native load callback (1), save admission plus redundant validator refusal (1), clear callback (2), export/import callback (1 each), future authored overwrite (2), future AWRP normalization losing bytes (1), source window past EOF (1), integer coercion (3), unknown settings fields discarded (1), depth guard (1), duplicate JSON (2), import transaction removed (4), path-shaped hash admitted (1). Review `/workspace/engine-review/sample-settings-review`, scripts sample-settings-review.py/sample-settings-tsan.py; logs `/tmp/sample-settings-plants-complete.log`, `/tmp/sample-settings-clang-final.log`, `/tmp/sample-settings-clang-legacy.log`, `/tmp/sample-settings-shadow-final.log`, `/tmp/sample-settings-gate-*`, `/tmp/sample-settings-final-*`.
+
+**Concurrency evidence/limit explicitly:** one application Index under GCC TSAN, instrumenting the new codec/Index with concurrent settings/tag/read threads: **2 checks, zero reports**, final authored values/tags and reopen preserved. The separate **two-connection functional stress** also passes 2, retaining all 32 tag updates and final settings. The first two-connections-in-one-process TSAN run reports the exact upstream-documented WAL memcpy pair walIndexWriteHdr/walIndexTryHdr in library.sqlite-shm, not an ADI object: bundled sqlite3.c **tag-20200519-1** explicitly describes this false-positive double-read/barrier protocol (its no_sanitize_thread annotation is Clang-only). The original report `/tmp/sample-settings-tsan.log` is retained. No suppression, vendor patch or SQLite race-free claim was introduced: `/tmp/sample-settings-tsan-one-index.log` is the app's one-Index serialized C++ scope; `/tmp/sample-settings-two-connections.log` is functional native SQLite stress. No whole Clang/MSVC/macOS/hardware/Live parity claim; README remains win-owned.
+
+**Next immediately — storage is not a completed Save workflow:** worktree `/workspace/wt-engine-sample-defaults`, branch `engine/sample-defaults`, based on this feature at `28f6e2ab` (depth two). Connect an actual native clip to authored capture/Save and an actual new import to Recall, with correct source identity/window, immutable captured settings, normal native transaction/undo/CBOR replay and actual Session playback at both widths, including another tempo/rate and native cache cleanup/reopen. Reuse `copyClip`'s existing source-clock/fade freezing instead of inventing tempo conversion: clip_commands.cpp freezeAudio/freezeWarpFades already pin legacy source domains and retain native future bytes. Keep placement/project identities/device automation out of sample defaults, preserve unsupported user data and document boundaries; no UI edit. Then Link and the remaining brief queue. Model weights/Drive backend handover remain specifically open from prior entries. This is a gate/log checkpoint, not a stop: continue the same turn through compaction.
+
+---
+
+## 2026-11-05 — Central analysed cache gated; taking persistent sample Warp/clip defaults
+
+**PR requested:** head `engine/analysed-cache` at **`90e71ff2a4e1d79a59d1f638fd5be6c4a77e00a8`**, base `engine/log` (`71b080b5`). Title: **Keep per-sample waveform analysis in the shared analysed folder**. Independent of PCM/AAC/progressive playback and the scanner/stem stacks. Win opens the PR; main stays untouched.
+
+**Window/worker handoff / PR body:** `media::AnalysisCache` now holds one `cache/analysed/<source BLAKE3>.adia` per sample, with bounded versioned/configured named sections in that single file. The unchanged normal `buildMediaPeaks` API uses the process folder; its new overload accepts an explicit cache or nullptr to disable central persistence. Legacy pool BLOBs remain readable/opaque and are never overwritten; new waveform results persist centrally without pool/op/history writes. Matching content/dimensions can draw a read-only project's missing source from the central APKS record. New building still hashes/resolves/reads/rechecks the source. Existing valid cached resolution can be reused, as with the pool cache. Missing, malformed or unwritable optional cache is rebuildable; even serialization allocation failure after computing the bins preserves the successful waveform. A stopped persistence request remains cancelled. Portable ADI_HOME/default-folder routing and the old API callback boundary are tested, rather than claiming integration from only a custom-cache DTO.
+
+**Format/publication/cleanup:** explicit LE ADIA v1, 168-byte header, exact source hash/rate/channels/frames and body length/digest; 0..32 unique four-letter sections, 32 MiB total file limit, bounded first pass before payload copies, no recursive encoding. APKS embeds the existing validated peak codec; unknown sections survive same-process updates. All callback entry points refuse before allocation/free/SQL/file I/O/locking and preserve caller diagnostics. A writer reserves an owner-only private directory, writes/flushes/closes a complete record, then `media::replaceCacheFile` atomically replaces on the same volume through the existing platform adapter, with no partial-copy fallback. Failed/cancelled private files retire without touching previous complete data. Removal accepts one lowercase hash and removes only its actual regular .adia file; no source, sidecar, library or project removal. Empty/unavailable app-data roots never become relative cache writes. ENGINE-ANALYSED-CACHE.md and docs/format/ANALYSIS-CACHE.md specify the contract. No project schema/opcode change and no UI edits.
+
+**Gate:** final GCC14 Debug/Werror/PD-on/JUCE-off build and `test_all.sh` **13,729 checks / 158 suites**, all rows and sum inspected, zero failures, validators/layout clean. This independent branch adds **43** to win's integrated 13,686-check base; legacy peaks remain **33**. Tests cover exact bytes and round trips, truncated/oversized/reserved/version/digest/duplicate records, identity/dimension mismatch, unknown section retention, corrupt-record rebuilding, pre-cancellation, owner-only staging retirement, one file per sample, cleanup isolation, read-only/missing-source waveform reuse, no native-history/pool writes, no adjacent .asd file, controlled cache-serialization bad_alloc with retained bins/recovery, and zero callback allocation/free/actual I/O, including the legacy wrapper before singleton creation. Focused Clang19 compiles the three changed production CPP units and both test units with actual conversion/Wshadow flags: **43 + 33** pass against validated GCC cold dependencies. Five actual GCC Ninja Wshadow checks pass, with the final new test repeated. No whole Clang/MSVC/macOS/hardware/Live claim; README remains win-owned.
+
+**Adversarial evidence:** **15 compiled final-source plants**, each a normal assertion failure (no crash/exception counted): encode callback (1), decode callback (1), read callback (1), write callback (1), remove callback (1), payload digest (2), duplicate section (1), source identity (1), unknown section retention (1), reserved header (1), read cancellation (1), write cancellation including its redundant lookup checkpoint (1), waveform consumer ignoring shared cache (1), serialization failure treated as mandatory (1), and legacy-wrapper callback before default initialization (1). Focused GCC TSAN instruments cache, peak consumer, hash and publication: **2 checks, zero races**; two cache instances/two writers/two readers preserve complete records, both final sections and per-sample cleanup. Review artifacts `/workspace/engine-review/analysis-review`, scripts analysis-review.py/analysis-tsan.py; logs `/tmp/analysis-final-*`, `/tmp/analysis-clang-final.log`, `/tmp/analysis-clang-legacy.log`, `/tmp/analysis-plants-final.log`, `/tmp/analysis-tsan2.log`, `/tmp/analysis-shadow*.log`. Initial 41-check full gate is superseded by the 43-check default-route gate. Syntax-only preflights and a corrected test-harness formatting compile failure are not counted as passed runtime checks.
+
+**Boundaries, not deferred user data:** this is rebuildable analysis only. Authoritative Warp/clip defaults must never enter it. Same-process operations serialize; concurrent applications atomically replace complete snapshots and may cause optional sections to need rebuilding (no cross-process merge transaction claim). No automatic analysis LRU/orphan reaper, cached transient algorithm or saved sample-settings implementation is claimed. Cache body digests/expected identities are corruption checks for an app-owned cache, not hostile-owner authentication. POSIX native replacement runs here; Windows/macOS remain unrun.
+
+**Next immediately / local preparation:** persistent per-source Warp/clip settings in the native library, outside cache cleanup. Worktree `/workspace/wt-engine-sample-settings`, branch `engine/sample-settings`, base `engine/log` (`de697f8e`). Unreferenced local WIP `library/sample_settings.hpp/.cpp` starts the typed pure codec (source/window, sound/loop/fade/signature defaults and exact AWRP bytes including readable future tails); it is not yet compiled/gated or connected to Index/native Save/Recall. Keep existing tags/BPM/rating, native transaction identity, future-data preservation, atomic imports/reopen and JSON exchange; do not substitute cache data for authored settings or claim project save/recall from the DTO. Then wire actual native clip capture/import and take Link/rest of Phase D/brief. Existing stem-weight/Drive handover blockers remain named open and do not stop this seat. Gate, push, log, next continues through compaction in this same turn.
+
+---
+
+## 2026-11-05 — Progressive native compressed playback gated; taking the analysed folder
+
+**PR requested:** head `engine/progressive-decode` at **`f0e3188f5d777c4507f3f00a20555cfd3297617b`**, base `engine/pcm-decode-stream` (`506f4274`), independent `engine/aac-import` (`26d7a64c`) merged as `e41d0b4d`. Title: **Play compressed clips from bounded progressive decode prefixes**. Both independent prerequisites must merge first; this integration is depth two. Win opens the PR; main remains untouched.
+
+**Window/worker handoff / PR body:** plain compressed clips with a cheap exact nonempty container length now load and play a flushed PCM prefix before full conversion. The normal unwarped native material import captures header dimensions and source identity without warming a full decode; existing media import overloads keep complete validation. `inspectPcm` retains unknown length rather than guessing a headerless MP3 duration. `ProgressiveDecoder` owns two codec workers by default (configurable 1..8), bounds running plus queued jobs at 32, coalesces live leases by source byte hash across path aliases, and permits fresh retry of a terminal job while old generations retain its diagnostics. `SessionSpec::progressiveDecoder` optionally selects an app-owned service/cache with lifetime through retired generations; null uses the process service. `ClipPlayback::decodeProblems()` gives the owner actual asynchronous error text, separately from construction problems. No Store enters jobs or the callback. No project schema, opcode, blob or UI edit.
+
+**PCM/cache/lifecycle contract:** native bounded owner-thread PCM reads supply RIFF/AIFF/FLAC/MP3/Ogg; native AAC sink delivery supplies supported mono/stereo AAC-LC M4A/MP4/ADTS. The old AAC WAV API wraps the sink and preserves priming/tail semantics. Each job owns an exclusive private prefix directory under the shared decoded cache. WavWriter flushes each complete block/header before the ready-frame release. Prefix readers open/read/close under the same state mutex as writes, publication and writer finalization **including native-error/cancellation unwinding**; no persistent prefix reader can block a Windows rename. The final source hash pass runs outside that lock so available pages remain usable during it. Page requests beyond available PCM/context defer without publishing zero pages or incrementing errors; terminal errors report once and prime returns false promptly. The callback still only requests/consumes ready pages and never locks/allocates/decodes/does disk I/O. Admission accounts full expected PCM, queued reservations, cache budget and minimum disk headroom. Only a closed complete decode with unchanged final source identity enters the public hash path through no-clobber publication; a real concurrent winner must have exact dimensions, and existing bytes are never overwritten. The last public lease returns its completed cache pin synchronously; pending last leases request cancellation, and worker state cleans its private files. ENGINE-PROGRESSIVE-DECODE.md specifies bounds, ownership and cache trust.
+
+**Gate:** final GCC14 Debug/Werror/PD-on/JUCE-off build and `test_all.sh` **13,868 checks / 160 suites**, all rows and sum inspected, zero failures, validators/layout clean. Both prerequisites contribute their prior 50 and 39 checks; this integration adds **93**. Actual Vorbis and native FFmpeg61 AAC Sessions play exact nonzero PCM at both widths while held incomplete and before the actual target is published; the independent complete reference is a separate cache. 44.1 kHz conversion, real right context, nonzero source offsets and repeated loop seeks match full WAV playback before completion. Tests cover coalescing, worker/admission bounds, source mutation, cancellation/retry, disk limits, malformed/concurrent publication, complete pin lifetime, owner diagnostics and zero callback allocation/free/I/O. Legacy clip playback passes all **251**, including its pin assertion moved to the actual completion boundary; AAC import 39, PCM stream 50, MP4 AAC 48 and NI Stems 43 remain green. Focused Clang19 compiles ten production CPP units (both FFmpeg ABIs included) plus the new test with actual conversion/Wshadow flags and passes all **93** against validated GCC cold dependencies. Ten actual GCC Ninja Wshadow syntax checks pass, with changed units repeated after the final edits.
+
+**Adversarial evidence:** **16 compiled final-source plants** each fail by normal assertion (no crash/exception counted): read callback (1), pending range (9), partial frames (1), final source hash (2), completed pin (2), last pin release (2), last-owner cancellation (1), job capacity (1), worker count (4), coalescing (5), disk budget (1), import secretly full-decoding (4), pending treated as error (4), silent pending page (4), diagnostic callback guard (1), terminal retry (4). Focused GCC TSAN instruments the job/cache, PCM CPP+C codec implementations, WAV I/O, hash and publication: **3 checks, zero races**, eight jobs/sixteen readers with live cache maintenance, then eight cancellations with concurrent real prefix reads and no torn-header read failures. The first added cancellation harness accidentally reused complete targets because setLimits alone does not trim; its timeout is not a product failure or passed check. Adding explicit trim forces fresh jobs; the final stress passes. Review artifacts `/workspace/engine-review/progressive-review`, scripts progressive-review.py/progressive-tsan.py, final logs `/tmp/progressive-retire-*`, `/tmp/progressive-clang-retire.log`, `/tmp/progressive-plants-retire.log`, `/tmp/progressive-tsan-retire2.log`. The earlier full pin assertion failure and pre-unwind-fix passing run are superseded by this final gate.
+
+**Limits kept explicit:** Warp still needs complete offline preparation; unknown exact header length retains the complete path. Jobs require stable closed sources; header-only import can commit a damaged later payload, whose decode then reports failure. Native Windows/macOS rewrap and codec execution remain unrun here; FFmpeg60 is compile-checked only. No whole Clang/MSVC/macOS/hardware/Live parity claim. The resource cap is explicit; cache crash leftovers are not a new startup-reaper claim. App-owned complete cache dimensions are validated, not authenticated against malicious same-shape PCM. README remains win-owned.
+
+**Next immediately / already preparing:** Phase D 10's one-per-sample central `analysed` folder, followed by persistent library Warp/clip settings that cache cleanup never deletes. Independent worktree `/workspace/wt-engine-analysed-cache`, branch `engine/analysed-cache`, base `engine/log` (`71b080b5`): local WIP has bounded versioned/digested non-recursive analysis sections, atomic optional-cache replacement, normal waveform-consumer integration and isolated tests. It has syntax preflight only, not a gate/ready claim; configure/build/test it next after reclaiming only obsolete generated prerequisite builds. Then take Link and the rest of the brief. Stem model weight access and the actual Drive clone handover remain the earlier named blockers for those claims, not a seat stop. Gate, push, log, next continues in this same turn through compaction.
+
+---
+
+## 2026-11-05 — Context checkpoint: progressive decode integration in flight, seat continues
+
+**Continue this item; no stop or PR-ready claim.** Worktree `/workspace/wt-engine-progressive-decode`, branch `engine/progressive-decode`, clean prerequisite merge `e41d0b4d` combines independent PCM `506f4274` and AAC `26d7a64c` (depth two, no main). The current integration edits are local pending their final gate: bounded two-worker/32-job hash-coalesced decode service, private flushed prefixes and complete no-clobber cache publication, native AAC PCM sink plus retained WAV wrapper, unwarped header-only native import, and actual ClipPlayback/Session page consumption before full conversion. Warp and unknown exact header length retain full preparation; no UI/schema/opcode edits. ENGINE-PROGRESSIVE-DECODE.md states ownership, source stability, cancellation, disk/pin/queue limits and unsupported claims.
+
+**Evidence so far, not the final gate:** focused GCC initially 89 clean checks; current focused Clang19 production units/test pass **91** with actual conversion/Wshadow flags against validated GCC cold dependencies. Real Vorbis and native FFmpeg61 AAC Sessions play exact PCM at 32/64 while held incomplete; separate full-cache reference never warms the actual target. 44.1 kHz conversion/right context/source offset/loop seeks match complete WAV. GCC TSAN instrumented job/cache/decoder C+CPP/WAV/hash/publication stress: **2 checks, zero races**, eight jobs/sixteen readers/live cache maintenance. Ten actual GCC Ninja Wshadow syntax checks pass. Compiled plants are still running under `/workspace/engine-review/progressive-review.py`; artifacts/logs `/workspace/engine-review/progressive-review` and `/tmp/progressive-*`.
+
+**Gate correction in progress:** initial full build succeeds; its test_all run identifies the legacy pin assertion immediately after load (the load is now intentionally asynchronous). Update it to assert the pin after complete publication. Also release completed pins synchronously with the last public lease rather than the worker's brief bookkeeping reference; permit fresh retry while an older generation retains a terminal cancelled/failed lease. Those latest changes are already in the 91-check Clang/TSAN evidence but need the final rebuilt GCC full gate. Never claim the older 89-check full-run pin failure as green. Wait for external fault-variant links to finish before relinking their owning Ninja core archive; then rebuild and run all rows/validators. Win opens PRs after the gate/push entry. Next take the analysed folder/library Warp data, Link and the remaining brief queue; model weight access/Drive backend handover remain named open from prior entries. This checkpoint is a log entry, not a seat stop: continue in the same turn through compaction.
+
+---
+
+## 2026-11-04 — Native PCM pull streams gated; taking progressive decode integration
+
+**PR requested:** head `engine/pcm-decode-stream` at **`506f427418b00c8f52ade37d7c159a30520cc5e7`**, base `engine/log` (`58ed0af4`). Title: **Expose bounded owner-worker PCM decoding streams**. Independent of `engine/aac-import`; no feature prerequisite. Win opens the PR; main stays untouched.
+
+**Worker/window handoff / PR body:** `audio::openPcmStream` returns native metadata plus a worker-owned pull decoder, not a cache path or async job. Immutable format/rate/channels and optional exact frame count can be copied into job state. Read caller-owned interleaved float spans of 1..65536 whole frames; explicit Frames/End/Cancelled/InvalidBuffer/AudioThread/WrongOwner/Failed statuses, counted actual frames and owner-only error diagnostics. Same opening worker reads/destroys; callback/foreign/invalid/pre-cancelled requests preserve buffers, position and diagnostics, with no allocation/free or I/O on the callback refusal. Cancellation is between blocks, native initialization may predecode an initial frame, sources must remain stable. Read through End to verify a declared total: overrun/short source or reported codec error is terminal even if a file is repaired later. Unknown lengths retain the native decoder's EOF-integrity limits, not an invented duration. MP3 without a length header is left unknown and not fully scanned on open; the existing complete-cache path retains its prior pre-scan policy and agrees on actual PCM. No project rows/opcodes/schema, background threads, full decoded PCM allocation or playback-completion claim is introduced.
+
+**Vorbis / scope:** RIFF/AIFF/FLAC/MP3/Ogg Vorbis/Ogg FLAC use the existing native decoders. Vorbis now opens an owned native FILE (wide on Windows) and stb's checked file section, instead of retaining the whole compressed file in a C++ vector; its existing 2 GiB seek cap remains. stb owns the cursor, ADI closes the file after decoder teardown, including failed opens. The C wrapper enables stdio and selects the vendor's secure CRT branch on Windows; no third-party source edited. Legacy complete-cache Vorbis uses the same streaming backend. New AAC import is deliberately absent from this independent branch; its streaming integration is next. ENGINE-PCM-STREAM.md and synthetic fixture provenance/hash README document contracts/limits. No UI/device/plug-in tier edits.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and final test_all.sh **13,736 checks / 158 suites**, every row/sum inspected, zero failures, validators/layout clean; new suite **50**, legacy decoder **56**. Actual 1/7/31/4096/65536-frame pulls across eleven existing formats/rates, guarded spans, complete PCM equality to canonical cache, independent original 16/24-bit PCM, metadata/EOF/frame counters, cancellation and correct resumption, another-worker and callback zero allocation/free/file-I/O refusal, known-empty WAV, above-unity/tiny/signed-zero float bits, terminal truncation/repair, Unicode Vorbis, unknown-length no-Xing MP3 with independently authored channel frequencies/amplitudes, complete-cache equality, larger Vorbis real prefix/no whole-compressed C++ allocation, and actual Ogg FLAC bit identity are exercised. New long Vorbis/no-Xing/Ogg FLAC fixtures are synthetic, independently encoded by FFmpeg 7.1.5-0+deb13u1, checked in; no runtime CLI dependency. Focused Clang19 compiles both production C++ and the C codec implementations plus test, with actual target flags (C implementations remain outside the vendor warning wall as before); C++/test warning/conversion/Wshadow clean, all **50** pass against GCC cold dependencies. Both actual GCC Ninja Wshadow checks pass. No whole Clang/MSVC/macOS/JUCE/hardware/Live claim; README remains win-owned.
+
+**Adversarial/concurrent gate:** **14** compiled normal-failure plants: read callback (2), open callback (1), wrong owner (3), block bound (4), whole frames (6), empty buffer (3), block cancellation (4), open cancellation (1), declared-short EOF (2), terminal failure (1), no-Xing pre-scan (2), dimension bound (1), wrong frame counter (28), restored whole-Vorbis retention (1). No crash/exception counted, validated sources/binaries untouched. Focused **TSAN**, production C++ wrapper AND C codec implementations instrumented with its harness, passes **3** checks with no races: concurrent owner reads preserve every one of 409600 PCM frames while another worker is refused 1000+ times; an actual FIFO refuses before a blocking open; 300 malformed native Vorbis opens leave file descriptors unchanged. External scripts/logs: /workspace/engine-review/pcm-stream-review.py, pcm-stream-tsan.py / pcm-stream-boundary.cpp, /tmp/pcm-stream-*. The environment was reselected starting→ready with this uncommitted work/gates intact, and work continued. Reclaimed only clean/pushed automation/lane/shape/recording/write-policy generated builds (sources/logs retained) for the next cold build; about 18 GiB free. No seat stop.
+
+**Next immediately:** combine this independent prerequisite and AAC `26d7a64c` on `engine/progressive-decode`; two independent PR prerequisites at depth two, no three-deep stack. First expose native AAC PCM chunks without thread-local writer hooks; retain existing encode/decode wrappers and exact priming/duration/mono semantics. Add shared bounded background decode jobs/readiness and safe flushed prefix reads/private file lifetime/completion publication; ClipPlayback must obtain prefix pages on its worker rather than synchronously converting the full compressed source in its constructor. Fast metadata capture can use known exact source dimensions; name the fallback for unknown totals/offline Warp rather than guess durations. No codec/SQL/allocation/lock/file access in the callback; validate real Session samples before decode completion, seek/resampler context, error/cancel/last-owner lifetimes and concurrent/TSAN behavior. Keep existing cache cancellation/hash/publication guarantees when merging AAC. Win merges the two prerequisites first; no waiting on CI or main. Then analysed folder/library Warp data, Link and the rest of the brief, with model-weight access and Drive handoff still the named open claims. Gate, push, log, next continues through compaction in this same turn; this is a context checkpoint, not an ending.
+
+---
+
+## 2026-11-04 — Ordinary native AAC-LC import gated; taking streaming PCM and progressive playback
+
+**PR requested:** head `engine/aac-import` at **`26d7a64ca6c60724bf4f3150dcf8fbcb46cd43cd`**, base `engine/log` (`9bcbee27`, no stem-result feature dependency). Title: **Import native mono/stereo AAC-LC through the normal audio pipeline**. Win opens the PR; main remains untouched.
+
+**Window/worker handoff / PR body:** the existing `clip_edit::prepareImportAudio` / `commitMaterial` flow now captures content-sniffed mono/stereo AAC-LC M4A/MP4 or raw ADTS, records exact decoded dimensions and source BLAKE3, and creates the ordinary media+playing clip as one undo action. Copy-in retains original compressed bytes, Warp defaults off; no schema/opcode change. `DecodeCache::playable(source, stop_token)` and a trailing-token prepareImport overload retain the original APIs and add cancellation through hashing, PCM blocks, native AAC packets/draining and publication checks. Material import forwards its token and uses fixed-buffer/exact-size cancellable copy-in. The owner checkpoint reports progress/requests cancellation outside the cache mutex; do not reenter that cache or a Store whose capture is in progress. Media/material callback refusal now precedes allocation/free, SQL/file I/O and clearing caller-owned requests; the legacy callback test now correctly expects its old request to be preserved.
+
+**Transport/native split:** `aacConfig` reads supported mono/stereo LC without changing NI's stereo `aacSampleRate`, `readAacMovie` or aligned writer/export contract. `readAacAudioMovie` accepts differing sibling AAC configs/rates/durations; ordinary import chooses the first audio track in file order, does not mix tracks or add a selector UI. A movie with no audio has typed no-audio status and generic media capture retains its opaque MP4 with null audio dimensions, without claiming video playback. `readAdts` bounds one million fixed-config single-access-unit LC frames and validates header/layer/sync/extents; CRC bytes are stripped but not checksum-verified. ADTS retains all coded samples with priming zero because authored gapless duration is absent. ISO-BMFF preserves exact edit-list priming/duration and the existing coarse-clock end rule. Five audio tracks, one million packets/track, 64 MiB moov, 1 MiB/packet/NI metadata; mono/stereo LC/1024-frame mode up to 65535 Hz. Fragmented/encrypted/complex edits, HE/SBR, unsupported layouts/frame/rate modes and ID3-prefixed ADTS are not claimed. Linux dynamically uses libavcodec60/61 with matching avutil58/59; native Windows/macOS adapters use mono/stereo PCM layouts and a private single-track rewrap (`writeAacAudioMovie`) without relaxing NI export. Native availability retains its existing verified-codec probe, unavailable codecs have a distinct error. No transcoder/Python runtime is invoked; the CLI is fixture-generation only.
+
+**Cache integrity/publication:** validate complete cached hits before pinning; never consume an incomplete target or overwrite/delete it. Recheck the source hash after conversion and refuse a changed final hash. Sources must stay closed/stable; endpoint hashes are not an atomic snapshot against an in-place writer changing and restoring bytes. Publish the private WAV without replacing a concurrent winner, whose complete dimensions must match. Cancellation/other failures cannot be hidden by an appearing cache file. Remove only owned private artifacts; an already published valid cache file can remain for later reuse. Reserve decoded space before AAC conversion, check size multiplication overflow, retain existing LRU/pins/free-space policy. ENGINE-AAC-IMPORT.md / OPS and synthetic fixture provenance/hash README document the accepted scope.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **13,725 checks / 158 suites**, every row and sum inspected, zero failures, all validators/layout clean. New suite **39**, legacy decode **56**, MP4/AAC **48**, NI Stems **43**, media ops **71** pass; this branch adds 39 to win's integrated 13,686 baseline, not thousands of newly written tests. New synthetic mono 44.1 kHz and stereo 48 kHz M4A/ADTS were independently encoded/muxed/decoded by FFmpeg 7.1.5-0+deb13u1; compressed bytes and float32 reference WAVs are committed, no runtime/test CLI dependency. Authored vs coded frame counts, priming, channel order/PCM, wrong extensions/source-hash reuse/restart, six malformed ADTS classes plus later sync/config failure, native material import/owned compressed bytes/one undo/redo/reopen, actual Session playback at 32/64, live cancellation at the first private-file checkpoint before full decoding, token propagation/no premature cache publication, source mutation, disk refusal, concurrent winner byte preservation, invalid cached targets, opaque non-audio containers and callback zero allocation/free/file I/O are exercised. Current GCC and focused Clang19 suites each pass all 39; six production units plus test compiled with actual warning/conversion/Wshadow flags and linked against validated GCC cold dependencies, both FFmpeg ABI shims compiled. All eight actual GCC Ninja Wshadow checks pass; final transport check repeated after correcting Clang's signed-shift warning. Native libavcodec61/avutil59 was exercised; ABI60/58 was compiled, not runtime-exercised. Windows/macOS adapter sources were reviewed and test paths use UTF-8 conversion/wide ADI_HOME; those platform executions/whole Clang/JUCE/UI/hardware/Live parity remain unrun. README stays win-owned.
+
+**Adversarial evidence:** 15 compiled normal-failure plants in the actual 39-check suite: lost priming (4), ADTS profile (1), truncated extent (1), changed config (1), relaxed NI stereo (1), lost final source hash (1), missing native checkpoint (1), lost disk reservation (1), overwriting concurrent winner (1), invalid cache hit (1), dropped media token (1), wrong format label (1), each media/material callback guard (1/1), FFmpeg mono layout (6). Separate production-linked probes add **4** passing CRC-header/native byte-identity and exact-one-million/one-extra packet boundary checks, plus **2** passing controlled unavailable-backend checks; removing only codec admission makes the latter fail normally (1). Thus **16** compiled plants, all explicit FAIL/exit1, no exception/crash counted, no validated source/binary replacement. External scripts/logs: /workspace/engine-review/aac-import-review.py, aac-import-boundary.py/.cpp and /tmp/aac-import-*.
+
+**Environment correction / no hidden failed gate:** the expanded integrated build is ~7 GiB. The first full run filled the workspace and hit the cache's real 2 GiB free-space floor; that invalidated run was stopped/preserved as /tmp/aac-import-disk-full-all.log, not counted as a product gate. Removed only reproducible generated builds from already clean/pushed scanner-process/quarantine, graph-worker, stem-result, MIDI memory/capture-input/capture worktrees; sources/commits/benchmarks/review logs remain, reconfigure to rerun those old reviews. Kept scanner build for its external headless VST3 archive dependencies. About 14 GiB headroom remains. General AAC reaches the default cache for NI container metadata, so these cloud gates explicitly use **ADI_HOME=/workspace/.adi-cloud-test-data** (documented portable override, not HOME) because the sandbox cannot create /home/agent/.cache/adi; new suite isolates its own appdata. The rerun and final post-warning-fix gate above pass. No stop here.
+
+**Next immediately / Phase D 10:** a file must play before decoding finishes. Current media capture calls blocking playable(), and ClipPlayback's constructor also calls it before starting its page worker; AAC support does not claim to close that gap. First expose a bounded owner-worker PCM pull stream/fast metadata primitive from the existing native RIFF/AIFF/FLAC/MP3/Ogg decoders, independently of this AAC branch so the later integration can have two independent prerequisites at depth two (not a three-deep stack). Then combine it with this AAC branch for native AAC streaming and shared bounded progressive jobs: flushed immutable prefix/readiness, no partial cache hit/publication, worker-only reads, source lifetime/cancellation/error state, seek/resampler context, actual Session output before completion, and race/underrun/TSAN evidence. No thread-local writer hooks or synchronous full decode on the callback/message thread. Warp's offline preparation is a separate constraint; name any remaining claim. Then the analysed folder/library Warp data, Link and the rest of the brief. Model weight access and native Drive/cascade handoff remain the named open blockers above. Gate, push, log, next continues in this same turn through compaction; this is a context checkpoint, not a stop.
+
+---
+
+## 2026-11-04 — Whole Loudness Drive cascade handoff still blocked; taking general AAC/M4A import
+
+**Named item blocker, not a seat stop:** Phase D 7/7a's whole Loudness Drive must engage actual per-channel/group ADI-L stages and the master's full-mode end (ADR-0204 d1). This checkout still contains no ADI-Q/ADI-L clone header/target, supported DeviceInstance adapter, accepted measurement/handover artifact, stable parameter/state ids, response query or limiter light/full-mode contract; the earlier N16 handoff request remains unanswered here. Only the generic Live-class limiter exists in the device tier, which this lane does not change or substitute for the director's clone. InputGainNode and Auto Gain Stage already provide pre-insert gain after the instrument, but neither is a completed saved VCA/cascade control. Inspection also confirms tracks.role's native migration is still absent here (N38's handlers deliberately refuse that older format), relevant to a saved reference bypass. No new schema/control, slot engagement or complete Drive claim was made from the empty inspection branch. Win/clones must publish that actual backend contract; this is the existing handover dependency, not a director approval question.
+
+**Queue continuation at once:** 7b's installer/UI tiers belong to win/window; 7c/7d export jobs/LUFS/NI Stems and 8/9 freeze/bounce/history/save have their prior pushed gates and remain taken. At Phase D 10, audio/decode.hpp's SourceFormat and decode.cpp's decoder dispatch still recognize only RIFF/AIFF/FLAC/MP3/Ogg, while the independent NI Stems path already has native MP4/AAC/platform codecs. General AAC/M4A import is therefore the next concrete engine gap. Wire sniffed content and the existing native MP4/AAC path into the normal import/cache/playback pipeline, with bounded decoding, cache identity/publication/error/cancellation and real fixture evidence; then take progressive decode playback, the analysed folder/library Warp data, Link and remaining brief work. Keep model weight access and the Drive handoff named open, rather than claiming either from a DTO or substituting unrelated DSP. Gate, push, log, next continues in this same turn through compaction; no stop here.
+
+---
+
+## 2026-11-04 — Native N-stem result import gated; model weights blocked, taking Loudness Drive
+
+**PR requested:** head `engine/stem-results` at **`75d9a0b5`**, base `engine/log` (`c830b634`, including win's earlier integration history). Title: **Import completed N-stem results as one native action**. No scanner or inference dependency. Win opens the PR; main remains untouched.
+
+**Window/worker handoff / PR body:** `media::prepareSeparatedStems` captures a closed producer's named, hash-authenticated WAVs on the serialized document owner worker; `commitSeparatedStems` creates owned content-addressed audio, one group and N child audio tracks/clips in one **Separate stems** undo action. Supply source media/hash/frame window, exact service/model/version/request and optional weights hash (mandatory for builtin), free allocated identities, placement, generation, explicit timestamp and advisory selection. Source and results retain exact rate/window length and mono/stereo samples; all clips start together, Warp off, source offset zero. Tick end rounds upward to cover the final sample. N is resource-bounded 1..1024, not hardcoded to four. Exact request and canonical model/version/weights/source-window metadata enter existing agent_requests in the same SQL transaction; actor_detail carries provenance, native CBOR replay needs no inference or result folder. Previously registered identical media is relinked to owned pool audio through native ops and undo restores its prior paths. No project opcode/schema change. ENGINE-SEPARATED-STEMS.md/OPS document API and ownership.
+
+**Boundary/failure policy:** strict bounded UTF-8/no NUL, lowercase 64-hex hashes, real absolute result directory and real basename files, exact finite WAV dimensions, free/distinct identities, unlocked group parent, aggregate byte preflight (8 GiB default, caller ceiling 1 TiB). Fixed 64 KiB copy buffers enforce captured byte counts; captured and final publication hashes must match. Stop/checkpoint loops support cancellation; callback entry refuses before allocation/SQL/file I/O. Private exclusively reserved staging is owner-lifetime RAII; producer files can disappear after capture. Same still-open Store/client, document path/generation and journal head only; caller head/veto policy stays effective. SQL failure rolls back music/head/audit and can retry, retaining unreferenced content-addressed published files for GC rather than deleting another possible owner's asset. Existing destination must be a real matching regular file and is never overwritten. Equal dimensions/common placement preserve producer alignment but do not establish acoustic phase alignment or model quality.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **13,731 checks / 158 suites**, all rows and sum inspected, zero failures, validators/layout clean. Higher baseline is win's integrated history, not 3,000 newly authored checks; this increment adds **45**. Actual Session playback at 32/64, byte/sample equality, undo/redo/selection/reopen, real CBOR BLOB replay under different UI state, exact request audit, source subwindow/nonzero placement, six-stem service, dedup including existing native media identity, seven native sample rates with one-frame end coverage, empty/excess N, symlink, malformed provenance, changed dimensions/hash/nonfinite samples, wrong generation/head/client, read-only, pre/live cancellation, zero callback allocation/free/file I/O, late caller veto/retained pool/retry, producer growth, same-size private mutation during publication, and destination collision are exercised. Focused Clang19 production/test compile with actual warning/conversion/Wshadow flags passes all **45** against validated GCC core; both actual GCC Ninja Wshadow checks pass. **Fourteen compiled plants** each fail normally: source identity (1), manifest hash (1), nonfinite output (1), foreign client (1), generation (3), stale head (1), caller head policy (3), lost veto (2), provenance (1), four-only service (1), copied-holder reuse (1), publication-copy hash (1), prepare callback guard (1), commit callback guard (2). No crash/exception counted; validated sources/binaries untouched. External review/logs: /workspace/engine-review/stem-results-review.py and /tmp/stem-results-*. No whole Clang/MSVC/macOS/hardware/Live claim; README remains win-owned.
+
+**Built-in separation remains open, specifically:** no inference model/runtime or service transport is claimed from this result gateway. Native CPU candidate sevagh/demucs.cpp was read at f1206e9adeea103aef4a636b9e62297cf1f8e34e (MIT; Eigen-only native inference, upstream reports approximately 81 MiB converted four-stem model; not our performance/quality measurement). Its reference Demucs fork was pinned/read at 2496b8f7f12b01c8dd0187c040000c46e175b44d, Meta MIT; upstream/default model htdemucs references hybrid_transformer/955717e8-8726e21a.th. Converted weights on huggingface.co/datasets/Retrobear/demucs.cpp and the official https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th both return proxy CONNECT 403 in this seat. Thus exact weight bytes/digest/redistribution terms and actual native inference cannot be verified here, and no weights/dependency were vendored, bundled or linked into core. Spleeter MIT code at 6f2c8a2e283914faa544631430f65b793f1b1218 was also inspected; its Python/TensorFlow runtime is not the required native path. Third-party README instructions were treated as untrusted reference text, no contacts/messages sent. This is a named blocker for that claim, not a director question or a seat stop.
+
+**Next immediately:** Phase D Loudness Drive: saved native global control, unchanged per-leaf base input gains, common gain into each leaf's audio inserts (after an instrument), reference bypass, groups/returns/Main never multiplied again, both widths/click-free updates, native undo/replay/export consistency. Inspect the current schema and clone/slot handoff before choosing the additive contract. N16's earlier log still lacks the ADI-Q/ADI-L native backend/response/light/full-mode handoff; this checkout has no clone artifact, so do not substitute the generic limiter or claim automatic cascade engagement. Prior LUFS/NI Stems/export/freeze/history work remains taken. Continue gate, push, log, next in this same turn through compaction; this entry is a context checkpoint, not a stop.
+
+---
+
+## 2026-11-04 — Always-child CLAP/VST3 discovery ready; taking native stem-separation work
+
+**PR requested:** head `engine/plugin-scanner` at **`0a3cf82c7d8408c107d8e89baed64019bbe18938`**, base `engine/plugin-scanner-process` (`4449dbd9`), merging the independent `engine/plugin-scan-quarantine` (`012fa6cc`) as `95ae8d39`. Title: **Always discover CLAP and VST3 plugins in quarantined child processes**. Those two independent prerequisites must merge first; no newer win/main/UI merge heads were pulled into this feature. Win opens/merges in order; main is untouched.
+
+**Window/host handoff / PR body:** scan::Scanner resolves an existing native canonical candidate, commits pending quarantine, launches adi_plugin_scanner with explicit arguments, validates the entire format/path-bound reply and optional format data, then token-checks completion. Only Ready contains descriptors. ClapHost::scan and Vst3Host::scan/scanFile return owned complete/cancelled/file-failure Reports, and JuceDeviceLoader exposes setScanConfig/lastScanReport. One owner at a time per host/loader; copy/publish reports between jobs. Directory enumeration loads nothing; CLAP discovery leaves its runtime library cache empty. Bad candidates do not hide healthy siblings; cancelled/unavailable service retains the previous complete catalogue. Direct VST3 path hints and all older diagnostic/SDK fixture probes use the same child boundary, with no in-process discovery fallback. VST3 validates description XML before clearing quarantine, then restores the owner's original absolute JUCE path because its saved identifier hashes that spelling; CLAP saved hints are canonicalized for installed-copy selection. Runtime instantiation stays in process under D-03, and existing running instances are not terminated by rescans. Registry blocklist read/re-enable APIs are ready for the window; no UI wiring is claimed. No project schema/opcode/blob or external plug-in ABI change; rebuild native adapters for the C++ scan signatures.
+
+**Wire/failure contract:** schema-1 UTF-8 JSON has exact typed fields, matching canonical path/format and unique keys/descriptor ids. Unknown/missing/future/duplicate (including escaped key spellings), NUL/invalid UTF-8, truncated/trailing data or invalid later descriptors refuse whole. Bounds: 8 MiB packet, 65,536 descriptors and catalogue entries, 65,536 raw string bytes, depth eight and 4,194,304 preflight string/container/separator tokens. Child CLAP strings are bounded before copy and feature lists cap at 1,024/65,536 bytes. Reserved metadata channel precedes library constructor/init/factory/deinit/unload; incidental stdout/stderr is discarded, and CLAP unload completes before metadata publication. Crashes/timeouts/nonzero/oversized/bad metadata retain named blocks; caller cancellation/helper launch/unsupported deployment abandons its own marker. Stale/failed completion publishes nothing. Resource exceptions retain pending quarantine. VST3 XML refuses DTD/entity declarations, nested content and inconsistent path/id/common fields; only the helper target compiles its discovery factory probe. This is crash containment, not a privilege sandbox.
+
+**Packaging / parser findings:** CMake builds CLAP helper everywhere, adds headless VST3 with JUCE, and always copies the matching helper beside each discovery consumer (probe/player/render/app, including MacOS directory), even when the consumer does not relink. Explicit helper path remains available; unavailable never falls back. Version-2 shared registry means older suite applications must be updated together. The full 65,536-row test exposed nlohmann 3.12's quadratic DOM-callback array scan; a streaming duplicate-key pass plus ordinary DOM parsing fixes it without lowering the supported count. Final focused 42-check run takes about six seconds on this guest; no universal parent latency claim. ENGINE-PLUGIN-SCANNER.md, the updated foundation docs and OPS specify the contract.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,085 checks / 109 suites**, all rows/sum inspected, zero failures and clean validators/layout. New scanner **42**, legacy CLAP **486** and both foundation suites pass. Real controlled CLAP libraries prove multiple exact descriptors/UTF-8 paths, child-only PID records, noisy output separation, static/init/factory/descriptor/deinit/unload crashes, hangs, bad/duplicate/oversized fields, quarantine/re-enable, alias admission, late owner block, format rejection, cancellation and catalogue retention. Valid 65,536 descriptors and an over-count packet fitting the byte limit exercise both boundaries; callback guards have zero allocations/file I/O. Focused Clang19 builds the changed scanner/CLAP/child/test/fixture units and passes all 42 against validated GCC cold dependencies. A pinned JUCE modules-only/headless Linux build runs the production VST3 child/client/validator against the existing three-class SDK fixture: **14** pass under GCC and focused Clang (GCC JUCE cold archive), including XML refusal, retained generations, native alias UID spelling and callback guards. This avoids unavailable X11/ALSA development packages; it is not a whole JUCE/UI build. GCC and Clang strict Wshadow syntax passes for Vst3Host, JuceDeviceLoader and the updated SDK probe; seven actual default Ninja-command Wshadow checks pass including the CLAP diagnostic probe. Its controlled static-constructor-crash smoke exits normally with code 1 and a durable blocked row, never entering runtime creation. The exact copy-target fragment runs with a separate headless consumer: default sibling lookup succeeds; replacing only its generated helper copy with a stale fixture is repaired on the next build without consumer relink, identical source SHA256. No Windows/macOS execution, hardware or measured Live parity claim; README remains win-owned.
+
+**Defect evidence:** **31 compiled plants** fail normally, no exception/crash counted and no validated source/binary replacement: format (1), path (4), schema (1), duplicate keys (1), duplicate ids (1), over-count (1), nonzero accepted (3), ignored format validation (1), lost failure quarantine (5), ignored completion (1), noncanonical admission (1), five scanner/protocol callback guards (1 each), lost metadata channel (1), parent library open (5), lost catalogue retention (3), three CLAP callback guards (1 each), VST3 DTD/nested/path/name acceptance (1 each), valid-prefix publication (4), lost saved UID spelling (1), failed VST3 publication (1), and two VST3 callback guards (1 each). Review scripts/logs remain under /workspace/engine-review and /tmp/plugin-scanner-*. The temporary stale-copy test used only a controlled generated consumer copy, not the validated helper.
+
+**Next immediately — Phase D item 6:** stem separation built in/offline, native with no Python runtime, its own process; four stems/model in installer, N-stem external services. Read ADR-0203 d8/d25 and the Master Reference's service contract before choosing the model/runtime. Verify actual code AND weight licensing under the two refusals, native CPU support, exact model identity/digest, bounded audio/job/result ownership and cancellation; do not claim a bundled model or service implementation from a DTO. Installer/UI remain their lanes. Then Loudness Drive over leaf input gains/cascade and the rest of the brief, preserving prior export/NI Stems/freeze/history work rather than duplicating it. This is a gate/log checkpoint, not a stop: continue in this same turn through compaction until the seat's actual usage/context limit.
+
+---
+
+## 2026-11-04 — Durable scan quarantine ready; taking always-child discovery
+
+**PR requested:** head `engine/plugin-scan-quarantine` at **`012fa6cca36e4c8d42dac150ef33e9de51537aab`**, base `engine/log` (`ecd72baf`, before win's concurrent stack merge). Title: **Persist plugin scan quarantine with guarded attempt completion**. Independent of the process-runner branch; integration will consume both independent prerequisites rather than stacking them. Win opens the PR; main is untouched.
+
+**Window/scanner handoff / PR body:** PluginRegistry version **2** transactionally migrates version 1, retaining routes/times and ADIP identity. Owner beginScan(format, absolute UTF-8 canonical-path key, explicit Unix microseconds) commits pending quarantine before launch; an existing pending/blocked key refuses, and persistence failure means no scan. Pending survives close/death/reopen without automatic expiry, preserving the distinction between interrupted and proven failed. finishScan accepts only the same still-open connection's opaque ticket and exact unrecycled AUTOINCREMENT pending identity: success/abandonment remove their own marker, failure stores a bounded named block. Cancellation/helper launch failures should abandon; plug-in crashes/timeouts/bad metadata must fail. Explicit blockScan invalidates an active completion, unblockScan re-enables idempotently; late successes/failures cannot clear/poison replacement attempts. Other files/connections/reopened instances reject foreign/expired tickets. scanBlocks returns sorted owned format/path/state/reason/time for a visible blocklist; window draws/re-enables through these APIs. All registry methods now refuse callbacks before SQL/allocation/diagnostic mutation. One owner per connection; concurrent suite connections use existing WAL/busy timeout. ENGINE-SCAN-QUARANTINE.md/OPS document it. This is app data, no project schema/opcode/blob change; old version-1 suite applications refuse the upgraded registry and should be updated together.
+
+**Bounds/identity:** clap/vst3 only; exact absolute UTF-8 path keys <=65,536 bytes, nonempty failure reasons <=4,096 bytes, no NUL, nonnegative explicit time. Scanner resolves aliases before admission; registry never guesses case/Unicode equivalence or touches the filesystem for a key. At most 65,536 shared entries; existing blocks remain editable/re-enableable at capacity. Whole-list reads default to 4,096 rows, allow 1..65,536, cap aggregate text at 16 MiB and preflight stored types/column lengths before copying. Invalid/later/excess data refuses whole, not a successful prefix. Ticket payload copies precede the committed marker; post-commit ticket return moves without allocation. Completion/SQL failure preserves quarantine and rejects metadata.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,016 checks / 107 suites**, every row/sum inspected, zero failures, validators/layout clean. New quarantine suite **45** and legacy registry **35** pass. Actual native migration/rollback, preserved routes/timestamps, cross-connection committed visibility, all completion states, namespace separation, re-enable/replacement, copied/foreign/expired/stale tickets, concurrent four-owner admission (exactly one winner), malformed input, callback zero allocation/file I/O, insert/update/delete trigger failures, full 65,536-entry capacity, read row/text bounds and invalid later stored row are exercised. Focused Clang19 production/test compile with actual warning/conversion/Wshadow flags and all 45 pass against validated GCC core; both actual GCC Ninja Wshadow checks pass. **Sixteen** compiled plants fail normally: lost connection identity (3), accepted older attempt (7), recycled id (7), wrong failure state (1), close clearing pending (1), over-capacity (2), partial read (1), invalid UTF-8 (4), plus individually removed callback guards for all eight entry points (1/1/1/1/3/3/3/1). No crash/exception counted and validated sources/binaries untouched. External real child `_Exit` bypasses all DB destructors, leaves committed WAL, a second begin refuses, and actual API reopen→explicit re-enable→new successful completion passes. No whole Clang/MSVC/macOS/JUCE/hardware claim; README remains win-owned.
+
+**Next at once:** integrate bounded/versioned, duplicate-free, path/format-bound metadata and a dedicated child helper; CLAP parent enumeration must leave libraryCount zero, with real controlled shared-library fixtures for constructor/init/factory crashes/hangs/noisy output and invalid data. VST3 must include the loader's direct path-hint discovery and never fall back in process. Package helper beside the app or provide explicit path; fail closed when helper/registry unavailable. Pinned JUCE has a modules-only/headless VST3 path: use that for a focused Linux child build if feasible without inventing a whole JUCE/UI/hardware gate. After scanner completion continue stem separation, Loudness Drive and the remaining brief. Gate, push, log, next persists in this same turn through compaction; no stop here.
+
+---
+
+## 2026-11-04 — Scanner process boundary ready; taking durable quarantine and discovery
+
+**PR requested:** head `engine/plugin-scanner-process` at **`4449dbd98a20fed6224026ccc7ebac55ceb4a65f`**, base `engine/log` (`ecd72baf`, before win's concurrent stack merge). Title: **Add bounded child process execution for isolated plugin discovery**. No feature dependencies. Win opens the PR; main remains untouched.
+
+**Host/window handoff / PR body:** owner workers can call scan::runProcess with an absolute executable, explicit UTF-8 argument vector and bounded ProcessOptions. No shell/PATH lookup/global cwd or signal handler. Raw bounded stdout is drained during execution; stdin/stderr use the null device. Result distinguishes invalid/callback/launch failure, normal exit including nonzero, crash, timeout, cancellation, output limit and I/O failure; only normal zero exit is success. Defaults 30 seconds/8 MiB; accepted 1..300000 ms, 1 byte..8 MiB, 256 arguments/128 KiB argv budget, no embedded NUL. Windows native paths/strict UTF-8 conversion/CRT quoting use a suspended launch assigned to a kill-on-close job before resume, with explicit inherited handles. POSIX uses posix_spawn with its own group, nonblocking reader, bounded drain batches and WNOWAIT to retain leader identity until group kill/reap. Timeout/cancel/failure and normal exit clean descendants without waiting for inherited-writer EOF. RAII retains cleanup on allocation exceptions; POSIX callers must not ignore SIGCHLD/steal its child status. Callback refusal precedes allocation/OS calls. This is crash containment rather than a malicious-code privilege sandbox. ENGINE-SCAN-PROCESS.md and OPS document ownership/bounds/platform constraints. No project schema/opcode/blob change.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **9,998 checks / 107 suites**, every row and sum inspected, zero failures, validators/layout clean. New suite **27** uses actual child crash/hang/flood, binary NUL/large stdout, stderr, stdin EOF, exact empty/space/quote/backslash/metacharacter/newline/UTF-8 arguments, Unicode executable paths, closed standard descriptors, limits, pre/live cancellation, timeout and normal-exit descendants, 24 repeated and 24 concurrent launches, direct child reaping and callback zero allocation/file I/O. Focused Clang19 production/test compile with actual warning/conversion/Wshadow flags and all 27 pass against validated GCC core; both actual GCC Ninja Wshadow checks pass. Seven compiled plants fail normally: callback guard (2), output bound (2), group cleanup (2), empty argument loss (1), stdout byte loss (11), crash classification (1), late deadline (2). No crash/exception counted as a plant success, no validated source/binary replacement. Windows/macOS execution/whole Clang/JUCE/hardware remain unrun; README stays win-owned.
+
+**Next immediately / remaining scanner claim:** this foundation deliberately leaves existing CLAP/VST3 scans unchanged until integration. Add durable pre-launch quarantine and explicit re-enable in the shared plug-in registry, token-checked completion so stale jobs cannot clear new blocks; then a bounded/versioned path-bound metadata helper, CLAP parent discovery without loading, and VST3 including its separate path-hint discovery call. No in-process fallback. Master Reference R-17 confirms visible disabled list/re-enable; pending attempts surviving parent death must stay quarantined. JUCE 9.0.2 was fetched read-only and its tag verified at pinned 72782788ce18c2d4d760b28e0921d6ffc6431102: VST3 directory search only inspects files; findAllTypesForFile is the child boundary. Linux lacks X11/ALSA development packages at present, so no JUCE compilation claim. Continue gate, push, log, next through compaction in this same turn; this is not a stop.
+
+---
+
+## 2026-11-04 — Persistent graph workers gated; taking the out-of-process scanner
+
+**PR requested:** head `engine/graph-workers` at **`f6e8533b4ae679ce80c5c576ae29a57953a48f38`**, base `engine/log` (`2d73325a`). Title: **Run independent graph nodes on persistent audio workers**. Independent of the scale/automation stacks. Win opens the PR; main is untouched.
+
+**Driver/host handoff / PR body:** Graph, GraphHost and Session expose setParallelRendering(workers, minimumFrames, minimumNodes, initializer, context). Zero workers remains the default. Thresholds are explicit; at most sixteen persistent owner-created workers. Optional driver initialization runs once per worker outside CallbackScope before borrowed nodes are prepared; failure joins partial resources and preserves the old published graph/audio. Its context must survive later rebuilds until policy replacement/destruction. Unknown/device nodes stay on the callback by default; only SumNode/GainNode/MixNode currently opt in, and duplicate node pointers never run on workers. Custom native adapters must rebuild against the added Node capability virtual. No external plug-in ABI or project format changes. Owner-created participant scratch and fixed consumer order preserve routing, sidechain, PDC, bypass, events, suspension, tap windows and counters in both precisions. Callback dispatch/completion uses bounded partition storage and atomics; worker waits occur outside CallbackScope, with no callback mutex/semaphore wait. Completed-bit recovery prevents duplicate node execution after a later worker wait failure. Per-job FP mode, including x86 FTZ/DAZ, follows the caller and restores the worker. Driver priority/affinity remains explicit; no universal device/plugin readiness claim. ENGINE-GRAPH-WORKERS.md and OPS describe ownership and failures.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,063 checks / 107 suites**, every row/sum inspected, all validators/layout pass. New suite **92** covers primitive 1/3/16-worker generations, actual overlap, small-block serial policy, affinity/duplicates, byte-identical float/double rendering at 44.1–768 kHz and 32–4096 frames, real Store/Session realization and swaps, failed initialization before borrowed-node prepare, caller FP changes, zero callback/worker-job allocation/free/file I/O, scope counters and release. Both precisions also run 1,000 callbacks with up to 500 concurrent owner latency retaps. Focused Clang19 builds changed graph/worker/host/session/test units and runs all 92 against validated GCC core; GCC ThreadSanitizer instruments those units/test and passes all 92 without reports or suppressions. Actual Ninja warning/Wshadow checks pass for six affected units, with the final test repeated; Release benchmark syntax also passes. Nine compiled plants fail normally (affinity, small-block switch, sleeping levels, counters, sum order, scope, FP, partition loss, late setup); no crashes counted. Separate injected post/wait failures retain exact once-per-node audio, and removing completed-bit retention fails normally. Full Release benchmark and its self-test pass. No whole Clang/MSVC/macOS/JUCE/hardware/Live parity claim; README remains win-owned.
+
+**Measured policy:** nine committed artifacts retain 256 raw rows plus environment/source fingerprints: fixed existing benchmark projects, both precisions, 32–4096 frames, 1,000 measured callbacks after 32 warmups, four-vCPU AMD EPYC cloud guest pinned to guest CPUs 0–3. Focused old hot-render baseline is exactly 2d73325a; current serial, forced-three-worker and explicit candidate profile are separate runs. Forced workers substantially hurt 32/64-frame tails (13/3 budget misses per precision); do not enable them there. Candidate minimumFrames=4096/minimumNodes=64 dispatches only active 64-track 4096-frame levels and skips sleeping levels. That case's p50/p99 improves from serial 748.5/1703.5 to 614.2/910.8 microseconds (float), and 2150.7/3948.2 to 1002.1/1505.2 (double). Small-block serial p50 medians versus old renderer are 0.991/1.010; raw ranges/tails remain available. Candidate totals have zero/one budget misses; the double miss is a 32-frame row with no pool, reflecting guest scheduling noise. No event drops/rejects. This is one guest's tested candidate, not a universal automatic profile or hardware xrun claim.
+
+**Concurrent log integration:** win advanced remote engine/log with its existing engine-stack/UI merge history while this gate was running. Merged that remote topic head 89c9a784 into the log branch without conflicts or rewriting history; no main checkout, UI source edit or PR merge was performed by this seat. Feature scanner work remains independently based on ecd72baf.
+
+**Next at once:** Phase D plug-in scanning always out of process (R-17/D-03). Inspect actual CLAP/VST3 enumeration and helper launch paths before choosing the shared bounded subprocess/protocol contract; parent enumeration must never load a plug-in. Cover crash, timeout, malformed/oversized output, cancellation and path identity using controlled fixtures, with precise JUCE/Windows handoff. Then stem separation, Loudness Drive and remaining brief queue. Gate, push, log, next continues in this same turn through compaction; this checkpoint is not a stop.
+
+---
+
+## 2026-11-04 — Per-key tuning timeline ready; taking multi-threaded graph processing
+
+**PR requested:** head `engine/scale-timeline` at **`0c80f1d640306f8b07517fca61900a34224dfc0f`**, base `engine/log` (`9b84a9e9`). Title: **Expose immutable tuning changes at exact timeline ticks**. Explicit dependency: `engine/scale-context` (`18966b17`) and N32. Independent of the writer/Scala branches; cross-branch writer integration was tested separately. Win opens/merges in order; main is untouched.
+
+**Window/device handoff / PR body:** `engine::readScaleTimeline(store)` reads global key events/references/memberships and referenced definitions in one coherent owner transaction, preserving an outer transaction. `compileScaleTimeline` accepts explicit owner values. Held immutable generations expose atTicks, events and nextChangeAfterTicks: inclusive exact int64 key boundaries, next strictly later boundary, C major/12-TET before the first event (including pre-roll), no floating-clock narrowing or tick-plus-one overflow. Queries are bounded binary searches without allocation, SQL, locks or I/O; keep/retire their generation on the owner. Event views retain key IDs and exact positions; ScaleContext pitch queries still require explicit absolute tonic. Clip-local scales remain separate overrides through N32/N33. No automatic note retuning, sample-time conversion, device publication, Session hook or UI/DSP changes are claimed. ENGINE-SCALE-TIMELINE.md and OPS §9.5 specify the handoff. No schema/opcode/binary-layout change.
+
+**Bounds/error policy:** at most 65,536 events/1,024 supplied definitions; 1,048,576 compiled degree rows including fallback, 1,048,576 memberships, 8 MiB authored text. Repeated definitions and names count at every event before allocating compiled copies. Reader accumulation is independently bounded; individual explicit definitions still cap at 65,536 degrees. Global positions/IDs are ordered/unique/nonnegative/positive; local flags refuse. Orphan/missing/invalid used data, even a bad later tuning after a good prefix, refuses the whole map; retain the prior valid generation on rebuild failure. Unreferenced contents do not affect the map. Reads/compilation refuse callback use before SQL or copying.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,067 checks / 109 suites**, every row/sum inspected, zero failures, all validators/layout pass. New timeline suite **28** covers exact 0/inclusive/strict-next boundaries, adjacent ticks beyond 2^53, INT64 min/max, 24/53-EDO changes within a continuing clip, author data/source lifetime, moved holders, 11 malformed cases, count/repeated degree/text preflight, full 65,536-event map, caller transaction preservation, SQL immutability, clip-local/global distinction, malformed note independence, orphan/missing/later-corruption refusal and retained good generation. 300,000 callback queries plus refusal paths have zero allocation/file-I/O; callback SQL trace is zero. Clang19 changed module/test compile with full warning/conversion/Wshadow flags and all 28 pass against validated GCC core; two actual Ninja-command Wshadow checks pass. Seven compiled plants fail normally: previous-at-boundary (10), shifted clock (7), wrong default membership (1), local accepted globally (1), missing repeated-degree budget (1), missing repeated-text budget (1), accepted valid prefix (2). No crash/exception counted. Separate executable links the actual timeline module with pushed native tuning writer: **10** real Store checks pass for key edits, per-key non-octave context, retained generation, whole-action undo/redo, binary replay under different UI state/digest and reopen. No whole Clang/MSVC/JUCE/hardware/Live parity claim; README stays win-owned.
+
+**Next immediately — Phase D graph threading:** ADR-0056's same-level output independence does not yet make runNode concurrently safe: Graph owns shared mix/sidechain/compensation scratch, input-idle flags and render counters. Isolate render state per executing participant before any worker concurrency. Preserve fixed consumer sum order, event routing/splitting/PDC/tails/bypass and both widths; provider thread ownership needs explicit treatment (do not assume every external/device node is safe). Then persistent owner-created workers, callback no allocation/lock/logging, completion barriers, small-block serial switch from measured data, determinism and real concurrency/TSAN/bench evidence per ADR-0102 d4. No pool or Live performance readiness is claimed from reverse-order tests. Graph work can branch independently from engine/log without scale dependencies. After that take the out-of-process scanner, stem separation, Loudness Drive and remaining brief queue. Standing order continues: gate, push, log, next in this turn through compaction; this is a checkpoint, not a stop.
+
+---
+
+## 2026-11-04 — Bounded Scala input reaches native tunings; taking per-key timeline context
+
+**PR requested:** head `engine/scala-import` at **`5aa71c08d931b8bf9d0ba79dcbaed8930948d620`**, base `engine/log` (`d1a6ebaf`). Title: **Parse bounded Scala scale input into exact tuning definitions**. Explicit dependency: `engine/scale-context` (`18966b17`) and N32. Parser code is independent of `engine/tuning-edits`; the integration was also tested against that separate pushed writer. Win opens/merges in order; main remains untouched.
+
+**Window/device handoff / PR body:** `engine::parseScala(bytes,id,displayName)` owns an explicit TuningDefinition without files/SQL, identity reservation or project writes. It preserves description spacing/bytes and explicit name, marks source scala, inserts unison degree zero, stores intervals 1..n-1 as double cents and moves the final interval into the actual repeat period (including tritaves). Ratio operands are positive decimal integers up to 2^53-1, exact in double; log1p retains near-unison ratios. Numeric-line annotations are ignored instead of invented note labels. The owner can compile/review this definition, then use tunings::definitionPayload with the writer's create/replace and key assignment in one native action. The logged resolved double values replay without file access or new logarithms. Native note pitch still uses the existing explicitly bounded key/float-offset representation; no automatic retuning.
+
+**Accepted grammar / review limits:** optional initial UTF-8 BOM, LF/CRLF/CR, optional final newline; first non-comment physical line is the description (empty allowed), then blank/comment lines are skipped. Count and interval tokens stop at ASCII whitespace or !. A token containing a decimal point is finite decimal cents (plus/exponent supported); otherwise a/b or integer a/1. Strictly rising positive intervals, exactly the declared count, no extra trailing content. Bounds: 8 MiB input, 65,536 bytes per physical line/name, 1..65,536 degrees. NUL/overflow/invalid/ambiguous data refuses a whole definition with a physical-line diagnostic, never a partial scale. Callback guard precedes copying/allocation. ENGINE-SCALA-IMPORT.md and OPS §9.5 specify these choices. No schema/opcode/binary-layout change. The official Scala page remains proxy403, so accepted-grammar fixtures are evidence, not a full external Scala/Live importer parity claim. KBM/reference frequency, filename/encoding inference and UI chooser wiring remain separate.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,064 checks / 109 suites**, all rows/sum inspected, zero failures, every validator/layout pass. New parser suite **25** covers ratio/decimal/full-double precision, non-octave period, near-unison, description/source ownership, comments/empty descriptions/BOM/line endings, 23 malformed packets, preflight budgets/line diagnostics, the full 65,536-degree case, actual native ANOT E-minus-fifty-cent insertion with one-action undo/redo, and callback zero allocations/file I/O. Clang19 changed parser/test compile with full warning/conversion/Wshadow flags and all 25 pass against validated GCC core; two actual Ninja-command Wshadow checks pass. Seven compiled plants fail normally: wrong period (4), narrowed cents (4), lost description (2), lost display name (1), ignored trailing content (1), missing byte preflight (1), missing degree-count preflight (1). No crash/exception counted. A separate cross-branch executable links the actual new parser to the pushed tuning writer and passes **16** real Store checks: parsed definition→native tuning/key/clip commit→effective context→one undo/redo→binary log replay under different UI state→identical SQL digest/projection→reopen. No merged-stack readiness or whole Clang/MSVC/JUCE/hardware/manual parity claim. README remains win-owned.
+
+**Seat maintenance:** reclaimed only generated build directories of three already-gated, pushed and clean items (clip-envelopes/send-automation/audio-memory), retaining source commits, logs and review evidence; about 7.6 GiB freed. Current feature builds and root checkout remain clean. This changes no source or branch history.
+
+**Next at once:** immutable per-key ScaleTimeline over exact int64 arrangement ticks, coherent owner read, default 12-TET before first event, bounded referenced definitions/memberships, next-change boundaries and allocation-free callback lookup with retained generation lifetimes. Clip-local scales remain explicit overrides of the global timeline. Then take Phase D multithreaded graph processing, scanner out of process, stem separation/Loudness Drive/Link/scope in brief order; keep open Capture format/inference and measured parity claims named, not fabricated or used to stop independent work. Standing order remains gate, push, log, next in this same turn through app compaction; this checkpoint is not an ending.
+
+---
+
+## 2026-11-04 — Native tuning/key-scale edits replay exactly; taking Scala import
+
+**PR requested:** head `engine/tuning-edits` at **`e88a91744941298240830e3cf4c74b64215005f9`**, base `engine/log` (`6cf70734`). Title: **Add native tuning definitions and per-key scale edits**. Explicit dependency: `engine/scale-context` (`18966b17`) and its N32 prerequisite; no newer win/main/UI merge heads. Win opens/merges in dependency order; main stays untouched.
+
+**Window/device handoff / PR body:** six native owner operations now implement tuning.create/delete/replace, project.insertKeyEvent/removeKeyEvent/setKeyScale. Explicit positive int64 identities, integer arrangement ticks and complete authored values are carried in payloads; inserts never upsert. Definitions preserve double cent offsets, sparse authored degree IDs, non-octave periods, names/description and provenance. Replacement validates every referencing key's membership before writing; deletion refuses a referenced tuning. Scale assignment preserves position/identity and can explicitly detach to implicit 12-TET or choose empty membership. Twelve-bit compatibility masks are enforced on writes even for tuned keys; tuning-aware reads still ignore that mask. Definitions cap at 65,536 degrees, 65,536 bytes/text and 8 MiB total text. Unknown nested fields, missing/noninteger/overflowed IDs, nonfinite/invalid rows and missing/duplicate selected degrees refuse. Complete inverse capture plus the journal transaction handles undo/redo/reopen and late SQL rollback. Handler/inverse callback guards run before SQL; payload construction and the journal remain owner APIs. Async callers still supply their normal head/document/veto policy. Notes are not implicitly retuned.
+
+**Projection and format:** typed rows and text projection now cover all five existing scale tables. Tuning definitions expose full-double period/degrees and escaped author text; key events expose exact position/root/identifier/mask, membership and content-labelled references. Row IDs never appear; degree IDs remain authored coordinates. Same-named definitions, changed relational identities and shuffled rows retain identical projection. Missing tuning targets are explicit unresolved references. ENGINE-TUNING-EDITS.md, OPS §9.1 and TEXT-PROJECTION document it. No schema/binary-layout change. The catalogue is **176** (four new rows; the key insert/remove rows already existed), P2 +4; win reconciles independent opcode stacks. No README edit. Scala file parsing, editor/device production wiring, presets/KBM/reference/bypass/Retune Set On Loading remain separate work.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,072 checks / 109 suites**, every row and sum inspected, zero failures, all validators/layout pass. New native suite **38** covers real native edit→inherited clip context at two different tunings, sparse Scala/tritave definition, held-context lifetime, exact double values, one action undo/redo/reopen, complete definition/key inverses, referenced delete/invalidating replacement refusal, late trigger failure after old rows cleared, transaction rollback, 23 malformed packets, int64 ID/ticks beyond 2^53, empty memberships and callback SQL refusal. Actual binary op log exercises all six handlers under different selection/playhead/grid, matching both SQL digest and full text; whole-log rewind/redo succeeds. Clang19 compiles changed ops/typed-reader/projector/test units, syntax-checks catalogue, then runs all 38 against validated GCC core; not whole Clang CI. Five actual Ninja-command Wshadow checks pass (test repeated after final additions). Seven compiled plants fail normally: narrowed cents (3), lost names (3), invalidated membership (1), incomplete tuning inverse (3), wrong root (1), incomplete key inverse (1), unknown nested fields (1). No crash/exception counted. MSVC/JUCE/hardware/measured Live parity unrun.
+
+**Next at once:** Scala .scl owner parsing into explicit bounded tuning values, moving the last interval to the repeat period and inserting degree-zero unison as ADR-0178 requires; keep ratio conversion double, source/description exact and no KBM/absolute-root guesses. The official Scala format page returned proxy403 today, so report accepted grammar and tested fixtures precisely, not external parity. Parser can depend on context independently of the writer PR, avoiding an unnecessary write-stack dependency. Then immutable per-key timeline context, multithreaded graph/scanner/stem separation/Loudness Drive/Link/scope as the brief orders. Capture persistence/inference questions remain named in earlier entries, not a seat stop. Gate, push, log, next continues in this turn through app compaction; this is a checkpoint, not a stop.
+
+---
+
+## 2026-11-04 — Immutable Scale Mode/tuning context ready; taking native scale edits
+
+**PR requested:** head `engine/scale-context` at **`18966b17bae5c03d5bb4c3e727930d2419483248`**, base `engine/log` (`b304506`). Title: **Expose immutable clip scale and named tuning context**. Explicit dependency: N32 clip-details code commit `93f2e35` (merged as `e1400b3c`), not its newer win/main merge head. N33's optional table is read through N32's existing policy; no new N33 dependency. Win opens/merges in order; this Linux seat leaves main untouched.
+
+**Window/device handoff / PR body:** `engine::readClipScaleContext(store,clip)` reads effective clip-local/inherited scale and referenced tuning rows in one owner snapshot without selecting/decoding note blobs. Missing/bad definitions and ambiguous inherited linear/ramp clocks refuse whole rather than silently falling back. N32 `readClipDetails` gains default-true includeNotes and participates in a caller-owned transaction without committing it. `compileScaleContext` accepts explicit values, retaining immutable degree IDs, cent offsets, authored names, period, provenance and description. Twelve-bit masks apply only to implicit 12-TET; explicit tunings use degree membership and ignore the mask (ADR-0178). Empty membership, sparse degree IDs and non-octave periods remain exact. Hold contexts on the owner for graph-generation lifetimes; do not retire their final shared data on the callback.
+
+**Consumer contract:** bounded allocation/SQL/lock/I/O-free includesDegree/nearest/match/contains queries require an explicit absolute tonic in cents. Nearest scale-member ties choose the lower pitch; literal highlighting does not quantize notes. Owner-only grid projects an inclusive ruler/Fold list with author names or numeric degree fallback, bounded to 65,536 rows and no partial list on failure. Optional native MIDI-key/float-offset encoding reports actual precision error (default maximum 0.0001 cents), not an arbitrary-double storage claim. Full definitions cap at 65,536 degrees; pitch bounds +/-1e9 cents and repeat bounds +/-2^50 protect conversions. No schema/new opcode or playback retuning; editor/device automatic wiring, preset parity, import, KBM/reference pitch, bypass and Retune Set On Loading are not claimed. ENGINE-SCALE-CONTEXT.md and OPS §9.5 document the API and limits.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,039 checks / 108 suites**, every result row and summed count inspected, zero failures, all validators/layout pass. New context suite **39** and N32 **29** pass. Tests cover 24-EDO Rast/E half-flat, 53-EDO precision, sparse degrees/tritave period, masks/empty Fold, explicit tonic, negative periods/tolerance/ties, malformed rows/references, bounded grid, retained immutable data, real per-key SQL changes/local override/linear timing, caller read transactions, no note reads with an invalid blob, callback SQL refusal and 128,000 realtime query pairs with zero callback allocations/file I/O. Clang19 compiles both changed production units and the new test with full warning/conversion/Wshadow flags and runs all 39 against the validated GCC core (not whole Clang CI). Three actual Ninja-command Wshadow checks pass. Seven compiled plants fail normally: wrong tuned membership (5), lost authored names (3), wrong period (2), lost tonic (4), wrong tie (1), invalid degree order (2), missing referenced-degree check (1). No crash/exception counted; MSVC/JUCE/hardware/measured Live parity unrun. README remains win-owned.
+
+**Next immediately:** native scale-aware edits over ADR-0178's existing tables: explicit-ID tuning create/replace/delete and key-event insert/remove/scale assignment, complete inverse capture, cross-row validation, coherent text projection and binary replay under different UI state. Then Scala import and immutable per-key timeline context, followed by the remaining Phase D queue. Capture precision/inference questions in the prior entry remain open for those claims; they do not stop independent work. Standing order: gate, push, log, next in the same turn through app compaction; this is a checkpoint, not an ending.
+
+---
+
+## 2026-11-04 — Native MIDI-1/CC Capture plays and replays; continuing Scale Mode/tuning support
+
+**PR requested:** head `engine/midi-capture` at **`bc385f6387c954ec0179b630f2f6dbfc240bd05a`**, base `engine/log` (`7fa6f30`). Title: **Capture MIDI notes and controllers in one native stream operation**. Explicit dependency: `engine/midi-capture-input` (`5dc751a`) and its declared memory/controller dependencies. Independent of audio Capture/automation stacks. Win opens and merges in dependency order; main remains untouched by this Linux seat.
+
+**Window/host handoff / PR body:** `midi_capture.hpp` adds owner-side capture::prepareMidi(store,snapshot,MidiSpec,error) and commitMidi. Supply a new clip ID, project tick position and explicit driver-sample range containing the complete retained input, name and held-note closing policy. A coherent read checks the unlocked/unfrozen regular target and step-tempo map; every placed boundary must roundtrip its exact source-relative sample. Notes keep uint64 source IDs and source-quantized MIDI-1 onset/release words; arbitrary note doubles and unsupported expressions refuse rather than narrow. CC values remain double. Held notes may close at the explicit boundary with release zero. Truncation, serial/time gaps, unknown/reused ownership, mismatched releases, zero-duration notes, bad targets, ramps and unrepresentable clocks refuse without writes. Commit requires the same still-open Store/client and captured head (including NULL), retains transaction veto, and refuses callbacks before SQL/allocation. Caller document generation remains necessary across async work.
+
+**Native operation:** one `capture.createMidi` carries explicit MIDI clip and stream IDs plus validated sorted v1 ANOT/ACTL binary images. It writes each stream once, with a 1,048,576 aggregate note/point limit and 2,048 CC-address limit. Unknown/future/truncated images, invalid fields/reserved flags, duplicate/occupied IDs/addresses and late SQL failure roll back everything. Its inverse is clip.delete: one undo restores original clip/stream absence; redo/replay consumes only captured values. This branch adds one opcode (OPS catalogue **174**, from this base's 173), no schema or binary-layout change. Win reconciles that count with the independent automation opcode stack; no README edit. OPS §9.5 documents the payload/recovery/limits.
+
+**Playback limits, not a full-Live completion claim:** native CC first-value chase, ordinary holds, owned pedal releases and cross-stream ordering stay as the existing playback contract. Raw input memory keeps exact serial order; committed native clips do not promise that cross-stream serial order or unknown controller state before a first point. Host/physical-input/UI Capture wiring remains caller work. Full arbitrary-double note/expression persistence and automatic stopped-transport Live phrase/tempo/loop inference remain open.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,215 checks / 111 suites**, every row/sum inspected, zero failures, all validators/layout pass. New native suite **41** covers actual MpeParser→memory→prepared op→Session audio in both precisions, held-end closure, source >2^53 clocks, uint64 extremes, all 44.1–768 kHz rates and step-tempo crossing, full-double CC, one undo/redo/reopen, binary-log replay under different selection/playhead/grid, coherent outer reads, NULL-head/reopen guards, callback SQL/allocation guards, 18 malformed native packets and frozen targets. A **10,000-note** Capture writes its stream exactly once (actual SQL trace), with complete one-step undo/redo. Clang19 compiles changed Capture/test translation units and runs all 41 against the validated core; changed catalogue also passes Clang syntax/Wshadow. Three actual Ninja-command Wshadow checks pass. Eight compiled plants fail normally: tolerated velocity narrowing (1), missing held end (5), removed exact sample guard (1), narrowed CC (4), reopened-document guard (1), missing head guard (1), accepted future layout (1), zero duration accepted (1). No crash/exception counted. MSVC/JUCE/hardware and measured Live parity remain unrun.
+
+**Capture review block / next independent Phase D item:** full MPE persistence needs the format contract asked of win above; ANOT/AEXP cannot truthfully store all captured doubles as they stand. Exact automatic Live Capture inference also lacks authoritative fixtures/defaults: the repository's Master Reference preview says tempo and loop length are guessed when stopped but supplies no inference algorithm; official Ableton manual access is still proxy-blocked, not parity evidence. Win: provide/approve the persistence contract and stopped/playing Capture fixtures (phrase boundary, inferred tempo, bar/loop rounding). These are named blockers for those remaining Capture claims, not a seat stop or fabricated algorithm. Native MIDI-1/CC and audio Capture APIs are ready for integration in the meantime.
+
+**Take next at once:** Phase D Scale Mode/tunings engine support. Reuse already-pushed N32 clip-details and N33 clip-properties context rather than duplicating their storage/ops. Read ADR-0178 and the Master Reference's §5.1 (extracted read-only at /tmp/adi-master-preview.txt), inspect exact feature commits rather than their newer win/main merge heads, and expose immutable tuning/scale-degree context, membership/folding and named degree data needed by the note editor/devices. No UI/device DSP edits, no guessed non-octave root mapping, and no premature full-Live claim. Then multi-threading/scanner/stem separation/Loudness Drive/Link/scope as the brief orders. Standing order remains gate, push, log, next in this same turn, including through context compaction; this is a checkpoint, not an ending.
+
+---
+
+## 2026-11-04 — Chord releases and ordinary CC now reach Capture; taking native MIDI clip preparation
+
+**PR requested:** head `engine/midi-capture-input` at **`5dc751a285bbe7fc7925ec0b41985b2f05faf1dd`**, base `engine/log` (`09b0cd5`). Title: **Preserve plain MIDI chord releases and ordinary input controllers**. Explicit dependency: `engine/midi-memory` (`273cf7a`) and its declared typed-controller dependencies. Win opens/merges in order; this Linux seat leaves main untouched.
+
+**Window/host handoff / PR body:** MpeParser now keeps a non-member channel's identities per key, so ordinary distinct-key chords release earlier keys correctly instead of emitting unknown IDs and leaving native-router voices alive. MPE members retain the existing single-note expression ownership. Reset clears the map without recycling IDs; unmatched releases remain zero. Same-key retrigger deliberately retains the former newest-identity release policy, not an invented FIFO rule. Every ordinary CC now emits normalized typed Controller input on its original zero-based address, including zone-master controls and non-timbre member controls. Member CC74/106 keeps its exact per-note 14-bit timbre path; outside a member these stay ordinary addressed CC. Other high-resolution CC pairs preserve both addressed components. Consumed status-bit data bytes refuse before indexing/state/normalization. Sink refusal remains counted/nonblocking. Actual parser→router and parser→Capture memory paths work without callback allocations/I/O. No schema/opcode/UI/device-production change; OPS §9.5 records scope and channel conventions.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,174 checks / 110 suites**, all rows/sum inspected, zero failures, all validators/layout pass. New input suite **21**, legacy MPE **72** and memory **32** pass in the full gate; focused Clang19 input **21** and legacy MPE **72** pass with full warning/conversion/Wshadow flags. Actual Ninja-command Wshadow passes for changed parser and new suite. Tests cover all 128 keys in reverse release order, channel isolation, velocity-zero off/reset/retrigger, no native-router stuck/unknown chord voices, exact packet clocks/IDs into Capture, all 128 CCs through the actual router, high-resolution pairs, MPE timbre/pedals/master controls, bad data and delivery rejection. Callback allocation/file-I/O guards remain zero. Six compiled plants fail normally: channel-only releases (5), missing ordinary CC (9), lost member timbre (2), wrong CC channel (5), invalid value-byte accepted (2), stale per-key reset state (1). MSVC/hardware/manual parity unrun.
+
+**Next immediately:** owner-side native MIDI Capture from the exact snapshot. Use a coherent Store read and captured client/head guards, explicit new clip identity/placement, typed note identity matching and exact sample→project-step-tempo roundtrips. Existing native `note.insert` preserves uint64 IDs, and normalized source-quantized MIDI-1 velocity can roundtrip through ANOT exactly; reject arbitrary doubles that cannot rather than silently quantizing them. `controllers::writeRequest` can capture full-double CC points in addressed streams. Create the clip, write explicit-ID CC streams before note.insert's auto-created notes row so IDs cannot collide, then insert notes, all as one OpJournal transaction. Close held notes only at an explicit Capture boundary; refuse ambiguous/unmatched ownership/truncated input instead of inventing it. Raw transcript remains exact; native playback retains its existing cross-stream ordering. Expression persistence/format review and automatic Live phrase/tempo/loop inference remain open, not a claim of full Live Capture completion. The format question in the prior entry is still for win; independent native MIDI-1/CC preparation proceeds now, then Scale Mode and the brief's queue. Context checkpoint is a log entry, not a stop; keep taking the next item in this same turn.
+
+---
+
+## 2026-11-04 — Exact retrospective MIDI memory ready; fixing its live input prerequisite
+
+**PR requested:** head `engine/midi-memory` at **`273cf7ae7e0b33fb77869f1890e7966098b2a561`**, base `engine/log` (`ffe4df1`). Title: **Retain exact typed MIDI input for retrospective Capture**. Explicit dependency: controller playback code commit `d7d7c0` and its controller-editing dependency, not the newer remote branch's win/main merge stack. Independent of the audio-memory/automation stacks. Win opens and merges in order; main remains untouched by this seat.
+
+**Window/host handoff / PR body:** `engine/midi_memory.hpp` supplies one preallocated rolling typed-event memory per explicit input/target track and sample rate, with an explicitly declared note-channel convention. One producer serializes gates, live Event pushes at integer driver timestamps and exclusive block-end advance (including silent blocks); one owner snapshots concurrently. Armed OR monitored input listens independently of transport play/record. Forward rests preserve history; on/off, backward clocks, malformed musical input and pinned-slot drops start new epochs. Notes, expression and controllers retain double values, uint64 identities, original frames, >2^53 times and coincident serial order without MIDI re-encoding. Controller addresses remain 0..15/0..127; MpeParser note channels are explicitly One-based, clip notes Zero-based. Unassigned releases remain unresolved. Addressed parameter/modulation events are ignored without erasing musical history. Snapshots return immutable bounded history, current end clock and explicit prefixDropped notice after capacity eviction, or an empty racing-overwrite refusal. Producer never waits/allocates/locks/logs/does I/O; stats name copied/dropped/ignored/invalid events. Default 65,536 events, bounded 2..1,048,576. This is exact input memory plus the actual MPE-parser handoff, not host/UI wiring, a complete phrase, inferred tempo/loop or native clip persistence. No schema/new opcode/device-production change; OPS §9.5 documents it.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,153 checks / 109 suites**, every result row and sum inspected, zero failures, validators/layout all pass. New suite **32** passes GCC14 and Clang19 with the full warning/conversion/Wshadow flags; actual Ninja-command Wshadow checks pass for both new translation units. GCC ThreadSanitizer completes all 32 with no report (40,000-event producer, 821 successful owner snapshots / 45,381 attempts / 107 named pinned drops in that run). Callback allocation/file-I/O guards stay zero. Covers actual MPE input packet/frame/identity path, 14-bit pitch beyond float, integer/high-ID extremes, channels, rests/gates/restarts, ring eviction/immutability, malformed input and concurrent wraps/drops. Seven compiled plants fail normally: narrowed value (5), narrowed clock (3), ignored monitor (6), lost note identity (6), lost CC address (3), missing prefix notice (1), spliced clock (1). No crash/exception counted; MSVC/hardware/manual parity unrun.
+
+**Next immediately:** finish Capture's live-input prerequisite before owner note composition. Current MpeParser has only one key/identity per channel even without an MPE zone: an ordinary same-channel chord loses earlier note-off identities. It also drops most ordinary CCs, despite the typed Controller path already playing. Fix plain-note per-key identity tracking and ordinary CC delivery while preserving member-channel MPE 74/106 timbre resolution. Validate consumed MIDI data bytes before array indexing; keep unmatched releases explicit and reset IDs safely. This is a concrete input defect, not a reason to stop the seat. Then compose native Capture notes/CCs, address the storage precision limit and Live tempo/loop inference, then Scale Mode and the rest of Phase D.
+
+**Win format question / independent work continues:** exact input memory is intentionally wider than ANOT's velocity bytes and AEXP's float values. Full arbitrary-double/MPE Capture cannot silently use those fields as exact storage. A compatible versioned record extension (e.g. authoritative double tails with legacy prefixes) or another explicit persistence contract needs format review; no schema/version or lossy conversion has been invented here. Basic source-quantized MIDI-1 values may be persisted only with a demonstrated exact source roundtrip. The input parser/phrase work can proceed now. Context checkpoint is this log entry, not a turn ending; user standing order remains gate, push, log, next, continuing through app compaction.
+
+---
+
+## 2026-11-04 — Capture memory makes playing undoable clips; taking retrospective MIDI
+
+**PR requested:** head `engine/audio-memory-capture` at **`c21e180f8e28a5ec23dd17ddf32f064c8068a560`**, base `engine/log` (`22215fa`). Title: **Materialize retrospective audio memory as an undoable playing clip**. Explicit dependencies: `engine/audio-memory` (`0f91906`) and N20 `engine/audio-input-recording` code commit `0768096`. Only that code commit was merged, not the newer branch head containing win's main/unrelated-lane merge. Win opens and merges in dependency order; main remains untouched by this seat.
+
+**Window/host handoff / PR body:** Take an immutable input snapshot, then call `recording::captureMemory(store,snapshot,track,timelineStartSample,workFolder)` on its document owner. The helper resolves the project's source identity and creates a private Float32 WAV via AudioRecordingResult::fromMemory. Placement is explicit at the snapshot's rate, independently of its integer driver stream clock (which may exceed 2^53). Use existing recording::prepareCommit/commit with explicit ClipIds/names: the existing publication/dedup/rollback/retry path now makes a real playing Capture clip in one native undo step. Source bits, rate and frame count are preserved without resampling, normalization or dither; malformed/empty metadata, over-30-second/256-MiB snapshots and invalid timeline extents refuse before file reservation. Materialization failures clean only their own staging. Stale/failed commits retain private PCM for fresh preparation; Undo/Redo/reopen retains actual heard audio. InvalidCapture names invalid memory metadata/placement. No schema/new opcode/UI/device-production changes.
+
+**Connection guard / integration:** prepareCommit and commit now require the same still-open Store pointer/client plus the captured head (including NULL). A reopened or different connection must prepare afresh, even for the same filename/head. A worker connection must commit there or prepare again on the owner; keep the originating window document generation across async work. This intentionally tightens the former path-only prepared-edit guard. Source-project identity is still checked. Capture/helper preparation refuses callbacks before database/file access; SQL tracing proves the database guard. Automatic UI Capture placement, physical input configuration/callback hookup and multi-input policy remain caller integration, not invented from stream timestamps. The RAM input API and owner materialization are concrete engine paths, not a claim that the existing app Capture button is wired.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,133 checks / 110 suites**, all result rows and sum inspected, zero failures, every validator/layout pass. New bridge suite **32** covers actual immutable input→WAV→native transaction→Session playback at both precisions, exact placement/duration, undo/redo/reopen, all 44.1–768 kHz source rates, float mantissa/NaN/signed-zero bits, reopen/head rejection, late rollback/retry, dedup, bad metadata, staging collision and actual SQL/file callback guards. Clang19 bridge/memory/raw recorder/recording commands/Session **5/5** pass (32/35/59/36/214 checks). Three translation units pass Wshadow. Six compiled plants fail normally: PCM narrowing (5), shifted placement (4), missing input identity (1), accepted empty memory (1), reopened Store guard removed (4), callback SQL guard removed (1). MSVC/hardware/UI/manual parity remain unrun; no README count edit.
+
+**Next immediately / context checkpoint, not a stop:** retrospective MIDI Capture. The existing typed Event must retain double values, note identities, channels, controller addresses and exact integer timestamps; use the already-pushed controller event contract rather than another raw-MIDI encoding. `engine/midi-controller-playback` code commit `d7d7c032db351c98e251c86b6e3d5d639f7f7cb1` has been fetched and is available; current remote head `f17a5c7` contains later win/main merges, so inspect/declare the exact dependency rather than merging unrelated lanes. Begin bounded race-safe rolling typed-event memory, then owner phrase/note/CC preparation and Live-style tempo/loop inference with explicit parity limits. Existing ANOT velocity bytes and AEXP float values are a real persistence precision constraint: do not silently narrow arbitrary captured doubles or pretend those fields already preserve them. Log any needed format decision and continue independent work. After Capture: Scale Mode, multi-threading, scanner, stem separation, Loudness Drive, Link and scope in the brief's order. User's standing order is gate, push, log, next in this same turn; context compaction is not a reason to stop.
+
+---
+
+## 2026-11-04 — Capture audio RAM memory ready; taking undoable materialization
+
+**PR requested:** head `engine/audio-memory` at **`0f919061ce5826829669fef52726110548f2b699`**, base `engine/log` (`8c8048a`). Title: **Keep thirty seconds of race-safe retrospective input audio**. Independent of the automation stack. Win opens the PR; no main changes/merges by this Linux seat.
+
+**Window/host handoff / PR body:** `engine/audio_memory.hpp` supplies one preallocated AudioMemory per explicit physical input, default 30 seconds, listening while armed OR monitored. Queue gate changes and planar float input blocks to exactly one producer, with the driver's explicit integer stream-sample clock independent of the playhead. Listening on/off clears logical history; a gap, reset or rejected/pinned segment starts a new epoch, so the owner captures only a contiguous suffix. Irregular callbacks and callbacks larger than the ring retain exactly the latest configured duration. Source float bits (including signed zero/NaN payloads/above-unity) survive; no internal double graph bus is narrowed. Null channels explicitly mean digital silence; a hardware adapter must validate its selected input mapping. `snapshot(output,error)` runs on one owner, returns immutable interleaved samples plus input/epoch/clock/format, or an explicit empty refusal on racing overwrite/in-flight chunks. Producer never waits for the reader: bounded lock-free chunk ownership drops/counts pinned segments. Stats expose copied/dropped/ignored/invalid input. Constructor bounds identity/format/duration and caps RAM at 256 MiB/input. The default 48 kHz stereo sample payload is 11.52 MB plus metadata/spare chunk. Existing owner Float32 WAV I/O preserves the snapshot. No schema/opcode/UI/device production changes; this does not yet attach physical inputs or materialize a clip.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,006 checks / 107 suites**, every result row and sum inspected, zero failures, validators/layout pass. The lower count versus automation is the deliberately independent engine/log code base, not removed tests. New memory suite **35** passes GCC and Clang19 with Wshadow; actual Ninja-command Wshadow checks also pass for both changed translation units. GCC ThreadSanitizer completes all 35 checks with no report (concurrent 4,000-block producer and owner snapshots, 423 successful snapshots / 6,096 attempts in that run). Callback allocation/file-I/O guards stay zero. Tests cover exact default retention, all 44.1–768 kHz rates, multichannel and one-frame rings, multiple wraps/callback, gates, discontinuities/restarts, >2^53 timestamps, integer overflow, budgets, source bits, owner WAV roundtrip, independent inputs and immutable snapshots. Six compiled plants fail normally: ignored monitor (8), shortened memory (8), lost channel (11), narrowed clock (1), spliced gap (2), missing retention bound (5). No crash/exception counted. MSVC, hardware adapters and measured Live parity remain unrun here.
+
+**Take next immediately:** bridge a snapshot to the already-pushed N20 recording take/import path so Capture creates an actual playing clip in one undo step. Reuse `engine/audio-input-recording`'s code commit `0768096` (same recording sources as current remote head `3d53172`; the later head merges main and unrelated lanes, so do not pull that whole stack into this item). Its AudioRecordingResult owns the private take and recording::prepareCommit/commit already handles publication, dedup, exact sample-boundary musical placement, rollback/retry and undo. Add a memory-origin take factory and owner helper rather than duplicating asset/journal machinery. Declare audio-memory and audio-input-recording dependencies explicitly. Then MIDI retrospective Capture, Scale Mode and the rest of Phase D, without ending at this context checkpoint. Full hardware/UI Capture wiring and Live tempo inference remain explicit work, not completed by this buffer API.
+
+---
+
+## 2026-11-04 — Send levels automate like faders; taking Capture audio memory
+
+**PR requested:** head `engine/send-automation` at **`8e6d4ff11833490f7180052c55df8d20ed46ec7e`**, base `engine/log` (`c28b547`). Title: **Play automated send levels through fader and recording policy**. Explicit dependency: `engine/clip-envelopes` (`7ca44d0`) and its declared automation dependencies. Win opens and merges in dependency order; this Linux seat never touches main.
+
+**Window/host handoff / PR body:** Existing native lane/point APIs can address a track-origin send with owner_kind=routing, owner_id=its routing row ID, param_ref=gain_db, value_domain=real (dB). Session refresh binds arrangement and source-track absolute clip envelopes to the send's existing second strip stage, preserving +24 dB ceiling, silence threshold, control cadence, five-millisecond ramps and both graph precisions. Enable Send/solo stay gates; source mute, Pre/Post fader/automation and track-delay/PDC stay in the first stage. Graph holders retain both programs independently. Ordinary routing.setGain edits override only that send lane, even when a track shares its numeric ID; Re-Enable resumes it. Send lanes join the existing Arm/write/commit/refresh/finish policy without permanent recorded overrides. Unsupported domains/parameters/non-send targets are named. No schema/new opcode/UI/device-production change; timestamp producers still need the prior explicit coordinator handoff.
+
+**Solo policy:** Reachability conservatively includes an enabled send if its arrangement/default or any clip point can rise above silence anywhere in its program. Actual audio follows its current curve. This avoids callback topology/PDC changes, but can keep an arbitrary destination reachable in silent portions of an otherwise audible send. Wholly silent automation does not open it. This explicit policy is not a measured Live parity claim.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,266 checks / 113 suites**, every result row and sum inspected, zero failures, all validators/layout green. New send suite **45** checks covers real Store→Session float/double playback, ceiling, source mute, Pre/Post, seek/clip fallback, disabled sends, equal track/routing IDs, ordinary override and timestamped captured-data commit/resumption, solo reachability, target refusals, independent graph lifetimes, PDC and callback no-allocation. Clang19 send/mixer/Session/clip/write-policy **5/5** pass. Five translation units pass Wshadow. Six compiled plants fail normally: absent ceiling (2), absent binding (16), stored-knob solo reachability (1), wrong clip source (3), missing manual override (2), missing send write recognition (4). MSVC/JUCE, physical inputs/plugins and measured Live parity remain unrun here. README count remains win-owned.
+
+**Next immediately:** Phase D Capture, starting its default 30-second RAM audio memory per armed or monitored input (ADR-0132 d9), then owner-side materialization and MIDI retrospective capture, before Scale Mode and the rest of the brief. Keep input identity/clock explicit, exact source samples, bounded producer work and memory, no callback allocation/lock/file I/O, and a race-safe owner snapshot. Do not confuse this retrospective buffer with transport recording or claim hardware/UI hookup from an engine API. Capture can branch independently from engine/log; it does not need the automation dependency stack. Standing order remains gate, push, log, next in this same turn; no stop at this checkpoint.
+
+---
+
+## 2026-11-04 — Absolute clip envelopes play; taking automated send levels now
+
+**PR requested:** head `engine/clip-envelopes` at **`7ca44d02c1227560d9b49ea785b107a6aee0673d`**, base `engine/log` (`5aa99b0`). Title: **Play absolute clip automation envelopes through native lanes**. Explicit dependency: `engine/automation-write-policy` (`875c820`) and the preceding automation stack, integrated only into this item worktree. Win opens/merges; main is untouched.
+
+**Window/host handoff / PR body:** Existing track/device lanes now play clip-relative automation_data as immutable absolute-value overlays while a clip's half-open placement is active, falling back to the arrangement stream/default. Latest audible start then clip ID owns overlaps; an underlying clip resumes its ongoing phase. Musical/linear placement, tick/ns envelopes, source offsets, loop intros/wraps, native curves through step tempos and full-precision values are compiled off-thread. Device emission sees rounded clip/point/wrap boundaries between cadence ticks, including downward and half-tie rounding; strips retain their existing grid/smoothing and both widths. Native values/curve phases are retained rather than renormalizing trimmed segments. No schema/opcode/UI changes. OPS §9.6 documents absolute semantics, bounds and limits. Stands on automation-write-policy.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,221 checks / 112 suites**, all rows and sum inspected, zero failures, validators/layout clean. New suite **48** checks includes 44.1–768 kHz, nonlinear curves through step tempos, offsets, loop prefixes/phases, overlap fallback/order, exact rounded events, transport wraps/seeks, float/double strip renders, callback allocation guards, Store→native edit→model→engine→undo, and malformed/unit/budget refusals. Clang19 Werror clip/arrangement/parameter-automation/mixer/Session **5/5** pass. Four changed/new translation units pass Wshadow; the existing arrangement test changes only its missing-clip diagnostic expectation. Eight separately compiled plants fail normally: reversed overlap (2), ignored offset (4), ignored loop (6), linearized curves (5), raw rather than rounded point timing (1), closed clip-end interval (9), unknown clock accepted (1), missing event boundaries (3). Validated sources/binaries were never replaced by plants. MSVC, real host/hardware and measured Live parity remain unrun here.
+
+**Limits, explicitly not hidden blockers:** absolute values use the existing lane domain; a relative-modulation mode is not invented. Clip-owned gain/modulation and aliases remain named unsupported, while addressed clip streams on track/device lanes play. Invalid streams refuse a whole overlay, preserving valid neighbors and arrangement fallback; empty/muted clips do not mask it. Preparation caps per-lane points/boundaries at 1,048,576 and placements at 16,384 with a repeat budget; sub-sample loops are explicitly refused. Ramp tempos use the existing reported step fallback. Native loops on ns envelopes map musical phase through the source-relative tempo clock. No measured Live parity is claimed from those implementation rules.
+
+**Standing order:** the director explicitly ruled that a context checkpoint is a log entry, not a stop. This seat resumes from the previous entry, gates/pushes/logs this item, and takes the next one without ending the turn for a report, CI, or queue length. No new director gate blocks independent work.
+
+**Continuing immediately:** automate send levels like faders. Current SendNode already has a second StripNode for its own level; reuse that stage, lifetime retention, source mute/pre/post/solo semantics and PDC. Add routing-owned gain_db lane binding, retain the send ceiling, and include sends in ordinary manual override and recording-write policy without colliding with track IDs. Then resume Capture/Scale Mode/multi-threading/scanner/stem separation/Loudness Drive/Link/scope work in the brief's order; host/UI timestamp/recording coordination and Live parity remain explicit handoffs, not fabricated completions.
+
+---
+
+## 2026-11-04 — Session automation-write policy ready; context checkpoint and clip envelopes next
+
+**PR requested:** head `engine/automation-write-policy` at **`875c820181ea505b0cfe88ae9bceb9472fe6f64b`**, base `engine/log` (`8299371`). Title: **Coordinate Session automation writing and manual overrides**. Explicit dependency: `engine/automation-recording` (`34c2bd2`) and its shape/point/lifecycle dependencies. Win opens and merges in that order; no main changes or PR merges by this seat.
+
+**Window/host handoff / PR body:** Session now exposes owner-side Arm/record state and `beginAutomationWrite` / `finishAutomationWrite`. A recognized active write suspends its strip/device automation source independently of ordinary manual overrides; its parameter/fader journal changes do not light a permanent override. Gate-off prevents new writes but keeps the prior write suspended while captured points are pending. The owner closes/drains the producer, commits the prepared recording, refreshes Session, then finishes with follow=true to resume the new curve. Follow=false explicitly retains a normal manual override on capture/commit failure. Re-Enable does not cancel an active write; deleted/disabled lanes prune stale write state. Rebuild failure retains the requested policy for retry, like existing Re-Enable behavior; false is not readiness. No schema/new opcode/UI/host callback production change. Stands on automation-recording.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,173 checks / 111 suites**, all 111 result rows and their sum inspected, zero failures, every validator/layout check passes. Policy **31** checks proves the real Store→timestamped capture→native commit→Session refresh→resumed parameter-event path, both gate checks, pending stop, manual fallback, ordinary record-off behavior, strip lanes and deletion/undo cleanup. Clang19 Werror Session/parameter-automation/recorder/policy **4/4** pass. Changed Session translation unit and new suite pass Wshadow. Six compiled plants fail normally: ignored Arm (1), ignored record (1), missing suspension (4), permanent recorded override (2), premature stop cleanup (2), missing manual fallback (4). No plants changed validated sources/binaries. Windows/MSVC, real hardware/plugin timestamps and measured Live parity are still unrun here.
+
+**Seat checkpoint:** four increments completed in sequence, each gated and logged before taking the next: lane lifecycle `a0c22af`, prepared shape insertion `3f35b87`, timestamped capture `34c2bd2`, Session write policy `875c820`. Earlier point editing remains `1c37d05`. The main checkout and every completed item checkout are clean. Win opens the PRs; Git HTTPS pushes work. No automatic publication or new-task restoration is claimed.
+
+**Take next immediately:** clip-envelope playback in Phase D item 1, then automated send levels, then Capture/Scale Mode/multi-threading/scanner/stem separation/Loudness Drive/Link/scope engine work as the brief orders it. AutomationProgram currently reports every clip-scoped automation_data row as not played and accepts only track/device owners; that refusal is the concrete next code site. Read the format's clip-relative lane/data contract and clip placement/offset/loop model before extending it. Preserve arrangement fallback, overlap ownership, loop/seek behavior, all six curves, sample compensation and callback no-allocation guarantees. Do not silently guess relative modulation semantics or claim exact Live geometry from the prototype templates. Official-manual access is still proxy-blocked; its domains are saved in the environment draft but not applied/published here. Independent engine preparation continues.
+
+**Remaining integration, not a readiness claim:** window/host producers must map target/value/time units correctly, queue controls to the single producer, delimit loops/seeks, and invoke the commit/refresh/finish sequence. Session policy and capture are validated APIs, not automatic wiring of every existing host callback or the UI Arm button. Keep the prepared document/client/head guards and supply the UI's document generation across async work. Full Live preset geometry/defaults need authoritative manual/fixture comparison; no parity signoff is invented. New item branches should declare this explicit dependency stack until win reports it merged.
+
+---
+
+## 2026-11-04 — Automation Arm capture/commit foundation ready; continuing Session write policy
+
+**PR requested:** head `engine/automation-recording` at **`34c2bd28e8ff00cc4ae0d2a84c2ad4da4c8a349b`**, base `engine/log` (`ba1232a`). Title: **Add Automation Arm and timestamped recording capture**. Explicit dependency: `engine/automation-shapes` (`3f35b87`) and its point/lifecycle dependencies. Win opens and merges in dependency order; main is untouched.
+
+**Window/host handoff / PR body:** `engine/automation_recording.hpp` supplies one bounded SPSC recorder per explicit lane/data/clip target. Arm defaults on, transport recording off; gates affect automation capture rather than normal ParamOps. Exactly one producer serializes controls and manual Begin/Value/End events with explicit lane-unit timestamps; UI controls must be queued to that producer. Disarm/stop close the prior gesture using the last held value; seek/loop boundaries must be delimited explicitly. Producer calls allocate/lock/log nothing and reach neither Store nor plugins. Overflow, invalid input and consumer point-budget exhaustion discard the entire gesture, counted instead of committing a partial curve. `prepareRecordedAutomation` resolves fresh IDs through the generalized one-revision `prepareAutomationWrite`; commit retains document/client/head guards and one exact undo. No schema/new opcode/UI/host callback production change. Existing callbacks/Arm button are not automatically wired, and gesture-final ParamEditCapture values are not treated as sample timing. Stands on automation-shapes.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,142 checks / 110 suites**, all validators/layout checks pass. Recorder **36** and refactored shapes **50** pass. Clang19 Werror core plus recorder/shapes/points/lifecycle/ops/replay **6/6** pass. Three changed translation units pass GCC Wshadow. Recorder checks include allocation guards, 1000 gestures across real producer/consumer threads, bounded overflow recovery, gates, exact timestamps above 2^53, stop endpoints, data-unit flags, malformed input, and native commit/undo/redo. Six independently compiled plants fail normally: ignored Arm (5), ignored record state (6), narrowed value (3), lost timestamps (8), partial overflow recording (2), ignored taint (2). No crash or timeout is counted as a plant success. MSVC, real host/driver timestamps and Live parity remain unverified here.
+
+**Continuing immediately:** Session's write policy. While an armed recording gesture is active, its lane must be suspended without lighting the ordinary manual-override state; manual parameter journal changes during that write must not permanently override the lane. Only after the captured data commits and refreshes should the owner resume its automation. This is still Automation Arm integration, before clip envelopes/send playback; do not claim the full host/Session path is finished from capture alone. Then continue Phase D in order. The director requested more than one item per seat; lifecycle, shape insertion and capture have each passed and been logged before taking the next one.
+
+---
+
+## 2026-11-04 — Prepared automation shape insertion ready; taking Automation Arm now
+
+**PR requested:** head `engine/automation-shapes` at **`3f35b877aa8049a224f660dedf25926a9a2dc2e5`**, base `engine/log` (`5b2f102`). Title: **Add prepared automation shape insertion**. Explicit dependencies: `engine/automation-edits` (`1c37d05`) and `engine/automation-lanes` (`a0c22af`), integrated only on this item branch, with their catalogue counts reconciled to 174. Win opens/merges the dependency PRs before this one; no main merge or history rewrite was performed.
+
+**Window handoff / PR body:** `automation_shapes.hpp` supplies bounded generation for sine, triangle, saw/inverse, square, exponential/logarithmic rise/fall and configurable ADSR, plus `prepareShapeInsertion`/`commitShapeInsertion`. Preparation resolves fresh explicit point IDs and an inclusive-range delete/write batch under one SQLite read snapshot without writes/reservations. Commit guards the original open document/client and exact history head, including NULL. Existing outside records remain; resulting point interpolation can change sound across unanchored boundaries. Native vertices/curve descriptors preserve triangle/ramp geometry; sine uses requested sampling. Integer quotient/remainder preserves times beyond 2^53. Templates, defaults and boundaries are documented as implementation behavior awaiting Live comparison; blocked official-manual access is not a measured parity claim. No schema, new opcode, UI, device or callback change. Stands on the two automation dependencies above.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,106 checks / 109 suites**, all individual results and sum inspected; all validators/layout checks pass. Clang19 Werror core plus shape/point/lifecycle/automation/ops/replay tests **6/6** pass; final strengthened shape suite **50** passes under both compilers. New shape source and suite pass Wshadow; integrated catalogue was already covered by the lifecycle/points gates and compiled under both compilers. Six separately compiled plants fail normally: narrowed int64 time (1), missing NULL-head guard (4), missing document guard (2), retained selected points (2), mixed snapshot reads (2), ignored lane bounds (1). A deterministic second connection commits between head and metadata reads and proves one-revision preparation plus stale refusal. Final sources and validated binaries are unchanged by plants. MSVC/remote CI/Live visual and render parity remain unrun here.
+
+**Continuing immediately:** Automation Arm and timestamped gesture recording into the same native lane/point operations. Existing ParamEditCapture only records gesture-final values at drain time; it cannot be relabelled sample-accurate automation capture. Add a bounded producer/consumer capture with explicit lane-unit timestamps, recording/arm gates and atomic owner-side commits, preserving normal parameter edits while disarmed. Then clip envelopes, send levels and the rest of Phase D. Exact Live preset geometry/defaults remain a validation follow-up when the manual/fixture prerequisite is available; no need to ask the director before independent recording work.
+
+---
+
+## 2026-11-04 — Automation lane lifecycle ready; taking shape insertion immediately
+
+**PR requested:** head `engine/automation-lanes` at **`a0c22af586208c8b2cb1ffa68c3312e0d41c5dc4`**, base `engine/log` (`29a2c7f`). Title: **Add undoable automation lane lifecycle**. Independent of `engine/automation-edits`, which is already pushed. Win opens the PR and merges; this Linux seat does neither merge nor claim MSVC/remote CI success.
+
+**Window handoff / PR body:** `automation_lanes.hpp` now supplies `createLane(LaneSpec)`, delete, clear, enable, visibility and default-value requests for the document owner to commit through OpJournal. Creation carries every default explicitly and validates the existing polymorphic owner, identity, time base, value domain and bounds. Clear empties all arrangement/clip streams while retaining row/clip identities, future header version/stride/flags and trailers; any unreadable stream rolls the entire operation back. Delete undo restores every stored scalar and every stream byte, including legacy metadata and malformed blobs. Captured `automation.restoreLane` inverses preserve original absence. No schema, UI, device-production or audio-callback change. OPS §9.6 documents the native lifecycle. This branch adds one opcode to its base catalogue; combine its count deliberately with automation-edits' restoreData when both are integrated.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,010 checks / 107 suites**, all validators and binary-layout checks pass. Lifecycle **39** checks covers explicit replay, exact undo/redo, metadata bounds and owners, populated cascade restoration, future streams, clip slots, malformed later-stream rollback and caller-hook rollback. Clang19 Debug/Werror core/lifecycle/ops/replay build, **3/3** focused suites pass. All three changed translation units pass GCC Wshadow. Four separately compiled plants fail normally: missing owner validation (5), lost restored streams (4), normalized future header (1), narrowed double default (1). Validated binaries and checkout sources were never replaced by plants. Main is untouched; item and log use separate worktrees. Windows/MSVC and Live parity remain win's acceptance legs.
+
+**Prompt/network evidence:** the requested second-issue `collab/prompts/2026-11-04-engine-lane-codex.md` does not exist in fetched origin/main or origin/engine/log; the director's direct correction supplies the Linux-seat/win-opens-PR rules. No fabricated prompt read is claimed. The official Ableton automation manual request returned proxy CONNECT 403. The environment draft now adds ableton.com/www.ableton.com while preserving existing domains/presets; persistence is confirmed, runtime application/publication is not. Exact Live preset/parity evidence remains unverified; this does not block independent insertion/recording mechanisms.
+
+**Continuing now:** shape insertion on the pushed point/lifecycle APIs, then Automation Arm, clip envelopes and automated sends, in Phase D order. Earlier needs remain taken by pushed feature branches. Do not end the seat after this item; the director explicitly requested continued work through the context/usage boundary.
+
+---
+
+## 2026-11-04 — Native automation point edits ready; continue Phase D
+
+**PR requested** — head `engine/automation-edits` at **`1c37d0563c16580e19510c61631c538dbc71519f`**, base **`engine/log`** at `f3fe7c5c37ea01c450e1878a217b455da66fcfb8`. Title: **Add undoable automation point editing**. The tested branch is pushed; win/window opens the PR, win merges. GitHub GraphQL returned Forbidden, so no opened PR or remote CI success is claimed.
+
+**PR body / window handoff:** The document owner can submit `automation::writePoints`, `deletePoints`, `movePoints`, and `setCurve` through `OpJournal` for an existing arrangement or clip lane. Requests explicitly address the automation_data row, lane, clip (null for arrangement), and full uint64 point IDs. Writes upsert; moves use absolute int64 time/double value; curves use the existing six formulas and finite -1..1 tension. All-or-nothing selection validation, stable coincident-point order, flags/reserved bytes, future record suffixes and trailers are retained. Captured `automation.restoreData` restores exact bytes or original absence. Inserting unknown newer-format fields is refused. OPS §9.6 documents the payloads and limits. No schema, UI, device production or callback changes. This is the native point-editing prerequisite, not completion of shape presets or all Phase D. Stacked on `engine/log` at the base above.
+
+**Validation:** GCC14 full Debug/Werror/PD-on/JUCE-off build and `tools/test_all.sh`: **10,017 checks / 107 suites**, every result and the sum inspected, all validators and binary layout checks clean. New edits suite **46** checks includes deterministic replay, exact undo/redo, finite/range/refusal checks, full-width IDs and values, future-layout reordering/deletion, clip-relative nanosecond flags, owner/data mismatch, engine compilation/evaluation, and final commit-hook rollback. Clang19 Debug/Werror builds the core and passes edits **46**, automation **39**, ops **130**, replay **63**. All three changed translation units pass GCC Wshadow. Five independently compiled fault plants fail normally: value narrowing (2), ignored curves (1), dropped trailer (2), ignored address (4), undo absence retained as an empty row (3). The final plant variants do not edit checkout sources or replace the validated binaries. MSVC, JUCE host/GUI, seven-ABI CI and measured Live parity remain unverified in this Linux seat; win owns merge acceptance. No README count edit.
+
+**Seat and base discrepancy:** The uploaded 4 November work-seat instructions describe Windows and say `engine/log` contains the rebuilt #382–#421 feature stack. This actual machine is Linux; fetched `origin/engine/log` is `f3fe7c5`, carrying the newest handoff but not those feature implementations (including the controller source APIs). The required base was preserved, and this increment has no dependency on absent feature code or schema minors. Win should reconcile the stack base and OPS catalogue count with the existing feature branches during integration; no reset, force push or duplication of those features was performed. The main checkout remains untouched, with code and log in separate worktrees.
+
+**Network:** Existing Git HTTPS authentication works for reads and push. The draft now adds `api.github.com` to the existing network policy, preserving all presets; saving is confirmed but runtime application/publication is not. No token was requested or exposed. The fallback PR title/body is recorded here and a local copy is `/workspace/engine-review/automation-edits-pr.md`. Clang was extracted under `/workspace/adi-clang` from checksum-verified Debian packages obtained through its signed official HTTPS archive; no verification was disabled.
+
+**Queue:** Continue Phase D item 1. Implement native lane creation/deletion and lane enable/visibility/default/clear operations with exact inverses, then Live shape insertion on these point APIs, Automation Arm, clip-envelope playback and automated send levels. Point editing currently requires an already existing lane; it does not introduce a UI SQL path or claim those follow-ups are built. Earlier needs remain taken by the existing feature branches. Capture, Scale Mode, multi-threading, scanner, stem separation, Loudness Drive, Link and scope engine work remain later in the standing queue. No LANES §5 question blocks continuation.
+
+---
+
+
+## 2026-11-03 — Controller lanes play through the graph and hosts; on to Phase D automation
+
+**PR requested** — head `engine/midi-controller-playback` at **`d7d7c032db351c98e251c86b6e3d5d639f7f7cb1`**, base **`engine/midi-controller-editing`** (`c16d1cd`, pending PR above main). Title: **Play MIDI controller lanes through compensated graphs and hosts**. Depth two, explicitly depends on controller editing/read APIs. Win/window opens; win merges. GitHub API remains inaccessible here.
+
+**PR body:** Compiles addressed controller data into immutable per-track timelines, covering musical/linear clip placement, offsets, loops, overlap precedence and all six curve shapes/tensions through step tempos. The MIDI source chases full-precision values before notes, emits on a global 64-sample cadence plus exact boundaries, and retains owned CC64/66/69 releases through stop/seek/wrap/mute/deletion/rebuild, graph compensation and overflow. Delivery tokens route acknowledgements only to the matching source by binary search; retries retain ownership until release delivery. Controller pressure preserves note space and rotates addresses. The event stays double through the graph and mapped VST3 parameters; CLAP narrows at its advertised MIDI boundary, alongside native notes. Hosts count unsupported controllers. No schema, new op, DSP or UI production changes. OPS §9.5 documents timing and host limits.
+
+**Window handoff:** the previous PR's committed `cc.write`/`cc.delete` data now plays after normal `Session::refresh`; no extra UI playback path or Store reads from callbacks. Empty lanes send nothing; ordinary CC holds after placement ends, owned pedal releases do not keep cancelling unrelated live input after acknowledgement. Invalid lanes, aliases and unsupported tempo ramps report preparation problems. Latest clip start wins a shared address, with clip ID as tie breaker. `MidiClips::droppedControllers()` counts deferred/refused updates. CLAP ports must advertise MIDI/MIDI-MPE for ordinary CC; unsupported ports are counted. VST3 uses IMidiMapping where the existing host can reach IEditController; JUCE's unexposed separate controller remains an explicitly counted unsupported route. Do not claim every VST3 accepts CC. Existing Pd/native MpeRouter consumers receive the new control route without touching device production.
+
+**Validation:** full GCC14 Debug/Werror/no-JUCE/PD-on build and `test_all.sh` **10,121 checks / 108 suites**, every C++ result and sum inspected; all validators green. Focused GCC/Clang: new playback **90**, MIDI clips **167**, CLAP **490**, MPE output **91**, graph **200**; Clang controller editing **54**, engine **119**, ops **130**, replay **63** also pass. Real Session commit→model→source→instrument, cascade deletion, both graph precisions, 44.1–768 kHz, irregular callback sizes, three pedals across five transitions, same-source rejection retry, pending compensation, empty/full lists and rotating controller pressure are covered. Callback allocation/file-I/O guards stay zero. Seven changed translation units pass direct Wshadow compilation. Fourteen separately compiled fault plants fail normally: omitted curves, wrong tempo phase, reused loop offset, reversed overlap owner, narrowed values, unowned hold-2, skipped pedal release, missing note reserve, callback-local cadence, false rejection acknowledgement, lost channel, truncated MIDI rounding, absent CLAP MIDI wire and reused source namespace. No crash counted. MSVC/JUCE host build remains CI's leg; README check totals remain win-owned.
+
+**Queue:** refreshed main/window/devices refs; main remains `9be60a8`, window/log `49b597d`, devices/log `28cf3b2`; no new engine need. Earlier table items already have pushed implementations/PR requests; no duplicate work on unstruck rows. Phase C note transforms and controller lanes are delivered. Continue Phase D item 1: undoable automation edits needed by shape insertion, then Automation Arm, clip envelopes and send levels. No LANES §5 question blocks. This continuation chains directly to the next item.
+
+
+## 2026-11-03 — Controller-lane editing and immutable data ready; playback follows
+
+**PR requested** — head `engine/midi-controller-editing` at **`c16d1cdb7551de2615fe2571dbb36bbca18307fa`**, base **`main`** (`9be60a8` at cut). Title: **Add undoable MIDI controller lanes and snapshot data**. Independent of note transforms/daily/compaction. Win/window opens; win merges. The environment still has no GitHub API.
+
+**PR body:** Adds native cc.write/cc.delete plus captured cc.restoreStream on the format's existing addressed event_streams/ACTL rows. Explicit row/channel/controller/point identities, full normalized double values and curve/tension/flags survive writing and exact undo/redo. Point deletion preserves unrelated records, including future tails and trailers; an unknown wider layout refuses invented new records. Invalid/unbound streams remain visible with errors. ClipNode.controllers and rows::Model.controllers carry the typed data, raw bytes and errors; every field participates in sharing. SnapshotBuilder now reads controllers and clip/project metadata under one SQLite snapshot. No schema, UI, DSP or callback change. This PR supplies editing/read APIs; prepared controller playback and host delivery follow in the next branch.
+
+**Window handoff:** use `controllers::prepareWrite(Store&,clip,channel,controller,points)` on the document owner. Zero point IDs request fresh explicit IDs; it locates an existing slot or allocates a noncolliding event-stream ID and returns the actual IDs/request. Preparation writes/reserves nothing and respects a caller-owned read transaction. `commitPrepared` guards the captured head (including NULL), file/open-client identity; retain document generation across async work. The window needs no SQL access. Existing lane/point IDs are in `ClipNode.controllers` / `controllers::readLanes`; channel 0..15/controller 0..127 are storage addresses. `writeRequest`/`deleteRequest` also build explicit OpRequests for batching. Values remain normalized double, with MIDI narrowing deferred to the host. Deleting a lane's last point leaves its empty addressed row; undo of first creation restores absence. OPS §9.5 gives payloads, curves and error behavior. Playback is still pending this companion increment; do not present an unbuilt host route as sounding.
+
+**Validation:** final full GCC14 Debug/Werror/no-JUCE/PD-on build/runner **10,025 checks / 107 suites**, every C++ result and sum inspected; all five validators pass. GCC/Clang controller **54**, engine **119**, ops **130**, replay **63**, MIDI playback **165**, project view **14** pass. Direct Wshadow builds of catalogue, controller code, snapshot, row adapter and suite pass. Fifteen compiled plants all fail normally: missing prepared head/document guards, invalid channels, narrowed uint64 point IDs/values, detached tails, partial missing-ID deletion, wrong clip slot, omitted controller sharing, mixed controller/clip revisions, hidden malformed lanes, missing row-model data, absence restored as an empty row, preparation writing metadata, and invented future record fields. No crash counted. A deterministic second-connection edit between queries proves one-revision snapshots. Producer tests include fresh root/NULL guards, retry refusal, same-file reopen invalidation and no reservation writes. README counts remain win-owned.
+
+**Integration:** independent OPS.md additions from note transforms and this branch each add one inverse opcode; combine the table/count deliberately when both merge. Existing freeze's catch-all source fingerprint traverses FK-owned event_streams rows, so CC changes remain source material; combined branches still need their integration tests. Controller playback must consume the new immutable row data, preserve full value precision to the host boundary, chase/loop/seek/reset held pedals safely and keep callbacks allocation/lock/log free. Continuing that now on one branch above this one (depth two), with no director question.
+
+
+## 2026-11-03 — Phase C native quantize/transpose ready; controller-lane editing next
+
+**PR requested** — head `engine/midi-note-transforms` at **`cd40539b7bf2733919ef80ac8c4ae9629d5a07e7`**, base **`main`** (cut from `9be60a8`). Title: **Add native MIDI note quantize and transpose**. No unmerged dependency. Win/window opens the PR; win merges. API remains unavailable here.
+
+**PR body:** Completes Phase C's missing quantize/transpose native editing operations with explicit full-width note IDs and numeric settings. Quantize supports starts, ends, strength, swing and grid origin with exact int64 arithmetic, including beyond 2^53 and overflowing start-minus-origin differences. Start-only keeps duration; collapsed independently snapped ends keep one tick; overflow refuses the entire edit. Transpose shifts the listed pitches and refuses the whole selection if any would exceed 0–127. Both preserve unrelated note fields and expression identities. Quantize's compact CBOR-binary inverse restores the exact original stream, including coincident-note order, future record tails, flags/version and trailer. No schema, UI, DSP or callback change.
+
+**Window handoff:** `notes::quantizeRequest(clip, ids, QuantizeSettings)` and `transposeRequest(clip, ids, semitones)` from `note_transforms.hpp` return native OpRequests; commit one, or a batch for a multi-clip gesture. Strength/swing are integer hundredths of a percent (10000 = 100.00%); factories capture every grid/origin/start/end setting into the payload. UI selection bits/playhead/grid are never read. Native `note.restoreNotes` is the inverse's exact stream packet and cannot replace the note identity set. OPS §9.5 documents the fields and refusal rules. This extends N17's separately requested material/fade/Auto-Warp APIs; it does not repeat those branches. Controller lanes are still the next Phase C increment. Tie rounding, one-tick collapsed notes and transpose range refusal are explicit implementation behavior; no measured Live parity claim.
+
+**Validation:** full GCC14 Debug/Werror/no-JUCE/PD-on build plus `test_all.sh`: **10,007 checks / 107 suites, all five validators clean**; every C++ result and sum inspected. Final GCC/Clang new suite **36**, ops **130**, replay **63**, MIDI playback **165** pass. Direct Wshadow builds of catalogue, transforms and the suite pass. Nine compiled plants fail normally (1/1/1/2/1/1/2/1/2 checks): restored-ID loss, ignored strength/swing, narrowed tick phase, detached record tails, changed start-only duration, ignored selection, omitted transpose bounds, normalized inverse layout. Source bytes restored exactly after reordering and after undo/redo; valid-empty restore cannot orphan expression identities. Clang's test-initializer braces warning was fixed before final validation. Two unregistered prior-history executables were archived before the full run; no stale results counted. README counts remain win-owned.
+
+**Continuing:** native `cc.write`/`cc.delete`, addressed controller-stream reads and snapshot data. The schema already has event_streams.channel/controller, so no invented controller table is needed. After editing, connect prepared controller events to the graph/hosts as the next increment; the engine EventType currently carries notes/expression but no ordinary control events. No director gate blocks.
+
+
+## 2026-11-03 — Active undo caps and replay checkpoints ready; chaining into remaining Phase C MIDI edits
+
+**PR requested** — head `engine/history-compaction` at **`3c1b8acd6e8e8aa65acfad85254a1f292b83db52`**, base **`engine/history-retention`** (`75909f7`, daily snapshots requested immediately below). Title: **Compact undo history into replayable project checkpoints**. This is the second and final stack level. Win/window opens; win merges daily retention first. The feature is pushed; no actual PR URL is available in this API-blocked seat.
+
+**PR body:** Implements ADR-0203 d13's active undo cap of 2,000 transactions or 1,000 decimal MB, with optional smaller project budgets. Each native journal commit atomically checkpoints and prunes a complete oldest prefix before its final caller hook. Schema 1.10 adds one typed-CBOR project-state checkpoint at the retained root; undo stops there, while redo, named snapshots and reachable branches remain valid. All existing snapshots, branch heads/forks and unuploaded collaboration seqs protect their points; protections can leave the journal above budget and are reported. The newest whole transaction and legacy embedded media remain protected. Checkpoint failure or final hook rejection rolls back the edit and compaction together. Replay restores the checkpoint into an empty-journal target, preserving UI metadata, then replays only source ops after baseSeq. No UI, DSP, audio-callback or new opcode change.
+
+**Window/sync handoff:** `History::setUndoRetentionPolicy(UndoRetentionPolicy)` persists the project policy and compacts; `compactUndo()` reports remaining transaction/byte counts, baseSeq, removedOps and protectedHistory. Normal journal commits enforce it automatically. Collaboration must be enabled before its edits, and uploadedThroughSeq means ALL local seqs through that point were uploaded; missing ack protects everything. Transfer any existing checkpoint along with a new collaboration session's log. N29's undo-list adapter must exclude the retained root, as `nextUndo()` already does; integrate its sibling after both land. Replay/export-log consumers hold a source read transaction across `restoreReplayBase(source,target)` and retained-log reads and skip the root's already-folded forward op. Metadata/snapshot callers remain as the daily handoff below. Details: ENGINE-HISTORY-RETENTION and format/SPEC §8.3.
+
+**Validation:** final full GCC14 Debug/Werror/no-JUCE/PD-on build and runner: **10,028 checks / 108 suites**, every C++ result and sum inspected, all zero failures. CI/op/PD/layout validators pass. **Sole failure: schema validator's win-owned README count, 51 tables versus 52**; all schema invariants and frozen 1.0–1.9 migrations to 1.10 pass. Win updates the count and reconciles the independent schema-1.10 siblings during integration; no README edit here. GCC/Clang compaction **49**, daily **38**, history **95**, snapshots **65**, replay **63**, migration **162**, text projection **210**, integrity **43**, collect/export **63** pass. Direct Wshadow builds of history, ops, compaction, integrity and the new suite pass. **Eleven compiled plants all fail normally** (2/2/2/2/2/1/1/1/2/1/2 checks): ignored stored policy, wrong boundary state, bytes ignored, named/unuploaded/fork protections removed, partial-batch cut, inverse-less root offered, NULL changed to TEXT, late caller hook outside transaction, restore without transaction. No crash counted. Tests read the first committed batch boundary directly, without invoking maintenance that could repair a planted partial cut; branch protection is also tested after switching to the older line. A legacy extraction compatibility failure from the first broad run is fixed and covered by collect/export; aborted/earlier runs are not final evidence.
+
+**Boundaries:** the byte budget covers active journal payload/inverse/selection, UTF-8 metadata and fixed per-row accounting, not the whole file/checkpoint/content pool. Checkpoint capture can cost project size plus retained-history rewind on the owner; never call from audio. Snapshots remain usable and thus can protect history above cap until explicit removal/automatic snapshot-budget eviction. Legacy embedded rows keep their replay log until extraction, since current triggers forbid restoring those old embedded rows. No claim of measured Live parity for numeric retention UI.
+
+**Queue:** history caps and daily snapshots are now delivered, with N3/N30 separately delivered earlier. Continuing Phase C's missing quantize/transpose/controller editing; tempo analysis/Auto-Warp and the material/fade/Time APIs are already in `engine/phase-c-editing` and are not being redone. Latest fetch main **9be60a8** includes win's N14/N4/N20 store/registry through #360 and the mixer timeout #376; the engine recording half remains in its earlier branch. Window log/needs table is unchanged (`49b597d`), no new engine rows. No LANES §5 gate blocks.
+
+
+## 2026-11-03 — Daily history snapshots and persistent-snapshot budgets ready; undo compaction next
+
+**PR requested** — head `engine/history-retention` at **`75909f71439bf0afad0d408da42629e214004079`**, base `main` (cut from `61eb28d`). Title: **Add daily snapshots and bounded snapshot retention**. GitHub API remains unavailable in this seat; win/window opens the PR and win merges. No other feature dependency.
+
+**PR body:** Implements ADR-0203 d13's daily automatic snapshot and 10,000 local / 100,000 collaboration persistent-snapshot limits. Opening an unchanged document creates nothing; the owner service records changed days and refreshes that day's automatic point after completed edits, undo or redo, including after reopen/timezone changes. Renaming an automatic point pins it as named. Retention removes only oldest automatic points; all-named limits report a block. Eviction, insertion/update and persistent day markers commit together, with rollback and same-head retry on failure. Explicit snapshot removal is metadata, like rename. No schema, opcode, UI or audio-thread change.
+
+**Window handoff:** construct one `DailyHistorySnapshots(Store&, HistorySnapshotPolicy)` before accepting edits on New/Open/Save As; call `poll(nowUtcMicros, utcOffsetMinutes)` after completed edit gestures/undo/redo and before close. Recreate the service when replacing the Store. Poll returns Unchanged/Created/Updated/Blocked/Failed and ID/name/error; there is no timer or clock read. `History::takeSnapshot` accepts the same optional budget policy, `renameSnapshot` promotes automatic points, and `removeSnapshot` explicitly frees a slot. See `docs/ENGINE-HISTORY-RETENTION.md`. Persistent snapshot metadata adds no journal operations. These APIs do not replace the separate N3/N30 file commands.
+
+**Validation:** full GCC14 Debug/Werror/no-JUCE/PD-on build and `test_all.sh`: **9,963 checks / 107 suites**, every C++ result and sum inspected; all five validators pass. GCC14 and Clang19 daily-policy **38**, snapshots **65**, history **95** pass. Direct shadow-warning builds of both changed production units and the new suite pass. Eight compiled plants fail normally (3/5/6/12/1/1/5/1 checks); no crashes counted: named eviction, failed promotion, phantom open, duplicate day, lost pending retry, negative-date floor, budget off-by-one and eviction without a transaction. Full runner was rebuilt after removing unregistered freeze executables; an earlier stale run was stopped and is not validation evidence. README counts remain win-owned.
+
+**Queue:** this completes daily snapshots and persistent snapshot budgets, **not** active undo's 2,000 transactions / 1,000 MB compaction. Continuing that independent increment now. It must store a replayable checkpoint, preserve named snapshots/reachable branch points and refuse to compact unuploaded collaboration edits. Freeze Group's final request remains `c7fecf74` below; live-key Freeze All still needs the host key-routing capability described there. No LANES §5 question blocks.
+
+
+## 2026-11-03 — Freeze Group added; final track-freeze head supersedes the earlier request
+
+**PR requested / update the earlier request:** engine/track-freeze ->
+**engine/track-delete-undo**, head **c7fecf74daebd9e059b4226c413c3e61f8f24c71**,
+title **Add track and group freeze caches with native undo**. This is the SAME
+freeze topic, still two deep on N37 (945f8d0); no new third-level stack. The
+ordinary checkpoint 2f9333c below is superseded by this head. GitHub API remains
+unavailable; win/window opens the PR and relays native CI / MSVC /WX.
+
+**Final body:** implement ordinary whole-track freeze and single whole-group
+freeze with verified dry/wet cached audio, preserved original clips/device state,
+explicit tail, one native undo step and recoverable no-clobber publication. The
+group mode caches the summed bus and root inserts, parks every descendant reader
+and device, and removes child audio connections from the realized graph. Original
+routing rows are retained. Group fader/pan/sends/parent console remain live. Child
+audio routes to outside the group stop until unfreeze: an explicit capture option
+acknowledges that tradeoff. Descendant arm switches are saved/disarmed/restored
+with cache scope; undo/redo/reopen and N37 track-delete undo preserve them. A root
+deletion retains surviving children's current disarmed state; its undo restores
+the frozen group exactly. Graph filtering follows original planning and remaps
+indices, preserving explicit routing rather than creating default outputs.
+
+**Window API addition:** set FreezeCaptureSpec.wholeGroups=true and select
+non-overlapping group roots; acknowledgeChildAudioRoutes=true only after the
+user chooses the child-route tradeoff. Then use the same generation-guarded
+capture/prepareFreeze/commitFreeze/unfreeze calls from the prior entry. All actual
+contributing child device identities are captured as well as the root's.
+Snapshot children expose frozenByGroup, effective frozen=true and
+freezeMode=group-member; the owning root's mode is group. Look up the owner to
+find its cache and unfreeze the whole group. Every field is in same(), including
+an ownership change between nested groups with otherwise unchanged child data.
+The native guard rejects edits to baked child controls and rearming while
+allowing the live root controls. Cache fallback resolution now feeds the actual
+playback reader, with size/time invalidation before reusing a verified location.
+New capture jobs do not copy/open parked group originals, so other tracks can
+still be frozen with those originals and plug-ins offline. See
+**docs/ENGINE-FREEZE.md** for the final contract and supported boundaries.
+
+**Boundaries remain explicit:** capture requires Solo off for a whole group,
+no external audio/key inputs into its subtree, baked VCA controls inside it,
+and no already frozen children. A master in the scope or MIDI forwarded without
+its included instrument is refused. Nested ordinary groups work. Freeze All
+Channels with independently adjustable child balances/live keys and live-prefix
+modes are still subsequent work, not claimed closed here. Float32 cache encoding
+is an explicit precision boundary; no bit-exact 64-bit null claim. No UI, device
+production, DSP or README edits.
+
+**Format:** additive schema **1.11**, frozen_groups with captured descendant IDs
+and original arm flags, plus group.setFreezeScope and its symmetric captured
+inverse. The 1.10 cache schema is frozen separately and left intact; migration
+adds an object, not columns to an already numbered schema. Generic N37 capture
+retains the new dependent BLOB without a special undo path. Update the earlier
+PR body's schema note: **win's README table count must become 53**, not 52, for
+the strict schema gate; reconcile sibling schema numbering when combining PRs.
+
+**Verified:** full GCC **10,166 checks / 111 suites**, every C++ result and sum
+inspected and passing. CI/OPS/PD/layout validators pass; the sole schema validator
+failure is win's README **51 versus 53 tables**. Migration/canonical/schema
+checks otherwise pass. GCC + Clang: group **65**, ordinary native **79**, capture
+**27**, fingerprint **30**, Session **214**, graph host **124**, device host
+**60**, engine/snapshot **128**, track-delete **38**, migration **175**, text
+projection **213**, all pass. Actual compensated PCM at both processing widths,
+analog bus taps without double processing, missing original files/plug-ins,
+actual pruned child/send paths, saved arm restoration, late SQL rollback and
+same-job retry, fallback playback, and independent capture with group originals
+offline are exercised. A direct shadow compile caught a nested lambda's row
+name; renamed it, then rebuilt/retested group/native with GCC and Clang. Nine
+final shadow compiles pass. Ten separately compiled plants fail normally:
+child-fader fast guard (4), child arm restore (16), child prune (3), owner sharing
+(1), cached dry bus tap (1), fallback (2), parked original input copying (2), Solo
+(1), external key (1), plan-transform dispatch (3). No crash counts as a plant.
+The earlier ordinary increment's 11 shadow checks/nine plants also remain valid.
+
+**Next:** continue Freeze All Channels/live-key handling, then the remaining
+LANES queue. No director gate.
+
+
+## 2026-11-03 — Whole-track freeze caches, original-state retention and native undo
+
+**PR requested:** engine/track-freeze -> **engine/track-delete-undo**, head
+**2f9333c089a6fc45015853cb29e42e12e06e93dd**, title **Add whole-track freeze
+caches with native undo**. Two deep: requires N37's generic dependent-row
+track-delete/undo capture (945f8d0). Win merges that first. GitHub API remains
+unavailable here; please open and relay native CI / MSVC /WX.
+
+**Body / behavior:** a frozen flag previously left the original readers and DSP
+running. This increment captures verified private Pre FX/Post FX WAVs from one
+WAL-inclusive snapshot and one multistream Session pass, publishes immutable
+owned media, and commits cache metadata/disarm flags in one native undo step.
+Original clips, parameters and opaque state remain intact. Playback skips parked
+plug-ins and original media; fader/pan/width/phase/delay/mute/solo/outgoing sends
+and the parent console remain live. The cached files play Warp off, with the
+chosen cache encoding (Float32 default, an encoding boundary at either graph
+width). Warm unfreeze restores fresh instances from preserved state so stale
+voices/history cannot resume. Cache topology requires a stopped callback or
+driver release; the owner reads an atomic driver observation, never Transport.
+
+**Window calls:** flush edit capture; on the rendering connection/host owner,
+call render::captureFreezeAudio with tracks, endSample from zero through ALL
+material plus the explicit tail, session format and documentGeneration. The
+private snapshot also pins/hash-verifies active audio assets so replacement of
+an external source during progress cannot contaminate later blocks. On the
+writable document owner, prepareFreeze(store, capture, currentGeneration,
+firstMediaId, importedUtc), then commitFreeze(store, edit, currentGeneration).
+Both preparation and publication check generation; filename, history head and
+causal source fingerprints are guarded too. unfreeze(store, trackIds) is another
+native undo step, with an installed-identity callback for captured actual
+format/UID/vendor/version; without it only stored source identity is checked.
+Explicit acknowledgement handles externally changed state. Snapshot TrackNode
+now exposes frozen, freezeMediaId and freezeMode, all in same(). Mode is wet,
+unverified legacy, or empty. Original clips stay visible. Details:
+docs/ENGINE-FREEZE.md.
+
+**Scope still queued:** this is ordinary whole-track wet freeze, including a
+batch of independent tracks. It refuses partial ranges, incoming audio/sidechain
+keys, groups, locked/already frozen tracks and forwarded MIDI without its own
+instrument. Freeze Group, All Channels with independent balance/live keys and
+live source-prefix caches are subsequent increments; this does not close all of
+ADR-0203 d16. A static file cannot respond to a live key or child fader. On
+combining N20, stop/finish recording before freeze/disarm; attempted recording
+material edits into a frozen source are refused by the native guard.
+
+**Persistence/recovery:** additive schema 1.10, frozen_renders; frozen 1.9 schema
+and full migration/read-only coverage. track.setFreeze has captured before/after
+states, strict shape checks and a symmetric inverse. Native commits/history and
+Session loading enforce causal state/arm/media constraints. Known live controls
+use a previously verified memo keyed by total_changes, data_version and both
+schema versions; opaque hooks, source-table triggers and unknown edits force
+validation. No SQL apply accesses files or loads devices. Publication moves a
+SEPARATE COPY, retaining original private renders for same-job retry after late
+SQL failure. Failure removes only files this attempt created; reused/colliding
+public files remain untouched. Track-delete undo preserves cache provenance.
+
+**Verified:** final GCC full runner **10,085 checks / 110 suites**, every C++
+result inspected and passing. CI/OPS/PD/layout validators pass. The sole schema
+validator issue is **README says 51 tables, schema has 52**: win owns that edit;
+please update it before the strict CI gate. README test totals are also win's.
+Older-minor migrations and canonical/schema validation pass. The first full run
+found the old migration fixture's unconditional 48 kHz expectation and the
+text projection's literal 1.9 header/missing coverage row; fixed and rerun full.
+GCC + Clang focused: native freeze **79**, capture **27**, fingerprint **30**,
+Session **214**, track-delete **38**, snapshot/engine **128**, replay **64**,
+migration **162**, text projection **210**, all pass. Eleven direct shadow
+compiles pass. Nine separately compiled plants fail normally (no crash): lost
+private source, lost generation, missing source guard, unprotected input gain,
+hardlinked input revision, dry for wet, stale instances resumed, parked plug-ins
+loaded, omitted snapshot sharing field. Actual dry/wet PCM at both widths,
+zero callback allocation/file I/O, no original DSP frames, missing original
+files/plug-ins, corruption, native edit refusal, late SQL retry, no-clobber,
+undo/redo/reopen, generation and late cancellation covered. No UI/device/DSP or
+README edits. Schema numbering must be reconciled with sibling 1.10/1.11 PRs
+when win combines them; no third-level stack was created.
+
+**Next:** continue remaining freeze modes and the LANES queue; no director gate.
+
+
+## 2026-11-03 — Dedicated Bounce to New Track / whole-chain Bounce in Place
+
+**PR requested:** engine/bounce-commands -> **engine/phase-c-editing**, head
+**98387836e5d6d1e98519e555442c50470e3591e1**, title **Add dedicated track
+bounce commands and retain recoverable renders**. Two deep: requires phase-C's
+complete typed clip/range capture and Warp-capable playback; win merges N17
+(engine/phase-c-editing 19d1fc6) first, then this. No freeze PR is stacked on it.
+GitHub API remains unavailable here; please open and relay native CI / MSVC /WX.
+
+**Body / what the window can call:** bounce_commands.hpp adds
+prepareBounceToNewTrack with explicit source/new-track/clip/media identities,
+render range/format/session, optional new Main-route id, name, muteOriginal and
+documentGeneration. It captures a private WAL-inclusive project, renders the
+source's direct post-fader wet output and prepares a plain audio sibling after
+the source, preserving parent, palette color and explicit Main destination.
+Later siblings shift in the same undo step; the clip is named and placed
+sample-exact, Warp off. muteOriginal defaults true and mutes the ENTIRE original
+track. prepareBounceInPlace takes a whole regular-track [0,end) range (including
+the caller's explicit tail), captures its pre-fader/post-FX output, replaces
+all clips, parks enabled inserts bypassed, resets baked input gain and disarms
+an armed source while retaining live fader/pan/width/delay/routing. commitTrackBounce
+checks the caller's current document generation; the private material edit also
+checks the actual project connection and captured head. Track/order/route/media/
+clip/source-state operations share ONE undo step. ENGINE-BOUNCE.md supplies the
+API/thread/range contracts and scope; no new opcode, schema, UI or device-tier
+code. OPS.md describes the existing native op composition.
+
+In-place playback does not run parked device DSP a second time; bypass retains
+its reported delay and the existing compensated dry line (ADR-0203 d4). The
+original params/state/blob rows remain for Undo. New Track is a direct output
+render: it does not clone sends, return effects or sidechain routes and does
+not claim to replace every parallel path. Whole-chain In Place refuses partial
+extents, a group, locked/frozen/missing source and live incoming main/send audio
+that would double a baked mix. The existing lower-level range-bounce producer
+remains available for material edits. Group freeze and the separate cached tap
+streams of Freeze All Channels remain next; no freeze parity closure is claimed.
+A chosen narrowing file encoding carries its own quantization tolerance, and
+live graph transition fades are not claimed bit-identical to offline replay.
+
+**Recovery fix:** the phase-C material publisher previously MOVED its only staged
+render before SQL COMMIT. A deferred SQL fault then removed the owned destination
+and lost the retry source. It now publishes a separate verified private COPY;
+the SAME prepared bounce/import survives late rollback and retries without
+rerendering. Copy-in also rehomes a reused valid external media identity into
+owned audio with a native relink; Undo restores its still-existing old path.
+Uncopied external sources are rehashed before commit, and changing one refuses
+the whole transaction without deleting it. Private snapshot SQLite paths now
+use UTF-8 rather than the Windows locale conversion; all dedicated bounce
+fixtures run inside a project directory with Chinese/Hebrew characters.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full runner **11062 checks /
+116 suites, ALL C++ PASS, every binary summary inspected**. The only gate
+failure is the N17 base's existing **README says 51 tables / schema has 54**;
+all schema/migration checks otherwise pass (version 1.11), and CI/ops/Pd/layout
+validators pass. README counts are win's; please update on main when merging
+the N17 schema. No README edit by this lane. GCC and Clang19 dedicated bounce
+**69** and material **29** pass, including final Unicode-path fixtures.
+Actual native playback compares wet output in BOTH widths through a parent
+and a different explicit Main destination, with source FX/gain/pan. Checks prove
+parking with zero source-DSP calls, Warp off, metadata/order/color/routing,
+source mute/disarm and retained live fader/pan, exact full-state Undo/Redo/reopen,
+generation/head/completed guards, partial/incoming refusal, late deferred SQL
+rollback and SAME-job retry, external source preservation and copy ownership.
+Four changed translation units pass extra shadow checking. Seven independently
+compiled defect plants fail: moved-only recovery source (1), unchecked external
+file (1), ignored copy-in choice (1), wrong Main route (4), unparked chain (8),
+baked fader applied twice (2), missing document-generation guard (4). Sources
+were not mutated during the proofs; no timeout increase or duplicated mixer tests.
+
+**Next:** track freeze, Freeze All Channels and Freeze Group with fingerprints,
+then history caps/daily snapshots. Continue chaining; no director gate.
+
+---
+
+
+## 2026-11-03 — NI Stems: bounded MP4, real AAC workers, queue export and one-step group import
+
+**PR requested:** engine/ni-stems -> **main**, head
+**341c0eeae06494f52e3145b289ecfbe07ab74fe9**, title
+**Add NI Stems transport, export jobs and captured group import**.
+Independent of the unmerged N13/normalization stack; no third-level branch.
+GitHub API remains unavailable here; win/window please open and relay native
+Windows/macOS CI, including MSVC /WX. No new director gate.
+
+**Body / what the window can call:** set Job.niStems to one to four direct wet
+Source/name/#RRGGBB values plus a per-track AAC bit rate (256000 default), use
+stereo 44.1/48-kHz Session settings, and enqueue through the existing Queue.
+Main post-fader is the premixed master; output is .stem.mp4 with four stem slots
+(unused slots contain real silence). Queue identity/retry/naming/region/cancel
+and no-clobber publication retain their contracts; progress spans five streams,
+while Result.framesWritten is one audible stream's frame count. To import,
+prepareStemImport captures a private original and decodes only stems, then
+commitStemImport verifies project connection, document generation and journal
+head and creates the group/tracks/Warp-off clips/media as ONE undo step.
+Allocate explicit ids, placement ticks, optional parent/index and optional
+Live palette indices 0..69; NI RGB stays in the retained manifest, never in
+tracks.color. containerMedia() identifies the untouched owned original after
+reopen. Enabled NI mastering compressor/limiter is a named refusal unless the
+caller explicitly chooses raw stems; manifest().masteringEnabled still reports
+the unapplied processing. ENGINE-NI-STEMS.md documents the worker/thread,
+resource, codec, recovery and capability contracts. No UI, DSP-tier, schema or
+native-opcode changes; OPS.md records the existing native batch composition.
+
+The original ISO-BMFF reader/writer bounds boxes, tables, descriptors and actual
+mdat packet addresses, supports co64/extended media, preserves raw NI metadata
+at moov/udta/stem and separates encoder priming, audible duration and EOF padding.
+Five AAC-LC tracks use one codec/rate/config. Unsupported fragmentation,
+encryption, HE-AAC, composition offsets, complex edits and inconsistent tracks
+refuse by name. Packet data streams from disk. Native platform AAC is independent
+of JUCE; Linux dynamically loads codec60/util58 or codec61/util59 through two
+major-matched public-header shims. FFmpeg headers are sparse, pinned by official
+tag AND verified commit; no FFmpeg implementation is compiled or CLI invoked.
+The ordinary compensated WAV renderer is reused from one SQLite Backup revision
+(including WAL and device blobs), with verified absolute media paths, so live
+project edits cannot alter later stem renders. Direct wet stems need not sum
+back through nonlinear Main processing; generated mastering DSP is disabled.
+
+Native import retains an original private copy until commit and moves only a
+separate publication copy. A late SQL failure removes newly published assets,
+preserves other files and leaves the SAME prepared job retryable. In-batch/pool
+content dedup works even for the identical silent slots. Imported pool assets
+remain through Undo for Redo; the original container is retained byte for byte,
+including unknown metadata. No new persistent group-to-container association
+is claimed. Worker cancellation/service runs between bounded operations;
+publication inside the native transaction checks stop without pumping the UI.
+
+**Known capability / follow-up, not a parity closure:** native Mac/Windows code
+needs its CI runners. Some Media Foundation versions omit explicit sample-exact
+priming/duration: the real native availability probe then returns false and both
+export/import refuse instead of guessing a delay. The missing Windows codec
+capability remains open. This branch's NI jobs use normalization Off. **When
+combining with engine/export-normalization, keep NI normalization Off/refuse an
+enabled mode until post-AAC loudness/true-peak verification is implemented**;
+verifying a pre-AAC WAV cannot certify the delivered AAC ceiling. The two Job
+additions are adjacent; retain both fields and the queue's format dispatch when
+merging. NI LUFS integration follows the N13/normalization merge; no unsafe
+three-deep stack. This is not a Traktor certification or NI mastering-DSP clone.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9976 checks
+across 108 suites, ALL PASS, every binary result inspected; validators clean**,
+and validate_schema.py separately PASS (51 tables, version 1.9). Final GCC and
+Clang19 MP4/AAC **48**, NI **43**, ordinary queue **196** pass; the last private
+codec fixture names were made distinct per rate and MP4 tests rerun on both.
+Actual AAC decode proves exact frame count and zero-sample waveform alignment
+at 44.1 and 48 kHz. Structural fixtures cover malformed offsets/counts/clocks,
+unsupported codecs/edits, future boxes, and real sparse >4-GiB co64 addresses
+without reading/allocating gigabytes. Import actually plays through native
+groups in BOTH processing widths; tests cover source-project edits during
+render, silent slots, labels/palette separation, master exclusion, native
+Undo/Redo/reopen, stale generation/head, enabled mastering's explicit choice,
+late SQL rollback, same-job retry and preserved external destination collisions.
+
+Ten changed translation units pass the extra shadow check. Seven independently
+compiled defect plants fail: lost priming (7), packet outside mdat accepted (1),
+enabled SBR accepted (1), live project replacing captured revision (1), premixed
+master imported as a stem (2), moved-only recovery source (1), missing head
+guard (1). Original sources were not mutated. Independent FFmpeg reads all five
+ADI-generated AAC streams at each rate, exact edit durations and zero-sample
+alignment; its raw PCM command retains final packet padding (ADI trims it by
+container duration). Mixxx's independent five-second sine container remuxes with
+all five streams at 5.000 s and preserved 1600-frame priming. No external source
+or audio fixture was vendored; references and header pins are attributed.
+
+**Next:** freeze and bounce (LANES 3.4); then history caps/daily snapshots and
+remaining brief work. Continue chaining; the window's newer needs still win.
+
+---
+
+
+
+
+
+
+
+## 2026-11-03 — Export queue: Peak and LUFS targets from one captured render
+
+**PR requested:** engine/export-normalization -> **engine/main-loudness**,
+head **6b02b28df5cbcd0bdf9b59a5f44aebd0ba2e4146**, title **Normalize captured exports to peak or LUFS targets**.
+**Dependency / two deep:** stands on N13's engine/main-loudness (0e4c3cc);
+win merges N13 first, then this. No third branch is stacked on these.
+
+**Body / what the window can call:** Job.normalization captures Off (default),
+Peak or Loudness, targetLufs (-14 default, -36..0), truePeakCeilingDb (-1 default,
+-12..0) and optional explicit channelWeights (0..2). Map the existing Export
+settings into each job; Queue add/update/snapshot keeps those values, and the
+runner reads no ambient settings. Off retains the original direct writer path.
+Peak targets 0 dB sample peak. Loudness uses the selected cropped source's
+gated integrated LUFS and true peak, retaining the actual encoded measurements
+in Result.normalization: optional source/output metrics, appliedGainDb,
+ceilingLimited and encodingPasses. A ceiling-limited target reports its achieved
+LUFS. ENGINE-EXPORT-NORMALIZATION.md and ENGINE-EXPORT-QUEUE.md describe the
+API, units, channel roles, failure behavior and remaining parity work.
+
+One continuous project/device render captures private **double PCM**; gain,
+encoding and verification use that capture, never another plug-in run. It
+preserves a 64-bit graph until final quantization, excludes preroll from analysis,
+and includes intentional compensated-range silence. The existing N13 meter
+now accepts the renderer's full 8--768-kHz range. Loudness gain is corrected
+against the encoded result when a boost changes absolute-gate membership.
+The worker also verifies the encoded WAV's true peak after quantization/dither;
+bounded re-encoding lowers gain if needed, restarting the same dither seed.
+FIR-tail padding extends neither the file nor its integrated-loudness window.
+Tiny Peak sources use a ratio without an overflowing reciprocal. No schema,
+native-opcode, UI or device-tier changes. Legacy export-test member shadowing
+was renamed for the strict warning pass.
+
+**Scope:** uniform gain normalization; a ceiling can make the LUFS target
+unreachable, which is reported. This does not claim a brickwall limiter, RMS
+targeting or linked-batch normalization (the rest of ADR-0205 d9). Unmeasurable/
+short Loudness sources fail with a reason to select Peak or Off; silent Peak
+retains unity. Channel roles are explicit/full-range by default, never guessed.
+This uses N13's bounded 0.1-LU gates and reconstructed-peak design; no certified
+or measured-Live claim. Cancellation/host servicing continues during conversion.
+A job stays Running until no-clobber publication, including encoding after its
+last rendered progress frame. NI Stems is next; no director gate.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9895 checks
+across 108 suites, ALL PASS, validators clean**, every binary result inspected.
+Counts reflect this N13 stack's base, which predates newer window-only tests.
+GCC and Clang19 normalization **23**, render queue **210**, meter **44** pass;
+the variable-only shadow cleanup was rebuilt/retested on both after the full run.
+Tests decode actual WAVs for LUFS at 44.1/48/96/768 kHz, dithered PCM intersample
+ceiling, gate-membership correction, channel-weight propagation, wide PCM24
+half-LSB precision, tiny gain, exact one-pass dither, short/invalid/cancel cases.
+Actual cropped compensated exports prove excluded preroll, both widths, one
+loader/continuous device render, pending job edits, cancellation during encoding
+and late destination collision preservation. Five changed source/test shadow
+checks pass. Compiled plants catch narrowed capture (2 failures), ignored encoded
+ceiling (1), missing gate correction (1), wrong dither stream (1), missing worker
+service/cancellation (1), extra plug-in rendering (2), lost 768-kHz support (1).
+Original sources were never changed during those proofs.
+
+---
+
+
+## 2026-11-03 — N20 engine backend: actual audio input recording and captured takes
+
+**PR requested:** engine/audio-input-recording -> main, head **0768096ec8fbfc09cb4d24b2c2389ea856bda8ab**,
+title **Record audio inputs and attach completed takes as one undo step**.
+
+**Body for the PR / what the window can call:** Session::startRecording takes
+AudioRecordingSpec (current driver rate/max block, work folder, bounded ring,
+encoding, armed destination tracks and ordered AudioIo input-channel indices).
+The callback captures actual input into preallocated SPSC buffers; one worker
+writes all target WAVs. session.recording().stop() and owner poll() return the
+finished pass after strict callback acknowledgment and finalization; poll(true)
+requires an already stopped device. Cancellation discards only owned work
+after quiescence, including a failed partial take. Result carries rate, actual
+start sample/frame count, per-track files/channels and resolved source-project
+identity. Keep the originating window document generation. Then call
+recording::prepareCommit(store, result, ClipIds[]) and recording::commit: all
+media import/relink + clip create/attach requests become one native undo step.
+Both boundaries must round-trip the current musical clock exactly at the
+capture rate. No schema/new opcode, UI or device-tier changes. See
+ENGINE-AUDIO-RECORDING.md and OPS.md for lifetime, recovery and integration.
+
+Publication stages a **separate copy**: publishFile moves its source, so moving
+the only take and then rolling SQL back would destroy the recording. The late
+SQL regression found that bug during development; the final implementation
+retains the original for a fresh prepare/retry, cleans only new publications,
+and safely reuses identical files retained by Undo. Existing pooled content
+is relocated to a verified owned recording asset; if Undo needs a prior path
+inside the private source directory, that directory stays. The command manages
+cleanup; callers must not blindly discard a retained history source. Simultaneous
+identical takes deduplicate within the captured batch, before any media row
+exists. Changed source bytes, stale head, another project, locked/missing target
+or a differing destination file refuses without losing the private take.
+Undo/Redo/reopen restores actual heard PCM without another recording pass.
+
+**Scope / remaining N20:** this is continuous linear raw-input recording,
+not the whole device configuration. Win/window still owns the device-scoped
+channel-config home/format and opening/enabling hardware inputs. The adapter
+must resolve device channels into the supplied callback indices. Monitoring,
+hardware/manual latency calibration, punch/loop takes, MIDI recording,
+quantization playback and Capture memory remain separate runtime work; N31's
+already-pushed preferences did not implement those. A seek/loop wrap, missing
+input, callback-size mismatch, bounded overflow or writer failure is explicit,
+never substituted silence or an incorrectly placed clip. No measured-Live claim.
+Next queue item: export LUFS/peak targeting (LANES 3.3); N16 native Q/L contracts
+and N38's role format remain external, with no new director gate.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9980 checks
+across 108 suites, ALL PASS, validators clean**. Every binary result inspected.
+Clang19 input recorder **59**, recording commands **36**, Session **214** pass.
+Tests read actual WAVs at 44.1/48 kHz, many small queue wraps, nonadjacent/shared
+channel order, partial blocks, deterministic bounded overflow, stopped-device
+reclamation, cancellation, seeks/interior loops and worker I/O failure; actual
+Session records in either graph width with zero callback allocations/file I/O.
+Recorded audio is heard at its original exact sample range; two-track one-undo
+dedup, exact Undo/Redo/reopen, changed bytes/head/project, late SQL cleanup/retry,
+old asset reuse and external/private prior-history paths pass. Five changed
+source/test shadow checks pass. Compiled plants fail as intended: wrong channel
+2, lost final samples 12, lost project identity 1, lost head 2, publication of
+the only take 6, deletion of a reused asset 1. No source mutation during proof.
+
+---
+
+
+## 2026-11-03 — N17 continuation: the Warp button on an existing clean import
+
+**PR requested: update the existing N17 PR**, engine/phase-c-editing -> main,
+head **19d1fc6** (after 619ccd3), title **Add captured clip, range and whole-Set
+editing actions**. Add to its body: the window can now call
+clip_edit::prepareSetWarp(store, clipId, WarpOptions, referenceRate) from
+warp_commands.hpp on an owner/worker connection, keep the document generation,
+then commitPrepared. Enable detects source timing and captures trim, bar map,
+mode and musical length on the same clip identity; disable captures the actual
+physical source duration and pins, instead of leaving a stretched extent with
+only its flag switched. One native captured arranger.splice undo step; apply,
+undo and redo never analyze files. Exact head, cancellation and a commit-time
+BLAKE3 guard protect the captured source. A future marker layout refuses rewrite.
+The full API/limits are in ENGINE-WARP.md, ENGINE-EDIT-COMMANDS.md and OPS.md.
+
+This producer is for the director's **clean import** (d7): an edited source
+offset/loop, alias, End marker, reverse/pitch or trimmed extent gives a named
+refusal. All six mode selections capture; arbitrary edited-clip Warp toggling
+and individual catalogue marker setters are separate. Material split/copy of
+Warp audio already works from the previous increment. No schema, version or
+new opcode change here; no UI/device code. The requested clip/range/Time,
+fades, silence and audio-import/bounce actions are available together in this
+one N17 branch. Video import still refuses honestly; the video clip/window
+backend is P2 under ADR-0206 d4, rather than a silent audio attachment.
+Next actionable window work is N20's engine input-recording backend; win's
+per-device channel configuration is still external. N16's native Q/L contracts
+and N38's role format remain with their respective lanes; no director gate.
+
+**Validation:** full GCC14 Debug/Werror/PD ON/JUCE OFF test_all **10988 checks
+across 115 C++ suites**, every result inspected and passing. Only the known
+win-owned README **51 vs 54 tables** fails; all other schema/frozen migrations,
+ops, Pd, CI and binary-layout validators pass. GCC and Clang19 Warp actions
+31, Warp playback/edit 125, Warp import 33 pass. Actual heard attacks move onto
+the project grid; Warp off returns physical speed/duration; exact undo/redo
+restores the heard PCM. Tests cover every mode selection, missing/edited
+source refusals, late/pre cancellation, stale journal head, changed source
+bytes and future map preservation. Strict shadow passes on producer/test.
+Compiled plants catch wrong off duration (1 failure), missing file guard (1),
+missing expected head (3), future marker rewrite (1). Latest fetch remains
+main 0cadd72, window/log 49b597d; no new need or CI relay arrived.
+
+---
+
+
+## 2026-11-03 — N17 continuation: warped material edits retain musical fades
+
+**PR requested: update the same N17 PR**, engine/phase-c-editing -> main,
+head **619ccd351049f6eeb8f64e49871d6af1dd6cc6ff** (after 318e4a1). Add to its
+body: the window's existing clip/range/Time copy, split and edit producers now
+accept attached Warp audio. Split retains the original fade curve through
+both pieces, including overlapping fades, repeated splits and unrolled source
+loops, without inserting an internal edge fade. A subsequent fade handle edit
+clears just its chosen side's retained domain; undo restores the full typed
+row and future bytes. No source-window or AWRP rewrite on these material edits.
+Aliases still give their prior named refusal. N17 stays open: existing-clip
+Warp actions continue next, followed by the remaining import work.
+
+**Schema 1.11** adds optional clip_warp_fade_domains with paired nullable
+in/out begin/end ticks on the unrolled source musical clock. Schema 1.10 is
+frozen exactly; migration/read-only TEMP projection adds an empty table,
+never inventing fades for old clips. Warp playback converts these domains
+through the tempo integral; unwarped playback retains its separate nanosecond
+clocks. Model Clip and snapshot ClipNode expose fadeClockTicks (four optional
+coordinates, in begin/end then out begin/end); every coordinate participates
+in sharing and the text projection. Typed image/FK capture includes the new
+child for delete, copy, split and range/Time edits, preserving future columns.
+No UI/device files or new opcodes. SPEC/OPS and engine API docs updated.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **10957 checks
+across 114 C++ suites**, every binary summary inspected, all passing. The sole
+validator failure remains win's README count (**51 vs 54 tables**); all other
+schema/frozen migration, ops, Pd, CI and binary-layout checks pass. GCC and
+Clang19: Warp playback/edit 125, ordinary clip edits 172, whole-Set Time 413,
+migrations 186, text projection 214, all passing. Heard PCM compares exactly
+in both widths across overlapping fades/loop/repeated splits and a linear
+split across a tempo junction; exact undo/redo/future bytes and partial-range
+edges pass. Each of the four coordinates changes structural sharing. Nine
+changed-source/test shadow checks pass. Compiled plants catch missing musical
+clock (6 failures), missing capture (4), missing sharing comparisons (4), and
+missing handle reset (2). Actual callback allocation/file I/O guards stay zero.
+
+---
+
+
+## 2026-11-03 — N17 continuation: Auto-Warp import and actual project playback
+
+**PR requested: update the existing N17 request**, engine/phase-c-editing ->
+main, head **318e4a1324f7500dc75d0b65720a9c94f06122a2** (after ee646f4),
+title **Add captured clip, range and whole-Set editing actions**. One N17 PR,
+no new stack. Add to its body: the window can now call prepareImportAudio with
+warp=true and captured mode, meter, tempo hint/optional source BPM,
+Detect Tempo Changes, From First Beat/Sample Start and cancellation. Analysis
+captures source trim, musical duration and canonical AWRP bar markers in the
+same media+clip undo group; an indeterminate beat refuses with a source-tempo
+reason. Replay and redo use literal captured bytes. ClipPlayback now plays
+all six modes through off-callback private prepared PCM and the paged reader,
+including project-tempo junctions within a bar, source-rate conversion,
+source offsets and musical loops/end markers. Old unwarped nanosecond pins do
+not override the Warp clock. Bounce forces Warp off (d16). ENGINE-WARP.md and
+ENGINE-EDIT-COMMANDS.md document the APIs, lifetime and provisional analysis.
+
+Source-grid onset detection precedes native file-rate conversion, so sinc
+pre-ringing cannot move detected attacks. Reimport after undo safely reuses
+an identical regular owned asset; a failed SQL transaction never deletes
+that existing file. Different content and symlinks still refuse. Cancellation
+is checked at commit even when media is deduplicated/no publication is needed.
+No schema version/table/opcode changes in this increment. No UI/device code.
+N17 remains open: Warp-aware split/fade retention and existing-clip Warp
+commands continue next, then the remaining import work. Native-mode sound and
+analysis are generated-signal tested, not a claim of measured Live parity.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all: **10882 checks
+across 114 C++ suites**, every binary result inspected, all passing. Sole
+validator failure is the already logged win-owned README **51 vs 53 tables**;
+other schema/frozen migrations, ops, Pd, CI and binary-layout checks pass.
+Clang19 focused: Auto-Warp 43, Warp import 33, Warp playback 76, worker warp
+91, material actions 24, ordinary playback 247; all pass. Actual callback
+allocation/file-I/O guards remain zero. Eight changed-source/test shadow
+checks pass. Compiled plants catch ignored project tempo (4 failures), a stale
+unwarped source offset (2), deletion of a reused pre-existing asset (1), and
+lost first-beat trim (6). Exact undo/redo/reopen, source attacks heard on the
+48-kHz grid from 44.1-kHz files, late SQL failure and stale-head guards pass.
+Latest fetch: main 0cadd72, window/log 49b597d; no new needs or CI relay.
+
+---
+
+
+## 2026-11-02 — N17 continuation: six prepared warp engines, before project integration
+
+**Existing N17 PR request updated, no second PR/stack:** engine/phase-c-editing
+-> main, head **ee646f4ac82e6132b20c5ddfc5540654144ba9ad** (after db2ec7a).
+The previous captured editing/whole-Set Time/material actions remain on this
+same branch. Add to its body: audio/warp.hpp now provides an off-callback worker
+that prepares private, aligned Float32 PCM for all six ADR-0188 d2 modes:
+native transient-slice Beats, native granular Texture, libsamplerate Re-Pitch,
+and Rubber Band R3 Tones/Complex/Complex Pro. Typed plans capture source/output
+anchors and controls; shared onset detection and canonical AWRP marker reading/
+writing are in audio/transients.hpp and audio/warp_map.hpp. This increment is
+the worker backend, not yet the live project handoff: Warp import and existing
+ClipPlayback still give their prior named refusals. Auto-Warp tempo/bar
+analysis, its edit producer and actual playback integration continue next.
+N17 stays open; the window continues using the preceding completed editing
+APIs and must not store a private prepared file as a media-pool asset path.
+ENGINE-WARP.md describes lifetime, bounds, units and integration status.
+
+Rubber Band is pinned **v4.0.0 / 1d95888bec3ae0a17c0c4af791810d5a63f6bc35**,
+and fetch_external.sh --build-only verifies it. ADR-0061's required exact-commit
+"version 2 ... or ... any later version" header finding is recorded in
+EXTERNAL-CODE.md. Upstream single-file build is unmodified, with vendor warnings
+separate from strict ADI code; Apple uses Accelerate, Windows its portable
+configuration. R3 gets interior key frames only (0->0 would divide by zero),
+exact source/output duration and file-rate-aware pitch/formant correction.
+Complex Pro's preserved envelope is verified with harmonic excitation, not
+just a pure sine that has no unshifted envelope after transposition. Re-Pitch
+keeps continuous sinc-best state and explicit anchor rate changes, with pitch
+tied to tape speed. Native modes share stereo timing/jitter; typed controls
+select transient loop/envelope and seeded grains. Native parameters/sound
+remain unmeasured against Live; the approved R3 Tones/Envelope parity gaps and
+provisional native defaults are documented. No measured-Live claim.
+
+The private PCM owner has a private constructor/owned directory, immutable
+file/metadata and deleted copy; only a newly reserved staging directory can
+be removed by its final off-thread owner, after readers close. Raw WAV reads
+never construct/pin the decoding cache accidentally. Cancellation cleans up
+private outputs, and callback calls refuse before allocation/I/O. AWRP v1 is
+the already-declared stream's 16-byte i64 source-window frame/tick pair; full
+64-bit/future-stride reads retain the original opaque bytes. No SQL schema
+version/table/opcode change in this increment. Prepared offline PCM is aligned
+and adds zero live stretcher latency; future live processing must declare PDC.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF test_all has **10730
+checks / 111 C++ suites, all passing**, every binary result checked. Sole
+failed validator is the known win-owned **README 51 vs 53 tables** in this
+N17 schema; win updates that count on integration. All other schema/frozen
+migrations, ops/Pd/CI/layout validators pass. GCC + Clang19 warp **91** pass:
+all engines, exact rates/lengths, actual pitch/spectral-envelope/impulse-anchor
+checks across 44.1/48-kHz sources, transient-loop directions, stereo coherence,
+seed repeatability, codec golden/future/full64, cancellation/lifetime and real
+callback allocation/I/O guards. Strict GCC shadow passes for four sources.
+Compiled defects caught: R3 origin division (8), lost formants (6), ignored
+tape rate (4), ignored grain seed (1), wrong future stride (1), unrefined
+onsets (1). No MSVC/remote CI claim. API remains unavailable; win/window updates
+the one existing request. Continuing Auto-Warp/project integration and then
+video, with no LANES section 5 gate blocking implementation.
+
+---
+
+
+
+## 2026-11-02 — N17 continuation: the whole-Set Time clipboard now acts
+
+**Existing N17 PR request updated, no new PR/stack:** engine/phase-c-editing
+-> main, head **db2ec7a943710566ce3381b19760fc7157cceaa2** (after ceeacbc).
+**Title:** Add captured editing, whole-Set time commands and material actions (N17)
+**Body / window handoff:** clip_commands.hpp now supplies TimeCopy/TimeCut and
+copyTime, prepareCutTime, preparePasteTime and prepareDuplicateTime, beside the
+previous Delete Time, Insert Silence, range/clip edits, fades and import/bounce
+APIs on this same branch. The new clipboard includes every track's clipped
+material and global automation, tempo/meter/key carry and interior events,
+tuned-key bindings/composite degree overrides, locators/cycles and clipped
+arranger sections. Paste inserts the source's integrated physical duration
+and musical length, places its context, then restores the destination's maps
+and automation at the far join. It works at zero, with captured replacement/
+restoration of root map bindings. Duplicate pastes at the source end; Cut
+captures its value and deletion under one read snapshot. Commit the one
+arranger.splice packet through commitPrepared with its expected head and the
+window's document generation. No UI production change. Old material-only
+insertTime overloads remain material-only; use the new named APIs for the
+global timeline. ENGINE-EDIT-COMMANDS.md and OPS.md document calls and limits.
+
+Unchanged outside envelopes retain their point identities/flags/curve domains
+and stream trailer; pasted points/ranges receive fresh captured IDs. Empty
+source envelopes copy their default; missing targets, insertion before a first
+or after a last point, coincident joins and nonlinear subdomains retain the
+proper values rather than inventing ramps. New target data retains captured
+source future columns/trailer, while existing target metadata stays intact.
+Media content, referenced tuning system/degrees, full lane contract, project
+filename, captured track kinds and reference render rate are checked before
+paste. Current scope is the same project/track ids and reference rate, with no
+implicit cross-project mapping; a changed lane contract/rate needs a fresh copy.
+Existing arranger playlist references follow insertion but copied sections do
+not duplicate the playback playlist. There is no new schema/opcode. Also fixes
+material-only paste reusing a synthetic ID allocated while trimming the
+clipboard: both range paste paths now reserve all copied root identities.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF full runner **10639
+checks / 110 C++ suites, every suite passes** (all 110 result lines verified).
+The sole failed validator remains **README 51 vs actual schema 53 tables**,
+win-owned and already logged for this N17 PR; win fixes that count on integration.
+All other schema/frozen migration, ops/Pd/CI/layout validators pass. GCC +
+Clang19 Time edits **413**, clip edits **172**, actual playback **247**, row edits
+**36**; Clang replay **63**. Tests include whole-state undo/redo/reopen, empty
+envelopes, guarded lane/tuning identity, stale head and late SQL rollback. Heard
+44.1/48-kHz resampled/faded/looped sources in both precisions copy exactly:
+400 source frames are inserted where the destination tempo alone would yield
+100, including the following clip's physical shift and heard undo/redo.
+Strict GCC shadow checks pass for four changed sources. Compiled defects caught:
+target-tempo gap (8), lost destination context (1), reused clipboard id (32),
+changed lane contract (1), lost new-stream trailer (1), material-only timeline
+(21). No MSVC/remote CI/measured-Live claim; API blocked, win/window updates or
+opens the one requested N17 PR. Main0cadd72/window49b597d unchanged at last fetch.
+
+**N17 continues:** global Time commands are no longer an open engine gap.
+Auto-Warp import/detection and warped playback are next, then video attachment;
+the existing named refusals are still accurate until those backends land.
+ADR-0188 d2's approved engine split governs: native Beats/Texture, libsamplerate
+Re-Pitch, Rubber Band R3 for Tones/Complex/Complex Pro. No director gate blocks
+implementation; continue the queue. General alias playback/consolidation remains
+separate existing engine work rather than a claim of this clipboard increment.
+
+---
+
+
+
+## 2026-11-02 — N17 continuation: Delete Time preserves the whole Set
+
+**Existing PR request updated, not a second N17 PR:** engine/phase-c-editing
+-> main, head **ceeacbc2b143c87667faa7adbd6adf3556d426a9** (after 53556ae).
+**Title:** Add captured range edits, fades, time deletion and import/bounce actions (N17)
+**Body / window handoff:** The existing clip_commands.hpp entry points now also
+include prepareDeleteTime(Store&, beginTicks, endTicks, referenceRate). It
+removes the selected musical time across every track as one guarded
+arranger.splice undo step, trimming crossing clips and moving remaining tick/ns
+clips. Linear objects use the old tempo map's integrated physical duration.
+Unwarped audio source/loop/fade clocks stay pinned before movement; playback
+matches the original with only the selected samples removed, including
+resampling, loops and both native precisions. Global automation preserves its
+original curve domains on both sides of the join, with coincident boundary
+guards, original surviving 64-bit identities/flags/trailer, and fresh captured
+boundary IDs. End-context tempo, meter and key events survive at the join;
+removed key tunings and every composite degree row are captured for undo.
+Locators/cycles in either clock, arranger sections and their playlist references,
+declared project end and saved loop follow the cut. The window uses
+commitPrepared with the captured expected head and its own document generation.
+No UI production change; ENGINE-EDIT-COMMANDS.md and OPS.md describe the API.
+Existing material, fades, import/bounce and Insert Silence APIs remain in this
+same PR, as detailed in the original handoff below.
+
+The row-delta wire format keeps integer ids for every old single-key packet;
+composite key_map_degrees uses {key_map_id,degree}. FK guards group all columns
+of a composite reference. Full typed NULL/empty/future BLOB data is preserved,
+and parent restoration works with arbitrary packet order. Existing Insert
+Silence also keeps future fields when splitting an already retained curve range.
+No new schema/opcode beyond N17's existing 1.10 additions. Fully deleting the
+saved loop provisionally disables it and retains its old positive bracket length
+at the join; this specific Live behavior remains unmeasured, and is documented.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF full runner has **10423
+checks across 110 C++ suites, all passing**; every binary result line was checked.
+The ONLY failed validator is the already reported win-owned README table count,
+**51 vs 53** for this N17 schema. Win updates that count during integration;
+README was not edited. All other schema/frozen migrations, ops/Pd/CI/layout
+validators pass. GCC + Clang19 time-edit **245**, captured rows **36**, clip edits
+**172**, actual playback **199**; Clang replay **63**. Strict GCC shadow checks
+pass on seven changed sources. Compiled defects caught: wrong join value (4),
+unmoved right pieces (8), lost arranger parent ordering (1), partial composite
+FK matching (2). Tests include exact whole-state undo/redo/reopen, late SQL
+rollback, stale head, future tuning/arranger bytes, all six curves with positive/
+negative tension in both clocks and repeated insert/delete, boundary clusters,
+and exact heard 44.1/48-kHz resampled sources, both widths. No MSVC/remote CI/
+Live-measured claim. Main remains 0cadd72; window/log49b597d adds no new need/CI.
+
+**N17 remains open:** full global Copy/Cut/Paste/Duplicate Time is next (the
+existing insertTime flag still pastes material only), then Auto-Warp detection/
+warp playback and video attachment/general alias/consolidation work. A normalized
+automation clipboard draft is already in progress locally. This is not a
+director gate; continuing the queue as instructed. GitHub API remains blocked;
+win/window updates or opens the existing requested PR, without a director relay.
+
+---
+
+
+
+## 2026-11-02 — N42 one persistent Pre/Post choice on each return
+
+**PR requested:** engine/return-send-tap -> main, head **bf83f66**.
+**Title:** Persist one Pre/Post send choice per return
+**Body:** N42: return.setSendTap {id, pre} persists a return-owned choice even
+with no sends and changes all incoming send taps in one undo step. Ordinary new
+routing.connect sends inherit an explicit return choice; a conflicting new
+per-edge setter refuses (same-value old callers still work). TrackNode and
+rows::Track expose optional returnSendTap {preFader, explicitChoice, legacyMixed};
+all fields participate in sharing. Snapshot sends and actual engine routing use
+that explicit policy. Legacy absent choices keep their raw per-edge audio,
+including mixed values, until the first explicit return choice. The new-send
+producer prepareSendToReturn/commitSendToReturn captures uniform legacy Pre as
+literal requests and guards file/head; the window keeps its document/generation
+check and caller-reserved ids. The inverse guards expected choice/flags/edge set,
+restores exact absence and mixed flags, and updates only tap columns, preserving
+future metadata. routing.disconnect now captures/restores its full typed row,
+including channel-map/future BLOBs, gain/pan/order/enable/origin, bypassing current
+policy on inverse reconnect. Historical six-field inverses and scalar apply
+semantics remain supported. The window replaces its per-edge batch with the
+return op and uses the producer/DTO for new sends; no UI production change.
+ENGINE-RETURN-SEND-TAPS.md gives calls and compatibility details.
+
+**Format:** 1.10 adds only return_send_taps (tracks FK, cascade); frozen 1.9 is
+byte-for-byte the base schema. Migration creates an empty table and changes no
+old audio. Read-only older projects use an empty TEMP stand-in. Text projection
+inlines stored sendTap pre/post (including explicit Post), retains raw edge taps,
+and covers the new table. N37's generic track inverse discovers this FK child
+when win combines the branches; no duplicate track-delete patch/own merge.
+Independent 1.10 schema branches N25/N17/N31 still need win's ordered version/
+merge handling; this is a standalone branch from main, not a deeper stack.
+
+**Validation:** final full run has all **107 C++ suites / 9968 checks passing**
+on GCC 14 Debug/Werror, PD ON/JUCE OFF. test_all.sh's ONLY final failure is
+validate_schema.py's README count: **README 51 tables vs actual 52**. **Win must
+update its owned count on this PR (or while integrating schema branches) to make
+that check/CI green.** README was not edited. All schema shape/frozen upgrade
+checks 1.0 through 1.9 -> 1.10, ops/Pd/CI/layout validators pass. GCC + Clang 19
+return taps **68**, migration **162**, projection **209**, catalog **106**, replay
+**63**, engine **119**. The existing N11 sharing test now accounts for a return's
+derived tap changing when its last incoming send moves away; unrelated tracks
+remain shared. Actual heard Post .25 vs Pre .375 with deliberately mismatched raw
+rows passes in both precisions, alongside zero-send persistence, inheritance,
+mixed legacy/CBOR/reopen, typed reconnect, future bytes, conflict rollback and
+UI-independent literal replay/undo/redo. Strict GCC shadow checks pass for eight
+changed sources; compiled defects caught: stale control sharing (1), lost choice
+(28), ignored engine policy (5), lost route image (1), stale restore (1). No
+MSVC/remote CI claim. API still CONNECT 403; win/window opens above, with the
+README-only failure visible. Continuing own remaining needs, no director gate.
+
+---
+
+
+## 2026-11-02 — N41 New includes A Reverb and B Delay
+
+**PR requested:** engine/default-returns -> engine/library-devices, head **8e4c6a5**.
+**Title:** Seed default Reverb and Delay returns with wet-only effects
+**Body:** N41: Store::createNewProject creates two MIDI/two audio tracks, A Reverb,
+B Delay and Main, in that root order. Main keeps id 1, regular tracks 2 to 5,
+returns 6/7; each has a mixer strip. All four regular tracks have enabled Post
+sends to both returns at the -150 dB minus-infinity floor; no return feedback
+edges are added. The returns contain compiled native Reverb and Delay identities,
+chains/devices and saved 100-percent-wet Mix controls (canonical ids 31/25),
+with the other native controls at their defaults. All rows are initialized in
+one root transaction, with no ops or UI undo protection. The first edit remains
+undoable and New survives snapshot/fork/revert/reopen. Window callers keep the
+same factory and model/snapshot APIs; new tracks reserve ids above existing
+tracks. No schema/opcode/UI production change. ENGINE-DEFAULT-RETURNS.md describes
+the root and loader. Missing-native builds keep normal placeholder identities.
+**Stack:** stands on N15 engine/library-devices (71d7921), depth two, for actual
+native factory loading; win merges N15 first. N31's independent New overload can
+retain its recording preferences on the four regular tracks (2 to 5) when win
+combines the factory edits; no own merge/rebase was performed. Native preset/
+render measurements remain the devices/parity lane, not a claim of measured
+Live sound from this initializer.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9992 / 107**,
+all validators clean. GCC + Clang 19 bootstrap **30**, built-ins **99**, catalog
+**106**, Session **214**. The actual Session loads both native effects on the
+correct chains with Mix=100, renders initial silence, and preserves root data
+through undo/redo/fork/snapshot/reopen. Strict GCC shadow and PD-off syntax pass
+for initializer/test sources. Compiled defects caught: wrong return kind (2
+failures), audible default send (1), dry return (2). No full PD-off runtime,
+MSVC or remote CI claim. API remains CONNECT 403; win/window opens above.
+Continuing N42 return-owned persistent Pre/Post; no LANES section 5 gate.
+
+---
+
+
+## 2026-11-02 — N40 source windows and waveform data for the window
+
+**PR requested:** engine/snapshot-audio-peaks -> main, head **4a64819**.
+**Title:** Expose audio sources and worker waveform peaks
+**Body:** N40: ClipNode.audio holds optional AudioClipSource with media id, full
+64-bit source-rate start/length, Warp mode/nullable marker bytes, pitch/formant,
+reverse/channel mode, and optional pool hash/rate/channels/frames/missing flag.
+Every field participates in sharing; missing attachments/pool rows remain
+explicit, old frames immutable. Rebuilds read coherent metadata only, without
+filesystem/decode work or pool peaks BLOBs. The window can use media/peaks.hpp:
+readMediaPeaks reads an optional cache, buildMediaPeaks uses a worker-local
+read-only Store and the playback DecodeCache/WavReader path to stream typed
+per-channel min/max. Content identity/dimensions, bounds, short tail bins,
+nonfinite-to-zero drawing and finite overs are handled. The optional versioned
+APKS v1 LE cache is bounded to one million bin/channel pairs; oversized BLOBs
+are rejected via SQLite length/CASE before materialization. Unknown cache bytes
+are preserved; workers never write the project/cache/op log/history. A valid
+cache can draw with missing original audio, without claiming audio availability.
+All allocating/SQL/file APIs refuse audio-thread misuse first. The worker result
+must match the current document/generation/media hash before painting; the window
+owns drawing and integration. ENGINE-SNAPSHOT-AUDIO.md and format/PEAKS.md give
+the call, source-domain mapping and cache format. No schema/opcode/UI production
+change. Raw source bins do not bake gain/fades/reverse/Warp or claim exact warped
+rendering/Live visual parity. Cancellation is checked per hash/read and around
+DecodeCache; a compressed decode call itself is not interruptible.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9944 / 108**,
+all validators clean. GCC + Clang 19 snapshot audio **26**, peaks **33**, engine
+**119**, decode **56**, media ops **71**. Actual stereo Float32 source and partial
+bin extrema, FLAC-vs-PCM exact bins, fixed LE cache bytes, read-only cached missing
+source, legacy empty mono pool row, malformed/oversized cache, identity changes,
+cancel-before-SQL and callback SQL/file-I/O refusal pass. Strict GCC shadow checks
+pass for four sources; compiled defects caught: stale audio sharing (22 failures),
+swapped channels (2), ignored cache identity (1), late pre-cancel (1). No MSVC or
+remote CI claim. API still CONNECT 403; win/window opens above. Continuing N41.
+
+---
+
+
+## 2026-11-02 — N39 all routing identities in the snapshot
+
+**PR requested:** engine/snapshot-routing-ids -> main, head **dd62a03**.
+**Title:** Expose highest routing identity across every connection kind
+**Body:** N39: Snapshot.maxRoutingId observes the highest positive routing row id
+across main/send/sidechain/VCA/cue, disabled rows and hardware endpoints. It is
+zero with no positive ids and preserves full signed 64-bit width including
+INT64_MAX. Endpoint numbers never enter the maximum. The window can use one past
+this value for its new send after guarding overflow, reserving ids for its
+pending batch and checking document/head freshness at commit. It is an
+observation, not a concurrent allocator; routing.connect still receives its id
+from the literal payload. A root metadata change shares unchanged send/track
+nodes and keeps old frames immutable. A borrowed/deferred read transaction
+(the same seam as N27/N38) keeps the maximum coherent with the frame's send list
+under a concurrent WAL writer. No SQL write/schema/opcode/UI production change.
+ENGINE-SNAPSHOT-ROUTING-IDS.md gives the window's call and guard requirements.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9901 / 107**,
+all validators clean. GCC + Clang 19 routing identities **16**, engine **119**,
+catalog **106**. Strict GCC shadow checks pass. Compiled defects caught:
+send-filtered maximum (12 failures), 32-bit truncation (2), incoherent WAL read
+(1). No MSVC/remote CI claim; API still CONNECT 403, win/window opens above.
+Continuing N40 source windows and off-thread waveform peaks; no director gate.
+
+---
+
+
+## 2026-11-02 — N38 engine role reader/op supplied; win's format remains
+
+**PR requested:** engine/track-roles -> main, head **58ca080**.
+**Title:** Add native track role snapshot and undoable op seam
+**Body:** N38's engine part: TrackNode.role is optional native role text, included
+in structural sharing. A missing tracks.role column reads no assignment; unknown
+future text remains visible. track.setRole {id, role?} accepts kick/bass/vocal/
+reference, with omission/null clearing. Positive ids and mixable track kinds are
+validated; a second reference refuses, so a caller explicitly clears the old id
+then assigns the new one in one batch. The symmetric inverse preserves SQL NULL;
+an unknown stored role refuses overwrite rather than creating a lossy inverse.
+GraphRebuild makes N23 re-read the native reference role once both branches land.
+Snapshot construction borrows a caller transaction or a deferred read snapshot
+(the same seam as N27). No UI production change or format DDL/version change.
+OPS.md documents the new op and its unavailable-format refusal.
+
+**N38 is still open for win:** origin/main has no tracks.role. This PR never
+invents/migrates that win-owned field and the op refuses atomically until its
+native format exists. Win supplies the nullable column, allowed role values,
+format version/migration, and can enforce reference uniqueness in the format.
+The ALTER in this suite is a synthetic reader/op fixture, not a migration or a
+claim that the native role is already persisted on today's schema. N23 already
+consumes the native role and supplies exclusive cue/reference audio; this branch
+does not duplicate it. No director question is needed; continuing N39.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF full **9916 / 107**, all
+validators clean. GCC + Clang 19 role **31**, engine **119**, catalog **106**,
+replay **63**. Native role fixture, unavailable legacy schema, reference move,
+nullable undo/redo, reopen, and literal replay with different UI selections pass.
+Strict GCC shadow checks pass for three sources; compiled defects catch missing
+role sharing (5 failures) and lost null inverse (2). No remote CI/MSVC claim.
+GitHub API remains CONNECT 403 after environment restart; win/window opens above.
+
+---
+
+
+## 2026-11-02 — N37 Delete Track and Ungroup restore their contents
+
+**PR requested:** engine/track-delete-undo -> main, head **945f8d0**.
+**Title:** Restore complete track subtrees and routing on undo
+**Body:** N37: existing track.delete now captures the complete causal row image:
+track descendants, all columns/SQLite types, clips/streams/lanes/mixer/summing,
+nested racks, parameters, panels, expression routes and state hashes. It removes
+routing of every internal kind and owned automation/controller bindings, while
+keeping equal numeric hardware ids distinct. Surviving rows changed by FK SET
+NULL (aliases, lane membership, VCA links) have exact before/after images.
+track.create's paired inverse accepts optional versioned contents; ordinary
+create and old inverses still work. Restoration checks identities/current rows,
+uses a savepoint with temporary FK deferral, then verifies the complete causal
+image and FK integrity. Collisions, unrelated packet rows and changed surviving
+rows refuse atomically. Future keyed FK children, composite keys and future
+BLOB/NULL columns survive. Media_files, shared state_blobs and plugin_refs stay
+pooled; weak remarks, session views and unknown scoped extensions remain.
+No window call changes: its existing Delete/Ungroup batches get a full undo.
+No schema/opcode change; OPS.md section 6.3 documents the extended inverse.
+Affected user triggers, generated/unkeyed tables, key-changing SET NULL and SET
+DEFAULT effects currently refuse explicitly rather than silently losing data.
+The typed row_capture helpers match N15/N17 for merge compatibility; new FK child
+tables (such as N31 recording choices) are discovered automatically.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9923 / 107**,
+all validators clean. GCC + Clang 19: track deletion **38**, catalog **106**,
+history **95**, replay **63**. Full metadata digest matches across repeated
+undo/redo, reopen and Ungroup; late batch failure and restoration conflicts leave
+no partial changes. Strict GCC shadow checks pass for four changed sources.
+Isolated compiled defects caught: lost future cascades (2 failures), lost external
+restore (3), unrelated restore injection (1). No MSVC/remote CI claim. API still
+CONNECT 403; win/window opens this exact PR. Continuing N38/N39, no director gate.
+
+---
+
+
+## 2026-11-02 — N27 remarks in the immutable snapshot
+
+**PR requested:** engine/snapshot-remarks -> main, head **06c372f**.
+**Title:** Expose remarks and coherent anchor ownership in snapshots
+**Body:** N27: Snapshot.remarks holds shared const RemarkNode values with all nine
+stored fields (id, targetKind, targetId, nullable paramId, author, actorDetail,
+text, createdUtc, resolved), plus optional trackId and anchorMissing. The window
+can filter trackId for row pips or use the raw target address for Info View.
+Clip ownership and nested device/rack ownership resolve once per rebuild;
+parameters need no plugin_params mirror row. Deleted, missing or cyclic anchors
+retain their metadata as unresolved remarks. Every raw and derived field takes
+part in sharing, including owner changes with unchanged remark text. The builder
+borrows an existing caller transaction or starts a deferred read transaction so
+a concurrent WAL writer cannot mix ownership and annotation states. With no
+remarks it skips device ownership reads. No schema/opcode or UI production change.
+ENGINE-SNAPSHOT-REMARKS.md describes the interface; existing remark ops edit it.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9914 checks / 107
+suites**, all validators clean. GCC and Clang 19: snapshot remarks **29**, engine
+**119**, existing remark ops **52**. Strict GCC shadow checks pass. Isolated
+compiled defects are caught: missing coherent read (1 failure), text-only sharing
+(14), lost author field (2). No MSVC or remote CI claim. GitHub API remains
+CONNECT 403; win/window opens from the exact branch above. Then continuing N37.
+
+---
+
+
+## 2026-11-02 — N24 engine backend: alignment switch, Track Delay suspended
+
+**PR requested:** engine/delay-compensation-switch -> main, head **5af5a8e**.
+**Title:** Add the delay compensation switch backend and suspend Track Delay
+**Body:** N24's engine side: SessionSpec.delayCompensation (default true) and
+Session::setDelayCompensation(bool) accept the app choice. A changed choice
+publishes a new graph without reloading devices; the same value is a no-op.
+Graph/GraphHost expose the same build/publication policy. Off means zero main
+and sidechain alignment rings/headroom, including retap and escalation paths.
+Intrinsic latency, physical MIDI forwarding delay and delayed dry bypass remain;
+bypass delay can still grow independently. Scope input stamps show heard global
+time off; diagnostic latency remains maximum physical path latency, not a claim
+that unaligned paths coincide. MixerStrips suspends Track Delay with the same
+flag, including sends/feedback, without changing SQL/model values. Re-enabling
+uses the latest saved value, even after edits/refreshes while off. No schema/opcode,
+registry or UI production changes. ENGINE-DELAY-COMPENSATION.md gives the call.
+**Win/window part remains:** add/feed the app's Options/registry choice (proposed
+audio.delayCompensation=true) into SessionSpec/setter. This PR supplies the
+backend; it does not falsely claim the app row/window control has landed.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9996 checks / 107 suites**,
+all validators clean. New111-check suite passes GCC and Clang19 at both widths:
+heard main/sidechain impulses, exact MIDI frames, scope clocks, physical bypass,
+latency retap/growth, signed Track Delay off/on/latest edit, preserved SQL,
+no-op choice, zero callback allocation/IO. Clang graph200/retap334/bypass107/
+Session214/mixer337(including sends)/precision108 pass. Strict shadow syntax
+passes changed engine sources/tests. Final compiled plants: alignment left on18
+failures, retap re-enabled6, bypass delay lost2, Track Delay leaked6, escalation
+still considering disabled rings6. Restored tests pass. The final audit fixed
+that escalation path explicitly; its new test grows only the physical dry ring,
+without spurious ringless alignment failures. No remote CI/MSVC/hardware/Live
+parity timing claim; README count remains win's. Next **N27** (snapshot remarks).
+
+---
+
+
+## 2026-11-02 — N10: Learn a control directly, with no automation lane
+
+**PR requested:** engine/controller-targets -> main, head **2e61936**.
+**Title:** Learn MIDI controller targets without creating automation lanes
+**Body:** N10: window calls learnControllerTarget(bindingId, kind, targetId,
+paramRef, CC, observedValues, policy, error) for a mixer control without an
+automation lane. It returns a captured controller.bind request, creates no
+lane and reads no project or app policy. Existing learnController resolves a
+lane's owner/param_ref and calls that same producer. Both apply Remote/Focus
+reservation, source/channel/CC checks, absolute/relative detection and takeover.
+Direct addresses require a known target kind, positive IDs and nonempty param;
+commit also checks the actual target still exists. No schema/opcode/payload
+change. The asynchronous UI retains its document-generation/expected-head
+guards. OPS.md describes the call and captured-policy/replay behavior.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9897/106**, all validators
+clean. GCC+Clang19 controller56/catalogue106/replay63 pass; controller source/test
+shadow/Werror syntax passes. New cases cover no lane or writes, exact Pan target,
+equivalence to lane Learn, raw-binding equality on replay despite later policy,
+undo to absence, relative takeover, Focus/Remote/input errors and atomic refusal
+of a missing target. Compiled plants: lost target1 failure, ignored reservation2,
+wrong relative takeover2; restored tests pass. No remote CI/MSVC/hardware claim.
+Next **N24**, Delay Compensation and Track Delay disabled with it, then the rest.
+
+---
+
+
+## 2026-11-02 — N31: per-track recording choices, snapshot and root inheritance
+
+**PR requested:** engine/track-recording-options -> main, head **11786be**.
+**Title:** Persist per-track Rec-Q, Play-Q and monitoring-latency choices
+**Body:** N31: TrackNode.recording carries recordEnabled/recordGrid,
+playEnabled/playGrid/playForgivenessMs and keepMonitoringLatency, all compared
+for sharing. track.setRecordQuantize {id,on,grid?}, track.setPlayQuantize
+{id,on,grid?,forgivenessMs?}, and track.setKeepMonitoringLatency {id,on} are
+undoable; track.restoreRecording restores the complete typed prior optional
+row, including future BLOBs and exact absence. Grid choices are 1/4,1/8,1/16,1/32,
+disabling retains the grid, explicit forgiveness is 0..1000ms (default zero).
+Missing policy defaults to Rec-Q on 1/16, Play-Q off, Keep Monitoring Latency on.
+Window appends trackRecordingDefaults(newId, record.quantize choice, keep)
+to a new-track batch. For New, createNewProject(path,error,choice,keep) captures
+the app defaults for all four initial tracks at the history root, no extra undo;
+the old overload keeps fixed defaults. Invalid choices create no file. Callers
+capture settings values, never a handler. Row-model and text projections expose
+all policy values and omit fixed defaults. Additive schema1.10 adds only
+track_recording_options and freezes exact1.9; no existing native DDL changes.
+Win must reconcile this additive minor with the other unmerged format PRs.
+ENGINE-TRACK-RECORDING.md gives the window call path. N31 supplies policy/ops;
+recording writer, post-take quantize and live Play-Q pending-list scheduling
+remain separate engine work, not claimed implemented by these switches.
+N37's full track inverse must include the new cascade child as well.
+
+**Validation:** all **107 C++ suites / 9936 checks pass** under GCC14 Debug/Werror.
+The full runner fails **only** validate_schema's win-owned README table count,
+51 versus52; CI/OPS/Pd/layout validators and frozen1.0..1.9 migrations pass.
+README unchanged. GCC+Clang19 focused recording33, text projection209,
+Session214/replay66/bootstrap24 pass; migrate162/catalogue106/engine119 pass.
+Strict shadow syntax covers changed sources/tests (migration fixture uses its
+normal target history-path define). Plants against the final33-check suite:
+restore-defaults-instead-of-absence2 failures, ignore-policy-sharing4, interpret
+future monitoring-op fields1. Restored tests pass. Migration fixture now stores
+48k explicitly, so its preservation assertion still tests the same property
+when the predecessor is1.9 with a44.1k default. Full coverage manifest includes
+the new table, no ignored projection gap. No remote CI/MSVC/hardware/parity claim.
+
+Environment refresh retained files and active compilers. Reusable start_skill
+was updated with the current workflow/ownership/queue, preserving install and
+network settings. API still fails CONNECT403 after restart despite saved allow
+rule and a GH_TOKEN binding name; no credential values inspected. Continue the
+push/log PR-request route. Next **N10**, then N24/N27 and the remaining needs.
+
+---
+
+
+## 2026-11-02 — MSVC mixer timeout: separate group/send console sweeps
+
+**PR requested:** engine/mixer-test-runtime -> main, head **834d26f**.
+**Title:** Separate group console sweeps from mixer tests for MSVC Debug
+**Body:** Window reports #350's MS STL Debug mixer ctest exceeding its existing
+600-second limit. That suite still combines ordinary mixer checks and the group
+console/send-level sweeps, after master-console tests were split earlier. Add
+adi_group_summing_tests and dispatch the existing two heavy functions there;
+ordinary mixer and master-console binaries remain separate. No render length,
+assertion, oracle, production code or timeout changes. All functions remain
+referenced in the common dispatcher for strict unused-function diagnostics.
+Current main's mixer337 + master98 = **435 checks**; the split is mixer233 +
+group/send104 + master98 = **435**. (The old hand-off's 428 predates current main.)
+The window has no new interface to consume; this is the engine's CI repair.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9885 checks / 107 suites**,
+all validators/migrations/layout clean. Clang19/Werror all3 suites pass the same
+435 checks. Local GCC elapsed mixer2.47s/group1.73s/master1.14s; Clang
+2.71s/1.76s/0.97s, concurrent local work present. GCC shadow/Werror syntax passes.
+No MSVC/remote CI timing claim; please let the existing seven-ABI CI validate
+its checked-iterator workload. Timeout stays unchanged. No extra tests or plants
+for this test-dispatch-only change; the original complete renders are the oracle.
+README counts remain win's. Next **N31**, then continue the needs queue.
+
+---
+
+
+## 2026-11-02 — N28: undoable Color Cab sample assignment and missing-file snapshot
+
+**PR requested:** engine/sample-slots -> engine/library-devices, head **34259fe**.
+**Title:** Assign built-in sample slots with undo and missing-file snapshots
+**Body:** Depends on N15 (71d7921), depth two. Window calls prepareSampleAssignment
+(store, device, declared slot, file, engineRate, importedUtc, optionalDecodeCache)
+then commitSampleAssignment; prepareSampleClear clears it. One undo group captures
+media import/relink, an absent slot's explicit empty baseline and device.loadState
+hashes. The existing ParamOps.appliedState path handles live forward/inverse
+notifications; Session restores on reopen. Color Cab slot1 (Impulse) uses the
+existing public preparation SDK and lock-free PdSampleSlots, no DSP/UI production
+changes. State contains the media hash, derived profile and mono source backup
+for another engine rate with the original absent. Snapshot.sampleSlots carries
+device/slot/name/UID, state/media hashes, optional media ID, empty/missing/derived
+flags and problems; immutable metadata is cached by state hash, small pool and
+locator presence refresh per rebuild, and every field participates in sharing.
+No project schema or opcode addition. Oversized/nonfinite/wrong-slot state
+refuses before publication. Immutable content follows the existing writeBlobs
+convention: later journal failure may retain an unreferenced blob only; expected
+head is checked inside the journal too. Hybrid's missing native backend remains
+unavailable. ENGINE-SAMPLE-SLOTS.md gives the exact window integration and limits.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **10014 checks / 108 suites**,
+all validators/migrations/layout clean. GCC + Clang19/Werror focused sample28,
+built-ins99, ParamOps177, engine119 and Session214 pass. After final review's
+undo label and pre-copy blob-size guard, affected sample28/engine119 pass on
+both compilers. GCC shadow syntax including disabled-backend paths passes.
+Sample tests exercise real audio, live undo/redo, missing original, 44.1k restore,
+malformed-state atomic refusal, cached UID/pool changes, and zero callback
+allocation/file IO. Compiled plants: missing undo baseline4 failures, skipped
+live publication3, ignored missing-state sharing3; restored tests pass. No
+remote CI/MSVC/JUCE-runtime/hardware/Live parity claim; README remains win's.
+
+**Refreshed queue:** explicitly fetched window/log (032498f; the remote's normal
+fetch spec covers main and engine branches only). New **N42** is queued: return-owned
+Pre/Post with persistence even without sends. New **N43** matches the already-pushed
+N23 engine/cue-reference (1466c85): Snapshot.cue.volumeDb/cueMode,
+cue.setVolume {db} (-150..+6), cue.setMode {on}, readCueSettings and the real cue
+path. Stored in session_state cue.controls, performance ops rather than undo
+edits; window refreshes ProjectView/Session as documented. N23's PR request
+remains the one for these controls; no duplicate backend/PR is needed.
+
+Window also reports #350's MSVC mixer timeout (same job passed #351). Repair that
+CI bottleneck next by isolating existing group-console/send-level sweeps in a
+third binary, keeping assertions and renders intact and the timeout unchanged;
+then **N31** and the remaining needs. No LANES5 director gate blocks this queue.
+
+---
+
+
+## 2026-11-02 — N15: catalogue, native built-in project loader and one-step insertion
+
+**PR requested:** engine/library-devices -> main, head **71d7921**.
+**Title:** Expose the built-in device catalogue and project loader
+**Body:** N15: the browser can read builtinCatalog() (UID/category/folder/name/availability),
+then prepareBuiltinInsert(store, uid, track, beforeDevice) and commitBuiltinInsert
+for one undo step creating/reusing the internal reference and chain. Preparation
+is read-only, captures all IDs/typed reference defaults and expected head, and
+normalizes legacy tied/large ordinals with exact inverses. The native project
+loader and JuceDeviceLoader now host the 17 existing canonical effects, with
+real parameter descriptors, atomic intent, transport/MIDI, latency and CBOR
+state; unknown fields survive save. Uses the existing device factory, no DSP or
+UI production changes. Existing app-scoped library::Index already supplies file
+browsing/pending hashes/preset files; ENGINE-BUILTINS.md documents that seam and
+the installed plug-in registry separately. No schema addition. New invertible
+pluginRef.register/unregister ops capture complete typed rows, including future
+columns/BLOBs, and have replay corpus coverage. Hybrid Reverb remains listed
+unavailable because its native factory entry does not exist; builds without PD
+retain the catalogue and placeholders. Sample assignment is N28, next.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS, **9986 checks / 107 suites**,
+all validators/migrations/layout clean. Clang19/Werror built-ins99, catalogue106,
+replay65, library48 and Session214 pass. GCC shadow/Werror syntax covers new
+sources/tests and PD-disabled branches; GCC + Clang JUCE loader syntax passes
+against JUCE9.0.2 (linked GUI development libraries unavailable). Compiled plants
+removing parameter delivery, expected-head validation and ordering each cause
+one failure; restored tests pass. Callback allocation checks cover all17.
+No remote CI/MSVC, linked JUCE, hardware or Live parity claim. README counts are
+win's. Window can consume the interfaces above; Hybrid/instrument backends and
+parity remain the devices lane's needs, not falsely advertised as available.
+
+---
+
+
+## 2026-11-02 — N17/N18 clipboard identity follow-ups; N15 precedes N28 as its loader dependency
+
+**Existing PR requests updated, no new stacks:**
+- engine/device-copy: **3638fc4** after 31fe98e, to main.
+- engine/phase-c-editing: **53556ae** after f6e9613, to main.
+
+Old clipboards are values, so an undo/new history branch can outlive the row
+an ID originally named. N18 now verifies the copied plug-in's format/UID/shell
+identity and the remote endpoint's host/port/protocol before paste. Cosmetic
+labels and a relocated binary remain compatible. N17 clip/range clipboards
+retain each attached media's content identity and refuse an ID reused for
+another file. Hashed media can move or change missing status; legacy unhashed
+rows retain their locator/dimensions. No peaks or media bytes are copied into
+the clipboard. These checks run inside preparation's read snapshot; commit
+retains the existing expected-head guard.
+
+N18: **test_all PASS, 9920/107, validators clean**; Clang device-copy35,
+device-ops139, catalogue106, replay63, device-model71 pass. A compiled bypass
+of the identity check causes 2 failures, restored checks pass. N17: **all
+109 C++ suites pass, 10124 checks**; full runner still fails only README51
+versus schema53. Clang clip-edit172, playback159, row-edits22, material24,
+catalogue106, replay63 pass; a compiled bypass causes 3 clipboard failures.
+No remote CI/MSVC/JUCE/hardware/Live parity claims. The N17 scope gaps remain
+open as recorded in its original entry.
+
+**N28 dependency found:** the sample handoff/preparation SDK already exists:
+LibPdEngine::bindSamples/publishSample, PdSampleSlots and the public Color Cab
+and Hybrid Reverb prepared-sample helpers. The project's JuceDeviceLoader,
+however, still explicitly refuses format=internal ("internal devices are not
+built yet"), and PdDevice exposes neither parameters/state nor a project
+loader. A sample op alone would therefore create stored data with no usable
+project device to receive it. This is the same host/catalogue insertion seam
+required by **N15**. Bringing N15 forward to supply that dependency, then return
+to N28, N31 and the remaining needs. Native DSP implementations and canonical
+canvas bytes remain the devices lane's; use their existing public factory/SDK,
+do not alter DSP or UI. No director gate or permission question is involved.
+
+---
+
+
+
+## 2026-11-02 — N18 ready; continuing N20/N28/N31
+
+**PR requested:** **engine/device-copy**, head **31fe98e**, to **main**
+(base **0e20848**). Title:
+**Expose stored device copies and prepare ordered paste batches (N18)**.
+
+PR body / window handoff: call adi::readDeviceCopy(Store&,id) on the Store's
+owner after flushing any pending host edit capture that should be included.
+The value contains the registered device.remove inverse as a device.insert
+payload, the referenced plug-in's metadata and a hasNestedChains flag. It reads
+stored params, state hashes (not their bytes), panel order, expression route,
+name/preset/bypass/missing/always-process, nullable rack kind and remote host.
+Read-only inspection is supported; no op or live plug-in read happens. For
+paste, call prepareDevicePaste(Store&,copy,newId,chain,beforeDeviceOptional)
+then commitDevicePaste. A null selection appends. The batch captures explicit
+moves in current (ord,id) order, handles ties and large ordinals, inserts
+immediately before the selection, and undoes every original ordinal exactly.
+The captured expected head includes a null root. Keep document generation
+with asynchronous results. Same-project refs/state are reused; cross-project
+pool import and nested rack images are not supplied and return named refusals.
+The reader still exposes a rack's root metadata. The window can now implement
+ordinary device Cut/Copy/Paste/Duplicate without reading SQLite itself.
+
+The existing insert/remove pair now retains native rack_kind/remote_host_id,
+through optional nullable rackKind/remoteHost payload keys. Inferred-int
+narrowing of order/latency/parameter flags is fixed. Values outside SQLite's
+signed 64-bit range refuse; late parameter failures roll back the new root and
+all preceding order moves. No schema bump, host processing or UI code change.
+
+GCC Debug/Werror: **test_all PASS, 9915 checks across 107 suites, validators
+clean**. Clang Werror: device-copy30, device-ops139, catalogue106, replay63,
+device-model71 pass (409); new reader/test and changed catalogue also pass
+-Wshadow/-Werror syntax checks. Compiled plants fail: ignored before-position1,
+old flag replay4, lost expected head1; restored checks pass. Remote CI, MSVC,
+linked JUCE, hardware and measured Live behavior unobserved. Win/window opens;
+win merges.
+
+**N20 ownership/contract still open:** main 0e20848 still declares
+audio.channelConfig as Device-scope empty Text (settings/registry.cpp154);
+AppSettings::set still refuses Device values (settings/store.cpp104). Its
+device-ID/channel-pair/name format and store belong to win; opening physical
+inputs is in the window's app code. Session's AudioIo already accepts inputs,
+but this is not a recording-writer implementation. Recording integration stays
+open pending the published channel configuration seam; no project-field
+workaround or registry edit has been invented. This is not a director gate.
+Continuing to **N28** sample assignment, then **N31** and the remaining needs.
+
+Main now includes the director's actual first-window remarks in
+collab/director.md (#355): R1/R6 wait on N26 (green and pushed at 04f3290);
+N40 supplies waveform data. The first window has been opened. The UI remarks
+remain the window's; this lane does not edit those files.
+
+---
+
+
+
+## 2026-11-02 — N26 retained curve domains green; moving to N18
+
+**Existing PR request updated:** engine/snapshot-automation is now
+**04f3290** (after 6566d8e), still to main. Keep its one N26 PR.
+
+Window handoff: AutomationPointNode now carries optional curveSlice
+{begin,end,sourceFirst,sourceLast} for its outgoing segment. When N17 is present,
+convert those four fields to engine::CurveSlice and draw with curveSliceValue;
+refitting the stored kind/tension between the new endpoints changes its shape.
+The envelope retains curveRanges with each range's identity, storage ordinal,
+owner and values. All fields participate in sharing, including metadata-only
+changes with byte-identical AAUT. Invalid owners, missing/duplicate ordinals,
+nonfinite values and bad intervals refuse the entire envelope with a problem;
+diagnostic metadata stays readable. Old retained frames remain unchanged.
+The optional SQL seam reads N17's table when present and adds no schema or
+branch dependency. Clip envelope playback is still the separate phase D item.
+
+GCC Debug/Werror: **test_all PASS, 9901 checks across 107 suites, validators
+clean**. Clang Werror: snapshot87, automation39, Session214, engine119 pass;
+reader/test also pass -Wshadow/-Werror syntax checks. A compiled defect that
+compares only the number of retained ranges causes 11 failures; restored checks
+pass. Remote CI/MSVC/JUCE unobserved. README's measured check count stays win's
+(advisory here; no table mismatch). Continuing directly to **N18**; no director
+gate or permission question has been reached.
+
+---
+
+
+
+## 2026-11-02 — N33 follow-up for N17's pinned source clocks
+
+**Existing PR request updated:** engine/clip-properties is now **7496a7d**
+(after 9b50180), still based on engine/markers-locators. Keep its one N33 PR;
+no merge, rebase, force or additional stack dependency.
+
+Start/End/Loop property edits now honor a present N17 clip_playback_details
+table: Start clears the offset and retained fade domains, End clears the
+source limit, and a loop window edit clears both physical endpoints. A
+switch-only edit keeps its dormant window. Their inverse restores the full
+typed details row (or absence), including future BLOB columns. Clip deletion
+also includes the optional playback/range child tables and remains able to
+restore old captured payloads. No N17 schema or C++ dependency was added;
+the standalone suite supplies the optional SQL seam.
+
+Window uses the same N33 ops. Win retains N17's stronger clip-image/FK guard
+when combining both branches; this follow-up supplies the property-clock
+invalidation and typed inverse. It prevents a successful field edit from
+leaving playback on an older split-time override.
+
+GCC Debug/Werror: **10071 checks across 108 C++ suites pass**. Full runner
+still fails only README's 51-vs-53 table count; other validators pass.
+Clang Werror: properties95, playback89, catalogue106, migration175 pass.
+A compiled lost-invalidation plant produces 3 failures, restored checks pass.
+Remote CI/MSVC/JUCE unobserved. Continuing with N26's retained-curve snapshot
+compatibility and then N18; the N17 remainder stays recorded above.
+
+---
+
+
+
+## 2026-11-02 — N17 captured editing and material actions; N17 stays open for the rest of Time and Warp/video
+
+**PR requested** (ADR-0210 d4): **engine/phase-c-editing**, head
+**f6e9613ee03affe8ac522de8555d93ee6ed8f789**, to **main** (cut from dff5b41;
+main fetched as add5102 during this work). Title:
+**Add captured range edits, fades, Insert Silence and import/bounce actions (N17)**.
+
+PR body / window handoff: use src/adi/clip_commands.hpp for copyClip,
+prepareCutClip, preparePaste, prepareDuplicate, prepareSplit, copyRange,
+prepareCutRange, prepareDeleteRange, preparePasteRange, prepareDuplicateRange
+and prepareInsertSilence. Pass explicit ticks/ns and the actual
+SessionSpec.sampleRate. Cut captures clipboard/deletion under one read
+snapshot. A range edit splits crossing clips and retains outside material.
+Paste maps selected tracks explicitly; a different destination clears the
+source comp lane. Commit through commitPrepared so the captured expected
+journal head, including a null root, is checked in the transaction. Keep the
+document generation with asynchronous results. IDs and typed row values,
+including native opaque children, future BLOB columns and external alias
+links, are captured before apply. Undo/redo neither allocate IDs nor evaluate
+defaults. Uncaptured FK effects and generated columns refuse by name.
+
+clip.setFades edits both handles in one step, with lengths/curve and optional
+continuous tension; no automatic internal edge fades. Snapshots/projection
+carry all fade fields and optional source/fade clocks, each in sharing.
+Source windows stay unchanged, including SRC phase; tick/ns placements retain
+their declared domain. Splitting through either active fade preserves its
+original envelope at both widths. Insert Silence shifts clips, maps,
+locators/cycles, arranger sections, project end and the saved transport loop
+(including exact JSON undo/future fields). Initial map events at zero stay.
+Global automation holds at the gap and retains original nonlinear curve
+domains on both sides, including repeated cuts. Original full-width point IDs,
+flags, tension and trailer bytes remain; new boundary IDs are captured.
+Direct blob replacement refuses data with retained curve ranges.
+
+Use src/adi/material_commands.hpp for ImportOptions and BounceOptions:
+prepareImportAudio/prepareBounce return a MaterialEdit; commitMaterial
+publishes owned files without clobbering immediately before SQL COMMIT.
+Import captures dimensions/hash, deduplicates, attaches a playing clip and
+honors explicit copy-in/edge-fade choices, in one undo step. Defaults off.
+Bounce captures a private SQLite/WAL backup, renders an independent Session
+through the existing source/tap/range/encoding runner, then attaches the result.
+An explicit replace selection gives Bounce in Place. Host thread contracts
+remain the caller's. Cancellation, stale head, target collision and late SQL
+failure leave no partial clip/media/publication. Undo retains media for redo;
+reusing an already committed result cannot remove its successful file.
+See docs/ENGINE-EDIT-COMMANDS.md for the exact interface and limits.
+
+**N17 is not struck.** This PR's insertTime flag inserts musical time then
+pastes/duplicates the captured material; its clipboard includes clip envelopes,
+not a full global tempo/meter/key/automation clipboard. Full Copy/Cut/Delete
+Time remains engine work. Auto-Warp tempo/bar-marker detection and the warp
+renderer, playable video attachment, arbitrary join/consolidation and alias
+playback are not supplied. Warped-source edits, aliases requiring split, future
+AAUT strides requiring unknown boundary fields, Warp-on-import and video
+return explicit refusals rather than writing an unplayable audio clip. Clip
+envelopes are preserved, not newly played. No Live parity or backend completion
+is claimed for those gaps. Keep them queued while the usable API reaches the
+window; continue the oldest independent needs instead of making it wait.
+
+**Win integration:** schema 1.10 adds clip_playback_details and
+automation_segment_ranges; frozen 1.9 is byte-identical to the base. Standalone
+has **53 tables**. Reconcile the minor/migration numbering with N25 marker1.10,
+N33 clip1.11 and N12 pan1.10 when merging. A tree containing just all four
+additions has 56 tables. Do not leave an already-current file missing a sibling
+table. README counts stay win's. The N33 optional-clock invalidation and N26
+curve-domain snapshot compatibility follow-ups are next, on their existing
+branches. At merge, retain N17's complete clip image/FK guard, the N33 properties
+ops, and the combined End marker/source-clock reader.
+
+Validation: GCC14 Debug/Werror, libpd on/JUCE off: **all 109 C++ suites pass,
+10119 checks**. Full test_all is **not green** only because validate_schema
+reports README's 51 tables versus this branch's 53. Every other validator
+passes, including the OPS count, layout, frozen history and migration/additivity.
+Clang19 Werror: clip-edit167, playback159, row-edits22, material24,
+automation39, curves48, catalogue106, migration162, projection212 (939 checks).
+All 11 new C++ sources additionally pass Clang -Wshadow/-Werror syntax checks.
+Compiled plants fail: refitted automation8, lost fade domains6, lost expected
+head1, leaked publication1; restored checks pass. Renders cover SRC at 44.1/48 kHz,
+loop phase, tempo changes, partial fades at native32/64, exact PCM before/after
+split, Insert Silence and undo/redo. Import/bounce checks cover deferred SQL
+commit failure cleanup, cancellation, mutation during render, the next clip-ID
+collision in Bounce in Place, repeat commit and cross-track lane ownership.
+Remote CI, MSVC, linked JUCE, hardware and measured Live behavior are unobserved.
+Win/window opens this PR and win merges. Continuing through the queue.
+
+---
+
+
+
+## 2026-11-02 — N12 ready; continuing to N17
+
+**PR requested** (ADR-0210 d4): `engine/split-stereo-pan` at **`c3ab3a9`** →
+`main` (base `dff5b41`). Title: **Add persistent Split Stereo Pan with independent panners (N12)**.
+
+PR body / window handoff: commit `mixer.setPanMode {id,mode:"stereo"|"split"}`,
+`mixer.setPanLeft {id,pan}` and `mixer.setPanRight {id,pan}` (finite -1..+1),
+then refresh Session and Snapshot. `id` is the existing mixer strip's track id.
+TrackNode now exposes panMode/panLeft/panRight, all in same(); other tracks and
+unchanged settings stay shared. Both split positions persist while in stereo;
+the original pan persists while dormant in split. Left/right edits are
+coalescable. Defaults are stereo, left -1/right +1. Independent real-unit track
+lanes panLeft/panRight bind, override separately and use Re-Enable normally.
+
+The native-width matrix independently positions each source. Default hard-L/R
+is exact unity; a swap exchanges sources, either side can sum both. Live's split
+mono panners use constant power without its ordinary stereo sqrt(2) boost;
+other selected laws retain their formulas. Fader/mute, five-ms coefficient
+ramps, silence landing, precision handover and source Post sends include the
+crossfeeds. Both inputs are captured before either output for in-place safety.
+Pre sends retain unity and mute; extra channels retain fader-only behavior.
+No callback allocation/lock/log. Width/phase remain Utility's placement.
+
+Schema **1.10**, frozen 1.9: additive optional mixer_pan_settings keyed to
+mixer_strip, no altered frozen core columns. Fresh/migrated/read-only TEMP
+reads and projection expose it. First-touch inverse restores row absence;
+later inverses update only their column, preserving dormant controls and
+future fields. Unknown future mode reads/names as stereo and can be restored
+verbatim by undo. OPS and `docs/ENGINE-SPLIT-PAN.md` define the seam. Full
+track deletion capture is still **N37**; add this cascade table to its child set.
+
+**Win merge work:** this is independent of N25's marker1.10 and N33's clip1.11.
+Reconcile minor numbers/migration history in merge order before publishing the
+combined format; do not leave an already-current file missing a new table.
+Its standalone schema has **52 tables**, so README line57's 51 must become 52
+for this branch's CI; the combined N25/N33/N12 tree has 54. README stays win's.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **all 107 test binaries pass,
+9898 checks**. test_all is **not green** solely for the current schema validator's
+README 51-vs-52 table count. OPS catalogue totals/version validator metadata are
+updated and revalidated; all other validators pass. All migrations/additivity
+checks pass. Six Clang Werror suites pass: split69, mixer337, engine119,
+Session214, migrate162, projection209. Covers native32/64 matrix, exact unity /
+swap / collapse / center, in-place reads, extra/mono channels, fader/mute,
+Post/Pre sends, segment invariance, ramp/width handoff, independent automation,
+ops/undo/redo/future columns/future mode, all snapshot fields, projection,
+reopen/refusal, read-only unchanged schema and writable migration. Four compiled
+regressions fail: missing crossfeed21, overwritten source19, missing mode
+sharing1, missing first-touch absence2. Remote CI/MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win merges. Continuing to **N17**, phase-C
+editing ops and prompt actions. No director gate reached.
+
+
+## 2026-11-02 — N8 ready; continuing to N12
+
+**PR requested** (ADR-0210 d4): `engine/plugin-editors` at **`ac17ea1`** →
+`main` (base `dff5b41`). Title: **Expose VST3 and CLAP editors with safe floating host content (N8)**.
+
+PR body / window handoff: include `juce/editor_host_component.hpp`, compile
+`editor_host_component.cpp` in the JUCE window target, and call
+`createEditorComponent(device,error)`. Move its result into FloatingHost::openView,
+using the component's own size. Call PluginEditorComponent::frame() on that
+window's existing clock. The bridge owns the editor lease; duplicate wrappers
+are refused. The exact VST3 editor uses JUCE 9's createEditorAndMakeActive,
+constrainer/resize notifications and editorBeingDeleted. CLAP Hosted mode
+creates and parents a native child inside the floating host, exposes size and
+resize hints, adjusts host sizes, and respects physical/logical API pixels.
+Report bridge.error() if native parenting/show fails. No editor is inline.
+
+`DeviceInstance::createEditor(EditorMode,error)` also exposes a shared protocol
+lease directly. Close is idempotent; removing a device closes its GUI before
+its processor/library is destroyed, leaving retained handles safe and invalid.
+CLAP's host GUI callbacks use fixed atomic mailboxes; the existing DeviceHost
+message-thread pump or editor.poll() drains them. No callback GUI work,
+allocation, lock or new timer. closed(true) receives its required destroy
+acknowledgment without hiding a disconnected window. Failed create, dimensions,
+show/hide/parent and resize are reported honestly. Native floating CLAP mode
+also supports title/transient owner and window-owned geometry (0/0 if not exposed).
+
+**Win review, not a director gate:** N8 asks for component content on the newer
+FloatingHost seam (ADR-0180); ADR-0076 specifically describes CLAP create(true).
+Both modes are implemented explicitly. Choose native Floating if retaining that
+older route; it needs no second JUCE wrapper window. Hosted is the N8 component
+route and never means an inline strip GUI. No ADR changed. Details and exact
+ownership/frame contract: `docs/ENGINE-PLUGIN-EDITORS.md`. No schema/op change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9862 checks / 107 suites**,
+validators clean. Five Clang Werror suites pass: editor48, CLAP486, device44,
+model71, host60. The protocol fake covers creation rollback, size/mode/API
+refusal, shared leases, floating/hosted parent distinction, visibility/refusal,
+resize hints, worker notifications, no resize echo, closed acknowledgment,
+reopen and destruction order/retained handles. Three compiled regressions fail:
+late device GUI close (2), ignored plugin close (10), show before parent (2).
+Pinned JUCE 9.0.2 headers: GCC and Clang syntax checks with Werror/Wall/Wextra/
+conversion/sign-conversion/shadow pass for the hosts, bridge and JUCE fixture.
+The existing JUCE probe now includes 16 ownership/constrainer/component checks
+for its macOS/Windows jobs. They are **not run locally**: a linked JUCE Linux
+configuration failed for missing GUI development libraries (freetype etc.).
+Native real-plugin drawing/parenting, monitor/DPI and measured Live parity,
+MSVC and remote CI remain unobserved. Win/window opens; win merges.
+Continuing to **N12**, Split Stereo Pan. No director gate reached.
+
+
+## 2026-11-02 — N7 ready; continuing to N8
+
+**PR requested** (ADR-0210 d4): `engine/ui-param-capture` at **`7d5e1f7`** →
+`main` (base `dff5b41`). Title: **Capture device strip parameter gestures as undoable edits (N7)**.
+
+PR body / window handoff: call `ParamOps::uiEvent(dev,param,kind,norm,nowMs,out)`
+on the owner/message thread, using Begin/Value/End and the timer drain's clock.
+Call `attachSession(session)` after load/refresh. It supplies a separate UI
+capture per device, retaining the plug-in's single-producer ring. Accepted
+values sound immediately; End emits one final edit and its first-touch opener.
+Commit every appended request as one transaction, writing pending state blobs
+first just as for timer drain. The bool describes the current input; older
+intervals can append requests even when it returns false. Devices already hold
+accepted values: do not replay own openers. Keyboard values close after 150ms
+quiet. Removed devices, external edits and recalled state cancel stale gestures.
+Backend refusal and invalid targets are reported, not recorded as accepted.
+
+A Session attachment publishes a runtime automation override before End;
+Re-Enable Automation resumes the lane. Refresh N26 with overriddenLanes() when
+that set changes. CLAP control ids remain hex and automation refs decimal per
+ADR-0165. As with existing graph publication, an already-running callback is
+not interrupted; this is not a sample-exact manual/automation arbitration API.
+The CLAP control queue is now bounded SPSC, retains backpressure and failed
+callback values, exposes accepted pending intent, flushes at stop/reactivation,
+and discards older intent only after successful guarded state recall. Delayed
+UI echoes cannot become extra undo steps. Immediate undo supersedes accepted
+intent even if a backend getter lags. No new schema/op name; OPS and
+`docs/ENGINE-UI-PARAM-CAPTURE.md` describe the seam. Window wiring stays window's.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9874 checks / 107 suites**,
+validators clean. Seven focused Clang suites pass: UI47, ParamOps177,
+ParamEdits377, CLAP499, device automation133, Session214, automation39.
+Covers long drags, keyboard intervals, independent concurrent producers,
+first-touch/journal undo/redo, refusal, delayed echoes, asynchronous undo,
+state recall and device retirement, live automation override/re-enable and
+CLAP decimal lookup. CLAP fake additionally exercises queue overflow,
+small-event-list backpressure, retry, stop/format/state boundaries and 8192
+accepted values across concurrent FIFO wraps. Three compiled regressions are
+caught: lost echo history (2), old-audible equality (1), missing override (1).
+Callback allocation/IO guards pass. Remote CI, MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win merges. Continuing to **N8**,
+plug-in editors through the hosts, from current main. No director gate reached.
+
+
+## 2026-11-02 — N34 ready; continuing to N7
+
+**PR requested** (ADR-0210 d4): `engine/note-active` at **`2db02a4`** →
+`main` (base `dff5b41`). Title: **Activate MIDI notes without rewriting their stream (N34)**.
+
+PR body / window handoff: use the already documented
+`note.setMute {clip,note,muted}` with `muted = !active`. `note` is N32's original
+uint64 ANOT identity, not display order. Commit as a snapshot-impact edit and
+refresh Session and the Clip View read. Inactive notes stay present/readable;
+playback skips them. Undo/redo of this symmetric op restores the prior muted
+bit, and deactivating a held note releases its voice on the next callback.
+The clip must be MIDI with an existing canonical notes stream. Zero/unassigned,
+absent or duplicate target ids and unreadable/unsupported-unit streams are
+refused, never silently replaced with an empty stream.
+
+The handler patches only bit0 in the original record stride: other flags and
+fields, wider future tails, original header/trailing bytes, row id/extension
+columns and other streams survive exactly. No sorting, blob re-encoding,
+schema bump or new audio-thread work. Existing OPS entry now has its handler;
+`docs/ENGINE-NOTE-ACTIVE.md` defines the call. N32 is an independent compatible
+reader, not a build dependency.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9866 checks / 107 suites**,
+validators clean. New flag suite **49**; four Clang Werror suites pass: flags49,
+MIDI clips168, catalog106, ops130. Covers exact one-bit native/future stream
+changes on first and second records, full-width id, other flags/streams/columns,
+undo/redo/reopen, malformed/ambiguous target refusal, atomic batch rollback and
+read-only refusal. Op-driven playback proves deactivation, undo reactivation and
+held-voice release; callback allocation/IO guards pass. Three compiled plants
+fail: wiping other flags (12), wrong bit (16), wrong stride (1). Remote CI,
+MSVC/JUCE and measured Live parity unobserved. Win/window opens; win merges.
+Continuing to **N7**, a separate window producer into ParamOps edit capture,
+lifting the engine portion of `537c56d` and testing live/undo behavior, from
+current main. No director gate reached.
+
+
+
+## 2026-11-02 — N33 pushed; continuing to N34
+
+**PR requested** (ADR-0210 d4): `engine/clip-properties` at **`9b50180`** →
+**`engine/markers-locators`** (`bb846aa`, N25). Two deep; merge N25 first.
+Title: **Edit and play clip markers, loop, signature and scale (N33)**.
+
+PR body / window handoff: submit `clip.setStartMarker {id,ticks}`,
+`clip.setEndMarker {id,ticks}`, `clip.setLoop {id,on,start?,length?}`,
+`clip.setTimeSignature {id,num?,den?}` and
+`clip.setScale {id,root?,scale?,mask?}`. All are undoable snapshot edits; refresh
+ProjectView and Session, and N32's `readClipDetails` for the Clip View. Source
+markers/loop use ticks in 0..2^50 even for a linear clip, preserving placement
+and its units. Start pins the previous default End; End bounds non-loop audio
+at the exact sample in both graph widths and releases crossing MIDI notes.
+Loop uses its own window with End inactive. A malformed imported loop can still
+be switched off. Signature uses numerator1..255 / power-of-two denominator1..128,
+both omitted to inherit. Scale takes root0..11/nonempty id/12-bit relative mask
+including tonic, all omitted to inherit. Signature/scale are metadata, not an
+implicit Fit to Scale. `rows::Clip` and the text projection carry local values;
+N32's optional-table reader is already compatible (independent PR).
+
+Schema **1.11**, additive optional `clip_properties`, frozen 1.10 and migration/
+read-only tests. N25 is the format dependency; N32 is not a build dependency.
+Scalar inverses capture full core/property rows, update in place and retain
+presence/extensions. Clip delete also captures all native streams, expressions,
+audio, clip envelopes, properties, and alias links cleared by FK; restore keeps
+ids/types/BLOBs and refuses collisions. Legacy inverse payloads still apply.
+Arbitrary unknown child tables are not claimed. Full track deletion is still
+N37; this closes the clip-level loss newly exposed by Main properties.
+API/semantics: `docs/ENGINE-CLIP-PROPERTIES.md`, OPS/SPEC updated.
+
+**Win-owned integration edit before CI/merge:** README's table count is **51**
+in this branch, **53** in its schema. Please update `adi_daw/README.md:57` to
+53 in this PR, after N25's count52 edit. Engine leaves that count to win.
+This is `validate_schema.py`'s sole failure; every frozen minor0..10 upgrades to
+1.11 and the additive-object checks pass. No validator was weakened.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **10061 checks / 108 suites**,
+all test binaries pass. `test_all.sh` returns failure solely on that README
+count; ops/pd/ci/layout validators pass. Seven Clang Werror suites pass:
+properties85, audio clips89, MIDI clips167, markers126, migrate175, projection211,
+media ops71. Tests include op-driven exact audio/MIDI source boundaries, double
+precision, loop End inactivity, full-state undo/redo/reopen, native cascade and
+alias restoration, collision rollback, extensions, invalid/batched edits and
+old read-only bytes unchanged. Five compiled plants fail: missing End pin (2),
+missing aliases (4), missing native children (4), no audio cut (2), no MIDI cut
+(1). No remote CI, MSVC/JUCE or measured Live parity result claimed. Win/window
+opens; win reviews/merges. Continuing to **N34** independently from main, using
+existing documented `note.setMute` for the active flag (muted=!active).
+No director gate reached.
+
+
+
+## 2026-11-02 — N32 ready; continuing to N33
+
+**PR requested** (ADR-0210 d4): `engine/clip-details` at **`93f2e35`** →
+`main` (base `dff5b41`). Title: **Expose clip properties and exact note identities for Clip View (N32)**.
+
+PR body / window handoff: the row allows an owner-thread read API rather than
+inflating every arrangement snapshot with notes. Call
+`engine::readClipDetails(store, clipId)` after journal movement, outside its
+mutation transaction. The owned result has kind/name/optional palette colour,
+track/lane/alias identity, original tick/ns placement/length, all common clip
+fields, source start/end markers, loop switch/window, inherited signature/scale
+at the clip's start (including native tuning id/degrees), and every original
+ANOT note id and property, including inactive notes. Address edits with
+`{clip:clipId,note:note.id}`; display order is not identity. Values remain stable
+while held. Invalid streams/notes are named without a partial curve or losing
+clip metadata. Legacy zero/duplicate ids stay exact with a problem; refuse
+ambiguous edits rather than inventing row-index identities. Future note extents
+and encoded bytes remain available. Read targets one stream, no op/playback.
+A missing clip or SQL failure is explicit. See `docs/ENGINE-CLIP-DETAILS.md`.
+
+No schema/op change here. The reader understands N33's optional additive
+`clip_properties` table when present: local end marker, signature and 12-TET
+scale with explicit local flags, NULL/absence means inheritance. Compatibility
+is tested with a synthetic table, not claimed as a native migration. N33 supplies
+writes/playback; N34 supplies note active writes. Until then Start is the stored
+content offset and End derives from source offset plus visible duration, through
+the step tempo map for a linear clip. Raw stored units always remain readable;
+unrepresentable derivations and tempo ramps are named.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9843 checks / 107 suites**,
+validators clean. New suite **29**; five Clang Werror suites pass: clip details29,
+MIDI clips165, catalog106, ops130, project view14. Covers a real note move using a
+returned full-width id, reorder/undo and retained values; all common properties;
+NULL versus zero; inherited/local meter and scale; linear tempo-change context;
+range guards; inactive/ambiguous/corrupt/future notes and read-only reopen.
+Three compiled plants fail: lost identity (4), reversed active bit (1), ignored
+local properties (1). Remote CI, MSVC/JUCE and measured Live parity unobserved.
+Win/window opens; win reviews/merges. Continuing to **N33** from N25's
+`engine/markers-locators` (two deep), so its additive format is 1.11 after N25's
+1.10. N32's read API is compatible but not a build dependency. N34 follows.
+No director gate reached.
+
+
+
+## 2026-11-02 — N29 ready; continuing to N32
+
+**PR requested** (ADR-0210 d4): `engine/history-list` at **`de77bf3`** →
+`main` (base `dff5b41`). Title: **Expose complete undo transactions with branches and snapshots (N29)**.
+
+PR body / window handoff: call `History(store).readTimeline()` on the message
+thread after history moves or snapshot metadata changes, outside a journal
+mutation. `steps` contains whole undo transactions newest sequence first across
+all branches: txn id, first/last seq, op count, first-op label/actor/detail,
+timestamp and parent; `applied` marks current-head ancestry and `onCurrentLine`
+also marks Ctrl-Y's redo path. `branchIds` names stored-head ancestry, with the
+current branch's redo line included, and `snapshotIds` links anchors. Root
+head/branch and complete branch/snapshot metadata are included; root snapshots
+remain even before any step. Values are owned so a retained frame is consistent.
+One read transaction, no CBOR/inverse/state blobs decoded, no log/head mutation.
+Ephemeral ops excluded; corrupt tables/cycles/partial-transaction heads return a
+named error with no partial data. Existing History APIs perform the actions.
+`docs/ENGINE-HISTORY-LIST.md` defines the statuses. No schema/op change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9843 checks / 107 suites**,
+validators clean. New list suite **29**; four Clang Werror suites pass:
+list29, history95, snapshots65, ops130. Checks include mixed-actor batches,
+first-op labels, branching/shared ancestry, undo redo-line status, branch switch,
+root/automatic anchors, retained values, backwards timestamps, metadata-only
+reads despite malformed payload bytes, read-only reopen and explicit corruption/
+nested-transaction errors. Two separately compiled plants fail: reversed order
+(2), marking undone steps applied (1). Remote CI, MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win reviews/merges. Continuing to **N32**,
+the message-thread clip properties/note-identity read API allowed by its row,
+from main. N33 and N34 follow. No director gate reached.
+
+
+
+## 2026-11-02 — N26 ready; continuing to N29
+
+**PR requested** (ADR-0210 d4): `engine/snapshot-automation` at **`6566d8e`**
+→ `main` (base `dff5b41`). Title: **Expose automation lanes, envelopes and runtime overrides (N26)**.
+
+PR body / window handoff: `Snapshot::automationLanes` / `findAutomationLane(id)`
+expose every stored owner/parameter/domain/unit/default/bounds/enabled/visible/
+height field, with arrangement and clip envelopes identified by data id and
+optional clip id. Point ids are the original uint64, times the original ticks/ns
+(clip-relative for clip envelopes); value, curve, tension and flags are readable.
+Invalid envelopes retain an explicit problem and no partial curve. Future AAUT
+tails and corrupt encoded changes participate in sharing. After refreshing the
+Session, call `ProjectView::refresh(store, session.overriddenLanes())`; repeat
+after Session's existing single/all `reenableAutomation` methods. Root
+`automationOverridden` lights Re-Enable; per-lane `overridden` identifies the
+control. Retained frames keep their own flags. The no-set overload is a view
+without a live session; overrides are not persisted or journaled. Every field
+participates in sharing, with unchanged envelope/sibling reuse, and changed
+bounds/time bases revalidate before reuse. `docs/ENGINE-AUTOMATION-SNAPSHOT.md`
+gives the refresh contract. No schema, op or audio playback policy change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **9882 checks / 107 suites**,
+all validators clean. New suite **68**; five Clang Werror suites pass:
+automation snapshot68, engine119, project view14, automation39, parameter
+automation133. Checks cover metadata and envelope identity/sharing, units,
+full-width point ids, retained override frames from a real Session, Re-Enable,
+corrupt/nonfinite/refused streams, bound revalidation, future tails, deletion.
+Three separately compiled plants fail: missing override (1), skipped bound
+revalidation (1), ignored encoded changes (11). No remote CI, MSVC/JUCE or
+measured Live parity result claimed. Win/window opens; win reviews/merges.
+Continuing to **N29**, the complete transaction-based undo list with branch
+membership and snapshot anchors, from current main. No director gate reached.
+
+
+
+## 2026-11-02 — N25 pushed; continuing to N26
+
+**PR requested** (ADR-0210 d4): `engine/markers-locators` at **`bb846aa`**
+→ `main` (base `dff5b41`). Title: **Add marker locators, literal notes and prompts (N25)**.
+
+PR body / window handoff: read `Snapshot::markers` / `findMarker(id)` for stable
+identity, time base, optional tick/ns positions and cycle lengths, name, kind,
+optional palette colour, note and literal prompt. Id order is not display order.
+Every field participates in sharing. Use `marker.create {id,pos,time_base?,name?,kind?,length?,color?,note?,prompt?}`
+(default musical position; a length defaults to cycle), `marker.delete {id}`,
+`marker.move {id,pos}`, `marker.rename {id,name}`, `marker.resize {id,length}`,
+`marker.setColor {id,color?}` (omit to clear), `marker.setNote {id,text}` and
+`marker.setPrompt {id,text}`. Cycles need positive lengths, colour is 0..69.
+All are snapshot-impact undoable edits; no graph rebuild. Text is never executed.
+Schema 1.10 adds optional `marker_details`, frozen 1.9 and migration/read-only
+coverage; the projection includes note/prompt and linear cycle lengths. Captured
+undo retains both rows, extension columns and SQLite types; scalar inverses
+update in place, avoiding cascade loss. A failed batch leaves no rows/log data.
+
+**Win-owned integration edit before CI/merge:** `adi_daw/README.md:57` still says
+**51 tables**; this additive schema has **52**. Please change that count in the
+feature PR. Engine leaves the README count to win (LANES §1/standing prompt).
+This is the sole `validate_schema.py` failure, not a director gate. No other
+validator is failing. The schema checker proves every frozen minor upgrades to
+1.10, including the named 1.9 default rebuild; no validator is weakened.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **9955 checks / 107 suites**,
+all test binaries pass. `test_all.sh` returns failure solely for the README count
+above; ops/pd/ci/layout validators pass. Marker suite **126**; five Clang Werror
+suites pass: marker126, engine119, migrate162, text projection209, history95.
+New coverage includes both units, literal multiline text, sharing of every
+field, null colour versus zero, exact undo/redo after reopen, atomic failure,
+1.9 read-only bytes unchanged, empty/nonempty BLOBs and quoted extension columns.
+Two separately compiled plants fail: omitted deleted text (3), ignored note
+sharing (1). No remote CI, MSVC/JUCE or measured Live parity result claimed.
+Win/window opens the PR and win reviews/merges. Continuing to **N26**, lanes,
+points and runtime overrides in the snapshot, independently from main.
+
+
+
+## 2026-11-02 — N23 ready; continuing to N25
+
+**PR requested** (ADR-0210 d4): `engine/cue-reference` at **`1466c85`** →
+**`engine/transport-loop-metronome`** (`e42fd56`, N19). Two deep; merge N19 first.
+Title: **Route Cue and exclusive reference past Main (N23)**.
+
+PR body / window handoff: `Snapshot::cue` exposes mode, selected track ids,
+output pair, volume, Solo in Place and reference selection/state. In Cue mode
+row buttons emit `cue.setTrack {id,on}` and read `selectedTracks`, keeping stored
+solo flags separate; `cue.setMode {on}` switches their behavior, and
+`mixer.setSoloInPlace {on}` controls returns. Use `cue.setOutput {first}` (even,
+zero-based stereo pair 0..62), `cue.setVolume {db}` (-150..+6), and
+`cue.setReference {on,id?}` for the tap/hold latch. All are saved transport-scope
+performance ops, audited/outside undo. Refresh ProjectView and Session. Cue is
+Post FX/PFL, including muted tracks. Reference keeps its source fader/pan and
+volume/pan automation, bypasses Main/parent processing and uses a complementary
+5 ms Main/reference swap to both monitor and Cue Out. Other cue signals/clicks
+are excluded while reference is exclusive. Shared Main/Cue pairs get reference
+once; selection and volume changes ramp. Fresh reference feeds fill their delay
+before Main fades, preventing a cold-start dip/click. Monitoring reuses rendered
+audio: devices run once, private graph sinks align to Main/track delay, stable
+edge keys preserve history, and lane ownership has its own audio publication.
+Offline renders ignore Cue/audition/mode changes and preserve musical solo/mute.
+
+**N38 integration:** no role DDL/version/migration is invented here. If
+`tracks.role` exists, its native reference is excluded from Main/sends and
+supplies the default audition target. `projectReferenceTrack`/`referenceFromRole`
+expose that derivation; preference edits do not pin a previous role. On today's
+schema an explicit id already auditions past Main; selecting an ordinary track
+as a performance target alone does not alter its Main route while off. The role
+format/snapshot/op need remains with win/engine as N38, not claimed closed.
+The synthetic role column test proves reading only. API details:
+`docs/ENGINE-CUE-MONITOR.md`; OPS and format/session contracts updated.
+
+**Merge with N13:** meter Main after graph processing, before `cueMonitor_.process`.
+The monitor mixer now hosts N19's click on Cue Out/volume.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9960 checks / 108 suites**,
+validators clean. Cue suite **96**, also Clang Werror. Six other Clang suites:
+mixer337, transport/settings49, host124, realize105, precision108, export197 pass.
+Checks include 5 ms enter/leave/shared-pair levels, Main FX/fader bypass, PFL mute,
+SIP/returns, output widths, compensation/history, cold activation, automation
+values/lifetime, no callback allocation and offline isolation. Four separately
+compiled plants fail: Main audio in cue (23), wrong clock (3), missing lane owner
+(1), skipped cold delay wait (2). MSVC/JUCE, hardware routing and measured Live
+sound/level parity remain platform gates; no remote CI result observed here.
+Win opens/reviews/merges. Continuing to **N25**, marker/locator ops and snapshot,
+from current main. No director gate has been reached.
+
+
+## 2026-11-02 — N22 ready; continuing to N23
+
+**PR requested** (ADR-0210 d4): `engine/snapshot-track-delay` at **`673c51c`**
+→ `main` (base `dff5b41`). Title: **Expose track delay in immutable snapshots (N22)**.
+
+PR body: The window can read `TrackNode::delaySamples`, a signed int64 stored at
+`Snapshot::sampleRate` (project rate); display milliseconds as
+`1000.0 * delaySamples / sampleRate`. Missing strips read zero. The field
+participates in structural sharing, so delay-only edits replace that track's node
+and retain siblings. Existing `mixer.setDelay {id,samples}` and its undo are the
+write path; this changes no schema, op or audio processing. Raw stored values are
+exposed, including values the runtime may clamp/name as a problem.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9823 checks / 106 suites**,
+validators clean. Engine suite **128**, also Clang Werror; Clang project-view14
+passes. Nine checks cover both signs, project-rate units, missing/removed strips,
+undo, changed-node identity and unchanged sharing. A compiled plant omitting delay
+from `same` fails three checks. N19-only stale test binary excluded. Remote CI,
+MSVC/JUCE and Live measurements unobserved; win opens/reviews/merges.
+
+Continuing to **N23**, cue path, Solo in Place and exclusive reference. It needs
+N19's metronome routing, so the new branch will stand on `engine/transport-loop-metronome`
+(two deep), named explicitly in its PR. The N38 role-format placement still needs
+win's migration/ADR mechanism for changing `tracks` (ADR-0144 d3); the cue backend
+will accept an explicit reference track id, so that integration does not stall it.
+No director question or gate has been reached.
+
+
+## 2026-11-02 — N19 ready; continuing to N22
+
+**PR requested** (ADR-0210 d4): `engine/transport-loop-metronome` at **`e42fd56`**
+→ `main` (base `dff5b41`). Title: **Save and play loop and metronome controls (N19)**.
+
+PR body: The window commits `transport.setMetronome {on}` and
+`transport.setLoop {on,start?,end?}` (musical ticks), then refreshes ProjectView
+and Session. Snapshot `transport` exposes metronome/loopEnabled/loopStartTicks/
+loopEndTicks; missing keys default off with a four-bar 4/4 region at zero.
+They remain ephemeral/audited, outside undo: saved session metadata and op rows
+commit atomically. Loop toggles retain bounds, invalid windows fail, and malformed
+metadata defaults safely. The audio driver applies changed loops at a callback
+boundary using the tempo map; unchanged rebuilds preserve position/revision and
+sub-sample windows play one frame. Original synthesized clicks follow tempo and
+signature with bar accents, stop when parked, and align to actual rendered graph
+latency through loop wraps (including delays longer than a loop). Both output
+widths work. Clicks bypass Main devices/fader on the current default stereo pair;
+N23 adds Cue Out/volume. Export queue and gain-stage offline sessions opt out of
+performance controls, preserving file renders. OPS and format/session metadata
+contracts are updated; see `docs/ENGINE-TRANSPORT-PERFORMANCE.md`.
+
+**Merge with N13:** keep `mainLoudness_.process(block)` immediately after graph
+processing, before `renderMetronome`; a click is a cue signal. These independent
+branches both touch Session::process. Win merges/reconciles, no engine merge.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9864 checks / 107 suites**,
+all validators clean. New transport/settings suite **49**, Clang Werror also;
+Clang export queue197, session214 and history-snapshots65 pass. Tests cover each
+snapshot field, undo exclusion, batch rollback, reopen, live toggles, changing
+tempo, 3/8 grid/accent, float/double dual outputs, delayed click/loop alignment,
+one-frame loops and export isolation. Compiled plants ignore click compensation
+(2 failures/49) and restore saved monitoring during export (2/197). Original click
+sound/level parity with Live, MSVC/JUCE and remote CI are unmeasured here.
+
+N3/N30/N9/N13/N19 are pushed, with PR requests in this log; no matching PR head
+refs found yet via Git, API remains unavailable. Continuing to **N22** from main.
+N16 integration dependency remains as below; no director gate is reached.
+
+
+## 2026-11-02 — N13 ready; continuing to N19
+
+**PR requested** (ADR-0210 d4): `engine/main-loudness` at **`0e4c3cc`** → `main`
+(base `dff5b41`). Title: **Meter Main loudness and true peak in real time (N13)**.
+
+PR body: The window can load `session.mainLoudness().readout()`'s atomic floats
+`momentaryLufs`, `shortTermLufs`, `integratedLufs` and `truePeakDb` with relaxed
+ordering and call `requestReset()` for the next callback. Silence/unwarmed windows
+are negative infinity. Session measures its actual post-Main output at native
+float/double width, without changing audio. K-weighted 400 ms and 3 s windows
+update at 10 Hz; integrated uses -70 LUFS / -10 LU gates and a bounded 0.1 LU
+histogram (gate quantisation, not a certified EBU claim). True peak uses the
+existing Kaiser-sinc design in double, 4x/2x/sample peak by rate, holding until
+reset. Same-format rebuilds retain history; new formats publish fresh DSP state
+and tick reclaims retired state off audio. No callback allocation, lock, I/O or
+store access. Mono/stereo weights are one; standalone API accepts explicit roles
+(front1, surround1.41, LFE0). Until channel roles arrive, Session treats channels
+as full-range rather than guessing LFE. See `docs/ENGINE-MAIN-LOUDNESS.md`.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9858 checks / 107 suites**,
+validators clean. New suite **44**, also Clang Werror; Clang session214, mixer337,
+master98 and precision108 pass. An allocation counter covers processing, gates
+and reset; independent complex filter-response calibration, both loudness gates,
+known intersample crests, format/reset lifetime and post-Main gain are exercised.
+Two compiled plants are caught: no K-weighting (11 failures) and no interpolation
+(2). N9-only stale binary excluded before discovery. MSVC/JUCE/Live measurements
+and remote CI unobserved; win opens/reviews/merges.
+
+Continuing to **N19**, metronome and loop, from main. N16 remains integration
+blocked as below. No director gate has been reached.
+
+
+## 2026-11-02 — N9 ready; continuing to N13
+
+**PR requested** (ADR-0210 d4): `engine/strip-meters` at **`fa09375`** → `main`
+(base `dff5b41`). Title: **Publish scalar post-fader meters for every strip (N9)**.
+
+PR body: The window can read `session.strips().stripFor(trackId)->meter()` through
+a const Session and load `peak`/`rms` with relaxed ordering. Both are lock-free
+linear floats per persistent strip, including groups and Main; peak is the largest
+channel magnitude and RMS the mean across channel samples. No scope subscription,
+SQL read, op or snapshot rebuild is needed. Values cover the current callback
+(prefix while a callback is segmented), reset on its next offset-zero segment,
+and clear when suspended or the driver stops. UI ballistics/holds stay with the
+window. Float/double audio is measured at its native width, after gain/pan/mute,
+without changing output samples. Nonfinite/oversized device output cannot put
+NaN/Inf into the readout. Rebuild preparation preserves live values and meter
+addresses. The earlier #205 StripMeter seam is retained, extended for current
+64-bit and segmented graph processing; no UI/device-tier production edits.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9842 checks / 107 suites**,
+validators clean. New meter suite **28**, also Clang Werror; broader Clang mixer
+337, master98 and precision108 pass. A separately compiled plant resetting every
+segment fails the two split-callback checks. Stale N3-only binaries were removed
+from test discovery before this independent-main run. No MSVC/JUCE/Live parity or
+remote CI success claimed; win opens/reviews/merges.
+
+N3/N30 and N9 are pushed. Continuing to **N13**, Main LUFS/true peak, from main.
+
+
+## 2026-11-02 — N30 ready; continuing to N9
+
+**PR requested** (API unavailable; ADR-0210 d4). Head `engine/collect-project` at
+`3722d72`, base **`engine/save-project`** (N3, `7cc1ffc`). Two deep; merge N3 first.
+Title: **Collect current and history media into portable projects (N30)**.
+
+PR body: The File menu can call `Store::collectAllAndSave()` and
+`Store::collectAndExport(zip)` off the audio thread, alongside N3's `saveCopy` and
+`saveAs`. Collection verifies and copies one file per hash into local `audio/`,
+then saves relative paths in the current pool and both sides of captured media
+ops on every history branch, including unlinked assets. Refresh the view/session
+after in-place collection. Undo, redo and branch changes retain their media when
+the folder moves. No musical edit or new history step is added. Matching existing
+files are reused, different contents/symlinks refused, and copy/SQL failures remove
+only newly published files and roll back all path changes. The ZIP exporter now
+uses the same collector on a private SQLite backup and preserves its live source;
+read-only ZIP sources and legacy extraction remain supported. SPEC §3.8 documents
+the location-maintenance contract. This branch depends on N3.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9897 checks / 107 suites**,
+all validators clean. Collection suite **102**, project-files **44**, both pass
+Clang Werror. Tests cover inactive branches, undo-only assets, relink inverses,
+physical folder moves, existing-target verification, missing-media and SQL
+rollback, read-only/export restrictions and source preservation. Corrected N3's
+branch-selection fixture to select the abandoned branch and assert its relink path.
+Two separately compiled plants were caught: skipped captured paths (9 failures)
+and omitted failed-file cleanup (2). Local MSVC/JUCE/Live measurements unrun;
+remote CI not observable here. Win opens/reviews/merges.
+
+N16 remains integration-blocked as recorded below. N3/N30 are pushed; continuing
+with **N9**, from current main, without waiting for PR opening.
+
+## 2026-11-02 — N3 Save As ready; chaining into N30
+
+### PR requested — N3
+
+**Title:** Save project copies and continue in Save As (N3)
+**Head:** `engine/save-project`, `7cc1ffc`; **base:** `main` at `dff5b41`.
+
+`Store::saveCopy(path)` snapshots committed WAL data into a private stage, relocates media references in rows AND captured media import/relink history on all branches/inverses, folds the copy's WAL and publishes without replacing an existing file. It leaves the source unchanged and supports missing media. `Store::saveAs(path)` then switches the same Store object to the new writable database: existing OpJournal/History references keep working, writer identity/name/UUID/history/session state survive, and future edits reach only the new file. Store filename I/O now passes UTF-8 to SQLite, including Windows Unicode paths. No schema/op or UI implementation changes; SPEC §3.7 documents file-maintenance relocation and failure semantics.
+
+**For the window:** call `document.store().saveAs(selectedPath)` on the Store owner thread after finishing SQL work; require `result.ok`, then refresh ProjectView/Session and the displayed filename. The Store object itself stays put, so OpSubmitter/History need no rebind. `saveCopy` is available for the Copy menu without switching. Calls refuse an existing destination and uncommitted transactions; Save As also refuses live SQL statements. A failed switch reports that the completed copy is retained. A held old reader can produce a nonfatal cleanup warning. An unknown newer major can only be copied verbatim, preserving read-only policy.
+
+**Validation:** GCC Debug/Werror, libpd on/JUCE off: **9858 checks / 107 suites**, all validators clean; project-files44. Four focused Clang Werror suites pass. Actual relocated playback, live WAL, continued journal/history edits, source preservation, Unicode filename, inactive branches, relink inverses, unlink captures through two relocations, missing media, read-only/future-major copies and failure cleanup are tested. Two separately compiled plants (skip captured path relocation; switch path without switching database) each fail2 checks. UI/device/clone production untouched.
+
+Next N30 will reuse this copy/location machinery for Collect All and Save and improve the existing ZIP export's captured-history portability. N16 remains integration-blocked as recorded above; this is not a turn stop or director question.
+
+---
+
+## 2026-11-02 — chaining the window needs; N16 integration dependency
+
+The director explicitly ordered continuous chaining until the needs table is empty or a LANES §5 question blocks. Fetched main `dff5b41` and current window/log: N1 (#306), N2 (#307), N5 (#308), N11 (#309), N35 (#316), N36 (#317) and N6 (#299) are struck/merged. N37–N41 are added and will be included. API remains Forbidden; PR requests continue through this log without the director relaying.
+
+**N16 integration blocked, not closed.** The checkout contains no ADI-Q/ADI-L native processing/response API or handover artifact, and no clone log naming one. A persisted switch alone would claim processing that is unavailable; its engaged EQ response and 5ms bypass/delay behavior need a real backend contract. For win/clones: publish the native core header/target or the supported DeviceInstance adapter, its stable parameter/state ids, EQ response query and limiter light/full mode contract. The engine's slot integration is queued against that contract. This is not a director question or a reason to stop: proceeding with N3/N30, then the following needs. The existing DeviceInstance seam is the intended adapter boundary; no clone or device production source is edited.
+
+---
+
+## 2026-11-01 — N11 snapshot sends ready; four concrete PR requests
+
+### PR requested — N11
+
+**Title:** Expose shared send-route snapshots for mixer controls (N11)
+**Head:** `engine/snapshot-sends`, `5ab8833`; **base:** `main` at `6fa069a`. Independent of N1/N2 and N5.
+
+`Snapshot::sends` contains shared immutable `SendRoute` rows: `id`, `sourceKind`, `sourceId`, `destinationKind`, `destinationId`, `order`, double `gainDb`/`pan`, `preFader`, `enabled`. Every field participates in `same()`. Disabled rows and sends into ordinary tracks/groups remain represented; endpoint kinds let the window identify unsupported rows too. Stable ordering is by routing id, not display/return order. Only changed sends are replaced; unchanged sends, tracks, clips and tempo remain shared. All capture happens off the audio thread during the normal snapshot rebuild. No schema or op change.
+
+**For the window:** read `ProjectView::current()->sends` with the frame's ordinary snapshot reference. Filter track endpoints and match source/destination ids to tracks/returns to draw the send controls. Use the routing id with existing `routing.setGain`, `setPan`, `setEnabled`, `setPreFader` ops. `preFader=true` is Post FX before the strip; false is Post Fader before parent console encoding. A per-return selector can submit its routing-row changes as one batch. This supplies N11's missing send rows without a project-file read or another provider.
+
+**Validation:** GCC Debug/Werror, real libpd on/JUCE off: **9690 checks / 105 suites**, all validators clean; engine119. Clang engine/project-view suites pass. The snapshot tests independently edit all nine control/endpoint fields, verify row identity/insertion/removal/filtering, disabled sends, 64-bit ids, double gain, old-snapshot immutability and exact sharing. Each of nine compiled omitted-comparison plants fails its regression.
+
+### Current PR-request heads (not claimed merged)
+
+| Need | Branch | Head | Requested base |
+|---|---|---|---|
+| N1 | `engine/project-defaults` | `8394df5` | `main` |
+| N2 | `engine/project-bootstrap` | `9d7a23c` | `engine/project-defaults` (N1 first) |
+| N5 | `engine/import-audio-clip` | `0bf9eb5` | `main` |
+| N11 | `engine/snapshot-sends` | `5ab8833` | `main` |
+
+The N1/N2/N5 entries below contain their complete PR titles, bodies and window instructions. N2's latest commit changes only its new test file's SPDX line; its behavior/check counts remain the validated `8daf5f0` implementation. API access still returns Forbidden; win/window open these requests under ADR-0210 d4 and relay CI. No message or approval is requested from the director. No feature PR has been merged or force-pushed by this seat.
+
+Next is N16's three dormant slots (ADI-Q, ADI-L and sidechain) with snapshot state and ops; then N3/N30 in the window's specified order. The later export LUFS/NI work no longer takes priority over that table. The director's replacement prompt is saved in the cloud handoff; no UI, device or clone production files were changed in these four items.
+
+---
+
+## 2026-11-01 — N5 import-to-playing-clip ready
+
+### PR requested — N5
+
+**Title:** Prepare audio imports and attach playing clips atomically (N5)
+**Head:** `engine/import-audio-clip`, `0bf9eb5`; **base:** `main` at `6fa069a`. Independent of N1/N2, not a third stack level.
+
+`media::prepareImport` captures a file without committing project rows/history. Recognized audio supplies source rate/channels/decoded frames, duration, format and native WAV bit depth; generic non-audio retains nullable metadata. It checks the content hash again after capture, releases temporary cache pins, and reports known corrupt audio. Reused media ids still return `result.audio`; stale/missing paths yield a captured relink to the matching file. Existing reused rows keep their old stored metadata, while the caller receives fresh dimensions.
+
+`clip.attachAudio {id,media,frames}` / `clip.detachAudio {id}` are lifted from `3feee62`, with source bounds checked. Attach creates an unwarped source window; detach refuses edited audio rather than losing it. Import + `clip.create` + attach can commit as one transaction; failure rolls back all three and one Undo removes them together. Deleting an imported clip also now captures its complete audio attachment in inverse `clip.create`'s optional `audio` object, including empty/NULL warp bytes, source edits and pitch/channel properties. Neither handler reads files. OPS.md documents the two new P0 ops (172 total) and captured payloads; no schema/UI production change.
+
+**For the window:** call `prepareImport` off the audio thread and require successful `result.audio`; append its request only if `request.opType` is nonempty (it can be a relink for an existing id). Use `result.mediaId` and `result.audio->frames` in `clip.attachAudio`, explicit placement/length in `clip.create`, and submit the entire list through one OpSubmitter batch. Omit the empty request for healthy deduplication. An optional DecodeCache pointer supports the caller's configured worker cache. This replaces the N5 drop stub; playback is exercised in the engine test, not inferred from inserted rows.
+
+**Validation:** GCC Debug/Werror, libpd on/JUCE off: **9704 checks / 105 suites**, all validators clean; media71. Four focused Clang Werror suites pass. Tests cover actual playback, single-step undo/redo with source removed, deletion/undo of all audio properties, decode metadata/pin release, moved deduplication, rejection paths and transaction rollback. Four compiled plants fail: wrong metadata (1), early commit (9), lost attachment (2), oversized window (3). Remote MSVC/seven-ABI CI remains external; API is Forbidden, so this is the ADR-0210 d4 PR request. Next: N11 snapshot sends, on a new main-based branch.
+
+---
+
+## 2026-11-01 — N2 bootstrap ready; N1 migration hardened
+
+### PR requested — N2
+
+**Title:** Bootstrap New projects at the history root (N2)
+**Head:** `engine/project-bootstrap`, `8daf5f0`; **base:** `engine/project-defaults` at `8394df5`. Depends on N1's project row/schema1.9; this is the second and last level of this stack. Please merge N1 first.
+
+`Store::createNewProject(path, error)` creates the project row, Main (id1), two MIDI/two audio tracks (ids2–5), all five mixer strips, 120 BPM and4/4 maps. All initialized state is the history root: zero ops, no Undo/Redo, persistent across reopening, undo, redo, branching and reverting to a snapshot named before any edit. The default track counts follow ADR-0209 §10 d10; CTZ is not selected. `adi_tool create` also uses the new factory. No new schema/op and no UI production edit.
+
+**For the window:** use `Store::createNewProject` for New in place of `Store::create`; remove its subsequent Main `track.create` bootstrap and its special `protectRoot(kNewProjectLabel)` workaround. Keep normal protection/error handling for actual edits. Read the root's five tracks and rate through the ordinary ProjectView snapshot; first user edits undo normally. `Store::create` remains row-only, `createEmpty` schema-only, for callers supplying another layout.
+
+**Validation:** GCC Debug/Werror, real libpd on/JUCE off: **9732 checks / 106 suites**, all validators clean; bootstrap24, store56, migration149. Six focused Clang Werror suites pass. The CLI creates schema1.9 with five tracks and zero ops. Compiled wrong-Main and bootstrap-as-an-op plants fail5 and7 checks. The official Live manual fetch is denied in this environment and no local copy exists: the four-track default comes from the director's explicit d10 ruling; no measured parity claim is made for the template names/order.
+
+**N1 correction:** its latest head is now `8394df5`, also contained in N2. Incoming project foreign keys are matched case-insensitively, as SQLite matches table identifiers. The mixed-case extension regression fails without this guard. This final combined full run includes that correction; old stored rates and extension data remain protected. The earlier N1 title/body still applies with this updated head.
+
+**PR requested via ADR-0210 d4:** GitHub API access is still Forbidden. Win/window can open these two branches directly; the director need not carry a message. Next independent branch starts from main for N5, the import-to-playing-clip path.
+
+---
+
+## 2026-11-01 — ADR-0210 adopted; N1 new-project metadata ready
+
+The director's standing prompt of 1 November replaces the old order: the window's needs table is now the head of the engine queue. Read the updated LANES and ADR-0209/0210 on `win/adr-0209-ruled`, and the needs table on `window/log`. `origin/main` at `6fa069a` contains the merges of #297 through #302, including N6; none of those PRs remains queued here. New work starts from main, with at most two dependent branches. UI and device production files remain their lanes' work.
+
+### PR requested — N1
+
+**Title:** Initialize new-project metadata at 44.1 kHz (N1)
+**Head:** `engine/project-defaults`, `b47b6ec`; **base:** `main` at `6fa069a`.
+
+`Store::create(path, error)` now creates the singleton project row (`id=1`, `Untitled`, 44100 Hz) before any undoable edit. `project.setName` immediately changes it, undo returns to its initial name, and snapshot reads report 44100. Snapshot's missing-row fallback also uses 44100. Schema1.9 implements ADR-0203 d18's new default; migration from every frozen minor preserves stored project values, restores indexes/triggers, leaves read-only files untouched, and rolls back unsafe extension copies. The 1.8 schema is frozen byte-for-byte. The validator allows only this named default change. Converters/low-level fixtures that supply their own rows use `Store::createEmpty`; fixture calls were mechanically updated without UI production changes.
+
+**For the window:** existing `Store::create` calls now get the project row and correct rate automatically; `project.setName` needs no workaround. The Main-track bootstrap is N2, next, so retain that workaround until N2's opt-in factory is available. No new op or UI implementation is included in N1.
+
+**Validation:** CI-style build-only dependency fetch; GCC Debug `ADI_WERROR=ON`, real libpd on/JUCE off: **9708 checks / 105 suites**, all validators clean. Store56, migration149; seven focused Clang Werror suites pass. Compiled missing-row and wrong-rate plants both fail the new tests. Frozen1.8 SHA matches main's original schema. MSVC/seven-ABI CI remains external. API retry still returns Forbidden; ADR-0210 d4's PR-request path is used, without a director relay.
 
 ---
 

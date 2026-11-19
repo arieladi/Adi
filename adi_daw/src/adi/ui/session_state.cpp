@@ -11,6 +11,8 @@ Payload toJson(const Selection &s) {
     // when there are some.
     if (!s.picked.empty())
         j["picked"] = s.picked;
+    if (!s.pickedClips.empty())
+        j["pickedClips"] = s.pickedClips;
     return j;
 }
 Selection fromJson(const Payload &j) {
@@ -26,6 +28,10 @@ Selection fromJson(const Payload &j) {
         for (const auto &id : *picked)
             if (id.is_number_integer())
                 s.picked.push_back(id.get<std::int64_t>());
+    if (const auto clips = j.find("pickedClips"); clips != j.end() && clips->is_array())
+        for (const auto &id : *clips)
+            if (id.is_number_integer())
+                s.pickedClips.push_back(id.get<std::int64_t>());
     return s;
 }
 } // namespace

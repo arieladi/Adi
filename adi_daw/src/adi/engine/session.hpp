@@ -42,27 +42,34 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/session_runtime.hpp"
+#include "adi/engine/gesture_preview.hpp"
+#include "adi/applied_batches.hpp"
 #include "adi/engine/gain_stage.hpp"
+#include "adi/engine/main_loudness.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/cue_monitor.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -71,7 +78,11 @@ namespace adi {
 class Store;
 }
 
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
+
+class AudioInputRecorder;
+struct AudioRecordingSpec;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -81,6 +92,20 @@ struct SessionSpec {
     std::int32_t maxFrames = 512;
     /// `audio.processingPrecision` (ADR-0207 d2): Live's scheme by default.
     Precision precision = Precision::Float32;
+    /// Live performance controls (saved loop/click). Offline export/analysis
+    /// disables these so monitor choices never alter rendered material.
+    bool performanceState = true;
+    /// The app's Delay Compensation choice; its registry row is win-owned.
+    bool delayCompensation = true;
+    /// Optional app-owned decode service/cache. Must outlive this session and
+    /// retired generations. Null uses the process service; never a callback API.
+    audio::ProgressiveDecoder* progressiveDecoder = nullptr;
+    /// Owner-selected performance clock, e.g. Link. A new prepared generation
+    /// uses this constant tempo for ALL musical playback and clock consumers;
+    /// authored project tempo rows remain intact. Not an offline export option.
+    std::optional<double> externalTempoBpm = std::nullopt;
+    /// Export quality is independent of monitoring/performance-state suppression.
+    bool exporting = false;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -91,6 +116,8 @@ struct DeviceRequest {
     const rows::PluginRef* ref = nullptr;
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
+    std::int32_t channels = 2; ///< explicit prepared main-bus width, including offline loads
+    bool exporting = false; ///< known before prepare, so the first block uses the intended bank
 };
 
 /// Turns a request into a live instance, or returns null with `error` set.
@@ -100,10 +127,26 @@ struct DeviceRequest {
 using DeviceLoader = std::function<std::unique_ptr<device::DeviceInstance>(
     const DeviceRequest&, std::string& error)>;
 
+/// The `param_ref` an automation lane on a device parameter carries, from the id
+/// the plug-in spells (ADR-0165: lane refs stay decimal for every format, so a
+/// CLAP id's hex becomes its decimal; every other format's id is its ref as it
+/// stands). Empty for a CLAP id that is not hex. The UI's lookup of a
+/// parameter's lane goes through this, as the session's own does.
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id);
+
 enum class OfflineTap { PreFader, PostFader };
 struct OfflineOutput {
     NodeId node = kInvalidNode;
     std::int64_t latency = 0;
+};
+struct OfflineDeviceInfo {
+    std::int64_t id = 0;
+    device::DeviceIdentity identity;
+};
+struct OfflineSourceInfo {
+    std::int64_t track = 0;
+    std::vector<OfflineDeviceInfo> devices;  // actual loaded chain order / versions
+    std::vector<std::int64_t> prefixDevices; // through the last MIDI consumer
 };
 
 class Session final : public BlockProcessor {
@@ -114,9 +157,15 @@ public:
         std::int64_t trackId = 0;      ///< the chain's track; 0 once retired
         std::string name;
         bool placeholder = false;      ///< a `MissingDevice` stands in (ADR-0011)
+        bool parked = false;           ///< freeze retirement: restore a fresh instance on unfreeze
         bool retired = false;          ///< the row is gone; the instance is kept
         std::string error;             ///< why the loader refused, when it did
         std::size_t hostIndex = 0;     ///< into `devices()`
+        /// Identity used to resolve this instance, independent of newer rows
+        /// reusing the same device ID. Runtime receipts must match this too.
+        std::optional<std::int64_t> resolvedPluginRef;
+        std::string resolvedFormat, resolvedUid;
+        std::shared_ptr<const void> runtimeIdentity;
         std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
     };
 
@@ -154,6 +203,12 @@ public:
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
 
+    [[nodiscard]] std::shared_ptr<const SessionEndpoint> endpoint() const noexcept { return endpoint_; }
+    [[nodiscard]] DeviceRuntimeToken deviceRuntimeToken(std::int64_t deviceId) const;
+    [[nodiscard]] device::DeviceInstance* resolveDevice(const DeviceRuntimeToken&) noexcept;
+    void retainRuntimeClient(std::shared_ptr<SessionRuntimeClient>);
+    [[nodiscard]] bool presentationReady(const AppliedSource&,std::uint64_t sequence) const noexcept;
+
     // --- automation override (ADR-0162) -------------------------------------
     // Live 12 25.4: changing an automated control while not recording turns
     // that lane off and the manual value stands. Here a refresh that finds an
@@ -168,6 +223,27 @@ public:
     /// One lane only: the parameter's context menu in Live. False if that lane
     /// was not overridden.
     bool reenableAutomation(std::int64_t laneId);
+    /// Message thread: a live UI value overrides its device lane before the
+    /// gesture commits, so playback cannot fight the drag. No op/history row;
+    /// reenableAutomation resumes it. True for an absent/already-overridden
+    /// lane too; false if rebuilding the requested binding failed (error()).
+    bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
+
+    // Document-owner recording policy. Queue matching gate changes to each
+    // recorder's producer separately; these methods never touch its SPSC ring.
+    // Turning a gate off prevents new writes but keeps a pending write suspended
+    // until its captured data is committed/refreshed and explicitly finished.
+    void setAutomationWriteState(bool armed, bool recording) noexcept;
+    [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
+    [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
+    [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
+    // As with reenableAutomation(), a rebuild failure leaves the requested
+    // policy installed for an owner-side rebuild() retry; false is not readiness.
+    bool beginAutomationWrite(std::int64_t laneId);
+    // After commit + refresh, follow=true resumes the newly recorded lane.
+    // On recording failure, follow=false retains the manual value as a normal
+    // override until Re-Enable Automation. This is an explicit caller choice.
+    bool finishAutomationWrite(std::int64_t laneId, bool follow = true);
 
     /// ADR-0165: the device lanes this rebuild plays, per device. Message
     /// thread, for tests and the UI: null until the first rebuild.
@@ -187,6 +263,60 @@ public:
 
     // --- BlockProcessor -----------------------------------------------------
 
+    /// One driver-scoped physical callback. Every query and logical slice uses
+    /// the same published graph and its immutable clock, even if the owner
+    /// publishes another generation between slices. Acquiring another handle
+    /// expires the older one. The Session must outlive all its driver handles.
+    class RenderBlock final {
+    public:
+        RenderBlock(const RenderBlock&) = delete;
+        RenderBlock& operator=(const RenderBlock&) = delete;
+        [[nodiscard]] bool valid() const noexcept { return graph_.valid(); }
+        [[nodiscard]] std::uint64_t generation() const noexcept { return graph_.generation(); }
+        [[nodiscard]] double sampleRate() const noexcept;
+        [[nodiscard]] std::int32_t maxFrames() const noexcept;
+        [[nodiscard]] Precision precision() const noexcept;
+        [[nodiscard]] std::int32_t latencySamples() const noexcept { return graph_.latencySamples(); }
+        [[nodiscard]] std::optional<double> externalTempoBpm() const noexcept;
+        [[nodiscard]] bool constantExternalTempo() const noexcept;
+        [[nodiscard]] std::optional<std::int64_t> loopBeginTick() const noexcept;
+        [[nodiscard]] std::optional<std::int64_t> loopEndTick() const noexcept;
+        [[nodiscard]] std::int64_t tick() const noexcept;
+        [[nodiscard]] std::int64_t tickAtSample(std::int64_t) const noexcept;
+        [[nodiscard]] double beatAtSample(std::int64_t) const noexcept;
+        [[nodiscard]] std::int64_t sampleAtTick(std::int64_t) const noexcept;
+        [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
+        /// Driver only, immediately before rendering this target. Posts bounded
+        /// read-ahead and checks mandatory pages without waiting or doing I/O.
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        /// Driver command between slices. Saved song start overrides the
+        /// insert marker; only a record start uses the saved count-in. Prepare
+        /// the recorder on its owner first. Explicit locate/play bypasses this
+        /// default start policy. Offline sessions ignore saved performance state.
+        bool startPlayback(std::int64_t insertMarkerTick, bool recording = false) noexcept;
+        bool process(const AudioIo&) noexcept;
+    private:
+        friend class Session;
+        explicit RenderBlock(Session&) noexcept;
+        // CallbackScope precedes acquisition and outlives the graph handle.
+        audio::CallbackScope callback_;
+        Session& session_;
+        GraphHost::RenderBlock graph_;
+    };
+    [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
+
+    /// Owner only. Rebuild a performance clock without changing authored tempo
+    /// or replacing device instances. Null restores authored project timing.
+    /// The owner guard admits the fully primed candidate before shared bindings
+    /// are changed; false leaves the existing source generation installed.
+    bool setExternalTempo(const Store&, std::optional<double> bpm,
+                          const std::function<bool()>& publishGuard = {}, std::int64_t primeTick = 0);
+    /// Preserve performed time before the musical boundary and replace its
+    /// future. Up to 4096 boundaries are retained in memory, never in the file.
+    bool setExternalTempoAt(const Store&, std::optional<double> bpm, std::int64_t tick,
+                            const std::function<bool()>& publishGuard = {});
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const AudioIo& io) noexcept override;
     void release() override;
@@ -198,12 +328,29 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     bool setPrecision(Precision p);
+
+    /// Message thread. Publish a new alignment policy without reloading
+    /// devices. Track Delay is suspended with it; stored values are retained.
+    bool setDelayCompensation(bool on);
 
     // --- inspection (message thread) ---------------------------------------
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
     [[nodiscard]] const rows::Model& model() const noexcept { return model_; }
+    /// Owner-side runtime notifications for this loaded Store connection.
+    /// No Store/SQLite pointer survives in the revocable source token.
+    [[nodiscard]] const AppliedSource& appliedNotifications() const noexcept { return appliedSource_; }
+    /// Last successful model/instance refresh in this notification domain.
+    [[nodiscard]] std::uint64_t realisedAppliedSequence() const noexcept { return appliedSequence_; }
+    /// Invalidated before Session-owned devices are destroyed. Session-bound
+    /// ParamOps may outlive the Session without dereferencing an old instance.
+    [[nodiscard]] std::weak_ptr<const void> lifetimeToken() const noexcept { return lifetime_; }
     [[nodiscard]] const SessionSpec& spec() const noexcept { return spec_; }
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
@@ -215,6 +362,10 @@ public:
     /// graph mutation. The result is invalidated by a rebuild or latency change.
     /// Empty for missing/non-audio tracks, unsupported taps or no prepared graph.
     [[nodiscard]] std::optional<OfflineOutput> offlineOutput(std::int64_t trackId, OfflineTap);
+    /// Owner-only cache capture. PreFx is after the instrument, before audio FX.
+    /// Returned identities come from the loaded devices AFTER state restoration.
+    [[nodiscard]] std::optional<OfflineOutput> offlineTapOutput(std::int64_t trackId, Tap);
+    [[nodiscard]] std::optional<OfflineSourceInfo> offlineSourceInfo(std::int64_t trackId);
 
     /// Everything the model read, the plan found and the session decided,
     /// in that order. A project with problems still plays where it can.
@@ -226,16 +377,31 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
+    /// requestReset is an off-thread command consumed at the next callback.
+    [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
 
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
     /// Message thread. A second call for the same key returns the same tap
-    /// with its original ring length. Taps live as long as the session, so audio
-    /// thread can never write into a freed one; closing one only detaches it.
+    /// with its original requested history while the endpoint is unchanged. Reacquire
+    /// after graph/format changes, or use ScopeLease to follow generations. Retired
+    /// taps remain safe snapshots and are reclaimed only after callback detachment.
     /// Null for a track with no strip in the graph.
     [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0,
                                                          ScopePoint point = ScopePoint::PostFader);
     void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
+    /// Scoped visual demand. Compatible logical endpoints share their physical capture and the
+    /// longest requested history. Off-thread tap snapshots follow replacement generations.
+    [[nodiscard]] ScopeLease requestScope(const ScopeRequest&);
+    /// Owner collection and latest deferred-plan publication after audio acknowledgement;
+    /// never releases a tap used by a stalled physical callback.
+    std::size_t collectScopeTaps();
+    struct ScopeStats {
+        std::size_t consumers = 0, sources = 0, retired = 0, deferredPlans = 0;
+        bool awaitingAudio = false;
+    };
+    [[nodiscard]] ScopeStats scopeStats() const;
 
     /// ADR-0203 d3: how long a return's send into itself takes to come back,
     /// in samples, in the graph now playing -- the loop's block, D, plus the
@@ -250,9 +416,13 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Owner-thread recording control. Channels address the driver's current
+    /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    bool startRecording(const AudioRecordingSpec&,std::string& error);
+    [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
-    [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
-    [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
+    [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
+    [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
 
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
@@ -279,7 +449,17 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
-    void attach();
+    friend struct GestureRuntime;
+    friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
+    friend class gesture::EnginePresentation;
+    void attach(std::shared_ptr<const GraphTransportState>);
+    bool readPlayback(const Store &);
+    // The tempo this Session plays a model at: performed history (with its
+    // authored resume), else the external tempo, else the model's map.
+    [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
+    // Every node a track's events reach, which is MIDI's controller route identity.
+    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
+    bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);
     void retireDepartedRows();
@@ -296,15 +476,63 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<AudioInputRecorder> recording_;
+    std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
-    struct TimingView final : Sequenced {
+    struct TimingView final : GraphTransportState {
+        std::shared_ptr<const GestureControls> generationControls;
+        std::shared_ptr<GestureAudio> gestureAudio;
+        std::uint64_t gestureGeneration=0;
+        Session* session=nullptr; // retained Session owns every published graph
+        mutable TransportInfo blockInfo{}; // the single audio driver's scratch
+        TransportSettings settings;
+        // Allocated on the owner; used only at a count-in's exact split. Input
+        // recording supports64 physical channels; output covers the full graph.
+        mutable std::vector<const float *> inputSlice;
+        mutable std::vector<float *> outputSlice;
+        mutable std::vector<double *> outputSlice64;
+        std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
+        std::shared_ptr<const StripLaneBindings> stripLanes;
+        ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
+        SessionSpec spec;
+        void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
-    SnapshotPublisher<TimingView> timing_;
+    MainLoudness mainLoudness_;
+    CueSettings cueSettings_;
+    CueMonitor cueMonitor_;
+    TransportSettings transportSettings_; // message thread, copied into TimingView
+    std::vector<rows::TempoEvent> performedTempo_; // owner-only performance history
+    std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
+    std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
+    bool primeExternalFollowDriver_ = false;
+    const std::function<bool()>* externalPublishGuard_ = nullptr; // synchronous owner call only
+    struct DriverClock {
+        std::int64_t sample = 0;
+        std::uint64_t revision = 0;
+        bool playing = false;
+    };
+    void publishDriverClock() noexcept; // single audio driver only
+    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
+    std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
+    std::atomic<std::int64_t> driverSample_{0};
+    std::atomic<bool> driverPlaying_{false};
+    bool loopApplied_=false,loopOn_=false;
+    std::int64_t loopBegin_=0,loopEnd_=0;
+    std::int64_t loopStartTick_=0,loopEndTick_=0;
+    // Driver-thread click state; routing moves to Cue Out when N23 arrives.
+    std::int64_t clickLastSample_=-2,clickLastBeat_=-1;
+    bool clickWasPlaying_=false;
+    double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
+    double countInBeatSamples_ = 24000;
+    std::int64_t countInBeatsPerBar_ = 4;
+    void renderCountIn(const TimingView &, const AudioIo &) noexcept;
+    void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
     std::unique_ptr<ClipPlayback> clips_;
@@ -315,11 +543,10 @@ private:
     MixerStrips strips_;
     std::map<std::int64_t, std::unique_ptr<InputGainNode>> inputGains_;
     GroupSumming summing_;   ///< ADR-0174: native analog group summing
-    using TapKey = std::pair<std::int64_t, ScopePoint>;
-    std::map<TapKey, std::shared_ptr<ScopeTap>> taps_; ///< all taps live until audio stops
-    std::set<TapKey> openTaps_;
-    std::map<std::int64_t, Node*> chainTapNodes_; ///< detach even after chain edits
+    struct ScopeRuntime;
+    std::unique_ptr<ScopeRuntime> scopeRuntime_;
     void attachTaps();
+    void beginScopeRead() noexcept;
     // ADR-0164: this rebuild's program, bound to strips. Kept here as well as
     // by every strip and graph that plays it.
     std::shared_ptr<StripAutomation> stripAutomation_;
@@ -329,9 +556,29 @@ private:
     std::vector<std::string> deviceSourceProblems_;
     void bindDeviceSources();
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
+    std::set<std::int64_t> writingAutomation_;
+    bool automationArmed_ = true, automationRecording_ = false;
+    std::shared_ptr<GestureAudio> gestureAudio_;
+    std::shared_ptr<GestureRuntime> gestureRuntime_;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    AppliedSource appliedSource_;
+    std::uint64_t appliedSequence_ = 0;
+    std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
+    std::shared_ptr<SessionEndpoint> endpoint_;
+    std::vector<std::shared_ptr<SessionRuntimeClient>> runtimeClients_;
+    std::uint64_t runtimeEpoch_ = 0;
+    rows::Model playbackModel_;
+    std::set<std::int64_t> frozenGroupChildren_;
+    struct FrozenMediaFile {
+        std::string row;
+        std::filesystem::path file;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+    };
+    std::map<std::int64_t, FrozenMediaFile> verifiedFrozenMedia_;
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> frozenSources_; // dry, wet synthetic tracks
     DeviceLoader loader_;
     SourceFn sources_;
     SessionSpec spec_;
@@ -341,7 +588,9 @@ private:
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
     std::string error_;
+    std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;
+    bool presentationPending_=false; ///< graph already published; owner tick retries auxiliary Cue scene
     bool live_ = false;      ///< a graph is prepared and published for a device
 };
 

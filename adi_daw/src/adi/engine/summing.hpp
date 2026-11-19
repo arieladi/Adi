@@ -78,8 +78,15 @@ private:
 };
 
 /// The session's summing: which halves exist, and where each one goes.
+struct SummingControl {
+    std::shared_ptr<ConsoleNode> node;
+    float pre=1.0f,post=1.0f;
+};
+
 class GroupSumming {
 public:
+    /// Existing halves only; no algorithm construction or filter reset.
+    [[nodiscard]] std::vector<SummingControl> prepareControls(const rows::Model&) const;
     /// Message thread, before the graph that plays them is built.
     void sync(const rows::Model& model);
 

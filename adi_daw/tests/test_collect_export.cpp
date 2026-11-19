@@ -6,6 +6,7 @@
 #include "adi/store.hpp"
 #include "adi/digest.hpp"
 #include "adi/check.hpp"
+#include "adi/history.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <miniz.h>
@@ -156,6 +157,136 @@ void collection() {
     bool staged = false; for (const auto& e : fs::directory_iterator(f.temp.path())) staged |= e.path().filename().string().starts_with(".adi-media-");
     check(!staged, "success and failure clean private staging directories");
 }
+bool resolves(Store& store,std::int64_t id) {
+    std::string error;
+    return !media::resolveMedia(media::projectFolder(store),media::mediaRow(store.db(),id),error).empty();
+}
+std::string identities(Store& store) {
+    std::string result;
+    SQLite::Statement rows(store.db(),"SELECT seq,txn_id,actor,op_type FROM ops ORDER BY seq");
+    while(rows.executeStep())for(int col=0;col<4;++col)result+=rows.getColumn(col).getString()+"|";
+    return result;
+}
+void collectActiveAndHistory() {
+    Fixture f;f.add("external/current.bin","current data",1);
+    f.add("external/undo.bin","undo data",2);
+    OpRequest unlink;unlink.opType="media.unlink";unlink.payload={{"id",2}};
+    check(OpJournal(*f.store).commit(unlink).ok,"unlink fixture keeps its inverse's media row");
+    History history(*f.store);
+    f.add("external/branch.bin","inactive branch data",3);
+    check(history.undo().ok,"leave one imported asset only on an inactive history branch");
+    OpRequest rename;rename.opType="project.setName";rename.payload={{"name","Fork"}};
+    check(OpJournal(*f.store).commit(rename).ok,"fork from the current pool without branch media");
+    std::int64_t firstBranch=0;
+    for(const auto& branch:history.branches())if(!branch.isCurrent)firstBranch=branch.id;
+    const auto ids=identities(*f.store);
+    const auto result=f.store->collectAllAndSave();
+    if(!result.ok)std::printf("collection diagnostic: %s\n",result.error.c_str());
+    check(result.ok,"Collect All and Save includes current, unlinked and inactive branch media");
+    check(identities(*f.store)==ids,"collection preserves every op identity, transaction and branch without appending an op");
+    check(std::distance(fs::directory_iterator(f.temp.path()/"audio"),fs::directory_iterator{})==3,"one verified audio file is collected per distinct history hash");
+    const auto before=digestProject(*f.store).text;
+    check(f.store->collectAllAndSave().ok && digestProject(*f.store).text==before,"collection is idempotent");
+    fs::remove_all(f.temp.path()/"external");
+    check(resolves(*f.store,1),"current audio resolves after original media is removed");
+    check(history.switchToBranch(firstBranch).ok && resolves(*f.store,3),"inactive branch imports resolve after original media is removed");
+    check(history.undo().ok && history.undo().ok && resolves(*f.store,2),"undo unlink restores a collected media path");
+    check(history.redo().ok && history.undo().ok && resolves(*f.store,2),"redo and undo retain portable captured paths");
+    const auto current=media::mediaRow(f.store->db(),1);
+    check(current.at("abs_path_hint").is_null() && current.at("rel_path").get<std::string>().starts_with("audio/"),"collected paths are local with no external absolute hints");
+    check(f.store->close(),"collected WAL folds on close");f.store.reset();
+    const auto moved=f.temp.path()/"moved";fs::create_directory(moved);
+    fs::rename(f.temp.path()/"song.adi",moved/"song.adi");fs::rename(f.temp.path()/"audio",moved/"audio");
+    StoreError error{};f.store=Store::open(moved/"song.adi",error);
+    check(f.store && resolves(*f.store,1) && resolves(*f.store,2),"moving just the project and audio directory preserves playback sources");
+}
+void collectionRefusals() {
+    Fixture f;f.add("a.bin","first",1);f.add("b.bin","second",2);
+    const auto before=digestProject(*f.store).text;
+    const auto a=media::mediaRow(f.store->db(),1),b=media::mediaRow(f.store->db(),2);
+    const bool missingB=a.at("hash_blake3").get<std::string>()<b.at("hash_blake3").get<std::string>();
+    const auto missing=f.temp.path()/(missingB?"b.bin":"a.bin");
+    fs::remove(missing);
+    check(!f.store->collectAllAndSave().ok,"a missing asset aborts collection");
+    check(digestProject(*f.store).text==before,"failed collection leaves all rows and captured paths unchanged");
+    check(fs::is_empty(f.temp.path()/"audio"),"failed collection removes only its newly published media and stages");
+    write(missing,missingB?"second":"first");
+    f.store->db().exec("CREATE TRIGGER refuse_collection BEFORE UPDATE OF rel_path ON media_files BEGIN SELECT RAISE(ABORT,'injected update failure'); END");
+    check(!f.store->collectAllAndSave().ok && fs::is_empty(f.temp.path()/"audio"),"SQL failure after copying removes all files published by collection");
+    check(digestProject(*f.store).text==before,"SQL failure restores pool and captured path bytes");
+    f.store->db().exec("DROP TRIGGER refuse_collection");
+    const auto aTarget=f.temp.path()/"audio"/(a.at("hash_blake3").get<std::string>()+".bin");
+    const auto bTarget=f.temp.path()/"audio"/(b.at("hash_blake3").get<std::string>()+".bin");
+    write(aTarget,"first");write(bTarget,"keep wrong existing file");
+    check(!f.store->collectAllAndSave().ok && read(aTarget)=="first" && read(bTarget)=="keep wrong existing file","hash-addressed targets are verified and never overwritten or removed on failure");
+    check(digestProject(*f.store).text==before,"existing corrupt destination also rolls back path changes");
+    fs::remove(bTarget);
+    check(f.store->collectAllAndSave().ok && read(aTarget)=="first","existing matching target is safely reused");
+    {
+        SQLite::Transaction transaction(f.store->db());
+        check(!f.store->collectAllAndSave().ok,"collection refuses an active transaction");
+        check(!f.store->collectAndExport(f.temp.path()/"uncommitted.zip").ok,"ZIP Store call refuses uncommitted state");
+    }
+    {
+        SQLite::Statement live(f.store->db(),"SELECT id FROM media_files");
+        check(!f.store->collectAllAndSave().ok,"collection refuses live SQL statements");
+    }
+    StoreError error{};auto ro=Store::open(f.store->path(),error,true);
+    check(ro && !ro->collectAllAndSave().ok,"read-only collection is refused");
+    const auto zip=f.temp.path()/"readonly.zip";
+    check(ro && ro->collectAndExport(zip).ok,"read-only Store can collect and export a private copy");
+    check(!ro->collectAndExport(zip).ok,"Store ZIP export never overwrites output");
+    ro.reset();check(f.store->close(),"collection fixture closes");
+    check(!f.store->collectAllAndSave().ok && !f.store->collectAndExport(f.temp.path()/"closed.zip").ok,"closed Store collection calls fail cleanly");
+}
+void collectRelink() {
+    Fixture f;f.add("original.bin","relinked bytes",8);
+    write(f.temp.path()/"moved.bin","relinked bytes");
+    check(media::relinkMedia(*f.store,8,"moved.bin").ok,"collection relink fixture");
+    check(f.store->collectAllAndSave().ok,"collection rewrites both captured relink paths");
+    fs::remove(f.temp.path()/"original.bin");fs::remove(f.temp.path()/"moved.bin");
+    History history(*f.store);
+    check(history.undo().ok && resolves(*f.store,8),"collected relink inverse resolves without its original source");
+    check(history.redo().ok && resolves(*f.store,8),"collected relink forward path stays portable");
+}
+void exportHistory() {
+    Fixture f;f.add("elsewhere/hidden.bin","only in history",7);
+    History history(*f.store);check(history.undo().ok,"ZIP fixture has media only in history");
+    const auto before=digestProject(*f.store).text,ids=identities(*f.store);
+    const auto zip=f.temp.path()/"history.zip";
+    check(f.store->collectAndExport(zip).ok,"Store ZIP export collects history-only media");
+    check(digestProject(*f.store).text==before && identities(*f.store)==ids,"ZIP export leaves live source pool and history unchanged");
+    ZipReader archive(zip);const auto unpacked=f.temp.path()/"unpacked";
+    check(archive.extract(unpacked),"history ZIP extracts");
+    fs::remove_all(f.temp.path()/"elsewhere");
+    StoreError error{};auto copy=Store::open(unpacked/"song.adi",error);
+    check(copy && History(*copy).redo().ok && resolves(*copy,7),"ZIP's redo restores media without access to original files");
+}
+// On unix SQLite names a project by its resolved path (macOS's temporary folder
+// /var/... is a link to /private/var/...) and ".." climbs physical parents. A
+// link shallower than its target reproduces that on any unix system: paths
+// rebased against the link's spelling climb too few levels. (Windows keeps the
+// link's spelling and resolves ".." lexically, so there the link is harmless.)
+void linkedOutputFolder() {
+    Fixture f;f.add("media/linked.bin","linked bytes",9);
+    const auto deep=f.temp.path()/"deep"/"er",shortcut=f.temp.path()/"shortcut";fs::create_directories(deep);
+    std::error_code ec;fs::create_directory_symlink(deep,shortcut,ec);
+    if(ec){
+#if defined(_WIN32)
+        std::printf("SKIP folder links unavailable: %s\n",ec.message().c_str());
+#else
+        std::printf("folder link diagnostic: %s\n",ec.message().c_str());
+        check(false,"the test folder takes a directory symlink");
+#endif
+        return;
+    }
+    const auto exported=media::collectExport(f.store->path(),shortcut/"linked.zip");
+    if(!exported.ok)std::printf("linked export diagnostic: %s\n",exported.error.c_str());
+    check(exported.ok && fs::exists(deep/"linked.zip"),"Collect and Export into a folder reached through a symlink");
+    check(f.store->saveCopy(shortcut/"Linked.adi").ok,"Save a Copy into a folder reached through a symlink");
+    StoreError error{};auto copy=Store::open(shortcut/"Linked.adi",error,true);
+    check(copy && resolves(*copy,9),"a copy saved through a symlinked folder resolves its media");
+}
 void legacy(Fixture& f, bool upgraded, bool badSecond = false) {
     auto& db = f.store->db();
     db.exec("DROP TRIGGER media_never_embedded_insert; DROP TRIGGER media_never_embedded_update; DROP TRIGGER media_blobs_forbidden;");
@@ -237,7 +368,7 @@ void rollbackAndCli() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
+    try { publication(); collection(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

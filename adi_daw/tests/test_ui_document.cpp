@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/ui/project_document.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <array>
+#include <filesystem>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
+#include <optional>
+#include <thread>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -41,8 +52,433 @@ double bin(const std::array<float, 2048> &data, int k) {
                std::polar(1., -2 * 3.141592653589793 * k * i / 1024.);
     return std::abs(sum) / 512.;
 }
+
+// A declared nonzero runtime latency prevents the publication test from passing merely because
+// DevicePanelData::latency defaulted to zero. The two controls retain the shared headless fixture.
+class SurfaceKnobs final : public device::DeviceInstance {
+  public:
+    const device::DeviceIdentity &identity() const noexcept override { return controls.identity(); }
+    bool loaded() const noexcept override { return true; }
+    void process(const engine::NodeIo &io) noexcept override { device::passThrough(io); }
+    std::int32_t latencySamples() const noexcept override { return 37; }
+    std::int32_t paramCount() const noexcept override { return controls.paramCount(); }
+    const device::ParamDescriptor *paramAt(std::int32_t i) const noexcept override { return controls.paramAt(i); }
+    device::ParamValue getParam(const std::string &id) const noexcept override { return controls.getParam(id); }
+    bool setParam(const std::string &id, const device::ParamValue &v) override { return controls.setParam(id, v); }
+    std::string paramText(const std::string &id, double v) const override { return controls.paramText(id, v); }
+    test::Knobs controls;
+};
+
+void refusedBeginOwnership(const std::filesystem::path &dir) {
+    using engine::ParamEventKind;
+    for (const bool guarded : {false, true}) for (const bool configuration : {false, true}) {
+        std::string error;
+        const auto file = dir / (std::string("refused-begin-") + (guarded ? "guarded-" : "common-") +
+                                 (configuration ? "configuration.adi" : "automatable.adi"));
+        auto document = ui::ProjectDocument::open(file, true, test::knobsLoader(), error);
+        check(document != nullptr, "refused Begin: fresh headless document");
+        if (!document) continue;
+        try {
+            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+                  "refused Begin: loaded device");
+            document->tick(0);
+            auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+            check(knobs && knobs->hasParamSink(), "refused Begin: callback producer attached");
+            if (!knobs) continue;
+            knobs->configuration(configuration);
+            const auto publication = document->parameterFeed().current();
+            const auto shown = std::find_if(publication->begin(), publication->end(), [](const auto &p) { return p.id == 3; });
+            check(shown != publication->end(), "refused Begin: published exact target");
+            if (shown == publication->end()) continue;
+            const auto runtime = shown->runtime;
+            const auto stamp = shown->instance;
+            const auto event = [&](ParamEventKind kind, double v) {
+                return guarded ? document->parameterGestureExpected(3, "cutoff", kind, v, runtime, stamp)
+                               : document->parameterGesture(3, "cutoff", kind, v);
+            };
+            const auto count = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64(); };
+            const auto before = count();
+            const auto undoBefore = document->ops().nextUndo()->txnId;
+            // A completed SDK-window edit is queued without a timer tick. Begin must
+            // drain it and discover the SQL refusal only after accepting the new owner.
+            knobs->windowGesture(1, .6);
+            document->store().db().exec("CREATE TEMP TRIGGER refuse_older BEFORE INSERT ON main.ops "
+                "WHEN NEW.op_type='device.setParam' BEGIN SELECT RAISE(ABORT,'older gesture rejected'); END");
+            check(!event(ParamEventKind::Begin, .5) &&
+                      document->error().find("older gesture rejected") != std::string::npos &&
+                      count() == before && document->ops().nextUndo()->txnId == undoBefore,
+                  "refused Begin: reports older store failure without a journal/head change");
+            const auto pending = document->pendingParameterGestures();
+            const auto old = std::find_if(pending.begin(), pending.end(), [](const auto &p) {
+                return p.parameterId == "gain";
+            });
+            check(old != pending.end() && old->owner && old->submission == CapturedSubmissionPhase::Refused,
+                  "refused Begin: older refused transaction remains owned and inspectable");
+            const auto oldOwner = old != pending.end() ? old->owner : nullptr;
+            document->store().db().exec("DROP TRIGGER refuse_older");
+            document->tick(1);
+            document->tick(2);
+            const auto settled = document->pendingParameterGestures();
+            check(std::none_of(settled.begin(), settled.end(), [](const auto &p) {
+                      return p.parameterId == "cutoff";
+                  }) && std::any_of(settled.begin(), settled.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }) && count() == before,
+                  "refused Begin: new unclaimed owner retires; older refusal is never retried or cancelled");
+            check(event(ParamEventKind::Begin, .5) && event(ParamEventKind::Value, .75) &&
+                      event(ParamEventKind::End, .75) &&
+                      std::abs(knobs->getParam("cutoff").normalized - .75) < 1e-12,
+                  "refused Begin: first fresh same-parameter gesture accepts and releases its explicit bracket");
+            // Completed packets remain FIFO behind the deliberately unretried older
+            // refusal. Accepting the new edit must neither retry nor erase that packet.
+            const auto completed = document->pendingParameterGestures();
+            check(count() == before && std::any_of(completed.begin(), completed.end(), [&](const auto &p) {
+                      return oldOwner && p.owner && oldOwner->sameOwner(*p.owner) &&
+                             p.submission == CapturedSubmissionPhase::Refused;
+                  }), "refused Begin: a completed newer edit does not silently retry an older refused transaction");
+        } catch (const std::exception &e) { check(false, e.what()); }
+    }
+}
+
+void mixSurfacePublication(const std::filesystem::path &file) {
+    using engine::ParamEventKind;
+    engine::DeviceLoader loader = [](const engine::DeviceRequest &request, std::string &error)
+        -> std::unique_ptr<device::DeviceInstance> {
+        if (request.ref && request.ref->uid == test::kKnobsUid)
+            return std::make_unique<SurfaceKnobs>();
+        error = "not the surface fixture";
+        return nullptr;
+    };
+    std::string error;
+    auto document = ui::ProjectDocument::open(file, true, std::move(loader), error);
+    check(document != nullptr, "Mix View: an owned document for the real parameter publication");
+    if (!document)
+        return;
+    try {
+        document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                   test::kKnobsUid + "','Surface controls'),(4,'clap','test.unavailable','Unavailable')");
+        std::vector<OpRequest> make(3);
+        make[0].opType = "chain.create";
+        make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+        make[1].opType = "device.insert";
+        make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 1}, {"ref", 3},
+                           {"name", "Same name"}, {"latency", 0}};
+        make[2].opType = "device.insert";
+        make[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 0}, {"ref", 4},
+                           {"name", "Same name"}, {"latency", 999}};
+        check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+              "Mix View: actual loaded and missing devices in authored order");
+        document->setParameterDemand(document.get(), {3, 4});
+        document->tick(0);
+        const auto panelOf = [&](std::int64_t id) -> const ui::DevicePanelData * {
+            const auto publication = document->parameterFeed().current();
+            for (const auto &data : *publication)
+                if (data.id == id)
+                    return &data;
+            return nullptr;
+        };
+        auto *knobs = dynamic_cast<SurfaceKnobs *>(document->session().instanceFor(3));
+        const auto *initial = panelOf(3);
+        const auto *missing = panelOf(4);
+        check(knobs && initial && missing, "Mix View: both devices retain their own publication records");
+        if (!knobs || !initial || !missing)
+            return;
+        const auto firstStamp = initial->instance;
+        const auto firstRuntime = initial->runtime;
+        check(firstStamp != 0 && missing->instance != 0 && firstStamp != missing->instance &&
+                  initial->available && initial->latency == 37 && !missing->available && missing->latency == 0 &&
+                  firstRuntime.sameInstance(document->session().deviceRuntimeToken(3)) &&
+                  document->session().resolveDevice(firstRuntime) == knobs,
+              "Mix View: opaque stamps, exact runtime, actual latency and missing availability are published");
+        std::vector<std::int64_t> order;
+        for (const auto &data : *document->parameterFeed().current())
+            if (data.track == 2)
+                order.push_back(data.id);
+        check(order == std::vector<std::int64_t>{4, 3},
+              "Mix View: publication follows chain order rather than device id or duplicate names");
+        const auto kept = document->parameterFeed().current();
+        document->tick(1);
+        check(panelOf(3)->instance == firstStamp && panelOf(4)->instance == missing->instance,
+              "Mix View: a fresh value publication does not remint loaded or missing instance stamps");
+        check(document->deviceAction("device.rename", {{"id", 3}, {"name", "Renamed controls"}}) &&
+                  document->deviceAction("device.setEnabled", {{"id", 3}, {"enabled", false}}) &&
+                  document->deviceAction("device.move", {{"id", 3}, {"chain", 3}, {"ord", -1}}),
+              "Mix View: rename, bypass and reorder use existing document operations");
+        check(panelOf(3)->instance == firstStamp && panelOf(3)->available && !panelOf(3)->enabled &&
+                  panelOf(3)->latency == 37 && panelOf(3)->runtime.sameInstance(firstRuntime) &&
+                  panelOf(3)->name == "Renamed controls",
+              "Mix View: metadata edits preserve the instance and a bypassed device remains available");
+        const auto old = std::find_if(kept->begin(), kept->end(), [](const auto &d) { return d.id == 3; });
+        check(old != kept->end() && old->name == "Same name" && old->enabled,
+              "Mix View: another surface's retained publication stays immutable");
+        const auto headTxn = [&] {
+            const auto head = document->ops().nextUndo();
+            return head ? head->txnId : std::int64_t{0};
+        };
+        const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt64(); };
+        const auto rowValue = [&](const std::string &param) -> std::optional<double> {
+            for (const auto &row : document->session().model().pluginParams)
+                if (row.deviceId == 3 && row.paramId == param)
+                    return row.normalized;
+            return std::nullopt;
+        };
+        const auto beforeGesture = opCount(), beforeTxn = headTxn();
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin, .5, firstRuntime, firstStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .65, firstRuntime, firstStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .8, firstRuntime, firstStamp) &&
+                  opCount() == beforeGesture && headTxn() == beforeTxn &&
+                  std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9,
+              "Mix View: the exact presented target sounds immediately and writes nothing before gesture End");
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::End, .8, firstRuntime, firstStamp) &&
+                  document->ops().nextUndo() && document->ops().nextUndo()->opCount == 2 &&
+                  headTxn() != beforeTxn && rowValue("cutoff") && std::abs(*rowValue("cutoff") - .8) < 1e-9 &&
+                  panelOf(3)->instance == firstStamp,
+              "Mix View: one guarded gesture is one undo transaction and preserves the instance stamp");
+        check(document->ops().undo().ok && document->synchronise() && headTxn() == beforeTxn && !rowValue("cutoff"),
+              "Mix View: one undo returns the guarded parameter gesture to the previous stored state");
+        check(document->ops().redo().ok && document->synchronise() && rowValue("cutoff") &&
+                  std::abs(*rowValue("cutoff") - .8) < 1e-9,
+              "Mix View: one redo restores the whole guarded gesture");
+
+        check(document->deviceAction("device.remove", {{"id", 3}}) && !panelOf(3),
+              "Mix View: removing a device removes its publication before undo");
+        check(document->ops().undo().ok && document->synchronise(), "Mix View: undo restores the actual device");
+        document->tick(2);
+        const auto restoredStamp = panelOf(3)->instance;
+        const auto restoredRuntime = panelOf(3)->runtime;
+        check(restoredStamp != firstStamp && restoredRuntime.sameInstance(firstRuntime),
+              "Mix View: undo remints the surface stamp even when the engine deliberately retains the runtime");
+        const auto setsBeforeStale = knobs->controls.sets;
+        const auto opsBeforeStale = opCount();
+        const auto valueBeforeStale = knobs->getParam("gain").normalized;
+        bool rejected = true;
+        for (const auto event : {ParamEventKind::Begin, ParamEventKind::Value, ParamEventKind::End})
+            rejected = !document->parameterGestureExpected(3, "gain", event, .9, firstRuntime, firstStamp) && rejected;
+        check(rejected && document->error().find("changed") != std::string::npos &&
+                  knobs->controls.sets == setsBeforeStale && opCount() == opsBeforeStale &&
+                  knobs->getParam("gain").normalized == valueBeforeStale && !rowValue("gain"),
+              "Mix View: stale retained callbacks cannot change the restored device or create undo operations");
+        check(document->parameterGestureExpected(3, "gain", ParamEventKind::Begin, .25, restoredRuntime, restoredStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .4, restoredRuntime, restoredStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::End, .4, restoredRuntime, restoredStamp) &&
+                  rowValue("gain") && std::abs(*rowValue("gain") - .4) < 1e-9,
+              "Mix View: the restored device accepts a fresh explicitly targeted gesture");
+
+        document->prepare(48000, 128);
+        document->tick(3);
+        const auto formatStamp = panelOf(3)->instance;
+        const auto formatRuntime = panelOf(3)->runtime;
+        const auto setsBeforeFormat = knobs->controls.sets;
+        const auto opsBeforeFormat = opCount();
+        check(formatRuntime.sameInstance(restoredRuntime) && !document->session().resolveDevice(restoredRuntime) &&
+                  !document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .95, restoredRuntime, formatStamp) &&
+                  knobs->controls.sets == setsBeforeFormat && opCount() == opsBeforeFormat &&
+                  std::abs(knobs->getParam("gain").normalized - .4) < 1e-9,
+              "Mix View: a format-stale runtime is refused even when its instance claim is unchanged");
+        check(document->parameterGestureExpected(3, "gain", ParamEventKind::Begin, .4, formatRuntime, formatStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .45, formatRuntime, formatStamp) &&
+                  document->parameterGestureExpected(3, "gain", ParamEventKind::End, .45, formatRuntime, formatStamp),
+              "Mix View: the new format's presented runtime remains editable");
+
+        const auto activeStamp = panelOf(3)->instance;
+        const auto activeRuntime = panelOf(3)->runtime;
+        check(document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin, .8, activeRuntime, activeStamp) &&
+                  document->parameterGestureExpected(3, "cutoff", ParamEventKind::Value, .82, activeRuntime, activeStamp),
+              "Mix View: an explicit target-owned drag is active when the device format changes");
+        document->prepare(96000, 256);
+        document->tick(4);
+        const auto resumedStamp = panelOf(3)->instance;
+        const auto resumedRuntime = panelOf(3)->runtime;
+        check(resumedStamp != activeStamp && resumedRuntime.sameInstance(activeRuntime),
+              "Mix View: format epoch invalidation remints the surface target even for the same SDK instance");
+        const auto setsBeforeStaleEnd = knobs->controls.sets;
+        const auto opsBeforeStaleEnd = opCount();
+        check(!document->parameterGestureExpected(3, "cutoff", ParamEventKind::End, .82,
+                                                  activeRuntime, activeStamp) &&
+                  knobs->controls.sets == setsBeforeStaleEnd && opCount() == opsBeforeStaleEnd,
+              "Mix View: stale End cannot write a value into the changed format or append a stale commit");
+        const bool resumedBegin = document->parameterGestureExpected(3, "cutoff", ParamEventKind::Begin,
+            knobs->getParam("cutoff").normalized, resumedRuntime, resumedStamp);
+        const auto beginError = document->error();
+        const bool resumedValue = resumedBegin && document->parameterGestureExpected(3, "cutoff",
+            ParamEventKind::Value, .86, resumedRuntime, resumedStamp);
+        const auto valueError = document->error();
+        const bool resumedEnd = resumedBegin && document->parameterGestureExpected(3, "cutoff",
+            ParamEventKind::End, .86, resumedRuntime, resumedStamp);
+        const auto endError = document->error();
+        const bool resumed = resumedBegin && resumedValue && resumedEnd;
+        if (!resumed)
+            std::printf("  active-format recovery Begin=%d (%s), Value=%d (%s), End=%d (%s)\n",
+                        resumedBegin ? 1 : 0, beginError.c_str(), resumedValue ? 1 : 0, valueError.c_str(),
+                        resumedEnd ? 1 : 0, endError.c_str());
+        check(resumed && rowValue("cutoff") && std::abs(*rowValue("cutoff") - .86) < 1e-9,
+              "Mix View: a format interruption releases the explicit owner and a fresh same-parameter drag commits");
+
+        check(document->deviceAction("device.remove", {{"id", 3}}) &&
+                  document->deviceAction("device.insert", {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 4},
+                                                            {"name", "Replacement"}, {"latency", 999}}),
+              "Mix View: reuse of the numeric device id with another authored reference");
+        const auto *replacement = panelOf(3);
+        check(replacement && replacement->instance != resumedStamp && !replacement->available && replacement->latency == 0 &&
+                  std::all_of(replacement->records.begin(), replacement->records.end(), [](const auto &r) { return r.missing; }),
+              "Mix View: an unmatched retained engine instance cannot advertise editable replacement controls");
+        const auto replacementSets = knobs->controls.sets;
+        const auto replacementOps = opCount();
+        check(replacement && !document->parameterGestureExpected(3, "gain", ParamEventKind::Value, .99,
+                                                                 resumedRuntime, replacement->instance) &&
+                  knobs->controls.sets == replacementSets && opCount() == replacementOps,
+              "Mix View: the exact current stamp cannot authorize editing an unavailable replacement");
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
+    document->release();
+}
 } // namespace
+// E5: ADI's import with choices (Live 12 manual 9.2; ADR-0132 d6): prepared on a connection of its
+// own, as the app's worker does, and committed through the document as one undo step.
+void importWithChoices(const std::filesystem::path &dir) {
+    std::string error;
+    auto doc = ui::ProjectDocument::open(dir / "import-choices.adi", true, {}, error);
+    check(doc != nullptr, "a project for the import with choices");
+    if (!doc)
+        return;
+    // A second of a tone, outside the project's folder.
+    const auto outside = dir / "outside";
+    std::filesystem::create_directories(outside);
+    const auto wav = outside / "Tone.wav";
+    {
+        std::vector<float> samples(48000);
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = static_cast<float>(0.5 * std::sin(static_cast<double>(i) * 2 * 3.14159265358979 * 220 / 48000.));
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto audioTrack = [&] {
+        for (const auto &t : doc->view().current()->tracks)
+            if (t && t->kind == "audio")
+                return t->id;
+        return std::int64_t{0};
+    }();
+    const auto clipsOn = [&](std::int64_t track) {
+        std::size_t n = 0;
+        if (const auto *t = doc->view().current()->findTrack(track))
+            n = t->clips.size();
+        return n;
+    };
+    // Copy on: the file lands in the project's folder and plays from there, in one undo step.
+    ui::ImportChoices copy;
+    copy.copyIn = true;
+    const auto before = doc->ops().nextUndo();
+    auto job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'000);
+    auto prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(prepared.edit.ok && clipsOn(audioTrack) == 0, "prepared on its own connection, nothing written yet");
+    const auto clip = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    check(clip != 0 && clipsOn(audioTrack) == 1, "committed: one clip on the track");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        const auto rel = db.execAndGet("SELECT rel_path FROM media_files ORDER BY id DESC LIMIT 1").getString();
+        const auto copied = doc->store().path().parent_path() / ui::pathFromUtf8(rel);
+        check(std::filesystem::exists(copied) && copied.parent_path().filename() == "audio" &&
+                  copied.parent_path().parent_path() == doc->store().path().parent_path(),
+              "the file was copied into the project's audio folder, and the pool points there");
+    }
+    const auto step = doc->ops().nextUndo();
+    check(step && (!before || step->txnId != before->txnId), "one undo step");
+    check(doc->ops().undo().ok && (doc->synchronise(), clipsOn(audioTrack) == 0), "one undo takes the clip and its pool row away");
+    // Create Fades on Clip Edges on: the clip has short fades at both ends.
+    ui::ImportChoices fades;
+    fades.edgeFades = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, fades, 1'700'000'000'000'001);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    const auto faded = doc->commitMaterial(prepared, job);
+    doc->synchronise();
+    bool edges = false;
+    if (const auto *t = doc->view().current()->findTrack(audioTrack))
+        for (const auto &c : t->clips)
+            if (c->id == faded)
+                edges = c->fadeInTicks > 0 && c->fadeOutTicks > 0;
+    check(faded != 0 && edges, "Create Fades on Clip Edges gives the clip fades at both ends");
+    doc->ops().undo();
+    doc->synchronise();
+    // Warp on, a second of a tone with no beat in it: a named refusal, nothing written.
+    ui::ImportChoices warp;
+    warp.warp = true;
+    job = doc->materialJob(wav.string(), audioTrack, 0, warp, 1'700'000'000'000'002);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("Tone.wav") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "Warp on with no beat to find is refused, named, and nothing lands");
+    // The project changed between preparing and committing: stale, and nothing is left.
+    job = doc->materialJob(wav.string(), audioTrack, 0, copy, 1'700'000'000'000'003);
+    prepared = ui::ProjectDocument::prepareMaterial(job);
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", audioTrack}, {"name", "Renamed"}};
+    check(doc->ops().submit(std::move(rename)).ok, "an edit lands meanwhile");
+    doc->synchronise();
+    std::int64_t media = 0;
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        media = db.execAndGet("SELECT count(*) FROM media_files").getInt64();
+    }
+    check(doc->commitMaterial(prepared, job) == 0 && doc->error().find("changed") != std::string::npos &&
+              clipsOn(audioTrack) == 0,
+          "the import prepared before it refuses as stale");
+    {
+        SQLite::Database db(doc->store().path().string(), SQLite::OPEN_READONLY);
+        check(db.execAndGet("SELECT count(*) FROM media_files").getInt64() == media, "and leaves no pool row");
+    }
+    doc->release();
+}
+// The extremes a waveform column draws (`peakSpan`): always those of real bins.
+void peakSpans() {
+    media::MediaPeaks p;
+    p.channels = 2;
+    p.framesPerBin = 256;
+    p.frames = 4 * 256;
+    // Channel 0: an ordinary bin, one wholly above full scale, one wholly below it, a quiet one.
+    // Channel 1 holds other values, so a wrong channel index shows.
+    p.bins = {{-.5f, .5f}, {9.f, 9.f}, {1.4f, 1.8f}, {9.f, 9.f}, {-1.8f, -1.4f}, {9.f, 9.f}, {-.1f, .2f}, {9.f, 9.f}};
+    const auto span = [&p](double from, double to) { return ui::peakSpan(p, from, to, 0); };
+    const auto is = [](const std::optional<media::PeakBin> &got, float low, float high) {
+        return got && got->minimum == low && got->maximum == high;
+    };
+    check(is(span(0., 256.), -.5f, .5f), "peak span: one whole bin is that bin");
+    check(is(span(256., 512.), 1.4f, 1.8f), "peak span: a bin wholly above full scale keeps its own lower edge");
+    check(is(span(512., 768.), -1.8f, -1.4f), "peak span: a bin wholly below full scale keeps its own upper edge");
+    check(is(span(0., 768.), -1.8f, 1.8f), "peak span: several bins give the lowest and the highest of them");
+    check(is(span(256.2, 256.7), 1.4f, 1.8f), "peak span: a span inside one frame answers with its bin");
+    check(is(span(768.5, 768.6), -.1f, .2f), "peak span: the same in the last bin");
+    check(is(span(800., 5000.), -.1f, .2f) && is(span(600., 5000.), -1.8f, .2f),
+          "peak span: a span running past the file stops at its last bin");
+    check(is(span(-100., 10.), -.5f, .5f), "peak span: a span that starts before the file begins at its first bin");
+    check(!span(-512., -256.) && !span(-10., 0.), "peak span: a span that ends at or before the first frame holds nothing");
+    check(!span(1024., 2000.) && !span(1e300, 2e300), "peak span: a span past the last bin holds nothing");
+    check(!span(10., 10.) && !span(20., 10.), "peak span: an empty or backwards span holds nothing");
+    const double nan = std::nan("");
+    check(!span(nan, 10.) && !span(0., nan) && !span(nan, nan), "peak span: a span that is not a number holds nothing");
+    check(!ui::peakSpan(p, 0., 256., 2), "peak span: a channel the file does not have holds nothing");
+    check(is(ui::peakSpan(p, 0., 256., 1), 9.f, 9.f), "peak span: the second channel reads its own bins");
+}
+
 int main(int argc, char **argv) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     if (argc == 3 && std::string(argv[1]) == "--fixture") {
         std::string error;
         auto doc = ui::ProjectDocument::open(ui::pathFromUtf8(argv[2]), true, {}, error);
@@ -52,6 +488,7 @@ int main(int argc, char **argv) {
         }
         return 0;
     }
+    peakSpans();
     test::TempDirectory temp("ui_document", "lifetime");
     std::string error;
     Tone tone;
@@ -61,20 +498,24 @@ int main(int argc, char **argv) {
         std::printf("%s\n", error.c_str());
         return 1;
     }
-    check(doc->store().db().execAndGet("SELECT count(*) FROM tracks WHERE kind='master'").getInt() ==
-              1,
-          "New makes the Main track");
-    check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 1,
-          "through the op every track is made with, not rows of its own");
-    check(!doc->ops().canUndo() && !doc->ops().undo().ok &&
-              doc->session().model().tracks.size() == 1,
+    // New is the store's (#307, N2): Main and Live's default Set, at the history's root.
+    const auto *made = doc->view().current().get();
+    check(made != nullptr && made->tracks.size() == 7 && made->findTrack(1) != nullptr &&
+              made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "1 MIDI" &&
+              made->findTrack(3)->name == "2 MIDI" && made->findTrack(4)->name == "3 Audio" &&
+              made->findTrack(5)->name == "4 Audio" && made->findTrack(6)->name == "A Reverb" &&
+              made->findTrack(7)->name == "B Delay",
+          "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay (N41)");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+          "as the history's root: no op, no undo step");
+    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 7,
           "creating the project cannot be undone (Live 5.4.2)");
     OpRequest add;
     add.opType = "track.create";
-    add.payload = {{"id", 2}, {"kind", "audio"}, {"name", "Tone"}};
+    add.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Tone"}};
     check(doc->ops().submit(add).ok && doc->synchronise(), "edit reaches Session and ProjectView");
     doc->session().setSourcesFor([&](std::int64_t id) {
-        return id == 2 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+        return id == 8 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
     });
     check(doc->session().rebuild(), "source enters the real graph");
     doc->prepare(48000, 64);
@@ -114,7 +555,7 @@ int main(int argc, char **argv) {
     check(!doc->mailbox().playing() && doc->mailbox().position() == 1024,
           "stop reaches driver without advancing");
     check(doc->ops().undo().ok && doc->synchronise(), "undo refreshes the real engine");
-    check(doc->session().model().tracks.size() == 1, "undo removes audio track and keeps master");
+    check(doc->session().model().tracks.size() == 7, "undo removes the added track and keeps the rest");
     check(doc->ops().redo().ok && doc->synchronise(), "redo restores graph rows");
     // Ctrl/Cmd+S takes a named snapshot (ADR-0203 d6, d13): history metadata, no op.
     const std::int64_t noon = 1'761'566'400'000'000; // 2025-10-27 12:00 UTC, in microseconds
@@ -137,12 +578,35 @@ int main(int argc, char **argv) {
     doc.reset();
     {
         auto reopen = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
-        check(reopen && reopen->view().current()->tracks.size() == 2,
+        check(reopen && reopen->view().current()->tracks.size() == 8,
               "every edit is in the file once it closes; there is nothing to save");
         check(reopen && reopen->ops().undo().ok, "a reopened project undoes its edits");
         check(reopen && !reopen->ops().canUndo() && !reopen->ops().undo().ok,
               "but never its creation");
         check(reopen && reopen->ops().redo().ok, "and redoes them");
+    }
+    {
+        // A project an earlier build made began its history with a "New project" step that made
+        // Main: undo still stops there.
+        const auto earlier = temp.path() / "earlier.adi";
+        {
+            StoreError madeError{};
+            auto st = Store::create(earlier, madeError);
+            check(st != nullptr, "a project as an earlier build made it");
+            if (st) {
+                engine::ProjectView pv;
+                pv.refresh(*st);
+                ui::OpSubmitter sub(*st, pv);
+                OpRequest main;
+                main.opType = "track.create";
+                main.payload = {{"id", 1}, {"kind", "master"}, {"name", "Main"}};
+                main.label = ui::kNewProjectLabel;
+                check(sub.submit(std::move(main)).ok, "with Main made by its first step");
+            }
+        }
+        auto old = ui::ProjectDocument::open(earlier, false, {}, error);
+        check(old && !old->ops().canUndo() && !old->ops().undo().ok && old->view().current()->tracks.size() == 1,
+              "that step is still the floor undo stops at");
     }
     for (int i = 0; i < 12; ++i) {
         auto opened = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
@@ -155,13 +619,56 @@ int main(int argc, char **argv) {
     }
     {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
-        // writing anything; the window's batch adds the clip; one commit, one undo step.
+        // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
+        // Live's default Set (#307, with its two returns since N41), tracks 1 to 7, so the drop's audio track is an eighth.
+        {
+            // A file imported AFTER Save As has its pool row in the new file only: the waveform
+            // worker follows the document there (the outside review of 18 November; on main it kept
+            // reading the file the document was opened from, and the clip drew empty).
+            auto moved = ui::ProjectDocument::open(temp.path() / "wave-before.adi", true, {}, error);
+            check(moved != nullptr, "a project to save under another name");
+            if (moved) {
+                OpRequest audioTrack;
+                audioTrack.opType = "track.create";
+                audioTrack.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Drums"}};
+                check(moved->ops().submit(audioTrack).ok && moved->synchronise(), "an audio track before the save");
+                check(moved->saveAs(temp.path() / "wave-after.adi") && moved->error().empty(), "Save As to a new file");
+                const auto wav = temp.path() / "after-save.wav";
+                {
+                    std::array<float, 12000> samples{};
+                    for (std::size_t i = 0; i < samples.size(); ++i)
+                        samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .07) * .5);
+                    audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                    writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+                }
+                ui::AudioImport import;
+                check(moved->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file read after the save");
+                auto edit = ui::dropAudio(*moved->view().current(), 8, 0, "after", import);
+                check(edit.refusal.empty() && moved->ops().submit(std::move(edit.ops)).ok && moved->synchronise(),
+                      "its clip committed into the new file");
+                auto &waves = moved->waveforms();
+                const auto snapshot = moved->view().current();
+                const auto *track = snapshot->findTrack(8);
+                const bool there = track != nullptr && track->clips.size() == 1 && track->clips[0]->audio.has_value();
+                check(snapshot != nullptr, "a snapshot after the drop");
+                check(there, "the clip is on the track");
+                if (there) {
+                    const auto &clip = *track->clips[0];
+                    (void)waves.peaks(*clip.audio);
+                    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    const auto built = waves.peaks(*clip.audio);
+                    check(built != nullptr && built->frames == 12000 && !built->bins.empty() && waves.problem().empty(),
+                          "a file imported after Save As gets its waveform");
+                }
+            }
+        }
         auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
         check(dropped != nullptr, "a project for the drop");
         if (dropped) {
             OpRequest audioTrack;
             audioTrack.opType = "track.create";
-            audioTrack.payload = {{"id", 2}, {"kind", "audio"}, {"name", "Drums"}};
+            audioTrack.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Drums"}};
             check(dropped->ops().submit(audioTrack).ok && dropped->synchronise(), "an audio track");
             const auto wav = temp.path() / "kick.wav";
             {
@@ -178,11 +685,11 @@ int main(int argc, char **argv) {
                       dropped->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrop &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "prepareImport reads the file and captures its row, writing nothing");
-            auto edit = ui::dropAudio(*dropped->view().current(), 2, 0, "kick", import);
+            auto edit = ui::dropAudio(*dropped->view().current(), 8, 0, "kick", import);
             check(edit.refusal.empty() && edit.ops.size() == 3 && dropped->ops().submit(std::move(edit.ops)).ok &&
                       dropped->synchronise(),
                   "the pool row, the clip and its audio commit together");
-            const auto *track = dropped->view().current()->findTrack(2);
+            const auto *track = dropped->view().current()->findTrack(8);
             check(track != nullptr && track->clips.size() == 1 && track->clips[0]->name == "kick" &&
                       dropped->ops().nextUndo() && dropped->ops().nextUndo()->opCount == 3 &&
                       dropped->ops().nextUndo()->label == "Insert Audio Clip",
@@ -207,8 +714,43 @@ int main(int argc, char **argv) {
             }
             check(heard, "and it plays");
             dropped->release();
+            {
+                // Its waveform (N40, #404): the first request queues the file and draws nothing; the
+                // worker builds its peaks once, through its own read-only store; the second request is
+                // served from memory; a new generation that still uses the file keeps them, and one
+                // that no longer does drops them.
+                auto &waves = dropped->waveforms();
+                const auto snapshot = dropped->view().current();
+                const auto &clip = *snapshot->findTrack(8)->clips[0];
+                const auto hash = clip.audio && clip.audio->mediaInfo ? clip.audio->mediaInfo->contentHash : std::string{};
+                const bool first = clip.audio && waves.peaks(*clip.audio) == nullptr;
+                for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                const auto built = clip.audio ? waves.peaks(*clip.audio) : nullptr;
+                check(first && !hash.empty() && built != nullptr && built->contentHash == hash &&
+                          built->sampleRate == 48000 && built->channels == 1 && built->frames == 24000 &&
+                          !built->bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
+                      "the worker builds the file's peaks once: none drawn at the first request, there at the next");
+                const auto again = waves.peaks(*clip.audio);
+                for (int i = 0; i < 20; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                check(again == built && waves.builds() == 1, "the second request is served from memory, nothing built");
+                waves.follow(*snapshot, 1001);
+                check(waves.holds(hash) && waves.peaks(*clip.audio) == built,
+                      "a new generation that still uses the file keeps its peaks");
+                OpRequest rename;
+                rename.opType = "track.rename";
+                rename.payload = {{"id", 8}, {"name", "Kick"}};
+                check(dropped->ops().submit(rename).ok, "an edit elsewhere");
+                waves.follow(*dropped->view().current(), 1002);
+                check(waves.holds(hash), "and so does the edit's");
+                check(dropped->ops().undo().ok && dropped->ops().undo().ok && dropped->synchronise(), "undo the drop");
+                waves.follow(*dropped->view().current(), 1003);
+                check(!waves.holds(hash) && waves.builds() == 1, "a generation without the clip drops its peaks");
+                check(dropped->ops().redo().ok && dropped->synchronise(), "redo the drop");
+            }
             check(dropped->ops().undo().ok && dropped->synchronise() &&
-                      dropped->view().current()->findTrack(2)->clips.empty() &&
+                      dropped->view().current()->findTrack(8)->clips.empty() &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "one undo removes the clip, its audio and the new pool row");
             ui::AudioImport none;
@@ -216,6 +758,606 @@ int main(int argc, char **argv) {
                   "a file that can't be read is refused, with a reason");
         }
     }
+    {
+        // Save a Copy (Live 12 manual 5.4.1), Collect All and Save (5.7) and Collect and Export (ADI's,
+        // MR 11.3) from the document (A4, N30). The copy opens and the open project stays where it is;
+        // collecting brings an outside file into `audio/` beside the project and the view re-reads it;
+        // the export runs on its own worker and leaves the project as it was. No ZIP is opened here.
+        const auto home = temp.path() / "collect";
+        std::filesystem::create_directories(home / "outside");
+        auto copying = ui::ProjectDocument::open(home / "song.adi", true, {}, error);
+        check(copying != nullptr, "a project to copy and collect");
+        if (copying) {
+            const auto wav = home / "outside" / "snare.wav";
+            {
+                std::array<float, 4800> samples{};
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .1) * .4);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+            }
+            ui::AudioImport import;
+            auto ok = copying->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+            auto edit = ui::dropAudio(*copying->view().current(), 4, 0, "snare", import);
+            check(ok && edit.refusal.empty() && copying->ops().submit(std::move(edit.ops)).ok && copying->synchronise(),
+                  "an outside file dropped on 3 Audio");
+            const auto copy = home / "copy.adi";
+            check(copying->saveCopy(copy) && copying->error().empty() && std::filesystem::exists(copy) &&
+                      std::filesystem::equivalent(copying->store().path(), home / "song.adi") && copying->name() == "song",
+                  "Save a Copy writes a second project, and the open one stays where it is");
+            {
+                StoreError opened{};
+                auto copied = Store::open(copy, opened, true);
+                check(copied && opened == StoreError::Ok &&
+                          copied->db().execAndGet("SELECT count(*) FROM tracks").getInt() ==
+                              copying->store().db().execAndGet("SELECT count(*) FROM tracks").getInt(),
+                      "the copy opens, with the same tracks");
+            }
+            check(!copying->saveCopy(copy) && copying->error().find("already exists") != std::string::npos,
+                  "a copy over an existing file is refused, with the name");
+            const auto collectGeneration = copying->view().generation();
+            check(copying->collectAllAndSave() && copying->error().empty() && copying->view().generation() > collectGeneration,
+                  "Collect All and Save succeeds, and the view reads the project again");
+            std::size_t collected = 0;
+            if (std::filesystem::is_directory(home / "audio"))
+                for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(home / "audio"))
+                    ++collected;
+            check(collected == 1 &&
+                      copying->store().db().execAndGet("SELECT rel_path FROM media_files").getString().rfind("audio/", 0) == 0,
+                  "the outside file is in audio/ beside the project, and the pool points at it there");
+            const auto archive = home / "song.zip";
+            const auto opsBeforeExport = copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            ui::ProjectDocument::ExportJob job;
+            check(copying->prepareCollectAndExport(archive, job) && copying->error().empty() && job.zip == archive &&
+                      std::filesystem::equivalent(job.project, copying->store().path()),
+                  "Collect and Export is prepared on the message thread: the project's file and the ZIP");
+            // The app runs it on a worker of its own while the project stays open and writable.
+            StoreFileResult exported;
+            std::thread worker([&] { exported = ui::ProjectDocument::runCollectAndExport(job); });
+            worker.join();
+            if (!exported.ok)
+                std::printf("export: %s\n", exported.error.c_str());
+            check(exported.ok && std::filesystem::exists(archive) &&
+                      copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeExport,
+                  "run on a worker, it writes the ZIP and leaves the project unchanged");
+            ui::ProjectDocument::ExportJob again;
+            check(!copying->prepareCollectAndExport(archive, again) && copying->error().find("already exists") != std::string::npos,
+                  "an export over an existing file is refused before it starts");
+            copying->release();
+        }
+    }
+    {
+        // New captures the registry's recording defaults for its four tracks (#397, N31).
+        const ui::RecordingDefaults defaults{"off", false};
+        auto fresh = ui::ProjectDocument::open(temp.path() / "defaults.adi", true, {}, error, &defaults);
+        check(fresh != nullptr, "a new project with recording defaults");
+        if (fresh) {
+            const auto options = readTrackRecordingOptions(fresh->store());
+            bool all = options.size() >= 4;
+            for (const auto &[id, o] : options)
+                all = all && !o.recordEnabled && !o.keepMonitoringLatency;
+            check(all && !fresh->ops().canUndo(), "New stores Rec-Q Free and Keep Monitoring Latency off on its tracks, in the root");
+            fresh->release();
+        }
+    }
+    {
+        // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the project carries on in the new
+        // file, its history with it, and the old file keeps what it had. No audio media here:
+        // relocating media is what fails on macOS, and this suite runs there.
+        const auto before = temp.path() / "before.adi";
+        auto saving = ui::ProjectDocument::open(before, true, {}, error);
+        check(saving != nullptr, "a project to save as");
+        if (saving) {
+            OpRequest first;
+            first.opType = "track.create";
+            first.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Before"}};
+            check(saving->ops().submit(first).ok && saving->synchronise(), "an edit before Save As");
+            const auto opsBeforeSave = saving->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            const auto folder = temp.path() / "saved";
+            std::filesystem::create_directories(folder);
+            const auto after = folder / "after.adi";
+            const auto generationBefore = saving->view().generation();
+            check(saving->saveAs(after) && saving->error().empty() && saving->warning().empty() &&
+                      std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
+                  "Save As writes the new file and the document carries on in it, under its name");
+            check(saving->snapshotName(noon, 120) == "after 2025-10-27 14:00",
+                  "the Take Snapshot prompt is pre-filled with the new name");
+            // The re-read the Store header asks for after a Save As: a new generation of the
+            // view, which the session has already caught up with.
+            check(saving->view().generation() > generationBefore && saving->synchronise() &&
+                      saving->view().current()->findTrack(8) != nullptr &&
+                      saving->session().model().tracks.size() == 8,
+                  "the view and the session read the new file");
+            OpRequest second;
+            second.opType = "track.create";
+            second.payload = {{"id", 9}, {"kind", "audio"}, {"name", "After"}};
+            check(saving->ops().submit(second).ok && saving->synchronise() &&
+                      saving->view().current()->tracks.size() == 9,
+                  "the next edit lands in the new file");
+            {
+                StoreError opened{};
+                auto old = Store::open(before, opened, true);
+                check(old && opened == StoreError::Ok &&
+                          old->db().execAndGet("SELECT count(*) FROM tracks").getInt() == 8 &&
+                          old->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeSave,
+                      "and the old file is unchanged");
+            }
+            check(saving->ops().undo().ok && saving->synchronise() && saving->ops().undo().ok &&
+                      saving->synchronise() && saving->view().current()->tracks.size() == 7 &&
+                      saving->session().model().tracks.size() == 7,
+                  "undo still reaches the edit made before Save As");
+            check(!saving->saveAs(before) && saving->error().find("already exists") != std::string::npos &&
+                      std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
+                  "an existing destination is refused with its reason, and nothing moves");
+            check(!saving->saveAs(temp.path() / "nowhere" / "lost.adi") && !saving->error().empty() &&
+                      std::filesystem::equivalent(saving->store().path(), after),
+                  "a folder that does not exist is refused with the store's reason");
+            check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
+                  "and the history still redoes after a refusal");
+        }
+    }
+    {
+        // Color Cab's sample slot (D5; N28, #414): a fixture WAV assigned to Impulse is one undo step
+        // and reads back; a moved file reads missing; Clear empties the slot. With Pd off the engine
+        // refuses, with its reason.
+        auto cab = ui::ProjectDocument::open(temp.path() / "color-cab.adi", true, {}, error);
+        check(cab != nullptr, "a project for Color Cab's sample");
+        if (cab) {
+            const auto wav = temp.path() / "impulse.wav";
+            {
+                std::vector<float> silence(256);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Float32);
+                writer.write(silence.data(), 256);
+            }
+#if ADI_WITH_PD
+            check(cab->insertBuiltin("org.adidaw.builtin.color-cab", 4, std::nullopt), "Color Cab on 3 Audio");
+            const auto device = cab->store().db().execAndGet("SELECT id FROM devices WHERE name = 'Color Cab'").getInt64();
+            const auto slotOf = [&]() -> const engine::SampleSlotNode * {
+                for (const auto &slot : cab->view().current()->sampleSlots)
+                    if (slot && slot->deviceId == device && slot->slot == 1)
+                        return slot.get();
+                return nullptr;
+            };
+            // Every outcome of `ParamOps::appliedState`: this document has no loader for built-ins, so
+            // the device has no live instance here and the call lands on `unknownDevice`; in the app
+            // the instance takes the state. What is checked is that the window hands it over.
+            const auto handed = [&] {
+                const auto &st = cab->parameterStats();
+                return st.statesApplied + st.statesAppliedEqual + st.statesCleared + st.statesRefused + st.unknownDevice;
+            };
+            const auto appliedBefore = handed();
+            check(cab->assignSample(device, 1, wav, 7) && cab->ops().nextUndo() &&
+                      cab->ops().nextUndo()->label == "Assign device sample",
+                  "a fixture WAV assigned to Impulse, one step named Assign device sample");
+            check(slotOf() != nullptr && !slotOf()->empty && !slotOf()->missing && slotOf()->name == "Impulse",
+                  "the snapshot reads it back: Impulse, holding a sample, its file present");
+            check(handed() > appliedBefore,
+                  "the new state is handed to the live device (ParamOps::appliedState), as the engine's contract asks");
+            check(cab->ops().undo().ok && cab->synchronise() && (slotOf() == nullptr || slotOf()->empty),
+                  "one undo empties the slot again");
+            check(cab->ops().redo().ok && cab->synchronise() && slotOf() != nullptr && !slotOf()->empty, "redo assigns it again");
+            std::filesystem::rename(wav, temp.path() / "impulse-moved.wav");
+            cab->view().refresh(cab->store());
+            check(slotOf() != nullptr && slotOf()->missing, "a moved file reads missing");
+            check(cab->clearSample(device, 1) && slotOf() != nullptr && slotOf()->empty, "Clear empties the slot");
+#else
+            cab->store().db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(40,'internal',"
+                                   "'org.adidaw.builtin.color-cab','Color Cab')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 40}, {"track", 4}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 40}, {"chain", 40}, {"ord", 0}, {"ref", 40}, {"name", "Color Cab"}, {"latency", 0}};
+            check(cab->ops().submit(std::move(make)).ok && cab->synchronise(), "Color Cab's rows, with Pd off");
+            check(!cab->assignSample(40, 1, wav, 7) && !cab->error().empty(),
+                  "with Pd off the assignment is refused, with the engine's reason");
+#endif
+            cab->release();
+        }
+    }
+    {
+        // A built-in device from the browser (D4; N15, #395): Auto Filter onto a track with no chain
+        // makes the plug-in reference, the chain and the device in one undo step, and undo removes
+        // all three; with Pd off the load is refused with the catalogue's reason.
+        auto built = ui::ProjectDocument::open(temp.path() / "builtin.adi", true, {}, error);
+        check(built != nullptr, "a project for a built-in device");
+        if (built) {
+            const auto count = [&](const char *sql) { return built->store().db().execAndGet(sql).getInt(); };
+            [[maybe_unused]] const auto refs = count("SELECT count(*) FROM plugin_refs");
+            [[maybe_unused]] const auto chains = count("SELECT count(*) FROM device_chains");
+            const auto devices = count("SELECT count(*) FROM devices");
+#if ADI_WITH_PD
+            check(count("SELECT count(*) FROM device_chains WHERE track_id = 2") == 0 &&
+                      built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt),
+                  "Auto Filter loads onto 1 MIDI, which has no chain");
+            check(count("SELECT count(*) FROM plugin_refs") == refs + 1 &&
+                      count("SELECT count(*) FROM device_chains") == chains + 1 &&
+                      count("SELECT count(*) FROM devices") == devices + 1 &&
+                      built->ops().nextUndo()->label == "Insert Auto Filter",
+                  "the reference, the chain and the device, in one step named Insert Auto Filter");
+            check(built->ops().undo().ok && built->synchronise() && count("SELECT count(*) FROM plugin_refs") == refs &&
+                      count("SELECT count(*) FROM device_chains") == chains &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "one undo removes all three");
+#else
+            check(!built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt) &&
+                      built->error().find("not available") != std::string::npos &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "with Pd off, the load is refused with the catalogue's reason");
+#endif
+            built->release();
+        }
+    }
+    {
+        // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
+        // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
+        // step with a new id and the source's stored parameters; Cut and Paste bring it back.
+        auto clip = ui::ProjectDocument::open(temp.path() / "clipboard.adi", true, {}, error);
+        check(clip != nullptr, "a project with no plug-in loader");
+        if (clip) {
+            clip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                    test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(3);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            make[2].opType = "device.setParam";
+            make[2].payload = {{"dev", 3}, {"param", "cutoff"}, {"norm", 0.75}};
+            check(clip->ops().submit(std::move(make)).ok && clip->synchronise(), "a stored device with a parameter set");
+            const auto chainOrder = [&] {
+                std::vector<std::int64_t> out;
+                SQLite::Statement q(clip->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+                while (q.executeStep())
+                    out.push_back(q.getColumn(0).getInt64());
+                return out;
+            };
+            DeviceCopy copied;
+            check(clip->copyDevice(3, copied) && copied.ok && chainOrder() == std::vector<std::int64_t>{3},
+                  "Copy reads the stored device, with no plug-in loaded, and writes nothing");
+            check(clip->pasteDevice(copied, 2, 3), "Paste in front of the device");
+            const auto order = chainOrder();
+            DeviceCopy pasted;
+            check(order.size() == 2 && order[1] == 3 && order[0] > 3 && clip->copyDevice(order[0], pasted) &&
+                      pasted.insert.value("params", Payload::array()) == copied.insert.value("params", Payload::array()) &&
+                      !copied.insert.value("params", Payload::array()).empty() &&
+                      clip->ops().nextUndo()->label == "Paste Device",
+                  "a new id in front of it, with the source's stored parameters, one step named Paste Device");
+            check(clip->ops().undo().ok && clip->synchronise() && chainOrder() == std::vector<std::int64_t>{3},
+                  "one undo takes it away");
+            DeviceCopy cut;
+            check(clip->copyDevice(3, cut) && clip->deviceAction("device.remove", {{"id", 3}}) && chainOrder().empty(),
+                  "Cut: the copy kept, the device removed");
+            check(clip->pasteDevice(cut, 2, std::nullopt) && chainOrder().size() == 1,
+                  "Paste at the empty chain's end brings it back");
+            DeviceCopy back;
+            check(!chainOrder().empty() && clip->copyDevice(chainOrder()[0], back) &&
+                      back.insert.value("params", Payload::array()) == cut.insert.value("params", Payload::array()) &&
+                      back.insert.value("name", "") == "UI knobs",
+                  "with its name and stored parameters");
+            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error()=="destination track is missing",
+                  "a missing destination track is refused, with the reason");
+            // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
+            {
+                const auto rack = chainOrder()[0];
+                OpRequest nested;
+                nested.opType = "chain.create";
+                nested.payload = {{"id", 60}, {"device", rack}, {"ord", 0}, {"name", "Nested"}};
+                DeviceCopy refused;
+                check(clip->ops().submit(nested).ok && clip->synchronise() && !clip->copyDevice(rack, refused) &&
+                          clip->error().find("nested chain") != std::string::npos,
+                      "a rack with chains inside it is refused at Copy, with the engine's reason");
+                check(clip->ops().undo().ok && clip->synchronise(), "the nested chain undone");
+            }
+            // Save As: the same project under a new file; the app moves a held copy over to it.
+            {
+                DeviceCopy held;
+                const auto before = clip->deviceCopyIdentity();
+                check(!before.empty() && clip->copyDevice(chainOrder()[0], held) && held.sourceFile == before,
+                      "a copy names its project by the engine's file identity");
+                check(clip->saveAs(temp.path() / "clipboard-renamed.adi") && clip->deviceCopyIdentity() != before,
+                      "Save As moves the project to a new file");
+                check(!clip->pasteDevice(held, 2, std::nullopt) &&
+                          clip->error().find("different project") != std::string::npos,
+                      "a copy still keyed to the old file reads as another project");
+                held.sourceFile = clip->deviceCopyIdentity();
+                check(clip->pasteDevice(held, 2, std::nullopt) && chainOrder().size() == 2,
+                      "moved over to the new file, as ui_main.cpp does after Save As, it pastes");
+            }
+            clip->release();
+        }
+    }
+    {
+        // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4,
+        // ADR-0181 d5; MR 9.1, audit row 110). The plug-in is the loader's headless Knobs; the
+        // gesture is what ParameterControl sends (ui_devices.cpp): Begin, Values, End.
+        using engine::ParamEventKind;
+        auto strip = ui::ProjectDocument::open(temp.path() / "strip.adi", true, test::knobsLoader(), error);
+        check(strip != nullptr, "a project whose plug-ins the loader makes");
+        // An exception here is a failed check with its text, not a CRT dialog on a desktop.
+        if (strip) try {
+            // A chain on 1 MIDI and a device in it, after New's two returns (refs, chains and
+            // devices 1 and 2: Reverb and Delay); the plug-in reference is the catalogue's row,
+            // not an op.
+            strip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                     test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(strip->ops().submit(std::move(make)).ok && strip->synchronise(), "a device on track 2");
+            strip->setParameterDemand(strip.get(), {3});
+            strip->tick(0); // the timer's frame: the feed publishes the new device
+            auto *knobs = dynamic_cast<test::Knobs *>(strip->session().instanceFor(3));
+            const auto *entry = strip->session().entryFor(3);
+            check(knobs != nullptr && entry != nullptr && !entry->placeholder && entry->name == "UI knobs",
+                  "the loader made it and the session holds it under its name");
+            // The feed's panel for it, among the returns' two.
+            auto panelOf = [&](std::int64_t device) -> const ui::DevicePanelData * {
+                const auto feed = strip->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == device)
+                            return &data;
+                return nullptr;
+            };
+            const auto *panel = panelOf(3);
+            check(panel != nullptr && panel->track == 2 && panel->records.size() == 2 &&
+                      panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9 &&
+                      panel->records[0].text == "10.0 kHz" && panel->records[1].text == "-24.0 dB" &&
+                      panel->defaults.size() == 2 && std::abs(panel->defaults.at("cutoff") - .5) < 1e-9 &&
+                      std::abs(panel->defaults.at("gain") - .25) < 1e-9,
+                  "the strip's feed lists the device on its track, its parameters by the plug-in's ids, in the "
+                  "plug-in's own words, with their defaults (manual 41.6's Return to Default)");
+            const auto opsBeforeDrag = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            auto headTxn = [&] {
+                const auto head = strip->ops().nextUndo();
+                return head ? head->txnId : std::int64_t{0};
+            };
+            const auto txnBefore = headTxn();
+            bool moving = knobs != nullptr && strip->parameterGesture(3,"cutoff", ParamEventKind::Begin, .5);
+            for (const double v : {.6, .7, .8})
+                moving = moving && strip->parameterGesture(3,"cutoff", ParamEventKind::Value, v);
+            check(moving && knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+                      strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrag &&
+                      headTxn() == txnBefore && strip->error().empty(),
+                  "every value of the drag reaches the plug-in at once, and nothing is written before End");
+            check(strip->parameterGesture(3,"cutoff", ParamEventKind::End, .8) && strip->error().empty(),
+                  "End commits the gesture");
+            const auto step = strip->ops().nextUndo();
+            check(step && step->opCount == 2 && step->label == "UI knobs: Cutoff" && step->txnId != 0 &&
+                      step->txnId != txnBefore,
+                  "Begin, three Values and End are ONE undo step, named for the device and its control");
+            if (step) {
+                SQLite::Statement first(strip->store().db(),
+                                        "SELECT op_type, payload FROM ops WHERE txn_id = ? ORDER BY seq LIMIT 1");
+                first.bind(1, step->txnId);
+                const bool found = first.executeStep();
+                Payload opener;
+                if (found) {
+                    const auto column = first.getColumn(1); // the journal stores payloads as CBOR
+                    const auto *bytes = static_cast<const std::uint8_t *>(column.getBlob());
+                    opener = Payload::from_cbor(
+                        std::vector<std::uint8_t>(bytes, bytes + static_cast<std::size_t>(column.getBytes())));
+                }
+                check(found && first.getColumn(0).getString() == "device.setParam" && opener.contains("norm") &&
+                          std::abs(opener.at("norm").get<double>() - .5) < 1e-9 && opener.value("dev", 0) == 3,
+                      "whose first op is the opener: the value the parameter had before the drag (ADR-0124 d4)");
+            }
+            // The project's own row for a parameter, as the session re-reads it on synchronise();
+            // the snapshot carries lanes, not plug-in rows.
+            auto rowOf = [&](const char *param) -> std::optional<double> {
+                for (const auto &p : strip->session().model().pluginParams)
+                    if (p.deviceId == 3 && p.paramId == param)
+                        return p.normalized;
+                return std::nullopt;
+            };
+            check(rowOf("cutoff") && std::abs(*rowOf("cutoff") - .8) < 1e-9 && panelOf(3) != nullptr &&
+                      std::abs(panelOf(3)->records[0].stored - .8) < 1e-9,
+                  "the project holds the final value and the strip's feed shows it stored");
+            check(strip->ops().undo().ok && strip->synchronise() && !rowOf("cutoff") && headTxn() == txnBefore,
+                  "one undo restores the value: the parameter is never touched again, as before the drag");
+            check(strip->ops().redo().ok && strip->synchronise() && rowOf("cutoff") &&
+                      std::abs(*rowOf("cutoff") - .8) < 1e-9,
+                  "and one redo brings the whole drag back");
+            // A value nothing brackets (a typed value, a key) closes on the drain's quiet timer.
+            // An event the plug-in refuses after that still commits the older gesture: the
+            // producer drains before it judges (docs/ENGINE-UI-PARAM-CAPTURE.md).
+            check(strip->parameterGesture(3,"gain", ParamEventKind::Value, .9) && knobs != nullptr &&
+                      std::abs(knobs->getParam("gain").normalized - .9) < 1e-9 && !rowOf("gain"),
+                  "an unbracketed value sounds at once and waits for the quiet timer");
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            if (knobs)
+                knobs->refuse = true;
+            const auto refusedCount = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            check(!strip->parameterGesture(3,"cutoff", ParamEventKind::Value, .3) &&
+                      strip->error() == "The plug-in did not take the value." && rowOf("gain") &&
+                      std::abs(*rowOf("gain") - .9) < 1e-9 && strip->ops().nextUndo() &&
+                      strip->ops().nextUndo()->label == "UI knobs: Gain" && strip->ops().nextUndo()->opCount == 2 &&
+                      strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == refusedCount + 2,
+                  "an event the plug-in refuses is refused with its reason, and the older gesture it drained commits");
+            if (knobs)
+                knobs->refuse = false;
+            check(!strip->parameterGesture(99, "cutoff", ParamEventKind::Begin, .5) &&
+                      strip->error() == "That device is not loaded, so its values cannot be edited." &&
+                      !strip->parameterGesture(3,"nothing", ParamEventKind::Begin, .5) &&
+                      strip->error() == "The plug-in has no parameter \"nothing\".",
+                  "a device that is not loaded and a parameter the plug-in has not are refused, each with its reason");
+            check(strip->parameterGesture(3,"cutoff", ParamEventKind::Begin, .8) &&
+                      strip->parameterGesture(3,"cutoff", ParamEventKind::Value, .4) &&
+                      strip->parameterGesture(3,"cutoff", ParamEventKind::End, .4) && strip->ops().nextUndo() &&
+                      strip->ops().nextUndo()->opCount == 1 && strip->ops().nextUndo()->label == "UI knobs: Cutoff",
+                  "a later gesture on the same parameter needs no opener: one op, one step");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+        }
+    }
+    {
+        // Re-Enable Automation lit, and Automation Arm (N26, worklist C1; Live 12 manual 25.1 and
+        // 25.4; MR 6.1, audit rows 97 and 133). A3's device, its Cutoff under the numeric id a
+        // lane's param_ref must parse as, and a lane on it: a strip gesture overrides the lane
+        // (ADR-0162), the snapshot says so, and Re-Enable follows the envelope again. The
+        // reference row says vst3 so the session's own re-read of a changed row finds the
+        // override too (a clap row's ids are hex, which "7" is not); the loader goes by uid.
+        using engine::ParamEventKind;
+        auto armed = ui::ProjectDocument::open(temp.path() / "arm.adi", true, test::knobsLoader("7"), error);
+        check(armed != nullptr, "a project for the automated device");
+        if (armed) try {
+            armed->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                   test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(armed->ops().submit(std::move(make)).ok && armed->synchronise(), "a device on 1 MIDI");
+            automation::LaneSpec spec;
+            spec.id = 1;
+            spec.ownerKind = "device";
+            spec.ownerId = 3;
+            spec.paramRef = "7";
+            spec.paramName = "Cutoff";
+            spec.defaultValue = .5;
+            check(armed->ops().submit(automation::createLane(spec)).ok && armed->synchronise(),
+                  "a lane on its Cutoff, with no points: the lane plays its default");
+            armed->setParameterDemand(armed.get(), {3});
+            armed->tick(0); // the timer's frame: the feed publishes the device
+            auto *knobs = dynamic_cast<test::Knobs *>(armed->session().instanceFor(3));
+            auto snapshot = [&] { return armed->view().current(); };
+            auto laneOverridden = [&] {
+                const auto *lane = snapshot()->findAutomationLane(1);
+                return lane != nullptr && lane->overridden;
+            };
+            auto cutoffRecord = [&]() -> const panel::Record * {
+                const auto feed = armed->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == 3 && !data.records.empty())
+                            return &data.records[0];
+                return nullptr;
+            };
+            auto opCount = [&] { return armed->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+            auto headTxn = [&] {
+                const auto head = armed->ops().nextUndo();
+                return head ? head->txnId : std::int64_t{0};
+            };
+            check(knobs != nullptr && snapshot()->automationLanes.size() == 1 && !snapshot()->automationOverridden &&
+                      !laneOverridden() && !armed->session().automationOverridden(),
+                  "nothing is overridden: Re-Enable Automation is unlit");
+            check(cutoffRecord() != nullptr && cutoffRecord()->id == "7" && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden,
+                  "the strip's feed marks Cutoff automated, not overridden");
+            check(armed->automationArmed() && armed->session().automationArmed() && !armed->session().automationRecording(),
+                  "Automation Arm is on in a new Set (manual 25.1), and the window never records");
+            const auto generationBefore = armed->view().generation();
+            const auto opsBeforeDrag = opCount();
+            const auto txnBefore = headTxn();
+            check(armed->parameterGesture(3, "7", ParamEventKind::Begin, .5) &&
+                      armed->parameterGesture(3, "7", ParamEventKind::Value, .8) && armed->error().empty() &&
+                      armed->session().overriddenLanes().contains(1) && snapshot()->automationOverridden &&
+                      laneOverridden() && armed->view().generation() == generationBefore + 1 && opCount() == opsBeforeDrag &&
+                      headTxn() == txnBefore,
+                  "a value the plug-in takes overrides the lane at once, with no op: the snapshot says so "
+                  "before any frame, under a new generation, and the undo list is untouched (ADR-0162)");
+            check(armed->parameterGesture(3, "7", ParamEventKind::End, .8) && armed->error().empty() &&
+                      opCount() == opsBeforeDrag + 2 && snapshot()->automationOverridden && laneOverridden(),
+                  "End commits the gesture, and the override stands through the submitter's refresh");
+            check(cutoffRecord() != nullptr && cutoffRecord()->overridden, "the strip's feed marks Cutoff overridden");
+            const auto generationAfterEnd = armed->view().generation();
+            armed->tick(0);
+            check(armed->view().generation() == generationAfterEnd && snapshot()->automationOverridden,
+                  "a frame that changes nothing rebuilds nothing, and the switch stays lit");
+            check(armed->ops().undo().ok && armed->synchronise() && snapshot()->automationOverridden && laneOverridden() &&
+                      armed->ops().redo().ok && armed->synchronise() && snapshot()->automationOverridden,
+                  "undo and redo of the move edit the stored value, not the override: it stands (not an op)");
+            const auto opsBeforeReenable = opCount();
+            const auto txnBeforeReenable = headTxn();
+            check(armed->reenableAutomation() && armed->error().empty() && !armed->session().automationOverridden() &&
+                      !snapshot()->automationOverridden && !laneOverridden() && opCount() == opsBeforeReenable &&
+                      headTxn() == txnBeforeReenable,
+                  "Re-Enable Automation: every lane follows its envelope again, in the same call; not an op, "
+                  "not an undo step (manual 25.4)");
+            check(cutoffRecord() != nullptr && cutoffRecord()->automated && !cutoffRecord()->overridden,
+                  "and the strip's feed marks Cutoff automated again at once");
+            check(armed->reenableAutomation() && armed->error().empty() && !snapshot()->automationOverridden,
+                  "with nothing overridden it succeeds and changes nothing");
+            // An override the session finds on its own re-read of the rows (ADR-0162: an op, the
+            // agent, anything that changes an automated value): the submitter refreshes before the
+            // session re-reads, and synchronise() brings the snapshot up in the same call.
+            OpRequest op;
+            op.opType = "device.setParam";
+            op.payload = {{"dev", 3}, {"param", "7"}, {"norm", .3}};
+            const auto generationBeforeOp = armed->view().generation();
+            check(armed->ops().submit(op).ok && !snapshot()->automationOverridden && armed->synchronise() &&
+                      armed->session().overriddenLanes().contains(1) && snapshot()->automationOverridden &&
+                      laneOverridden() && armed->view().generation() == generationBeforeOp + 2,
+                  "an op on the automated parameter: the session finds the override when it re-reads, and "
+                  "synchronise() puts it in the snapshot (one more generation, the rows unchanged)");
+            check(armed->reenableAutomation() && !snapshot()->automationOverridden, "and Re-Enable clears that too");
+            armed->setAutomationArmed(false);
+            check(!armed->automationArmed() && !armed->session().automationArmed() && !armed->session().automationRecording(),
+                  "Automation Arm off: the session is told, recording still never on");
+            armed->setAutomationArmed(true);
+            check(armed->automationArmed(), "and on again");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+        }
+    }
+    {
+        // A CLAP plug-in spells its parameter ids in hex where its lanes' refs are decimal
+        // (ADR-0165): the strip's feed finds the lane through the same spelling the session's
+        // override uses, so Re-Enable lighting and the control's LED going off agree (C1 review).
+        using engine::ParamEventKind;
+        auto clap = ui::ProjectDocument::open(temp.path() / "clap-arm.adi", true, test::knobsLoader("0000001f", "clap"),
+                                              error);
+        check(clap != nullptr, "a project for a CLAP-spelled device");
+        if (clap) try {
+            clap->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                    test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            automation::LaneSpec spec;
+            spec.id = 1;
+            spec.ownerKind = "device";
+            spec.ownerId = 3;
+            spec.paramRef = "31"; // 0x1f
+            spec.paramName = "Cutoff";
+            spec.defaultValue = .5;
+            make.push_back(automation::createLane(spec));
+            check(clap->ops().submit(std::move(make)).ok && clap->synchronise(), "the device and a lane on its Cutoff");
+            clap->setParameterDemand(clap.get(), {3});
+            clap->tick(0);
+            auto cutoffRecord = [&]() -> const panel::Record * {
+                const auto feed = clap->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == 3 && !data.records.empty())
+                            return &data.records[0];
+                return nullptr;
+            };
+            check(cutoffRecord() != nullptr && cutoffRecord()->id == "0000001f" && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden,
+                  "the feed keeps the plug-in's hex id and finds the lane under its decimal ref");
+            check(clap->parameterGesture(3, "0000001f", ParamEventKind::Begin, .5) &&
+                      clap->parameterGesture(3, "0000001f", ParamEventKind::Value, .8) && clap->error().empty() &&
+                      clap->session().overriddenLanes().contains(1) && clap->view().current()->automationOverridden &&
+                      clap->parameterGesture(3, "0000001f", ParamEventKind::End, .8) && cutoffRecord() != nullptr &&
+                      cutoffRecord()->overridden,
+                  "a drag overrides the lane and the feed marks the control overridden: Re-Enable and the LED agree");
+            check(clap->reenableAutomation() && cutoffRecord() != nullptr && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden && !clap->view().current()->automationOverridden,
+                  "and Re-Enable lights the LED again");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+        }
+    }
+    refusedBeginOwnership(temp.path());
+    importWithChoices(temp.path());
+    mixSurfacePublication(temp.path() / "mix-surface.adi");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

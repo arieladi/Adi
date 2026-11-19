@@ -8,8 +8,8 @@
 # Both target directories are gitignored: each clone is its own git repo, the
 # same arrangement as VST-ADI/vital. Submodules are NOT fetched by default --
 # none of the reference repos needs to build for us to read it -- and an entry
-# that genuinely needs one says `submodules` in a seventh column. libpd is the
-# only one: pure-data is a submodule and is the DSP itself.
+# that genuinely needs one says `submodules` in a seventh column. libpd needs
+# pure-data (the DSP itself); Link needs its pinned standalone Asio.
 #
 # The licence boundary these two directories encode is not cosmetic. See
 # docs/EXTERNAL-CODE.md before copying a single line out of reference/.
@@ -60,6 +60,11 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
+  "Ableton/link link GPL-2.0-or-later Link-4.1.1 5ba907ae027a8c2ec8824463e37296dcefc5e9be build submodules"
+  # Public headers only: independent ABI shims dynamically load Linux AAC.
+  "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
+  "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
   "libsndfile/libsamplerate libsamplerate BSD-2-Clause 0.2.2 c96f5e3de9c4488f4e6c97f59f5245f22fda22f7 build"
   "JuliaStrings/utf8proc utf8proc MIT v2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78 build"
   "BLAKE3-team/BLAKE3          BLAKE3      CC0-1.0/Apache-2.0 1.8.7 f3149ec5bb5449af877ba20377a11008ff499fa2 build"
@@ -68,10 +73,14 @@ THIRD_PARTY=(
   "richgel999/miniz            miniz       MIT       3.1.2     77d0dce8627735138c51770d1799a1ef48f2117d build"
   "SRombauts/SQLiteCpp          SQLiteCpp   MIT       3.3.3     59a047b8d3fe8574406ed73ab9fac0474e87bd03  build"
   "nlohmann/json                json        MIT       v3.12.0   55f93686c01528224f448c19128836e7df245f72  build"
+  "breakfastquay/rubberband     rubberband  GPL-2.0-or-later v4.0.0 1d95888bec3ae0a17c0c4af791810d5a63f6bc35 build"
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
-  # libpd is the one entry with a submodule, and it is not optional: pure-data
+  # Preserve the authored EQ's static-target SIMD/FFT evaluation. A dependency
+  # update requires rerunning its strict extraction comparisons.
+  "google/highway               highway     Apache-2.0 1.4.0    2607d3b5b0113992fe84d3848859eae13b3b52c1  build"
+  # libpd has a required submodule: pure-data
   # IS the DSP -- libpd without it is a wrapper around nothing. Its commit is
   # fixed by libpd's own tree, so the pin below still answers "what did we build
   # against" with one hash. ADR-0035, ADR-0183.
@@ -105,7 +114,7 @@ THIRD_PARTY=(
   # the table now takes a full URL. Nothing here reaches into bungee's submodule
   # -- a dependency two levels down that nobody fetched is not a pin.
   "https://bitbucket.org/jpommier/pffft.git pffft PFFFT/FFTPACK-BSD v1.0.0 02fe7715a5bf8bfd914681c53429600f94e0f536  build"
-  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.2     72782788ce18c2d4d760b28e0921d6ffc6431102  juce"
+  "juce-framework/JUCE          JUCE        AGPL-3.0  9.0.5     d60b7a78030661574a615b586d9325ba7a7fa7dd  juce"
 )
 
 # NOTE: helio is helio-fm/helio-sequencer, NOT Ahornberg/helio-workstation --
@@ -197,15 +206,26 @@ fetch_pinned() {
         fi
     else
         printf '  %-18s cloning...    ' "$dir"
-        git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
-            "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        if [ "$sub" = headers ]; then
+            git clone --filter=blob:none --sparse --depth 1 --branch "$tag" \
+                -c advice.detachedHead=false -q "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        else
+            git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
+                "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$sub" = headers ] && [ -d "$path/.git" ]; then
+        git -C "$path" sparse-checkout set --no-cone '/libavcodec/*.h' '/libavutil/*.h' /COPYING.LGPLv2.1 /LICENSE.md
     fi
 
     # A submodule is fetched only where the table asks. Shallow, like the parent:
     # the gitlink in the parent's tree names the exact commit, so depth 1 still
     # lands on it.
+    # A failed update must stop the script (set -e), not leave a stale or
+    # missing submodule behind a pin line that reads OK.
     if [ "$sub" = submodules ] && [ -d "$path/.git" ]; then
-        git -C "$path" submodule update --init --depth 1 --recursive -q 2>/dev/null || true
+        git -C "$path" submodule update --init --depth 1 --recursive -q
     fi
 
     # A tag is a mutable ref. Matching the tag name proves nothing about the
@@ -223,6 +243,14 @@ fetch_pinned() {
         echo "Either upstream moved the tag, or someone edited this table without" >&2
         echo "updating the commit beside it. Do not 'fix' this by copying the new" >&2
         echo "hash in -- moving a pin is a reviewed change. See ADR-0024." >&2
+        exit 1
+    fi
+    # The parent's commit pins its submodules by gitlink; verify they sit there
+    # ('-' uninitialised, '+' at another commit, 'U' conflicted).
+    if [ "$sub" = submodules ] && git -C "$path" submodule status --recursive | grep -q '^[-+U]'; then
+        printf 'MISMATCH\n'
+        echo "FATAL: $repo submodules are not at the gitlinks of its pinned commit:" >&2
+        git -C "$path" submodule status --recursive >&2
         exit 1
     fi
     printf '%s %s  %-9s [%s]\n' "${got:0:9}" "$(git -C "$path" log -1 --format='%cs')" "$tag" "$lic"

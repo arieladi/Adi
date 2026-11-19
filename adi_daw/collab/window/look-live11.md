@@ -34,7 +34,7 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 
 ## What ADI adds (Master Reference)
 
-- ADI-Q and ADI-L, the channel slots (ADR-0204 d1): on the row after the sends in the track controls, under the name in a Mixer View strip.
+- ADI-Q and ADI-L, the channel slots (ADR-0204 d1): withdrawn on 17 November 2026 (ADR-0243 d2). No channel has a button for a Mix View function.
 - The AI tab at the foot of the browser's panes (Master Reference 3.1).
 - Pd Devices in the sidebar where Live has Max for Live (Master Reference 9.3).
 - Configure on a device's title bar, for the DAW-drawn panel (ADR-0150).
@@ -44,11 +44,11 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 | # | Live shows | ADI shows | Waits on |
 |---|---|---|---|
 | 1 | The browser's list (folders, devices) | The list's header only | The browser's content model (LANES §3b item 2) |
-| 2 | Return tracks A and B and Main, last, with Post and the cue volume | Built 2 November 2026: the returns and Main at the foot (#315), the returns' letters and Pre/Post, Main's own row (`window/return-main-rows`) | Main's cue volume (N43) |
+| 2 | Return tracks A and B and Main, last, with Post and the cue volume | Built 2 November 2026: the returns and Main at the foot (#315), the returns' letters and Pre/Post, Main's own row (`window/return-main-rows`). New makes A Reverb and B Delay itself since #415 (N41; parity-7.2-application row 1, picture `2026-11-08-new-returns.png`) | Main's cue volume (N43; Live 12's F-03 Set shows it at -6.0) |
 | 3 | ~~MIDI tracks: All Ins, All Channels, No Output; no volume or pan; a dot meter~~ | ~~Every track drawn as an audio track~~ | Built 2 November 2026 (`window/midi-rows`, parity-7.6 row 18): a MIDI track's choosers; with no instrument, no mixer and No Output; the MIDI meter stays dark |
 | 4 | ~~The sends' -inf boxes~~ | ~~ADI-Q and ADI-L in that row~~ | Built 2 November 2026 (`window/send-knobs`): the boxes on that row, ADI-Q and ADI-L on the next |
-| 5 | In/Out choosers with the track's own routing | ADI's fixed routing: Ext. In, 1/2, Auto, Master; a grouped track to its group ("Group"), a group its output only (`window/group-rows`) | The routing in the snapshot (N11) |
-| 6 | The loop brace in the locator band, the playhead's marker | None | The transport's loop |
+| 5 | In/Out choosers with the track's own routing | ADI's fixed routing: Ext. In, 1/2, Auto, Master; a grouped track to its group ("Group"), a group its output only (`window/group-rows`). Live 12's new Set on the director's profile (Readings F-03, 5 November; parity-7.2-application row 1) shows its audio tracks at Ext. In with the channel chooser reading 1 and 2 (dimmed), Monitor Off with In and Auto dimmed, and the output chooser reading Main; ADI's show 1/2, Auto lit and Master. Whether mono inputs 1 and 2 and Monitor Off are a new Set's defaults is open (F-02 and M4-06 NOT RUN; F-01 read No Input): measure on a profile with an input device | The routing in the snapshot (N11) |
+| 6 | The loop brace in the locator band, the playhead's marker | Built 9 November 2026 (`window/loop-metronome`, C2; parity-7.3 row 40): the brace along the band's top, the time signature markers under it; its colours are ADI's until measured. The playhead's marker in the band: none | The brace's colours on Live 11; the playhead's marker |
 | 7 | EQ Eight's and Auto Filter's own displays | The DAW-drawn knob panel | ADR-0150: ADI's devices are drawn from their parameters |
 | 8 | Live's own typeface | The platform's sans-serif, sized to Live's widths | A font choice (no licence for Live's) |
 | 9 | Bipolar knobs filled from the middle (Gain at 0 dB) | Filled from the start | A parameter's bipolarity in the panel record |

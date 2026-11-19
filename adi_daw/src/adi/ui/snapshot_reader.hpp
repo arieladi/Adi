@@ -141,6 +141,31 @@ public:
         return snapshot_ && snapshot_->anySoloed();
     }
 
+    /// Live's Solo in Place (manual 18.6): a soloed track leaves the returns
+    /// audible. The project's one field (`Snapshot::cue.soloInPlace`, #412),
+    /// which the Solo button's menu and the Options menu's entry share; on by
+    /// default (the engine's #412 default; Live's factory default is unmeasured,
+    /// F-02 NOT RUN, the director's profile reads it ticked, F-07), so true when
+    /// invalid.
+    [[nodiscard]] bool soloInPlace() const noexcept {
+        return !snapshot_ || snapshot_->cue.soloInPlace;
+    }
+
+    /// Live's Re-Enable Automation button, lit (manual 25.4): a manual change
+    /// has overridden at least one automation lane this run (ADR-0162). The
+    /// session's state, carried by the snapshot so every window reads one
+    /// truth (N26); false when invalid.
+    [[nodiscard]] bool automationOverridden() const noexcept {
+        return snapshot_ && snapshot_->automationOverridden;
+    }
+
+    /// The transport's saved state (#383, N19): the metronome, the Arrangement
+    /// Loop's switch and its brace, in ticks. Outside undo; saved with the
+    /// project. The defaults (off, the first four bars) when invalid.
+    [[nodiscard]] const TransportSettings& transport() const noexcept {
+        return snapshot_ ? snapshot_->transport : noTransport();
+    }
+
     /// The whole model, for a component that needs more than the accessors.
     /// Null when invalid. Borrowed: it is valid for this reader's lifetime and
     /// storing it defeats the point of the deleted copy constructor.
@@ -163,6 +188,10 @@ private:
     }
     static const std::vector<std::shared_ptr<const engine::SendRoute>>& noSends() noexcept {
         static const std::vector<std::shared_ptr<const engine::SendRoute>> none;
+        return none;
+    }
+    static const TransportSettings& noTransport() noexcept {
+        static const TransportSettings none;
         return none;
     }
     static const std::vector<textproj::Meter>& noMeters() noexcept {

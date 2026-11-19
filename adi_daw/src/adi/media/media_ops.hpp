@@ -3,6 +3,7 @@
 #include "adi/ops.hpp"
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 namespace adi::audio { class DecodeCache; }
 namespace adi::media {
 struct AudioInfo {
@@ -23,11 +24,22 @@ struct MediaResult {
 // Non-audio files retain nullable audio metadata. Known corrupt audio fails.
 MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
                           std::int64_t importedUtc, OpRequest&, audio::DecodeCache* = nullptr);
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&, audio::DecodeCache*,std::stop_token);
+// Header-only import for the normal unwarped material command. Exact container
+// dimensions are captured without validating the whole PCM payload; a later
+// decode error is surfaced by playback. Unknown lengths use full validation.
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&, audio::DecodeCache*,std::stop_token,bool headerOnly);
 MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,
                         Actor actor = Actor::User);
+// The folder SQLite names the database file in: the base a rel_path is
+// resolved against. On unix SQLite resolves every symlink in that name (macOS:
+// /var is /private/var), so make rel_paths relative to this spelling.
 std::filesystem::path projectFolder(const Store&);
+std::filesystem::path projectFolder(const SQLite::Database&);
 std::string pathUtf8(const std::filesystem::path&);
 std::filesystem::path pathFromUtf8(const std::string&);
 // Resolution verifies the first existing candidate; a mismatch is fatal.

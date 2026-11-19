@@ -20,17 +20,22 @@
 #include "temp_directory.hpp"
 
 #include "adi/digest.hpp"
+#include "adi/blob.hpp"
 #include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -118,6 +123,8 @@ std::vector<OpRequest> corpus() {
     op("track.create", {{"id", 10}, {"kind", "midi"}, {"name", "Keys"}}, "Add Keys");
     op("track.create", {{"id", 11}, {"kind", "audio"}, {"name", "Vox"}}, "Add Vox");
     op("track.create", {{"id", 12}, {"kind", "group"}, {"name", "Bus"}}, "Add Bus");
+    op("track.setFreeze", {{"id",11},{"before",{{"armed",0},{"frozen",0},{"media",nullptr},{"render",nullptr}}},
+        {"after",{{"armed",0},{"frozen",0},{"media",nullptr},{"render",nullptr}}}}, "Captured unfrozen state");
     // Ids are caller-allocated and deliberately NOT sequential, so a handler
     // that quietly used rowid order instead would diverge.
     op("track.create", {{"id", 7}, {"kind", "midi"}, {"name", "Drums"},
@@ -131,6 +138,11 @@ std::vector<OpRequest> corpus() {
     op("controller.bind", {{"id",81},{"binding",binding}}, "Relearn pan");
     op("controller.unbind", {{"id",81}}, "Unlearn pan");
     op("controller.bind", {{"id",82},{"binding",binding}}, "Keep project binding");
+    op("track.setRecordQuantize", {{"id",10},{"on",false},{"grid","1/8"}}, "Free record");
+    op("track.setPlayQuantize", {{"id",10},{"on",true},{"grid","1/16"},{"forgivenessMs",30.0}}, "Live quantize");
+    op("track.setKeepMonitoringLatency", {{"id",10},{"on",false}}, "Remove monitoring latency");
+    op("track.restoreRecording", {{"id",10}}, "Remove captured recording overrides");
+    op("track.setRecordQuantize", {{"id",10},{"on",true},{"grid","1/32"}}, "Record thirty-seconds");
     op("track.rename", {{"id", 11}, {"name", "Lead Vocal"}}, "Rename Vox");
     op("track.setMute", {{"id", 7}, {"muted", true}}, "Mute Drums");
     op("track.setMute", {{"id", 10}, {"muted", false}}, "Unmute Keys");
@@ -173,6 +185,70 @@ std::vector<OpRequest> corpus() {
     op("note.delete", {{"clip", 40}, {"note", 1}}, "Drop the C");
     op("clip.resize", {{"id", 40}, {"pos", 1441440}, {"length", 11531520}}, "Trim");
 
+    // Literal note.applyDiff creation is replayed under both ambient states.
+    // The producer supplies the stream identity and complete native row, so
+    // neither application chooses an ID or evaluates a default.
+    op("clip.create", {{"id", 41}, {"track", 10}, {"kind", "midi"},
+                       {"name", "Captured notes"}, {"pos", 0}, {"length", 23063040}},
+       "Add diff clip");
+    NoteRecord diffNote{};
+    diffNote.note_id = std::uint64_t{0x8000000000000011ULL};
+    diffNote.start_ticks = -120;
+    diffNote.dur_ticks = 1441440;
+    diffNote.key = 65;
+    diffNote.vel_on = 91;
+    diffNote.vel_off = 37;
+    diffNote.channel = 2;
+    diffNote.flags = static_cast<std::uint16_t>(NoteFlags::Muted | NoteFlags::Selected);
+    diffNote.probability = 8750;
+    diffNote.tuning_cents = 3.25f;
+    std::vector<std::uint8_t> noteBytes(sizeof diffNote);
+    std::memcpy(noteBytes.data(), &diffNote, sizeof diffNote);
+    const auto emptyNotes = writeStream<NoteRecord>(FourCC::Notes, {});
+    std::vector<std::uint8_t> emptyBytes(emptyNotes.size());
+    std::memcpy(emptyBytes.data(), emptyNotes.data(), emptyNotes.size());
+    const Payload create = {{"id", 700}, {"clip_id", 41}, {"stream_kind", "notes"},
+                            {"channel", nullptr}, {"controller", nullptr},
+                            {"data", Payload::binary(std::move(emptyBytes))}};
+    op("note.applyDiff", {{"clip", 41}, {"stream_id", 700}, {"from", "absent"},
+        {"added", Payload::array({Payload{{"bytes", Payload::binary(std::move(noteBytes))}}})},
+        {"removed", Payload::array()}, {"changed", Payload::array()}, {"create", create}},
+       "Add captured note");
+
+    // MI-02 carries both literal intent and its complete induced effects. This
+    // corpus supplies them independently, with no capture/selection/producer
+    // call during replay. Even the inactive victim collides by stored key.
+    const auto packetFor = [](const NoteRecord& note) {
+        std::vector<std::uint8_t> bytes(sizeof note);
+        std::memcpy(bytes.data(), &note, sizeof note);
+        return Payload{{"bytes", Payload::binary(std::move(bytes))}};
+    };
+    const std::array<NoteRecord, 1> priorNotes{{diffNote}};
+    const auto priorBytes = writeStream<NoteRecord>(FourCC::Notes, priorNotes);
+    const auto priorHash = media::blake3Bytes(priorBytes);
+    if (!priorHash) throw std::runtime_error("cannot hash literal overlap corpus baseline");
+    NoteRecord incoming{};
+    incoming.note_id = std::uint64_t{0x8000000000000012ULL};
+    incoming.start_ticks = 720600;
+    incoming.dur_ticks = 1000;
+    incoming.key = 65;
+    incoming.vel_on = 100;
+    incoming.vel_off = 64;
+    incoming.channel = 7;
+    incoming.probability = 10000;
+    incoming.tuning_cents = -3.25f;
+    auto shortened = diffNote;
+    shortened.dur_ticks = 720720;
+    const auto incomingPacket = packetFor(incoming);
+    const Payload overlapIntent = {{"added", Payload::array({incomingPacket})},
+        {"removed", Payload::array()}, {"changed", Payload::array()}};
+    op("note.applyDiff", {{"clip", 41}, {"stream_id", 700}, {"from", priorHash.hex},
+        {"added", Payload::array({incomingPacket})}, {"removed", Payload::array()},
+        {"changed", Payload::array({Payload{{"old", packetFor(diffNote)}, {"new", packetFor(shortened)}}})},
+        {"overlap", {{"version", 1}, {"intent", overlapIntent},
+            {"expression_guards", Payload::array({Payload{{"note_id", diffNote.note_id}, {"rows", Payload::array()}}})}}}},
+       "Shorten the overlapping note");
+
     // Devices (OPS.md 9.7). The chain first, because device.chain_id is NOT
     // NULL with foreign keys on, and then the whole device lifecycle: insert,
     // parameters, opaque state, preset, move, and the scalars.
@@ -182,10 +258,16 @@ std::vector<OpRequest> corpus() {
     // CONTENT, addressed by hash and travelling with the file, exactly as
     // media does (ADR-0032, ADR-0038). An op that inlined the bytes would put
     // a sampler's embedded content into the undo log twice.
+    const Payload builtinRow={{"id",400},{"format","internal"},{"uid","org.adidaw.builtin.utility"},
+        {"vendor","ADI"},{"name","Utility"},{"version","1"},{"subtype","effect"},
+        {"path_hint",""},{"is_shell",0},{"shell_id",nullptr}};
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility");
+    op("pluginRef.unregister", {{"id",400}}, "Forget unused Utility reference");
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility again");
     op("chain.create", {{"id", 60}, {"track", 10}, {"name", "Rhodes FX"}},
        "A chain on Rhodes");
     op("device.insert", {{"id", 70}, {"chain", 60}, {"ord", 0},
-                         {"name", "Compressor"}}, "Insert a compressor");
+                         {"name", "Compressor"},{"ref",400}}, "Insert a compressor");
     op("device.insert", {{"id", 71}, {"chain", 60}, {"ord", 1},
                          {"name", "Reverb"}, {"always", true}}, "Insert a reverb");
     // ADR-0011: a device whose plugin did not load is STILL INSERTED. Undoing

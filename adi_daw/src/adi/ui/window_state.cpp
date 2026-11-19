@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "window_state.hpp"
+#include "analysis_palettes.hpp"
+#include "spectrum_slope.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -69,8 +71,38 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         state.mixView = j.value("mixView", false);
-        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 5);
         state.mixViewDetached = j.value("mixViewDetached", false);
+        state.mixAnalyzerDock = j.value("mixAnalyzerDock", false);
+        state.clipView = j.value("clipView", false);
+        state.clipViewHeight = std::clamp(j.value("clipViewHeight", 286), 0, 4000);
+        state.noteGridSnap = j.value("noteGridSnap", true);
+        state.noteGridFixed = j.value("noteGridFixed", false);
+        state.noteGridTriplet = j.value("noteGridTriplet", false);
+        state.noteGridNarrow = std::clamp(j.value("noteGridNarrow", 0), -2, 2);
+        if (const double quarters = j.value("noteGridFixedQuarters", .25); std::isfinite(quarters))
+            state.noteGridFixedQuarters = std::clamp(quarters, 1. / 8, 32.);
+        state.highlightScale = j.value("highlightScale", true);
+        state.noteColours = std::clamp(j.value("noteColours", 0), 0, 4);
+        state.noteLaneHeight = std::clamp(j.value("noteLaneHeight", 56), 50, 2000);
+        state.noteSpelling = std::clamp(j.value("noteSpelling", 0), 0, 4);
+        state.clipPanelsFolded = j.value("clipPanelsFolded", false);
+        state.clipPanelsArrangement = std::clamp(j.value("clipPanelsArrangement", 0), 0, 2);
+        state.quantizeValue = std::clamp(j.value("quantizeValue", 0), 0, 7);
+        state.quantizeAmount = std::clamp(j.value("quantizeAmount", 100), 0, 100);
+        state.quantizeSwing = std::clamp(j.value("quantizeSwing", 0), 0, 100);
+        state.quantizeStarts = j.value("quantizeStarts", true);
+        state.quantizeEnds = j.value("quantizeEnds", false);
+        state.mixAnalyzerWidth = std::clamp(j.value("mixAnalyzerWidth", 300), 240, 420);
+        state.mixAnalyzerSource = std::clamp(j.value("mixAnalyzerSource", 0), 0, 1);
+        state.mixAnalyzerPoint = std::clamp(j.value("mixAnalyzerPoint", 0), 0, 2);
+        state.mixAnalyzerChannel = std::clamp(j.value("mixAnalyzerChannel", 0), 0, 4);
+        const auto palette = j.value("analysisPalette", std::string("adi"));
+        const bool knownPalette = palettes::id(palettes::find(palette)) == palette;
+        state.analysisPalette = knownPalette ? palette : "adi";
+        state.analysisPaletteReverse = knownPalette && j.value("analysisPaletteReverse", false);
+        const auto slope = j.value("analysisSpectrumSlope", std::string("flat"));
+        state.analysisSpectrumSlope = spectrumSlopeId(spectrumSlopeFromId(slope));
         state.showReference = j.value("showReference", false);
         state.hideReturns = j.value("hideReturns", false);
         state.follow = j.value("follow", false);
@@ -78,6 +110,9 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);
         state.mixerInOut = j.value("mixerInOut", false);
+        state.mixerSends = j.value("mixerSends", true);
+        state.trackOptions = j.value("trackOptions", false);
+        state.mixerTrackOptions = j.value("mixerTrackOptions", false);
         state.largeTracks = j.value("largeTracks", true);
         state.viewGroup = j.value("viewGroup", std::int64_t{0});
         state.gridSnap = j.value("gridSnap", true);
@@ -120,7 +155,13 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
             state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512 ||
             !std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
-            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000) {
+            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000 ||
+            state.mixAnalyzerWidth < 240 || state.mixAnalyzerWidth > 420 ||
+            state.mixAnalyzerSource < 0 || state.mixAnalyzerSource > 1 ||
+            state.mixAnalyzerPoint < 0 || state.mixAnalyzerPoint > 2 ||
+            state.mixAnalyzerChannel < 0 || state.mixAnalyzerChannel > 4 ||
+            palettes::id(palettes::find(state.analysisPalette)) != state.analysisPalette ||
+            !validSpectrumSlopeId(state.analysisSpectrumSlope)) {
             error = "Invalid view geometry";
             return false;
         }
@@ -142,6 +183,32 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixView", state.mixView},
                             {"mixViewTab", state.mixViewTab},
                             {"mixViewDetached", state.mixViewDetached},
+                            {"mixAnalyzerDock", state.mixAnalyzerDock},
+                            {"clipView", state.clipView},
+                            {"clipViewHeight", state.clipViewHeight},
+                            {"noteGridSnap", state.noteGridSnap},
+                            {"noteGridFixed", state.noteGridFixed},
+                            {"noteGridTriplet", state.noteGridTriplet},
+                            {"noteGridNarrow", state.noteGridNarrow},
+                            {"noteGridFixedQuarters", state.noteGridFixedQuarters},
+                            {"highlightScale", state.highlightScale},
+                            {"noteColours", state.noteColours},
+                            {"noteLaneHeight", state.noteLaneHeight},
+                            {"noteSpelling", state.noteSpelling},
+                            {"clipPanelsFolded", state.clipPanelsFolded},
+                            {"clipPanelsArrangement", state.clipPanelsArrangement},
+                            {"quantizeValue", state.quantizeValue},
+                            {"quantizeAmount", state.quantizeAmount},
+                            {"quantizeSwing", state.quantizeSwing},
+                            {"quantizeStarts", state.quantizeStarts},
+                            {"quantizeEnds", state.quantizeEnds},
+                            {"mixAnalyzerWidth", state.mixAnalyzerWidth},
+                            {"mixAnalyzerSource", state.mixAnalyzerSource},
+                            {"mixAnalyzerPoint", state.mixAnalyzerPoint},
+                            {"mixAnalyzerChannel", state.mixAnalyzerChannel},
+                            {"analysisPalette", state.analysisPalette},
+                            {"analysisPaletteReverse", state.analysisPaletteReverse},
+                            {"analysisSpectrumSlope", state.analysisSpectrumSlope},
                             {"showReference", state.showReference},
                             {"hideReturns", state.hideReturns},
                             {"follow", state.follow},
@@ -149,6 +216,9 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"inOut", state.inOut},
                             {"sends", state.sends},
                             {"mixerInOut", state.mixerInOut},
+                            {"mixerSends", state.mixerSends},
+                            {"trackOptions", state.trackOptions},
+                            {"mixerTrackOptions", state.mixerTrackOptions},
                             {"largeTracks", state.largeTracks},
                             {"viewGroup", state.viewGroup},
                             {"gridSnap", state.gridSnap},

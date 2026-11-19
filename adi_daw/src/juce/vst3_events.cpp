@@ -13,7 +13,9 @@ bool Vst3EventList::add(const engine::Event& in, std::int32_t blockOffset,
     // event form -- it travels in IParameterChanges -- and returns false
     // rather than inventing an event a caller might assume was sent.
     engine::MpeOut o;
-    if (!engine::noteExpressionOut(in, engine::ExpressionCaps{}, o)) return false;
+    static constexpr engine::ExpressionCaps defaultCaps;
+    if (!engine::noteExpressionOut(in, defaultCaps, o))
+        return false;
     return addOut(o, blockOffset, segmentFrames);
 }
 

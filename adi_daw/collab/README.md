@@ -252,6 +252,37 @@ subject, say so in your log instead of writing it twice.
 | 0209 | win | `win/adr-0209-mixview` | the Mix View (F4), Gemini's draft handed over by the director, recorded in full with win's critique and nine questions, ruled by him the same day (§10: the four recommendations taken, the name kept, the ★ Reference on Shift+R) | used |
 | 0210 | win | `win/adr-0209-mixview` | nobody waits: the window's needs table heads the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push (director) | used |
 | 0211 | win | `win/adr-0211-track-colour` | a colour column holds an index into Live's palette (0 to 69), never RGB; NULL is no colour of its own; the theme owns the RGB table (answers the window's N36) | used |
+| 0212 | win | `win/m0-records` | the director's ruling of 5 November recorded in his words: no reserved plug-in slots, no separate built-in ADI-Q or ADI-L, his plug-ins as ordinary plug-ins, one unified built-in feature designed when his list arrives (plan P-6; amends ADR-0203 d14, ADR-0204 d1, ADR-0209 d11) | used |
+| 0213 | win | `win/m0-records` | the undo cap always holds: named snapshots and dead ends kept once as stored states, compaction best-effort (P-10), Live's Backup folder from the second Take Snapshot (his Q-A1 A, Q-A2 a) | used |
+| 0214 | win | `win/m0-records` | short samples on drop: every drop arrives clean, Live's result on Warp or from the import prompt, the setting offers Live's four choices (his Q-E a) | used |
+| 0215 | win | `win/m0-records` | editing Pd devices: Edit in Pd attaches vanilla Pd's editor to the running device; no added delay when the buffer is a multiple of 64; editing a built-in makes '<Device> (edited)' (his Q-K1 A, Q-K2 1, Q-K3 1) | used |
+| 0216 | win | `win/m0-records` | the gesture contract: one GestureSession, one label, two preview strategies, undo refused while open, OPS 6.4 retires (plan P-8 item 1; HI-01, XC-17) | used |
+| 0217 | win | `win/m0-records` | EditScope: every edit declares what it touches, Live's overlap rule in one planner, Lock Envelopes read by it, ripple as one visible switch (P-8 item 2; ED-03, AU-05, ED-07) | used |
+| 0218 | win | `win/m0-records` | the media reader: one bounded ISO-BMFF/QuickTime reader behind every decoder, channels from the AudioSpecificConfig, gapless by edit list then iTunSMPB, raw packets to platform decoders, ALAC in process (P-8 item 3; TM-MD-01) | used |
+| 0219 | win | `win/m0-records` | one loudness meter behind every reading, src/adi/dsp/loudness, proved against outside references, never 'EBU Mode compliant' (P-8 item 4; DEV-28, MX-27, XC-03) | used |
+| 0220 | win | `win/m0-records` | the measurement harness: record schema, gate vocabulary, seat table, relay rule, nothing of Ableton's in the repo; tools/measure and src/adi/measure (P-8 item 5; MX-33, XC-38, G-1) | used |
+| 0221 | win | `win/m0-records` | one capture for every offline render: captureDerived, ERRATA-11's four moments, Tap vocabulary, Direct/ViaMain/MainFxOnly, renders in process (P-8 item 6; EX-02, TM-FC-02, XC-14) | used |
+| 0222 | win | `win/m0-records` | jobs and staleness: one state machine wrapping render::Queue, a committing job declares its read set and is refused as stale only when those inputs changed (P-8 item 7; AGT-04, XC-20) | used |
+| 0223 | win | `win/m0-records` | freeze, bounce and consolidate are three contracts on one recipe key; refs verified by hash; collection only from an explicit command; Live's bounces as Live's (P-8 item 8; TM-FC-01 to TM-FC-03) | used |
+| 0224 | win | `win/m0-records` | every converter runs on the exact time base: one pure integer component, drop-frame on integer frames, Tick::MAX refused, whole tables (P-8 item 9; TM-IC-01, XC-11) | used |
+| 0225 | win | `win/m0-records` | comping is Live's: the main lane plays, take lanes are auditioned, a comp is copies on the main lane; NULL lane_id is the main lane (P-8 item 10; CT-01; ADR-0203 d1 over ADR-0037) | used |
+| 0226 | win | `win/m0-records` | the warp analysis stack: spectral-flux onsets, qm-dsp beats behind one analyser interface, versioned ADIA sections, a benchmark gates it and picks the suite's analyser (P-8 item 11; TM-WT-01; his Q-D a) | used |
+| 0227 | win | `win/m0-records` | tuning sources and the keyboard map: every source Live accepts, byte-exact re-export, whole tables in a minor, the ruler in Live's index order (P-8 item 12; TU-02, XC-28) | used |
+| 0228 | win | `win/m0-records` | remarks and Live's Edit Info Text are two things: the info text in a side table with one op; remark threads as Word's in whole tables at P2 (P-8 item 13; RE-03, RE-02) | used |
+| 0229 | win | `win/m0-records` | Graph threads: one persistent pool, a dependency-counted scheduler, real-time standing, devices opt in, on by default only after the Windows measurements, byte-identical output (P-8 item 14; DEV-23) | used |
+| 0230 | win | `win/m0-records` | the modulation schema: contributor kinds, one evaluator per block, one playing value and one ownership state per parameter; Arrangement clip envelopes are modulation (P-8 item 15; DEV-07, AU-06, XC-16) | used |
+| 0231 | win | `win/m0-records` | how the UI is tested: multi-instance test launches under ADI_HOME never on the director's desktop, the input clock seam, goldens that check text, UiControl, the headless runner, parity bookkeeping (P-8 item 16; WTS-01 to WTS-10) | used |
+| 0232 | win | `win/m0-records` | one control stack: one JUCE-free dispatcher, one loopback listener, one wire, one actor rule, named owners; starts now on a seat of its own (P-8 item 17; CTL-01; his Q-C a; Q-O stays his) | used |
+| 0235 | win | `win/adr-0235-0236` | ADiJ stays light: no Mix View and no unified built-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid; CPU is a requirement (director) | used |
+| 0236 | win | `win/adr-0235-0236` | the Mix View seat: his plug-in list is in, ADR-0212's gate opens; a dedicated local Codex seat builds the Mix View across the lanes, starting with a decision guide; his device-area tab model is the baseline; ADI-Clip is the clipper, ADI-C the compressor (director) | used |
+| 0237 | win | `win/adr-0235-0236` | the Mix View's first answers: one of each function per channel, added and removed like Live devices (undo), nothing on by default; EQ carries the unmasking, the limiter the clipper; analysers boxed in the Info box and in a Mix View tab, no CPU when unseen; compact rows (director) | used |
+| 0238 | win | `win/adr-0238-juce` | JUCE moves from 9.0.2 to 9.0.5 (d60b7a78): his plug-ins' JUCE, the newest stable; lands with #537 (director) | used |
+| 0239 | win | `control/mcp-slice` | the control stack's open questions answered: the token both ways, the user's choice; standalone adi-mcp first; every deferral a row in docs/DEFERRED.md until done, the release gate; win merges, he decides (director) | used |
+| 0240 | win | `win/adr-0240` | the Clip View approved and built by win; loading a channel's Mix Set replaces its native functions in one undo step; the Mix View answers that lived only in the seat's log (director) | used |
+| 0241 | win | `win/clip-view-additions` | the Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken (director) | used |
+| 0242 | win | `win/adr-0242` | more Clip View additions: win's picks and Reason's drift taken; the rest of the candidates on condition they impair no Live function; slide notes and a drum editor not taken; Live's clip editing audited, multi-clip editing now (director) | used |
+| 0243 | win | `window/no-channel-slots` | the look is settled surface by surface with the director; no channel button for a Mix View function; Live the base with Bitwig's and FabFilter's design language; the Mix View takes the window |
+| 0244 | win | `window/design-round-1` | the first design round: five sheets agreed; a cloned tool looks like its source and the scope is s(M)exoscope itself; the Mix View's pages are Stack, Focus and Analysers |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -264,6 +295,7 @@ Keep this short. One row per active branch. Delete your row when it merges.
 
 | Path | Agent | Branch | Since |
 |---|---|---|---|
+| `docs/daws/**`, `collab/prompts/2026-11-04-clones-daw-reference-reading.md` (director-assigned research only; raw evidence stays private on SALON-TV) | clones | `clones/daw-reference-reading-20261104` | 2026-11-04 |
 | Utility DSP/builtin/patch, tests/test_utility*.cpp, cmake/devices/utility.cmake | win_codex - mission 5 delegated by win | `codex/utility-pd` | 2026-09-29 |
 | Saturator DSP/builtin/patch, tests/test_saturator*.cpp, cmake/devices/saturator.cmake | win_codex - mission 5 delegated by win | `codex/saturator-pd` | 2026-09-29 |
 | Echo DSP/builtin/patch, tests/test_echo*.cpp, cmake/devices/echo.cmake | win_codex - mission 5 delegated by win | `codex/echo-pd` | 2026-09-29 |

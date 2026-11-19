@@ -42,9 +42,24 @@ namespace adi::engine {
 
 /// One realised graph, published. The `Sequenced` base is what the publisher
 /// numbers; everything else here is the payload.
+// Immutable generation identity/clock data; any scratch belongs only to the
+// single audio reader. Construct/retire on the owner, never from a callback.
+class GraphTransportState {
+public:
+    virtual ~GraphTransportState()=default;
+    // Called once per actually adopted generation, before beginBlock. Apply
+    // prevalidated raw control bindings only; no allocation/lock/destruction.
+    virtual void adopted() const noexcept {}
+    // Called once per rendered logical slice, after adopting its pinned graph
+    // and before running any node. Returned metadata lives through that slice.
+    // No allocation/lock/I/O.
+    [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
+};
 class PublishedGraph final : public Sequenced {
 public:
-    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g) : graph_(std::move(g)) {}
+    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g,std::shared_ptr<const GraphTransportState> state={},
+                            std::int32_t maxFrames=0)
+        : transportState_(std::move(state)),graph_(std::move(g)),maxFrames_(maxFrames) {}
 
     /// NON-CONST through a const `PublishedGraph`, on purpose. `AudioRead`
     /// hands out `const PublishedGraph*` because the snapshot's IDENTITY is
@@ -53,15 +68,45 @@ public:
     /// every block. `const` on a `unique_ptr` does not propagate to the
     /// pointee, so this needs no `mutable` and no cast.
     [[nodiscard]] RealizedGraph& graph() const noexcept { return *graph_; }
+    [[nodiscard]] const GraphTransportState* transportState()const noexcept{return transportState_.get();}
+    [[nodiscard]] std::int32_t maxFrames() const noexcept { return maxFrames_; }
 
 private:
+    // The graph retires first; its block metadata remains alive through it.
+    std::shared_ptr<const GraphTransportState> transportState_;
     std::unique_ptr<RealizedGraph> graph_;
+    std::int32_t maxFrames_ = 0;
 };
 
 /// Holds the live graph, replaces it, and renders through whichever one is
 /// current.
 class GraphHost final {
 public:
+    class PreparedGraph final {
+    public:
+        PreparedGraph(PreparedGraph&&) noexcept = default;
+        PreparedGraph& operator=(PreparedGraph&&) noexcept = default;
+        PreparedGraph(const PreparedGraph&) = delete;
+        PreparedGraph& operator=(const PreparedGraph&) = delete;
+        [[nodiscard]] bool valid() const noexcept { return value_ != nullptr && !host_.expired(); }
+        [[nodiscard]] const RealizedGraph* graph() const noexcept {
+            return value_ != nullptr ? &value_->graph() : nullptr;
+        }
+    private:
+        PreparedGraph() = default;
+        friend class GraphHost;
+        std::unique_ptr<PublishedGraph> value_;
+        std::weak_ptr<const void> host_;
+        std::uint64_t configuration_ = 0, formatEpoch_ = 0;
+        double sampleRate_ = 0.0;
+        std::int32_t maxFrames_ = 0, channels_ = 0;
+    };
+    struct PrepareResult {
+        std::unique_ptr<PreparedGraph> graph;
+        std::string error;
+        std::vector<std::string> problems;
+        [[nodiscard]] bool ok() const noexcept { return graph != nullptr; }
+    };
     struct Stats {
         std::int64_t published = 0;   ///< rebuilds that took effect
         std::int64_t refused = 0;     ///< rebuilds that never reached the audio thread
@@ -77,16 +122,28 @@ public:
 
     // --- message thread -----------------------------------------------------
 
+    /// Build a sealed ready generation without publishing. PreservePrepared
+    /// refuses incompatible reused nodes before any node is prepared.
+    [[nodiscard]] PrepareResult prepare(const rows::Model&, const RealizeOptions&,
+        double sampleRate, std::int32_t maxFrames,
+        const std::function<void(GraphPlan&)>& transformPlan = {},
+        std::shared_ptr<const GraphTransportState> transportState = {},
+        NodePreparePolicy policy = NodePreparePolicy::PrepareAll);
+    /// Consumes only on success. A stale/foreign handle or failed publication
+    /// preflight leaves the ready value owned and the running graph unchanged.
+    bool publish(PreparedGraph&);
+
     /// Plan, realise, prepare and publish. Returns false with `error()` set
     /// when the model cannot be realised.
     ///
-    /// **A FAILED REBUILD DOES NOT DISTURB THE RUNNING GRAPH.** Nothing is
-    /// published until the new graph has been prepared successfully, so a
-    /// model with a cycle or no master leaves the session playing exactly what
-    /// it was playing. The alternative — swap first, discover second — turns a
-    /// bad edit into silence.
-    bool rebuild(const rows::Model& model, const RealizeOptions& opts,
-                 double sampleRate, std::int32_t maxFrames);
+    /// Nothing is published until preparation succeeds. A bad plan leaves the
+    /// current graph playing. PreservePrepared additionally protects its shared
+    /// nodes from preparation side effects; PrepareAll is the explicit initial
+    /// or format/shape-change path, with device reactivation owned by the caller.
+    bool rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                 std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {},
+                 std::shared_ptr<const GraphTransportState> transportState = {},
+                 NodePreparePolicy policy = NodePreparePolicy::PrepareAll);
 
     /// Free retired graphs the audio thread has demonstrably moved past. Call
     /// it on the same timer that polls the coalescer; it never blocks audio.
@@ -100,6 +157,14 @@ public:
     /// why `LatencyCoalescer` attaches to the HOST and re-reads this every
     /// poll rather than storing it once.
     [[nodiscard]] Graph* currentGraph() const noexcept;
+    /// Audio thread, after process: latency of the graph that actually ran.
+    [[nodiscard]] std::int32_t renderedLatency() const noexcept;
+    /// Single audio reader, after process and before the next process. Protected
+    /// by the same publication as the graph that actually ran; no refcounting.
+    [[nodiscard]] const GraphTransportState* renderedTransportState()const noexcept;
+    /// Audio owner after process, before the next process: protected by its
+    /// current publication. Copies already rendered samples, never runs DSP.
+    [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device
@@ -117,13 +182,31 @@ public:
     /// scales with it: `channels * (delay + headroom) * 4` bytes per edge (`* 8`
     /// in a graph at 64, ADR-0207 d2), so
     /// 512 KiB of headroom per stereo edge at 384 kHz.
-    void setLatencyHeadroom(std::int32_t n) noexcept { headroom_ = n > 0 ? n : 0; }
+    void setLatencyHeadroom(std::int32_t n) noexcept {
+        const auto value = n > 0 ? n : 0;
+        if (headroom_ != value) ++configuration_;
+        headroom_ = value;
+    }
     [[nodiscard]] std::int32_t latencyHeadroom() const noexcept { return headroom_; }
 
     /// The Processing Precision every graph is built at (ADR-0207 d2), kept on
     /// the host as the headroom is. Takes effect at the next `rebuild`.
-    void setPrecision(Precision p) noexcept { precision_ = p; }
+    /// Owner configuration for future rebuilds. Existing graph remains live
+    /// until a successfully prepared candidate is published. Zero is serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr) noexcept;
+    void setPrecision(Precision p) noexcept {
+        if (precision_ != p) ++configuration_;
+        precision_ = p;
+    }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
+    /// Message-thread policy for the next graph, like Processing Precision.
+    void setDelayCompensation(bool on) noexcept {
+        if (delayCompensation_ != on) ++configuration_;
+        delayCompensation_=on;
+    }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
@@ -159,6 +242,31 @@ public:
 
     // --- audio thread -------------------------------------------------------
 
+    /// A physical callback pins one publication while rendering any number of
+    /// logical slices. Acquiring the next handle expires this one even when the
+    /// publication did not change. Keep it on the single driver's stack; owner
+    /// publication/collection is allowed throughout its lifetime.
+    class RenderBlock final {
+    public:
+        ~RenderBlock();
+        RenderBlock(const RenderBlock&) = delete;
+        RenderBlock& operator=(const RenderBlock&) = delete;
+        [[nodiscard]] bool valid() const noexcept;
+        [[nodiscard]] std::uint64_t generation() const noexcept;
+        [[nodiscard]] std::int32_t latencySamples() const noexcept;
+        [[nodiscard]] const GraphTransportState* transportState() const noexcept;
+        /// False writes silence at both widths and never dereferences an expired
+        /// publication. A successful slice applies its clock exactly once.
+        bool process(const AudioIo&) noexcept;
+    private:
+        friend class GraphHost;
+        explicit RenderBlock(GraphHost&) noexcept;
+        GraphHost& host_;
+        const PublishedGraph* snapshot_ = nullptr;
+        std::uint64_t serial_ = 0;
+    };
+    [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
+
     /// Render one block through whatever is current. Allocates nothing, locks
     /// nothing, waits for nothing.
     ///
@@ -170,23 +278,36 @@ public:
 private:
     using Pub = SnapshotPublisher<PublishedGraph>;
 
+    const PublishedGraph* acquireRender() noexcept;
+
     void fadeIn(const AudioIo& io) noexcept;
 
     /// Carry ring history from `from` to `to`. Audio thread, allocation-free:
     /// one merge walk over two sorted edge lists. Returns edges carried.
     std::int32_t handover(const PublishedGraph& from, const PublishedGraph& to) noexcept;
 
+    std::shared_ptr<const void> identity_ = std::make_shared<const int>(0);
     Pub pub_;
+    std::uint64_t configuration_ = 0, formatEpoch_ = 0;
+    double publishedSampleRate_ = 0.0;
+    std::int32_t publishedMaxFrames_ = 0, publishedChannels_ = 0;
     Stats stats_;
     std::string error_;
     std::vector<std::string> problems_;
     std::int32_t headroom_ = 8192;
     std::int32_t fadeFrames_ = 0;
     Precision precision_ = Precision::Float32;
+    bool delayCompensation_ = true;
+    std::uint32_t renderWorkers_=0,parallelMinimumNodes_=4;
+    std::int32_t parallelMinimumFrames_=256;
+    RenderWorkers::Initializer workerInitializer_=nullptr;
+    void* workerInitializationContext_=nullptr;
     bool keepHistory_ = true;
 
     // Audio thread only.
     std::uint64_t lastSeq_ = 0;
+    std::uint64_t renderSerial_ = 0;
+    bool renderActive_ = false;
     /// The snapshot rendered LAST block -- the one history is carried FROM.
     /// Not whatever the message thread last published: two rebuilds between
     /// blocks skip a graph that never ran, and its rings hold nothing.

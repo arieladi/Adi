@@ -15430,6 +15430,14 @@ its callers:
   display arrangement** (SPEC §8.4, a MUST). Restoring `x=3200` on a machine
   that lost its second monitor puts the window offscreen, and the clamp has to
   live wherever windows are created.
+
+  *Both items above are settled and no longer open (2026-11-08): ADR-0231's
+  amendments table strikes them as open (undocking reparents the same component;
+  a restored rectangle carries monitor identity). Where a restored rectangle
+  lives is WIN-02's: the main window and Settings in the App record
+  `window.places` (`docs/PLAN.md` R-e), floating windows in `ui_view`. This note
+  is the strike `docs/PLAN.md` §8.4 asks for; nothing else in this decision
+  moves.*
 - Each window owns its clock, per decision 1.
 
 **4. `MainSplit` is a panel→slot map, not a `StretchableLayoutManager`.**
@@ -17130,3 +17138,1937 @@ copy a colour down (manual 8.1.1.3).
   the frozen DDL).
 - No change to any op, the catalogue, OPS.md, the validator or the Master Reference's text
   beyond a line in 3.x's track colour sentence at the next build.
+
+## ADR-0212 — The director's ruling of 5 November: no reserved plug-in slots, no separate built-in ADI-Q or ADI-L; his plug-ins load as ordinary plug-ins; when they are all finished their source becomes one unified built-in feature, designed when his list arrives — `DECIDED` (2026-11-05; recorded 2026-11-08) — **DIRECTOR'S RULING, RECORDED IN HIS WORDS AND NOTHING MORE (`docs/PLAN.md` §6.2 P-6, MX-34, XC-27); AMENDS ADR-0203 d14 (THE CASCADE), ADR-0204 d1, ADR-0209 d11 AND §1; ADR-0208 d2's CASCADE ROLE FALLS, THE NAME STAYS HIS; DESIGNS NOTHING**
+
+**Where this comes from.** On 5 November 2026 the director ruled, in chat, on the per-channel
+slots that ADR-0204 d1 and ADR-0209 d11 had decided and that the window's needs table had already
+withdrawn (N16). `docs/PLAN.md` (#462) carries the ruling in every text it touches and asks, as
+placement P-6, that it also be one short record ADR, because LANES §2 says a decision is a new
+ADR and the docs win over the code: without this entry DECISIONS.md would still say the slots are
+decided while every other text says they are withdrawn. This entry records the ruling and designs
+nothing.
+
+**The ruling, as the plan carries it (his words where he gave them).**
+- **No reserved plug-in slots** on the channels, and **no separate built-in ADI-Q or ADI-L
+  devices.**
+- **His VST3 and CLAP builds stay ordinary plug-ins:** ADI-Q, ADI-L, ADI-Clip and the rest load in
+  ADI as any VST3 or CLAP plug-in does. Nothing in ADI waits for them and nothing is reserved for
+  them.
+- **When all his plug-ins are finished and he sends his list, their source becomes one unified
+  built-in feature with a device-like window,** reached from the track and from the Mix View.
+  **The built-in feature never hosts the VST3.** Its design waits for the list.
+- **Measurement clones under his own names are welcome** (ADR-0204 d3 stands, unchanged).
+- **What STACK shows until then (his answer to the plan's Q-B, 5 November, in his words):** *"each
+  track's own devices, Live's and VST3s loaded as plug-ins, like in the Ableton device area, only
+  with the FabFilter Pro-Q instance view where what I am standing on and tinkering with gets a
+  zoomed-in vibe, bigger than the rest, and I can move to the rest and they get bigger instead;
+  VST3s as live tiles with the fisheye; when the processor lands, it joins the row."*
+
+### Decisions
+
+1. **Withdrawn:** the per-channel slots (ADR-0204 d1's "every channel and group has the EQ built in,
+   present but off" and "ADI-L is baked into every channel and group as well"; ADR-0209 d11's three
+   present-but-off slots in the snapshot, N16; the sidechain slot as a slot); the separate built-in
+   ADI-Q and ADI-L devices; the hosted slot backend (a built-in that would host his VST3). The
+   per-channel ADI-L instances as the stages of the Loudness Drive's cascade (ADR-0204 d1,
+   ADR-0208 d2) fall with them: the Drive is the gain over the leaf tracks' input gain that
+   ADR-0203 d14 already rules, engaging nothing (the plan's P-1, DEV-30, MX-35).
+2. **Kept:** his VST3 and CLAP builds as ordinary plug-ins, found by the scanner and used like any
+   plug-in (DEV-26); the Mix View itself (ADR-0209: F4, the shell, the ★ Reference on Shift+R);
+   the STACK tab, whose rows are what his Q-B answer says: each track's own devices, Live's and his
+   VST3s as plug-ins, in a Pro-Q-instance-list view with the fisheye, the row under the pointer
+   zoomed and editable, the others smaller; when the unified feature lands it joins the row. The
+   drawn slot columns stay drawn and off, unremoved, until his list (N16).
+3. **ADR-0208 d2:** ADI-C's role as "the clipper stage of the Loudness Drive's cascade beside
+   ADI-L" falls with d1; the plug-in itself, its membership in his suite and its name (ADI-C, or
+   ADI-Clip as `docs/PLAN.md` §0 names it) stay his call and are not ruled here.
+4. **The unified feature is designed when his list arrives,** and not before. No entry, row, queue
+   item or prompt designs it, reserves a slot for it, or hosts his VST3 inside a built-in. What the
+   Quick Kick button engages (MX-20), CASCADE's stage columns (MX-31), and whether his plug-ins'
+   meters converge with ADI's one meter (DEV-28's LD2) wait for the same list.
+5. **The Dream Reference's slot passages** (chapters 7 to 9, his text) are superseded by this
+   ruling until he revises the Dream (XC-42); win does not edit his text.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0203 d14 | the clipper/limiter cascade is no longer built from per-channel ADI-L stages; the Drive stays one gain over the leaf tracks' input gain, engaging nothing (d1) |
+| ADR-0204 d1 | the EQ and ADI-L on every channel, present but off, and the one EQ window of every channel's EQ are withdrawn; the names and "clones from measurements are welcome" (d3) stand (d1, d2) |
+| ADR-0208 d2 | the cascade role falls; the name stays his (d3) |
+| ADR-0209 §1 to §8, d11 | every channel's slots and the "one window" ADR-0204 d1 owed are withdrawn; the shell, STACK (its rows per Q-B) and the ★ Reference stay P1 (d2) |
+| FEATURES §2 rows 78 to 80, 82, 84; LANES §1, §3, §4, §5; BUILD-BRIEF §4, §5, Phase D 7 and 7a, §9; UI-ARCHITECTURE §12 | follow the ruling in the plan's R-a, as `docs/PLAN.md` §8 proposes |
+
+## ADR-0213 — The undo cap always holds: every named snapshot and every dead end is kept once as a stored state; compaction is best-effort; Live's Backup folder from the second Take Snapshot — `DECIDED` (2026-11-05; recorded 2026-11-08) — **DIRECTOR'S ANSWERS Q-A1 (A) AND Q-A2 (a) OF 5 NOVEMBER, WITH WIN'S PLACEMENT P-10 (`docs/PLAN.md` §6.1, §6.2; HI-02, HI-04, PD-03, PD-07, TM-FC-03; XC-02, XC-32); AMENDS ADR-0203 d13, ADR-0140 d5, ADR-0125 (R-26) AND SPEC §8.3**
+
+**The question (plan Q-A1).** ADR-0203 d13 caps active undo at 2000 steps or 1000 MB and says
+compaction never passes a named snapshot or a reachable branch point. Every Ctrl+S (a named
+snapshot) and every undo followed by a new edit (a branch point) is such a point, so after the
+first of them 2000 steps pile up behind it and the cap stops holding; a Ctrl+S on a new project
+keeps compaction off for the life of the project. On main (#419) compaction also treats the daily
+automatic snapshot and the oldest fork as stops, and a failed compaction fails the edit. **His
+answer:** option A. **Q-A2:** should Ctrl+S also keep Live's Backup copies outside the file (R-26
+said "Backups: none")? **His answer:** option (a), as Live.
+
+### Decisions
+
+1. **What stays reachable at the cap (Q-A1, A).** Every named snapshot and every dead end (a
+   branch left behind by an undo followed by a new edit, or by a revert) is kept as a **stored
+   state**, deduplicated by content (row by row, by hash), openable and revertible as a snapshot
+   is; only the step-by-step undo older than the cap is compacted. So the cap of 2000 steps or
+   1000 MB **always holds**, however often Ctrl+S is pressed. A stored state can be opened and
+   reverted to, not stepped through one undo at a time beyond the cap. This amends ADR-0203 d13's
+   "never past a named snapshot nor a reachable branch point": compaction may now pass such a
+   point once its state is stored, and never loses it.
+2. **The daily automatic snapshot follows d13 as written:** compactable, the oldest dropped first;
+   it is not a stop. Main's treating it as one is a defect fixed inside HI-02, and the daily
+   snapshot (`DailyHistorySnapshots`, #410) is wired only together with this rule (XC-02, XC-32).
+3. **Compaction is best-effort (win's placement P-10, to strike if he wants the cap enforced
+   strictly).** It reports and never fails a commit: a compaction that cannot run leaves the edit,
+   the plug-in drains, the recording takes and the agent's applies untouched and logs why. It runs
+   down to a low-water mark (for example 1,800 steps or 900 MB) and stores checkpoint rows by
+   content hash, so a repeated checkpoint costs nothing.
+4. **Live's Backup folder (Q-A2, a).** From the second Take Snapshot on, a worker writes a
+   consistent copy of the project (the backup API, never a file copy of the live database) into
+   the project's Backup folder; **ten** are kept, ordered by a UTC time stored in each copy, so a
+   clock that goes back an hour overwrites nothing; the eleventh goes to the Recycle Bin, as Live
+   does; copies clear the session lock; media stay referenced, as in Live. No timer: the trigger is
+   Take Snapshot (his no-timer directive, ADR-0203 d13). R-26 ("Backups: none", ADR-0125) is
+   reversed for the project file only; the manual Back Up Project command (P2) stays. The folder's
+   name, time format and count are read on Live 12.4 (M5-A5H-014) before the row closes.
+5. **Collection of unreferenced renders** (TM-FC-03) marks by reference through every retained op
+   on every branch and every stored state, so a stored dead end keeps its renders.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0203 d13 | the cap holds by storing named snapshots and dead ends as deduplicated states (d1); the daily snapshot is compactable as written (d2); compaction never fails a commit (d3) |
+| ADR-0140 d5 | "compaction keeps snapshot points" becomes "keeps their stored states" (d1) |
+| ADR-0125 (R-26 "Backups: none") | reversed for the project file: Live's ten Backup copies from the second Take Snapshot (d4) |
+| SPEC §8.3 (#419) | the compaction rule and its failure mode (d1 to d3), reworded when HI-02's PR opens |
+| HI-02, HI-04, PD-03, PD-07, TM-FC-03 (`docs/PLAN.md`) | their open parts are decided; PD-07 is built at M5, HI-02 at M2 |
+
+## ADR-0214 — Short samples on drop: every drop arrives clean; Live's short-sample result comes on Warp or from the import prompt; the setting offers Live's four choices — `DECIDED` (2026-11-05; recorded 2026-11-08) — **DIRECTOR'S ANSWER Q-E (a) OF 5 NOVEMBER (`docs/PLAN.md` §6.1; TM-WT-05); CONFIRMS ADR-0203 d12 FOR SHORT SAMPLES; AMENDS ADR-0132 d6/d7's REGISTRY ROW `record.shortSampleMode` AND SETTINGS-CATALOGUE's "DECIDED parity" LINE**
+
+**The question (plan Q-E).** His deviation says a file dropped on an ADI track arrives clean, with
+no warp at all (ADR-0203 d12). Live's Loop/Warp Short Samples (Auto) warps and loops, on drop, a
+short sample it judges to be a loop. Does the deviation cover short samples too? **His answer:**
+(a), yes.
+
+### Decisions
+
+1. **Every drop arrives clean, whatever its length.** No classifier runs on drop; no warp marker,
+   no loop.
+2. **Live's short-sample result comes one press later:** when Warp is pressed on the clip, and from
+   the import prompt's Warp choice. The classifier then runs Live's rules: a loop becomes a Warped
+   Loop (two markers, the loop on, 1, 2, 4, 8 or 16 bars of 4/4 assumed); a single event becomes
+   an Unwarped One Shot; anything else stays Warp off. The x2 or /2 proposal never changes the
+   project tempo.
+3. **The setting `record.shortSampleMode` offers Live's four choices** (Unwarped One Shot, Warped
+   One Shot, Warped Loop, Auto) in place of today's {auto, on, off}, and governs what the press and
+   the prompt do; it is a registry row of the plan's R-e, written by win. The short/long threshold
+   is provisional at 60 s until it is read on Live 12.4.
+4. The behaviour is built at M6 (TM-WT-05, after TM-WT-01); the reading of what Auto does on a
+   drop against a Warp press, and the threshold, are NOT RUN until the measurement seat records
+   them.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0203 d12 | the deviation "import with no warp" is confirmed to cover short samples (d1) |
+| ADR-0132 d6, d7 | the registry row `record.shortSampleMode` takes Live's four values and the two triggers (d2, d3) |
+| SETTINGS-CATALOGUE Loop/Warp Short Samples | "DECIDED parity" becomes his deviation with Live's result on Warp |
+
+## ADR-0215 — Editing Pd devices: "Edit in Pd" attaches vanilla Pd's editor to the running device, edits heard at once; no added delay when the buffer is a multiple of 64, one reported block otherwise; editing a built-in makes "<Device> (edited)" on the Pd path — `DECIDED` (2026-11-05; recorded 2026-11-08) — **DIRECTOR'S ANSWERS Q-K1 (A), Q-K2 (1) AND Q-K3 (1) OF 5 NOVEMBER (`docs/PLAN.md` §6.3; DEV-11, DEV-13, DEV-12); REVERSES ADR-0145 d8 (THE EDITOR ON plugdata); RESTORES ADR-0134 d8's EXTERNAL EDITOR IN FORM; RELAXES ADR-0177 d4; AMENDS ADR-0203 d8 AND ADR-0204 d5 FOR THE EDITOR WINDOW ONLY; CLOSES ADR-0203 d4's REMAINDER CLAUSE**
+
+**The questions (plan Q-K1 to Q-K3).** Which route edits a Pd device's patch (the plugdata-based
+editor inside ADI of ADR-0145 d8, the plugdata application on a working copy, or vanilla Pd's
+editor attached to the running device)? What does a user patch do when audio does not come in
+whole 64-sample blocks (ADR-0203 d4's open clause)? Does editing a rebuilt Live effect change the
+device or make a copy? **His answers:** A, 1, 1. The plan said plainly what A reopens: it reverses
+ADR-0145 d8, brings back ADR-0134 d8's external editor, relaxes ADR-0177 d4, and re-admits an
+external Pd GUI process that ADR-0203 d8 ("embedded libpd only; no Max application path") and
+ADR-0204 d5 (the rejected "external Pd or Max path") had rejected. The audio still runs in ADI's
+embedded libpd; only the editor window is Pd's own. He chose it.
+
+### Decisions
+
+1. **"Edit in Pd" (Q-K1, A).** From the device's title bar and its Show Options menu, "Edit in Pd"
+   opens vanilla Pd's editor attached to the running instance, as Live's Edit button opens Max on
+   a running Max for Live device (Live 12 manual, ch. 31). **Edits are heard at once.** Objects
+   ADI cannot create draw dashed (ADR-0188 d8 met natively). **Save** re-reads the working copy,
+   validates it and writes one `device.loadState` with the text's BLAKE3 (ADR-0177's op stays the
+   only way the declared set changes; what is relaxed is that the sound may change before the op is
+   written). Closing without saving reverts. **Live's rule:** Save updates every instance that
+   shared the old hash; Save As asks. **Fences:** a root canvas that closes is hidden, not freed;
+   an ADI GUI plug-in rebinds Quit, Close, Open and Message so Pd's Quit can neither free the patch
+   nor end ADI; GUI polling never starves the tick; Tcl/Tk is packaged in the installer's tools
+   tier. The plugdata application as an optional "Open in plugdata" (route B) may come later;
+   plugdata's canvas inside ADI (route C) is not taken.
+2. **A user patch's delay (Q-K2, 1).** No added delay whenever the host buffer is a multiple of
+   64: the adapter runs whole Pd ticks across a block's splits (the device sees the whole block's
+   input) and each note or automation event lands at the start of the Pd tick that contains it, as
+   Pd itself schedules control messages (event timing inside a user patch is quantised to 64
+   samples). For any other buffer, one reported, compensated 64-sample block, shown on the device.
+   A patch's own delay (`$0-report_latency`, ADR-0095) is separate and always added. This closes
+   the clause of ADR-0203 d4 that sent the remainder case back to him. Silencing invalid segments
+   (today's WholeBlocks behaviour) stays a diagnostic contract, never production.
+3. **Editing a built-in (Q-K3, 1).** Opening a rebuilt Live effect shows its canonical patch
+   read-only. Editing creates a copy device named **"<Device> (edited)"** on the user-patch path
+   (DEV-10); the built-in stays native with no added delay (ADR-0203 d4) and every existing
+   project's sound and timing is unchanged. The copy states which path runs and its adapter delay.
+   Editing in place is rejected: it would silently change a familiar device's sound path and timing
+   under the same name.
+4. **Timing.** All three land with M7's Pd user tier (DEV-10 first). The agent never edits patch
+   text (ADR-0145 d8's agent rule stands); it proposes, the user approves in Pd's editor, and Save
+   is the op.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0145 d8 | reversed: the editor is vanilla Pd's, attached to the running device, not a plugdata-based window inside ADI; its agent rule and `state_blobs` storage stand (d1) |
+| ADR-0134 d8 | its external-editor form returns, attached rather than on a copy (d1) |
+| ADR-0177 d4 | relaxed: edits are heard before the op; the declared set still changes only through `device.loadState` on Save (d1) |
+| ADR-0203 d8, ADR-0204 d5 | "embedded libpd only; no Max application path" and the rejected "external Pd or Max path" are amended for the editor window alone; the audio stays in embedded libpd (d1) |
+| ADR-0203 d4 | the remainder clause is closed (d2); built-ins stay native and openable (d3) |
+| ADR-0183 d12 | the one reported block survives only for buffers that are not multiples of 64 (d2) |
+| FEATURES "Pure Data editor inside the DAW, built on plugdata" (P1) | becomes "Edit in Pd: vanilla Pd's editor attached to the running device" (P1, M7) |
+
+## ADR-0216 — The gesture contract: one GestureSession, one label, previewed then committed once; Esc writes nothing; undo is refused while a gesture is open; two preview strategies; OPS §6.4's time window retires — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0110, ADR-0141, ADR-0148 AND ADR-0153; PLAN P-8 ITEM 1 (HI-01, AU-03; XC-17); SUPERSEDES OPS §6.4; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** A drag, a tap run or a held key must be heard while it moves and land
+as one undo step (Live's labels per gesture). On main three implementations disagree: plug-in
+parameters coalesce through `ParamOps` (ADR-0124, #390); the mixer commits a fader drag on
+mouse-up only, so nothing is heard while dragging; Tap Tempo and the momentary latch coalesce by
+undo and recommit, leaving "forked at N" branches in the history. OPS §6.4's 300 ms coalescing was
+never built and cannot fire, since every commit takes a new `txn_id`. The cross-check (XC-17) asks
+for one contract.
+
+### Decisions
+
+1. **`GestureSession`: begin, update, commit, cancel.** Each update re-derives the gesture's
+   absolute ops from the origin; **commit** writes one `OpJournal` transaction with one label and the
+   pre-gesture inverse; **cancel** (Esc) writes nothing and leaves the digest unchanged.
+2. **Two preview strategies, chosen by what the gesture touches:** live values for continuous
+   scalars (faders, pans, sends, device parameters: the engine hears the value at once, nothing is
+   written until commit); an always-rolled-back transaction for structural edits (clip moves,
+   resizes, splits: `ProjectView` follows the preview, and the Session too when the ops' engine
+   impact is none or snapshot, ADR-0148's mechanism).
+3. **While a gesture is open, undo, redo, `moveTo`, revert and branch switches are refused;**
+   another producer's commit re-applies the preview on top of the new head (ADR-0153's expected
+   head).
+4. **`ParamOps` keeps plug-in parameters** (ADR-0110, ADR-0141: one gesture, one op) and opens the
+   same session; surfaces and the control API open the same sessions, so a Stream Deck turn and a
+   mouse drag are one kind of thing.
+5. **The quiet window survives only as the end detector** for sources that send no release (a
+   relative encoder, an OSC stream); OPS §6.4's 300 ms merge and undo-based coalescing retire.
+6. **AU-03's write pass is the one place a touch becomes automation** while a lane is armed; a
+   gesture never writes automation by itself.
+7. **Acceptance:** `test_gesture` (a 20-move drag is one transaction with one label; cancel leaves
+   zero transactions; the preview never writes ops) and the Live reading M-LIVE-UNDO (Live 12.4's
+   undo labels per gesture), NOT RUN until the measurement seat records it.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| OPS §6.4 (coalescing, 300 ms) | superseded by d1 to d5 |
+| ADR-0110, ADR-0141 | unchanged in substance; `ParamOps` is one client of the session (d4) |
+| ADR-0148, ADR-0153 | the rolled-back preview and the expected head are the two mechanisms d2 and d3 reuse |
+| HI-01, AU-03 (`docs/PLAN.md`) | decided; the window binds the mixer drag, Tap Tempo and the latch to the session at M2 |
+
+## ADR-0217 — EditScope: every edit declares what it touches; one placement rule (Live's overlap rule) in one engine planner; Lock Envelopes read by that planner; ripple as one visible switch — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0203 d1, d2, d7, d11 AND ADR-0021; PLAN P-8 ITEM 2 (ED-03, AU-05, ED-07; XC-12, XC-33); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** On main `clip.move` and `clip.resize` are raw UPDATEs: no overlap
+resolution, ticks only, no content-offset change; `preparePaste` and `prepareDuplicate` place a
+clip without clearing the destination while `preparePasteRange` clears it; the window emits raw
+moves and resizes; range producers carry clip envelopes but not track automation; `editing.
+deleteOverlaps` and `editing.automationFollowsClips` are read by nothing. Live has one rule.
+
+### Decisions
+
+1. **One engine planner (`edit_plan`) turns every placement into captured rows.** Moving, resizing,
+   pasting, duplicating, dropping or recording a clip over another on the same lane **replaces the
+   covered material, as Live:** the destination span is cleared by the existing `eraseRange` kernel
+   (split at the edges, delete what is inside), then the clip is placed, in one `arranger.splice`
+   step. Undo restores rows byte for byte.
+2. **`EditScope`** holds tracks, lanes, a time range and flags (clips; automation, per Lock
+   Envelopes; markers; tempo, meter and key; loop) with Live's presets; the UI resolves scope into
+   literals before the op (ADR-0021). `describe(PreparedEdit)` names what is split, removed and
+   shifted, for the Status Bar and the agent's preview. Trim moves the content offset (ticks, and
+   the pinned ns clock for audio); audio never trims before source frame 0, MIDI may.
+3. **Lock Envelopes (Live's Options menu and control bar; off by default)** is one switch read by
+   the planner: with envelopes unlocked, the track's device, mixer and send automation inside the
+   affected span moves, copies or deletes with the clips, replacing destination automation, with
+   guard points at both edges of source and destination, in the edit's single undo step; locked,
+   automation stays at song position. The ...Time commands always move global automation and
+   ignore the switch. The window-side batching of `automation.movePoints` (worklist C7) is not
+   built; the window binds to this (XC-33).
+4. **Ripple (an addition, ADR-0203 d2) is one visible switch:** Off (Live's leave-gap, the default),
+   Per track, All tracks. The planner closes or opens time to the right on the affected tracks,
+   right to left; automation follows d3; markers and tempo move only in All tracks, as the ...Time
+   commands; frozen material stops the ripple by TM-FC-04's rule and the Status Bar names the
+   track; one undo step. REAPER's four lock policies are not adopted (ADR-0203 d11).
+5. **The window stops sending raw `clip.move` and `clip.resize`:** a drag previews in the view (the
+   gesture contract, ADR-0216) and commits through the planner. The drop latency of `arranger.
+   splice` (a graph rebuild where `clip.move` was a snapshot change) is measured on a 100-track
+   project before the raw ops are removed.
+6. **Not taken:** Cubase's Shift override of Delete Overlaps and Lock Event Attributes; REAPER's
+   item locks, group lead/follow and razor areas (Live's multi-track time selection covers them).
+   `editing.mutedClipsAsDeleted` stays an option, off.
+7. **Acceptance:** a seeded sequence of 40 edits on 3 tracks with an overlap check after every
+   commit and undo-all equal to the start digest; AT-10 for Lock Envelopes; the Live 12.4 readings
+   of a clip moved over the middle, start, end and whole of another (audio and MIDI), NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `editing.deleteOverlaps`, `editing.automationFollowsClips` | gain their one reader, the planner (d1, d3) |
+| ADR-0115 d2 | slip keeps Live's modifier (Ctrl+Shift-drag; Shift+Option on macOS) and extends to unwarped audio as d2's addition; its plain Shift-drag binding gives way |
+| FEATURES §3 "Ripple edit / insert-delete time", §7 Lock Envelopes (new row) | the switch's three states (d4); the row's text per `docs/PLAN.md` §8.2 |
+| ED-03, ED-04, ED-05, ED-07, AU-05 (`docs/PLAN.md`) | decided; M2 (ripple M6) |
+
+## ADR-0218 — The media reader: one bounded ISO-BMFF and QuickTime reader behind every decoder; channels and rate from the AudioSpecificConfig; gapless trimming by edit list, then iTunSMPB, then none; platform decoders fed raw packets; ALAC in process — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0203 d18, ADR-0132 d3/d4, ADR-0156, ADR-0191 d4, ADR-0204 d5 AND ADR-0206 d4; PLAN P-8 ITEM 3 (TM-MD-01, TM-MD-02); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** ADR-0203 d18 wants every Live format and his list (AAC-LC in any
+layout, HE-AAC, ALAC, MOV PCM, fragmented MP4, gapless trimming; the audio of MOV, MP4 and M4V
+files). Main's `mp4_aac.cpp` is the NI Stems subset: fragments refused, one edit only, `iTunSMPB`
+unread, channels from the sample entry; #452 widens it but conflicts; the CoreAudio priming
+mismatch is fixed by #461 (PD-00 closed).
+
+### Decisions
+
+1. **ADI's own bounded container reader** (headers only, never `mdat`; hard caps on every count and
+   size; a hostile file is `decode.corrupt`, never a crash) is the one reader behind every
+   compressed decoder; the NI Stems reader becomes a strict filter over it.
+2. **AAC channels and rate come from the AudioSpecificConfig,** never from the sample entry (the
+   entry only when the configuration is 0).
+3. **Gapless trimming:** by edit list; else `iTunSMPB` (priming 0 to 16384, FFmpeg's bounds); else
+   none. Complex edit lists wait for P2.
+4. **Platform decoders are fed raw packets** with no temporary re-mux: Media Foundation decoder
+   MFTs on Windows, `AudioConverter` on macOS, libavcodec 60, 61 and 62 loaded at run time on Linux
+   (ADR-0191 d4, ADR-0204 d5). **ALAC decodes in process** (Apple's open codec).
+5. **A movie's first audio track imports while the picture stays P2** (ADR-0206 d4; win's placement,
+   to strike if wrong). QuickTime chapter and marker tracks are kept for the P2 video work.
+6. **Playing before decoding finishes (TM-MD-02, Live §5.1):** one decode job per source hash with a
+   frontier; a clip's page is served once the frontier covers it; a pending page plays silence
+   counted as pending, never as an underrun; a warped clip waits for the whole file (Live's analysis
+   gate); the clip switches to the finished file without a rebuild; session load passes the stored
+   BLAKE3 so nothing is re-hashed; leftover partial files are reaped; Cleanup removes unpinned files
+   outside the current Set's hashes.
+7. **Acceptance:** Mixxx's decoder acceptance suite and fixtures first (A-M1-1 to -10 on all seven
+   legs: the iTunes AAC at 1,325,952 frames with first sound at frame 1166; the FFmpeg AAC at 1112;
+   ALAC equal to the FLAC decode; MOV in24, sowt and lpcm v2 bit-exact; fragmented equal to
+   non-fragmented; hostile files refused); L-MEDIA-1 to -3 on Live, NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0156 (one decoder; its open items) | Cleanup and the known-hash load are decided (d6) |
+| ADR-0151 d4, d8 | the pending page is counted as pending, not as an underrun (d6) |
+| TM-MD-01, TM-MD-02 (`docs/PLAN.md`) | decided; M3, after #452's AudioSpecificConfig fix and the #450/#451 stack |
+
+## ADR-0219 — One loudness meter behind every reading: `src/adi/dsp/loudness` on 10 ms sub-blocks with M, S, I, LRA, run and pause; N13, export normalization, Auto Gain Stage and the Reference read it; proved against outside references, never "EBU Mode compliant" — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0203 d14, ADR-0175 d5, ADR-0167 d5, ADR-0166 d8, ADR-0195 d4 AND ADR-0209; PLAN P-8 ITEM 4 (DEV-28, MX-27, MX-10; XC-03, XC-46); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Three integrated-LUFS implementations coexist on main (N13's Main
+meter, export normalization, Auto Gain Stage); N13 walks a 22,001-bin histogram twice every 100 ms
+on the audio thread; LRA, max M/S and pause are missing; every test checks ADI against ADI. ADR-0203
+d14 wants one LUFS and true-peak meter on Main only, "on condition that it does not degrade
+performance".
+
+### Decisions
+
+1. **One meter, `dsp::LoudnessMeter` in `src/adi/dsp/loudness`:** 10 ms sub-blocks (M the last 40,
+   S the last 300); a gating block every 10 sub-blocks; an LRA sample at 10 Hz (Tech 3342);
+   histograms of 0.01 LU with exact energy from −70 to +20 LUFS, allocated in prepare; explicit
+   channel weights, never a guessed LFE; −inf until warmed up; I and LRA recomputed once every
+   100 ms from running totals, off the audio thread's hot path; the maxima reset with I; run and
+   pause; the programme's end handled without padding reaching I. ADI's own true-peak meter gains a
+   double path and more than 8 channels.
+2. **Every reading moves onto it:** N13's Main meter, export normalization (EX-05), Auto Gain
+   Stage's LUFS mode, `analyze.loudness`, the ★ Reference's matched loudness (ADR-0209). No other
+   strip shows LUFS (d14: Main only).
+3. **The claim** is "passes ADI's synthesised Tech 3341/3342 v4 minimum-requirement signals and
+   agrees with libebur128 and ffmpeg within 0.1 LU", never "EBU Mode compliant". libebur128 is a
+   test-only oracle (never its 1 Hz LRA); the EBU's WAV set is not usable.
+4. **Defaults (win's placement, to strike):** Main's run, pause and transport reset follow ADI-L's
+   own defaults; display M, S, I, LRA and TP at one decimal on the EBU +9 scale.
+5. **Whether his plug-ins' meters converge with this one is part of the unified feature's design**
+   (ADR-0212 d4), after his list; until then ADI-L's meter is a cross-check only.
+6. **Ownership while the devices seat is silent (XC-46):** `src/adi/dsp/loudness` and
+   `src/adi/dsp/limiter` are lent to the engine seat by a LANES §1 line; the loan ends the day the
+   devices seat logs again.
+7. **Acceptance:** every Tech 3341 case that can be synthesised (1 to 6, 9 to 23; 13 and 14 exact
+   on the 10 ms grid) and Tech 3342 1 to 4 within ±0.1 LU; libebur128 within 0.1 LU at 44.1, 48 and
+   96 kHz; the same result at any block size; zero allocations; the meter's cost on Main, always
+   on (A3-24), measured.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0195 d4 (Auto Gain Stage), ADR-0166 d8, ADR-0175 d5 | their LUFS readings come from the one meter (d2) |
+| N13 (#382) | rewired onto the one meter; its 0.1 LU histogram walk on the audio thread goes (d1, d2) |
+| DEV-28, MX-27, MX-10, EX-05's loudness part (`docs/PLAN.md`) | decided; M4 |
+
+## ADR-0220 — The measurement harness: a record schema, a gate vocabulary declared before each run, the seat table, the relay rule, nothing of Ableton's tracked in the repository; `tools/measure` and `src/adi/measure` — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0108 AND LANES §1; PLAN P-8 ITEM 5 (MX-33, WTS-11, MX-22; XC-38; G-1); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Every Live, Cubase, REAPER, Bitwig and Reason case in the plan is NOT
+RUN until a measurement seat records it, and every area wanted readings with no seat, no record
+schema, no Live 12 driver and no metric for what cannot null (XC-38). The director himself takes
+the Live 12 readings with a Claude session on the second Windows machine from Sunday 9 November
+(G-1; his brief is in his private Live12-readings folder, named and never quoted here). This entry
+fixes the form every reading takes, so his readings and the lanes' tests speak one language.
+
+### Decisions
+
+1. **A record schema.** Every reading names the program and its build (Live 12.4; Cubase 15.0.30
+   or 15.0.5, which are different evidence targets), the machine class, the profile (fresh or
+   existing: existing-account settings are not factory defaults), the fixture by SHA-256, the
+   method, the measured value, the tolerance, and the verdict. A reading that lacks any of these is
+   not a reading.
+2. **The gate vocabulary is declared before the run,** per row: null (bit-exact), within ±x dB or
+   ±x ms, same count, same order, same text, or observed (for behaviour without a number). A row's
+   verdict is one of measured PASS, measured FAIL, NOT RUN, or NOT MEASURABLE with the reason.
+3. **The seat table** lists who may record a reading for which program on which machine. Until a
+   seat is named for a program, its rows stay NOT RUN and parity rows stay "built, not verified"
+   (ADR-0108).
+4. **The relay rule.** An AWAITING row is struck only from a record that satisfies d1 and d2, never
+   from the manual's text or from memory (ADR-0203 d1's reading rule). The record is the evidence;
+   the row cites it.
+5. **Nothing of Ableton's is tracked in the repository:** no Live Set, no Live render, no screen
+   capture of Live; fixtures are ADI's own signals, imported by hash, and raw evidence stays on the
+   seat's machine, in his private folder.
+6. **The code:** `tools/measure/` (the live-probe kit moved with its history; a Windows Live driver
+   on pywinauto for GUI cases, with the interaction logger of #220; `analyse.py`; fixtures by
+   SHA-256) and the engine's `src/adi/measure/` (residual compare, MTDM with Ardour's caller logic,
+   sync spikes, probe signals) with `adi_measure` (generate, build through ordinary ops, render per
+   track, compare, latency) and `audio_probe --loopback`. `pyfar`, `pyrato`, Ardour's MTDM and
+   auraloss's formulas are the takes; DawDreamer, Plugalyzer and pedalboard never gate.
+7. **Acceptance:** the measurement plan's A1 to A5 (selftests in CI on three systems, fixture
+   hashes, MTDM at 256 and 256.5 samples, spikes at 1234, renders bit-identical across block sizes
+   and workers), NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0108 d1, d4, d5 | the record a reading must leave is defined (d1, d2); his signed side-by-side session still closes a step |
+| LANES §1 (win "measurements against Live"); a new measurement-seat row | the harness is the one path; the seat he names (G-1) uses it |
+| AWAITING | rows are struck only from records (d4) |
+| MX-33, WTS-11, MX-22 (`docs/PLAN.md`) | decided; the kit at M4, the readings from 9 November |
+
+## ADR-0221 — One capture for every offline render: `captureDerived` behind export jobs and every derived render; the revision and names read at job start; taps from the one vocabulary; the route treatment Direct, ViaMain, MainFxOnly; renders in process — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0071 d1, ADR-0203 d1/d3/d8/d16, ADR-0205 d9/d10 AND ERRATA-11; PLAN P-8 ITEM 6 (EX-02, EX-03, TM-FC-02; XC-14, XC-15, XC-26, XC-34); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Export jobs and the derived renders (freeze, bounce, consolidate, Paste
+Bounced Audio, stems, `.adiviz`) all need an offline capture, and two designs were about to be
+built (XC-14). The export runner on main processes the whole graph, unexported sidechains and
+returns included, and copies one endpoint; `offlineTapOutput` is used by freeze only.
+
+### Decisions
+
+1. **One engine capture, `captureDerived`,** with two clients: export jobs (`render::Queue`) and
+   the derived renders. It takes a tap per track from the one vocabulary (`plan.hpp`'s `Tap`: PreFx
+   (dry), PostFx, PostFader, PostMixer; `OfflineTap` and `ScopePoint` retire, XC-15), a range, loop
+   and tail windows, the route treatment, pruned incoming routes on request, pinned and verified
+   inputs, and the latency guards.
+2. **ERRATA-11's four moments stand:** a job's values are fixed at enqueue, its run membership at
+   `Queue::run`, and the project revision and resolved names are read when each job starts;
+   publication is last. No enqueue-time project snapshot.
+3. **The route treatment:** `Source{trackId, tap, route: Direct | ViaMain | MainFxOnly (P2)}`.
+   **ViaMain** is an offline audibility override in the private session: every track outside the
+   source, its descendants, its ancestors up to Main and the returns it reaches is silenced at its
+   outputs and sends while its chain still processes (keys and sidechains stay live), and Main
+   renders post-fader. It is never built on solo (a send follows its source's mute, never its
+   solo). Impossible combinations are refused at `add` (a pre-fader stem via Main).
+4. **Tails and Render as Loop (EX-03):** Render as Loop is Live's two passes, latency-compensated;
+   `Job.tail` is Off, Fixed or UntilSilent, refused inside a gapless batch (ADR-0070 d4); warm-up
+   from zero stays and is not a tail.
+5. **Renders run in process** (ADR-0203 d8: only the scanner runs out of process): instances created
+   and given state on the message thread, processing on a render worker or DEV-23's offline pool,
+   `serviceHost` marshalled; the child-process option of EX-11 is struck (XC-26).
+6. **Group bounces** (TM-FC-02) wait for ViaMain: children routed outside the group are excluded;
+   returns count only when they reach Main (XC-34).
+7. **Acceptance:** M2-HOST-EXPORT's probe (distinct tones on the selected media, an unselected
+   receive, a detector-only sidechain and a live return, compared across Direct, ViaMain,
+   MainFxOnly and full Main; with linear processing only, ViaMain stems sum to Main within float
+   tolerance); the Live readings of Include Return and Main Effects, NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0071 d1 (routing treatment) | named as d3's three routes on the one capture |
+| ADR-0205 d9 (the 2nd pass for tails) | is d4's `Job.tail` |
+| `OfflineTap`, `ScopePoint` | retire into `Tap` (d1) |
+| EX-02, EX-03, TM-FC-02's capture half (`docs/PLAN.md`) | decided; M5 |
+
+## ADR-0222 — Jobs and staleness: one legal job state machine wrapping `render::Queue` and the other workers; a job that commits into the project declares its read set and is refused as stale only when those inputs changed; interactive edits keep the expected head — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0086, ADR-0064 d1-d3, ADR-0071, ADR-0205 d5, ADR-0153 AND ERRATA-11; PLAN P-8 ITEM 7 (AGT-04; XC-20); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** One queue, three staleness rules (any head movement, the recipe key,
+the declared scope): under the first, a stem separation would fail because an unrelated fader
+moved (XC-20). `render::Queue` (#300) has states, add, update, remove, retry, run, snapshot and a
+stop token, but no transition rule, owner, retention or caller-visible revision policy.
+
+### Decisions
+
+1. **States and transitions.** `can_become` keeps progress monotone and terminal states final
+   (Pending, Running, Completed, Failed, Cancelled). Cancel is owner-scoped. Retention is 128 jobs
+   or 10 minutes. Each event is handed out by exactly one poll.
+2. **One revision rule per job type.** A job that commits into the project (a stem import, a
+   marker analysis, a Convert-to-MIDI) **declares its read set** at start and is refused as stale,
+   with a conflict and no artifact, only when one of those inputs changed before it commits; it is
+   refused, never rebased. Renders check at start only (CheckAtStartOnly), exactly as the audited
+   queue does, under ERRATA-11's four moments. Interactive edits keep ADR-0153's expected head.
+3. **One queue.** `render::Queue` stays the one renderer; AGT-04's state machine wraps it, the stem
+   gateway and the remote services (ADR-0086), and reports progress and honours cancellation over
+   the control API. No second job system; enqueue-time snapshots are not built.
+4. **Acceptance:** `test_rpc_jobs`: a late stem import after an edit to its inputs fails with a
+   conflict and leaves no artifact; one after an unrelated edit commits; an export queued before an
+   edit and started after it renders the revision at its start (A11R-001).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0086 (open: the Tier-2 wire format) | the job's states and events are the wire's job half (d1, d3) |
+| ADR-0064 d1 to d3 | the async AI results bind to the same states (d3) |
+| AGT-04 (`docs/PLAN.md`) | decided; M5, after CTL-03 |
+
+## ADR-0223 — Freeze, bounce and consolidate are three contracts on one recipe key: a BLAKE3 over the render's recipe; one render in flight per key; refs verified by hash; collection only from an explicit command; Live's bounces as Live's — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0059 d4/d5, ADR-0069 d2/d4, ADR-0038, ADR-0127, ADR-0203 d1/d11/d16 AND ADR-0205 d10; PLAN P-8 ITEM 8 (TM-FC-03, TM-FC-01, TM-FC-02; XC-01, XC-12, XC-32); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Renders on main are BLAKE3 media rows and `media.unlink` never deletes
+a file, so undo and redo restore freezes and bounces without rendering; but reuse is by output
+hash only (a re-freeze renders again), nothing collects renders or state blobs, `freeze-<hash>.wav`
+sits at the project root, and the built bounces differ from Live in six read places.
+
+### Decisions
+
+1. **The recipe key:** BLAKE3 over canonical CBOR of {key version, kind, the freeze fingerprint,
+   installed identities, engine build, render spec}, position-relative for clip renders. Names,
+   colours and the root fader leave the key alone; device parameters, clip gain, tempo, identities,
+   engine build, rate and format change it.
+2. **Three contracts, one key.** *Freeze* renders a track's or group's wet output and parks its
+   state (ADR-0059). *Bounce* (Live's Bounce to New Track and Bounce Track in Place) renders
+   `Tap::PostFx` (post-FX, pre-mixer); the new track copies `volume_db`, `pan`, `pan_law`, `width`,
+   `phase_invert`, `delay_samples`, `vca_group_id`, `mixer_pan_settings` and the sends at their
+   levels, never `input_gain_db`, which the tap already bakes; only the inner pieces of the
+   selection are muted (`clip.setMute`, never `track.setMute`); one new track per selected track,
+   one undo step; Bounce in Place removes the devices, captured for undo, instead of parking them
+   bypassed with their delay; a frozen source bounces in place from its verified wet file with no
+   render; renders are placed Warp off (ADR-0203 d16); the new clip takes the source clip's name.
+   *Consolidate* (Ctrl/Cmd+J) renders `PreFx` over the range for every selected audio track in one
+   pass, peak-normalizes with #418's measurement, writes a compensating `clip.setGain`, replaces
+   the material through the range planner in one undo step labelled "Consolidate"; a MIDI track
+   gets one clip with its note identities kept and nothing rendered; its warp state is the
+   director's Q-H (open). Paste Bounced Audio keeps the source reference on the clipboard and
+   renders `PostFx` at paste time.
+3. **Only a result that matches the current recipe revision may become the active derivative;** a
+   cancelled or stale job never overwrites a newer edit. Refs are written as `.part` and renamed
+   after commit; they are advisory, and every hit is verified by BLAKE3. One render in flight per
+   key; Render Again bypasses the lookup.
+4. **Collection runs only from an explicit command** (an Unused Files dialog: list, then trash,
+   then empty), never during undo, redo or replay (ADR-0038). The mark is by reference: current
+   rows and every retained op on every branch and every stored state (ADR-0213), `track.setFreeze`'s
+   before and after and clip images included, plus whether a path is live.
+5. **Stage prefixes** are named (`.adi-freeze-`, `.adi-edit-`, `.adi-render-`, `.adi-media-`,
+   `.adi-stem-import-`, `.adi-ni-`) and swept when stale; `.adi-record-*` is never swept. Renders
+   leave the project root for a sub-folder, as Live's; win names it when the PR opens (placement).
+6. **Edits on frozen material** follow TM-FC-04's rule after the Live readings; ripple stops at it
+   (XC-12).
+7. **Acceptance:** `test_render_key`; `test_freeze_commands` (freeze, unfreeze, freeze renders once;
+   undo and redo across three freezes never render; a corrupted cached output misses); the
+   collector tests; the A4-006 null (with the original muted, the new track nulls against it, also
+   with a track delay); the Live readings of which mixer settings a bounce copies, NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0059 d4, d5 | reuse is by recipe key, not output hash (d1, d3) |
+| ADR-0069 d2, d4 | the clip-granularity contract is Consolidate's; offline processing on a clip (F7) waits for `device_chains` to accept a clip owner (the plan's P-4, P2) |
+| ADR-0038 | collection only from the explicit command (d4) |
+| `bounce_commands.cpp`'s six differences from Live | corrected (d2); the window's bounce prompt states them until then (XC-33) |
+| TM-FC-01, TM-FC-02, TM-FC-03 (`docs/PLAN.md`) | decided; M5 |
+
+## ADR-0224 — Every converter runs on the exact time base: one pure integer component, drop-frame on integer frame counts, 29.97 as 30000/1001, beyond `Tick::MAX` refused; drop-frame and the external reservation as whole tables — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0206 d3, ADR-0004, ADR-0127 d7 AND ADR-0144 d3; PLAN P-8 ITEM 9 (TM-IC-01, TM-IC-02 TO TM-IC-04, IC-01 TO IC-03; XC-11); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** ADR-0206 d3 asked for the exact converter at P1 (254,016,000,000 ticks
+per second to and from frames at any ADI rate, nanoseconds and musical ticks, with a range check)
+and the `external_sessions`/`external_links` reservation; nothing of it is on main. Interchange
+was written twice (the time-media rows and the IC rows, XC-11).
+
+### Decisions
+
+1. **One pure integer component** in the time library (`src/adi/time_base.{hpp,cpp}`): ticks,
+   frames at any rate, nanoseconds and musical ticks convert exactly; the drop-frame algorithm runs
+   on integer frame counts; 29.97 is exactly 30000/1001; anything beyond `Tick::MAX` is refused.
+   No double-based rational time, no truncated 29.97.
+2. **Every converter runs on it:** DAWproject both ways (TM-IC-03), MIDI files (TM-IC-02), OTIO and
+   AAF (TM-IC-04), the ArtCraft converter (ADR-0206), MTC, and the video work at P2. The IC rows
+   refer to the time-media rows, which own.
+3. **Drop-frame lives in a new table,** not a column on `project`; `external_sessions` and
+   `external_links` are their own additive minor of whole tables (ADR-0144 d3; the minor is numbered
+   when the PR opens, XC-37).
+4. **Acceptance:** INTEROP-ARTCRAFT §3's tables (an NTSC frame is 8,475,667,200 ticks; the 125 ns
+   grid is 31,752 ticks; `Tick::MAX` refused) and OpenTimelineIO's drop-frame vectors (vectors only).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0206 d3 | built as d1 and d3; P1 |
+| ADR-0127 d7 (the converters) | every converter runs on the exact base (d2) |
+| TM-IC-01 to TM-IC-04, IC-01 to IC-03 (`docs/PLAN.md`) | one owner each; M5 and P2 |
+
+## ADR-0225 — Comping is Live's: one main lane plays, take lanes are auditioned; a comp is copies on the main lane; a NULL `lane_id` is the main lane — `DECIDED` (2026-11-08) — **WIN'S RULING UNDER ADR-0203 d1 (LIVE'S WAY) OVER ADR-0037's "COMPING FOLLOWS CUBASE"; PLAN P-8 ITEM 10 (CT-01, CT-02 TO CT-05; XC-21); AMENDS SPEC §6.2; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** ADR-0037 said the editing depth behind the arrangement, "crossfades,
+comping, take lanes, warp", follows Cubase, and SPEC §6.2 is written in that model. ADR-0203 d1
+(1 October) made Live the sole parity base, and Live 12 has take lanes and comping. The `lanes`
+table and `clips.lane_id` have been in the schema since 1.0 and unused; the engine plays every clip
+of a track with no lane filter.
+
+### Decisions
+
+1. **Live 12's model.** One **main lane** per track, audible, and **take lanes** heard only while
+   auditioned; show, hide, insert, duplicate, delete, delete unused, rename, reorder and resize lanes
+   as Live. A **comp is copies on the main lane**: choosing a take segment copies it onto the main
+   lane (Live's model), and the copies' own fades over their handles are the crossfades between
+   takes (CT-05, an addition from Cubase, off by default).
+2. **A NULL `lane_id` is the main lane.** A take-lane clip plays only while its lane is the track's
+   auditioned lane (session state, one per track, not an op). `lane.*` ops as OPS §9.2 plus
+   `clip.setLane`; every producer takes its lane from `EditScope` (ADR-0217). No schema change.
+3. **One engine accessor for "timeline clips that play"** (the main lane, or the auditioned take
+   lane; never a slot clip); every `clips` reader moves to it in CT-01's first PR, and Session View
+   (TM-SV-02) only extends it (XC-21).
+4. **Loop recording** writes one media row, a take clip per pass at offsets 0, L, 2L and on, on new
+   or reused take lanes, and a main-lane copy of the last pass; the incomplete last pass is kept;
+   passes undo one by one (CT-02; Live 19.3.1, 21.3). MIDI loop takes close held notes at each pass
+   end (CT-03).
+5. **Not taken:** REAPER's lane masking and play-all-lanes layering, Bitwig's comp-region sliding.
+6. **Acceptance:** the Live 12.4 readings M6-A6H-029 (does audition silence the main lane; is it
+   saved; is it undoable; the name a new lane gets), NOT RUN; lanes round-trip through the text
+   projection.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0037 | "comping, take lanes ... follow Cubase" is superseded by Live's model under ADR-0203 d1 (d1); the linear-only decision it made is untouched |
+| SPEC §6.2 | reworded to Live's model, main-lane copies (d1, d2) |
+| FEATURES §3 "Take lanes and comping", §8 "Loop record to take lanes" | the note of `docs/PLAN.md` §8.2 line 100 |
+| CT-01 to CT-05 (`docs/PLAN.md`) | decided; M6 |
+
+## ADR-0226 — The warp analysis stack: onsets from spectral flux, beats and downbeat from qm-dsp at a fixed analysis rate behind one analyser interface, results as versioned ADIA sections in the analysed cache, one analysis per file; a benchmark gates it and picks the suite's one analyser — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0132 d7, ADR-0203 d7/d12/d18, ADR-0188 d2 AND ADR-0205 d10, WITH THE DIRECTOR'S ANSWER Q-D (a) OF 5 NOVEMBER; PLAN P-8 ITEM 11 (TM-WT-01, TM-MD-04, AGT-07; XC-19); AMENDS ADR-0176 d4 AND ADR-0145 d10 IN PART; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Pressing Warp runs Live's Auto-Warp (tempo with changes, transients,
+1.1.1 on the first clear downbeat, a marker on each bar). Main's `auto_warp.cpp` is an
+inter-onset vote with a greedy tempo-change path and no downbeat; `transients.cpp` is a 5 ms RMS
+energy-rise placeholder; four callers pass a literal 50 for `editing.transientSensitivity`. ADR-0145
+d10 put ADiJ's beat grids on Essentia; the harvest proposes qm-dsp for the DAW. **His answer to
+Q-D:** (a), benchmark first, then one beat and key analyser for ADI and ADiJ; qm-dsp in the DAW
+meanwhile behind one interface.
+
+### Decisions
+
+1. **Onsets** from spectral flux on log bands, with strength and peak per onset, reading
+   `editing.transientSensitivity` instead of the literal 50.
+2. **Beats, downbeat and tempo** from qm-dsp at a fixed 44.1 kHz analysis rate, with Mixxx's
+   `TempoTrackV2` fork (it works from about 1.5 s of audio; upstream needs about 7.4 s), constant-
+   tempo regions and BPM snapping from Mixxx's BeatUtils; vendored as `adi_qmdsp` with its
+   kissfft. **Behind one analyser interface** (beats, downbeats, tempo regions, key), so the
+   analyser can change without touching a caller (Q-D).
+3. **One analysis per file,** stored as versioned ADIA sections in #449's analysed cache, the
+   configuration id carrying the analyser's parameters; never re-run on apply, undo or redo; every
+   edit captures literal AWRP bytes. AGT-07 reads the same sections; project-level analyses run as
+   jobs (XC-19).
+4. **The benchmark gates it (Q-D):** a labelled local corpus (F-measure, CMLt and AMLt, Acc1 and
+   Acc2, downbeat F, onset F at ±10 ms) in `tools/warp_bench`, with beat_this as the independent
+   comparator and Essentia as a comparator; qm-dsp replaces today's heuristic only if it beats it,
+   and the benchmark picks the one analyser for ADI and ADiJ. Until then ADiJ is untouched
+   (ADR-0145 d10 stands for ADiJ; it is amended only in that the suite's analyser is chosen by the
+   benchmark rather than fixed). If the winner changes, cached files are re-analysed (the sections
+   are versioned).
+5. **Not taken:** upstream `TempoTrackV2`, qm-dsp's "used with permission" files, a second cache
+   format, re-detection inside `prepareWarp`. Audio Alignment (TM-WT-08) stays deferred.
+6. **Acceptance:** the benchmark gate (no corpus assembled yet); M2-A-WARP 1 and 6 on Live 12.4;
+   48 and 96 kHz give identical results; 1.1.1 lands on the first downbeat after a pickup. NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0176 d4 (the hitpoint detector) | the detector is d1's spectral-flux onsets with its latency declared to PDC |
+| ADR-0145 d10 (Essentia for ADiJ) | the suite's one analyser is chosen by d4's benchmark; ADiJ unchanged until then |
+| `editing.transientSensitivity` | gains its reader (d1) |
+| TM-WT-01, TM-MD-04, AGT-07 (`docs/PLAN.md`) | decided; M6 (key detection M3) |
+
+## ADR-0227 — Tuning sources and the keyboard map: every source Live accepts is accepted and re-exported byte for byte; source order and duplicates live in a keyboard map, the original bytes in `tuning_sources`, whole tables in a minor; the ruler follows Live's index order — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0178 d2/d5, ADR-0103 d1, ADR-0203 d1/d7 AND ADR-0144 d3; PLAN P-8 ITEM 12 (TU-02, TU-03, TU-01; XC-28, XC-37); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** ADR-0178 d2 stores unique rising pitches within the period; Live
+accepts negative cents and non-monotonic order, the ASCL @ABL layer (NOTE_NAMES, REFERENCE_PITCH,
+NOTE_RANGE_BY_INDEX and BY_FREQUENCY, SOURCE, LINK), unknown directives, and re-exports a source as
+it came. The tuning stack (#442 to #445) plays 31-EDO 9.677 cents flat for want of a reference
+pitch and refuses valid sources; M0 merges it with a guard that refuses any source whose reference
+pitch it cannot yet honour (TU-01), so nothing plays flat until this lands.
+
+### Decisions
+
+1. **ADR-0178's tables stay as they are.** Source order and duplicates live in a **keyboard map**
+   (`key_map_keyboards`, `key_map_keyboard_slots`) and the original bytes in **`tuning_sources`**,
+   whole tables in one minor (numbered when the PR opens, XC-37; ADR-0144 d3). The reference pitch
+   is stored, and the M0 guard is replaced by acceptance.
+2. **Every source Live accepts is accepted:** negative cents, non-monotonic order, the @ABL layer,
+   `.kbm` (ADR-0103 d1's addition); unknown @ABL lines are kept verbatim with a warning; `.ascl` and
+   @ABL require UTF-8, plain `.scl` is decoded from Latin-1; an unedited import re-exports byte for
+   byte. No refusal of a valid source.
+3. **The ruler follows Live's index order, with Hz on hover** (XC-28; the matrix's "ADI shows pitch
+   order" is withdrawn: doing differently what Live does needs a ruling, and none exists). Pitch
+   order comes only as an addition if he asks. Names from NOTE_NAMES or the EDO name data; English
+   names and middle C as C3 (ADR-0203 d7).
+4. **A tuning change keeps note indices,** as Live (ADR-0178 d3); Live's automatic retuning is a
+   confirmed edit, one undo step; Bypass Tuning per track as Live (TU-03).
+5. **Acceptance:** the tuning6 fixtures; 31-EDO degree 0 at 263.0921 Hz (closes TU-01's gate at
+   M6); byte-exact round trips; M6-A6F-004, -007, -009 and -010 on Live 12.4, NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0178 d2, d5 | the "left for later" tables arrive as d1's three; d2's rising-degree store stands |
+| ADR-0103 d1 | `.kbm` is read into the keyboard map (d2) |
+| TU-01, TU-02, TU-03 (`docs/PLAN.md`) | decided; M6 |
+
+## ADR-0228 — Remarks and Live's Edit Info Text are two things: the info text is a property of its object in a side table with one op, shown above the remark, never merged; remark threads follow Word's rules in whole tables at P2 — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0203 d1 AND d17, ADR-0131, ADR-0139 AND ADR-0188 d5; PLAN P-8 ITEM 13 (RE-03, RE-02; XC-27 UNTOUCHED); CLOSES ADR-0131's AND ADR-0139's OPEN ITEMS ON THREADS AND ANCHORS; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Live's Edit Info Text (a text on tracks, clips and devices, shown in the
+Info View, copied with its object, kept in presets) has no home in the format; remarks (ADR-0131,
+"Word's comments", ADR-0203 d17) are a different thing and must never be merged with it.
+ADR-0131 left threads open and ADR-0139 left lanes and markers as anchors open.
+
+### Decisions
+
+1. **Edit Info Text (RE-03, Live's way):** a property of its object in a side table (kind, id,
+   text) with one op, `info.setText`; copied and duplicated with its object; exported as
+   DAWproject's `Nameable` comment; the Info View shows it as Live does, with the object's
+   documentation above and any remark below. It is never stored as a remark.
+2. **Remark threads and anchors (RE-02, P2):** a schema minor of whole tables (`remark_replies`,
+   `remark_anchors`, plain REFERENCES; numbered when the PR opens). Word's rules literally: a remark
+   follows its object's id; on Split it stays on the left piece unless anchored inside the right;
+   Duplicate and Paste copy threads; deleting the object deletes its thread, captured for undo;
+   Delete Time treats a range remark as Word treats deleted text; every rule sits in the edit's
+   single transaction and `describe()` counts it. Flat threads of replies; no nesting. The agent's
+   brief is bounded (256 KiB, 200 threads, 4,096 characters per message, single-line fields,
+   control and bidi characters escaped) and propose-only (ADR-0131 d5).
+3. **Not taken:** re-pin and collapse rules that change Word's behaviour; margin balloons in the
+   Arrangement.
+4. **Acceptance:** L-INFO measurements on Live 12.4 (which objects carry Edit Info Text; what
+   copying and presets keep), NOT RUN; the remarks harvest's thread tests adapted to Word's delete
+   rule; a Hebrew remark reads from the right.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0131 (open: threads) | closed by d2 |
+| ADR-0139 (open: lanes and markers as anchors) | closed by d2's `remark_anchors` |
+| FEATURES §9 (new row, Live's Edit Info Text, P1; `docs/PLAN.md` §8.2 said §4, but the row belongs with the Info View and the workspace rows) | per `docs/PLAN.md` §8.2 |
+| RE-02, RE-03 (`docs/PLAN.md`) | decided; RE-03 at M6, RE-02 at P2 |
+
+## ADR-0229 — Graph threads: one persistent pool owned by `GraphHost`, a dependency-counted work-conserving scheduler, workers with the callback's real-time standing, devices opt in, offline renders on their own pool; on by default only after the Windows measurements pass; byte-identical output — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0203 d8, ADR-0102 d1-d4, ADR-0055, ADR-0056 d3, ADR-0042 d6 AND ADR-0052 §2; PLAN P-8 ITEM 14 (DEV-23; XC-26); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Live spreads devices across cores with no switch; ADI must do the same
+without changing a single output byte, at tracking sizes (32 to 128) and mixing sizes (2,048 to
+4,096). Main is serial with `levels()` and the order oracle in place; #441 adds workers off by
+default for Sum, Gain and Mix nodes only, with a pool per graph and level barriers, and lands off
+by default first (devices K9).
+
+### Decisions
+
+1. **The pool:** one persistent pool owned by `GraphHost`, lent to each published graph, never
+   rebuilt per graph.
+2. **The scheduler** is dependency-counted and work-conserving: each node resets its own count; a
+   chain continues on the same thread; the callback works alongside; a node count ends the block,
+   so any number of sinks works. At most min(idle, ready) wakes per block.
+3. **Workers' standing:** they inherit the callback's FP state and real-time standing. Windows:
+   MMCSS "Pro Audio" at the callback's priority, never `REALTIME_PRIORITY_CLASS`; macOS: the
+   device workgroup; Linux: `SCHED_FIFO` where allowed.
+4. **Devices opt in:** CLAP with thread-check answered on workers; VST3; Pd after measuring the
+   pthreads4w lock contention; built-ins once the devices lane signs off. CLAP's thread-pool
+   extension is served from the same pool later.
+5. **Offline renders** run on their own normal-priority pool, or serially; every render stays in
+   process (XC-26).
+6. **Default: on, only after the director's Windows workstation measurements pass** (ADR-0102 d3's
+   suite under ASIO, serial against 5 and 11 workers, compared with Live 12: M-CPU), since Live has
+   no switch. ADI's Engine page keeps a thread count (Auto, All or N); no user-facing multicore
+   switch.
+7. **Not taken:** #441's pool per graph, level barriers and strided partitions as the target (its
+   `RenderState` split, FP propagation, tests and benchmark flags are kept); a real-time upgrade on
+   the wrong thread; a separate DSP-thread handoff; plug-in sandboxing (ADR-0203 d8).
+8. **Acceptance:** GT-1 (byte-identical output on 1,000 random graphs, self-send loops included);
+   GT-6 (16 Surge XT CLAP, 16 VST3 and 16 Pd devices on 4 workers match the serial bytes); GT-7 on
+   the director's Windows workstation. NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0102 d4 (a pool is allowed; single-threaded below a measured size) | the pool's shape and its gate (d1 to d3, d6) |
+| ADR-0056 d3 (levelled scheduling) | the schedule becomes dependency-counted (d2); the order oracle stays |
+| DEV-23 (`docs/PLAN.md`) | decided; M7 |
+
+## ADR-0230 — The modulation schema: contributor kinds (automation, macro takeover, clip envelopes, modulator routes), one evaluator per block delivering a base and one summed offset per target, one playing value per parameter, one ownership state; Arrangement clip envelopes are modulation, Session clip automation stays absolute — `DECIDED` (2026-11-08) — **WIN'S CONTRACT CLOSING ADR-0046's OPEN SCHEMA, UNDER ADR-0046 d1-d3, ADR-0052 d5, ADR-0114 d4, ADR-0124, ADR-0188 d3 AND ADR-0203 d1/d15; PLAN P-8 ITEM 15 (DEV-07, DEV-06, AU-06; XC-16, XC-34, XC-37); AMENDS #434's ARRANGEMENT OVERLAY; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** Clip modulation computed in the automation evaluator, modulators
+writing their own offsets, macros writing base values: three schemes and two playing values
+(XC-16). #434 plays clip streams as absolute overlays on Arrangement clips, which is Live's
+Session-clip automation, not Live's Arrangement clip envelopes (manual §26.3: "In the Arrangement,
+clips only have modulation envelopes"). ADR-0046 deliberately left the schema for the device
+parameter declaration; this is it.
+
+### Decisions
+
+1. **Contributor kinds:** automation (the lane's curve), macro takeover (ADR-0114, ADR-0203 d15's
+   N:1 sum in the parameter's unit up to a cap), clip envelopes (Live's per-parameter law: volume,
+   clip gain and sends a reducing percentage, pan scaled, device controls relative, transposition
+   additive and clamped, linked or unlinked from the clip's loop), modulator routes (LFOs,
+   envelopes, steps, the audio-rate envelope follower keyed from any track, and Live's modulator
+   devices on the same routes).
+2. **One evaluator per block** applies ADR-0114's order in each target's domain and delivers the
+   base and **one summed offset per target** to CLAP (`PARAM_MOD`, converted to plain units), VST3
+   (added host-side, a point sent), built-ins and Pd (once per Pd block); the transfer curve applies
+   before scaling.
+3. **One lock-free playing-value slot per target; one ownership state per parameter** (override,
+   macro takeover, controller takeover, Link's tempo) driving Re-Enable Automation.
+4. **Schema:** routes in side tables (source, target device and parameter, depth, curve points,
+   mode, bipolar, enable), persisted and undoable; outputs never persist or reach the op log
+   (ADR-0046 d2); modulation sets are not ops (ADR-0124); **Arrangement clip envelopes** are
+   modulation streams in a new whole-table minor (lane, clip, data, declared domain), evaluated
+   after automation; #434's absolute overlay stays only for Session clips (P2) and for the gain
+   curve on the clip (AU-07). Minors are numbered when the engine PR opens (XC-37).
+5. **Modulators are graph nodes** on the audio thread at sub-block resolution, ordered before their
+   targets by event-only edges; mono or global scope now; per-voice modulation waits for
+   instruments; the envelope follower keyed from any track needs DEV-05 and MX-24 (XC-34).
+   Mappings inside a device's state blob (#207's `MidiModulator`) are not adopted.
+6. **His multimapper device file** is the oracle for the macro sum (ADR-0203 d15), before the racks
+   and macros work (P2).
+7. **Acceptance:** one source modulating a CLAP, a VST3 and a built-in parameter gives the same
+   curve at each; the base is unchanged after stop, save and reopen; deleting a source removes its
+   routes in one undo step; L-AUTO-6 on Live 12.4 (volume at 50 % with the fader at −6 dB and
+   0 dB; a device knob at 30 % with +50 %; the transposition clamp), NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0046 (open: the schema) | closed by d1 to d4 |
+| ADR-0124 (open: modulation sets are not ops) | confirmed (d4) |
+| #434 (clip envelopes) | its Arrangement overlay becomes modulation; its absolute overlay stays for Session clips and AU-07 (d4) |
+| DEV-06, DEV-07, AU-06 (`docs/PLAN.md`) | decided; AU-06 at M6, DEV-07 at M7 |
+
+## ADR-0231 — How the UI is tested: test launches are multi-instance under `ADI_HOME`, never activate a window and never run on the director's desktop; an input clock seam; goldens that check text through recorded glyph boxes and a comparator; one component model `UiControl` for tests, scripts, screen readers and agents; a headless script runner; parity bookkeeping that cannot drift — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0180 d8, ADR-0108, ADR-0047, ADR-0050, ADR-0149 d1, ADR-0209 d9, ADR-0210 d3 AND ADR-0039 d4; PLAN P-8 ITEM 16 (WTS-01 TO WTS-10; XC-43); CLOSES ADR-0180's TWO SETTLED ITEMS (UNDOCKING REPARENTS; A RESTORED RECTANGLE CARRIES MONITOR IDENTITY); THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** `ADI.exe` is single-instance across every Windows session, forwards its
+command line to a running copy and takes the focus; the shell suite reads the physical keyboard
+(`KeyPress::isKeyCurrentlyDown`), so on the director's Windows workstation "Shift+R, a tap, latched"
+passes only while R is up; goldens compare exactly under hand-placed text masks that broke CI
+twice; `setComponentID` has no uses; ui.yml runs the native smoke on Windows only and cancels
+successive main runs. ADI.exe is never driven on the director's live desktop (XC-43).
+
+### Decisions
+
+1. **Launch isolation (WTS-01).** Test launches (`--smoke-output`, `--control-test`) are
+   multi-instance; require `ADI_HOME` (exit 2 without it); never activate their window; report to
+   stderr; script their file choosers. Tests run on the CI legs, the in-process runner, the Linux
+   box under Xvfb, or a Windows Sandbox on the director's workstation only with his OK; **never his
+   session.** His signed side-by-side session (ADR-0108) still closes a step.
+2. **Test hygiene (WTS-02).** An `InputClock` seam (key state and milliseconds) for `keyIsDown`,
+   `keyStateChanged`, `AppCommands::key`, the Mix View's [REF] and Tap Tempo; a fixed virtual
+   display set; `AssertionWatch` with `JUCE_LOG_ASSERTIONS` on the test targets only; no native
+   dialogs in Windows test binaries; repaint invariance, an extreme-zoom paint and a paint census;
+   the JUCE suite built where `test_all.sh` counts it.
+3. **Goldens that check text (WTS-03, WTS-04).** One Latin and Hebrew OFL face pinned in the test
+   binary; a `RecordingRenderer` records each glyph's box beside each golden; the ignore mask is the
+   union of current and golden boxes; EXACT is a memcmp count, pixelmatch gives the diff image;
+   bless modes, a failures folder, a 64 KiB cap per golden. Every leg uploads its renders and a
+   manifest; a PR is compared per OS against its base's renders; the render review job fails until
+   the PR carries `ui-renders-changed` and names the changed scenes; no `cancel-in-progress` on
+   main.
+4. **`UiControl` (WTS-05):** one description of the window in `src/juce/ui_control.*` (melatonin's
+   component model, copied with attribution): `ui.windows`, `ui.inspect`, `ui.elements`, `ui.lint`;
+   input only through `ComponentPeer::handle*`; `ui.invoke`, `ui.command`, `ui.focus`; `ui.frames`
+   and `ui.screenshot`; `ui.arrangement.hit` and `locate`; ids by the `componentID` grammar or the
+   title path; replies after the input is applied and one frame has run. The window lane owns the
+   `ui.*` methods and their id grammar.
+5. **The headless script runner (WTS-06):** `adi_ui_script (--project | --new) script.jsonl` over
+   the fake peer, no display or audio device; PNGs and `transcript.jsonl`; exit 1 on a failed
+   expectation; run on three legs.
+6. **Sweeps and his remarks as regressions (WTS-07, P2):** the dead-control sweep (each click
+   produces a history head, a view-state change, a popup, a transport command or a Status Bar
+   line), dialog coverage without a native chooser, layout invariants at three sizes and three
+   zooms, the Mix View's transitions as a filmstrip, a Hebrew-named track right to left, scripts for
+   his R1 to R6. **Accessibility lint (WTS-08, P2):** unnamed, obscured, zero-size, outside its
+   parent, duplicate id, clipped text; axe-windows' UIA rules where they map; a floor that only
+   falls.
+7. **Parity bookkeeping (WTS-09):** `tools/validate_parity.py` in ci.yml's validator step: every
+   `[P:<file>#<row>]` tag resolves; the count of untagged built rows only falls; a file's built count
+   never drops without a floor change; parity is never claimed from manual text.
+8. **The running app over the API (WTS-10):** the `ui` grant exists only under `--control-test`
+   (multi-instance, `ADI_HOME`, a banner while on), never for a paired surface; synthetic ops carry
+   `ui-test:<client>`; screenshots and drops are confined to declared roots; native smokes on Linux
+   (`xvfb-run`) and macOS too.
+9. **Acceptance:** AT-1 to AT-24 (a word moved 1 px passes while a divider moved 1 px fails; with an
+   ordinary ADI running, a smoke starts its own instance, writes its PNG and exits 0 and the
+   foreground window is unchanged; `ui.click` on Play equals Space; a drag is one labelled undo
+   step), NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0180 d8 (how the UI is tested) | filled in by d1 to d9; its two settled items (undocking reparents the same component; a restored rectangle carries monitor identity) are struck as open |
+| ADR-0047's open item (whatever replaces the inspector must be reachable by keyboard and announce itself) | met by `UiControl` and `ui.lint` (d4, d6) |
+| `ui.yml` | `actions: read`, no `cancel-in-progress` on main, the `labeled` trigger (d3); WTS-04 of M0 |
+| WTS-01 to WTS-10 (`docs/PLAN.md`) | decided; WTS-01, 02, 09 at M1, the rest with Track C or P2 |
+
+## ADR-0232 — One control stack: one JUCE-free dispatcher in `src/adi/control` with one loopback listener, one wire, one actor rule and named owners, shared by agents, surfaces, scripts, the ArtCraft bridge and the UI test surface; it starts now on a seat of its own — `DECIDED` (2026-11-08) — **WIN'S CONTRACT UNDER ADR-0039 d1-d6, ADR-0168 d5, ADR-0181 d2, ADR-0206 d1/d4 AND AI-AGENT §7.1, WITH THE DIRECTOR'S ANSWER Q-C (a) OF 5 NOVEMBER; PLAN P-8 ITEM 17 (CTL-01, CTL-03, CTL-04; XC-39, XC-40); Q-O (WHERE THE TOKEN LIVES) STAYS HIS; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** No socket, dispatcher, token or schema exists on main; the pieces it
+calls do (`validateSubmission`, `Actor` and `Scope`, `OpJournal::commit` with `expectHead`, the
+changeset, `OpSubmitter` per actor, `ParameterFeed`). Agents, surfaces, OSC, MIDI-CI, scripts, the
+ArtCraft bridge and the UI test surface would each have grown a listener (XC-40). No lane owned
+`src/adi/control/**` (XC-39). **His answer to Q-C:** (a), the control API starts now, as
+infrastructure, on a seat of its own, in parallel with the lanes.
+
+### Decisions
+
+1. **One listener,** JSON-RPC 2.0 over one loopback WebSocket, off by default (`control.enabled`),
+   port 0 meaning any free port; HTTP only on the same server and port; `adi-mcp` is stdio. Nothing
+   past loopback, which stays the user's deliberate act (ADR-0039 d4). **One network stack** in one
+   LANES path; every later listener (OSC, OSCQuery, a LAN session, Link Audio, AudioGridder, the LAN
+   audio node) rides on it, each off by default and listed in Settings' Privacy group.
+2. **Explicit project.** Every project-touching method names its project (ADR-0068's several open
+   projects). A `meta` sibling of `params` carries `expectHead` (an opaque equality token passed to
+   `CommitOptions::expectHead`), `deadlineMs` and `idempotencyKey`.
+3. **Actors, by who writes the ops:** agents and MCP clients write only through the changeset
+   (`agent`); surfaces write `user` / `surface:<name>`; OSC `user` / `osc:<client>`; MIDI-CI
+   `user` / `midici:<muid>`; synthetic UI input `ui-test:<client>`; `remote` only for a script
+   granted Apply; Tier-2 results follow whoever wrote the ops (ADR-0039 d3: tiers enforced at the
+   boundary).
+4. **Threads.** Network threads never touch the model; validation runs on the calling thread;
+   handlers run on the message thread through an injected executor; `project_read` uses a second,
+   read-only connection.
+5. **The core (CTL-03):** tokens compared in constant time with one refusal text; grants keyed by
+   the paired credential, never a self-declared name; a new client starts at Propose or lower and
+   only the user raises it; Apply only from an explicit per-client grant under
+   `agent.maxOpsPerMinute`; surfaces get ADR-0181 d2's allow-list; idempotency keyed by credential
+   plus request id; requests PENDING, TAKEN or ABANDONED so a timed-out request is never applied
+   late; an `expectHead` mismatch writes nothing; an audit ring of 512 events with secrets redacted.
+   Errors: −32602 invalid, −32002 stale (with `headFound`), −32005 limits, −32006 not granted.
+6. **Identity.** The API exposes ADI's durable integer ids and the head token; notifications never
+   mutate; remote parameter control stays undoable and attributed.
+7. **Owners.** The control seat he grants (Q-C) owns `src/adi/control/**` and `tools/adi-mcp`; the
+   window owns `src/juce/app_control.*`, the Settings page, the subscriptions and the test surface;
+   win owns the pins and the registry rows (`control.*`). Track C (CTL-02 to CTL-09, AGT-01,
+   AGT-02, AGT-08, WTS-03 to WTS-06, WTS-10) starts now in parallel.
+8. **Where the session token lives is his question (Q-O),** asked with Track C's first PR; this
+   entry does not place a discovery file. ADR-0039 d4 stands as written until he answers.
+9. **Acceptance:** AC-6 (every write method ends in `validateSubmission` plus `OpJournal::commit`,
+   or in `agent::preview`/`apply`, with its actor asserted); AC-17 (with two projects open, a
+   request naming B never touches A); `test_rpc_permissions`. NOT RUN.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0168 d5 (the library "decided in that step") | the stack is this entry's (d1 to d5); MAGDA's service, scopes, clients and audit are the base, ported to C++20 |
+| ADR-0181 d2 (no second server) | confirmed: one listener, one network stack (d1) |
+| ADR-0206 d1, d4 | the ArtCraft bridge is a client of this stack (d1, d3) |
+| LANES §1 | a control seat row and the paths of d7, per `docs/PLAN.md` §8.1 and his Q-C answer |
+| CTL-01, CTL-03, CTL-04 (`docs/PLAN.md`) | decided; the record at M0, the code with Track C |
+
+## ADR-0233 — The director's MCP request of 11 November is ADR-0232's control stack, built now: the registry's own schema, the transport-free core with its MCP projection, telemetry from what the engine already publishes, and a headless `adi-mcp` that holds no writable handle; win builds the first slice — `DECIDED` (2026-11-11) — **WIN'S CONTRACT UNDER ADR-0232, ADR-0168 d3, ADR-0039, ADR-0148, ADR-0209 d11, ADR-0203 d8/d14/d20 AND ADR-0222, AT THE DIRECTOR'S REQUEST OF 11 NOVEMBER; Q-O STAYS HIS; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** On 11 November the director asked for "a native C++20/JUCE MCP server and
+unified tool registry" and pasted a specification:
+- one registry serving an in-app assistant and external clients;
+- atomic undo and a proposal mode;
+- resources for the manifest, the graph, the Mix Radar's telemetry and the browser's catalogue;
+- one tool per action, and ML jobs.
+
+He asked for Gemini's help to make sure it all makes sense. ADR-0232 had already decided the
+control stack on 8 November, but the seat it named never ran, and no control code existed on main.
+This entry:
+- maps the request onto that stack;
+- records what of the request is adopted, what conflicts with a ruling and why;
+- records what the first slice builds.
+
+`docs/CONTROL-MCP.md` is the design: its §1 has the request, part by part, and §3 the threading
+diagram.
+
+### Decisions
+
+1. **The request is ADR-0232's stack, built now, and win builds its first slice.** The director
+   asked win directly, so win takes the control seat's first items on branches `control/*`, under
+   the seat prompt's rules for owners, the gate and one PR per item:
+   - CTL-02;
+   - the in-process part of CTL-03;
+   - AGT-01's caps and queue;
+   - AGT-02's levelled read;
+   - CTL-08's headless backend.
+
+   The prompt of 5 November stays for whichever seat continues with CTL-04, CTL-09 and
+   `--connect`.
+2. **Adopted from the request.**
+   - **MCP resources** join the four tools as read-only views on the same methods:
+     `adi://projects/{project}/manifest`, `.../graph` and `.../telemetry`, plus `adi://ops` and
+     `adi://ops/{name}`. The four tools are ADR-0168 d3's three (`project_read`, `ops_describe`,
+     `changeset_propose`) plus CTL-08's `changeset_status`; no tool is added here.
+   - **A telemetry resource** that reads only what the engine already publishes: `StripMeter`,
+     `MainLoudnessReadout` and the transport.
+     - It is sampled on the message thread at the UI clock into one immutable frame.
+     - No new audio-to-anything path is added (ADR-0050 §4; MX-30).
+     - Each value is labelled with what it is: a strip's peak and RMS are as last stored, two
+       independent reads, possibly from different callbacks, and not held; Main's loudness is
+       four independent reads.
+     - Every Mix Radar input that does not exist yet is listed, with its milestone: nine rows,
+       the AI Mix Radar's findings (P2) among them.
+     - Headless, the result is `{available: false, reason, unavailable, project}`.
+   - **In-process callers** are `Principal`s of the same dispatcher, under the same grants, with no
+     side door. A model-backed button such as the Mix Radar's [Propose Fix] (AI-AGENT §8) is one.
+3. **Mapped onto what exists, not adopted as named.**
+   - The "unified tool registry" is the op registry, which already is the one vocabulary
+     (AI-AGENT §3). CTL-02's generated schema is how registering once produces the schemas.
+   - `adi.batch_transaction`, SQLite savepoints and `dry_run` / `stage_proposal` are the changeset
+     (ADR-0148): one transaction, one `txn_id`, one undo step. The Propose preview runs in a
+     transaction that is always rolled back. No savepoint API is added.
+   - Tools per action (`create_track`, `set_routing`, `configure_sidechain`, ...) are ops inside
+     one `changeset_propose`. ADR-0168 d3 stands: a few tools, never one per op, approved by the
+     director on 25 September; CTL-08 names the four.
+   - "Mix Radar telemetry" is `adi://projects/{project}/telemetry`. The AI Mix Radar itself stays
+     at P2 (ADR-0209 §6, d11; MX-21), because its inputs (MX-30's spectra, AGT-07's `analyze.*`)
+     do not exist yet. Its assisted fixes (`apply_gain_staging`, `propose_eq_match`,
+     `resolve_frequency_masking`) wait for its findings; each is then one `changeset_propose`.
+   - The request's `prompts/list` is not built. No prompts are ruled, and the instructions text
+     carries the guidance a prompt would. The method answers −32601, and no `prompts`
+     capability is declared.
+   - `adi://browser/catalog` waits for AGT-05, and with it inserting a plug-in that is not yet in
+     the project. A plug-in already in the project can be inserted again now, through the
+     `pluginRefs` and device `ref`s that `project_read` lists at level 0.
+4. **Not adopted, because a ruling says otherwise.** The director may strike the ruling.
+   - HTTP+SSE, which MCP itself deprecated in 2025-03-26, and named pipes: one listener, one
+     network stack (ADR-0232 d1).
+   - LAN clients by default: loopback, off by default, and a bearer token always (ADR-0039 d4).
+   - A `juce::Thread` in the core: the core is JUCE-free (ADR-0232).
+   - A model inside the DAW process: the agent is the sidecar (ADR-0168).
+   - Live LUFS per bus: rejected (ADR-0203 d14).
+5. **Refinements made while building.**
+   - **CTL-02's default bounds apply at the remote boundary only** (`Bounds::Remote`): text at
+     most 16 KiB characters, arrays at most 4096 elements, unless a field declares otherwise.
+     - Applied to local submissions, they would refuse a long automation pass or a large note
+       diff.
+     - Declared metadata applies everywhere, with one authority: `validateSubmission` enforces
+       what `opInputSchema` says.
+     - The "ids at least 0" default needs an id marker on `Field`, so it is deferred.
+     - At the boundary, a float with no fractional part in an Int field becomes the integer,
+       because JSON Schema calls 1.0 an integer.
+     - An Int keeps the whole range a JSON integer can hold, signed or unsigned, because a note's
+       persisted id is a full uint64 (ANOT); the schema's bounds say so (INT64_MIN to UINT64_MAX),
+       and a whole number beyond them is refused.
+     - AC-24 holds over values as nlohmann parses them, not over JSON text: an integer literal
+       outside int64 and uint64 arrives as a double, so one just below INT64_MIN can collapse to
+       it. The result is still a legal int64, and no handler accepts such an id or position.
+   - **`project_read` is its own derived view, with durable ids and `nextIds`.** It is not the
+     canonical text projection, whose rule R2 forbids row ids. Ops never allocate ids (ADR-0021),
+     so a caller creating rows takes them from `nextIds`, and the stale check keeps them free.
+   - **`project_read` reads the rows and the head in one read transaction**, so a head is never
+     paired with older rows.
+   - **`baseHead` is required in `changeset_propose`**, unless an RPC caller sends
+     `meta.expectHead`. `null` is the root, an empty history, as `project_read` reports it. There
+     is no default to "the head now", which would let a change the user made between the read
+     and the proposal pass unseen. With both, the stale check really keeps `nextIds` free.
+   - **`project_read` in detail.** `level` runs from 0 to 2. Scope arguments are refused at a
+     level that ignores them (`tracks`, `fromBar` and `toBar` at level 0, `clips` below level 2),
+     and `fromBar` must be before `toBar`. Level 0 adds `pluginRefs`, each device's `ref`, and
+     every tempo and meter change by position (`tempoChanges`, `meterChanges`), because the ops
+     that remove them address them by position. Note positions use the meter in force at the
+     clip's start, `start` is raw ticks, and the bars select clips, not notes.
+   - **A proposal changes nothing, so proposals do not chain.** Each preview runs against the
+     project as it is. Chained edits need an apply in between and a fresh `project_read`.
+   - **`changeset_propose`'s result includes the changeset**, so the user can save it for
+     `adi_tool` without a second call.
+   - **`changeset_status`** reports `headError` instead of a null head when the head cannot be
+     read, because null would mean the root. `applied` means applied once; it may since have
+     been undone. `Review::Rejected` is reserved for the app host's review panel; nothing in this
+     slice sets it.
+   - **`adi-mcp --project` holds no writable handle** (AI-AGENT §6 rule 1), and no handle at all
+     between requests.
+     - Each read opens a read-only connection and closes it again, so an idle bridge holds no
+       lock that could stop ADI leaving WAL mode at close (SPEC §3.3).
+     - Previews run on a private snapshot, taken with SQLite's backup API and retaken whenever the
+       head moves. This is ADR-0148 d1's rolled-back preview, run on a copy because the bridge's
+       own connection is read-only. The copy lives in a folder named for the bridge's process,
+       and a folder left by a crashed or killed bridge is swept when the next one starts.
+     - The file is never written, upgraded or locked for writing.
+     - Applying stays the user's act: `adi_tool propose --apply` with the changeset that
+       `changeset_propose` returns (and `changeset_status`, while it awaits review). adi_tool
+       now holds it to the same `agent.maxOpsPerRequest`.
+   - **Validation runs on the calling thread** (ADR-0232 d4): a method's screen checks its
+     parameters and normalises and validates every op before the hop, so a refusal never costs
+     the owner thread anything.
+   - **The preview's diff is bounded in memory.** The common prefix and suffix are trimmed before
+     Myers, each step keeps only its live diagonals, and past a budget the changed middle is shown
+     as one replacement. A remote request that deletes a large track, or inserts thousands of
+     notes, could otherwise make the diff allocate gigabytes.
+   - **The grant applies at the MCP layer too.** Listing tools or resources needs a grant like any
+     call, and `tools/list` offers only the tools the caller's tier can call. Only `initialize`,
+     `ping` and `server/discover` answer without one. The grant is checked again on the owner
+     thread, so a grant revoked while a call waits stops it unrun.
+   - **The audit keeps codes, not text.** A refusal is recorded by its code and refusal kind,
+     never by its message, which may quote the request. Every refusal is audited, those the MCP
+     layer makes before the `Service` included. Every field is capped, and the connection's start
+     and end are recorded.
+   - **Internal errors leak nothing.** The wire says only "internal error"; the detail goes to
+     adi-mcp's stderr.
+   - **Idempotency keys are exact.** A key reused with different arguments is refused, never
+     replayed, and a `_meta` idempotency key that is present but invalid is refused, as
+     `parseMeta` refuses it on the RPC path.
+   - **An explicit project, except for a single-project host.** `project` may be omitted only by
+     a host bound to one project for its life (adi-mcp). Everywhere else it is required, as
+     ADR-0232 d2 says.
+   - **A request whose deadline passed while it waited is −32003** and never runs. ADR-0232 d5
+     named no code for it.
+   - **Both MCP eras, as published:**
+     - 2025-11-25, 2025-06-18 and 2024-11-05 through `initialize`; 2024-11-05 carries no batch
+       obligation. 2025-03-26 is not offered: it MUST receive JSON-RPC batches, which this server
+       refuses, so such a client is answered 2025-11-25, and the lifecycle says a client that
+       cannot speak it SHOULD (not MUST) disconnect.
+     - 2026-07-28, stateless:
+       - each request carries `_meta` with the protocol version and the client's capabilities;
+       - `resultType` on every result;
+       - `ttlMs` and `cacheScope` on discover, list and read results (0 and `private`);
+       - a mandatory `server/discover`, and no `ping`;
+       - −32022 with `{supported, requested}` for an unsupported version.
+     - A modern-shaped request whose `_meta` names a legacy version is treated as legacy: it
+       needs `initialize` first.
+     - In `tools/call`, a refusal is a tool execution error carrying ADI's refusal, so the model
+       can correct itself. An unknown tool is −32602.
+     - `resources/read` answers "resource not found" with −32002 in a legacy session (2025-11-25
+       says SHOULD) and −32602 for a modern request (2026-07-28 says MUST NOT emit −32002).
+     - A refusal whose id could not be read omits the id, as MCP's schema allows
+       (`id?: RequestId`, never null). Malformed requests are still answered.
+     - A response-shaped message (no `method`, with `result` or `error`) is dropped whatever its
+       id, so ADI never answers a peer's response.
+   - **ADI's `_meta` prefix is `io.github.arieladi.adi/`**, the reverse DNS of the project's
+     GitHub Pages domain. The one key read today is `idempotencyKey`, in `tools/call`'s
+     `params._meta`. The `meta` sibling of `params` (ADR-0232 d2), with `expectHead` and
+     `deadlineMs`, arrives with the WebSocket listener (CTL-04); `parseMeta` is built and tested
+     for it.
+   - **`Limits::maxOps` defaults to 6000** (ADR-0203 d20), and adi-mcp reads
+     `agent.maxOpsPerRequest`. This is AGT-01's first half. The per-minute cap applies at Apply,
+     which no MCP client reaches yet.
+6. **Jobs and models.**
+   - `jobs_*` arrive with AGT-04, at M5. MCP's `notifications/progress` and its
+     `io.modelcontextprotocol/tasks` extension map onto ADR-0222's states.
+   - The request's model claims are corrected in CONTROL-MCP §10.2:
+     - Demucs runs at 44.1 kHz.
+     - Whisper gives no syllable or transient alignment.
+     - RVC is voice conversion: it needs a model per voice and is Tier 2 by ADR-0086.
+     - Timbre transfer is a P3 row.
+7. **Q-O, where the session token lives, stays the director's**, asked with this first PR
+   (ADR-0232 d8). This slice writes no token and no discovery file. adi-mcp's grant is keyed by a
+   per-process secret, because stdio is private to the client that started it.
+8. **Consent before AGT-03: headless adi-mcp ships first, and the director may rule otherwise.**
+   CTL-08 asks for AGT-03's consent before `project_read` returns anything to a non-local
+   destination; AGT-03 is P2, and PLAN's Track C itself schedules the headless bridge first.
+   - Until AGT-03 exists, the user's own MCP host configuration, which names the file, is the
+     per-project opt-in.
+   - adi-mcp says on stderr, at start, what the client reads: names, routing, devices,
+     parameters, clips, notes and remarks; never audio or media files.
+   - `--connect` and the app's listener wait for AGT-03.
+   - ADR-0039's open consent item stays open.
+9. **The Gemini round.** At the director's request, the design and the code go to a Gemini check
+   of at most five file-and-prompt pairs, which he runs. Win verifies every claim, and the PRs
+   merge after that round. Before it, an internal review of five lenses, each finding checked by
+   a verifier trying to refute it, confirmed 51 findings of 55; every confirmed one is fixed or
+   recorded here.
+10. **Acceptance:**
+   - `adi_ops_schema_tests` (AC-24, nested metadata included);
+   - `adi_rpc_permissions_tests` (`test_rpc_permissions`: the screen, the audit's codes);
+   - `adi_changeset_tests` (the bounded diff);
+   - `adi_control_projection_tests` (AGT-02's levels over a seeded project: clips, lanes, notes,
+     the bar window, the scope refusals, tempo and meter changes, `pluginRefs`);
+   - `adi_control_mcp_tests`:
+     - AC-23 and AC-17, with two projects open;
+     - CONTROL-MCP §6.3's group-and-sidechain changeset that one undo restores;
+     - the grant gate;
+     - telemetry;
+     - hostile lines;
+     - the binary over pipes.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0232 d1, d7 | the first slice is win's, at the director's request; the listener and the app host come next |
+| ADR-0168 d3 | ADR-0168 d3 (three tools) plus CTL-08's `changeset_status`: resources join these four as read-only views; no tool is added here |
+| CTL-02 (`docs/PLAN.md`) | default bounds at the remote boundary only; whole-number floats normalised; ids-at-least-0 deferred |
+| CTL-08 | the headless backend previews on a snapshot and holds no handle between requests; the 2026-07-28 details as published; `baseHead` is required in `changeset_propose`; its consent precondition is deferred until AGT-03, and headless adi-mcp ships before it (d8) |
+| ADR-0148 d1 | headless, the rolled-back preview runs on a backup-API copy, swept if a bridge dies; the preview's diff is bounded in memory |
+| ADR-0232 d2 | the project may be omitted only by a host bound to one project for its life |
+| ADR-0232 d4 | validation on the calling thread is each method's screen |
+| AGT-01 | the cap defaults to 6000 and adi-mcp reads the row; the queue is in memory, by credential |
+| AGT-02 | `project_read` carries ids and `nextIds`, and at level 0 `pluginRefs`, device `ref`s and every tempo and meter change; levels 0 to 2 are built, and 3 is refused with its card; scope arguments a level ignores are refused |
+
+## ADR-0234 — The ArtCraft integration is cancelled: no bridge, no FilmCraft time base or link tables, no contribution to storytold's apps; the general AAF, OTIO and timecode work stays, built from specifications and ADI's own code — `DECIDED` (2026-11-11) — **DIRECTOR'S RULING; CANCELS ADR-0206 EXCEPT d6; AMENDS ADR-0232 d1 AND ADR-0207's FILMCRAFT ITEM**
+
+**The ruling.** On 11 November the director cancelled the integration with storytold's ArtCraft
+suite (FilmCraft, SoundCraft, EffectCraft). His reason: ADI cannot plan on storytold doing any work
+for it, so nothing in ADI's plan may depend on them. He allowed one exception: work that needs
+nothing from them and is trivial. The bridge is neither trivial nor needed, so it goes.
+
+### Decisions
+
+1. **Cancelled:**
+   - the bridge in every phase: ADR-0206 d1, d4, d5 (attach, Send to ADI, Return to FilmCraft,
+     transport master, everything at P3);
+   - ADR-0206 d3's FilmCraft-specific prerequisites: its 254,016,000,000 ticks-per-second time base
+     as a target, and the `external_sessions` / `external_links` schema reservation (never built,
+     so no schema changes);
+   - the FilmCraft contribution (the stale-waveform PR 1 and its prompt, the Rust toolchain gate on
+     adi-ubuntu, the "open the FilmCraft PR" gate);
+   - the settings catalogue's "Return to FilmCraft" row, removed with the next registry PR.
+2. **Kept, because each stands on its own and needs nothing from storytold:**
+   - OTIO and AAF import and export (TM-IC-04), the industry's handoff to Pro Tools, Resolve and
+     Premiere. They predate ADR-0206 (ADR-0127 d7).
+   - The AAF writer is now written clean-room from the AAF and compound-file specifications. It
+     is no longer ported from FilmCraft (take IC10).
+   - The exact integer time base and SMPTE timecode (TM-IC-01), which MTC, AAF, OTIO and video
+     need anyway.
+   - ADR-0206 d6 (`files.sampleEditorOpens` defaults to opening in place, Live's way). It was
+     never about storytold.
+3. **What stays as reading only.** `reference/filmcraft` and `reference/soundcraft` remain
+   read-only reference clones, like every other reference repository. The plan names a few ideas
+   from them (for example how a long job reports progress), and those may be read and
+   reimplemented. Nothing connects to their apps, and nothing waits on them.
+4. **`docs/INTEROP-ARTCRAFT.md` is kept as history** with a cancelled banner, so the facts read on
+   25 October are not lost.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0206 | cancelled except d6 |
+| ADR-0232 d1 | the ArtCraft bridge is no longer one of the control stack's clients |
+| ADR-0207 | its FilmCraft contribution item is withdrawn |
+| PLAN TM-IC-01, IC-03, TM-IC-04, take IC10 | the FilmCraft time base, the link tables and the bridge are struck; the AAF writer is clean-room |
+| FEATURES, BUILD-BRIEF 7e and 19-20, LANES §3 item 3 and its gates | marked cancelled |
+
+## ADR-0235 — ADiJ stays light: no Mix View and no unified built-in plug-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; REFINES ADR-0105 d4 AND NARROWS ADR-0187 d4**
+
+**The ruling, in his words (12 November).** "ADIJ doesn't get the new mixview and all this plugins
+and abelites adij while do support clap and vst3 , the daw side of it should be very simple to
+combine automations with the dj play so we can set things to happen in advanced and having them
+still on the time line even if we slow the tempo or whatever because it will sit on top of the wav
+meta data and will run on the same engine right ? ) but we defiantly do not need an extensive adi
+daw features in adij the daw in there should be pretty lightweight and all very cpu efficient as it
+meant for playing as dj on cdj and alike". Win answered his question yes: one engine, and automation
+placed on the beat grid follows any tempo (d4, d5).
+
+### Decisions
+
+1. **Not in ADiJ:** the Mix View (ADR-0209, ADR-0212, ADR-0236) and the unified built-in feature
+   made from the director's plug-ins (ADR-0212). His plug-ins' ordinary VST3 and CLAP builds load in
+   ADiJ like any plug-in (d2).
+2. **CLAP and VST3 are hosted** for effects and instruments, as ADR-0105 d4 and ADR-0133 d1 already
+   say, through the same hosts in `adi_core` and the shared plug-in capability record (ADR-0149 d2,
+   ADR-0203 d22).
+3. **The DAW side is small.** ADR-0105 d4's Mini DAW mode is the whole of it: a few automation lanes
+   per deck, drawn on the deck's waveform beside the grid, set in advance. It is not ADI's
+   arrangement, Session view, device area or mixer.
+4. **Automation is anchored to the track's beat grid, not to seconds.** A point says "bar 33,
+   beat 1" on that track's grid. Pitch, tempo changes, sync and keylock move the automation with the
+   music; editing the grid (moving the downbeat) moves it too. The grid and the automation are a
+   record in ADiJ's library keyed by the audio's BLAKE3 hash, beside the track's analysis (ADR-0104
+   d1, ADR-0147). "On top of the wav meta data" therefore means on top of the track's grid record:
+   nothing is written into the audio file (ADR-0105 d4), because changing its bytes would change its
+   hash and orphan its analysis.
+   - *Format note.* The project format's automation is in ticks against one tempo map, or ns
+     (`automation_lanes.time_base`). A deck needs its own time base: either a mapping through the
+     track's grid onto ticks, or a new `time_base` value (a schema minor). The engine lane decides
+     which, with the first ADiJ format work; ADR-0105 d4's "the DAW's automation lanes and ops, not
+     new ones" holds either way.
+5. **One engine** (ADR-0105 d2, ADR-0188 d8, ADR-0190 d2): ADiJ is a shell over `adi_core`, and its
+   automation runs on the same graph and the same automation code as ADI.
+6. **CPU is a requirement.** ADiJ is for playing live with CDJs and similar hardware: a deck's
+   audio path, its stems (ADR-0191 d4) and its automation must stay cheap and must never glitch;
+   analysis and separation stay off the deck, at analysis time. ADR-0187 d4's "aDiJ should match
+   [Mixxx's] feature set" is narrowed accordingly: DJ features, yes; DAW breadth, no.
+7. **Unchanged:** the USB export still strips plug-ins and automation (ADR-0105 d5), so automation
+   plays only while ADiJ itself plays the deck, for example CDJs with a laptop running ADiJ
+   (ADR-0205 d8); ADR-0191 d1 to d4; FEATURES §10.6 priorities; roadmap step 13.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0105 d4 | Mini DAW mode confirmed as the whole DAW side; automation anchored to the track's grid (d3, d4) |
+| ADR-0187 d4 | "match its feature set" covers DJ features, not DAW breadth (d6) |
+| ADR-0209, ADR-0212 | ADI only; not in ADiJ (d1) |
+| FEATURES §10.6 | a row for the grid-anchored automation and the CPU rule, with the next FEATURES pass |
+
+## ADR-0236 — The Mix View seat: his plug-in list is in, so the unified feature's design starts; a dedicated Codex session builds the Mix View across the lanes, starting with a decision guide; his tab model is the baseline — `DECIDED` (2026-11-12) — **DIRECTOR'S DIRECTION; OPENS ADR-0212's GATE; AMENDS ADR-0208 d2's NAME AND LANES §2**
+
+**The direction (12 November), in his words.** "please give codex a mission of creating the mix view
+for us from all his research and knowledge have it advance in the engine lane window lane and
+control lane (and any other lanes needed) i want a codex session in my codex pro 500 that is about
+putting all its work into adi new mix view". Then: "i need to understand how we intend to integrate
+all the 10 plugins i want to put in the mix view, i want codex to guide me with the decision making
+on how to combine them all into this mix view and its standalones. i am thinking in the Ableton like
+device area - to have like tabs of enabled mixview function - lets say i chose to enable the EQ and
+Limiter on the mix view for a channel that channel then shows at the end of the chain in the device
+area a tab for EQ and then a TAB for LIMITER (eq default first other tools - clipper then limiter
+last) in this case we only enabled EQ and Limiter so - EQ is in the end of the device chain and
+after it there is a limiter but we can move those tabs to put those elements in between vst3 or
+clap plugins in the chain if we want the limiter before any processing we can if we want eq in the
+middle after an soothe2 and then limiter and then some other vst after we can.. those tabs move the
+elements from mix view in the device area".
+
+### Decisions
+
+1. **ADR-0212's gate opens.** His list is the product table of his 9 November roadmap: ADI-Q,
+   ADI-L, ADI-Clip and ADI Still (built), and ADI-View (the analysers combined), ADI-FUSE
+   (Trackspacer- and FUSER-class), ADI-C (Pro-C 3-class compressor), ADI-DS and ADI-G (to build);
+   he speaks of ten. The seat's first act is to confirm the ten with him. The unified feature is
+   written from their source and never hosts their VST3 (ADR-0212 d2 stands).
+2. **His tab model is the baseline**, to be confirmed through the decision guide (d4), not designed
+   around: each Mix View function enabled on a channel appears as a tab in that track's device area,
+   at the end of the chain by default in a fixed order (EQ first, clipper then limiter last), and
+   each tab can be moved anywhere among the track's VST3 and CLAP devices. A tab is the device-like
+   window ADR-0212 asked for; the Mix View row shows the same functions in chain order. Nothing is
+   enabled by default and nothing reserves a slot (ADR-0212 d1 stands).
+3. **A dedicated Codex Mix View seat**, local to his PC (his plug-in source and research are not in
+   any repository), owns the Mix View end to end: the unified feature's engine side, the Mix View
+   and device-area windows, the control-lane methods the Mix View needs (the AI Mix Radar's
+   proposals through the changeset, ADR-0148, ADR-0232), and the standalones. It works on branches
+   `mixview/…`, logs in `collab/mixview.md` on `mixview/log`, and lands through win like the other
+   seats. The engine and window seats keep their own queues; where a Mix View item touches their
+   paths, the seats coordinate through their logs (ADR-0208 d3's path ownership, amended by this
+   seat).
+4. **The first deliverable is a decision guide** for the director: every choice the unified feature
+   and its standalones need, each with options, costs and a recommendation, including at least: his
+   ten; disabling a function (settings kept or lost); analysers and visualisers as taps rather than
+   chain positions; Mix-Unmask's sidechain key; latency of moved tabs; more than one of a function
+   per channel; presets and new-track defaults; the standalones (one app or one per plug-in, and
+   how they share the code); what the Mix View row shows for third-party plug-ins; the open ADI-View
+   decisions D1 to D13; how a compressor and a gate as opt-in functions sit with ADR-0203 d14 ("no
+   compressor, no gate" on channels); per-row loudness versus ADR-0203 d14's Main-only metering;
+   the JUCE versions; the shipped code that still draws the withdrawn slots
+   (`ui/mix_view_provider.hpp`, `juce/ui_stack.cpp`).
+5. **Names.** ADI-Clip is the clipper and ADI-C the Pro-C 3-class compressor, as his roadmap names
+   them; ADR-0208 d2's "ADI-C" clipper is renamed ADI-Clip (ADR-0212 d3 left the name his call).
+6. **Not in ADiJ** (ADR-0235 d1).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0212 | its gate opens (d1); d1, d2 and d4's rules (no slots, never host the VST3) stand |
+| ADR-0208 d2 | the clipper is ADI-Clip; ADI-C is the compressor (d5) |
+| ADR-0209 d12 | ADI-View and ADI-FUSE are products with their own cores, per his roadmap; the guide reconciles d12's "parity passes" (d4) |
+| LANES §2 | a `mixview/` prefix and a Mix View seat (d3) |
+| PLAN MX-20, MX-21, MX-31, MX-36 | their "waits for the list" parts are unblocked, through the guide's answers |
+
+## ADR-0237 — The Mix View's first answers: one of each function per channel, added and removed like Live devices; EQ carries the unmasking; the limiter carries the clipper; analysers live in the Info box and a Mix View tab, and cost nothing unseen — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; ANSWERS ADR-0236 d4's FIRST QUESTIONS**
+
+**His answers, in his words (12 November),** to the eight questions win put to him from ADR-0236 d4:
+
+- Disabling: "as deleting a Live device does but we can undo of curse"
+- Analysers and visualisers: "mostly meant to run on the master unless comparison between channels
+  like psyscope - we need a very efficient way of handling the mix view while is not apparent (if
+  someone choosing to look at it in second screen all the time so be it but if its not visible it
+  should not use cpu at all) visualizers from adi mixview shuld sit in the info box in a boxed
+  version.. not as tabs in the device area"
+- Second inputs: "to enable this function one needs to go into mix view and enable this function
+  with all its goodness on modulation and routing and easy sidechaining to the kick and so on, so if
+  one use that function he can then see a tab (this abilities of trackspacer and fuser should go into
+  the EQ window the rest need to have there own new designs like pro-c pro-ds pro-g clones and the
+  adi-clip can be part of the adi-L as another mode or tab"
+- Latency: "if one hover on the tab to look for info it then show it in the info box for a sec until
+  not hovering on it anymore then it goes back to boxed version analyzers.."
+- Two of the same: "no this part of the mix view is for easy broad changes on all instance for vca
+  trick or clip2zero method - easy routing and AI assistant friendly across all channels if someone
+  wants another EQ he can load ADI-Q or a fabfilter PRO-Q or pulsar massive or whatever they want"
+- Presets and defaults: "both, nothing starts defult on a track one dose need to enable it from the
+  mix view or from an add tabs the tabs will show the mix view functions we can add from the device
+  area like adding a clipper (adi-clip) wich its defaults is like kclip defaults."
+- Standalones: "an ADI-View-style app showing the current channel I'm on and act as the full
+  analyzer suite for that channel we can then from there go to mix view and still be on that channel
+  and then add whatever , the mix view will have the fabfilter instance view like interface for the
+  processing plugins while all the analizer and visualizer will live in a separate tab within the mix
+  view where we have a master view of span + smexoscope and so on.. and a compare where we have a
+  psyscope like and a multi channel phase compare and so on.."
+- The Mix View row: "like what the device area show but without modulation and as a compacted (like
+  dabble clicking in Ableton on a device to shrink it so it wont take a lot of space - we need to see
+  the name and be able to disable or enable if we want like in device view)"
+
+### Decisions
+
+1. **One of each function per channel.** The Mix View's functions are for broad changes across all
+   channels at once (the VCA trick, clip-to-zero), easy routing, and work the AI assistant can do
+   across channels. A second EQ on a channel is an ordinary plug-in: ADI-Q's VST3, Pro-Q, Pulsar
+   Massive or anything else.
+2. **The functions.** The EQ (ADI-Q), which also carries the Trackspacer- and FUSER-class unmasking
+   (ADI-FUSE) inside its window; the compressor (ADI-C), the de-esser (ADI-DS) and the gate (ADI-G),
+   each with a new design of its own; the limiter (ADI-L), with the clipper (ADI-Clip) as one of its
+   modes or tabs. Default order at the chain's end: EQ first, the others between, the limiter (with
+   its clipper) last (ADR-0236 d2). ADI Still's place is to be confirmed.
+3. **Added and removed like Live devices.** Nothing is enabled on a new track. A function is added
+   from the Mix View or from the device area's add-tab control, which lists the Mix View functions;
+   it starts at its reference's defaults (the clipper at KClip's). Disabling removes it, as deleting
+   a Live device does, and Undo brings it back. A function that needs a second input (the EQ's
+   unmasking keyed from the kick) is enabled and routed in the Mix View, with its modulation and
+   routing there; its tab then appears in the device area.
+4. **Presets at both levels:** a channel's whole set, and each function.
+5. **Analysers and visualisers are not chain functions and never device-area tabs.** They run on Main
+   mostly, and across channels only for comparison (a Psyscope-class view, a multi-channel phase
+   compare). They live in two places: boxed in the Info box, and in a tab of their own inside the Mix
+   View with a master view (SPAN- and sMexoscope-class and the rest) and a compare view. The Mix View
+   itself keeps the FabFilter instance-list interface for the processing functions.
+6. **Nothing unseen costs CPU.** When the Mix View and the analysers are not visible they use no CPU
+   at all (no taps fed, no workers running); visible on a second screen all the time is the user's
+   choice.
+7. **Hovering a tab** shows its information, latency included, in the Info box while the pointer is
+   on it; then the Info box returns to the boxed analysers.
+8. **A Mix View row** shows what the device area shows for that track, without modulation, folded
+   compact as a double-click folds a Live device: each device's name and its on/off switch.
+9. **The analyser window ("standalone").** An ADI-View-style window follows the channel you are on
+   and is that channel's full analyser suite; from it you go to the Mix View on the same channel and
+   add functions. Win reads this as a window of ADI, possibly on a second screen; whether separate
+   standalone apps are also wanted is for the seat to confirm with him.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0236 d4 | questions 2 to 8, 10 and 11 of the guide answered (d1 to d9); the guide carries the rest |
+| ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
+| ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
+| ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
+
+## ADR-0238 — JUCE moves from 9.0.2 to 9.0.5 — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; SUPERSEDES ADR-0048's PIN; ANSWERS ADI-VIEW D7**
+
+**The ruling, in his words (12 November):** "yes ADI should move from JUCE 9.0.2 to 9.0.5".
+
+**Why it came up.** The Mix View seat's foundation PR (#537) moved the pin inside a feature
+commit. Win's review held that for him: ADR-0024 needs a named reason for a pin change, and the
+JUCE version was one of his open ADI-View questions (D7).
+
+### Decisions
+
+1. **The pin is `juce-framework/JUCE` 9.0.5, commit `d60b7a78030661574a615b586d9325ba7a7fa7dd`**,
+   still under AGPLv3 and still never a hard dependency (ADR-0048 otherwise stands).
+2. **The named reason (ADR-0024):** the Mix View takes the source of his plug-ins (ADR-0212,
+   ADR-0236, ADR-0237). ADI-Clip is built on 9.0.5, ADI-Q and ADI-L on 9.0.4, and 9.0.5 is the
+   newest stable release. One JUCE for the DAW and the code it takes.
+3. **ADI-Q's hash-guarded JUCE peer patches stay ADI-Q's.** They are not applied to the DAW, and
+   whatever the Mix View needs from them is ported as ADI code.
+4. **Where the change lands:** with #537. That PR carries the fetch script, the EXTERNAL-CODE row,
+   the CMake updates and the fake-peer signature that 9.0.5's peer interface needs; its CI passes
+   on every platform. This entry and BUILD-BRIEF §3 record it.
+5. **Shared checkouts:** `tools/fetch_external.sh` moves an existing `third_party/JUCE` to the
+   new tag in place, so every worktree that links a shared `third_party` moves with it.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0048 | the pin: 9.0.2 / `72782788` becomes 9.0.5 / `d60b7a78` |
+| BUILD-BRIEF §3 | JUCE 9.0.5 |
+| ADI-View D7 | answered |
+
+## ADR-0239 — The control stack's two open questions answered: the token both ways, the user's choice; the standalone adi-mcp ships first; and every deferral is a tracked row until it is done — `DECIDED` (2026-11-13) — **DIRECTOR'S RULING; ANSWERS Q-O AND ADR-0233 d8; AMENDS ADR-0039 d4**
+
+**His answers, in his words (13 November):**
+- Q-O: "we want both - present the 2 options to the users either Shown in ADI, and you paste it
+  into each AI tool. or install in a folder readable only by your Windows account."
+- Consent before AGT-03: "ship the standalone version first. but dont count on me to remember to move
+  things you keep for later, document all and make sure we will do everything in the end result
+  after all the tests for the things that comes first of cures."
+- Merging: "i never merge you merge tell me what the options and your recommendation."
+
+### Decisions
+
+1. **The session token, both ways; the user chooses** (Q-O, CTL-05). When ADI's own listener is
+   switched on, ADI offers:
+   - **shown in ADI**, to copy into each AI tool (ADR-0039 d4's model), or
+   - **a discovery file in the user's profile, readable only by that Windows account** (owner-only
+     ACL on Windows, mode 0600 in a 0700 folder on macOS and Linux), which AI tools find on their
+     own; it exists only while the listener is on and is removed when it stops.
+   The token is never written into the `.adi`. ADR-0039 d4 is amended to allow the second option.
+2. **The standalone `adi-mcp` ships first** (ADR-0233 d8 confirmed). The user's MCP host
+   configuration, which names the project, is the opt-in. `--connect`, ADI's listener and the
+   in-app host wait for AGT-03's consent.
+3. **Nothing deferred is left to memory.** Every piece of work a ruling, review or slice postpones is
+   a row in `docs/DEFERRED.md`, added in the same change, closed only by the PR that does it.
+   No release, and no milestone marked complete, while one of its rows is open, unless he re-rules
+   that row by name. Win keeps the register and re-reads it at every gate.
+4. **Win merges; he decides.** Win lands PRs. Where a merge needs his decision, win brings him the
+   options and a recommendation, never a request to merge.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0039 d4 | a token may also live in an owner-only discovery file, the user's choice (d1) |
+| ADR-0232 d8, ADR-0233 d7 | Q-O answered (d1) |
+| ADR-0233 d8 | confirmed: standalone first (d2) |
+| PLAN CTL-05 | both options, user's choice |
+| `docs/DEFERRED.md` | new: the register (d3) |
+
+## ADR-0240 — The Clip View is approved and win builds it; loading a channel's Mix Set replaces its native functions; the Mix View answers that lived only in the seat's log — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; OPENS STEP-7-PLAN 7.7; ANSWERS DF-M23's LOAD QUESTION; CLOSES DF-M27**
+
+**His words (16 November):**
+- The Clip View, shown its picture of 28 October again: "yes build the clip view", and "i will give
+  window lane your prompt and you build the clip view".
+- Loading a channel's Mix Set, asked by the Mix View seat whether it merges into or replaces what
+  the channel has: he chose replace. As the seat recorded it: "Replace the whole native function
+  set, as one undo step. To change one function and keep the rest, the user loads that function's
+  own preset."
+
+### Decisions
+
+1. **The Clip View and the MIDI Note Editor are approved as pictured**
+   (`collab/window/pictures/2026-10-28-clip-view.png`): Live 12's Clip View in ADI's look, nothing
+   added. STEP-7-PLAN 7.7's build order stands, and `collab/window/parity-7.7-clip-view.md` holds
+   the rows to check against Live 12.
+2. **Win builds it.** The window lane keeps its own list (`collab/prompts/2026-11-16-window-lane.md`)
+   so neither waits for the other. For this item win writes in the window lane's area (ADR-0208):
+   new files `src/juce/ui_clipview.*` and `src/adi/ui/note_*.hpp`, `clip_edits.hpp`, and small
+   changes in `ui_shell.*`, `ui_arrangement.cpp` and `ProjectDocument`. The lane's ownership of
+   everything else is unchanged.
+3. **Loading a channel's Mix Set replaces the channel's whole native function set, as one undo
+   step** (ADR-0237 d4 made precise).
+   - Functions the set holds are added or take its settings; functions it does not hold are removed.
+   - Ordinary plug-ins on the channel are untouched.
+   - One Undo restores the former functions, their settings and their order; Redo applies the set
+     again. A load that is refused changes nothing.
+   - The way to change one function and keep the rest is that function's own preset.
+   Where preset files live, their format, and where a set's functions sit among a channel's ordinary
+   plug-ins are not ruled here; win writes that ADR from the seat's proposal (DF-M23).
+4. **The director's earlier answers to the Mix View seat, until now only in its log**
+   (`collab/mixview.md`, entries of 13 to 16 November). They are recorded as the seat wrote them
+   down; where one is wrong he strikes it here.
+   - The Mix View's rows show **channels that have Mix View tools** by default; all channels is the
+     other choice.
+   - **An analyser dock at the right of the rows is optional**, shown and hidden by the user, off by
+     default; the separate analyser tab stays.
+   - **Clip and Limiter** have independent switches, in the order Clip → Limiter.
+   - **EQ, Carve and Focus** are separate pages with independent switches, in the order
+     EQ → Carve → Focus. A suggestion changes nothing until the user applies it.
+   - **Focus** recalls from its current settings; no hidden history of how the knobs were moved is
+     kept.
+   - **ADI Still stays an ordinary plug-in** (ADR-0237 d2 had left its place open).
+   - **The Versatile limiter style keeps its per-instance seed**, so a recall repeats.
+   - The reference sketch of the Mix View is a starting point, not a requirement that every row is
+     expanded.
+   - Not settled: whether an edit across several channels is relative or absolute.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| STEP-7-PLAN 7.7 | approved; the build is win's (d1, d2) |
+| ADR-0208 | for the Clip View only, win writes in the window lane's area (d2) |
+| ADR-0237 d4 | a channel set's load replaces the native set, one undo step (d3) |
+| `docs/DEFERRED.md` | DF-M27 closed; DF-M23 carries d3; the window rows DF-W1 to DF-W7 added |
+
+## ADR-0241 — The Clip View's first additions beyond Live: audio pitch editing is P1; four Cubase note-editor tools; per-note gain and pan with the MPE tab; Bitwig's operators are taken — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §4; AMENDS FEATURES LINE 114, PLAN MI-07, MI-08, MI-09**
+
+**His words (16 November):** asked the four decisions of `docs/CLIP-VIEW-ADDITIONS.md` §4, each with
+win's recommendation: "yes to all 4, keep going". Earlier the same day: "don't forget Cubase
+variaudio and Cubase clip view tools (all we need to add from Cubase that is missing in Ableton and
+also bitwig (the grid or maybe instead taken from reason 14) modulation parts, MPE supports".
+
+### Decisions
+
+1. **Pitch editing of audio is P1** (was P3, FEATURES line 114): segments of a monophonic recording
+   on a piano roll over the waveform, each with its pitch, time, straightening, tilt, formant and
+   volume, pitch quantized to the clip's scale, and notes extracted to MIDI. It comes after the
+   Sample Editor's warp markers (TM-WT-02, TM-WT-06) and stands on the same analysis; its pitch
+   tracker is the one Convert Melody to MIDI needs (TM-WT-09). It is an addition shown in the audio
+   editor (ADR-0203 d2), under a name of ADI's own (ADR-0176 d5), with whole new tables designed
+   with it (ADR-0144 d3) and a parity gate against Cubase (ADR-0108). Win adds its plan card; the
+   research `docs/CLIP-VIEW-ADDITIONS.md` §5 lists comes first.
+2. **Four note-editor additions from Cubase's Key Editor, in this order**, none changing the file:
+   - line tools in the Velocity lane and the controller lanes (line, parabola, sine, triangle,
+     square, paint);
+   - chord editing (triads and four-note chords from a note, inversions, drop 2, drop 3);
+   - the trim tool and the length functions Live lacks (fixed lengths, delete overlaps);
+   - handles on a selection of velocity or controller events: tilt, compress, scale.
+   Each is a composition of the note and controller ops that exist, one undo step, shown in the
+   Clip View where its Live neighbours are.
+3. **Per-note gain and pan curves are edited beside Live's pitch, slide and pressure**, in the MPE
+   tab, as Bitwig's note expressions are. The file stores them already (SPEC 6.3.2); the ops and the
+   playback are MI-08's, which now covers the five dimensions.
+4. **Bitwig's operators are taken:** repeats (ratchets), occurrence and recurrence, with chance,
+   which was decided. They are properties of a note, stored in a side table with Live 12's
+   probability groups (MI-09), and need the engine to play them. This strikes MI-07's and MI-09's
+   "reject Bitwig's operators", which was win's placement. Their priority is win's placement until
+   he says otherwise: P2, with MI-09.
+
+Not reopened: the Grid tier stays his answer of 5 November, the hybrid on Pure Data (DEV-15), and no
+feature is taken from Reason; `docs/CLIP-VIEW-ADDITIONS.md` §3.3 says what its rack and its pitch
+editor are used for.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| FEATURES line 114; PLAN §1.6 | pitch editing of audio is P1, after the warp markers (d1) |
+| ADR-0240 d1 | "nothing added" stood for the approved picture; these are the first additions (d2, d3) |
+| PLAN MI-08 | the editing UI and playback cover gain and pan as well as pitch, slide and pressure (d3) |
+| PLAN MI-07, MI-09 | the rejection of Bitwig's operators is struck; they are P2 with MI-09 (d4) |
+| `docs/CLIP-VIEW-ADDITIONS.md` | §4 answered; `docs/DEFERRED.md` DF-W10 split into the rows that build it |
+
+## ADR-0242 — More Clip View additions: win's picks and Reason's drift are taken; the rest of the candidates on one condition; slide notes and a drum editor are not; Live's own clip editing is audited — `DECIDED` (2026-11-16) — **DIRECTOR'S RULING; ANSWERS `docs/CLIP-VIEW-ADDITIONS.md` §3.3 AND §3.5**
+
+**His words (16 November),** to the candidates of `docs/CLIP-VIEW-ADDITIONS.md` §3.5 and win's question
+about Reason's pitch editor:
+- "yes to all your picks and reason drift, keep going"
+- "slide notes (FL), a drum editor with drum maps (Cubase) are not needed (drum editor of Ableton is
+  better) but the rest you suggested if not crippling the Ableton functions then please add them"
+- "also go on Ableton complete research on salon-tv to make sure we don't miss any Ableton
+  qualities, like i can put 2 different midi channel different colors then select both and open them
+  together to see different color midi and edit both channel at once etc.. not sure we know Ableton
+  can do it from our doc.. (and it defiantly can)"
+
+### Decisions
+
+1. **Win's picks are taken** (§3.5's starred rows): N1 note colours, N2 the quantize panel, N3
+   quantize that can be taken back, N4 velocity functions, N5 delete doubles and restrict polyphony,
+   N6 several controller lanes at once, N7 scale help; A1 harmony voices, A2 Detect Silence, A3 clip
+   gain drawn in the editor, A4 pitch, formant, gain and pan per audio event; M1 take envelopes for
+   pitch and mute, M2 a shape tool that writes points.
+2. **Reason's Drift and Transition per pitch segment** (A9) are part of the pitch editing of audio
+   (ADR-0241 d1).
+3. **Not taken:** slide notes (N11) and a drum editor with drum maps (N15); Live's own way of editing
+   drums stays.
+4. **The rest of §3.5 is taken on one condition: none may impair a function of Live's.** N8, N9, N10,
+   N12, N13, N14, N16 to N19; A5 to A8, A10, A11; M3 to M5. Where one would change how a Live
+   function behaves, win brings that one back to him before building it. Their order is win's
+   placement: what needs no file change first; what needs tables or the engine with those; and what
+   is known only from memory (FL Studio, Logic, Studio One) after it is researched.
+5. **Live's own clip editing is audited** against ADI's parity list from his Ableton research and
+   the manual, so that nothing of Live's is missed. Editing several clips together (each clip's
+   notes in its own colour, all editable at once), which the plan had placed later, is built now.
+
+Each addition keeps ADR-0241's terms: shown where its Live neighbours are, one undo step, a parity
+gate against the DAW it comes from (ADR-0108).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| `docs/CLIP-VIEW-ADDITIONS.md` §3.3, §3.5 | answered (d1 to d4) |
+| ADR-0241 d1 | the pitch editing gains drift and transition per segment (d2) |
+| STEP-7-PLAN 7.7 step 5; ADR-0047 d2; FEATURES line 129 | multi-clip editing is built now, not later (d5) |
+| `docs/DEFERRED.md` | DF-W10 reworded; DF-W15 to DF-W18 added |
+
+## ADR-0243 — The look is not accepted as built: it is settled surface by surface with the director; no channel carries a button for a Mix View function; Live stays the base, with Bitwig's and FabFilter's design language; the Mix View takes the window — `DECIDED` (2026-11-17) — **DIRECTOR'S RULING; AMENDS ADR-0209 d11; ENDS WHAT WAS LEFT OF ADR-0204 d1 ON THE STRIPS**
+
+**His words (17 November),** after seeing the pictures of win's live retest of the Mix View and the
+window as it stands:
+- "it is so very wrong on so many levels ... it looks like an attempt to put the qualities of what i
+  want into the most generic looking things possible"
+- "i think we need to stop here and start going on the window lane one by one. you show me a photo
+  we talk about how it should look to the deepest details possible where you guide me and ask until
+  you sure of every pixel my answers will be from my mind or from references i will give you as
+  photos."
+- "please remove the Q and the L from the channels they are part of the mixview and same as other
+  tools like the adi-clip etc.. no special buttons for them in the channels themselves"
+- "the design is looks a bit like ablton 11 which is fine but i would like to change it a bit to be
+  like a Ableton and bitwig collaboration .. things should look new with design style in mind"
+- "the mixview is also terrible it stays within the arrangement window instead of switching to the
+  new mix view window (i don't need the devices area or browser window on the mix view) and it looks
+  really bad nothing like the gemini starting point i made and nothing like the fabfilter pro-q
+  instance list"
+- "for thing like the limiter we already have the adi-l so why the limiter has design so far from
+  it ? ... the mixview devices ... should look like the devices in the PRO-Q instance list"
+- "Ableton was the base (but not as generic as we made it) and now we need some fabfilter and
+  bitwig design lang"
+- Also named: an audio or MIDI clip that "just looks like an empty clip"; the Info box with its
+  analysers ("small boxed versions" of the main analysers); every native device panel he saw.
+
+**The decisions.**
+
+1. **The look is settled one surface at a time, with him.** Win shows a picture of one surface as it
+   stands; win asks and he answers, from his mind or from pictures he gives, until every detail of
+   that surface is certain; the agreed surface is written down as a sheet with its picture before
+   any of it is built; the built surface is then shown to him against the sheet. No seat builds or
+   restyles the look of a surface whose sheet is not agreed. What a surface does (its ops, its
+   engine side, its tests) is not stopped by this.
+2. **No channel has a button for a Mix View function.** The Q and L buttons leave every mixer strip
+   and every track row, with the row they stood on. The EQ and the limiter are added in the Mix View
+   like the clipper and every other function. This is the last of ADR-0204 d1's slots on the window
+   (ADR-0212 had withdrawn the slots themselves).
+3. **The design language.** Live stays the base, but not the plain reading of it built so far: the
+   window is to read as Live and Bitwig working together, with FabFilter's design language where
+   the mixing tools are. The particulars are settled surface by surface (d1), not here.
+4. **The Mix View takes the window.** Opening it switches the window to the Mix View; the Browser
+   and the Device View are not part of it. Its look starts from his own starting design and from
+   the instance list of FabFilter's Pro-Q 4. ADR-0209 d11 (docked in the centre of the main window,
+   or in a window of its own) is amended by this; what stays of the docked form is settled in the
+   review.
+5. **The Mix View's function panels look like the devices in that instance list,** and the limiter
+   follows ADI-L's own design, which exists. They are ADI's own drawing: nothing of another maker's
+   artwork is taken (the standing rule).
+6. **Named for the review, each a row in the register:** audio and notes shown inside a clip in the
+   Arrangement; the Info box and its small analysers; the Device View's panels.
+7. **Order and working rules** are win's to propose and his to change; they are in win's log of this
+   date, not here.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0204 d1 | its Q and L buttons on the strips are removed (d2) |
+| ADR-0209 d11 | the Mix View takes the window; no Browser or Device View beside it (d4) |
+| ADR-0208 (the window lane), ADR-0236, ADR-0237 | the look of every surface waits for its agreed sheet (d1); function work goes on |
+| `collab/window/look-live11.md`, `collab/window/parity-7.6-mixer.md` row 11 | the slots are withdrawn |
+| `docs/DEFERRED.md` | DF-W20 to DF-W23 and DF-M47, DF-M48 added |
+
+## ADR-0244 — The first design round: five sheets agreed; a cloned tool looks like its source, and the scope is s(M)exoscope itself; the Mix View's pages are Stack, Focus and Analysers — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 17 AND 18 NOVEMBER; CARRIES OUT ADR-0243 d1, d3, d4, d5; AMENDS ADR-0209 d11 AND THE TAB LIST OF ADR-0236**
+
+**What this records.** The first round of the review ADR-0243 ordered. Win drew, he answered, win
+redrew: two proposals of the design language, two of the Arrangement, six of the Mix View's Stack,
+two of Focus and one of the Analysers. The agreed pictures and the words that go with them are the
+sheets in `collab/window/design/`; that file is the detail and this entry is the rulings.
+
+**His words on each sheet.**
+- The design language: "design language looks very good".
+- The Arrangement: "as a design guide that seems good enough".
+- The Mix View's Stack: "yha thats good".
+- Focus and the Analysers (18 November): "its hard for me to rap my mind around it so lets take it
+  as approved for now".
+
+**The decisions.**
+
+1. **The five sheets are the look to build from.** A seat builds the look of these surfaces from
+   `collab/window/design/` and shows the result to him against the sheet (ADR-0243 d1). "Approved
+   for now" is his: he may reopen any of them, and a sheet changes only by his word.
+2. **The design language (ADR-0243 d3 made particular).** Live stays the base for the Arrangement,
+   the Browser and the Device View, with its controls in its order. Buttons are drawn in rounded
+   groups as Bitwig draws them; the knob is Bitwig's ring knob, one knob everywhere; the tools of
+   the Mix View follow FabFilter's design language. The default theme is dark, as Live 12's dark.
+   Colours are a matter of settings: "we should support many themes". Density is a setting with two
+   values: Compact, with Live 12's sizes, is the default; Open is the other.
+3. **No device is a box of dials.** "nothing in adi daw can look like a generic design-less
+   device." Every device panel has a display that shows what the device does.
+4. **A cloned tool looks like its source.** "the elements we are cloning (BX_meter, SPAN, VISU,
+   BLUPRINT, s(m)exoscope oscope2 psyscope pro, fuser, trackspacer) ... they should look the same
+   as the plugins we are cloning (about the same at least)". Its layout, its read-outs and the way
+   its display is drawn are the source's; no seat invents another look for it. It is drawn by ADI:
+   no other maker's bitmaps, logos or fonts (the standing rule, ADR-0243 d5). Such a tool needs no
+   sheet of its own: it is shown to him as built, beside its source.
+5. **The scope is s(M)exoscope itself.** "should be literally the exo scope embedded in there as we
+   actually have s(m)exoscope code as it is open code". Its display and controls come from its
+   source, not from a redrawing. ADR-0183 d5 (its own buffer) stands; what that source lacks for
+   the DAW (safe hand-over from the audio thread, a size that follows the window) is added round
+   it, not in place of it.
+6. **The spectrum has three looks:** SPAN's, BluPrint's, and Live's Spectrum device ("we also want
+   the ableton like spectrum option").
+7. **The Info box's analyser** is the spectrogram (the VISU clone) by default, with a switch to
+   the spectrum. A click on it opens the Analysers.
+8. **The Arrangement.** A track inside a group is as wide as its group and is not indented; it
+   carries a line in the group's colour as in Live, and a second line for a group inside a group.
+   Over the track names stand the switch of sides and a chooser that shows only chosen groups.
+9. **The Device View.** The EQ, the compressor and the limiter there "are the Mix View's own
+   panels". The Pd EQ Eight, limiter and compressor "are used as regulars devices like vst or clap
+   and are not part of the mixview solution". The other Pd devices stay, each with a designed panel
+   of its own, "one sheet per device".
+10. **The Mix View's layout (ADR-0243 d4 made particular).** It takes the whole window. From the
+    left: the channel browser (search, the list, the group filters) with the Info box under it; the
+    rows; the meter at the far right. Above them the song strip, an overview with the ruler in
+    which he moves as in the Arrangement. Its pages are **Stack, Focus and Analysers**.
+11. **The Stack's rows are a lens,** as the instance list of FabFilter's Pro-Q 4 behaves: with the
+    pointer in the list, the row under it is the largest, its neighbours are partly grown and the
+    rest stay small; rows push each other and nothing overlaps; the tool under the pointer is wider
+    than its row-mates. With the pointer on the meter or the analyser, every row is small. A slider
+    sets how many channels are seen at once.
+12. **A row** is one channel: its name with its colour, M and S at the row's left, then its tools
+    as cards without title bars. There is no channel block at the right. What else the name tag
+    carries waits for his use of it.
+13. **Every chain ends with a "+"** that adds a Mix View tool (one of each in a channel, ADR-0237)
+    or a device or plug-in.
+14. **A third-party plug-in in a chain** is a chip; a click opens its editor over the Mix View and
+    closing it leaves him there.
+15. **"Sounding now"** is a filter that shows the channels sounding at the moment it is chosen. It
+    is a snapshot: "what i chose at that moment stays" until it is refreshed or another filter is
+    chosen.
+16. **The meter** at the right has bx_meter's layout and readings (d4): "i want it same design and
+    reads".
+17. **Focus.** Two or more channels (A, B, C and on), one of them the main, worked on together with
+    Unmask (the Trackspacer and FUSER class), Match, Align and Scope to begin with: "i want all the
+    tools but need to build around it slowly lets start with this and add as needed". Leaving Focus
+    keeps the solos. Two readings are win's and wait for his word: that the Mix View button opens
+    Focus while tracks are soloed ("when tracks are followed"), and that un-soloing a channel in
+    Focus takes it out and makes the first one still soloed the main.
+18. **The Analysers** are a page of the Mix View: every analyser at once, and a page for each
+    (Spectrogram, Spectrum, Scope, Phase, Loudness, Analysis), on Main, a chosen channel or the
+    selected one followed. The layout is agreed; each analyser's look is its source's (d4).
+
+**What is not settled here.** Each Pd device's panel; the Clip View; the Mixer and the track rows in
+detail; the Browser; menus, dialogs and Settings. They stay under DF-W20 and DF-W23.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0243 d1, d3, d4, d5 | carried out for five surfaces (d1, d2, d10 to d16) |
+| ADR-0209 d11, ADR-0236 (the tab model) | the Mix View's pages are Stack, Focus and Analysers (d10); the earlier tabs' content lives in them |
+| ADR-0183 | its EXO tab is s(M)exoscope's own display and controls (d5); its spectrogram and spectrum look like their sources (d4, d6) |
+| ADR-0167 | the scope's panel takes its look from its sources (d4, d5); what it does is unchanged |
+| ADR-0237 | the analysers' places are the Info box and the Analysers page (d7, d18); one of each tool per channel stands (d13) |
+| `collab/window/design/` | new: the five sheets |
+| `docs/DEFERRED.md` | DF-W24 to DF-W27 and DF-M49 to DF-M55 added; DF-W22, DF-M47 and DF-M48 now build from the sheets |
+
+## ADR-0245 — The November research taken in: folded into the plan's rows, Windows first, proved after the build; cables only in the Grid; clips drawn as Live 12; a hosted plug-in is told the time of the audio it receives; a return may live inside a group; no look-ahead engine; DEV-23 earlier — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 18 NOVEMBER; NARROWS ADR-0113; AMENDS ADR-0220 d4 AND ADR-0244 d4; ADDS TO MX-04, MX-05, MX-25 AND DEV-26**
+
+**What this records.** The director's research went on after the bundle that `docs/RESEARCH-INTAKE.md`
+took in on 5 November: a measurement seat ran cases in Live 12.4, REAPER 7.79's engine was measured
+with a test plug-in, Cubase 15's plug-in scanner was run against a test plug-in, and Cubase, Bitwig,
+Reason and the rest of REAPER were read from manuals and from the programs' own files. He gave win
+the programme's own summary and then the whole of it. Win read the summary against main, told him
+where it disagreed, and he answered; then win read all of it (seven readers, one per part, their
+claims about ADI checked against main at `c0f1c8f7`). The relay, reading by reading, is
+`docs/RESEARCH-INTAKE.md` §6. The same day he ruled on the clips' look and on FX channels; those are
+here too.
+
+### Decisions
+
+1. **No second plan.** The research's summary asked for "one dependency-ordered implementation
+   plan". Win's answer was that the right move is to fold its real changes into the existing rows;
+   he agreed. `docs/PLAN.md` stays the plan; `RESEARCH-INTAKE.md` §6 says which row each reading
+   serves and what it does to it. Most of the research's case ids were already cited by rows.
+2. **Windows is first.** His words: "windows is first mac and linux later." Win's reading: when an
+   order has to be chosen (a driver path, a host quirk, a measurement), Windows gets it first; the
+   build stays portable and CI keeps its three systems.
+3. **Planned around, proved after the build.** His words: "its good enough to plan around it. no
+   need measure everything to the point of perfection the measure's will be after the build with
+   real tests then we will make it better if need be." So a reading the research measured is the
+   plan's working value from today, and an AWAITING row it answers is answered for planning.
+   ADR-0220 d4 still stands for what closes a parity row: ADI's own test after the build, against
+   a record in ADR-0220's form. No Live baseline at small buffers is to be taken ("no need for
+   now").
+4. **Racks are Live's Rack; the Grid is the Grid.** He had asked for Bitwig's Grid, and read the
+   research as answering with something from Reason instead. Read whole, the research answers the
+   Grid with the Pure Data tier that DEV-15 already plans (its Grid contracts are DEV-15's test
+   list), and offers Reason only as the model for a saved rack's panel: controls that each drive
+   several targets, and whatever crosses the rack's edge staying outside the preset. That idea goes
+   to DEV-01 and DEV-06, on Live's Rack as the base (ADR-0203 d1).
+5. **Cables.** His words: "no cable diagram in the device area or the mixview but defiantly do use
+   cable diagram in our THE GIRD solution". ADR-0113 keeps the Device View and the Mix View free of
+   any cable diagram; the Grid tier's editor is a cable patcher and is meant to be one. Reason's
+   cables between devices on a rack are therefore not taken.
+6. **The analysers and mixing tools read like their sources, and the list is his:** SPAN, BluPrint,
+   VISU and Live's Spectrum; bx_meter; s(M)exoscope, Oscope2 and Psyscope Pro; Pro-Q; Trackspacer
+   and Fuser (this fills in ADR-0244 d4 to d6). Cubase's analyser settings are not the starting
+   point. What the research read about them is kept as reference only (§6.6).
+7. **Clips are drawn as Live 12 draws them.** His words: MIDI and audio clips "should look as they
+   look in Ableton 12", and that the content must read as real notes and a real waveform. Carried
+   out in #636 (a MIDI clip shows its notes) and #637 (the clip solid in its colour, its content
+   dark on it); shown to him at 1920x1080 on a project of real parts; his word: "your last photo is
+   good".
+8. **A hosted plug-in is told the transport, at the time of the audio it is receiving** (his
+   ruling on a proposal he brought: "we need pr to fill all the gaps"). On main a VST3 or CLAP
+   plug-in is told nothing: no tempo, no position, no playing state (`vst3_host.cpp` passes no
+   process context, `clap_host.cpp` no transport). So a tempo-synced plug-in cannot follow ADI at
+   all. The engine gives each hosted plug-in, every block: playing, tempo, time signature, the loop
+   and its bounds, the position in samples and in musical time, and the start of the bar.
+   - With Delay Compensation on, the position is that of the first sample **at the plug-in's own
+     input**: the block's timeline position less the arrival latency the graph already holds for
+     that device. A plug-in behind 1,024 samples of latency is told a position 1,024 samples
+     earlier than a plug-in on an unlatent track, because that is the audio it has in hand.
+   - The musical position is read from the tempo map at that sample time, never made by taking
+     beats away. Before the song's start it is negative and continuous.
+   - In a loop the position wraps into the loop for audio that left before the wrap, by the loop's
+     length as many times as needed; a block that crosses the loop point is split there.
+   - The device's parameter automation and its note events run on the same clock.
+   - With Delay Compensation off the position is the heard time, as the scope's stamps already are.
+   - A render, a freeze and a bounce use the same clock and tell the plug-in it is not in real time.
+   This is an addition. Live's manual says a synced device behind a latent one can stay out of time
+   (the plan's own open test A6H-034), and nothing in the research measured Live doing otherwise.
+9. **A return may live inside a group** (Bitwig's way; his words: "an fx channel is in a group and
+   can be mixed with audio and synths as a regular channel", and "like in Ableton a group auto
+   route to the group above it"). Such a return sits in the group as a channel. Its output is the
+   group, summed with the group's other channels before the group's devices, so the group's own
+   clipper or limiter takes the tails with the dry sound; the group goes on to the group above as
+   Live's groups do. Its send appears only on the tracks inside that group. The group has no send
+   to its own return. A return at the top level is Live's, unchanged. Win's placements, his to
+   strike: tracks at any depth inside the group see the send; solo and the return's own sends
+   follow Live's returns (a soloed track's return is still heard; a return's sends to its sibling
+   returns exist and start off).
+10. **A send's tap.** Live's switch per return stays as it is: Pre takes the track after its
+    devices and before its fader, Post after the fader. The addition: a single send may be set to
+    one of the three points Live names in its routing choosers, Pre FX, Post FX or Post Mixer, and
+    a return whose sends differ shows as mixed (the model has held that state since the return's
+    tap was built). Compensation uses the latency at the tap, so a Pre FX send does not wait for
+    the track's devices. Not taken: a tap by device number, which moves when a device is added,
+    moved or removed; and a free output chooser on every return, which d9 makes unnecessary and
+    which invites loops.
+11. **What was already there.** The proposal's fourth part, every path aligned at every summing
+    point, is built: the graph computes an arrival for every node and delays the earlier edges,
+    side-chain keys included, and moves the taps with a crossfade when a latency changes while
+    playing (ADR-0058, ADR-0079, ADR-0085). Its null test (a dry path and an inverted path through
+    a return inside the group, 1,024 and 512 samples of latency, cancelling to silence) becomes a
+    test of d9.
+
+12. **A look-ahead engine is not taken** (REAPER's anticipative processing, Cubase's ASIO-Guard).
+    Win recommended it and he said yes. He works at 2,048 samples with a great many channels and
+    kept ASIO-Guard off in Cubase. The measurements agree with him (`RESEARCH-INTAKE.md` §6.4): at
+    2,048 samples nothing was missed with it on or off and no processor time was saved; it bought
+    headroom that was not needed and made an edit audible up to 1.4 s late; and Cubase ships a
+    message that its guard is disabled when the buffer size is too large for the chosen guard level
+    (the rule behind the message was not traced). ADR-0145 d5 stands as it is. The one case it was
+    measured to help is a small buffer under heavy load; if he comes to play through ADI that way,
+    the question may be opened again.
+13. **DEV-23 moves ahead of its milestone.** Win recommended it and he said yes. What limits a
+    session of many channels at a large buffer is that no hosted plug-in may yet run on a graph
+    worker: only the engine's own sum, gain and source nodes may. With its look-ahead off, REAPER
+    still spread 64 independent tracks about twelve times across 16 logical processors. The engine
+    seat takes it after d8 to d10: first that a hosted plug-in may run on a worker, under the
+    plug-in format's own threading rules; then ADR-0229's gate for workers on by default, measured
+    on Windows first (d2). DF-E23.
+
+**What the evidence shows and does not show** (so that nothing is planned on more than it holds).
+- Outside Live almost nothing was run. Every Cubase, Bitwig and Reason case, and REAPER's beyond the
+  engine, is a manual's sentence or a file's content, and the manuals are not the installed
+  builds' manuals. Such rows are proposed contracts and test lists, as in the first intake.
+- Nothing ranks one DAW's efficiency against another's. The research's own engine report says it
+  does not establish comparative efficiency; Live and Cubase were not run for it; the Live CPU
+  figures are process counters on one machine and one driver, and nearly every contrast failed its
+  own noise gate. Reputation is not a reading.
+- What is measured and solid is in §6.2 (Live 12.4), §6.4 (REAPER's engine) and §6.5 (the scanner).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0113 | its reach is the Device View and the Mix View; the Grid tier's editor is a cable patcher (d5) |
+| ADR-0220 d4 | a reading the research measured answers an AWAITING row for planning; the record after the build still closes the parity row (d3) |
+| ADR-0244 d4 to d6 | the list of sources is d6's |
+| ADR-0203 d1 | unchanged; d8, d9 and d10 are additions where Live lacks the ability |
+| `docs/PLAN.md` MX-04, MX-05, MX-25, DEV-26 | d8 (MX-04, DEV-26), d9 and d10 (MX-05), d10 (MX-25) noted on the rows; TM-SV-01, AU-03, SC2 and the two "P3" lines for pitch editing corrected from the readings and from ADR-0241 |
+| `docs/RESEARCH-INTAKE.md` | §6 added: the relay of the research's returns |
+| ADR-0145 d5 | stands; a look-ahead engine is not taken (d12) |
+| `docs/PLAN.md` DEV-23 | taken ahead of its milestone (d13) |
+| `docs/DEFERRED.md` | DF-E19 to DF-E23, DF-W32 and DF-W33 added |
+| `collab/prompts/` | the engine seat's prompt for d8 to d10 |

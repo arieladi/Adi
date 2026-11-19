@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/mixer.hpp"
+#include <stdexcept>
 
 #include <algorithm>
 #include <cmath>
@@ -49,11 +50,43 @@ double faderGain(double volumeDb) noexcept {
 
 // ---------------------------------------------------------------------------
 
+const StripLanes* StripLaneBindings::forNode(const StripNode* node) const noexcept {
+    // Indexed access avoids MSVC Debug's checked-iterator proxy lock on the
+    // audio driver. The owner froze this vector before publication.
+    std::size_t first=0,count=entries_.size();
+    while(count>0) {
+        const std::size_t step=count/2,at=first+step;
+        if(std::less<const StripNode*>{}(entries_[at].node,node)) {
+            first=at+1;count-=step+1;
+        }else count=step;
+    }
+    return first<entries_.size() && entries_[first].node==node?entries_[first].lanes:nullptr;
+}
+
+void StripLaneBindings::add(const StripNode& node,const StripLanes* lanes,std::shared_ptr<void> owner) {
+    const auto at=std::lower_bound(entries_.begin(),entries_.end(),&node,
+        [](const Entry& entry,const StripNode* wanted){return std::less<const StripNode*>{}(entry.node,wanted);});
+    Entry entry{&node,lanes,std::move(owner)};
+    if(at!=entries_.end() && at->node==&node)*at=std::move(entry);
+    else entries_.insert(at,std::move(entry));
+}
+
+const StripLanes* StripNode::lanesFor(const NodeIo& io) const noexcept {
+    if(io.transport && io.transport->stripLanes)return io.transport->stripLanes->forNode(this);
+    return lanes_.load(std::memory_order_acquire);
+}
+
 void StripNode::setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept {
     volumeDb_.store(static_cast<float>(volumeDb), std::memory_order_relaxed);
     pan_.store(static_cast<float>(pan), std::memory_order_relaxed);
     law_.store(static_cast<int>(law), std::memory_order_relaxed);
     audible_.store(audible, std::memory_order_relaxed);
+}
+
+void StripNode::setPanMode(PanMode mode,double left,double right) noexcept {
+    panLeft_.store(left,std::memory_order_relaxed);
+    panRight_.store(right,std::memory_order_relaxed);
+    panMode_.store(static_cast<int>(mode),std::memory_order_relaxed);
 }
 
 void StripNode::setLanes(const StripLanes* lanes, std::shared_ptr<void> keepAlive) noexcept {
@@ -94,19 +127,26 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     double vol = volumeDb_.load(std::memory_order_relaxed);
     double pan = pan_.load(std::memory_order_relaxed);
     const int law = law_.load(std::memory_order_relaxed);
+    const int mode = panMode_.load(std::memory_order_relaxed);
+    double left=panLeft_.load(std::memory_order_relaxed),right=panRight_.load(std::memory_order_relaxed);
     bool heard = audible_.load(std::memory_order_relaxed);
-    if (lanes != nullptr && transport_ != nullptr) {
+    const Transport* transport=transport_.load(std::memory_order_acquire);
+    if (lanes != nullptr && transport != nullptr) {
         // A parked playhead is ONE position. sampleAt answers position + offset
         // whether the transport is playing or not, and reading a block ahead
         // of a stopped playhead made a sloped lane saw at the block rate.
-        const std::int64_t at = transport_->sampleAt(transport_->playing() ? frame : 0);
+        const std::int64_t at = transport->sampleAt(transport->playing() ? frame : 0);
         if (lanes->volume != nullptr) vol = valueAt(*lanes->volume, at);
         if (lanes->pan != nullptr) pan = valueAt(*lanes->pan, at);
+        if (lanes->panLeft != nullptr) left = valueAt(*lanes->panLeft, at);
+        if (lanes->panRight != nullptr) right = valueAt(*lanes->panRight, at);
         if (lanes->mute != nullptr && valueAt(*lanes->mute, at) >= 0.5) heard = false;
     }
+    vol = std::min(vol, volumeCeiling_.load(std::memory_order_relaxed));
     // Recomputed only when an input moved: a pow and a sin per change, never
     // per sample.
-    if (haveLast_ && vol == lastVol_ && pan == lastPan_ && law == lastLaw_ && heard == lastHeard_)
+    if (haveLast_ && vol == lastVol_ && pan == lastPan_ && law == lastLaw_ && heard == lastHeard_ &&
+        mode==lastPanMode_ && left==lastPanLeft_ && right==lastPanRight_)
         return lastGains_;
     const double fader = heard ? faderGain(vol) : 0.0;
     const StereoGainWide w = panGainsWide(pan, static_cast<PanLaw>(law));
@@ -118,6 +158,16 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     out.w[0] = fader * w.left;
     out.w[1] = fader * w.right;
     out.w[2] = fader;
+    if(mode==static_cast<int>(PanMode::Split)) {
+        // Each input is mono: Live's stereo +/-3dB boost must not boost the
+        // unchanged hard-L/hard-R split. Its mono panner is equal power.
+        const auto monoLaw=static_cast<PanLaw>(law)==PanLaw::Live?PanLaw::EqualPower:static_cast<PanLaw>(law);
+        const auto l=panGainsWide(left,monoLaw),r=panGainsWide(right,monoLaw);
+        out.w[0]=fader*l.left;out.w[1]=fader*r.right;
+        out.w[3]=fader*r.left;out.w[4]=fader*l.right;
+        for(int k=0;k<5;++k)out.g[k]=static_cast<float>(out.w[k]);
+    }
+    lastPanMode_=mode;lastPanLeft_=left;lastPanRight_=right;
     lastVol_ = vol;
     lastPan_ = pan;
     lastLaw_ = law;
@@ -128,16 +178,16 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
 }
 
 template <typename T>
-void StripNode::Ramp<T>::retarget(const T (&t)[3], std::int32_t frames) noexcept {
+void StripNode::Ramp<T>::retarget(const T (&t)[5], std::int32_t frames) noexcept {
     if (!started) {
-        for (int k = 0; k < 3; ++k) cur[k] = to[k] = t[k];
+        for (int k = 0; k < 5; ++k) cur[k] = to[k] = t[k];
         remaining = 0;
         started = true;
         return;
     }
-    if (t[0] == to[0] && t[1] == to[1] && t[2] == to[2]) return;
+    if (t[0] == to[0] && t[1] == to[1] && t[2] == to[2] && t[3]==to[3] && t[4]==to[4]) return;
     // A new target, from wherever the gain is now -- mid-ramp included.
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < 5; ++k) {
         to[k] = t[k];
         step[k] = (t[k] - cur[k]) / static_cast<T>(frames);
     }
@@ -145,8 +195,8 @@ void StripNode::Ramp<T>::retarget(const T (&t)[3], std::int32_t frames) noexcept
 }
 
 template <typename T>
-void StripNode::Ramp<T>::land(const T (&t)[3]) noexcept {
-    for (int k = 0; k < 3; ++k) cur[k] = to[k] = t[k];
+void StripNode::Ramp<T>::land(const T (&t)[5]) noexcept {
+    for (int k = 0; k < 5; ++k) cur[k] = to[k] = t[k];
     remaining = 0;
     started = true;
 }
@@ -176,7 +226,7 @@ void StripNode::handover() noexcept {
     // Mid-ramp: go on from the gain actually playing, toward the same target
     // and in the time that was left; the retarget that follows redirects it
     // to this width's own target if that differs.
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < 5; ++k) {
         to.cur[k] = static_cast<T>(from.cur[k]);
         to.to[k] = static_cast<T>(from.to[k]);
         to.step[k] = static_cast<T>(from.step[k]);
@@ -191,23 +241,57 @@ void StripNode::process(const NodeIo& io) noexcept {
         writeTap<double>(preFaderTap_, io, io.in64);
         processGains<double>(io, io.in64, io.out64);
         writeTap<double>(tap_, io, io.out64);
+        writeMeter<double>(io, io.out64);
         return;
     }
     writeTap<float>(preFaderTap_, io, io.in);
     processGains<float>(io, io.in, io.out);
     writeTap<float>(tap_, io, io.out);
+    writeMeter<float>(io, io.out);
 }
 
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
+    writeMeter<float>(io, nullptr);
     writeTap<float>(preFaderTap_, io, nullptr);
     writeTap<float>(tap_, io, nullptr);
     // Asleep (ADR-0043): the input is silent, so a gain set meanwhile -- a
     // fader or a send pulled down, a mute -- is landed now, where nobody can
     // hear it. Woken, the strip starts at it, rather than ramping away from
     // the gain it fell asleep at and playing that gain's first 5 ms.
-    const Gains d = desired(lanes_.load(std::memory_order_acquire), io.blockOffset);
+    const Gains d = desired(lanesFor(io), io.blockOffset);
     if (lastWidth_ == 32) ramp32_.land(d.g);
     else if (lastWidth_ == 64) ramp64_.land(d.w);
+}
+
+void StripNode::release() {
+    meter_.peak.store(0, std::memory_order_relaxed);
+    meter_.rms.store(0, std::memory_order_relaxed);
+}
+
+template <typename T>
+void StripNode::writeMeter(const NodeIo& io, const T* const* audio) noexcept {
+    if (io.frames <= 0 || io.channels <= 0) return;
+    if (io.blockOffset == 0) meterPeak_ = meterEnergy_ = meterCount_ = 0;
+    double segmentPeak = 0;
+    constexpr double ceiling = std::numeric_limits<float>::max();
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        if (audio == nullptr || audio[c] == nullptr) continue;
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const double sample = static_cast<double>(audio[c][io.blockOffset+i]);
+            // Bound only the readout, never the audio. Wide audio can exceed
+            // float's range; neither that nor a bad device may publish NaN/Inf.
+            const double magnitude = std::isnan(sample) ? 0.0 : std::min(std::abs(sample), ceiling);
+            meterPeak_ = std::max(meterPeak_, magnitude);
+            segmentPeak = std::max(segmentPeak, magnitude);
+            meterEnergy_ += magnitude*magnitude;
+        }
+    }
+    meterCount_ += static_cast<double>(io.frames)*io.channels;
+    meter_.peak.store(static_cast<float>(meterPeak_), std::memory_order_relaxed);
+    meter_.rms.store(static_cast<float>(std::sqrt(meterEnergy_/meterCount_)), std::memory_order_relaxed);
+    // A frame can consume the hold between processing parts. Republishing the
+    // cumulative callback peak would resurrect an already consumed transient.
+    meter_.holdPeak(static_cast<float>(segmentPeak));
 }
 
 template <typename T>
@@ -217,8 +301,9 @@ void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
     // the timeline position it is heard at. One relaxed load when unwatched.
     if (ScopeTap* tap = slot.load(std::memory_order_relaxed); tap != nullptr && io.channels > 0) {
         std::atomic_thread_fence(std::memory_order_acquire);
-        const bool playing = transport_ != nullptr && transport_->playing();
-        const std::int64_t at = transport_ != nullptr ? transport_->sampleAt(playing ? io.blockOffset : 0) : 0;
+        const Transport* transport=transport_.load(std::memory_order_acquire);
+        const bool playing = transport != nullptr && transport->playing();
+        const std::int64_t at = transport != nullptr ? transport->sampleAt(playing ? io.blockOffset : 0) : 0;
         const T* l = audio != nullptr && audio[0] != nullptr ? audio[0] + io.blockOffset : nullptr;
         const T* r = audio != nullptr && io.channels > 1 && audio[1] != nullptr ? audio[1] + io.blockOffset : nullptr;
         tap->write(l, r, io.frames, at - tap->latency(), playing);
@@ -227,9 +312,10 @@ void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
 
 template <typename T>
 void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept {
-    const StripLanes* lanes = lanes_.load(std::memory_order_acquire);
-    const bool moving = lanes != nullptr && transport_ != nullptr &&
-                        (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr);
+    const StripLanes* lanes = lanesFor(io);
+    const bool moving = lanes != nullptr && transport_.load(std::memory_order_acquire) != nullptr &&
+                        (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr ||
+                         lanes->panLeft != nullptr || lanes->panRight != nullptr);
     const std::int32_t off = io.blockOffset;
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
     handover<T>();
@@ -247,7 +333,7 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
 
     retargetAt(off);
 
-    if (!moving && r.remaining == 0) {
+    if (!moving && r.remaining == 0 && r.cur[3]==T{0} && r.cur[4]==T{0}) {
         // Steady: one gain per channel for the whole segment.
         for (std::int32_t c = 0; c < io.channels; ++c) {
             T* o = out[c] + off;
@@ -265,13 +351,24 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
         // segment boundary falls does not move where it is read.
         if (moving && i > 0 && (off + i) % kControlFrames == 0) retargetAt(off + i);
         if (r.remaining > 0) {
-            for (int k = 0; k < 3; ++k) r.cur[k] += r.step[k];
+            for (int k = 0; k < 5; ++k) r.cur[k] += r.step[k];
             if (--r.remaining == 0)
-                for (int k = 0; k < 3; ++k) r.cur[k] = r.to[k];   // land exactly
+                for (int k = 0; k < 5; ++k) r.cur[k] = r.to[k];   // land exactly
         }
-        for (std::int32_t c = 0; c < io.channels; ++c) {
+        // Capture both inputs before either output: sends can process in place.
+        const T left=(in && io.channels>0 && in[0])?in[0][off+i]:T{0};
+        const T right=(in && io.channels>1 && in[1])?in[1][off+i]:T{0};
+        if(io.channels>0) {
+            T value=left*r.cur[0];if(r.cur[3]!=T{0})value+=right*r.cur[3];
+            out[0][off+i]=value;
+        }
+        if(io.channels>1) {
+            T value=right*r.cur[1];if(r.cur[4]!=T{0})value+=left*r.cur[4];
+            out[1][off+i]=value;
+        }
+        for (std::int32_t c = 2; c < io.channels; ++c) {
             const T x = (in != nullptr && in[c] != nullptr) ? in[c][off + i] : T{0};
-            out[c][off + i] = x * r.cur[gainIndex(c)];
+            out[c][off + i] = x * r.cur[2];
         }
     }
 }
@@ -311,14 +408,14 @@ Hearing hearing(const rows::Model& model, const GraphPlan& plan, const HearingFl
     for (std::size_t i = 0; i < n; ++i) {
         const auto it = track.find(plan.nodes[i].trackId);
         if (it == track.end()) continue;
-        muted[i] = it->second->muted;
+        muted[i] = it->second->muted || plan.nodes[i].trackId==flags.referenceTrack;
         defeat[i] = it->second->soloDefeat;
         // Soloing the master would solo everything it hears, which is nothing
         // a user means; a VCA carries no audio (ADR-0072), so soloing it
         // would solo nothing and silence the rest. Both are ignored rather
         // than refused.
         const PlannedKind kind = plan.nodes[i].kind;
-        soloed[i] = it->second->soloed && kind != PlannedKind::Master && kind != PlannedKind::Vca;
+        soloed[i] = it->second->soloed && !flags.soloIsCue && plan.nodes[i].trackId!=flags.referenceTrack && kind != PlannedKind::Master && kind != PlannedKind::Vca;
         anySolo = anySolo || soloed[i];
     }
 
@@ -440,14 +537,30 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
     if (!out->program) return out;
     for (const AutomationLaneProgram& lane : out->program->lanes()) {
         const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
+        if (lane.ownerKind == "routing") {
+            if (lane.paramRef != "gain_db" || lane.valueDomain != "real") {
+                out->problems.push_back(who + ": send automation requires gain_db in real dB; not played");
+                continue;
+            }
+            if (!lane.enabled) continue;
+            if (out->sendLaneFor.contains(lane.ownerId)) {
+                out->problems.push_back(who + ": a second gain_db lane for routing#" + std::to_string(lane.ownerId) + "; the first is played");
+                continue;
+            }
+            out->sendLaneFor[lane.ownerId] = lane.laneId;
+            if (!overridden.contains(lane.laneId)) out->bySend[lane.ownerId].volume = &lane;
+            continue;
+        }
         if (lane.ownerKind != "track") continue;   // devices: ADR-0165's binding; the compiler named the rest
         StripParam param;
         if (lane.paramRef == "volume") param = StripParam::Volume;
         else if (lane.paramRef == "pan") param = StripParam::Pan;
         else if (lane.paramRef == "mute") param = StripParam::Mute;
+        else if (lane.paramRef == "panLeft") param = StripParam::PanLeft;
+        else if (lane.paramRef == "panRight") param = StripParam::PanRight;
         else {
             out->problems.push_back(who + ": a track has no parameter '" + lane.paramRef +
-                                    "'; volume, pan and mute are automatable (SPEC 6.9)");
+                                    "'; volume, pan, panLeft, panRight and mute are automatable (SPEC 6.9)");
             continue;
         }
         // A fader in dB and a pan in -1..1 are real values; normalized has no
@@ -470,21 +583,90 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
         StripLanes& bound = out->byTrack[lane.ownerId];
         if (param == StripParam::Volume) bound.volume = &lane;
         else if (param == StripParam::Pan) bound.pan = &lane;
-        else bound.mute = &lane;
+        else if (param == StripParam::Mute) bound.mute = &lane;
+        else if (param == StripParam::PanLeft) bound.panLeft = &lane;
+        else bound.panRight = &lane;
+    }
+    return out;
+}
+
+StripControlImage StripNode::captureControls() const {
+    StripControlImage out;
+    out.config.volumeDb=volumeDb_.load(std::memory_order_relaxed);
+    out.config.pan=pan_.load(std::memory_order_relaxed);
+    out.config.law=static_cast<PanLaw>(law_.load(std::memory_order_relaxed));
+    out.config.panMode=static_cast<PanMode>(panMode_.load(std::memory_order_relaxed));
+    out.config.panLeft=panLeft_.load(std::memory_order_relaxed);
+    out.config.panRight=panRight_.load(std::memory_order_relaxed);
+    out.config.lanes=lanes_.load(std::memory_order_acquire);
+    out.config.keepAlive=keepAlive_;
+    out.config.delaySamples=delayProject_.load(std::memory_order_relaxed);
+    out.config.delayRate=delayRate_.load(std::memory_order_relaxed);
+    out.audible=audible_.load(std::memory_order_relaxed);
+    return out;
+}
+void StripNode::applyPublishedControls(const StripControlImage& value) noexcept {
+    setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible);
+    setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
+    usePublishedLanes(value.config.lanes);
+}
+void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
+    for(const auto& value:strips_)captured.add(*value.node,value.image.config.lanes,value.image.config.keepAlive);
+    for(const auto& value:sends_)value.node->captureLanes(captured,value.image);
+}
+void MixerControlBatch::apply() const noexcept {
+    for(const auto& value:strips_)value.node->applyPublishedControls(value.image);
+    for(const auto& value:sends_)value.node->applyPublishedControls(value.image);
+}
+std::shared_ptr<const MixerControlBatch> MixerStrips::prepareControls(
+    const rows::Model& model,const Transport* transport,const std::shared_ptr<StripAutomation>& automation,
+    bool delayCompensation,const HearingFlags& flags) const {
+    // Reuse the single control calculation, including global solo reachability,
+    // reference exclusions, split pan and Pre/Post source automation. The
+    // isolated nodes are never prepared or placed in an audio graph.
+    MixerStrips staged;
+    staged.setFormat(channels_,maxFrames_);
+    staged.sync(model,transport,automation,delayCompensation,flags);
+    auto out=std::make_shared<MixerControlBatch>();
+    for(const auto& [id,node]:staged.strips_) {
+        const auto target=strips_.find(id);
+        if(target==strips_.end())throw std::runtime_error("preview needs a new mixer strip");
+        out->strips_.push_back({target->second.get(),node->captureControls()});
+    }
+    for(const auto& [id,node]:staged.sends_) {
+        const auto target=sends_.find(id);
+        if(target==sends_.end())throw std::runtime_error("preview needs a new send");
+        out->sends_.push_back({target->second.get(),node->captureControls()});
     }
     return out;
 }
 
 void MixerStrips::sync(const rows::Model& model, const Transport* transport,
-                       const std::shared_ptr<StripAutomation>& automation) {
+                       const std::shared_ptr<StripAutomation>& automation,bool delayCompensation, const HearingFlags& flags) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
-    const Hearing hears = hearing(model, plan);
+    // Solo reachability must account for an enabled automated send that can
+    // rise above silence even when its stored knob is fully down. Audio gain
+    // still follows the actual curve; no routing/PDC edge changes per sample.
+    rows::Model hearingModel;
+    hearingModel.tracks = model.tracks;
+    hearingModel.routing = model.routing;
+    if (automation) for (auto& route : hearingModel.routing) {
+        const auto at = automation->bySend.find(route.id);
+        if (at == automation->bySend.end() || !at->second.volume) continue;
+        const auto& lane = *at->second.volume;
+        bool carries = lane.points.empty() && lane.defaultValue > kSilenceDb;
+        for (const auto& point : lane.points) carries = carries || point.value > kSilenceDb;
+        for (const auto& clip : lane.clipEnvelopes)
+            for (const auto& point : clip.points) carries = carries || point.value > kSilenceDb;
+        route.gainDb = carries ? 0.0 : kSilenceDb;
+    }
+    const Hearing hears = hearing(hearingModel, plan, flags);
     const std::map<std::int64_t, bool>& audible = hears.track;
     std::map<std::int64_t, const rows::MixerStrip*> row;
     for (const rows::MixerStrip& s : model.strips) row[s.trackId] = &s;
     std::map<std::int64_t, bool> unmuted;
-    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted;
+    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted && t.id!=flags.referenceTrack;
 
     // ADR-0203 d3: a node for every send the plan made, kept per routing row.
     // Back in the plan after time out of it, in no graph and so never
@@ -526,6 +708,12 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
             const rows::MixerStrip& r = *it->second;
             config.volumeDb = r.volumeDb;
             config.pan = r.pan;
+            if(r.panMode=="split")config.panMode=PanMode::Split;
+            else if(r.panMode!="stereo")problems_.push_back(who+": unknown pan mode '"+r.panMode+"'; stereo is used");
+            config.panLeft=std::isfinite(r.panLeft)?std::clamp(r.panLeft,-1.0,1.0):-1.0;
+            config.panRight=std::isfinite(r.panRight)?std::clamp(r.panRight,-1.0,1.0):1.0;
+            if(!std::isfinite(r.panLeft) || !std::isfinite(r.panRight))
+                problems_.push_back(who+": split pan is not finite; default side is used");
             if (r.panLaw >= 0 && r.panLaw <= 3) config.law = static_cast<PanLaw>(r.panLaw);
             else problems_.push_back(who + ": pan law " + std::to_string(r.panLaw) +
                                      " is not one of SPEC 6.9's; Live's is used");
@@ -544,6 +732,9 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         // latency there would make the graph's own latency negative.
         std::int64_t delay = 0;
         if (const auto it = row.find(node.trackId); it != row.end()) delay = it->second->delaySamples;
+        // Track Delay is suspended with compensation; model/SQL values remain
+        // unchanged and re-enabling uses their latest saved values.
+        if(!delayCompensation)delay=0;
         const bool isMaster = plan.output && plan.nodes[*plan.output].trackId == node.trackId;
         const std::int64_t rate = model.project.sampleRate > 0 ? model.project.sampleRate : 48000;
         const auto limit = static_cast<std::int64_t>(StripNode::kMaxDelaySeconds * static_cast<double>(rate));
@@ -592,8 +783,13 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         if (r.kind != "send" || !tapOf.count(r.id)) continue;
         SendNode& send = *sends_[r.id];
         const std::string who = "routing#" + std::to_string(r.id);
-        if (std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
-        else if (r.gainDb > kSendTopDb)
+        const StripLanes* gainLanes = nullptr;
+        if (automation) {
+            const auto at = automation->bySend.find(r.id);
+            if (at != automation->bySend.end()) gainLanes = &at->second;
+        }
+        if (!gainLanes && std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
+        else if (!gainLanes && r.gainDb > kSendTopDb)
             problems_.push_back(who + ": a send level of " + std::to_string(r.gainDb) + " dB is past the top, " +
                                 std::to_string(kSendTopDb) + " dB, and is played there");
         double pan = r.pan;
@@ -626,11 +822,25 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         }
         const auto gate = hears.send.find(r.id);
         send.set(r.gainDb, pan, PanLaw::Live, r.enabled && gate != hears.send.end() && gate->second);
+        send.setAutomation(gainLanes, gainLanes ? automation : std::shared_ptr<void>{});
         live.insert(r.id);
     }
     for (auto& [id, send] : sends_)
-        if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+        if (!live.count(id)) { send->set(kSilenceDb, 0.0, PanLaw::Live, false); send->setAutomation(nullptr, {}); }
     liveSends_ = std::move(live);
+}
+
+std::shared_ptr<StripLaneBindings> MixerStrips::captureLanes() const {
+    auto captured=std::make_shared<StripLaneBindings>();
+    captured->entries_.reserve(strips_.size()+sends_.size()*2);
+    auto retain=[&](const StripNode& node) {
+        captured->entries_.push_back({&node,node.lanes_.load(std::memory_order_acquire),node.sourceLifetime()});
+    };
+    for(const auto& [id,strip]:strips_) { (void)id;retain(*strip); }
+    for(const auto& [id,send]:sends_) { (void)id;retain(send->source_);retain(send->gain_); }
+    std::sort(captured->entries_.begin(),captured->entries_.end(),
+        [](const auto& left,const auto& right){return std::less<const StripNode*>{}(left.node,right.node);});
+    return captured;
 }
 
 void SendNode::process(const NodeIo& io) noexcept {

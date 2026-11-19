@@ -41,4 +41,12 @@ inline constexpr double kExpRange = 6.907755278982137;
 [[nodiscard]] double curveValue(double v0, double v1, double x, std::uint8_t curve,
                                 double tension) noexcept;
 
+struct CurveSlice {
+    double begin=0,end=1,sourceFirst=0,sourceLast=0;
+};
+/// A trimmed segment retains the source curve instead of fitting a different
+/// curve to its new endpoints. Endpoints remain the stored point values.
+[[nodiscard]] double curveSliceValue(double v0,double v1,double x,std::uint8_t curve,double tension,
+                                      const CurveSlice* slice=nullptr) noexcept;
+
 }  // namespace adi::engine

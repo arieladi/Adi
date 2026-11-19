@@ -2,7 +2,9 @@
 #pragma once
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
+#include "adi/track_recording.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -132,6 +134,19 @@ inline TrackEdit soloTracks(const SnapshotTracks &tracks, std::int64_t clicked, 
     }
     return edit;
 }
+// Live's Solo in Place (Live 12 manual 18.6; the Solo button's menu and the Options menu's entry):
+// soloing leaves the returns audible. One project field for both entries (`mixer.setSoloInPlace`,
+// #412), on by default (the engine's default; Live's factory default is unmeasured, F-02 NOT RUN,
+// the director's profile reads it ticked, F-07). The manual gives the Options entry a second role,
+// "the default behavior", which ADI has no field for until it is measured (parity-7.6 row 7). The
+// op is outside undo, as the catalogue says (ephemeral, in the transport scope), and saved with
+// the project. No op when the snapshot already holds `on`.
+inline TrackEdit soloInPlaceEdit(const engine::Snapshot &snapshot, bool on) {
+    TrackEdit edit;
+    if (snapshot.cue.soloInPlace != on)
+        edit.ops.push_back(track_edits_detail::op("mixer.setSoloInPlace", {{"on", on}}, "Solo in Place"));
+    return edit;
+}
 // Live's colour chooser (Live 12 manual 2.3.2): the colour at `index` of Live's palette (ADR-0211) on
 // every track of `ids` whose colour differs, as one batch; no ops when none would change.
 inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t index,
@@ -249,6 +264,210 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
 }
 // The selected track into a new group, which takes its place and is selected.
 inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
+// Live's Insert Audio Track and Insert MIDI Track (Ctrl/Cmd+T, Ctrl/Cmd+Shift+T; manual 18.2): a new
+// track right after the selected one, in the group that holds it, selected. The tracks after it move
+// down one place in the same batch, as `track.create` moves none. With nothing selected, or Main or
+// a return, it comes after the last track at the top. Named "# Audio" or "# MIDI": '#' shows its
+// number.
+// The registry's recording defaults for a new track (#397, N31): `record.quantize` ("off" or a grid)
+// and `audio.keepMonitoringLatency`, captured into the creating batch as ops, so a replay never
+// reads the settings again.
+struct RecordingDefaults {
+    std::string quantize = "1/16";
+    bool keepMonitoringLatency = true;
+};
+inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const RecordingDefaults &defaults, const char *label) {
+    auto ops = trackRecordingDefaults(track, defaults.quantize, defaults.keepMonitoringLatency);
+    for (auto &o : ops)
+        o.label = label;
+    return ops;
+}
+inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi,
+                             const RecordingDefaults *defaults = nullptr) {
+    using namespace track_edits_detail;
+    const char *label = midi ? "Insert MIDI Track" : "Insert Audio Track";
+    TrackEdit edit;
+    std::int64_t id = 1;
+    for (const auto &k : tracks)
+        if (k)
+            id = std::max(id, k->id + 1);
+    const auto *t = find(tracks, selected);
+    if (t != nullptr && rank(*t) != 0)
+        t = nullptr;
+    const auto parent = t != nullptr ? t->parent : 0;
+    // What the group holds, the returns and Main aside: they keep their own places.
+    auto order = children(tracks, parent);
+    order.erase(std::remove_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) != 0; }), order.end());
+    std::size_t at = order.size();
+    if (t != nullptr)
+        at = static_cast<std::size_t>(std::find(order.begin(), order.end(), t) - order.begin()) + 1;
+    edit.ops.push_back(op("track.create",
+                          {{"id", id},
+                           {"kind", midi ? "midi" : "audio"},
+                           {"name", midi ? "# MIDI" : "# Audio"},
+                           {"parent", parentValue(parent)},
+                           {"index", static_cast<std::int64_t>(at)}},
+                          label));
+    if (defaults != nullptr)
+        for (auto &o : recordingDefaultOps(id, *defaults, label))
+            edit.ops.push_back(std::move(o));
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
+        if (order[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+    }
+    edit.select = id;
+    return edit;
+}
+// Where dragged tracks land: in `parent` (0 at the top), before its track `before`; with `before`
+// 0, after the rest it holds (before the returns and Main at the top).
+struct TrackDrop {
+    std::int64_t parent = 0, before = 0;
+};
+// Live's track drag (Live 12 manual, Arrangement View: "Tracks can be reordered by selecting and
+// dragging them above or below other tracks"; 18.3: "tracks can be dragged into or out of the
+// group"): the selected tracks, in the arrangement's order, to `to`, side by side. A track whose
+// group is selected as well goes with its group. The returns move among themselves, at the foot
+// (`to.before` a return, or 0 for after the last); Main stays last; a group never goes inside
+// itself. Tracks moved into or out of a group are routed as Group Tracks routes
+// them (`track.setParent`). One batch, so one undo step; no ops when nothing would move.
+inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, TrackDrop to) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    auto picked = [&ids](std::int64_t id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
+    // Every track in the arrangement's order (TrackOrder's): each group followed by what it holds.
+    std::vector<const engine::TrackNode *> all, stack;
+    for (auto top = children(tracks, 0); !top.empty(); top.pop_back())
+        stack.push_back(top.back());
+    while (!stack.empty() && all.size() < tracks.size()) {
+        const auto *t = stack.back();
+        stack.pop_back();
+        all.push_back(t);
+        auto held = children(tracks, t->id);
+        for (auto k = held.rbegin(); k != held.rend(); ++k)
+            stack.push_back(*k);
+    }
+    // The selected tracks no selected group holds, in that order.
+    std::vector<const engine::TrackNode *> chosen;
+    for (const auto *t : all) {
+        if (!picked(t->id))
+            continue;
+        bool held = false;
+        for (const auto *up = find(tracks, t->parent); up != nullptr && !held; up = find(tracks, up->parent))
+            held = picked(up->id);
+        if (!held)
+            chosen.push_back(t);
+    }
+    auto moving = [&chosen](const engine::TrackNode *t) {
+        return std::find(chosen.begin(), chosen.end(), t) != chosen.end();
+    };
+    if (chosen.empty()) {
+        edit.refusal = "Select a track to move.";
+        return edit;
+    }
+    // Live reorders the returns among themselves, at the foot; Main stays last.
+    const auto returns = static_cast<std::size_t>(
+        std::count_if(chosen.begin(), chosen.end(), [](const auto *t) { return t->kind == "return"; }));
+    for (const auto *t : chosen)
+        if (t->kind == "master") {
+            edit.refusal = "Main stays last.";
+            return edit;
+        }
+    if (returns != 0 && (returns != chosen.size() || to.parent != 0)) {
+        edit.refusal = "Return tracks move among the returns only.";
+        return edit;
+    }
+    if (to.parent != 0) {
+        const auto *g = find(tracks, to.parent);
+        if (g == nullptr || g->kind != "group") {
+            edit.refusal = "Tracks go into a group track only.";
+            return edit;
+        }
+        for (const auto *up = g; up != nullptr; up = find(tracks, up->parent))
+            if (moving(up)) {
+                edit.refusal = "A group can't go inside itself.";
+                return edit;
+            }
+    }
+    const char *label = chosen.size() > 1 ? "Move Tracks" : "Move Track";
+    // What the parent will hold: the rest, the moved tracks before `before` (past it while it is
+    // one of them), or after the rest's tracks and groups. Returns, among the returns alone.
+    auto list = children(tracks, to.parent);
+    if (returns != 0)
+        list.erase(std::remove_if(list.begin(), list.end(), [](const auto *k) { return k->kind != "return"; }), list.end());
+    std::vector<const engine::TrackNode *> rest;
+    std::size_t at = 0;
+    bool placed = false, passed = false;
+    for (const auto *k : list) {
+        passed = passed || k->id == to.before;
+        if (moving(k))
+            continue;
+        if (!placed && passed) {
+            at = rest.size();
+            placed = true;
+        }
+        rest.push_back(k);
+    }
+    if (!placed) {
+        at = returns != 0 ? rest.size() : 0;
+        while (at < rest.size() && rank(*rest[at]) == 0)
+            ++at;
+    }
+    auto order = rest;
+    order.insert(order.begin() + static_cast<std::ptrdiff_t>(at), chosen.begin(), chosen.end());
+    // Dropped where they stand: nothing moves, and no step is made.
+    const bool inPlace = std::all_of(chosen.begin(), chosen.end(), [&to](const auto *t) { return t->parent == to.parent; });
+    if (inPlace && order == list)
+        return edit;
+    // The groups they leave, each once, renumbered without them.
+    std::vector<std::int64_t> left;
+    for (const auto *t : chosen)
+        if (t->parent != to.parent) {
+            edit.ops.push_back(op("track.setParent", {{"id", t->id}, {"parent", parentValue(to.parent)}}, label));
+            if (std::find(left.begin(), left.end(), t->parent) == left.end())
+                left.push_back(t->parent);
+        }
+    renumber(edit.ops, order, label);
+    for (const auto parent : left) {
+        auto stay = children(tracks, parent);
+        stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
+        renumber(edit.ops, stay, label);
+    }
+    return edit;
+}
+// Live's Track Delay (manual 18.7): a track's output delayed, or pre-delayed by a negative value, in
+// milliseconds. The format keeps samples at the project's rate (`TrackNode::delaySamples`,
+// `Snapshot::sampleRate`; ADR-0172): the window writes ms × rate / 1000, to the nearest sample, and
+// reads back 1000 × samples / rate, so a typed value shows what the sample grid kept.
+inline double trackDelayMs(std::int64_t samples, int sampleRate) noexcept {
+    return sampleRate > 0 ? 1000. * static_cast<double>(samples) / sampleRate : 0.;
+}
+inline std::int64_t trackDelaySamples(double ms, int sampleRate) noexcept {
+    return std::llround(ms * sampleRate / 1000.);
+}
+// One `mixer.setDelay` on track `id`, one undo step; no ops when the sample grid would keep the
+// delay it has. Main's is shown and written as every track's (Master Reference 8.1).
+inline TrackEdit setTrackDelay(const SnapshotTracks &tracks, int sampleRate, std::int64_t id, double ms) {
+    TrackEdit edit;
+    const auto *t = track_edits_detail::find(tracks, id);
+    if (t == nullptr) {
+        edit.refusal = "Select a track to delay.";
+        return edit;
+    }
+    if (!std::isfinite(ms)) {
+        edit.refusal = "Track Delay takes a number of milliseconds.";
+        return edit;
+    }
+    if (sampleRate <= 0) {
+        edit.refusal = "The project has no sample rate to count the delay in.";
+        return edit;
+    }
+    const auto samples = trackDelaySamples(ms, sampleRate);
+    if (samples != t->delaySamples)
+        edit.ops.push_back(
+            track_edits_detail::op("mixer.setDelay", {{"id", id}, {"samples", samples}}, "Change Track Delay"));
+    return edit;
+}
 // A group's tracks back where the group stood, in their order, and the group removed; the first
 // of them is selected. An empty group is just removed.
 inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {

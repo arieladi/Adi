@@ -36,7 +36,7 @@ MR § is the Master Reference's section.
 | Three view states in one value, Global / Group focus / Detailed zoom (Macro / Main / Micro); the mixer and the timeline always show the same tracks | 1.1, 3.2, 10 (ADR-0112) | Missing. Global is the window's alone; Group focus needs the snapshot's groups (N6: a track's parent and kind); Detailed zoom needs the detail editor (section 5) |
 | Named view filters, Bitwig's project filter (figure 32: a menu at the top of the track-header column listing the project's group tree; choose one to see only it), a manual filter tab and an un-filter toggle, applied to the timeline and the mixer | 1.1, 3.2, 10 (ADR-0112 d2) | Partial (window/view-filter, 29 October): Bitwig's project view, the director's choice over the funnel picture: the button at the top of the names, its menu of the project and its groups as a tree, a group's tracks and Main shown in the lanes, the track controls and the Mixer View alike, the button lit while a group is chosen, kept per window. The groups are read from the project file (the director's choice, 29 October; N6 may replace it); the menu drawn as Bitwig's; the manual tab and the name filter come after |
 | The AI builds a view from a sentence ("put all percussion in a view group") | 3.2, 10 | Later (the agent, steps 8 and 9) |
-| Every window, zoom and selection restored on open | 1.6, 11.3 | Built (`ui_view`); plug-in windows on their monitor wait for N8 |
+| Every window, zoom and selection restored on open | 1.6, 11.3 | Built (`ui_view`); a plug-in window keeps its place (its size is the plug-in's), reopened from its wrench |
 | Hebrew and right-to-left text in text fields; the timeline stays left to right | 1.1 (ADR-0125 d4) | Unchecked: JUCE shapes it, no test yet |
 
 ## 2. The browser (MR 3.1)
@@ -45,7 +45,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Collections, Categories (Pd Devices in Max for Live's place), Places (Packs, User Library, Current Project, Add Folder…) | 3.1 | Partial: all listed, but the sidebar does not scroll, so on a short window Places is cut off below Templates. Missing: a scrolling sidebar |
 | Search; Ctrl/Cmd+F from anywhere | 3.1 | Built |
-| The lists under each label; double-click or drag to load | 3.1 | Waits (N15) |
+| The lists under each label; double-click or drag to load | 3.1 | Partial (D4, N15): Samples and the Places (D1); Audio Effects in Live's seven folders and ADI's own (Chord Comb, Color Cab) under Pd Devices, from the catalogue. Double-click or Enter loads onto the selected track in front of the device chosen in the strip; a drag drops into the chain or onto a lane's track; one undo step with the reference and the chain. An entry this build cannot load is dimmed and says why (every one with Pd off; Hybrid Reverb always). Missing: Instruments, MIDI Effects, Sounds and Drums (the devices lane), Plug-Ins (the scanner, #438 to #440), presets (no format) |
 | The AI chat as a collapsed tab at the browser's foot | 3.1 | Built (the tab); the chat is the agent's (Later) |
 | The floating palette, Ctrl+P / Cmd+P: V/serum, S/snare, P/ presets, arrows, Space auditions, Enter loads; sentences become tasks | 1.1, 3.1 (ADR-0104) | Missing. Commands by name are the window's alone; plug-ins, samples and presets wait for N15; sentences for the agent |
 | AudioGridder servers' plug-ins beside the local ones, with a server icon | 3.1, 9.5 | Later (engine, P1) |
@@ -59,14 +59,14 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Volume, pan, Track Activator, solo, arm; In/Out with monitoring In / Auto / Off | 8.1 | Built |
 | One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Built: the knobs (#325), the returns at the foot (#315), Insert Return Track and Hide/Show Return Tracks (`window/return-commands`), Hide/Show Sends and the strip's I-O and R selectors (`window/view-selectors`) |
-| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; held while no send reaches the return waits on N42), Enable Send (#325), Enable All Sends (`window/return-commands`) |
+| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; the return's own switch, held while no send reaches it, `window/return-pre-post` on #405), Enable Send (#325), Enable All Sends (`window/return-commands`) |
 | A send into any track, and a pan on a send, made from the send slot | 1.3, 8.2 | Waits (N11) |
 | Sends Only in the output menu | 8.2 | Waits (N11) |
 | ADI-Q and ADI-L on every strip, present but off, one click each | 0.3, 1.3, 3.2, 8.1 | Built as Live-sized switches, off; engaging them waits (N16) |
 | The one EQ window listing every channel's EQ and limiter, opened from the strip | 1.3, 3.2, 8.1 | Built (View › Channel EQ; the slots wait for N16) |
 | Split Stereo Pan from the pan control's context menu | 3.2, 8.1 | Built: listed, disabled, says why (N12) |
-| Solo in Place, a switch in the Solo button's context menu and in the Options menu; Exclusive Solo; Solo/Cue, Cue Out and Cue Volume | 8.1 | Waits: Solo in Place has no setting and the engine has no cue path (new Need). Exclusive Solo exists in the registry (`record.exclusiveSolo`) and the window does not follow it yet: Missing |
-| Track Delay in milliseconds on every strip; the master's shown, not played | 7, 8.1 | Waits: `mixer.setDelay` exists, but the snapshot does not carry a track's delay (new Need) |
+| Solo in Place, a switch in the Solo button's context menu and in the Options menu; Exclusive Solo; Solo/Cue, Cue Out and Cue Volume | 8.1 | Built: Solo in Place in both menus, the project's one field (`mixer.setSoloInPlace`, #412; `window/solo-in-place`); Exclusive Solo followed from the registry (`window/solo-rules`). Solo/Cue, Cue Out and Cue Volume wait for the cue path's window half (worklist B6, N43) |
+| Track Delay in milliseconds on every strip; the master's shown, not played | 7, 8.1 | Built (`window/track-delay`, N22): Live's Track Options shows the ms box on every strip, Main's too; written as samples at the project's rate, the engine plays it as latency (ADR-0172) |
 | Delay Compensation, Live's switch in the Options menu; Track Delay off while it is off | 7, 8.4 | Waits: no setting and no engine switch (new Need) |
 | Reduced Latency When Monitoring in the Options menu | 8.4, V.2 §3 | Missing: the setting exists (`audio.reducedLatencyWhenMonitoring`); the menu item is the window's |
 | Auto Gain Stage, one command | 1.3, 8.1 | Built (the track controls' right-click menu, two choices) |
@@ -75,8 +75,8 @@ MR § is the Master Reference's section.
 | A small live scope and spectrum inside every strip; a click opens the Scope or the analyser on that track; Compare in Scope for two selected tracks, or Alt-click a second track's scope button | 1.3, 3.2, 8.1, 8.6 | Partial: the analyser's big window and the engine's scope taps exist; the strip's view and the Scope window are Missing |
 | A loudness meter, LUFS and true peak, on the master only | 1.3, 8.6 | Waits (N13, and N6 for the master) |
 | Live's CPU meter; the per-track Performance Impact meter | V.3, V.4 §1 | Partial: the CPU meter is drawn; the per-track meter waits for the engine's numbers |
-| Rec-Q ([1/16] or [Free]) and Play-Q on every MIDI track header | V.2 §9 | Waits: no op, and no track kind (N6) |
-| Keep Monitoring Latency from the monitor button's right-click | V.2 §9 | Waits: no op (new Need) |
+| Rec-Q ([1/16] or [Free]) and Play-Q on every MIDI track header | V.2 §9 | Built (`window/rec-q`, C6, N31): two boxes under the name, each a menu of Free/Off and the four grids, one undo step; nothing follows them yet (Play-Q unscheduled, no MIDI recording) |
+| Keep Monitoring Latency from the monitor button's right-click | V.2 §9 | Built (`window/rec-q`, C6, N31): a right-click on In or Auto in the track controls, and Live 12's Keep Latency toggle under Track Delay in the Mixer View's Track Options; the recorder ignores it yet (#406) |
 | Freeze, Freeze All Channels, Freeze Group; Bounce in Place, Bounce to New Track, with a prompt | 1.3, 7 | Waits (engine, P1) |
 | Group Tracks; a group as a folder and its bus | 7 | Partial: the folder is built, read from the snapshot (#299): the tree in every panel, folding, Group Tracks and Ungroup Tracks (`window/groups`, `window/group-commands`; parity-7.3 row 33); dragging into a group and the summing controls are not built |
 | Save as Default Audio/MIDI Track in the header's menu | V.2 §9 | Later (P2) |
@@ -88,17 +88,17 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Waits (N17) |
-| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Built (E1, E2, E3): Delete over a range trims the clips crossing its edges, or cuts the middle out of one; Split (Ctrl/Cmd+E) cuts at the insert marker or at a selection's edges; cut, copy, paste and duplicate over a range (E2); Cut, Copy, Paste, Duplicate and Delete Time (Ctrl/Cmd+Shift+X, C, V, D, Delete) and Insert Silence (Ctrl/Cmd+I) across every track, locators, the loop and time signature markers moving with the time (E3). Silence over a range that keeps the time (Live's Delete on a time selection leaves silence) is Delete's |
+| Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Built (E4, `window/fades`): peak and curve handles on audio clips, the same fade on every selected clip in one step; Create Fade In/Out and Create Crossfade on Ctrl/Cmd+Alt+F; Delete Fades/Crossfades on Ctrl/Cmd+Alt+Backspace; F shows the handles. Waits: the fade-start handles (a fade offset in `clip.setFades`), a crossfade over hidden material (parity-7.3 row 43) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
 | Markers and locators, a marker holding a note and a prompt | 3.3 | Waits: no marker ops (new Need) |
 | The loop brace, punch in and out | 3.6 | Waits (N19) |
-| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: the two buttons are drawn; the lanes wait for the automation data in the snapshot (new Need) |
+| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: Re-Enable Automation is lit from the snapshot while any lane is overridden and a click follows every envelope again, and Automation Arm is the session's switch (`window/automation-arm`, parity-7.2 row 32); the lanes and their editing wait for C7 (the data is in the snapshot since #386) |
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
-| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15) |
+| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track The import prompt (E5): Warp, Create Fades on Clip Edges and Copy into the project's folder asked on a drop, all off by default, kept as the last ones; with any on, the engine's material import on a worker, one undo step per file. |
 
 ## 5. Devices and the editors (MR 3.4, 4, 5, 9)
 
@@ -106,14 +106,14 @@ MR § is the Master Reference's section.
 |---|---|---|
 | The device chain: DAW-drawn panels, fold, delete, rename, Configure | 3.4, 9.2 | Built |
 | ADI's searchable Parameter List button beside Configure | 3.4, 9.2 (ADR-0150 d3) | Missing |
-| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Missing: the menu is the window's; Return to Default waits for N7 |
-| A drag on a control is one undo step | 9.1 | Waits (N7) |
-| A plug-in's own window, floating, from the wrench | 3.4 | Waits (N8) |
+| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Partial: Return to Default is built as Live's key, Delete on a clicked control (`window/strip-param-undo`, parity-7.4 row 16), a gesture to the plug-in's declared default; the menu itself is missing, and its Edit MIDI Map and Show Automation wait for MIDI mapping and the automation lanes in the window |
+| A drag on a control is one undo step | 9.1 | Built (`window/strip-param-undo`, N7): Begin, Values and End through `ParamOps::uiEvent`, one step with its opener; the undone value reaches the plug-in at the next load only (N44) |
+| A plug-in's own window, floating, from the wrench | 3.4 | Built (D3, N8): the wrench on a plug-in's title bar, the hosted editor at its own size, never scaled; Ctrl/Cmd+Alt+P; Multiple, Auto-Hide and Always on Top followed. Missing: Auto-Open (no device insert from the window yet) |
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
-| Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
+| Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Built (D5, N28, #414): the Impulse tile beside Color Cab's controls takes a file from the desktop or the browser's Samples, in any format the browser lists; it shows the empty and the missing-file marks; Clear empties it; each is one undo step, and the live device takes the new state. Missing: undo and redo of an assignment reach the file, not the live device, until N47; the file is decoded on the message thread |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
-| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
-| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |
+| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing. Planned as STEP-7-PLAN §7.7 (window/clip-view), Live 12's layout; its picture `pictures/2026-10-28-clip-view.png` went to the director on 28 October. The frame can be built alone; the clip's properties wait on N32 and N33 |
+| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing. Planned in §7.7 with `parity-7.7-clip-view.md`. The note ruler and the geometry can be built alone; drawing and editing notes wait on reading them (N32); the five note ops exist and the Pitch and Time tools compose them |
 | Layered editing; the editors torn out | 3.4, 4.1 | Later, with the editors |
 | The Pd patch editor | 9.3 | Later (P1, its own step) |
 
@@ -130,7 +130,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; the metronome and the loop wait (N19); Link waits for the engine (P1) |
+| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; Automation Arm and Re-Enable Automation are live (`window/automation-arm`); the metronome and the loop wait (N19); Link waits for the engine (P1) |
 | Count-In in the metronome's menu | V.2 §9 | Missing (the menu); counting in waits with the metronome (N19) |
 | **ADI's additions:** project tabs for several open projects | 3.6, 11.1 | Missing (the window's, large: one store per open tab, inactive tabs offline) |
 | **ADI's additions:** the current view state | 3.6, 3.7 | Missing, with the view states (section 1) |
@@ -140,11 +140,11 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As says it waits (N3) |
+| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As through `Store::saveAs` (`window/save-as`, N3), never replacing an existing file |
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |
-| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Waits (N17, N18) |
+| Edit: Cut, Copy, Paste, Duplicate, Select All | — | Partial: on devices (D2, N18): Ctrl/Cmd+X, C, V and D on the focused device, Paste also at the chain's end; Select All in the Arrangement. On clips and time selections (E2, N17): Ctrl/Cmd+X, C, V and D on the chosen clip or the time selection, Paste at the insert marker, a range onto as many tracks as it came from, each one undo step. Missing: several picked clips as one copy; the …Time commands (E3); a paste onto a track with no chain yet (N51) |
 | Create: Insert Audio / MIDI Track | — | Built |
 | Create: Insert Return Track; Import MIDI File | 8.2, V.2 §5 | Insert Return Track built (`window/return-commands`); Import MIDI File later (P2) |
 | View: Undo History (Ctrl+Alt+Z / Cmd+Option+Z), newest on top, pick a line to go back, with ADI's branches and snapshots; any node opens read-only in a silent tab | 1.6, 11.1, V.4 §4 | Waits: `History` lists branches and snapshots, but no undo steps (new Need) |

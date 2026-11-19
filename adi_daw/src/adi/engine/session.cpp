@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/row_capture.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 //
 // The session. See session.hpp for the three decisions; this file is their
 // mechanics. ADR-0122.
@@ -8,12 +13,19 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "juce/clap_host.hpp"
+#include "adi/engine/audio_recording.hpp"
+#include "adi/gesture_capture_detail.hpp"
 
 #include <algorithm>
+#include <numbers>
+#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <functional>
+#include <mutex>
 
 namespace adi::engine {
 namespace {
@@ -37,8 +49,187 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
-Session::Session() = default;
-Session::~Session() = default;
+struct ScopeLease::State {
+    mutable std::mutex mutex;
+    std::shared_ptr<const ScopeTap> current;
+    std::function<void()> release;
+    bool alive = true;
+};
+ScopeLease::ScopeLease(std::shared_ptr<State> state) : state_(std::move(state)) {}
+ScopeLease::~ScopeLease() { reset(); }
+ScopeLease::ScopeLease(ScopeLease&& other) noexcept : state_(std::move(other.state_)) {}
+ScopeLease& ScopeLease::operator=(ScopeLease&& other) noexcept {
+    if (this != &other) { reset(); state_ = std::move(other.state_); }
+    return *this;
+}
+void ScopeLease::reset() noexcept {
+    auto state = std::move(state_);
+    if (!state) return;
+    std::function<void()> release;
+    {
+        std::lock_guard lock(state->mutex);
+        release = std::move(state->release);
+        state->current.reset();
+        state->alive = false;
+    }
+    // Owner publication may fail to allocate. The consumer is already gone; leaving
+    // its previous capture publication alive until the next rebuild is safe.
+    if (release) try { release(); } catch (...) {}
+}
+ScopeLease::operator bool() const noexcept {
+    if (!state_) return false;
+    std::lock_guard lock(state_->mutex);
+    return state_->alive;
+}
+std::shared_ptr<const ScopeTap> ScopeLease::tap() const {
+    if (!state_) return {};
+    std::lock_guard lock(state_->mutex);
+    return state_->current;
+}
+
+struct Session::ScopeRuntime {
+    struct Request { ScopeSource source; double seconds; std::shared_ptr<ScopeLease::State> state; };
+    struct PortKey {
+        Node::ScopePorts* ports = nullptr;
+        bool output = false;
+        std::uint64_t epoch = 0;
+        auto operator<=>(const PortKey&) const = default;
+    };
+    struct Binding {
+        PortKey key;
+        std::shared_ptr<Node::ScopePorts> ports;
+        std::shared_ptr<const void> identity;
+        std::shared_ptr<ScopeTap> tap;
+    };
+    struct Bindings : Sequenced { std::vector<Binding> items; };
+    std::map<std::uint64_t, Request> requests;
+    std::map<ScopeSource, double> legacy;
+    std::map<PortKey, Binding> groups;
+    std::map<ScopeSource, std::shared_ptr<ScopeTap>> bySource;
+    SnapshotPublisher<Bindings> publisher;
+    std::unique_ptr<Bindings> deferred; // owner only; newest desired plan behind one unacknowledged publication
+    bool dirty = false; // owner only; a failed demand rebuild must reconcile before deferred publication
+    const Bindings* audio = nullptr; // audio only, protected by publisher's strict epoch
+    std::uint64_t next = 0;
+
+    bool awaitingAudio() const noexcept {
+        return publisher.publishedSeq() > publisher.inUseSeq();
+    }
+    void publishOrDefer(std::unique_ptr<Bindings>& plan) {
+        publisher.collect();
+        if (awaitingAudio()) {
+            deferred = std::move(plan);
+            return;
+        }
+        // Any publication failure preserves both the caller's candidate and
+        // the previous deferred demand. Acceptance below is nonthrowing.
+        publisher.publishPrepared(plan);
+        deferred.reset();
+    }
+    std::size_t collect() {
+        const auto freed = publisher.collect();
+        if (deferred && !awaitingAudio()) publisher.publishPrepared(deferred);
+        return freed;
+    }
+
+    void adopt() noexcept {
+        const auto* plan = publisher.peek();
+        if (plan == audio) return;
+        // Finish all access to the previous plan before announcing the new one.
+        // Ports themselves outlive a retired Node; no graph-collection assumption.
+        if (audio) for (const auto& binding : audio->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(nullptr, std::memory_order_release);
+        }
+        if (plan) for (const auto& binding : plan->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(binding.tap.get(), std::memory_order_release);
+        }
+        publisher.announce(plan);
+        audio = plan;
+    }
+    void revoke() noexcept {
+        for (auto& [id, request] : requests) {
+            (void)id;
+            std::lock_guard lock(request.state->mutex);
+            request.state->alive = false;
+            request.state->release = {};
+            request.state->current.reset();
+        }
+        // Session destruction is after the driver stops. The last publication is
+        // still protected, even if a graph holding its Node has already retired.
+        if (audio) for (const auto& binding : audio->items) {
+            auto& port = binding.key.output ? binding.ports->output : binding.ports->input;
+            port.store(nullptr, std::memory_order_release);
+        }
+    }
+};
+
+Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
+    scopeRuntime_ = std::make_unique<ScopeRuntime>();
+    endpoint_->owner_=this;
+}
+Session::~Session() {
+    scopeRuntime_->revoke();
+    endpoint_->owner_=nullptr;
+    lifetime_.reset();
+    for(const auto& client:runtimeClients_)client->sessionEnded();
+    runtimeClients_.clear();
+}
+
+DeviceRuntimeToken Session::deviceRuntimeToken(std::int64_t deviceId) const {
+    DeviceRuntimeToken result;
+    const auto* entry=entryFor(deviceId);
+    if(!entry || entry->retired || !entry->runtimeIdentity)return result;
+    auto* instance=const_cast<Session*>(this)->instanceFor(deviceId);
+    if(!instance)return result;
+    auto data=std::make_shared<DeviceRuntimeToken::Data>();
+    data->session=endpoint_;data->identity=entry->runtimeIdentity;data->instance=instance;
+    data->deviceId=deviceId;data->runtimeEpoch=runtimeEpoch_;data->shapeEpoch=instance->preparationShapeEpoch();
+    data->pluginRef=entry->resolvedPluginRef;data->format=entry->resolvedFormat;data->uid=entry->resolvedUid;
+    result.data_=std::move(data);return result;
+}
+
+device::DeviceInstance* Session::resolveDevice(const DeviceRuntimeToken& token) noexcept {
+    if(!token.data_ || token.data_->runtimeEpoch!=runtimeEpoch_)return nullptr;
+    const auto owner=token.data_->session.lock();
+    if(!owner || owner->get()!=this || token.data_->identity.expired())return nullptr;
+    const auto* entry=entryFor(token.data_->deviceId);
+    if(!entry || entry->retired || !entry->runtimeIdentity ||
+       token.data_->identity.owner_before(entry->runtimeIdentity) ||
+       entry->runtimeIdentity.owner_before(token.data_->identity) ||
+       entry->resolvedPluginRef!=token.data_->pluginRef || entry->resolvedFormat!=token.data_->format ||
+       entry->resolvedUid!=token.data_->uid)return nullptr;
+    auto* instance=instanceFor(token.data_->deviceId);
+    return instance==token.data_->instance && instance->preparationShapeEpoch()==token.data_->shapeEpoch?instance:nullptr;
+}
+
+bool Session::presentationReady(const AppliedSource& source,std::uint64_t sequence) const noexcept {
+    if(presentationPending_)return false;
+    for(const auto& client:runtimeClients_)if(!client->presentationReady(source,sequence))return false;
+    return true;
+}
+void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) {
+    if(!client)return;
+    if(std::find(runtimeClients_.begin(),runtimeClients_.end(),client)==runtimeClients_.end())
+        runtimeClients_.push_back(std::move(client));
+}
+
+AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
+    if(!live_){error="No active audio session for recording";return false;}
+    if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
+        error="Recording format must match the active audio device";return false;
+    }
+    for(const auto& target:options.targets) {
+        const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
+        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+            error="Recording target must be an armed audio or MIDI track";return false;
+        }
+    }
+    auto captured=options;captured.sourceProject=recordingProject_;
+    return recording_->start(captured,error);
+}
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -83,6 +274,8 @@ std::vector<device::DeviceNode*> Session::chainFor(std::int64_t trackId) {
     int chainsOnTrack = 0;
     for (const rows::DeviceChain& c : model_.deviceChains) {
         if (!c.trackId || *c.trackId != trackId) continue;
+        if (frozenSources_.contains(trackId))
+            continue;
         ++chainsOnTrack;
         // `devices` is sorted by chainId first, so the chain's rows are one run.
         auto first = std::lower_bound(
@@ -228,6 +421,9 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     const rows::PluginRef* ref = refFor(row);
     Entry e;
     e.deviceId = row.id;
+    e.runtimeIdentity=std::make_shared<const int>(0);
+    e.resolvedPluginRef = row.pluginRefId;
+    if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
     e.name = !row.name.empty() ? row.name
            : (ref != nullptr && !ref->name.empty()) ? ref->name
@@ -245,6 +441,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
         rq.ref = ref;
         rq.sampleRate = spec_.sampleRate;
         rq.maxFrames = spec_.maxFrames;
+        rq.channels = spec_.channels;
+        rq.exporting = spec_.exporting;
         inst = loader_(rq, err);
         if (inst == nullptr && err.empty()) err = "the loader returned nothing";
     }
@@ -272,6 +470,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
 
 void Session::resolveNewRows(const Store& store) {
     for (const rows::Device& row : model_.devices) {
+        if (parkedDevice(row))
+            continue;
         const auto it = byId_.find(row.id);
         if (it == byId_.end()) {
             resolveOne(store, row);
@@ -281,6 +481,12 @@ void Session::resolveNewRows(const Store& store) {
         // waiting, state and all. That is the payoff of retiring rather than
         // destroying: the undo restores the sound, not a fresh default.
         Entry& e = entries_[it->second];
+        if (e.retired && e.parked) {
+            // Never resume voices/delay history left in an instance before its
+            // cache was installed. Restore from the preserved project state.
+            resolveOne(store, row);
+            continue;
+        }
         if (e.retired) {
             e.retired = false;
             --stats_.retired;
@@ -291,13 +497,18 @@ void Session::resolveNewRows(const Store& store) {
 void Session::retireDepartedRows() {
     for (Entry& e : entries_) {
         if (e.retired) continue;
-        const bool present = std::any_of(
-            model_.devices.begin(), model_.devices.end(),
-            [&](const rows::Device& d) { return d.id == e.deviceId; });
+        const bool present =
+            std::any_of(model_.devices.begin(), model_.devices.end(),
+                        [&](const rows::Device &d) { return d.id == e.deviceId && !parkedDevice(d); });
         if (present) continue;
+        for (const auto &row : model_.devices)
+            if (row.id == e.deviceId)
+                e.parked = parkedDevice(row);
         e.retired = true;
         e.trackId = 0;
         ++stats_.retired;
+        if (e.parked)
+            continue;
         sessionProblems_.push_back("devices#" + std::to_string(e.deviceId) + " (" + e.name +
                                    "): removed from the project; its instance is kept out "
                                    "of every chain until the session closes (ADR-0122)");
@@ -356,9 +567,17 @@ void Session::syncRoute(Entry& e, device::DeviceInstance& inst) {
 // The graph
 // ---------------------------------------------------------------------------
 
-void Session::attach() {
+void Session::attach(std::shared_ptr<const GraphTransportState> timing) {
     device::DeviceHost::RebuildSpec rs;
+    rs.transportState=std::move(timing);
     rs.model = [this] { return &model_; };
+    if (!frozenGroupChildren_.empty())
+        rs.transformPlan = [this](GraphPlan &plan) {
+            std::set<std::int64_t> roots;
+            for (const auto &source : frozenSources_)
+                roots.insert(source.first);
+            freeze::pruneGroupPlan(plan, frozenGroupChildren_, roots);
+        };
     rs.channels = spec_.channels;
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
@@ -383,9 +602,10 @@ void Session::attach() {
     auto* clipSource = clips();
     auto* midiSource = midi_.get();
     rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {
-        auto nodes = sources_ ? sources_(id) : std::vector<Node*>{};
+        auto nodes = sources_ && !frozenSources_.contains(id) ? sources_(id) : std::vector<Node *>{};
         if (clipSource) {
-            auto audio = clipSource->sourcesFor(id);
+            const auto frozen = frozenSources_.find(id);
+            auto audio = clipSource->sourcesFor(frozen == frozenSources_.end() ? id : frozen->second.first);
             nodes.insert(nodes.end(), audio.begin(), audio.end());
         }
         if (midiSource) {
@@ -394,13 +614,25 @@ void Session::attach() {
         }
         return nodes;
     };
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
     devices_.attachHost(graph_, std::move(rs));
 }
 
 std::vector<Node*> Session::trackChain(std::int64_t trackId) {
     std::vector<Node*> nodes;
     // ADR-0174: a summing group's buss half is first, right after its sum.
-    if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
+    if (!frozenSources_.contains(trackId))
+        if (Node *buss = summing_.headFor(trackId))
+            nodes.push_back(buss);
+    if (const auto frozen = frozenSources_.find(trackId); frozen != frozenSources_.end()) {
+        auto wet = clips_->sourcesFor(frozen->second.second);
+        nodes.insert(nodes.end(), wet.begin(), wet.end());
+        if (StripNode *strip = strips_.stripFor(trackId))
+            nodes.push_back(strip);
+        if (Node *channel = summing_.tailFor(trackId))
+            nodes.push_back(channel);
+        return nodes;
+    }
     const auto chain = chainFor(trackId);
     std::size_t firstAudio = 0;
     for (std::size_t i = 0; i < chain.size(); ++i)
@@ -437,6 +669,8 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
         case Tap::PostFx:
             return at > 0 && at <= nodes.size() ? nodes[at - 1] : nullptr;
         case Tap::PreFx: {
+            if (frozenSources_.contains(trackId))
+                return nullptr;
             // After the instrument, before the first audio effect: the last
             // node that plays the track's notes, or what comes before them.
             Node* last = summing_.headFor(trackId);
@@ -449,53 +683,194 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
 }
 
 std::optional<OfflineOutput> Session::offlineOutput(std::int64_t trackId, OfflineTap point) {
-    if (point != OfflineTap::PreFader && point != OfflineTap::PostFader) return std::nullopt;
+    if (point != OfflineTap::PreFader && point != OfflineTap::PostFader)
+        return std::nullopt;
+    return offlineTapOutput(trackId, point == OfflineTap::PreFader ? Tap::PostFx : Tap::PostFader);
+}
+std::optional<OfflineOutput> Session::offlineTapOutput(std::int64_t trackId, Tap point) {
+    if (point != Tap::PreFx && point != Tap::PostFx && point != Tap::PostFader && point != Tap::PostMixer &&
+        point != Tap::Tail)
+        return std::nullopt;
     const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
-        [trackId](const rows::Track& t) { return t.id == trackId; });
+                                    [trackId](const rows::Track &row) { return row.id == trackId; });
     if (track == model_.tracks.end() ||
         (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument" &&
-         track->kind != "group" && track->kind != "return" && track->kind != "master")) return std::nullopt;
-    auto* realized = graph_.current();
-    if (!realized) return std::nullopt;
-    auto& graph = realized->graph();
-    Node* node = tapFor(trackId, point == OfflineTap::PreFader ? Tap::PostFx : Tap::PostFader);
+         track->kind != "group" && track->kind != "return" && track->kind != "master"))
+        return std::nullopt;
+    auto *realized = graph_.current();
+    if (!realized)
+        return std::nullopt;
+    auto &graph = realized->graph();
+    Node *node = tapFor(trackId, point);
     const NodeId id = node ? graph.find(*node) : realized->inputFor(trackId);
     const auto latency = graph.outputLatencyOf(id);
-    if (!latency) return std::nullopt;
+    if (!latency)
+        return std::nullopt;
     return OfflineOutput{id, *latency};
+}
+std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId) {
+    if (frozenSources_.contains(trackId) || !offlineTapOutput(trackId, Tap::PostFx))
+        return std::nullopt;
+    const auto chain = chainFor(trackId);
+    std::size_t prefix = 0;
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        if (chain[i]->eventFlow() == EventFlow::Consume)
+            prefix = i + 1;
+    OfflineSourceInfo info;
+    info.track = trackId;
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        for (const auto &entry : entries_) {
+            if (entry.retired || &devices_.nodeAt(entry.hostIndex) != chain[i])
+                continue;
+            if (entry.placeholder || !devices_.deviceAt(entry.hostIndex).loaded())
+                return std::nullopt;
+            info.devices.push_back({entry.deviceId, devices_.deviceAt(entry.hostIndex).identity()});
+            if (i < prefix)
+                info.prefixDevices.push_back(entry.deviceId);
+            break;
+        }
+    return info;
+}
+
+DeviceChainFn Session::eventPathFor(const rows::Model& model) {
+    return [this, plan = std::make_shared<const GraphPlan>(planGraph(model))](std::int64_t track) {
+        std::vector<Node*> result;
+        const auto start = plan->indexOf(track);
+        if (!start) return result;
+        std::vector<bool> visited(plan->nodes.size(), false);
+        std::vector<std::size_t> pending{*start};
+        for (std::size_t at = 0; at < pending.size(); ++at) {
+            const auto index = pending[at];
+            if (visited[index]) continue;
+            visited[index] = true;
+            if (plan->nodes[index].kind == PlannedKind::Vca) continue;
+            bool through = true;
+            for (auto* node : chainFor(plan->nodes[index].trackId)) {
+                result.push_back(node);
+                if (node->eventFlow() != EventFlow::Through) { through = false; break; }
+            }
+            if (!through) continue;
+            // Sends stop notes and sidechains carry only audio. An
+            // unconsumed main path can reach more than one instrument;
+            // retain every destination identity, never its later audio FX.
+            for (const auto& edge : plan->edges)
+                if (edge.from == index && edge.to < plan->nodes.size() &&
+                    edge.bus == Bus::Main && edge.routingId == 0 && !edge.feedback)
+                    pending.push_back(edge.to);
+        }
+        return result;
+    };
 }
 
 bool Session::rebuild() {
+    if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
     if (!loaded_) {
         error_ = "no project loaded";
         return false;
     }
-    auto timing = std::make_unique<TimingView>();
+    (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
+    auto timing = std::make_shared<TimingView>();
+    timing->session=this;
+    timing->gestureAudio=gestureAudio_;
+    timing->gestureGeneration=gestureAudio_->reserveGeneration();
+    const auto gestureGeneration=timing->gestureGeneration;
     timing->sampleRate = spec_.sampleRate;
+    timing->spec = spec_;
+    timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
+    timing->inputSlice.resize(64);
+    timing->outputSlice.resize(static_cast<std::size_t>(std::max(64, spec_.channels)));
+    timing->outputSlice64.resize(timing->outputSlice.size());
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
     // when a stored event requests a ramp. Do not create a second converter.
-    for (const auto& e : model_.tempo)
+    for (const auto& e : playbackModel_.tempo)
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    auto loopSample=[&](std::int64_t ticks){
+        const long double sample=static_cast<long double>(timing->tempo.ticksToSeconds(ticks))*spec_.sampleRate;
+        return sample>=static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(std::llround(sample));
+    };
+    timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
+    timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
+    if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
+        timing->loopEnd=timing->loopBegin+1; // a valid sub-sample tick window plays one frame
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
+    std::unique_ptr<ClipPlayback> nextClips;
+    std::unique_ptr<MidiClips> nextMidi;
     try {
-        clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
-                                                spec_.channels, spec_.maxFrames);
-        midi_ = std::make_unique<MidiClips>(model_, transport_, spec_.sampleRate, midiState_);
+        const DeviceChainFn eventPath = eventPathFor(model_);
+        nextClips = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
+                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
+        nextMidi = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_, eventPath);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
     // lane the user overrode. An override of a lane that is gone goes with it.
-    const std::shared_ptr<const AutomationProgram> program = compileAutomation(model_, spec_.sampleRate);
-    stripAutomation_ = bindStripAutomation(program, overridden_);
-    deviceAutomation_ = bindDeviceAutomation(program, overridden_, transport_, spec_.sampleRate);
+    const std::shared_ptr<const AutomationProgram> program =
+        compileAutomation(playbackModel_, spec_.sampleRate);
+    if (primeExternalAt_) {
+        // Warp construction and automation compilation can take much longer
+        // than a physical callback. Prime at a freshly published driver sample,
+        // not the older packet boundary. Never copy/read the live Transport on
+        // the owner. Only this unpublished candidate has a request producer.
+        std::optional<DriverClock> origin;
+        bool ready = false;
+        const auto prime = [&](const Transport& requested, std::chrono::milliseconds timeout) {
+            if (!timing->settings.hasLoop || !timing->settings.loopEnabled)
+                return nextClips->primeAt(requested, timeout);
+            Transport loopHead = requested;
+            loopHead.locate(timing->loopBegin);
+            // One request protects the union until the candidate is published;
+            // two separate requests would let the worker evict the loop head.
+            return nextClips->primeAt(requested, loopHead, timeout);
+        };
+        for (unsigned attempt = 0; attempt < 8 && !ready; ++attempt) {
+            DriverClock before;
+            if (!readDriverClock(before)) continue;
+            if (!origin) origin = before;
+            if (before.revision != origin->revision || before.playing != origin->playing) break;
+            Transport requested;
+            requested.locate(before.playing && primeExternalFollowDriver_ ? before.sample : loopSample(*primeExternalAt_));
+            if (timing->settings.hasLoop)
+                requested.loop(timing->loopBegin, timing->loopEnd, timing->settings.loopEnabled);
+            requested.play();
+            if (!prime(requested, std::chrono::milliseconds(100))) continue;
+            DriverClock after;
+            if (!readDriverClock(after)) continue;
+            if (after.revision != origin->revision || after.playing != origin->playing) break;
+            requested.locate(after.playing && primeExternalFollowDriver_ ? after.sample : loopSample(*primeExternalAt_));
+            ready = prime(requested, std::chrono::milliseconds(0));
+        }
+        if (!ready) {
+            error_ = "external tempo source pages could not catch the current driver position";
+            return false;
+        }
+    }
+    if (externalPublishGuard_ && *externalPublishGuard_ && !(*externalPublishGuard_)()) {
+        error_ = "external tempo preparation became stale";
+        return false;
+    }
+    timing->sourceReadiness = nextClips->readiness();
+    clips_ = std::move(nextClips);
+    midi_ = std::move(nextMidi);
+    auto suspended = overridden_;
+    suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
+    stripAutomation_ = bindStripAutomation(program, suspended);
+    deviceAutomation_ = bindDeviceAutomation(program, suspended, transport_, spec_.sampleRate);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
+    }
+    for (auto it = writingAutomation_.begin(); it != writingAutomation_.end();) {
+        bool known = false;
+        for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
+        it = known ? std::next(it) : writingAutomation_.erase(it);
     }
     for (const auto& track : model_.tracks) {
         double db = 0.0;
@@ -508,17 +883,27 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    HearingFlags hearingFlags;hearingFlags.soloInPlace=cueSettings_.soloInPlace;
+    hearingFlags.soloIsCue=spec_.performanceState && cueSettings_.cueMode;hearingFlags.referenceTrack=cueSettings_.projectReferenceTrack;
+    strips_.sync(model_, &transport_, stripAutomation_,spec_.delayCompensation,hearingFlags);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
-    attach();   // the spec, the sources or the placement may have changed
+    cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
+    auto laneBindings = strips_.captureLanes();
+    cueMonitor_.captureLanes(*laneBindings);
+    timing->stripLanes = std::move(laneBindings);
+    timing->generationControls=nativeGestureControls(*this);
+    attach(std::move(timing)); // publish the matching clock with this graph
+    gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
-        timing_.publish(std::move(timing));
-        live_ = true;
+        live_ = true; // durable audio publication; later auxiliary work cannot undo it
+        gestureAudio_->publishedGeneration(gestureGeneration);
+        presentationPending_=!cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
     }
+    try {
     attachTaps();   // ADR-0175: the new graph's latencies
 
     problems_ = model_.problems;
@@ -539,10 +924,166 @@ bool Session::rebuild() {
     problems_.insert(problems_.end(), deviceSourceProblems_.begin(), deviceSourceProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
+    } catch(const std::exception&) {
+        // The graph may already be audible. Preserve that fact and let the
+        // presentation owner retry; never report an untouched failed preview.
+        if(!ok)return false;
+        presentationPending_=true;
+    }
     return ok;
 }
 
+bool Session::parkedDevice(const rows::Device &device) const {
+    const auto *chain = chainOf(device.chainId);
+    return chain && chain->trackId &&
+           (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
+}
+std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) const {
+    if (performedTempo_.empty()) {
+        if (spec_.externalTempoBpm) return {rows::TempoEvent{0, *spec_.externalTempoBpm, 0, 0}};
+        return model.tempo;
+    }
+    auto result = performedTempo_;
+    if (authoredResumeAt_) {
+        const auto boundary = *authoredResumeAt_;
+        std::erase_if(result, [boundary](const auto& event) { return event.posTicks >= boundary; });
+        TempoMap authored;
+        for (const auto& event : model.tempo)
+            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
+        result.push_back({boundary, authored.bpmAt(boundary), 0, 0});
+        for (const auto& event : model.tempo)
+            if (event.posTicks > boundary) result.push_back(event);
+        if (result.size() > 4096)
+            throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
+    }
+    return result;
+}
+bool Session::readPlayback(const Store &store) {
+    try {
+        // A malformed/stale cache never falls back to a different live sound.
+        freeze::validate(const_cast<Store &>(store));
+        freeze::remember(const_cast<Store &>(store));
+        const auto cached = freeze::renders(const_cast<SQLite::Database &>(store.db()));
+        if((spec_.externalTempoBpm || !performedTempo_.empty()) && !cached.empty())
+            throw std::runtime_error("unfreeze cached tracks before preparing an external tempo generation");
+        std::set<std::int64_t> before, after;
+        for (const auto &entry : frozenSources_)
+            before.insert(entry.first);
+        for (const auto &row : cached)
+            after.insert(adi::detail::signedInteger(row.at("track_id")));
+        if (loaded_ && playbackRunning_.load(std::memory_order_acquire) && before != after)
+            throw std::runtime_error("stop playback before freezing or unfreezing");
+        playbackModel_ = model_;
+        playbackModel_.tempo = playbackTempo(model_);
+        frozenSources_.clear();
+        frozenGroupChildren_.clear();
+        for (const auto &[root, members] : freeze::groups(const_cast<SQLite::Database &>(store.db()))) {
+            (void)root;
+            for (const auto &member : members)
+                frozenGroupChildren_.insert(member.id);
+        }
+        std::erase_if(playbackModel_.clips,
+                      [&](const auto &clip) { return frozenGroupChildren_.contains(clip.trackId); });
+        std::int64_t ordinal = 0;
+        std::set<std::int64_t> used;
+        for (const auto &clip : model_.clips)
+            used.insert(clip.id);
+        for (const auto &track : model_.tracks)
+            used.insert(track.id);
+        auto synthetic = [&] {
+            while (used.contains(-1 - ordinal))
+                ++ordinal;
+            const auto id = -1 - ordinal++;
+            used.insert(id);
+            return id;
+        };
+        for (const auto &render : cached) {
+            const auto id = adi::detail::signedInteger(render.at("track_id"));
+            for (const auto *field : {"pre_media_id", "post_media_id"}) {
+                const auto mediaId = adi::detail::signedInteger(render.at(field));
+                SQLite::Statement q(
+                    store.db(),
+                    "SELECT hash_blake3,rel_path,abs_path_hint,orig_name FROM media_files WHERE id=?");
+                q.bind(1, mediaId);
+                if (!q.executeStep())
+                    throw std::runtime_error("freeze cache media is missing");
+                Payload row = {
+                    {"orig_name", q.getColumn(3).getString()},
+                    {"hash_blake3", q.getColumn(0).getString()},
+                    {"rel_path", q.getColumn(1).isNull() ? Payload() : Payload(q.getColumn(1).getString())},
+                    {"abs_path_hint",
+                     q.getColumn(2).isNull() ? Payload() : Payload(q.getColumn(2).getString())}};
+                const auto key = row.dump();
+                auto &verified = verifiedFrozenMedia_[mediaId];
+                std::error_code statusError;
+                const auto size = std::filesystem::file_size(verified.file, statusError);
+                bool current = !statusError && verified.row == key && verified.size == size;
+                const auto modified = std::filesystem::last_write_time(verified.file, statusError);
+                current = current && !statusError && modified == verified.modified;
+                if (!current) {
+                    std::string error;
+                    const auto resolved = media::resolveMedia(media::projectFolder(store), row, error);
+                    if (resolved.empty())
+                        throw std::runtime_error("freeze cache media: " + error);
+                    verified = {key, resolved, std::filesystem::file_size(resolved),
+                                std::filesystem::last_write_time(resolved)};
+                }
+                // Use the verified resolution in this private playback model;
+                // a missing relative path can have a valid original/collected fallback.
+                const auto entry = std::find_if(playbackModel_.media.begin(), playbackModel_.media.end(),
+                                                [mediaId](const auto &item) { return item.id == mediaId; });
+                if (entry == playbackModel_.media.end())
+                    throw std::runtime_error("freeze cache has no playback media row");
+                entry->relPath = media::pathUtf8(verified.file);
+            }
+            const auto dry = synthetic(), wet = synthetic();
+            frozenSources_.emplace(id, std::pair{dry, wet});
+            std::erase_if(playbackModel_.clips, [id](const auto &clip) { return clip.trackId == id; });
+            const auto frames = adi::detail::signedInteger(render.at("frames"));
+            const auto rate = adi::detail::signedInteger(render.at("sample_rate"));
+            if (static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate) >
+                static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+                throw std::runtime_error("freeze duration exceeds project clock range");
+            for (unsigned point = 0; point < 2; ++point) {
+                rows::Clip clip;
+                clip.id = point ? wet : dry;
+                clip.trackId = clip.id;
+                clip.kind = "audio";
+                clip.timeBase = 1;
+                clip.posNs = 0;
+                clip.lengthNs = static_cast<std::int64_t>(
+                    std::llround(static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate)));
+                playbackModel_.clips.push_back(clip);
+                rows::AudioClip audio;
+                audio.clipId = clip.id;
+                audio.mediaId = adi::detail::signedInteger(render.at(point ? "post_media_id" : "pre_media_id"));
+                audio.srcLenFrames = frames;
+                audio.warpEnabled = false;
+                playbackModel_.audioClips.push_back(audio);
+            }
+        }
+        for (const auto &track : model_.tracks)
+            if (track.frozen && !frozenSources_.contains(track.id))
+                throw std::runtime_error("legacy frozen flag has no verified cache; unfreeze first");
+        std::erase_if(playbackModel_.automationLanes, [&](const auto &lane) {
+            if (lane.ownerKind == "device") {
+                for (const auto &device : model_.devices)
+                    if (device.id == lane.ownerId)
+                        return parkedDevice(device);
+            }
+            return lane.ownerKind == "track" && frozenSources_.contains(lane.ownerId) &&
+                   lane.paramRef == "input_gain";
+        });
+        clipProject_ = readClipProject(store, playbackModel_);
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    if(audio::onAudioThread)return false;
     error_.clear();
     if (loaded_) {
         // One session, one project. A second project is a second session --
@@ -550,26 +1091,73 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
         error_ = "a project is already loaded in this session";
         return false;
     }
+    if(spec.externalTempoBpm && (!spec.performanceState || !std::isfinite(*spec.externalTempoBpm) ||
+       *spec.externalTempoBpm<20 || *spec.externalTempoBpm>999)) {
+        error_="external tempo needs a performance generation and finite 20..999 BPM";
+        return false;
+    }
     loader_ = std::move(loader);
+    appliedSource_ = adi::appliedSource(store);
+    // Offline rendering loads a coherent read-only project. It retains its
+    // source identity without entering the editable gesture domain.
+    if(!store.readOnly()) {
+        const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
+        if(!registered.ok()) {error_=registered.message;return false;}
+    }
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
+    graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
     model_ = rows::readModel(store);
-    clipProject_ = readClipProject(store, model_);
+    transportSettings_=readTransportSettings(store);
+    SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
+    while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
+    cueSettings_=readCueSettings(store);
+    if (!readPlayback(store))
+        return false;
     loaded_ = true;
     resolveNewRows(store);
-    return rebuild();
+    const bool rebuilt = rebuild();
+    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    return rebuilt;
+}
+
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
+    if (format != "clap") return id;
+    std::uint32_t numeric = 0;
+    if (!device::ClapDevice::paramIdFromText(id,numeric)) return {};
+    return std::to_string(numeric); // ADR-0165: lane refs stay decimal for every format
 }
 
 namespace {
 // What a user can move on a strip, per track: what an override compares.
 struct StripValues {
-    double volume = 0.0, pan = 0.0;
+    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
+bool knownNonAutomatable(const device::DeviceInstance* instance,const std::string& parameter,bool laneReference) {
+    if (!instance || !instance->loaded()) return false;
+    for (std::int32_t i=0;i<instance->paramCount();++i) {
+        const auto* descriptor=instance->paramAt(i);
+        if (!descriptor || descriptor->missing) continue;
+        const auto reference=laneReference ? automationParamRef(instance->identity().format,descriptor->id)
+                                           : std::optional<std::string>{descriptor->id};
+        if (reference && *reference==parameter) return !descriptor->automatable;
+    }
+    // Unknown and temporarily missing declarations keep their existing waiting
+    // semantics. Only a live, explicit non-automatable declaration rejects it.
+    return false;
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
-    for (const rows::PluginParam& p : m.pluginParams) v[{p.deviceId, p.paramId}] = p.normalized;
+    std::set<std::int64_t> clapRefs, clapDevices;
+    for (const auto& reference : m.pluginRefs) if (reference.format == "clap") clapRefs.insert(reference.id);
+    for (const auto& item : m.devices)
+        if (item.pluginRefId && clapRefs.contains(*item.pluginRefId)) clapDevices.insert(item.id);
+    for (const rows::PluginParam& p : m.pluginParams) {
+        const auto ref = automationParamRef(clapDevices.contains(p.deviceId) ? "clap" : "",p.paramId);
+        if (ref) v[{p.deviceId,*ref}] = p.normalized;
+    }
     return v;
 }
 
@@ -579,33 +1167,57 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     for (const rows::MixerStrip& s : m.strips) {
         v[s.trackId].volume = s.volumeDb;
         v[s.trackId].pan = s.pan;
+        v[s.trackId].panLeft = s.panLeft;
+        v[s.trackId].panRight = s.panRight;
     }
     return v;
 }
 }  // namespace
 
 bool Session::refresh(const Store& store) {
+    if(const auto handled=refreshGestureRuntime(gestureRuntime_,store))return *handled;
     error_.clear();
     if (!loaded_) {
         error_ = "no project loaded";
         return false;
     }
+    const auto source = adi::appliedSource(store);
+    if (!appliedSource_.sameConnection(source)) appliedSequence_ = 0;
+    appliedSource_ = source;
+    if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
+        const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
+        if(!registered.ok()) {error_=registered.message;return false;}
+    }
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
+    std::map<std::int64_t, double> sendsBefore;
+    for (const auto& route : model_.routing) if (route.kind == "send") sendsBefore[route.id] = route.gainDb;
     model_ = rows::readModel(store);
+    transportSettings_=readTransportSettings(store);
+    cueSettings_=readCueSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
         const std::map<std::int64_t, StripValues> after = stripValues(model_);
         for (const auto& [key, laneId] : stripAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
             const auto b = before.find(key.first);
             const auto a = after.find(key.first);
             if (b == before.end() || a == after.end()) continue;
             const bool changed = key.second == StripParam::Volume ? b->second.volume != a->second.volume
                                : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
+                               : key.second == StripParam::PanLeft ? b->second.panLeft != a->second.panLeft
+                               : key.second == StripParam::PanRight ? b->second.panRight != a->second.panRight
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
+        }
+        std::map<std::int64_t, double> sendsAfter;
+        for (const auto& route : model_.routing) if (route.kind == "send") sendsAfter[route.id] = route.gainDb;
+        for (const auto& [route, laneId] : stripAutomation_->sendLaneFor) {
+            if (overridden_.contains(laneId) || writingAutomation_.contains(laneId)) continue;
+            const auto beforeSend = sendsBefore.find(route), afterSend = sendsAfter.find(route);
+            if (beforeSend != sendsBefore.end() && afterSend != sendsAfter.end() && beforeSend->second != afterSend->second)
+                overridden_.insert(laneId);
         }
     }
     // ADR-0162 for a plug-in's parameters (ADR-0165): a changed stored value --
@@ -615,18 +1227,117 @@ bool Session::refresh(const Store& store) {
     if (deviceAutomation_) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
+            if (knownNonAutomatable(instanceFor(key.first),key.second,true)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
             if (had != has || (had && b->second != a->second)) overridden_.insert(laneId);
         }
     }
-    clipProject_ = readClipProject(store, model_);
+    if (!readPlayback(store))
+        return false;
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
-    return rebuild();
+    const bool rebuilt = rebuild();
+    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    return rebuilt;
+}
+
+bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,
+                               const std::function<bool()>& publishGuard, std::int64_t primeTick) {
+    if (audio::onAudioThread) return false;
+    if (!loaded_ || !spec_.performanceState || primeTick < 0 ||
+        (bpm && (!std::isfinite(*bpm) || *bpm < 20 || *bpm > 999))) {
+        error_ = "external tempo needs a loaded performance session and finite 20..999 BPM";
+        return false;
+    }
+    if (gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "external tempo waits for the active gesture";
+        return false;
+    }
+    auto previousPlayback = playbackModel_;
+    auto previousProject = clipProject_;
+    const auto previousBpm = spec_.externalTempoBpm;
+    auto previousHistory = performedTempo_;
+    const auto previousResume = authoredResumeAt_;
+    spec_.externalTempoBpm = bpm;
+    performedTempo_.clear();
+    authoredResumeAt_.reset();
+    primeExternalAt_ = primeTick;
+    primeExternalFollowDriver_ = false;
+    externalPublishGuard_ = &publishGuard;
+    bool ok = false;
+    try { ok = refresh(store); }
+    catch (const std::exception& failure) { error_ = failure.what(); }
+    catch (...) { error_ = "external tempo preparation failed"; }
+    externalPublishGuard_ = nullptr;
+    primeExternalAt_.reset();
+    if (!ok) {
+        playbackModel_ = std::move(previousPlayback);
+        clipProject_ = std::move(previousProject);
+        spec_.externalTempoBpm = previousBpm;
+        performedTempo_ = std::move(previousHistory);
+        authoredResumeAt_ = previousResume;
+    }
+    return ok;
+}
+
+bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, std::int64_t tick,
+                                 const std::function<bool()>& publishGuard) {
+    if (audio::onAudioThread) return false;
+    if (!loaded_ || !spec_.performanceState || tick < 0 ||
+        (bpm && (!std::isfinite(*bpm) || *bpm < 20 || *bpm > 999))) {
+        error_ = "performed tempo needs a loaded performance session, nonnegative tick and finite 20..999 BPM";
+        return false;
+    }
+    if (gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "external tempo waits for the active gesture";
+        return false;
+    }
+    std::vector<rows::TempoEvent> candidate;
+    for (const auto& event : playbackModel_.tempo)
+        if (event.posTicks < tick) candidate.push_back(event);
+    if (candidate.empty() && tick > 0) candidate.push_back({0, 120, 0, 0});
+    if (bpm) candidate.push_back({tick, *bpm, 0, 0});
+    else {
+        TempoMap authored;
+        for (const auto& event : model_.tempo)
+            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
+        candidate.push_back({tick, authored.bpmAt(tick), 0, 0});
+        for (const auto& event : model_.tempo)
+            if (event.posTicks > tick) candidate.push_back(event);
+    }
+    if (candidate.size() > 4096) {
+        error_ = "performed tempo history exceeds 4096 boundaries";
+        return false;
+    }
+    auto previousPlayback = playbackModel_;
+    auto previousProject = clipProject_;
+    const auto previousBpm = spec_.externalTempoBpm;
+    auto previousHistory = std::move(performedTempo_);
+    const auto previousResume = authoredResumeAt_;
+    spec_.externalTempoBpm = bpm;
+    performedTempo_ = std::move(candidate);
+    authoredResumeAt_ = bpm ? std::nullopt : std::optional<std::int64_t>{tick};
+    primeExternalAt_ = tick;
+    primeExternalFollowDriver_ = true;
+    externalPublishGuard_ = &publishGuard;
+    bool ok = false;
+    try { ok = refresh(store); }
+    catch (const std::exception& failure) { error_ = failure.what(); }
+    catch (...) { error_ = "external tempo preparation failed"; }
+    externalPublishGuard_ = nullptr;
+    primeExternalAt_.reset();
+    if (!ok) {
+        playbackModel_ = std::move(previousPlayback);
+        clipProject_ = std::move(previousProject);
+        spec_.externalTempoBpm = previousBpm;
+        performedTempo_ = std::move(previousHistory);
+        authoredResumeAt_ = previousResume;
+    }
+    return ok;
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
@@ -655,61 +1366,148 @@ std::int32_t Session::feedbackTrip(std::int64_t routingId) {
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<const ScopeTap> Session::openScope(std::int64_t trackId, double seconds, ScopePoint point) {
-    if (strips_.stripFor(trackId) == nullptr) return nullptr;
-    const TapKey key{trackId, point};
-    auto& tap = taps_[key];
-    if (!tap) tap = std::make_shared<ScopeTap>(spec_.sampleRate, seconds);
-    openTaps_.insert(key);
+    if (strips_.stripFor(trackId) == nullptr || !std::isfinite(seconds) || seconds <= 0 ||
+        point == ScopePoint::DeviceInput || point == ScopePoint::DeviceOutput) return {};
+    const ScopeSource source{trackId, point, 0};
+    // Preserve the legacy idempotent open contract: repeat calls keep the first
+    // demand, even if a caller omits its earlier custom history argument.
+    scopeRuntime_->legacy.try_emplace(source, seconds);
     attachTaps();
-    return tap;
+    const auto it = scopeRuntime_->bySource.find(source);
+    return it != scopeRuntime_->bySource.end() ? it->second : nullptr;
 }
 
 void Session::closeScope(std::int64_t trackId, ScopePoint point) {
-    openTaps_.erase({trackId, point});
-    if (point == ScopePoint::ChainInput) {
-        const auto node = chainTapNodes_.find(trackId);
-        if (node != chainTapNodes_.end()) {
-            node->second->setInputTap(nullptr);
-            chainTapNodes_.erase(node);
-        }
-    } else if (StripNode* strip = strips_.stripFor(trackId)) {
-        if (point == ScopePoint::PreFader) strip->setPreFaderTap(nullptr);
-        else strip->setTap(nullptr);
-    }
+    if (scopeRuntime_->legacy.erase({trackId, point, 0}) != 0) attachTaps();
 }
 
+ScopeLease Session::requestScope(const ScopeRequest& request) {
+    if (request.source.track <= 0 || !std::isfinite(request.seconds) || request.seconds <= 0 ||
+        !std::isfinite(request.seconds * spec_.sampleRate) ||
+        request.seconds * spec_.sampleRate > static_cast<double>(std::int64_t{1} << 24)) return {};
+    const bool device = request.source.point == ScopePoint::DeviceInput ||
+                        request.source.point == ScopePoint::DeviceOutput;
+    if (device != (request.source.device > 0)) return {};
+    auto state = std::make_shared<ScopeLease::State>();
+    const auto id = ++scopeRuntime_->next;
+    state->release = [this, id] {
+        scopeRuntime_->requests.erase(id);
+        attachTaps();
+    };
+    scopeRuntime_->requests.emplace(id, ScopeRuntime::Request{request.source, request.seconds, state});
+    try { attachTaps(); }
+    catch (...) { scopeRuntime_->requests.erase(id); throw; }
+    return ScopeLease(std::move(state));
+}
+
+std::size_t Session::collectScopeTaps() {
+    if (scopeRuntime_->dirty) attachTaps();
+    return scopeRuntime_->collect();
+}
+Session::ScopeStats Session::scopeStats() const {
+    return {scopeRuntime_->requests.size() + scopeRuntime_->legacy.size(),
+            scopeRuntime_->groups.size(), scopeRuntime_->publisher.retainedCount(),
+            scopeRuntime_->deferred ? std::size_t{1} : std::size_t{0}, scopeRuntime_->awaitingAudio()};
+}
+void Session::beginScopeRead() noexcept { scopeRuntime_->adopt(); }
+
 void Session::attachTaps() {
-    Graph* g = graph_.currentGraph();
-    for (const auto& key : openTaps_) {
-        const auto [id, point] = key;
-        StripNode* strip = strips_.stripFor(id);
-        const auto tap = taps_.find(key);
-        if (strip == nullptr || tap == taps_.end()) continue;
-        // Heard timeline: this point's arrival. Only PostFader adds the
-        // strip's own reported latency (negative for ADR-0172 track delay).
-        Node* tapped = strip;
-        if (point == ScopePoint::ChainInput) {
-            const auto chain = chainFor(id);
+    scopeRuntime_->dirty = true;
+    struct Demand {
+        std::shared_ptr<Node::ScopePorts> ports;
+        std::shared_ptr<const void> identity;
+        double seconds = 0;
+        std::int32_t latency = 0;
+    };
+    std::map<ScopeRuntime::PortKey, Demand> desired;
+    std::map<ScopeSource, ScopeRuntime::PortKey> resolved;
+    Graph* graph = graph_.currentGraph();
+    const auto add = [&](const ScopeSource& source, double seconds) {
+        auto* strip = strips_.stripFor(source.track);
+        if (!strip || !graph) return;
+        Node* node = strip;
+        bool output = source.point == ScopePoint::PostFader;
+        std::shared_ptr<const void> identity;
+        if (source.point == ScopePoint::DeviceInput || source.point == ScopePoint::DeviceOutput) {
+            const auto* entry = entryFor(source.device);
+            if (!entry || entry->retired || entry->parked || entry->placeholder ||
+                entry->trackId != source.track || !entry->runtimeIdentity) return;
+            node = &devices_.nodeAt(entry->hostIndex);
+            identity = entry->runtimeIdentity;
+            output = source.point == ScopePoint::DeviceOutput;
+        } else if (source.point == ScopePoint::ChainInput) {
+            const auto chain = chainFor(source.track);
             std::size_t first = 0;
             for (std::size_t i = 0; i < chain.size(); ++i)
                 if (chain[i]->eventFlow() == EventFlow::Consume) first = i + 1;
-            if (first < chain.size()) tapped = chain[first];
-            const auto gain = inputGains_.find(id);
-            if (gain != inputGains_.end()) tapped = gain->second.get();
-            auto& previous = chainTapNodes_[id];
-            if (previous && previous != tapped) previous->setInputTap(nullptr);
-            previous = tapped;
+            if (first < chain.size()) node = chain[first];
+            const auto gain = inputGains_.find(source.track);
+            if (gain != inputGains_.end()) node = gain->second.get();
+            if (frozenSources_.contains(source.track)) {
+                const auto cached = trackChain(source.track);
+                if (!cached.empty()) node = cached.front();
+            }
         }
-        std::int32_t latency = point == ScopePoint::PostFader ? strip->latencySamples() : 0;
-        if (g != nullptr) {
-            const NodeId n = g->find(*tapped);
-            if (n != kInvalidNode) latency += g->arrivalOf(n);
-        }
-        tap->second->setLatency(latency);
-        if (point == ScopePoint::ChainInput) tapped->setInputTap(tap->second.get());
-        else if (point == ScopePoint::PreFader) strip->setPreFaderTap(tap->second.get());
-        else strip->setTap(tap->second.get());
+        const auto nodeId = graph->find(*node);
+        if (nodeId == kInvalidNode) return;
+        const auto ports = node->scopePorts();
+        // Port identity distinguishes a replaced Node under the same authored ID;
+        // aliases such as ChainInput/first DeviceInput must share one writer. The
+        // format epoch distinguishes newly prepared rates, precision and runtime.
+        ScopeRuntime::PortKey key{ports.get(), output, runtimeEpoch_};
+        auto& demand = desired[key];
+        demand.ports = ports;
+        demand.identity = std::move(identity);
+        demand.seconds = (std::max)(demand.seconds, seconds);
+        const auto arrival = static_cast<std::int64_t>(graph->arrivalOf(nodeId));
+        const auto own = graph->outputLatencyOf(nodeId).value_or(arrival) - arrival;
+        const auto latency = (spec_.delayCompensation ? arrival : 0) + (output ? own : 0);
+        demand.latency = static_cast<std::int32_t>(std::clamp(latency,
+            static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()),
+            static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())));
+        resolved[source] = key;
+    };
+    for (const auto& [source, seconds] : scopeRuntime_->legacy) add(source, seconds);
+    for (const auto& [id, request] : scopeRuntime_->requests) { (void)id; add(request.source, request.seconds); }
+
+    std::map<ScopeRuntime::PortKey, ScopeRuntime::Binding> groups;
+    std::map<ScopeSource, std::shared_ptr<ScopeTap>> bySource;
+    auto plan = std::make_unique<ScopeRuntime::Bindings>();
+    plan->items.reserve(desired.size());
+    bool changed = desired.size() != scopeRuntime_->groups.size();
+    for (const auto& [key, demand] : desired) {
+        std::shared_ptr<ScopeTap> tap;
+        const auto previous = scopeRuntime_->groups.find(key);
+        const auto frames = std::ceil(spec_.sampleRate * demand.seconds);
+        if (previous != scopeRuntime_->groups.end() &&
+            previous->second.tap->sampleRate() == spec_.sampleRate &&
+            static_cast<double>(previous->second.tap->capacity()) >= frames)
+            tap = previous->second.tap;
+        else { tap = std::make_shared<ScopeTap>(spec_.sampleRate, demand.seconds); changed = true; }
+        tap->setLatency(demand.latency); // compatibility diagnostic; writes use Graph's cached values
+        ScopeRuntime::Binding binding{key, demand.ports, demand.identity, tap};
+        groups.emplace(key, binding);
+        plan->items.push_back(std::move(binding));
     }
+    for (const auto& [source, key] : resolved) bySource.emplace(source, groups.at(key).tap);
+    // Acquire every potentially throwing lease lock before accepting a plan.
+    // A requestScope rollback must not leave its failed request in a published
+    // or deferred plan because a later lease-state lock failed.
+    std::vector<std::unique_lock<std::mutex>> leaseLocks;
+    leaseLocks.reserve(scopeRuntime_->requests.size());
+    for (const auto& [id, request] : scopeRuntime_->requests) {
+        (void)id;
+        leaseLocks.emplace_back(request.state->mutex);
+    }
+    if (changed) scopeRuntime_->publishOrDefer(plan);
+    scopeRuntime_->groups.swap(groups);
+    scopeRuntime_->bySource.swap(bySource);
+    for (const auto& [id, request] : scopeRuntime_->requests) {
+        (void)id;
+        const auto it = scopeRuntime_->bySource.find(request.source);
+        request.state->current = it != scopeRuntime_->bySource.end() ? it->second : nullptr;
+    }
+    scopeRuntime_->dirty = false;
 }
 
 void Session::bindDeviceSources() {
@@ -746,13 +1544,62 @@ bool Session::reenableAutomation() {
     return rebuild();
 }
 
+void Session::setAutomationWriteState(bool armed, bool recording) noexcept {
+    automationArmed_ = armed;
+    automationRecording_ = recording;
+}
+
+bool Session::beginAutomationWrite(std::int64_t laneId) {
+    if (!loaded_ || !automationArmed_ || !automationRecording_) return false;
+    if (writingAutomation_.contains(laneId)) return true;
+    bool known = false;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->laneFor) known = known || id == laneId;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->sendLaneFor) known = known || id == laneId;
+    if (deviceAutomation_)
+        for (const auto& [key, id] : deviceAutomation_->laneFor) known = known || id == laneId;
+    if (!known) return false;
+    overridden_.erase(laneId);
+    writingAutomation_.insert(laneId);
+    return rebuild();
+}
+
+bool Session::finishAutomationWrite(std::int64_t laneId, bool follow) {
+    if (writingAutomation_.erase(laneId) == 0) return false;
+    if (!follow) overridden_.insert(laneId);
+    return rebuild();
+}
+
 bool Session::reenableAutomation(std::int64_t laneId) {
     if (overridden_.erase(laneId) == 0) return false;
     return rebuild();
 }
 
+bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
+    if (!deviceAutomation_) return true;
+    const auto* instance = instanceFor(deviceId);
+    if (knownNonAutomatable(instance,paramId,false)) return true;
+    const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
+    if (!ref) return true;
+    const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second)) return true;
+    overridden_.insert(lane->second);
+    return rebuild();
+}
+
 bool Session::tick(std::int64_t nowMs) {
-    timing_.collect();
+    if(presentationPending_ && cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph())) {
+        presentationPending_=false;error_.clear();
+    }
+    collectScopeTaps();
+    if(gestureAudio_)gestureAudio_->collect();
+    mainLoudness_.collect();
+    cueMonitor_.collect();
+    const auto clients=runtimeClients_;
+    for(const auto& client:clients)client->pump(nowMs);
+    std::erase_if(runtimeClients_,[](const auto& client){return client->releasable();});
+    pumpGestureCoordinator(*this,nowMs);
     return devices_.tick(nowMs);
 }
 
@@ -763,6 +1610,11 @@ bool Session::tick(std::int64_t nowMs) {
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
+    if (changed) {
+        recording_->stop();
+        if (transport_.countInRemaining() > 0)
+            transport_.play(false);
+    }
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
@@ -770,6 +1622,7 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     if (!changed && live_) return;
 
     if (changed) {
+        ++runtimeEpoch_;
         ++stats_.formatChanges;
         spec_.sampleRate = sampleRate;
         spec_.maxFrames = maxFrames;
@@ -778,20 +1631,36 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     rebuild();
 }
 
+bool Session::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) {
+    if(!graph_.setParallelRendering(workers,minimumFrames,minimumNodes,initialize,context))return false;
+    if(!loaded_)return true;
+    return rebuild();
+}
+
 bool Session::setPrecision(Precision p) {
     if (p == spec_.precision) return true;
     // A format change of its own: every buffer, sum and ring changes width,
     // so it is a new graph, never a change to the playing one (ADR-0207 d2).
     ++stats_.formatChanges;
+    ++runtimeEpoch_;
     spec_.precision = p;
     graph_.setPrecision(p);
     if (!loaded_) return true;
     return rebuild();
 }
 
+bool Session::setDelayCompensation(bool on) {
+    if(on==spec_.delayCompensation)return true;
+    spec_.delayCompensation=on;graph_.setDelayCompensation(on);
+    if(!loaded_)return true;
+    return rebuild();
+}
+
 TransportInfo Session::TimingView::at(const Transport& transport) const noexcept {
     TransportInfo info;
+    info.stripLanes = stripLanes.get();
     info.playing = transport.playing();
+    info.transportRevision = transport.revision();
     info.timelineSample = transport.sampleAt(0);
     const auto ticks = tempo.secondsToTicks(static_cast<double>(info.timelineSample) / sampleRate);
     info.bpm = tempo.bpmAt(ticks);
@@ -819,27 +1688,337 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     return info;
 }
 
-void Session::process(const AudioIo& io) noexcept {
-    audio::CallbackScope callback;
-    SnapshotPublisher<TimingView>::AudioRead timing(timing_);
-    TransportInfo info;
-    if (timing.valid()) info = timing->at(transport_);
-    else {
-        info.playing = transport_.playing();
-        info.timelineSample = transport_.sampleAt(0);
+void Session::TimingView::applyLoop() const noexcept {
+    const bool sameLoop = session->loopApplied_ && session->loopOn_ == settings.loopEnabled &&
+                          session->loopStartTick_ == settings.loopStartTicks && session->loopEndTick_ == settings.loopEndTicks;
+    if(settings.hasLoop && (!sameLoop || session->loopBegin_!=loopBegin || session->loopEnd_!=loopEnd)) {
+        session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
+        session->loopStartTick_ = settings.loopStartTicks; session->loopEndTick_ = settings.loopEndTicks;
+        if (sameLoop) session->transport_.retimeLoop(loopBegin,loopEnd,settings.loopEnabled);
+        else session->transport_.loop(loopBegin,loopEnd,settings.loopEnabled);
     }
+}
+
+const TransportInfo* Session::TimingView::beginBlock()const noexcept {
+    if(generationControls)generationControls->apply();
+    const StripLaneBindings* overlay=gestureAudio?gestureAudio->apply(gestureGeneration):nullptr;
+    applyLoop();
+    blockInfo=at(session->transport_);
+    if(overlay)blockInfo.stripLanes=overlay;
+    return &blockInfo;
+}
+
+void Session::publishDriverClock() noexcept {
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    static_assert(std::atomic<std::int64_t>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
+    // All fields and the sequence use one sequentially-consistent order. This
+    // is a bounded atomic snapshot, never an audio-side lock or retry loop.
+    driverClockSequence_.fetch_add(1);
+    driverSample_.store(transport_.position());
+    driverRevision_.store(transport_.revision());
+    driverPlaying_.store(transport_.playing());
+    driverClockSequence_.fetch_add(1);
+}
+bool Session::readDriverClock(DriverClock& result) const noexcept {
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        const auto before = driverClockSequence_.load();
+        if ((before & 1U) != 0) continue;
+        DriverClock candidate;
+        candidate.sample = driverSample_.load();
+        candidate.revision = driverRevision_.load();
+        candidate.playing = driverPlaying_.load();
+        if (driverClockSequence_.load() == before) { result = candidate; return true; }
+    }
+    return false;
+}
+
+Session::RenderBlock::RenderBlock(Session& session) noexcept
+    : session_(session), graph_(session.graph_.beginRender()) {
+    session_.beginScopeRead();
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (timing) timing->applyLoop();
+    session_.publishDriverClock();
+}
+
+double Session::RenderBlock::sampleRate() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->sampleRate : 0;
+}
+std::int32_t Session::RenderBlock::maxFrames() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->spec.maxFrames : 0;
+}
+Precision Session::RenderBlock::precision() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->spec.precision : Precision::Float32;
+}
+std::optional<double> Session::RenderBlock::externalTempoBpm() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->spec.externalTempoBpm : std::nullopt;
+}
+bool Session::RenderBlock::constantExternalTempo() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing && timing->spec.externalTempoBpm && timing->tempo.events.size() == 1 &&
+           timing->tempo.events.front().posTicks == 0 &&
+           timing->tempo.events.front().bpm == *timing->spec.externalTempoBpm;
+}
+std::optional<std::int64_t> Session::RenderBlock::loopBeginTick() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing && timing->settings.hasLoop ? std::optional<std::int64_t>{timing->settings.loopStartTicks} : std::nullopt;
+}
+std::optional<std::int64_t> Session::RenderBlock::loopEndTick() const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing && timing->settings.hasLoop ? std::optional<std::int64_t>{timing->settings.loopEndTicks} : std::nullopt;
+}
+std::int64_t Session::RenderBlock::tick() const noexcept {
+    return tickAtSample(session_.transport_.position());
+}
+std::int64_t Session::RenderBlock::tickAtSample(std::int64_t sample) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->tempo.secondsToTicks(static_cast<double>(sample) / timing->sampleRate) : 0;
+}
+double Session::RenderBlock::beatAtSample(std::int64_t sample) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing || sample <= 0) return 0;
+    const double seconds = static_cast<double>(sample) / timing->sampleRate;
+    constexpr auto maximumTick = std::numeric_limits<std::int64_t>::max();
+    constexpr double ppq = static_cast<double>(textproj::kPPQ);
+    if (seconds >= timing->tempo.ticksToSeconds(maximumTick))
+        return static_cast<double>(maximumTick) / ppq;
+    const auto wholeTick = timing->tempo.secondsToTicks(seconds);
+    // Reuse the one TempoMap inverse, then retain its sub-tick remainder.
+    // Dividing only the truncated tick accumulates drift over small loop spans.
+    const double remainder = seconds - timing->tempo.ticksToSeconds(wholeTick);
+    return static_cast<double>(wholeTick) / ppq + remainder * timing->tempo.bpmAt(wholeTick) / 60.0;
+}
+bool Session::RenderBlock::sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept {
+    if (sample < 0) return false;
+    Transport requested = session_.transport_; // this is the single driver, not the owner
+    requested.locate(sample);
+    requested.play();
+    return sourcesReady(requested, frames);
+}
+bool Session::RenderBlock::sourcesReady(const Transport& requested, std::int32_t frames) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing || frames <= 0 || frames > timing->spec.maxFrames || !timing->sourceReadiness)
+        return false;
+    Transport target = requested;
+    if (timing->settings.hasLoop)
+        target.retimeLoop(timing->loopBegin, timing->loopEnd, timing->settings.loopEnabled);
+    return timing->sourceReadiness(target, frames);
+}
+std::int64_t Session::RenderBlock::sampleAtTick(std::int64_t tick) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!timing) return 0;
+    const long double sample = static_cast<long double>(timing->tempo.ticksToSeconds(tick)) *
+                               static_cast<long double>(timing->sampleRate);
+    constexpr auto limit = std::numeric_limits<std::int64_t>::max();
+    if (sample >= static_cast<long double>(limit)) return limit;
+    if (sample <= 0) return 0;
+    return static_cast<std::int64_t>(std::llround(sample));
+}
+double Session::RenderBlock::bpmAtTick(std::int64_t tick) const noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    return timing ? timing->tempo.bpmAt(tick) : 0;
+}
+bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool recording) noexcept {
+    const auto *timing = dynamic_cast<const TimingView *>(graph_.transportState());
+    if (!timing || insertMarkerTick < 0)
+        return false;
+    const auto tick = timing->settings.songStartTicks.value_or(insertMarkerTick);
+    const auto sample = sampleAtTick(tick);
+    if (sample == std::numeric_limits<std::int64_t>::max())
+        return false;
+    std::int64_t numerator = 4, denominator = 4;
+    for (const auto &meter : timing->signatures) {
+        if (meter.posTicks > tick)
+            break;
+        numerator = meter.numerator;
+        denominator = meter.denominator;
+    }
+    const double beatSamples = timing->sampleRate * 60.0 / timing->tempo.bpmAt(tick) * 4.0 /
+                               static_cast<double>(denominator);
+    const long double frames = static_cast<long double>(beatSamples) *
+                               static_cast<long double>(numerator) *
+                               static_cast<long double>(timing->settings.countInBars);
+    if (!std::isfinite(beatSamples) || beatSamples <= 0 || numerator <= 0 ||
+        frames > static_cast<long double>(std::int64_t{1} << 50))
+        return false;
+    timing->applyLoop();
+    session_.transport_.locate(sample);
+    if (recording && timing->settings.countInBars > 0) {
+        session_.countInBeatSamples_ = beatSamples;
+        session_.countInBeatsPerBar_ = numerator;
+        session_.clickEnvelope_ = 0;
+        session_.clickWasPlaying_ = false;
+        session_.transport_.countIn(
+            std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(frames))));
+    } else
+        session_.transport_.play();
+    session_.publishDriverClock();
+    return true;
+}
+bool Session::RenderBlock::process(const AudioIo& io) noexcept {
+    const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
+    if (!graph_.valid() || io.frames <= 0 || io.numIn < 0 || io.numOut < 0 ||
+        (timing && io.frames > timing->spec.maxFrames)) {
+        // A stopped device uses an empty callback to consume the meter's
+        // pending reset. It renders no graph and advances no transport.
+        if (io.frames == 0) session_.mainLoudness_.process(io);
+        if (io.frames > 0) {
+            SilenceProcessor silence;
+            silence.process(io);
+        }
+        return false;
+    }
+    const auto remaining = session_.transport_.countInRemaining();
+    if (remaining > 0 && timing &&
+        (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
+         static_cast<std::size_t>(io.numOut) > timing->outputSlice.size() ||
+         io.streamTimeSamples < 0 ||
+         io.streamTimeSamples > std::numeric_limits<std::int64_t>::max() - io.frames)) {
+        SilenceProcessor silence;
+        silence.process(io);
+        return false;
+    }
+    if (remaining > 0 && remaining < io.frames && timing) {
+        // Bounds and the whole physical stream interval were validated before
+        // rendering either half. No heap work or new graph acquisition.
+        const auto prefix = static_cast<std::int32_t>(remaining);
+        AudioIo lead = io;
+        lead.frames = prefix;
+        if (!process(lead))
+            return false;
+        for (std::int32_t channel = 0; channel < io.numIn; ++channel)
+            timing->inputSlice[static_cast<std::size_t>(channel)] =
+                io.in && io.in[channel] ? io.in[channel] + prefix : nullptr;
+        for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
+            const auto c = static_cast<std::size_t>(channel);
+            timing->outputSlice[c] = io.out && io.out[channel] ? io.out[channel] + prefix : nullptr;
+            timing->outputSlice64[c] =
+                io.out64 && io.out64[channel] ? io.out64[channel] + prefix : nullptr;
+        }
+        AudioIo tail = io;
+        tail.frames -= prefix;
+        tail.streamTimeSamples += prefix;
+        tail.in = io.in ? timing->inputSlice.data() : nullptr;
+        tail.out = io.out ? timing->outputSlice.data() : nullptr;
+        tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
+        return process(tail);
+    }
+    session_.recording_->capture(io, session_.transport_);
+    session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     AudioIo block = io;
-    block.transport = &info;
-    graph_.process(block);
-    transport_.advance(io.frames);
+    if (timing) {
+        block.transport = &timing->blockInfo;
+        block.exporting = timing->spec.exporting;
+    }
+    if (!graph_.process(block)) return false;
+    session_.mainLoudness_.process(block);
+    struct ClickContext { Session* session; const TimingView* timing; };
+    ClickContext click{&session_, timing};
+    CueMonitor::Click renderClick;
+    if (timing && (session_.transport_.countInRemaining() > 0 ||
+                   (timing->settings.metronome && session_.transport_.playing()))) {
+        renderClick.context = &click;
+        renderClick.render = [](void* context, const AudioIo& cueIo) noexcept {
+            const auto& call = *static_cast<ClickContext*>(context);
+            if (call.session->transport_.countInRemaining() > 0)
+                call.session->renderCountIn(*call.timing, cueIo);
+            else
+                call.session->renderMetronome(*call.timing, cueIo);
+        };
+    } else if (timing)
+        session_.renderMetronome(*timing, AudioIo{});
+    session_.cueMonitor_.process(session_.graph_, block, renderClick);
+    session_.transport_.advance(io.frames);
+    session_.publishDriverClock();
+    return true;
+}
+void Session::process(const AudioIo& io) noexcept {
+    auto block = beginRender();
+    (void)block.process(io);
+}
+
+void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {
+    const auto elapsed = transport_.countInElapsed();
+    const double decay = std::exp(-1.0 / (0.004 * timing.sampleRate));
+    for (std::int32_t frame = 0; frame < io.frames; ++frame) {
+        const auto sample = elapsed + frame;
+        const auto beat = static_cast<std::int64_t>(
+            std::llround(static_cast<double>(sample) / countInBeatSamples_));
+        const auto boundary = static_cast<std::int64_t>(
+            std::llround(static_cast<double>(beat) * countInBeatSamples_));
+        if (sample == boundary) {
+            clickPhase_ = 0;
+            clickEnvelope_ = 0.2;
+            clickFrequency_ = beat % countInBeatsPerBar_ == 0 ? 1760 : 880;
+        }
+        const double value = std::sin(clickPhase_) * clickEnvelope_;
+        clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / timing.sampleRate;
+        if (clickPhase_ >= 2 * std::numbers::pi)
+            clickPhase_ -= 2 * std::numbers::pi;
+        clickEnvelope_ *= decay;
+        for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
+            if (io.out && io.out[channel])
+                io.out[channel][frame] += static_cast<float>(value);
+            if (io.out64 && io.out64[channel])
+                io.out64[channel][frame] += value;
+        }
+    }
+}
+void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {
+    if(!timing.settings.metronome || !transport_.playing()) {
+        clickEnvelope_=0;clickWasPlaying_=false;return;
+    }
+    const auto& tempo=timing.tempo;const double rate=timing.sampleRate;
+    const auto latency=graph_.renderedLatency();
+    const double decay=std::exp(-1.0/(0.004*rate));
+    for(std::int32_t i=0;i<io.frames;++i) {
+        const auto sample=transport_.delayedSample(i,latency);
+        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}
+        const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
+        std::int64_t signature=0,numerator=4,denominator=4;
+        for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
+        const auto beatTicks=textproj::kWhole/denominator;
+        const auto beat=(tick-signature)/beatTicks;
+        const auto beatTick=signature+beat*beatTicks;
+        const double boundary=tempo.ticksToSeconds(beatTick)*rate;
+        const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
+        const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
+        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {
+            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;
+        }
+        const double click=clickEnvelope_*std::sin(clickPhase_);
+        clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;
+        if(clickPhase_>=2*std::numbers::pi)clickPhase_-=2*std::numbers::pi;
+        clickEnvelope_*=decay;if(clickEnvelope_<1e-12)clickEnvelope_=0;
+        // Default Cue pair until the separate Cue Out routing (N23) is built.
+        for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
+            if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
+            if(io.out64 && io.out64[c])io.out64[c][i]+=click;
+        }
+        clickLastSample_=sample;clickLastBeat_=beatTick;clickWasPlaying_=true;
+    }
 }
 
 void Session::release() {
+    ++runtimeEpoch_;
+    recording_->stop();
+    // A device stop cancels a pending lead-in, as a format change does in
+    // prepare(): the recorder it was counting in for has just stopped, so a
+    // same-format restart must not resume clicking and then start the
+    // timeline with nothing recording. Nothing renders now; no race.
+    if (transport_.countInRemaining() > 0)
+        transport_.play(false);
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released
     // instance. `live_` false is what defeats the no-op path above.
     live_ = false;
+    mainLoudness_.requestReset();
+    playbackRunning_.store(false, std::memory_order_release);
     if (Graph* g = graph_.currentGraph()) g->release();
 }
 

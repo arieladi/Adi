@@ -339,6 +339,66 @@ void testSchemaMatchesFile() {
     check(pageSize == 4096, "page_size is 4096 (SPEC 3.4), got " + std::to_string(pageSize));
 }
 
+// --- createEmpty runs its schema in ONE transaction ---------------------------
+//
+// The schema and its seed commit together (store.cpp, createEmpty). Pragmas a
+// transaction would swallow must still hold afterwards, and a create that fails
+// before its commit must leave nothing behind and the path reusable.
+
+void testCreateIsOneTransaction() {
+    section("createEmpty: one transaction, pragmas intact, failure rolls back");
+    Scratch s("create_txn");
+    const auto p = s / "song.adi";
+    StoreError err = StoreError::Ok;
+    {
+        auto st = Store::createEmpty(p, err);
+        check(st != nullptr && err == StoreError::Ok, "created");
+        if (!st) return;
+        auto& db = st->db();
+        check(db.execAndGet("PRAGMA foreign_keys").getInt() == 1,
+              "foreign_keys is ON after create (a no-op pragma inside a transaction)");
+        check(db.execAndGet("PRAGMA journal_mode").getString() == "wal",
+              "journal_mode is WAL after create (refused inside a transaction)");
+        check(db.execAndGet("PRAGMA application_id").getInt() == kApplicationId,
+              "application_id committed with the schema");
+        check(db.execAndGet("PRAGMA user_version").getInt() == kSchemaMajor * 1000 + kSchemaMinor,
+              "user_version committed with the schema");
+        check(db.execAndGet("SELECT COUNT(*) FROM adi_meta WHERE key='created_utc' "
+                            "AND value <> ''").getInt() == 1,
+              "the seed rows committed with the schema");
+        check(st->close(), "closed");
+    }
+    {
+        auto st = Store::open(p, err);
+        check(st != nullptr && err == StoreError::Ok, "the one-transaction file reopens");
+        if (st) {
+            check(st->db().execAndGet("PRAGMA foreign_keys").getInt() == 1,
+                  "foreign_keys is ON after open");
+            check(st->close(), "closed after reopen");
+        }
+    }
+
+    const auto failed = s / "failed.adi";
+    Store::failNextCreateBeforeCommitForTest();
+    auto none = Store::createEmpty(failed, err);
+    check(none == nullptr && err == StoreError::CannotCreate,
+          "a fault after the schema, before commit, fails the create");
+    check(!fs::exists(failed), "and leaves no half-built file behind");
+    check(!fs::exists(fs::path(failed) += "-journal") && !fs::exists(fs::path(failed) += "-wal"),
+          "and no journal sidecar either");
+    {
+        auto again = Store::createEmpty(failed, err);
+        check(again != nullptr && err == StoreError::Ok, "the same path is reusable afterwards");
+        if (again) {
+            const auto tables = again->db()
+                .execAndGet("SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                            "AND name NOT LIKE 'sqlite_%'").getInt();
+            check(tables >= 37, "with the full schema, got " + std::to_string(tables) + " tables");
+            check(again->close(), "closed");
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -355,6 +415,7 @@ int main() {
     testIdentityAndVersionGates();
     testBlobRoundTrip();
     testSchemaMatchesFile();
+    testCreateIsOneTransaction();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);
     return g_failures ? 1 : 0;

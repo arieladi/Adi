@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "adi/textproj.hpp"
+#include "meters.hpp"
 #include "session_state.hpp"
 #include "snapshot_reader.hpp"
 #include "track_order.hpp"
@@ -148,6 +149,21 @@ struct ArrangementGeometry {
     // Whether the selection covers a track: a time selection across tracks covers every track from
     // `selection.track` to `selection.toTrack` in the lanes' order (Live 12 manual 6.9); otherwise
     // just the selected track.
+    // Whether a clip is selected: the selected one, or one picked besides it with Ctrl/Cmd+click.
+    bool clipSelected(std::int64_t id) const noexcept {
+        return id != 0 && (id == selection.clip || std::find(selection.pickedClips.begin(), selection.pickedClips.end(),
+                                                             id) != selection.pickedClips.end());
+    }
+    // The selected clips: the selected one first, then those picked besides it.
+    std::vector<std::int64_t> selectedClips() const {
+        std::vector<std::int64_t> out;
+        if (selection.clip != 0)
+            out.push_back(selection.clip);
+        for (const auto id : selection.pickedClips)
+            if (id != selection.clip)
+                out.push_back(id);
+        return out;
+    }
     bool inSelection(const SnapshotReader &reader, std::int64_t id) const noexcept {
         if (id == 0)
             return false;
@@ -216,16 +232,89 @@ struct ArrangementGeometry {
                                 std::pow(2., -grid.narrow);
         return std::clamp(grid.fixed ? grid.fixedQuarters : adaptive, kFinestGrid, kWidestGrid);
     }
-    // The grid line at or before `tick`, or at or after it with `up`.
+    // The project's meters (#299), for a grid in the meter in force: set by the view for each
+    // snapshot. Null, or 4/4 throughout, keeps the grid a plain multiple of its step from the start.
+    const std::vector<textproj::Meter> *meters = nullptr;
+    // Whether the meters shape the grid: any signature but a lone 4/4.
+    bool metered() const noexcept {
+        if (meters == nullptr || meters->empty())
+            return false;
+        return meters->size() > 1 || meters->front().numerator != 4 || meters->front().denominator != 4;
+    }
+    // The grid line at or before `tick`, or at or after it with `up`. In the project's meters (Live
+    // 12 manual 6.10; 6.5: markers' "positioning is only constrained by the editing grid"), a step
+    // under a bar runs from each bar line, and a bar's own lines among them; the bar widths count
+    // the meter's bars from bar 1, a triplet two thirds of them. In 4/4 throughout both are plain
+    // multiples of the step from the start, as without meters.
     std::int64_t snap(std::int64_t tick, bool up) const noexcept {
-        const double step = gridQuarters() * textproj::kPPQ;
-        const double cells = static_cast<double>(tick) / step;
-        return std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
+        if (!metered() || tick < 0) {
+            const double step = gridQuarters() * textproj::kPPQ;
+            const double cells = static_cast<double>(tick) / step;
+            return std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
+        }
+        const auto bar = barHolding(tick);
+        const double plain = plainGridQuarters();
+        if (plain < 4) {
+            const double step = gridQuarters() * textproj::kPPQ;
+            const double cells = static_cast<double>(tick - bar.start) / step;
+            const auto line = bar.start + std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
+            return up ? std::min<std::int64_t>(line, bar.end) : line;
+        }
+        const double unit = plain / 4 * (grid.triplet ? 2. / 3 : 1.);
+        const double at = static_cast<double>(bar.index) +
+                          static_cast<double>(tick - bar.start) / static_cast<double>(std::max<std::int64_t>(1, bar.end - bar.start));
+        const double cells = at / unit;
+        return tickOfBars((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * unit);
+    }
+    // Every grid line from `from` to `to`, in order.
+    template <class Visit>
+    void forEachGridLine(std::int64_t from, std::int64_t to, Visit &&visit) const {
+        for (auto line = snap(std::max<std::int64_t>(0, from), true); line <= to;) {
+            visit(line);
+            const auto next = snap(line + 1, true);
+            if (next <= line)
+                return;
+            line = next;
+        }
     }
     // The grid line after `tick`, or the one before it: where an arrow key takes the insert
     // marker, a clip or a selection's edge (online §41.4.1.3). Never before the start.
     std::int64_t nextGridLine(std::int64_t tick, bool forward) const noexcept {
         return forward ? snap(tick + 1, true) : std::max<std::int64_t>(0, snap(tick - 1, false));
+    }
+    // The bar holding `tick` (from 0): its number from 0, its start and its end, cut short by a
+    // change that falls inside it.
+    struct BarSpan {
+        std::int64_t index = 0, start = 0, end = 0;
+    };
+    BarSpan barHolding(std::int64_t tick) const noexcept {
+        const auto &m = *meters;
+        std::int64_t start = 0, before = 0;
+        const textproj::Meter *meter = &m.front();
+        std::size_t next = 1;
+        for (; next < m.size() && m[next].start_ticks <= tick; ++next) {
+            const auto bt = std::max<std::int64_t>(1, meter->barTicks());
+            const auto span = m[next].start_ticks - start;
+            before += span / bt + (span % bt != 0 ? 1 : 0);
+            start = m[next].start_ticks;
+            meter = &m[next];
+        }
+        const auto bt = std::max<std::int64_t>(1, meter->barTicks());
+        const auto k = (tick - start) / bt;
+        auto end = start + (k + 1) * bt;
+        if (next < m.size())
+            end = std::min(end, m[next].start_ticks);
+        return {before + k, start + k * bt, end};
+    }
+    // Where a count of bars from the start falls: whole bars at their lines, a part of one through it.
+    std::int64_t tickOfBars(double bars) const noexcept {
+        const auto whole = static_cast<std::int64_t>(std::floor(bars + 1e-9));
+        const auto start = tickOf({whole + 1, 1, 1}, *meters).value_or(0);
+        const double part = bars - static_cast<double>(whole);
+        if (part < 1e-9)
+            return start;
+        const auto end = tickOf({whole + 2, 1, 1}, *meters).value_or(start);
+        return start + std::llround(part * static_cast<double>(end - start));
     }
     // This window's presented copy of the session's selection (ADR-0021): read at the
     // top of each frame, written back through the root. Never a second source of truth.

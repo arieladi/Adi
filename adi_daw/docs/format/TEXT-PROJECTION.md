@@ -606,3 +606,19 @@ parameters reach `automation_lanes`, and therefore what the projection renders
 for a device. A four-way design panel tied 29/29; the winner on three lenses
 came last on ADR-0021 determinism because it emits no op during reconciliation.
 Not yet written up as an ADR.
+
+
+## Scale context (ADR-0178)
+
+The store adapter projects tuning_systems, tuning_degrees, key_map,
+key_map_tunings and key_map_degrees. A tuning block carries source, exact
+period, description and authored degree coordinates/cents/names. Key blocks
+carry exact arrangement position, root, scale identifier and compatibility
+mask; an explicit tuning reference uses the normal content designator and
+selected degree coordinates. An absent reference differs from a present
+reference with no selected degrees. Database row identities are absent; degree
+numbers remain because they are the tuning's authored coordinates. Names and
+strings use the existing escaping rules, doubles use renderF64, and missing
+tuning targets are !unresolved(tuning). Changing row IDs or input row order
+cannot change a healthy project's projection. Text remains derived, never an
+import or a second source of tuning truth.

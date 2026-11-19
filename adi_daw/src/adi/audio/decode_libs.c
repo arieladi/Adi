@@ -3,8 +3,9 @@
  * The decoders' implementations, compiled once, as C, outside the warning wall
  * (ADR-0156). Each library keeps its own licence: dr_libs are public domain
  * (Unlicense) or MIT-0, stb_vorbis is MIT or public domain; see
- * docs/EXTERNAL-CODE.md. No stdio: every byte comes through the callbacks in
- * decode.cpp, which read with C++ file streams (wide paths on Windows).
+ * docs/EXTERNAL-CODE.md. dr_libs use the audited C++ callbacks in decode.cpp.
+ * Vorbis uses an already-open native FILE*, opened wide on Windows, so the
+ * compressed file streams instead of being retained in memory.
  */
 #define DR_FLAC_IMPLEMENTATION
 #define DR_FLAC_NO_STDIO
@@ -18,6 +19,9 @@
 #define DR_WAV_NO_STDIO
 #include "dr_wav.h"
 
-#define STB_VORBIS_NO_STDIO
+#if defined(_WIN32)
+/* Select stb's secure CRT branch for its unused filename convenience API. */
+#define __STDC_WANT_SECURE_LIB__ 1
+#endif
 #define STB_VORBIS_NO_PUSHDATA_API
 #include "stb_vorbis.c"

@@ -3,6 +3,7 @@
 // See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
 
 #include "juce/vst3_host.hpp"
+#include "juce/vst3_scan_host.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
@@ -12,6 +13,25 @@
 #include <limits>
 
 namespace adi::device {
+
+struct Vst3Device::HostMutationScope {
+    inline static thread_local std::array<const Vst3Device*,8> stack{};
+    inline static thread_local std::size_t depth=0;
+    Vst3Device& owner;
+    bool admitted=false;
+    explicit HostMutationScope(Vst3Device& value) noexcept : owner(value) {
+        if(depth==stack.size()){owner.reportCaptureFault();return;}
+        stack[depth++]=&owner;owner.hostMutations_.fetch_add(1,std::memory_order_release);admitted=true;
+    }
+    ~HostMutationScope() {
+        if(!admitted)return;
+        stack[--depth]=nullptr;owner.hostMutations_.fetch_sub(1,std::memory_order_release);
+    }
+};
+bool Vst3Device::hostMutationOnCurrentThread() const noexcept {
+    for(const auto* owner:HostMutationScope::stack)if(owner==this)return true;
+    return false;
+}
 
 namespace {
 
@@ -56,15 +76,52 @@ juce::FileSearchPath Vst3Host::defaultSearchPaths() const {
     return fmt.getDefaultLocationsToSearch();
 }
 
-void Vst3Host::scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into) {
-    for (int i = 0; i < formats_.getNumFormats(); ++i) {
-        auto* fmt = formats_.getFormat(i);
-        juce::PluginDirectoryScanner scanner(into, *fmt, paths,
-                                             /*recursive*/ true,
-                                             /*deadMansPedal*/ juce::File());
-        juce::String name;
-        while (scanner.scanNextFile(true, name)) { /* one plugin per turn */ }
+namespace {
+scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPluginList& into,
+                           const scan::Config& config) {
+    scan::Report report;
+    if(audio::onAudioThread){report.complete=false;return report;}
+    if(files.empty()){into.clear();return report;}
+    std::string error;auto scanner=scan::Scanner::open(config,error);
+    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
+    std::vector<juce::PluginDescription> found;
+    for(const auto& file:files) {
+        const auto bytes=file.toStdString();
+        std::vector<juce::PluginDescription> descriptions;
+        const auto result=scanVst3File(*scanner,file,descriptions);
+        if(result.state!=scan::State::Ready) {
+            report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
+            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+            }
+            continue;
+        }
+        if(descriptions.size()>scan::kMaximumPlugins-found.size()) {
+            report.complete=false;report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});return report;
+        }
+        for(auto& description:descriptions)found.push_back(std::move(description));
     }
+    into.clear();for(const auto& description:found)into.addType(description);return report;
+}
+} // namespace
+
+scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginList& into,
+                            const scan::Config& config) {
+    if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    std::vector<juce::String> files;
+    for (int i = 0; i < formats_.getNumFormats(); ++i) {
+        // Pinned JUCE VST3 searchPathsForPlugins only walks files/bundles;
+        // findAllTypesForFile (factory code) belongs solely to the child.
+        const auto candidates=formats_.getFormat(i)->searchPathsForPlugins(paths,true,false);
+        for(const auto& file:candidates)files.push_back(file);
+    }
+    std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
+    return scanVst3Files(files,into,config);
+}
+scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
+                                const scan::Config& config) {
+    if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    return scanVst3Files({file},into,config);
 }
 
 std::unique_ptr<juce::AudioPluginInstance> Vst3Host::instantiate(
@@ -185,6 +242,9 @@ engine::ExpressionCaps probeExpressionCaps(juce::AudioPluginInstance& inst) {
         };
         for (Steinberg::int16 ch = 0; ch < 16; ++ch) {
             const auto c = static_cast<std::size_t>(ch);
+            for (int cc = 0; cc < 128; ++cc)
+                caps.controllerParam[c][static_cast<std::size_t>(cc)] =
+                    mapped(ch, static_cast<SV::CtrlNumber>(cc));
             caps.bendParam[c]     = mapped(ch, SV::kPitchBend);
             caps.pressureParam[c] = mapped(ch, SV::kAfterTouch);
             caps.timbreParam[c]   = mapped(ch, static_cast<SV::CtrlNumber>(engine::kCtrlTimbre));
@@ -225,10 +285,56 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
 }
 
 Vst3Device::~Vst3Device() {
+    if(auto editor=editor_.lock())editor->close();
     if (inst_ != nullptr) inst_->removeListener(this);
     // Ours, from `queryInterface`, and released before JUCE tears the
     // component down. It never was, so the plug-in outlived its host.
     if (processor_ != nullptr) processor_->release();
+}
+
+namespace {
+class Vst3Editor final:public DeviceEditor {
+public:
+    Vst3Editor(juce::AudioPluginInstance& processor,juce::AudioProcessorEditor* editor)
+        :processor_(&processor),editor_(editor) {}
+    ~Vst3Editor()override{close();}
+    EditorMode mode()const noexcept override{return EditorMode::Hosted;}
+    bool valid()const noexcept override{return editor_!=nullptr;}
+    bool visible()const noexcept override{return editor_ && editor_->isVisible();}
+    EditorSize size()const noexcept override{return editor_?EditorSize{editor_->getWidth(),editor_->getHeight()}:EditorSize{};}
+    bool resizable()const noexcept override{return editor_ && editor_->isResizable();}
+    juce::Component* component()noexcept override{return editor_.get();}
+    bool attach(const EditorParent&)override{return false;} // FloatingHost reparents the component
+    bool show()override{if(!editor_)return false;editor_->setVisible(true);return true;}
+    bool hide()override{if(!editor_)return false;editor_->setVisible(false);return true;}
+    bool resize(EditorSize& requested)override {
+        if(!resizable() || requested.width<=0 || requested.height<=0)return false;
+        if(auto* constrainer=editor_->getConstrainer())
+            constrainer->setBoundsForComponent(editor_.get(),editor_->getBounds().withSize(requested.width,requested.height),false,false,true,true);
+        else editor_->setSize(requested.width,requested.height);
+        requested=size();return true;
+    }
+    bool setScale(double)override{return false;} // JUCE's peer owns native DPI, never scale DSP/editor twice
+    void close()override {
+        if(!editor_)return;
+        editor_->setVisible(false);
+        processor_->editorBeingDeleted(editor_.get());
+        editor_.reset();processor_=nullptr;
+    }
+private:
+    juce::AudioPluginInstance* processor_;
+    std::unique_ptr<juce::AudioProcessorEditor> editor_;
+};
+} // namespace
+
+std::shared_ptr<DeviceEditor> Vst3Device::createEditor(EditorMode mode,std::string& error) {
+    error.clear();
+    if(mode!=EditorMode::Hosted){error="VST3 editors use the floating host's component mode";return {};}
+    if(auto existing=editor_.lock();existing && existing->valid())return existing;
+    if(!inst_ || !inst_->hasEditor()){error="This VST3 has no editor";return {};}
+    auto* component=inst_->createEditorAndMakeActive();
+    if(!component){error="VST3 refused to create its editor";return {};}
+    auto editor=std::make_shared<Vst3Editor>(*inst_,component);editor_=editor;return editor;
 }
 
 void Vst3Device::readParameters() {
@@ -299,11 +405,8 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         // Muted from our own listener (ADR-0124): the three calls below tell
         // every listener, including us, and a host-initiated set is not an
         // edit. Scoped, so an early return cannot leave it set.
-        struct Mute {
-            bool& flag;
-            explicit Mute(bool& f) : flag(f) { flag = true; }
-            ~Mute() { flag = false; }
-        } mute(settingFromHost_);
+        HostMutationScope mute(*this);
+        if(!mute.admitted)return false;
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
@@ -313,21 +416,24 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
 }
 
 void Vst3Device::audioProcessorParameterChanged(juce::AudioProcessor*, int index, float value) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Value, static_cast<double>(value));
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Begin, 0.0);
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::End, 0.0);
@@ -543,6 +649,8 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
                 const std::int32_t t = o.frame - off;
                 if (t < 0 || t >= n) { ++routedOutOfRange_; continue; }
                 paramChanges_.set(o.paramId, o.value, t);
+            } else if (o.kind == engine::MpeOut::Kind::Control) {
+                unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 events_.addOut(o, off, n);
             }
@@ -762,12 +870,8 @@ bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8
     // and JUCE turns that -- synchronously, on this thread -- into a value
     // broadcast per changed parameter and a program-changed notification.
     // None of it is an edit: the op that caused this load is in the log.
-    struct Mute {
-        bool& flag;
-        const bool was;
-        explicit Mute(bool& f) : flag(f), was(f) { flag = true; }
-        ~Mute() { flag = was; }
-    } mute(settingFromHost_);
+    HostMutationScope mute(*this);
+    if(!mute.admitted)return false;
     inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
     return true;
 }
@@ -788,8 +892,12 @@ void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetail
         latencyEpoch_.fetch_add(1, std::memory_order_release);
     if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged) {
         // ADR-0142: the answer to our own load or set is not a boundary.
-        if (settingFromHost_) mutedStateSignals_.fetch_add(1, std::memory_order_release);
-        else stateEpoch_.fetch_add(1, std::memory_order_release);
+        if (hostMutationOnCurrentThread()) mutedStateSignals_.fetch_add(1, std::memory_order_release);
+        else {
+            auto signal=beginStateSignal();
+            if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
+            stateEpoch_.fetch_add(1, std::memory_order_release);
+        }
     }
 }
 
