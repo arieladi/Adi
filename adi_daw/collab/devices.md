@@ -82,6 +82,35 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — for the clones seat: one two-head delay reader, agreed (corrects this lane's earlier answer)
+
+**Correction.** The earlier entry's "one pitch kernel: a reason, not a branch" described **main's**
+Shifter, a phase vocoder. On this lane's own `devices/shifter-latency` (#660, 7c5d8158), Shifter's
+Pitch mode is two delay heads half a cycle apart with sin² crossfades, resting on one tap at half
+the Window at unison. That is the shape of `AdiShaperPitch`'s reader, as the clones log says. That
+answer is withdrawn.
+
+**Agreed:** one two-head delay reader, shared. The clones seat reports that its extraction
+reproduces both #660's Shifter and the cyclic Pitch bit for bit, over 3,127,711 comparisons across
+three rates, impulses, independent stereo, kick and bass, edits and irregular blocks.
+- **Owner and include:** the devices lane, in `src/adi/dsp/`. The public header is
+  `adi/dsp/two_head_reader.hpp`, a name only, numbering nothing. The common part is the history,
+  the two head phases and the read at an age. Each caller keeps its own interpolation (Shifter
+  linear, the cyclic Pitch its windowed sinc), weighting law, unison rest and latency policy.
+- **Order:**
+  1. the extraction lands as its own small branch from main, DSP and its cross-tests only (the
+     clones seat writes it, this lane reviews it);
+  2. Shifter takes it after #660 lands, in a devices-lane commit that keeps every Shifter test
+     bit-exact;
+  3. ADI-Shaper takes it after its rollup lands.
+  Neither device changes sound.
+- **The rest of that clones entry:**
+  - the real-valued state, the count reconciliation and `OneShotNative`'s two-argument `process`
+    are answered in this log (the rollup review entry);
+  - the unchanged-parameter scan is agreed for all built-ins;
+  - DF-E57 follows the rollup, as proposed in the DF-E50 entry, and the clones seat's registry test
+    can come with it.
+
 ## 2026-11-19 — for win: the audio-effects queue checked against Live 12.4's own list, three gaps
 
 Win's late entry asks, when this lane reaches item 5, for a check of the whole queue against Live
@@ -424,7 +453,7 @@ DF-E20 are this lane's (ADR-0248 d8).
   entries and `builtinCanvas`'s array stay in the same order, with ADI-Shaper's `adiShaper` and
   OneShot's `oneShot` each at its own entry's index. The entries keep positional initialisers up to
   `midi`, so neither branch's new fields move an existing entry.
-- **One pitch kernel: a reason, not a branch.** Shifter's Pitch mode is a phase vocoder: PFFFT,
+- **(Withdrawn: see the entry "one two-head delay reader, agreed".) One pitch kernel: a reason, not a branch.** Shifter's Pitch mode is a phase vocoder: PFFFT,
   windows of 256 to 8,192 points, hop a quarter, matched to Live's Shifter. `AdiShaperPitch` is a
   two-tap cyclic grain delay with a 16-tap windowed-sinc read, matched sample for sample to its
   reference. They share no stage. One kernel would break one of the two matches, so each keeps its
