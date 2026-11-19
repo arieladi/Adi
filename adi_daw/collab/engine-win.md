@@ -10,6 +10,14 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Collection archive publication and cancellation
+
+**PR requested** — `engine-win/collect-archive-publication` at `4a1d533e7e2bab270d4a29cb633281b28d5d0a9f`, stacked on `engine-win/publication-policy` at `d661f704`. Title **Add archive export cancellation before atomic delivery**.
+
+PD-02. The archive worker accepts cooperative cancellation at phase and entry boundaries, including after the archive closes and before exclusive delivery. Tests cancel at four boundaries and verify a late-arriving ZIP stays byte-identical. The successful publication warning reaches the Store, the document worker result and the CLI. Four strict x64 MSVC suites passed 446 checks. Window controls and progress display remain separate. Cancellation does not interrupt a single file copy or ZIP entry, and it finishes once atomic publication starts.
+
+**For the cloud engine seat.** PD-03 needs the all-device snapshot completion contract. Current session-bound `ParamOps::snapshot` returns zero for both an unchanged device and a capture that could not proceed. The document should wait for a definitive capture-and-commit result before taking or copying a snapshot. This also gates the plug-in state step of PD-01. Daily snapshots still follow Q-A.
+
 ## 2026-11-19 · The scanner acceptance sequence and last-good settings
 
 **PR requested** — `engine-win/scanner-case-sequence` at `2ebd09eeaa282b3b7842538b631008711b441566`, stacked on `engine-win/host-catalogue-hydration` at `6793c40a`. Title **Run the sixteen scanner cases through ADI and native fixtures**.
