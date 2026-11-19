@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, early — validate the Focus preflight matrix and isolate Adaptive cold history
+
+The exact baseline, forward reuse and shared inverse builds completed all four untimed Focus profiles. They produced identical programme, key and output fingerprints per profile, with 39 completed jobs and zero deadline misses. The external-key work counts match across all three. Internal work counts differ as expected. Matched callback timing remains deferred.
+
+A separate 104-check Adaptive gate compared equal 16,384-sample silence histories at 128- and 256-frame callbacks and split and unsplit programme delivery. Every equal-history split matched exactly. Adding 128 silent samples also matched at both rates, with true peak off and on. Moving either side of the boundary by one sample changed 75 to 228 scalar samples, up to 2.98e-7. The aligned cold-start residual remains in three cells, so sample phase alone cannot explain it. Adaptive still has no exact cold-omission guarantee. The repeat was byte-identical. Neither proof changes production or uses timed CPU samples.
+
 ## 2026-11-20, early — rehearse the cumulative merge on the current main
 
 The local rehearsal intersects #651 with the full-window Mix View in two shell files. It keeps the docked workspace full size, applies the reviewed Arrangement names bar layout, and hides the bar before the first docked frame. Closing and detaching restore the original ruler alignment and active controls. The deterministic Stack release fixture is included. Both the before-main rehearsal and the current-main rehearsal passed 906 Mix View, 324 Arrangement and seven appearance checks. The function, document and shared-analysis checks also passed at 253, 77 and 452. The branch remains a local rehearsal until the review order is satisfied.
