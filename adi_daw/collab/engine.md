@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E15 quiet gesture states gated and pushed
+
+**PR requested** — branch `engine/df-e15-quiet-gesture-states`, head `f60f7f53a56a3186d831a71ddd95cacf94321445`, base `origin/main` at `4e11edd9`. Title **Report quiet gesture commit and cancellation states**. The remote head matches the gated commit.
+
+Quiet gesture update and poll now recognize pending cancellation and an in-progress commit before evaluating the quiet deadline. Pending cancellation returns Closed with its own message. In-progress commit returns Reentrant. A transitional poll produces no End and a timed retry still works after a genuine commit failure. The fixtures hold engine restoration open, then restore the original PCM without a journal write, and probe reentry from SQLite while the original commit writes exactly one op.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 58369 checks across 244 suites, all four validators and the layout check. All three focused gesture suites passed. Clang 19 compiled both changed C++ units with warnings as errors and passed 185 checks in the quiet gesture suite. Separately removing either transition check failed its intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Taking DF-E16 next.
+
 ## 2026-11-19 — DF-E14 stored history origins gated and pushed
 
 **PR requested** — branch `engine/df-e14-history-origin`, head `9aa23bec6a692a117bc1567eca90fb0b96be69fc`, base `origin/main` at `4e11edd9` merged with DF-E18 at `f28eacd0`. Title **Preserve stored history origins and refuse missing legacy origins**. Land DF-E18 first. The remote head matches the gated commit.
