@@ -19,6 +19,7 @@
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <functional>
 #include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -76,6 +77,10 @@ class ProjectDocument final : public engine::BlockProcessor {
     static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
+    // Installed by the audio device owner before attaching its callback. Evaluated on the
+    // message thread when the driver supplies the granted size to prepare.
+    void configureGraphWorkers(std::function<std::uint32_t(std::int32_t)> count,
+                               std::int32_t minimumFrames);
     void prepare(double rate, std::int32_t frames) override;
     void release() override;
     void process(const engine::AudioIo &) noexcept override;
@@ -213,6 +218,8 @@ class ProjectDocument final : public engine::BlockProcessor {
         std::shared_ptr<const gesture::OwnerToken> owner;
     };
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
+    std::function<std::uint32_t(std::int32_t)> graphWorkerCount_;
+    std::int32_t graphWorkerMinimumFrames_ = 1;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
