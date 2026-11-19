@@ -679,15 +679,43 @@ std::vector<std::string> DecodeCache::problems() const {
     return problems_;
 }
 
+namespace {
+struct DefaultDecodeCacheState {
+    std::mutex mutex;
+    DecodeCacheLimits limits;
+    std::unique_ptr<DecodeCache> cache;
+};
+DefaultDecodeCacheState& defaultCacheState() {
+    static DefaultDecodeCacheState state;
+    return state;
+}
+} // namespace
+
+void setDefaultDecodeCacheLimits(DecodeCacheLimits limits) {
+    if (onAudioThread) return;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (state.limits.maxBytes == limits.maxBytes && state.limits.minFreeBytes == limits.minFreeBytes)
+        return;
+    state.limits = limits;
+    if (state.cache) state.cache->setLimits(limits);
+}
+
 DecodeCache& defaultDecodeCache() {
-    static DecodeCache cache(appdata::pathsFor(appdata::App::Daw).cache / "decoded");
-    return cache;
+    auto& state = defaultCacheState();
+    std::lock_guard lock(state.mutex);
+    if (!state.cache)
+        state.cache = std::make_unique<DecodeCache>(appdata::pathsFor(appdata::App::Daw).cache / "decoded",
+                                                    state.limits);
+    return *state.cache;
 }
 
 fs::path playableFile(const fs::path& source) {
+    if (onAudioThread)
+        throw DecodeError(DecodeProblem::AudioThread, display(source) + ": decoding is never done on the audio thread");
     // A WAV the reader plays never touches the cache, so a session of plain
     // WAVs creates no cache folder at all.
-    if (!onAudioThread && sniff(source) == SourceFormat::Riff) {
+    if (sniff(source) == SourceFormat::Riff) {
         try {
             WavReader probe(source);
             return source;

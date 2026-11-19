@@ -2,6 +2,7 @@
 //
 // ADR-0156: one decoder for imported audio, into the decoding cache.
 // Fixtures: tests/fixtures/decode (README.md there says how each was made).
+#include "adi/appdata.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -327,6 +329,38 @@ void settings() {
     const auto bad = limitsFromSettings({{kCacheMaxSizeKey, -5}, {kCacheMinFreeKey, "x"}});
     check(bad.maxBytes == d.maxBytes && bad.minFreeBytes == d.minFreeBytes, "limits: an illegal value keeps the default");
 }
+
+void defaultCacheSettings(const fs::path& root) {
+    const auto home = root / "owned-application";
+#if defined(_WIN32)
+    if (_wputenv_s(L"ADI_HOME", home.c_str()) != 0) throw std::runtime_error("set test ADI home");
+#else
+    if (setenv("ADI_HOME", home.c_str(), 1) != 0) throw std::runtime_error("set test ADI home");
+#endif
+    const auto folder = adi::appdata::pathsFor(adi::appdata::App::Daw).cache / "decoded";
+    setDefaultDecodeCacheLimits({64ULL << 20, 0});
+    check(!fs::exists(folder), "setting initial limits leaves the process decode folder lazy");
+    check(playableFile(fixture("src16.wav")) == fixture("src16.wav") && !fs::exists(folder),
+          "configured limits keep an ordinary WAV on its direct path");
+    DecodeProblem refused{};
+    {
+        CallbackScope callback;
+        refused = problemOf([&] { (void)playableFile(fixture("tone16.flac")); });
+    }
+    check(refused == DecodeProblem::AudioThread && !fs::exists(folder),
+          "a refused first audio callback cannot initialize the cache");
+    auto& configured = defaultDecodeCache();
+    check(configured.folder() == folder && configured.limits().maxBytes == 64ULL << 20 &&
+              configured.limits().minFreeBytes == 0,
+          "first decoder use takes the configured process limits");
+    const auto held = configured.playable(fixture("tone16.flac"));
+    setDefaultDecodeCacheLimits({0, 0});
+    check(&defaultDecodeCache() == &configured && configured.limits().maxBytes == 0 && fs::exists(held),
+          "updating active limits keeps the cache object and the owned pinned PCM");
+    configured.release(held);
+    configured.trim();
+    check(!fs::exists(held), "a later owner trim uses the updated limit");
+}
 }  // namespace
 
 int main() {
@@ -340,6 +374,7 @@ int main() {
         pinned(tmp.path());
         freeSpace(tmp.path());
         settings();
+        defaultCacheSettings(tmp.path());
     } catch (const std::exception& e) {
         check(false, std::string("unexpected exception: ") + e.what());
     }

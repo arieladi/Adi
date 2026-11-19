@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
@@ -84,6 +85,7 @@ class AdiApplication final : public juce::JUCEApplication,
         else
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
+        applyDecodeCacheLimits();
         commands_ = std::make_unique<AppCommands>(*settings_);
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
@@ -221,6 +223,15 @@ class AdiApplication final : public juce::JUCEApplication,
     }
 
   private:
+    void applyDecodeCacheLimits() {
+        using namespace audio;
+        const settings::Value cacheValues{
+            {kCacheMaxSizeKey, settings_->get(kCacheMaxSizeKey)},
+            {kCacheMinFreeKey, settings_->get(kCacheMinFreeKey)}
+        };
+        setDefaultDecodeCacheLimits(limitsFromSettings(cacheValues));
+    }
+
     void report(const std::string &text) {
         if (smokeOutput_ != juce::File{}) {
             std::fprintf(stderr, "ADI: %s\n", text.c_str());
@@ -733,7 +744,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    applyDecodeCacheLimits();
+                };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);

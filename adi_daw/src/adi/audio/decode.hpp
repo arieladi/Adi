@@ -173,8 +173,11 @@ private:
 
 /// The process's cache: appdata::pathsFor(App::Daw).cache / "decoded" -- the
 /// cache folder all three applications share (ADR-0149). Default limits
-/// until the application applies its settings with setLimits.
+/// apply until the application provides its settings.
 [[nodiscard]] DecodeCache& defaultDecodeCache();
+/// Updates the process cache's limits without creating its folder or trimming.
+/// The next cache operation uses the new limits. Owner thread only.
+void setDefaultDecodeCacheLimits(DecodeCacheLimits);
 
 /// defaultDecodeCache().playable(source), except that a WAV the reader plays
 /// is returned without constructing the cache: the clip worker's one call.

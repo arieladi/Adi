@@ -1,5 +1,11 @@
 # Decode cache refusal, hint recovery and cancellation (DF-E28)
 
+The desktop applies the maximum-size and minimum-free-space preferences at
+startup and when settings change. Applying them leaves cache creation and
+cleanup to normal cache operations. Updates retain the same cache object
+and its live pins. The selected cache folder and the analysis-cache budget
+are separate settings work.
+
 Before evicting any existing file for a new complete decode, `DecodeCache`
 refuses an individual estimated Float32 size above its maximum. The estimate
 is the existing `frames * channels * 4 + 4096` reservation. The error is
