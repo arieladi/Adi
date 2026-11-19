@@ -1070,6 +1070,47 @@ void stereoMeterSharingAndIntervals() {
           "last meter consumer releases the physical tap");
 }
 
+void parkedStereoMeter() {
+    using Meter = adi::dsp::StereoEnvelopeMeter;
+    Fixture f;
+    auto view = f.broker.acquireStereoMeter(1, {false, Meter::Weighting::A});
+    const auto quiet = [&](std::uint64_t revision) {
+        f.tap->write(static_cast<const float *>(nullptr), nullptr, 480, 0, false, revision);
+        f.broker.pump();
+    };
+    quiet(1);
+    const auto parked = view.readStereoMeter();
+    const auto before = f.broker.stats();
+    for (int block = 0; block < 1100; ++block) quiet(1);
+    const auto after = f.broker.stats();
+    check(parked && parked->reading == Meter::Reading{} && view.readStereoMeter() == parked &&
+          after.workerPasses == before.workerPasses && after.cursorReads == before.cursorReads &&
+          after.publications == before.publications,
+          "empty stereo meter does no analysis across a parked ring wrap");
+    const std::array<float, 480> left = [] { std::array<float, 480> values{}; values.fill(.1f); return values; }();
+    Meter direct;
+    const auto ready = direct.prepare({48000., .6, .5, .5, 1.e-6, false, Meter::Weighting::A}) &&
+                       direct.process(left, left);
+    f.tap->write(left.data(), left.data(), static_cast<int>(left.size()), 0, false, 1);
+    f.broker.pump();
+    const auto sounding = view.readStereoMeter();
+    check(ready && sounding && parked && sounding->epoch == parked->epoch && sounding->reading == direct.reading(),
+          "a parked meter picks up live monitoring at the first audible sample without a false gap");
+    quiet(1);
+    const auto settled = view.readStereoMeter();
+    check(settled && sounding && settled->reading.peak[0] < sounding->reading.peak[0] &&
+          settled->reading.maximumPeak == sounding->reading.maximumPeak,
+          "a non-neutral meter still decays and keeps its stored maximum");
+    check(view.restartStereoMeter(), "reset starts a neutral interval");
+    quiet(1);
+    const auto oldInterval = view.readStereoMeter();
+    quiet(2);
+    const auto afterSeek = view.readStereoMeter();
+    check(oldInterval && afterSeek && afterSeek->epoch > oldInterval->epoch &&
+          afterSeek->reading == Meter::Reading{},
+          "a new parked source epoch invalidates the old interval");
+}
+
 void lateRateAndFailedNegotiation() {
     std::shared_ptr<ScopeTap> tap;
     bool sourceExists = false;
@@ -1127,7 +1168,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); }
+          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
