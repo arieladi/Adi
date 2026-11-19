@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — reproduce grouped history at the shared broker
+
+The new private spectrogram fixture ran 465 Release checks with six expected failures on the current broker. Raw one-hop history still shares one tap and transform plan with the comparison. The unfinished group becomes visible early, then Clear and seek have no first contributing sequence to reject an old peak. The contract is one publication per complete group, exact per-bin maxima and a view-local Clear fence on the first contributing window. It also preserves the second viewer and starts a fresh group after seek.
+
+The three-hop fixture pins transport and subscription behavior independently of the native preset cadence, which still needs a live measurement. The scalar grouping proof remains green. No product setting or review package changed.
+
 ## 2026-11-19, night — verify Classic compression, spectrum histories and Limiter cold silence
 
 The private fixed Classic compressor envelope passed all five saved stereo renders, 4,680,320 frames. The worst error was 1.49e-8 peak and 6.20e-11 RMS. It also matched the direct gain oracle bit for bit, including across 17-frame processing splits, with no callback allocation or free. The fixed settings proof is ready for later integration review.
