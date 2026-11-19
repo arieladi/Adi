@@ -12,6 +12,10 @@ std::uint64_t cyclePhase(double cycles) noexcept {
     return part < 1.0 ? static_cast<std::uint64_t>(part * 0x1p64) : 0;
 }
 
+bool validPosition(double qn) noexcept {
+    return std::isfinite(qn) && std::abs(qn) <= 0x1p52;
+}
+
 // The measured balance curve is cubic: zero at the bottom, unity at the
 // centre, and square root two with a horizontal tangent at the top.
 float panGain(double position) noexcept {
@@ -62,6 +66,7 @@ void AdiShaper::prepareStages(double sampleRate) noexcept {
     sampleRate_ = sampleRate;
     quarterNotes_ = 0.0;
     historyStampSet_ = false;
+    sampleStampSet_ = false;
     historyQuarterNotes_ = 0.0;
     playing_ = true;
     for (auto& filter : filters_) filter.prepare(sampleRate);
@@ -185,18 +190,38 @@ void AdiShaper::tempo(double bpm) noexcept {
 }
 
 void AdiShaper::sync(double quarterNotes, bool playing, unsigned historyToleranceFrames) noexcept {
-    if (!std::isfinite(quarterNotes) || std::abs(quarterNotes) > 0x1p52) return;
+    if (!validPosition(quarterNotes)) return;
     const bool changed = playing != playing_;
     // Legacy Pd may receive the same block-start stamp for several segments.
     // Keep an independent prediction across duplicate packets. Its audio clock
     // also quantizes to a 64-frame tick, unlike the exact native segment clock.
-    if (!historyStampSet_ || changed || quarterNotes != lastHistoryStamp_ || historyToleranceFrames == 0) {
+    if (stages_.back().enabled && (!historyStampSet_ || changed || quarterNotes != lastHistoryStamp_ || historyToleranceFrames == 0)) {
         const double tolerance = (historyToleranceFrames + 0.5) * bpm_ / (60.0 * sampleRate_) + 1.0e-7;
         if (changed || (historyStampSet_ && std::abs(quarterNotes - historyQuarterNotes_) > tolerance))
             resetKernels(Stage::Time);
         historyStampSet_ = true;
+        sampleStampSet_ = false;
         lastHistoryStamp_ = historyQuarterNotes_ = quarterNotes;
     }
+    syncClock(quarterNotes, playing);
+}
+
+void AdiShaper::syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept {
+    if (!validPosition(quarterNotes)) return;
+    if (stages_.back().enabled) {
+        const auto position = static_cast<std::uint64_t>(sample);
+        if (playing != playing_ || (sampleStampSet_ && (position != expectedSample_ || revision != transportRevision_)))
+            resetKernels(Stage::Time);
+        expectedSample_ = position;
+        transportRevision_ = revision;
+        sampleStampSet_ = true;
+        historyStampSet_ = false;
+    }
+    syncClock(quarterNotes, playing);
+}
+
+void AdiShaper::syncClock(double quarterNotes, bool playing) noexcept {
+    const bool changed = playing != playing_;
     playing_ = playing;
     quarterNotes_ = quarterNotes;
     for (auto& stage : stages_) {
@@ -212,6 +237,8 @@ void AdiShaper::sync(double quarterNotes, bool playing, unsigned historyToleranc
 void AdiShaper::updateTimeRanges() noexcept {
     const auto& stage = stages_[static_cast<std::size_t>(Stage::Time)];
     const double quarterFrames = sampleRate_ * 60.0 / bpm_;
+    // Fixed bars use the measured 4/4 scale in all meters. Follow uses the
+    // actual contour period, in either quarter notes or seconds.
     constexpr std::array<double, 7> lengths{4, 8, 16, 32, 0.005, 0.020, 0.040};
     for (std::size_t i = 0; i < timeSpans_.size(); ++i) {
         const auto& band = stage.bands[i];
@@ -296,6 +323,7 @@ void AdiShaper::restart(Stage kind) noexcept {
         updateStep(band);
     }
     resetKernels(kind);
+    if (kind == Stage::Time) sampleStampSet_ = historyStampSet_ = false;
 }
 
 void AdiShaper::resetKernels(Stage kind) noexcept {
@@ -611,7 +639,8 @@ void AdiShaper::process(const float* inL, const float* inR, float* outL, float* 
     if (playing_) {
         const double advance = (bpm_ / (60.0 * sampleRate_)) * static_cast<double>(frames);
         quarterNotes_ += advance;
-        historyQuarterNotes_ += advance;
+        if (sampleStampSet_) expectedSample_ += static_cast<std::uint64_t>(frames);
+        if (historyStampSet_) historyQuarterNotes_ += advance;
     }
 }
 

@@ -69,6 +69,7 @@ class AdiShaper {
     void set(Param id, float value) noexcept;
     void tempo(double bpm) noexcept;
     void sync(double quarterNotes, bool playing = true, unsigned historyToleranceFrames = 0) noexcept;
+    void syncAtSample(double quarterNotes, bool playing, std::int64_t sample, std::uint64_t revision) noexcept;
     void process(const float* inL, const float* inR, float* outL, float* outR,
                  std::size_t frames) noexcept;
     [[nodiscard]] int latency() const noexcept {
@@ -134,6 +135,7 @@ class AdiShaper {
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
     void setMod(Param id, float value) noexcept;
     void prepareStages(double sampleRate) noexcept;
+    void syncClock(double quarterNotes, bool playing) noexcept;
     void updateTimeRanges() noexcept;
     void restart(Stage kind) noexcept;
     void resetKernels(Stage kind) noexcept;
@@ -151,8 +153,9 @@ class AdiShaper {
     DriveDryDelay driveSource_;
     double sampleRate_ = 48000.0, bpm_ = 120.0, quarterNotes_ = 0.0;
     double historyQuarterNotes_ = 0.0, lastHistoryStamp_ = 0.0;
+    std::uint64_t expectedSample_ = 0, transportRevision_ = 0;
     float masterMix_ = 1.0f;
-    bool playing_ = true, historyStampSet_ = false;
+    bool playing_ = true, historyStampSet_ = false, sampleStampSet_ = false;
 };
 
 } // namespace adi::dsp

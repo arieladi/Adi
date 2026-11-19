@@ -649,6 +649,23 @@ void timeRanges() {
     check(left[200192] == .5f && right[200192] == -.25f &&
           std::count_if(left.begin(), left.end(), [](float v) { return v != 0; }) == 1,
           "tempo change retains older audio and measures the entire bar at the new tempo");
+
+    rack.set(Shaper::timeParam(Band::Mid, Shaper::TimeRange), 5);
+    rack.set(Shaper::TimeOn, 0);
+    rack.set(Shaper::TimeOn, 1);
+    constexpr std::size_t span = 320;
+    for (std::uint64_t revision : {1U, 2U}) {
+        std::array<float, span> marker{}, markerR{};
+        marker[0] = .75f;
+        rack.syncAtSample(0, true, 0, 1);
+        rack.process(marker.data(), markerR.data(), marker.data(), markerR.data(), 100);
+        // The exact sample cursor stays contiguous regardless of beat-map edits.
+        rack.syncAtSample(.5, true, 100, revision);
+        rack.process(marker.data() + 100, markerR.data() + 100, marker.data() + 100,
+                     markerR.data() + 100, span - 100);
+        check(marker[239] == (revision == 1 ? .75f : 0.f),
+              "native history follows the exact timeline sample and transport revision across tempo-map edits");
+    }
 }
 
 void timeBandHistory() {

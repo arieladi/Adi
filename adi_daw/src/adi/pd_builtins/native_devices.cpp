@@ -233,7 +233,8 @@ template <class Core> class NativeDevice final : public NativePdDevice {
         if constexpr (std::is_same_v<Core, dsp::AdiShaper>) {
             if (const auto* position = io.deviceTransport) {
                 core_.tempo(position->bpm);
-                core_.sync(position->quarterNotes, position->playing);
+                core_.syncAtSample(position->quarterNotes, position->playing, position->sample,
+                                   io.transport ? io.transport->transportRevision : 0);
             } else if (const auto* t = io.transport) {
                 applyShaperTransport(core_, t->playing, static_cast<float>(t->bpm),
                     t->timeSigNumerator, t->timeSigDenominator, static_cast<float>(t->bar),
