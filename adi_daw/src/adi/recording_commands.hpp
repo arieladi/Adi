@@ -4,8 +4,9 @@
 #include "adi/ops.hpp"
 namespace adi::recording {
 struct ClipIds {std::int64_t clip=0,media=0;std::string name;};
-/// Explicit owner-allocated identities. Each pass gets a new take lane; an
-/// occupied lane ID refuses rather than inventing automatic lane-reuse policy.
+/// Explicit owner-allocated identities. Lane IDs reserve fresh fallbacks when
+/// no existing take lane is eligible; clip IDs are always new. All supplied
+/// identities must be unoccupied even when a fallback is ultimately unused.
 struct LoopPassIds {std::int64_t lane=0,clip=0;std::string name;};
 struct LoopTrackIds {std::int64_t media=0;std::vector<LoopPassIds> passes;};
 struct RecordingEdit {
@@ -40,14 +41,20 @@ private:
 /// Opted-in loop captures are refused, including a single partial pass: their
 /// take-lane/main-copy publication and per-pass history are a separate contract.
 [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
-/// Complete pass log to new take lanes and cumulative main-lane copies. The
+/// Complete pass log to eligible existing or new take lanes and main-lane copies.
+/// A pre-existing same-track take lane is eligible when every clip provably ends
+/// at/before this pass's start. First visible (ord,id) wins; each is used once.
+/// Unknown extents refuse reuse, not the recording. New fallback lanes form a
+/// chronological group above existing lanes, whose relative order is retained. The
 /// last partial pass replaces only its captured interval; earlier audible
 /// material outside that interval survives. One source is imported per unique
 /// captured content, and all passes commit atomically with one Undo per pass.
-/// Does not write project rows during preparation. Existing take lanes are
-/// unaffected. Optional selection metadata is supplied once per pass and stored
-/// on that pass's first request. No automatic reuse, punch trimming, quantize
-/// or UI policy. Material recording leaves authored automation unchanged.
+/// Does not write project rows during preparation. Existing lane identities,
+/// properties and clips are retained; only the new take is added to a reused lane.
+/// Optional selection metadata is supplied once per pass on its first request.
+/// No punch trimming, quantize or UI policy. Material recording leaves authored
+/// automation unchanged. First-visible reuse is ADI's deterministic policy;
+/// exact reference-DAW selection among several eligible lanes remains unmeasured.
 [[nodiscard]] RecordingEdit prepareLoopCommit(Store&,const engine::AudioRecordingResult&,std::span<const LoopTrackIds>,
     std::span<const std::optional<Payload>> selectionsBefore={});
 /// Linear captures have one Undo. Loop captures have one per pass. Failure rolls

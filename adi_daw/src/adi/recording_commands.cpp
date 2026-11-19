@@ -10,6 +10,7 @@
 #include "adi/store.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_plan.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/take_lane_ops.hpp"
 #include <algorithm>
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -175,6 +176,50 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
     return result;
 }
 namespace {
+// Existing lanes are considered in visible order, once per capture. A lane
+// whose native extent cannot prove it is wholly before the pass is not reused.
+struct ReusableLane {
+    std::int64_t id=0,tickEnd=0,nanoEnd=0;
+    bool valid=true,hasTicks=false,hasNanos=false,used=false;
+};
+ReusableLane inspectReusableLane(SQLite::Database& db,std::int64_t id,std::int64_t track) {
+    ReusableLane lane;lane.id=id;
+    SQLite::Statement clips(db,"SELECT track_id,time_base,pos_ticks,length_ticks,pos_ns,length_ns FROM clips WHERE lane_id=?");
+    clips.bind(1,id);
+    while(clips.executeStep()) {
+        if(!clips.getColumn(0).isInteger() || clips.getColumn(0).getInt64()!=track || !clips.getColumn(1).isInteger()) {
+            lane.valid=false;return lane;
+        }
+        const auto base=clips.getColumn(1).getInt64();
+        if(base!=0 && base!=1){lane.valid=false;return lane;}
+        const int position=base==0?2:4,length=position+1;
+        if(!clips.getColumn(position).isInteger() || !clips.getColumn(length).isInteger()) {lane.valid=false;return lane;}
+        const auto begin=clips.getColumn(position).getInt64(),count=clips.getColumn(length).getInt64();
+        if(begin<0 || count<0 || begin>std::numeric_limits<std::int64_t>::max()-count) {lane.valid=false;return lane;}
+        const auto end=edit::addTime(begin,count);
+        if(base==0){lane.hasTicks=true;lane.tickEnd=std::max(lane.tickEnd,end);}
+        else {lane.hasNanos=true;lane.nanoEnd=std::max(lane.nanoEnd,end);}
+    }
+    return lane;
+}
+std::optional<std::int64_t> captureStartNanos(std::int64_t sample,std::uint32_t rate) {
+    // The clip's tick placement round-trips to this sample. Use the original
+    // sample clock for physical extents, whose exact boundary can lie between ticks.
+    constexpr std::int64_t billion=1000000000;
+    const auto seconds=sample/rate,remainder=sample%rate;
+    const auto fraction=remainder*billion/rate;
+    if(seconds>(std::numeric_limits<std::int64_t>::max()-fraction)/billion)return {};
+    return seconds*billion+fraction;
+}
+std::optional<std::int64_t> takeReusableLane(std::vector<ReusableLane>& lanes,
+    std::int64_t tick,std::optional<std::int64_t> nanos) {
+    for(auto& lane:lanes) {
+        if(lane.used || !lane.valid || (lane.hasTicks && lane.tickEnd>tick) ||
+            (lane.hasNanos && (!nanos || lane.nanoEnd>*nanos)))continue;
+        lane.used=true;return lane.id;
+    }
+    return {};
+}
 struct RecordedPiece {
     std::int64_t id=0,begin=0,end=0;
     std::uint64_t source=0;
@@ -252,10 +297,12 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
         std::set<std::int64_t> lanes,clips,tracks;
         std::vector<ClipIds> sources;std::vector<std::int64_t> trackIds;
         std::vector<std::vector<std::int64_t>> laneOrders(ids.size());
+        std::vector<std::vector<ReusableLane>> reusable(ids.size());
+        std::vector<std::size_t> newLaneCounts(ids.size());
         for(std::size_t track=0;track<ids.size();++track) {
             const auto& wanted=ids[track];const auto trackId=recorded.tracks[track].trackId;
             if(wanted.passes.size()!=passes.size() || !tracks.insert(trackId).second)
-                throw std::runtime_error("loop materialization needs distinct targets and one new lane/clip per pass");
+                throw std::runtime_error("loop materialization needs distinct targets and one fallback lane/new clip per pass");
             for(const auto& pass:wanted.passes) {
                 if(pass.lane<=0 || pass.clip<=0 || !lanes.insert(pass.lane).second || !clips.insert(pass.clip).second ||
                    edit::row(store.db(),"lanes",pass.lane) || edit::row(store.db(),"clips",pass.clip))
@@ -265,7 +312,11 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
             sources.push_back({wanted.passes.front().clip,wanted.media,{}});trackIds.push_back(trackId);
             SQLite::Statement existing(store.db(),"SELECT id FROM lanes WHERE track_id=? AND kind='take' ORDER BY ord,id");
             existing.bind(1,trackId);
-            while(existing.executeStep())laneOrders[track].push_back(existing.getColumn(0).getInt64());
+            while(existing.executeStep()) {
+                const auto id=existing.getColumn(0).getInt64();
+                laneOrders[track].push_back(id);
+                reusable[track].push_back(inspectReusableLane(store.db(),id,trackId));
+            }
         }
         const auto tempo=tempoOf(store);
         for(const auto& pass:passes) {
@@ -286,20 +337,27 @@ RecordingEdit prepareLoopCommit(Store& store,const engine::AudioRecordingResult&
             const auto first=tickAt(tempo,earliest,recorded.sampleRate),last=tickAt(tempo,latest,recorded.sampleRate);
             auto scope=edit_plan::materialScope(trackIds,edit_plan::PlacementClock::Ticks,{first,last});
             scope.domains=edit_plan::Domains::Clips;
+            const auto startTick=tickAt(tempo,captured.timelineStartSample,recorded.sampleRate);
+            const auto startNanos=captureStartNanos(captured.timelineStartSample,recorded.sampleRate);
             for(std::size_t track=0;track<ids.size();++track) {
                 const auto& wanted=ids[track].passes[pass];const auto trackId=recorded.tracks[track].trackId;
                 const auto name=wanted.name.empty()?(pass==0?std::string("Audio"):"Audio "+std::to_string(pass+1)):wanted.name;
-                result.requests.push_back(createTakeLane(store,wanted.lane,trackId));
-                auto& lanesInOrder=laneOrders[track];
-                lanesInOrder.insert(lanesInOrder.begin()+static_cast<std::ptrdiff_t>(pass),wanted.lane);
-                if(pass!=0) {
-                    OpRequest order;order.opType="lane.reorder";
-                    order.payload={{"track",trackId},{"lanes",lanesInOrder}};
-                    result.requests.push_back(std::move(order));
+                const auto reused=takeReusableLane(reusable[track],startTick,startNanos);
+                const auto laneId=reused.value_or(wanted.lane);
+                if(!reused) {
+                    result.requests.push_back(createTakeLane(store,laneId,trackId));
+                    auto& lanesInOrder=laneOrders[track];auto& created=newLaneCounts[track];
+                    lanesInOrder.insert(lanesInOrder.begin()+static_cast<std::ptrdiff_t>(created),laneId);
+                    if(created!=0) {
+                        OpRequest order;order.opType="lane.reorder";
+                        order.payload={{"track",trackId},{"lanes",lanesInOrder}};
+                        result.requests.push_back(std::move(order));
+                    }
+                    ++created;
                 }
                 RecordedPiece take{wanted.clip,captured.timelineStartSample,captured.timelineEndSample,captured.sourceStartFrame,name};
                 edit::RowEdits takeRows(store.db());
-                clip_edit::createImage(takeRows,recordedImage(store,tempo,take,trackId,sourceEdits[track].mediaId,recorded.sampleRate,wanted.lane));
+                clip_edit::createImage(takeRows,recordedImage(store,tempo,take,trackId,sourceEdits[track].mediaId,recorded.sampleRate,laneId));
                 OpRequest clip;clip.opType="clip.duplicate";clip.payload={{"id",wanted.clip},{"changes",takeRows.changes()}};
                 clip.targetKind="clip";clip.targetId=wanted.clip;result.requests.push_back(std::move(clip));
                 take.id=allocated.next("clips");replaceRecordedSpan(main[track],std::move(take),allocated);

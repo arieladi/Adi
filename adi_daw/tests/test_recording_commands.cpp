@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <thread>
 namespace {
 using namespace adi;using namespace adi::engine;
@@ -438,11 +439,120 @@ void loopAtomicRefusalAndDedup() {
     fresh.discard();
 }
 
+
+std::int64_t fixtureTicks(std::int64_t sample) {
+    TempoMap tempo;tempo.events.push_back({0,120,0});return tempo.secondsToTicks(static_cast<double>(sample)/48000);
+}
+void existingTake(Store& store,std::int64_t lane,std::int64_t order,std::int64_t track=21) {
+    SQLite::Statement row(store.db(),"INSERT INTO lanes(id,track_id,ord,kind,name) VALUES(?,?,?,'take','Existing')");
+    row.bind(1,lane);row.bind(2,track);row.bind(3,order);row.exec();
+}
+void existingTakeClip(Store& store,std::int64_t id,std::int64_t lane,std::int64_t begin,
+    std::optional<std::int64_t> length,bool nanos=false,std::int64_t track=21) {
+    const auto sql=nanos?"INSERT INTO clips(id,track_id,lane_id,kind,time_base,pos_ns,length_ns) VALUES(?,?,?,'midi',1,?,?)":
+        "INSERT INTO clips(id,track_id,lane_id,kind,time_base,pos_ticks,length_ticks) VALUES(?,?,?,'midi',0,?,?)";
+    SQLite::Statement row(store.db(),sql);row.bind(1,id);row.bind(2,track);row.bind(3,lane);row.bind(4,begin);
+    if(length)row.bind(5,*length);else row.bind(5);row.exec();
+}
+std::vector<std::int64_t> takeOrder(Store& store) {
+    SQLite::Statement rows(store.db(),"SELECT id FROM lanes WHERE track_id=21 AND kind='take' ORDER BY ord,id");
+    std::vector<std::int64_t> result;while(rows.executeStep())result.push_back(rows.getColumn(0).getInt64());return result;
+}
+std::int64_t preparedTakeLane(const recording::RecordingEdit& prepared,std::int64_t clip) {
+    for(const auto& request:prepared.requests)if(request.opType=="clip.duplicate" && request.payload.at("id")==clip)
+        for(const auto& change:request.payload.at("changes"))if(change.at("table")=="clips")
+            return change.at("after").at("lane_id").get<std::int64_t>();
+    return -1;
+}
+void loopReusesOrderedLanes() {
+    Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,448);auto& db=fixture.store->db();
+    // Visible order differs from ID order. The first lane has both clocks and
+    // ends at the exact musical boundary; ns floor is strictly before it.
+    existingTake(*fixture.store,30,4);existingTake(*fixture.store,20,9);existingTake(*fixture.store,10,17);
+    existingTake(*fixture.store,5,0,22);
+    existingTakeClip(*fixture.store,40,30,0,fixtureTicks(512));
+    existingTakeClip(*fixture.store,41,30,0,10666666,true);
+    existingTakeClip(*fixture.store,42,20,0,fixtureTicks(480));
+    const auto before=digestProject(*fixture.store).text;const auto ids=loopIds(recorded);
+    auto prepared=recording::prepareLoopCommit(*fixture.store,recorded,ids);
+    check(prepared.ok && preparedTakeLane(prepared,200)==30 && preparedTakeLane(prepared,201)==20 &&
+        preparedTakeLane(prepared,202)==10 && preparedTakeLane(prepared,203)==103,
+        "reuse takes visible same-track lanes once each, including exact ends, then a fresh fallback");
+    check(prepared.ok && digestProject(*fixture.store).text==before,"reuse preparation leaves prior lanes and material unchanged");
+    const auto result=recording::commit(*fixture.store,prepared);
+    if(!result.ok)std::printf("reuse commit: %s\n",result.error.c_str());
+    check(result.ok && result.groupTxnIds.size()==4,"reused and new lanes share one transaction with four pass Undo groups");
+    if(!result.ok)return;
+    check(takeOrder(*fixture.store)==std::vector<std::int64_t>{103,30,20,10} &&
+        db.execAndGet("SELECT count(*) FROM lanes WHERE id IN (100,101,102)").getInt()==0,
+        "unused fallback IDs stay absent and pre-existing lanes retain relative order");
+    check(db.execAndGet("SELECT count(*) FROM clips WHERE id IN (40,41,42)").getInt()==3 &&
+        db.execAndGet("SELECT count(*) FROM clips WHERE lane_id=5").getInt()==0 &&
+        fixture.play(Precision::Float32)==loopOracle(448,512),
+        "existing take content and other-track lanes survive while the main comp sounds exact");
+    const auto after=digestProject(*fixture.store).text;History history(*fixture.store);
+    for(int remaining=3;remaining>=0;--remaining) {
+        const auto undone=history.undo();
+        check(undone.ok && takeOrder(*fixture.store)==std::vector<std::int64_t>{30,20,10} &&
+            db.execAndGet("SELECT count(*) FROM clips WHERE id IN (40,41,42)").getInt()==3 &&
+            fixture.play(Precision::Float32)==loopOracle(remaining*128,512),
+            "each reused pass Undo preserves pre-existing lanes and restores preceding main audio");
+    }
+    check(digestProject(*fixture.store).text==before,"all reuse Undo restores exact old clip and sparse lane ordinal bytes");
+    for(int pass=0;pass<4;++pass)check(history.redo().ok,"reuse pass redoes independently");
+    check(digestProject(*fixture.store).text==after,"reuse Redo restores literal assigned lanes and source windows");
+}
+void loopMixedReuseAndFallback() {
+    Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,448,{},480);
+    existingTake(*fixture.store,77,12);
+    existingTakeClip(*fixture.store,40,77,0,fixtureTicks(500));
+    const auto ids=loopIds(recorded);const auto before=digestProject(*fixture.store).text;
+    auto prepared=recording::prepareLoopCommit(*fixture.store,recorded,ids);
+    check(prepared.ok && preparedTakeLane(prepared,200)==100 && preparedTakeLane(prepared,201)==77 &&
+        preparedTakeLane(prepared,202)==102 && preparedTakeLane(prepared,203)==103,
+        "partial pre-loop pass falls back before a later pass can safely reuse the same visible lane");
+    prepared.options.beforeCommit=[](SQLite::Database&,std::int64_t,std::string& error){error="reuse veto";return false;};
+    check(!recording::commit(*fixture.store,prepared).ok && digestProject(*fixture.store).text==before &&
+        std::filesystem::exists(recorded.tracks[0].file),"reuse veto rolls every pass back and preserves old rows and private audio");
+    auto retry=recording::prepareLoopCommit(*fixture.store,recorded,ids);const auto committed=recording::commit(*fixture.store,retry);
+    check(committed.ok && takeOrder(*fixture.store)==std::vector<std::int64_t>{100,102,103,77} &&
+        fixture.play(Precision::Float32)==loopOracle(448,480),"new fallback lanes stay in pass order around a reused pass");
+    if(!committed.ok)return;
+    History history(*fixture.store);
+    const std::array<std::vector<std::int64_t>,4> previous={std::vector<std::int64_t>{100,102,77},
+        std::vector<std::int64_t>{100,77},std::vector<std::int64_t>{100,77},std::vector<std::int64_t>{77}};
+    for(const auto& order:previous)check(history.undo().ok && takeOrder(*fixture.store)==order,
+        "mixed pass Undo restores the preceding chronological fallback group without moving old lanes");
+    check(digestProject(*fixture.store).text==before,"mixed reuse restores exact original lane ordinal and material");
+}
+void loopReuseRefusesUnprovedExtents() {
+    Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,32);auto& db=fixture.store->db();
+    for(std::int64_t lane=50;lane<57;++lane)existingTake(*fixture.store,lane,lane);
+    existingTakeClip(*fixture.store,40,50,0,fixtureTicks(513)); // Overlaps start.
+    existingTakeClip(*fixture.store,41,51,fixtureTicks(900),fixtureTicks(10)); // Later, even without overlap.
+    existingTakeClip(*fixture.store,42,52,0,10666667,true); // One ns beyond the safe floor.
+    existingTakeClip(*fixture.store,43,53,0,std::nullopt); // Unbounded.
+    existingTakeClip(*fixture.store,44,54,std::numeric_limits<std::int64_t>::max(),1); // Sum overflow.
+    existingTakeClip(*fixture.store,45,55,0,0,false,22); // Inconsistent owning track.
+    existingTakeClip(*fixture.store,46,56,0,-1); // Malformed native extent.
+    db.exec("UPDATE clips SET muted=1 WHERE id=41");
+    const auto before=digestProject(*fixture.store).text;const auto ids=loopIds(recorded);
+    auto prepared=recording::prepareLoopCommit(*fixture.store,recorded,ids);
+    check(prepared.ok && preparedTakeLane(prepared,200)==100 && digestProject(*fixture.store).text==before,
+        "overlap, future muted material, fractional-ns ambiguity, unknown, overflow and wrong ownership all prevent reuse safely");
+    // An exact physical boundary is eligible too: 480 samples at 48 kHz is 10 ms.
+    Fixture exact;auto shortTake=exact.capture(false,Precision::Float32,true,32,{},480);
+    existingTake(*exact.store,70,9);existingTakeClip(*exact.store,40,70,0,10000000,true);
+    auto physical=recording::prepareLoopCommit(*exact.store,shortTake,loopIds(shortTake));
+    check(physical.ok && preparedTakeLane(physical,200)==70,"nanosecond clip ending exactly at pass start is reusable");
+}
+
 }
 int main(int argc,char** argv){try{
     if(argc!=1 && (argc!=3 || std::string(argv[1])!="--cross-volume-work-folder"))throw std::runtime_error("usage: recording tests [--cross-volume-work-folder PATH]");
     publicationStagingOwnership();heardPlacementAndHistory();rollbackNeverDeletesLaterWriter();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();
     loopPassesAndHistory();loopPartialEdgesAndPriorComp();loopSinglePassBoundaries();loopAtomicRefusalAndDedup();
+    loopReusesOrderedLanes();loopMixedReuseAndFallback();loopReuseRefusesUnprovedExtents();
     if(argc==3) {
         const auto captureFolder=media::pathFromUtf8(argv[2]);
         crossVolumePublication(captureFolder);

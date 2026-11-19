@@ -73,8 +73,29 @@ lifetime protocol. The owner copies the used log only after acknowledgment.
 
 ## Publishing completed takes
 
-The owner supplies a media ID per target and a new lane and clip ID per pass.
-The new lanes appear in pass order as a group above existing take lanes.
+The owner supplies a media ID per target, a new clip ID per pass, and a fresh
+fallback lane ID per pass. Existing same-track take lanes are considered in
+visible `(ord,id)` order. A lane is eligible only when every existing clip ends
+at or before that pass's actual start; an empty lane qualifies. A clip ending
+exactly at the boundary qualifies, while overlapping or later material prevents
+reuse. Each existing lane is consumed at most once per capture. ADI chooses
+the first eligible visible lane. Live's choice among several qualifying lanes
+remains open (PLAN M6-A6H-027).
+
+Musical clips compare checked native ends to the pass's proven tick boundary.
+Nanosecond clips compare to the original capture boundary, rounded down to
+whole nanoseconds. The capture sample can fall between two musical ticks.
+Missing, noninteger, negative or overflowing extents,
+or inconsistent track ownership, make that lane ineligible. A lane's muted
+state does not erase its material for this check. Fallback creates a fresh lane
+when no lane can be proved safe; it never discards existing material.
+
+Reused lanes retain IDs and properties, and all old clips. The new lanes appear
+in creation/pass order as a group above existing lanes, whose relative order
+is retained even when reused and newly created passes are interleaved. Native
+lane creation may renumber ordinals; Undo restores their exact prior values.
+All supplied fallback and clip IDs must be distinct, positive and unused. A
+fallback ID becomes a lane only when it is needed.
 The take clips reference exact windows of the captured source. Media import and
 all lanes, takes and main-lane edits commit in one SQL transaction. Each pass
 has a distinct `Record` Undo group. The shared media row belongs to the first
@@ -103,6 +124,23 @@ These are deterministic engine tests using supplied input, not a hardware-driver
 latency or long-duration recording measurement. The pass log is retained in the
 completed result, not persisted as a crash-recovery journal.
 
-Remaining CT-02 work includes automatic take-lane reuse, punch and pre-roll
+Remaining CT-02 work includes measuring the reference lane-choice policy, punch and pre-roll
 policy, latency compensation, recovery persistence, desktop wiring and
 long-running device checks.
+
+The recording suite checks ordered reuse, exact boundaries in both clocks,
+overlap and future material, unknown extents, overflow, same-track isolation,
+one use per lane, mixed fallback ordering, atomic failure and exact Undo/Redo.
+
+## Loop recording parity checklist
+
+| Case | Director's Live 12.4 reading | ADI check |
+|---|---|---|
+| Stop audio partway through pass four | One continuous source contains four takes. The fourth replaces the main-lane prefix through Stop. Pass three stays audible afterward. | CT-02 Session and publication fixtures cover exact PCM, source offsets and the partial pass. Desktop Stop remains to test. |
+| Undo audio pass four | One `Undo Record` removes the fourth pass and restores pass three across the loop. Redo reinstates the partial take. | The same fixtures compare per-pass Undo/Redo, exact PCM and shared-source lifetime. |
+| MIDI Overdub Off, loop off | New notes replace the notes in the covered clip. The clip extends to Stop, one take is retained, and one Undo restores the old material. | CT-03, pending the note-creation API and desktop recording. |
+| MIDI Overdub Off, loop on | Each pass records its own notes. The final partial pass replaces the main prefix, with the previous pass audible over the uncovered tail. Each pass has its own Undo. | CT-03, pending the note-creation API and desktop recording. |
+
+Readings correspond to PLAN M6-A6H-016 and CT-03's Overdub cases. Existing ADI
+engine fixtures use supplied callback input. Hardware latency and the desktop
+workflow have separate gates.
