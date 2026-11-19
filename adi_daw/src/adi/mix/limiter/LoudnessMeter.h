@@ -111,6 +111,13 @@ public:
         refreshEnergies();
         result.momentary = filledFrames >= momentaryFrames ? loudness(momentaryEnergy / static_cast<double>(momentaryFrames)) : negativeInfinity;
         result.shortTerm = filledFrames >= shortTermFrames ? loudness(shortTermEnergy / static_cast<double>(shortTermFrames)) : negativeInfinity;
+        if (recording)
+        {
+            // The live readout can rise between histogram hops. Retain that
+            // observed level as well as the separate hop-rate maxima.
+            result.maxMomentary = std::max(result.maxMomentary, result.momentary);
+            result.maxShortTerm = std::max(result.maxShortTerm, result.shortTerm);
+        }
         result.peak = peakAmplitude > 0.0 ? static_cast<float>(20.0 * std::log10(peakAmplitude)) : negativeInfinity;
     }
 

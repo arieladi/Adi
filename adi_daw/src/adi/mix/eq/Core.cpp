@@ -14,9 +14,6 @@
 #include <cmath>
 #include <stdexcept>
 #include <vector>
-#if defined(_M_X64) || defined(__SSE2__)
-#include <xmmintrin.h>
-#endif
 
 namespace adi::mix::eq {
 namespace {
@@ -41,13 +38,6 @@ bool samePlan(const Settings &a, const Settings &b) noexcept {
     return a.structure == b.structure && a.lookaheadMs == b.lookaheadMs &&
            a.spectralResolution == b.spectralResolution && spectral(a) == spectral(b);
 }
-struct FlushDenormals {
-#if defined(_M_X64) || defined(__SSE2__)
-    unsigned previous = _mm_getcsr();
-    FlushDenormals() { _mm_setcsr(previous | 0x8040U); }
-    ~FlushDenormals() { _mm_setcsr(previous); }
-#endif
-};
 } // namespace
 bool valid(const Settings &s) noexcept {
     if (static_cast<unsigned>(s.structure) > 5 || static_cast<unsigned>(s.spectralResolution) > 2 ||
@@ -132,8 +122,16 @@ struct Core::Implementation {
                                   static_cast<ADISharedEqSpectralDynamics::Resolution>(s.spectralResolution))
                             : 0);
     }
-    void consider(const Settings &desired) noexcept {
-        if (pending.load(std::memory_order_relaxed) || samePlan(active, desired))
+    void consider(const Settings &desired, bool canWithdraw = false) noexcept {
+        const auto currentOffer = pending.load(std::memory_order_relaxed);
+        if (currentOffer && !canWithdraw)
+            return;
+        if (samePlan(active, desired)) {
+            if (currentOffer)
+                pending.store(0, std::memory_order_release);
+            return;
+        }
+        if (currentOffer)
             return;
         offer = desired;
         if (++offerSerial == 0)
@@ -321,7 +319,7 @@ struct Core::Implementation {
         for (int ch = 0; ch < keyChannels; ++ch)
             if (key[ch] == nullptr)
                 return false;
-        [[maybe_unused]] FlushDenormals flush;
+        [[maybe_unused]] filters::FlushDenormals flush;
         consider(desired);
         const auto s = pinned(desired);
         apply(s);
@@ -426,7 +424,7 @@ bool Core::requestConfiguration(const Settings &s) noexcept {
     auto &i = *implementation;
     if (!i.prepared || !valid(s))
         return false;
-    i.consider(s);
+    i.consider(s, true);
     return true;
 }
 BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, const Settings &s,
@@ -435,21 +433,27 @@ BlockContext Core::beginBlock(std::uint64_t physical, std::int32_t configured, c
     if (!i.prepared || !valid(s) || configured < 0)
         return {};
     if (physical && physical == i.lastPhysical) {
-        i.consider(s);
+        i.consider(s, admitPending && configured == i.committedLatency.load(std::memory_order_relaxed));
         return i.blockAdmitted ? BlockContext{i.generation, i.block} : BlockContext{};
     }
     i.lastPhysical = physical;
     ++i.block;
     i.blockAdmitted = false;
     const auto pending = i.pending.load(std::memory_order_acquire);
+    bool canWithdraw = false;
     if (admitPending && pending && configured == static_cast<std::int32_t>(pending & 0xffffffffU)) {
         i.active = i.offer;
         i.committedLatency.store(configured, std::memory_order_release);
         i.pending.store(0, std::memory_order_release);
+    } else if (admitPending && configured == i.committedLatency.load(std::memory_order_relaxed)) {
+        // The callback still uses the old PDC. Reverting to the active plan
+        // can withdraw its unused offer. A serial parent holding an offer
+        // passes admitPending=false and keeps its child token stable.
+        canWithdraw = pending != 0;
     }
     if (configured != i.committedLatency.load(std::memory_order_relaxed))
         return {};
-    i.consider(s);
+    i.consider(s, canWithdraw);
     i.blockAdmitted = true;
     return {i.generation, i.block};
 }
