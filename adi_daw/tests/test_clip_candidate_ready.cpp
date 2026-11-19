@@ -85,6 +85,16 @@ bool waitPhase(const std::atomic<int>& phase,int wanted) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     return phase.load(std::memory_order_acquire)==wanted;
 }
+ClipPlayback::RequestSnapshotProbeForTest holdEmptyRequest(std::atomic<int>& phase) {
+    // Confirm the worker has already read an empty request before posting
+    // pages that the refusal test needs to stay unavailable.
+    ClipPlayback::RequestSnapshotProbeForTest probe;
+    probe.context=&phase;
+    probe.afterSnapshot=[](void* context,std::int64_t firstPage) noexcept {
+        if(firstPage<0)holdOnce(context,0);
+    };
+    return probe;
+}
 template <typename Narrow,typename Wide>
 bool rendered(Precision precision,const Narrow& narrow,const Wide& wide,const Transport& target) {
     bool exact=true;
@@ -141,8 +151,11 @@ void immutableCandidate(bool looped,Precision precision) {
           "primed native source renders without callback allocation, free, or file I/O");
 }
 void refusalAndRetry() {
+    std::atomic<int> phase{0};
+    const auto probe=holdEmptyRequest(phase);
     Fixture fixture;
-    fixture.clips->stallForTest(true);
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);
+    if(!waitPhase(phase,1))throw std::runtime_error("worker did not pause on the empty request");
     Transport target;target.locate(40000);target.play();
     check(!fixture.clips->primeAt(target,std::chrono::milliseconds(5)),"unavailable candidate pages time out instead of claiming readiness");
     check(!fixture.clips->primeAt(target,std::chrono::milliseconds(-1)),"negative readiness timeout refuses");
@@ -156,16 +169,19 @@ void refusalAndRetry() {
     {audio::CallbackScope callback;denied=!fixture.clips->primeAt(target) && !fixture.clips->prime();}
     check(denied && allocations.load()==beforeAllocations && frees.load()==beforeFrees && audio::callbackFileIo.load()==beforeIo,
           "both blocking readiness entry points refuse callback use before touching driver state or resources");
-    fixture.clips->stallForTest(false);
+    phase.store(2,std::memory_order_release);
     check(fixture.clips->primeAt(target,std::chrono::seconds(2)),"a failed candidate wait can retry once its worker becomes available");
     check(fixture.live.position()==0 && !fixture.live.playing(),"candidate preparation never changes the live transport");
 }
 void callbackReadiness(Precision precision) {
+    std::atomic<int> phase{0};
+    const auto probe=holdEmptyRequest(phase);
     Fixture fixture;
     auto ready=fixture.clips->readiness();
     const auto sources=fixture.clips->sourcesFor(1);
     if(!ready || sources.size()!=1)throw std::runtime_error("readiness fixture source");
-    fixture.clips->stallForTest(true);
+    fixture.clips->setRequestSnapshotProbeForTest(&probe);
+    if(!waitPhase(phase,1))throw std::runtime_error("worker did not pause on the empty request");
     Transport target;target.locate(32000);target.play();
     const auto beforeAllocations=allocations.load(),beforeFrees=frees.load();
     const auto beforeIo=audio::callbackFileIo.load();
@@ -177,7 +193,7 @@ void callbackReadiness(Precision precision) {
         constructionRefused=!fixture.clips->readiness();
     }
     check(unavailable && invalid && constructionRefused,"callback readiness refuses unavailable pages, invalid bounds, and callback closure construction");
-    fixture.clips->stallForTest(false);
+    phase.store(2,std::memory_order_release);
     std::array<std::array<float,blockFrames>,2> narrow{};
     std::array<std::array<double,blockFrames>,2> wide{};
     float* out[]{narrow[0].data(),narrow[1].data()};double* out64[]{wide[0].data(),wide[1].data()};
