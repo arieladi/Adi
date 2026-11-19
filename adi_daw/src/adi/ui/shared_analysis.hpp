@@ -68,6 +68,7 @@ class SharedAnalysis final {
         // Raw per-channel sample peak/RMS, not a true-peak or loudness meter. Spectrum uses
         // dsp::Spectrum's coherent sine calibration; Scope/Phase keep unwindowed samples.
         std::array<float, 2> peak{}, rms{};
+        std::size_t clippedSamples = 0; // Meters: finite samples at or above full scale across both channels.
         double correlation = 0;
         std::vector<float> binsDbfs, scopeLeft, scopeRight;
         // Bounded newest columns. Serial and sourceEpoch expose missed or reset history.

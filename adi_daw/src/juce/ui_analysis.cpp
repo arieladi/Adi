@@ -233,10 +233,10 @@ void SharedSpectrumView::updateDemand() noexcept {
             switch (mode_) {
             case Mode::Spectrum: request.outputs = SharedAnalysis::Spectrum; break;
             case Mode::Scope: request.outputs = SharedAnalysis::Scope; break;
-            case Mode::Meters: request.outputs = SharedAnalysis::Meters; break;
+            case Mode::Meters:
+            case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters; break;
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
-            case Mode::ChannelReadout: request.outputs = SharedAnalysis::Meters | SharedAnalysis::Phase; break;
             }
             try {
                 lease_ = broker_->acquire(request);
@@ -422,15 +422,12 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
     const double left = shown_->rms[0], right = shown_->rms[1];
     const double energy = left * left + right * right;
     const double side = energy > 0 ? .5 - left * right * shown_->correlation / energy : 0;
-    const auto fullScale = [](float sample) { return std::abs(sample) >= 1.f; };
-    const auto samplesAtFullScale = std::ranges::count_if(shown_->scopeLeft, fullScale) +
-                                    std::ranges::count_if(shown_->scopeRight, fullScale);
     const std::array values{
         peak > 0 ? juce::String(20. * std::log10(peak), 1) : juce::String("-inf"),
         energy > 0 && peak > 0 ? juce::String(20. * std::log10(peak / std::sqrt(.5 * energy)), 1) : juce::String("-"),
         juce::String(100. * std::clamp(side, 0., 1.), 0),
         juce::String(shown_->correlation, 2),
-        juce::String(static_cast<juce::int64>(samplesAtFullScale)),
+        juce::String(static_cast<juce::int64>(shown_->clippedSamples)),
         mainMeter_ ? meterNumber(mainMeter_->momentaryLufs) : juce::String("-")
     };
     for (std::size_t i = 0; i < values.size(); ++i) {

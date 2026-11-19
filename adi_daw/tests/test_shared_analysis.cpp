@@ -347,6 +347,49 @@ void sharedModesAndCursors() {
     tone(*f.tap, 1024, .5f, -1.f, 51024); f.broker.pump();
     check(power.read() && near(power.read()->binsDbfs[16], -6.020599913), "stereo power spectrum does not cancel antiphase audio");
 }
+void clippedSampleWindows() {
+    Fixture f;
+    SharedAnalysis::Request request{1};
+    request.fftSize = 32;
+    request.hopSize = 8;
+    request.outputs = SharedAnalysis::Meters;
+    auto meter = f.broker.acquire(request);
+    std::array<float, 32> left{}, right{};
+    left[0] = 1.f;
+    left[1] = -1.f;
+    left[2] = std::numeric_limits<float>::quiet_NaN();
+    left[8] = 1.125f;
+    right[3] = -std::numeric_limits<float>::max();
+    right[4] = std::numeric_limits<float>::infinity();
+    right[6] = -std::numeric_limits<float>::infinity();
+    right[7] = std::nextafter(1.f, 0.f);
+    f.tap->write(left.data(), right.data(), 32, 0, true);
+    check(f.broker.pump() == 0, "windowed Meters need no FFT");
+    const auto first = meter.read();
+    check(first && first->clippedSamples == 4 && first->nonFiniteSamples == 3 &&
+              first->scopeLeft.empty() && first->scopeRight.empty(),
+          "Meters count both finite full-scale polarities, including clamped extremes, without raw samples");
+
+    std::array<float, 8> nextLeft{}, nextRight{};
+    nextLeft[4] = -2.f;
+    nextRight[5] = 1.f;
+    f.tap->write(nextLeft.data(), nextRight.data(), 7, 32, true);
+    f.broker.pump();
+    check(first && meter.read() == first, "partial hop keeps the last complete clip count");
+    request.outputs = SharedAnalysis::Scope;
+    auto scope = f.broker.acquire(request);
+    f.broker.pump();
+    const auto same = scope.read();
+    check(same && same == meter.read() && same->firstStamp == 0 &&
+              same->clippedSamples == 4 && same->nonFiniteSamples == 3 && same->scopeLeft.size() == left.size(),
+          "compatible raw demand shares the same completed meter window, excluding partial samples");
+
+    f.tap->write(nextLeft.data() + 7, nextRight.data() + 7, 1, 39, true);
+    f.broker.pump();
+    const auto shifted = meter.read();
+    check(shifted && shifted->firstStamp == 8 && shifted->clippedSamples == 3 && shifted->nonFiniteSamples == 0,
+          "the next complete window drops expired samples and counts only the new hop");
+}
 void exactZeroSpectrum() {
     for (const auto size : {32, 96, 1024, 1536, 65536})
         for (const auto window : {adi::dsp::Window::Hann, adi::dsp::Window::Rectangular}) {
@@ -1168,7 +1211,7 @@ void operator delete(void *p,std::size_t) noexcept {::operator delete(p);}
 void operator delete[](void *p,std::size_t) noexcept {::operator delete(p);}
 int main() {
     try { parkedSilence(); sharing(); configurationsAndMoves(); refreshAndLifetime(); refusalsAndBounds(); shutdown(); workerLifecycle();
-          sharedModesAndCursors(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
+          sharedModesAndCursors(); clippedSampleWindows(); exactZeroSpectrum(); exactSilentStereoLanes(); sharedAverage(); averageActivationAndOverflow(); averageChronologyAndEpochs(); averagePreparationFailure(); averagePendingBoundaries(); averageHistoryAndSanitation(); averagePublicationFailure(); boundsAndDeviceSources(); historyRenegotiation(); fairFrameBudget(); lazyPlansAndIdleDemand(); boundedImmutableHistory(); fullHistoryBursts(); finiteExtremeSpectrum(); actualRateHistory(); lateRateAndFailedNegotiation(); stereoMeterSharingAndIntervals(); parkedStereoMeter(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

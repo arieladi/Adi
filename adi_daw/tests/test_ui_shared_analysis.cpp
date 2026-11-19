@@ -1026,6 +1026,18 @@ void mixAnalyserPages() {
     check(!pages.sourceBox.isVisible() && !pages.detail.isVisible() && table.consumers == 3 &&
               table.taps == 3 && table.spectralPlans == 0,
           "Analysis shows per-channel readings without a spectrogram or spectrum plan");
+    {
+        SharedAnalysis::Request meterRequest{main->id};
+        meterRequest.outputs = SharedAnalysis::Meters;
+        auto sharedMeter = f.broker->acquire(meterRequest);
+        f.write(3072);
+        f.broker->pump();
+        const auto result = sharedMeter.read();
+        const auto shared = f.broker->stats();
+        check(result && result->outputs == SharedAnalysis::Meters && result->scopeLeft.empty() &&
+                  result->scopeRight.empty() && shared.consumers == 4 && shared.domains == 3 && shared.taps == 3,
+              "the table shares the Main meter window without adding Phase or requesting raw samples");
+    }
     pages.setVisible(false);
     check(f.broker->stats().consumers == 0 && f.broker->stats().taps == 0,
           "hiding Analysers releases the full measurement table without another frame");

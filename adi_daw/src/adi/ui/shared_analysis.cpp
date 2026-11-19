@@ -372,6 +372,8 @@ struct SharedAnalysis::Domain {
         latest->gapCount = gaps; latest->overrunCount = overruns; latest->discontinuity = discontinuous;
         if (!newWindow) if (const auto previous = readResult()) latest->nonFiniteSamples = previous->nonFiniteSamples;
         double sumL = 0, sumR = 0, cross = 0;
+        const bool needsMeters = (bits & Output::Meters) != 0;
+        std::size_t clippedSamples = 0;
         bool nonzero = false, clippedLeft = false, clippedRight = false;
         for (std::size_t i = 0; i < n; ++i) {
             const auto k = (position + i) % n;
@@ -384,8 +386,11 @@ struct SharedAnalysis::Domain {
             clippedRight = clippedRight || (finiteR && rawR != r);
             sumL += static_cast<double>(l) * l; sumR += static_cast<double>(r) * r;
             cross += static_cast<double>(l) * r;
-            latest->peak[0] = std::max(latest->peak[0], std::abs(l));
-            latest->peak[1] = std::max(latest->peak[1], std::abs(r));
+            const float magnitudeL = std::abs(l), magnitudeR = std::abs(r);
+            latest->peak[0] = std::max(latest->peak[0], magnitudeL);
+            latest->peak[1] = std::max(latest->peak[1], magnitudeR);
+            if (needsMeters)
+                clippedSamples += static_cast<std::size_t>(magnitudeL >= 1.f) + static_cast<std::size_t>(magnitudeR >= 1.f);
             if (needsSpectrum) {
                 switch (request.channel) {
                 case Channel::Mid: scratch[i] = (l + r) * .5f; break;
@@ -396,6 +401,7 @@ struct SharedAnalysis::Domain {
                 nonzero = nonzero || scratch[i] != 0 || (request.channel == Channel::StereoPower && r != 0);
             }
         }
+        latest->clippedSamples = clippedSamples;
         latest->rms = {static_cast<float>(std::sqrt(sumL / static_cast<double>(n))),
                        static_cast<float>(std::sqrt(sumR / static_cast<double>(n)))};
         latest->correlation = sumL > 0 && sumR > 0 ? std::clamp(cross / std::sqrt(sumL * sumR), -1., 1.) : 0.;
