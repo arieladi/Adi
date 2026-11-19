@@ -119,6 +119,7 @@ struct SharedAnalysis::Domain {
     std::unique_ptr<dsp::LinearMagnitudeAverage> average;
     std::unique_ptr<dsp::StereoEnvelopeMeter> meter;
     bool meterPrepared = false;
+    std::atomic<bool> neutralMeter{false};
     bool averageConfigured = false;
     AverageStatus averageStatus = AverageStatus::Unavailable;
     std::uint64_t averageEpoch = 0, averageWindows = 0, averageWindow = 0, averageBinsWindow = 0;
@@ -205,6 +206,7 @@ struct SharedAnalysis::Domain {
         cursor = tap ? tap->cursorAtEnd() : engine::ScopeTap::Cursor{};
         if (tap && !fresh) cursor.next = std::max(tap->oldest(), tap->written() - request.fftSize);
         if (meter) {
+            neutralMeter.store(false, std::memory_order_release);
             publishMeter({});
             const auto profile = *request.stereoMeter;
             meterPrepared = usable(tap, request.fftSize) &&
@@ -271,6 +273,7 @@ struct SharedAnalysis::Domain {
         const auto consumed = consumedSequence.load(std::memory_order_acquire);
         if (end == consumed) return false;
         const auto quiet = tap->lastParkedSilence();
+        if (meter) return !(neutralMeter.load(std::memory_order_acquire) && quiet.begin <= consumed && quiet.end >= end);
         return !(quiet.end >= end && settledParkedSilence(quiet));
     }
     std::atomic<bool> active{true}, available{false};
@@ -465,6 +468,7 @@ struct SharedAnalysis::Domain {
     }
     void resetMeter() {
         meter->reset();
+        neutralMeter.store(false, std::memory_order_release);
         ++sourceEpoch;
         publishMeter({});
     }
@@ -479,6 +483,13 @@ struct SharedAnalysis::Domain {
     }
     bool pumpMeter(std::span<float> l, std::span<float> r, std::size_t &samples, std::size_t &reads) {
         const auto end = tap->written();
+        if (neutralMeter.load(std::memory_order_relaxed)) {
+            // A fully empty reading has never accumulated a nonzero peak. The
+            // certified parked zeros keep its history exactly neutral through wrap.
+            const auto quiet = tap->lastParkedSilence();
+            if (quiet.begin <= cursor.next && quiet.end > cursor.next)
+                cursor.next = std::min(end, quiet.end);
+        }
         bool advanced = false;
         while (cursor.next < end && reads < kMaxReadsPerFrame && samples < kMaxSamplesPerFrame) {
             const auto count = std::min({static_cast<std::size_t>(end - cursor.next), l.size(),
@@ -500,6 +511,7 @@ struct SharedAnalysis::Domain {
         consumedSequence.store(cursor.next, std::memory_order_release);
         if (!advanced || !active.load(std::memory_order_acquire)) return false;
         const auto reading = meter->reading();
+        neutralMeter.store(reading == dsp::StereoEnvelopeMeter::Reading{}, std::memory_order_release);
         if (const auto prior = readMeterResult(); prior && prior->reading == reading) return false;
         publishMeter(std::make_shared<StereoMeterResult>(StereoMeterResult{
             reading, tap->sampleRate(), tap->generation(), sourceEpoch}));
