@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M25 detached analyser returns to its source in Analysers
+
+The detached analyser's Mix View action opens the matching Analysers page with the displayed channel. It respects the preferred docked or separate workspace and selects a valid fallback if the old source disappeared. Stack keeps its filter and group when opened later. The action adds no project edit or Undo entry.
+
+The fixture reproduced seven failures at `e38090b5`. Exact Windows x64 Release `a64cd847a1893af880c35c7c7e01cf26e3813b6e` passed 900 Mix View component checks and the three shared-analysis and Mix Functions CTests. The retest brief covers Phase, the same-channel return, excluded Stack groups, two solos, the detached workspace and the removed-source fallback. ZIP SHA-256 `46cb64c9ffaac7b397ccd186faac55b5afc7d4b0709c983cca1da56f782357d9`; ADI.exe SHA-256 `01c047d26ab19ba8f68c6344615fb4bb35bba81d7b648570c46878b3781594c9`.
+
+**PR requested.** Include `mixview/detached-analysis-return-20261119` after Main Meter Link. The Window review is limited to the existing return callback.
+
 ### DF-M53 Main meter Link mode
 
 The Main meter offers Link with one combined Dynamic reading and a central range bar. Peak, RMS and holds still read the individual L/R channels. The independent Link interval starts from fresh samples and shares the active physical tap. It uses the existing weighting and reset controls. The linked calculation runs only for the Link profile. The monitor control remains independent.
