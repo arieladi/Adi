@@ -83,6 +83,9 @@ struct Fragment {
     std::vector<std::string> records;
     std::vector<std::array<int, 4>> internal;   ///< local src, outlet, local dst, inlet
     std::vector<std::pair<int, int>> inlets, outlets;
+    /// Where a CONTROL source lands on a Max inlet that also takes a signal
+    /// (biquad~'s coefficient list), when that differs from `inlets`.
+    std::map<int, std::pair<int, int>> controlInlets;
     [[nodiscard]] std::pair<int, int> in(int n) const {
         return static_cast<std::size_t>(n) < inlets.size() ? inlets[static_cast<std::size_t>(n)]
                                                            : std::pair<int, int>{0, n};
@@ -186,7 +189,9 @@ public:
             return std::pair<int, int>{base.at(l.src) + p.first, p.second};
         };
         const auto dst = [&](const Line& l) {
-            const auto p = frags_.at(l.dst).in(l.inlet);
+            const Fragment& f = frags_.at(l.dst);
+            const auto c = f.controlInlets.find(l.inlet);
+            const auto p = c != f.controlInlets.end() && !isSignalSource(l) ? c->second : f.in(l.inlet);
             return std::pair<int, int>{base.at(l.dst) + p.first, p.second};
         };
         std::map<std::pair<std::string, int>, std::vector<const Line*>> fan;
@@ -326,7 +331,15 @@ private:
             const bool signal = mc == "inlet" ? (!b.signalOutlet.empty() && b.signalOutlet[0]) : fedSignal(b, 0);
             return obj(b, mc + (signal ? "~" : ""));
         }
-        if (mc == "live.dial" || mc == "live.numbox" || mc == "live.slider") return liveControl(b);
+        if (mc == "live.dial" || mc == "live.numbox" || mc == "live.slider" || mc == "live.menu" ||
+            mc == "live.tab")
+            return liveControl(b);
+        if (mc == "live.text") {
+            // Toggle mode is a two-state parameter; button mode (mode 0) is a
+            // bang with no value, not translated yet.
+            if (b.raw.value("mode", 1) == 0) return refuse(b, mc, "button mode is not translated yet");
+            return liveControl(b, true);
+        }
         if (mc != "newobj") return refuse(b, mc, "no translation for this kind of box yet");
         if (b.words.empty()) return refuse(b, "newobj", "an empty object box");
         if (b.text.find('"') != std::string::npos) return refuse(b, b.words[0], "quoted symbols are not translated yet");
@@ -370,6 +383,35 @@ private:
         }
         if (cls == "t" || cls == "trigger") return trigger(b, args);
         if (cls == "line~") return line(b, args);
+        if (cls == "prepend" || cls == "append") {
+            if (args.empty()) return refuse(b, cls, "nothing to add");
+            std::string what;
+            for (const auto& a : args) what += " " + a;
+            // Max outputs a message whose selector is the first word; Pd's
+            // [list prepend] gives a list, which [list trim] turns into that message.
+            return chain(b, {"list " + cls + what, "list trim"});
+        }
+        if (cls == "f" || cls == "float") {
+            if (args.size() > 1 || !allNumbers) return refuse(b, cls, "one number at most");
+            return obj(b, "f" + (args.empty() ? std::string() : " " + args[0]));
+        }
+        if (cls == "i" || cls == "int") {
+            if (args.size() > 1 || !allNumbers) return refuse(b, cls, "one number at most");
+            return obj(b, "i" + (args.empty() ? std::string() : " " + args[0]));
+        }
+        if (cls == "delay" || cls == "del") {
+            if (args.size() > 1 || !allNumbers) return refuse(b, cls, "only a time in ms is translated");
+            return obj(b, "delay" + (args.empty() ? std::string() : " " + args[0]));
+        }
+        if (cls == "abs~") {
+            if (!args.empty()) return refuse(b, cls, "no arguments");
+            return obj(b, "abs~");
+        }
+        if (cls == "!-") return reverseSubtract(b, args);
+        if (cls == "gate") return gate(b, args);
+        if (cls == "selector~") return selector(b, args);
+        if (cls == "slide~") return slide(b, args);
+        if (cls == "biquad~") return biquad(b, args);
         if (cls == "pack" || cls == "unpack") return packing(b, cls, args);
         static const std::set<std::string> twoInlet{"+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "min", "max"};
         if (twoInlet.count(cls) != 0 || cls == "abs") {
@@ -451,6 +493,135 @@ private:
         single(b, canvas + "#X restore " + at(b.x, b.y) + " pd max-line~");
     }
 
+    /// Boxes in a row, each feeding the next: inlets on the first, outlet 0
+    /// on the last.
+    void chain(const Box& b, const std::vector<std::string>& texts) {
+        Fragment f;
+        for (std::size_t k = 0; k < texts.size(); ++k) {
+            f.records.push_back("#X obj " + at(b.x, b.y + 20.0 * static_cast<double>(k)) + " " + texts[k]);
+            if (k > 0) f.internal.push_back({static_cast<int>(k) - 1, 0, static_cast<int>(k), 0});
+        }
+        f.outlets = {{static_cast<int>(texts.size()) - 1, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max [!- n]: n minus the input, int unless n is written as a float;
+    /// the right inlet sets n. Pd: (-x) + n, with [i] first for ints.
+    void reverseSubtract(const Box& b, const std::vector<std::string>& args) {
+        if (args.size() > 1 || (args.size() == 1 && !isNumber(args[0]))) return refuse(b, "!-", "one number at most");
+        const bool isFloat = !args.empty() && isFloatLiteral(args[0]);
+        const std::string n = args.empty() ? "0" : args[0];
+        Fragment f;
+        if (!isFloat) f.records.push_back("#X obj " + at(b.x, b.y - 20) + " i");
+        const int neg = static_cast<int>(f.records.size());
+        f.records.push_back("#X obj " + at(b.x, b.y) + " * -1");
+        const int add = neg + 1;
+        f.records.push_back("#X obj " + at(b.x, b.y + 20) + " + " + n);
+        if (!isFloat) {
+            f.records.push_back("#X obj " + at(b.x + 40, b.y - 20) + " i");
+            f.internal.push_back({0, 0, neg, 0});
+            f.internal.push_back({add + 1, 0, add, 1});
+            f.inlets = {{0, 0}, {add + 1, 0}};
+        } else {
+            f.inlets = {{neg, 0}, {add, 1}};
+        }
+        f.internal.push_back({neg, 0, add, 0});
+        f.outlets = {{add, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max [gate n init]: the left inlet picks an outlet (0 closes it), the
+    /// right inlet's message goes out there. Pd: the choice is the prefix a
+    /// [list prepend] puts on the message, and [route 1 .. n] sends it on.
+    void gate(const Box& b, const std::vector<std::string>& args) {
+        if (args.size() > 2 || !std::all_of(args.begin(), args.end(), isIntLiteral))
+            return refuse(b, "gate", "outlet count and initial choice, as ints");
+        const int n = args.empty() ? 1 : std::atoi(args[0].c_str());
+        const std::string init = args.size() > 1 ? args[1] : "0";
+        if (n < 1 || n > 64) return refuse(b, "gate", "between 1 and 64 outlets");
+        std::string routes = "route";
+        for (int k = 1; k <= n; ++k) routes += " " + std::to_string(k);
+        Fragment f;
+        f.records = {"#X obj " + at(b.x, b.y - 20) + " i", "#X obj " + at(b.x, b.y) + " list prepend " + init,
+                     "#X obj " + at(b.x, b.y + 20) + " " + routes};
+        f.internal = {{0, 0, 1, 1}, {1, 0, 2, 0}};
+        f.inlets = {{0, 0}, {1, 0}};
+        for (int k = 0; k < n; ++k) f.outlets.emplace_back(2, k);
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max [selector~ n init]: the left inlet picks one of n signal inputs
+    /// (0 is silence), switched at once. Pd: each input times (choice == k),
+    /// summed into one [*~ 1].
+    void selector(const Box& b, const std::vector<std::string>& args) {
+        if (args.size() > 2 || !std::all_of(args.begin(), args.end(), isIntLiteral))
+            return refuse(b, "selector~", "input count and initial choice, as ints");
+        if (fedSignal(b, 0)) return refuse(b, "selector~", "a signal choosing the input is not translated yet");
+        const int n = args.empty() ? 1 : std::atoi(args[0].c_str());
+        const int init = args.size() > 1 ? std::atoi(args[1].c_str()) : 0;
+        if (n < 1 || n > 64) return refuse(b, "selector~", "between 1 and 64 inputs");
+        Fragment f;
+        f.records.push_back("#X obj " + at(b.x, b.y - 40) + " i");   // 0: the choice
+        f.inlets.emplace_back(0, 0);
+        const int sum = 1;
+        f.records.push_back("#X obj " + at(b.x, b.y + 40) + " *~ 1");
+        for (int k = 1; k <= n; ++k) {
+            const int eq = static_cast<int>(f.records.size());
+            f.records.push_back("#X obj " + at(b.x + 50.0 * k, b.y - 20) + " == " + std::to_string(k));
+            f.records.push_back("#X obj " + at(b.x + 50.0 * k, b.y) + " *~ " + (k == init ? "1" : "0"));
+            f.internal.push_back({0, 0, eq, 0});
+            f.internal.push_back({eq, 0, eq + 1, 1});
+            f.internal.push_back({eq + 1, 0, sum, 0});
+            f.inlets.emplace_back(eq + 1, 0);
+        }
+        f.outlets = {{sum, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max [slide~ up down]: y += (x - y) / (x > y ? up : down), each at
+    /// least 1. Written as that recursion in [fexpr~]; the inlets set them.
+    void slide(const Box& b, const std::vector<std::string>& args) {
+        if (args.size() > 2 || !std::all_of(args.begin(), args.end(), isNumber))
+            return refuse(b, "slide~", "up and down as numbers");
+        if (fedSignal(b, 1) || fedSignal(b, 2)) return refuse(b, "slide~", "signal-rate up and down are not translated yet");
+        const std::string up = args.empty() ? "1" : args[0];
+        const std::string down = args.size() > 1 ? args[1] : "1";
+        Fragment f;
+        f.records = {"#X obj " + at(b.x, b.y) +
+                         " fexpr~ \\$y1 + (\\$x1 - \\$y1) / if(\\$x1 > \\$y1 \\, max(\\$f2 \\, 1) \\, max(\\$f3 \\, 1))",
+                     "#X obj " + at(b.x + 120, b.y - 60) + " loadbang", "#X msg " + at(b.x + 120, b.y - 40) + " " + up,
+                     "#X msg " + at(b.x + 170, b.y - 40) + " " + down};
+        f.internal = {{1, 0, 2, 0}, {1, 0, 3, 0}, {2, 0, 0, 1}, {3, 0, 0, 2}};
+        f.inlets = {{0, 0}, {0, 1}, {0, 2}};
+        f.outlets = {{0, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max [biquad~] takes a0 a1 a2 b1 b2 for y = a0 x + a1 x1 + a2 x2 - b1 y1 -
+    /// b2 y2; Pd's takes fb1 fb2 ff1 ff2 ff3 with the feedback ADDED. So a
+    /// coefficient list is reordered and its b's negated on the way in.
+    void biquad(const Box& b, const std::vector<std::string>& args) {
+        if (!(args.empty() || args.size() == 5) || !std::all_of(args.begin(), args.end(), isNumber))
+            return refuse(b, "biquad~", "five coefficients or none");
+        for (int k = 1; k <= 5; ++k)
+            if (connected(b, false, k)) return refuse(b, "biquad~", "signal-rate coefficients are not translated yet");
+        const auto neg = [](const std::string& v) { return number(-std::strtod(v.c_str(), nullptr)); };
+        const std::string init = args.empty() ? "" : " " + neg(args[3]) + " " + neg(args[4]) + " " + args[0] + " " +
+                                                         args[1] + " " + args[2];
+        Fragment f;
+        f.records = {"#X obj " + at(b.x, b.y) + " biquad~" + init,
+                     "#X obj " + at(b.x + 80, b.y - 40) +
+                         " expr -\\$f4 \\; -\\$f5 \\; \\$f1 \\; \\$f2 \\; \\$f3",
+                     "#X obj " + at(b.x + 80, b.y - 20) + " pack f f f f f"};
+        // [expr] spreads a list over its inlets and fires right to left, so
+        // the pack's hot inlet is filled last.
+        f.internal = {{1, 0, 2, 0}, {1, 1, 2, 1}, {1, 2, 2, 2}, {1, 3, 2, 3}, {1, 4, 2, 4}, {2, 0, 0, 0}};
+        f.inlets = {{0, 0}};
+        f.controlInlets[0] = {1, 0};   // a coefficient list goes through the reorder
+        f.outlets = {{0, 0}};
+        frags_[b.id] = std::move(f);
+    }
+
     void trigger(const Box& b, const std::vector<std::string>& args) {
         Fragment f;
         std::string t = "t";
@@ -527,7 +698,7 @@ private:
         single(b, "#N canvas 0 50 600 400 " + name + " 0;\n" + inner + "#X restore " + at(b.x, b.y) + " pd " + name);
     }
 
-    void liveControl(const Box& b) {
+    void liveControl(const Box& b, bool toggle = false) {
         if (connected(b, true, 1)) return refuse(b, b.maxClass, "only its value outlet is translated");
         for (int i = 0; i < 4; ++i)
             if (connected(b, false, i)) return refuse(b, b.maxClass, "setting it from the patch is not translated");
@@ -557,6 +728,11 @@ private:
             lo = 0;
             hi = static_cast<double>(items.size() - 1);
         }
+        if (toggle) {   // live.text in toggle mode: off and on, nothing else
+            lo = 0;
+            hi = 1;
+            items.clear();
+        }
         const bool initialOn = num("parameter_initial_enable", 0) != 0;
         double def = initialOn ? num("parameter_initial", lo) : lo;
         if (!(lo < hi)) return refuse(b, b.maxClass, "its range is empty");
@@ -567,6 +743,7 @@ private:
         std::string curve = "lin";
         if (type == 1) curve = "int";
         if (type == 2) curve = "menu";
+        if (toggle) curve = "toggle";
         const double exponent = num("parameter_exponent", 1.0);
         if (type == 0 && exponent > 0 && std::fabs(exponent - 1.0) > 1e-12) curve = number(exponent);
         const int id = static_cast<int>(out_.parameters.size()) + 1;

@@ -144,6 +144,33 @@ void testTheTranslation() {
           "a message 'set $1, 2' is written 'set \\$1 \\, 2'");
 }
 
+void testMoreLiveControls() {
+    section("DEV-16 step 4 -- live.text (toggle) and live.menu become parameters");
+    const std::string toggle =
+        R"(,"mode":1,"saved_attribute_attributes":{"valueof":{"parameter_longname":"Bypass","parameter_type":2,)"
+        R"("parameter_enum":["off","on"],"parameter_initial_enable":1,"parameter_initial":[1]}})";
+    const std::string menu =
+        R"(,"saved_attribute_attributes":{"valueof":{"parameter_longname":"Shape","parameter_type":2,)"
+        R"("parameter_enum":["Sine","Saw Up","Square"]}})";
+    const std::string button = R"(,"mode":0)";
+    const auto t = translateMaxPatcher(
+        patcher({box("obj-1", "", 10, 10, R"("")", "live.text", toggle), box("obj-2", "", 100, 10, R"("")", "live.menu", menu)},
+                {}),
+        AmxdKind::AudioEffect);
+    const auto d = parsePdDeclarations(t.pdPatch);
+    check(t.ok() && d.params.size() == 2 && d.problems.empty(), "two parameters, no problem");
+    if (d.params.size() == 2) {
+        check(d.params[0].curve == PdCurve::Toggle && d.params[0].def == 1.0 && d.params[0].name == "Bypass",
+              "live.text in toggle mode: a toggle, default on, 'Bypass'");
+        check(d.params[1].curve == PdCurve::Menu && d.params[1].items ==
+                  std::vector<std::string>{"Sine", "Saw Up", "Square"},
+              "live.menu: a menu with its three items");
+    }
+    const auto b = translateMaxPatcher(patcher({box("obj-1", "", 10, 10, R"("")", "live.text", button)}, {}),
+                                       AmxdKind::AudioEffect);
+    check(!b.ok() && b.refused.size() == 1, "live.text in button mode is refused for now");
+}
+
 void testRightToLeftIsMadeExplicit() {
     section("DEV-16 -- Max's right-to-left order becomes a [t a a]");
     const auto t = translateMaxPatcher(
@@ -401,6 +428,87 @@ void testLineSegmentsAreChained() {
                   std::to_string(v) + ")" + error);
 }
 
+void testStepFourControls() {
+    section("DEV-16 step 4 -- prepend, append, f, i, !-, gate, played in libpd");
+    struct Case { const char* what; std::string json; std::vector<std::string> expect; };
+    // [gate 2]: choose outlet 2, then send 5 through; only outlet 2 prints.
+    const std::string gate = patcher(
+        {box("obj-1", "loadbang", 10, 10, R"("bang")"), box("obj-2", "t b b", 10, 30, R"("bang","bang")"),
+         box("obj-3", "2", 120, 50, R"("")", "message"), box("obj-4", "5", 10, 50, R"("")", "message"),
+         box("obj-5", "gate 2", 10, 80, R"("","")"), box("obj-6", "print Y", 10, 120, ""),
+         box("obj-7", "print X", 100, 120, "")},
+        {line("obj-1", 0, "obj-2", 0), line("obj-2", 1, "obj-3", 0), line("obj-2", 0, "obj-4", 0),
+         line("obj-3", 0, "obj-5", 0), line("obj-4", 0, "obj-5", 1), line("obj-5", 0, "obj-6", 0),
+         line("obj-5", 1, "obj-7", 0)});
+    const std::vector<Case> cases{
+        {"[prepend set] fed 3 gives the message set 3", probe("3", "prepend set", R"("")"), {"X: set 3"}},
+        {"[append foo] fed 3 gives 3 foo", probe("3", "append foo", R"("")"), {"X: 3 foo"}},
+        {"[f 0.5] banged gives 0.5", probe("bang", "f 0.5", R"("float")"), {"X: 0.5"}},
+        {"[i] fed 2.9 gives 2", probe("2.9", "i", R"("int")"), {"X: 2"}},
+        {"[!- 10] fed 3.5 gives 7 (int)", probe("3.5", "!- 10", R"("int")"), {"X: 7"}},
+        {"[!- 10.] fed 3.5 gives 6.5", probe("3.5", "!- 10.", R"("float")"), {"X: 6.5"}},
+        {"[gate 2] set to 2 passes 5 out of its second outlet", gate, {"X: 5"}},
+    };
+    for (const auto& c : cases) {
+        const auto t = translateMaxPatcher(c.json, AmxdKind::AudioEffect);
+        const auto got = t.ok() ? printed(t.pdPatch) : std::vector<std::string>{"refused"};
+        std::string shown;
+        for (const auto& g : got) shown += (shown.empty() ? "" : " | ") + g;
+        check(got == c.expect, std::string(c.what) + ": " + shown);
+    }
+}
+
+void testStepFourSignals() {
+    section("DEV-16 step 4 -- selector~, slide~ and biquad~, as Max computes them");
+    // [selector~ 2 1]: input 1 (left) passes; the right is muted.
+    const std::string sel = patcher(
+        {box("obj-1", "plugin~", 20, 20, kSig2), box("obj-2", "selector~ 2 1", 20, 80, kSig),
+         box("obj-3", "plugout~", 20, 140, "")},
+        {line("obj-1", 0, "obj-2", 1), line("obj-1", 1, "obj-2", 2), line("obj-2", 0, "obj-3", 0),
+         line("obj-2", 0, "obj-3", 1)});
+    const auto ts = translateMaxPatcher(sel, AmxdKind::AudioEffect);
+    float gain = 0;
+    int latency = 0;
+    std::string error;
+    const auto residue = render(ts.pdPatch, gain, latency, error);
+    double worst = 0;
+    for (float r : residue) worst = std::max(worst, std::fabs(static_cast<double>(r)));
+    check(ts.ok() && error.empty() && std::fabs(gain - 1.0f) < 1e-6 && worst < 1e-6,
+          "[selector~ 2 1] passes its first input exactly: x " + std::to_string(gain) + error);
+
+    // [slide~ 10 10] of a step to 1: y[n] = 1 - 0.9^(n+1), Max's own formula.
+    const std::string slide = patcher(
+        {box("obj-1", "sig~ 1", 20, 20, kSig), box("obj-2", "slide~ 10 10", 20, 80, kSig),
+         box("obj-3", "plugout~", 20, 140, "")},
+        {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0), line("obj-2", 0, "obj-3", 1)});
+    const auto tl = translateMaxPatcher(slide, AmxdKind::AudioEffect);
+    const auto out = tl.ok() ? renderOut(tl.pdPatch, 512, latency, error) : std::vector<float>{};
+    double dev = 0;
+    for (int n = 0; n < 40 && static_cast<std::size_t>(latency + n) < out.size(); ++n)
+        dev = std::max(dev, std::fabs(out[static_cast<std::size_t>(latency + n)] - (1.0 - std::pow(0.9, n + 1))));
+    check(tl.ok() && !out.empty() && dev < 1e-6,
+          "[slide~ 10 10] on a step follows 1 - 0.9^(n+1) sample for sample (worst " + std::to_string(dev) + ")" + error);
+
+    // [biquad~] given Max's "1 0 0 -0.5 0" (y = x + 0.5 y1): DC gain 2.
+    const std::string bq = patcher(
+        {box("obj-1", "loadbang", 120, 10, R"("bang")"), box("obj-2", "1 0 0 -0.5 0", 120, 40, R"("")", "message"),
+         box("obj-3", "sig~ 1", 20, 40, kSig), box("obj-4", "biquad~", 20, 80, kSig),
+         box("obj-5", "plugout~", 20, 140, "")},
+        {line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-4", 0), line("obj-3", 0, "obj-4", 0),
+         line("obj-4", 0, "obj-5", 0), line("obj-4", 0, "obj-5", 1)});
+    const auto tb = translateMaxPatcher(bq, AmxdKind::AudioEffect);
+    const auto bout = tb.ok() ? renderOut(tb.pdPatch, 4096, latency, error) : std::vector<float>{};
+    const double settled = bout.empty() ? -1 : bout.back();
+    const double first = bout.size() > static_cast<std::size_t>(latency) ? bout[static_cast<std::size_t>(latency)] : -1;
+    check(tb.ok() && std::fabs(settled - 2.0) < 1e-5 && std::fabs(first - 1.0) < 1e-6,
+          "Max's biquad~ \"1 0 0 -0.5 0\" starts at 1 and settles at 2: " + std::to_string(first) + ", " +
+              std::to_string(settled) + error);
+    const auto args = translateMaxPatcher(
+        patcher({box("obj-1", "biquad~ 0.5 0.1 0.2 -0.3 0.4", 10, 10, kSig)}, {}), AmxdKind::AudioEffect);
+    check(args.ok() && args.pdPatch.find("biquad~ 0.3 -0.4 0.5 0.1 0.2") != std::string::npos,
+          "and its arguments a0 a1 a2 b1 b2 become Pd's fb1 fb2 ff1 ff2 ff3 = -b1 -b2 a0 a1 a2");
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -429,6 +537,7 @@ int main() {
     std::printf("adi_pd_amxd_tests -- DEV-16 step 1, the .amxd translator\n");
     testTheContainer();
     testTheTranslation();
+    testMoreLiveControls();
     testRightToLeftIsMadeExplicit();
     testWhatIsRefusedIsNamed();
 #if defined(ADI_WITH_PD)
@@ -437,6 +546,8 @@ int main() {
     testMaxIntegersAreHeard();
     testSubpatchersCarrySignalsAndControls();
     testLineSegmentsAreChained();
+    testStepFourControls();
+    testStepFourSignals();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;
