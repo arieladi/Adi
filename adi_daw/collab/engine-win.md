@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, retain the final recorded block at Stop
+
+**PR requested** — `engine-win/audio-recording-finalization` at `274f81f54cde8ac7d292e5f3c1434fada1f4e86b`, based on main `bedee5ab`. The writer rechecks the published end of the ring after acquiring Stop on the empty path. It drains frames accepted before callback quiescence before closing each WAV.
+
+**MEASURED.** A controlled Windows schedule parked the writer after it observed an empty ring, accepted eight samples, acknowledged Stop and released the writer. The previous code reported success with a zero-frame WAV in all three runs. With the fix all three WAVs contained the eight exact Float32 samples. Strict MSVC x64 `/W4 /WX` passed 273 checks across the recorder, recording commands and take-lane suites. The public short-recording regression covers both callback acknowledgement and a stopped driver. The deterministic schedule used private instrumentation. Win can add the register row requested by the engine.
+
+**Take contracts.** Engine supplied CT-02 grouped Undo at `a0a42ebd` and CT-03's driver MIDI tap at `ae4cebf4` on its branches. Both are pending on main. CT-02 materialization can now proceed against the grouped contract. #677 remains open and still gates the DF-E35 snapshot loan.
+
 ## 2026-11-19, combined decode-cache gate (DF-E28 and DF-E34)
 
 **MEASURED.** The requested `engine-win/decode-space-admission` at `1abfcb3c` and `engine-win/progressive-saved-source-mismatch` at `d4ecedb2` merge cleanly. Their combined tree `74f1751979ec67581a20130c478aaf8f123dea74` passed 853 checks across eight suites in strict MSVC x64 `/W4 /WX`. The progressive suite includes 50 warm sources opened through Session without hashing. The space-admission and trim regressions also passed. The existing native AAC and symlink cases lacked codec support and privilege, respectively. Review stays on the two existing branch requests.
