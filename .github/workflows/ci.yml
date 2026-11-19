@@ -42,9 +42,10 @@
 #   - main's runs are never cancelled by the next push (concurrency, below);
 #   - a DRAFT pull request runs nothing until it is marked ready (the `if`s on
 #     `plan` and `validators`; every other job needs `plan`);
-#   - a pull request that changes only Markdown no leg reads runs the
-#     validators and nothing else (`plan` decides, through
-#     .github/scripts/markdown_only.sh).
+#   - a pull request INTO MAIN that changes only Markdown no leg reads runs
+#     the validators and nothing else (`plan` decides, through
+#     .github/scripts/markdown_only.sh). A stacked pull request, whose base is
+#     another branch, always builds: its top lands with no new run.
 
 name: adi_daw
 
@@ -60,6 +61,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
       - '.github/scripts/markdown_only.sh'
+      - '.github/scripts/test_markdown_only.sh'
   pull_request:
     # GitHub's default three, plus ready_for_review: a draft runs nothing, so
     # the moment it is marked ready is the moment it has to be built.
@@ -73,6 +75,7 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
       - '.github/scripts/markdown_only.sh'
+      - '.github/scripts/test_markdown_only.sh'
   workflow_dispatch:
 
 permissions:
@@ -125,8 +128,9 @@ jobs:
   #     skipped is skipped too; `validators`, the one job that does not need
   #     this one, carries the same `if`. A draft marked ready gets a fresh run
   #     (ready_for_review, in `on:` above).
-  #   - `code` is 'false' for a pull request that changes only Markdown no leg
-  #     reads; every leg but the validators then skips. Only an explicit
+  #   - `code` is 'false' for a pull request into main that changes only
+  #     Markdown no leg reads (never for a stacked one, whose base is another
+  #     branch); every leg but the validators then skips. Only an explicit
   #     'false' skips: a missing answer builds (`!= 'false'`, never
   #     `== 'true'`). The build and strict lists are still written in full:
   #     a skipped job never expands its matrix, and an empty one would be an
@@ -143,14 +147,27 @@ jobs:
     steps:
       # Depth 2 is the whole history this needs. A pull request's checkout is
       # GitHub's merge of its head into its base, and that merge's first parent
-      # is the base, so HEAD^1..HEAD is exactly what the pull request would
-      # change on main.
+      # is the base, so HEAD^1..HEAD is exactly what the pull request changes
+      # on its base. That is main's view only when the base IS main, so the
+      # script builds everything for any other base: a stack lands through its
+      # top, retargeted to main and merged with no new run, and a top of
+      # Markdown alone would otherwise carry the C++ below it to main unbuilt.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
 
+      # The rule's own test table first. A rule gone wrong fails this job,
+      # every leg then skips for want of `plan`, and the gate fails: nothing
+      # lands on a classifier nobody can trust.
+      - name: markdown_only.sh passes its test table
+        run: bash .github/scripts/test_markdown_only.sh
+
       - name: Only Markdown no leg reads?
         id: changes
+        env:
+          # Passed in, not left to the default environment alone: the script
+          # answers code=false only when the base is main.
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
 
       - name: Decide

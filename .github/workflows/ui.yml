@@ -35,6 +35,10 @@ jobs:
           fetch-depth: 2
       - name: Only Markdown no build reads?
         id: changes
+        env:
+          # code=false only when the base is main: a stack's top lands with no
+          # new run, so a stacked pull request always builds (the script says why).
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
   shell:
     name: GUI shell / ${{ matrix.os }}

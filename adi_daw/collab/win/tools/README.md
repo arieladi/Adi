@@ -19,6 +19,7 @@ path.
 Traps they encode:
 - A PR's CI takes its workflow from the merge ref of head plus base, so retarget a stack's top to main before its final run.
 - A collab-only PR gets no checks at all.
-- A draft PR runs no checks until it is marked ready, and a PR that changes only Markdown no build reads runs the validators and the gate, nothing else (`.github/scripts/markdown_only.sh`).
+- A draft PR runs no checks until it is marked ready, and a PR into main that changes only Markdown no build reads runs the validators and the gate, nothing else (`.github/scripts/markdown_only.sh`, tested by `test_markdown_only.sh` beside it).
+- A stacked PR (base not main) always runs every leg, Markdown-only or not: its top is retargeted and merged by `merge_stack.sh` with no new run, so its run must have built everything below it.
 - Verify a run by its head SHA.
 - A commit pushed while GitHub still shows an older head can miss the merge (#507, then #510).

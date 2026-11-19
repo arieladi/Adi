@@ -3,10 +3,13 @@
 #
 # Does this pull request change anything a build leg compiles, runs or reads?
 #
-#   bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
+#   PR_BASE_REF=<the pull request's base branch> \
+#     bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
 #
 # Run from the repository root, in a pull request's checkout fetched at depth 2.
 # Prints one line, `code=true` or `code=false`, and says why on stderr.
+# test_markdown_only.sh beside this file is its test table; ci.yml's `plan`
+# runs it before it runs this.
 #
 # code=false means: every file the pull request changes is Markdown, and no
 # build leg reads any of them. ci.yml then runs the validators and nothing
@@ -21,8 +24,21 @@
 # they run is treated as code. A list here would be one more thing to forget
 # the day a test starts reading another document.
 #
-# Every doubt answers code=true. Not a pull request, not GitHub's merge commit,
-# a diff that cannot be read: all of it builds.
+# ONLY A PULL REQUEST INTO MAIN CAN SKIP. A stacked pull request's base is the
+# branch of the pull request below it, so HEAD^1..HEAD is what it changes on
+# THAT branch, not on main. A stack lands through its top: land_top.sh waits for
+# the top's run, then merge_stack.sh retargets the top to main and merges it at
+# once, with no new run. A top whose own diff is only Markdown would answer
+# code=false, its gate would pass on the validators alone, and the C++ of every
+# pull request below it would reach main unbuilt. So a base other than main
+# builds, whatever the diff. The base is read from PR_BASE_REF (ci.yml and
+# ui.yml pass the event's base ref) and from GITHUB_BASE_REF (GitHub sets it on
+# a pull request); either one naming another branch builds, and so does
+# neither being set.
+#
+# Every doubt answers code=true. Not a pull request, a base other than main or
+# no base at all, not GitHub's merge commit, a diff that cannot be read: all of
+# it builds.
 set -euo pipefail
 
 say() { printf '%s\n' "$*" >&2; }
@@ -32,9 +48,22 @@ if [ "${GITHUB_EVENT_NAME:-}" != "pull_request" ]; then
   echo "code=true"; exit 0
 fi
 
+passed_base=${PR_BASE_REF:-}
+github_base=${GITHUB_BASE_REF:-}
+if [ -z "$passed_base" ] && [ -z "$github_base" ]; then
+  say "no base branch given (PR_BASE_REF and GITHUB_BASE_REF unset): every leg runs"
+  echo "code=true"; exit 0
+fi
+for b in "$passed_base" "$github_base"; do
+  if [ -n "$b" ] && [ "$b" != main ]; then
+    say "base is $b, not main: a stack lands through its top with no new run, so every leg runs"
+    echo "code=true"; exit 0
+  fi
+done
+
 # A pull request's checkout is GitHub's merge commit: first parent the base it
 # merged into, second the pull request's head. HEAD^1..HEAD is then exactly
-# what the pull request changes on its base, the same set as base...head.
+# what the pull request changes on its base -- main, by the rule above.
 if ! git rev-parse -q --verify 'HEAD^2' >/dev/null 2>&1 \
    || ! git rev-parse -q --verify 'HEAD^1' >/dev/null 2>&1; then
   say "HEAD is not the pull request merged into its base: every leg runs"
