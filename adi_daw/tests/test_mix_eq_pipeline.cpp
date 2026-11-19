@@ -169,8 +169,11 @@ void pairedBandGesture() {
     check(edit(E::Begin, final) && !edit(E::Value, invalid) && !owner && matches(final) &&
           operations() == settled && doc->pendingParameterGestures().empty(),
           "a rejected second coordinate writes neither value and cancels the pair");
-    doc->store().db().exec("CREATE TRIGGER refuse_pair_gain BEFORE UPDATE ON plugin_params "
-                           "WHEN NEW.param_id='14' BEGIN SELECT RAISE(ABORT,'refuse gain'); END");
+    // The preview applies rows inside a rollback scope. Refuse the second
+    // durable journal insertion so this checks rollback after the first one.
+    doc->store().db().exec("CREATE TRIGGER refuse_pair_gain BEFORE INSERT ON ops "
+                           "WHEN NEW.op_type='device.setParam' AND (SELECT count(*) FROM ops) > " +
+                           std::to_string(settled) + " BEGIN SELECT RAISE(ABORT,'refuse gain'); END");
     check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
           !edit(E::End, origin) && !owner && matches(final) && operations() == settled &&
           doc->pendingParameterGestures().empty(),
