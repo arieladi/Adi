@@ -16,7 +16,7 @@ namespace fs=std::filesystem;
 namespace {
 constexpr std::size_t header=168,maximum=32*1024*1024,sectionHeader=16;
 std::mutex ioMutex; // all instances in this process; no reader remains open
-bool hashValid(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return (c>='0' && c<='9') || (c>='a' && c<='f');});}
+template<class String> bool hashValid(const String& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](auto c){return (c>='0' && c<='9') || (c>='a' && c<='f');});}
 bool identityValid(const AnalysisIdentity& id){return hashValid(id.hash) && id.sampleRate>0 && id.sampleRate<=768000 && id.channels>0 && id.channels<=64 && id.frames<=static_cast<std::uint64_t>(INT64_MAX);}
 bool tagValid(const std::string& tag){return tag.size()==4 && std::all_of(tag.begin(),tag.end(),[](char c){return c>='A' && c<='Z';});}
 void put(std::vector<std::byte>& data,std::size_t at,std::uint64_t value,unsigned width){for(unsigned i=0;i<width;++i)data[at+i]=static_cast<std::byte>((value>>(8*i))&255);}
@@ -27,7 +27,7 @@ std::string text(std::span<const std::byte> data,std::size_t at,std::size_t coun
 // callback refusals return (an allocation under MSVC's Debug iterator proxies).
 AnalysisCacheResult failure(AnalysisCacheProblem p){return {p,{},{}};}
 AnalysisCacheResult failure(AnalysisCacheProblem p,std::string error){return {p,std::move(error),{}};}
-AnalysisCacheResult readFile(const fs::path& file,const AnalysisIdentity& id,std::stop_token stop) {
+AnalysisCacheResult readFile(const fs::path& file,const AnalysisIdentity* expected,std::stop_token stop) {
     if(stop.stop_requested())return failure(AnalysisCacheProblem::Cancelled);
     std::error_code ec;const auto status=fs::symlink_status(file,ec);
     if(ec==std::errc::no_such_file_or_directory || status.type()==fs::file_type::not_found)return failure(AnalysisCacheProblem::Missing);
@@ -37,7 +37,7 @@ AnalysisCacheResult readFile(const fs::path& file,const AnalysisIdentity& id,std
     std::vector<std::byte> bytes(static_cast<std::size_t>(size));
     {audio::fileIoPoint();std::ifstream in(file,std::ios::binary);if(!in || !in.read(reinterpret_cast<char*>(bytes.data()),static_cast<std::streamsize>(bytes.size())))return failure(AnalysisCacheProblem::Io,"cannot read analysis");char extra=0;if(in.get(extra))return failure(AnalysisCacheProblem::Invalid,"analysis grew during read");}
     if(stop.stop_requested())return failure(AnalysisCacheProblem::Cancelled);
-    auto result=decodeAnalysis(bytes);if(result && result.data->identity!=id)return failure(AnalysisCacheProblem::Invalid,"analysis identity changed");return result;
+    auto result=decodeAnalysis(bytes);if(result && expected && result.data->identity!=*expected)return failure(AnalysisCacheProblem::Invalid,"analysis identity changed");return result;
 }
 }
 std::vector<std::byte> encodeAnalysis(const SampleAnalysis& data) {
@@ -87,7 +87,14 @@ AnalysisCacheResult AnalysisCache::read(const AnalysisIdentity& id,std::stop_tok
     if(audio::onAudioThread)return failure(AnalysisCacheProblem::Realtime);
     if(!identityValid(id))return failure(AnalysisCacheProblem::Invalid);
     if(folder_.empty() || !folder_.is_absolute())return failure(AnalysisCacheProblem::Io,"analysis folder must be absolute");
-    try {std::lock_guard lock(ioMutex);return readFile(folder_/(id.hash+".adia"),id,stop);}
+    try {
+        std::lock_guard lock(ioMutex);const auto file=folder_/(id.hash+".adia");
+        auto result=readFile(file,&id,stop);
+        // Cache recency is optional metadata: failure to stamp a readable cache
+        // must not turn a usable waveform into a miss (e.g. a read-only volume).
+        if(result){std::error_code ec;fs::last_write_time(file,fs::file_time_type::clock::now(),ec);}
+        return result;
+    }
     catch(const std::bad_alloc&){return failure(AnalysisCacheProblem::Resource);}
     catch(const std::exception& e){return failure(AnalysisCacheProblem::Io,e.what());}
 }
@@ -100,7 +107,7 @@ AnalysisCacheProblem AnalysisCache::update(const AnalysisIdentity& id,const std:
     struct Cleanup {fs::path& path;~Cleanup(){if(!path.empty()){std::error_code ec;fs::remove_all(path,ec);}}} cleanup{directory};
     try {
         std::lock_guard lock(ioMutex);const auto target=folder_/(id.hash+".adia");
-        auto previous=readFile(target,id,stop);if(previous.problem==AnalysisCacheProblem::Cancelled)return previous.problem;
+        auto previous=readFile(target,&id,stop);if(previous.problem==AnalysisCacheProblem::Cancelled)return previous.problem;
         if(previous.problem==AnalysisCacheProblem::Io || previous.problem==AnalysisCacheProblem::Resource){error=previous.error;return previous.problem;}
         SampleAnalysis data=previous?std::move(*previous.data):SampleAnalysis{id,{}};data.sections[tag]=section;const auto bytes=encodeAnalysis(data);
         if(stop.stop_requested())return AnalysisCacheProblem::Cancelled;
@@ -127,6 +134,62 @@ AnalysisCacheProblem AnalysisCache::remove(const std::string& hash,std::string& 
         if(ec || !fs::is_regular_file(status)){error="analysis is not a real regular file";return AnalysisCacheProblem::Io;}
         fs::remove(target);error.clear();return AnalysisCacheProblem::None;
     }catch(const std::exception& e){error=e.what();return AnalysisCacheProblem::Io;}
+}
+AnalysisTrimResult AnalysisCache::trimToBytes(std::uint64_t maximumBytes,std::string& error,std::stop_token stop) {
+    AnalysisTrimResult result;
+    if(audio::onAudioThread){result.problem=AnalysisCacheProblem::Realtime;return result;}
+    if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
+    if(folder_.empty() || !folder_.is_absolute()){error="analysis folder must be absolute";result.problem=AnalysisCacheProblem::Io;return result;}
+    struct Candidate {fs::path path;std::uint64_t bytes;fs::file_time_type stamp;};
+    try {
+        std::lock_guard lock(ioMutex);
+        if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
+        std::error_code ec;const auto root=fs::symlink_status(folder_,ec);
+        if(ec==std::errc::no_such_file_or_directory || root.type()==fs::file_type::not_found) {
+            result.inventoryComplete=true;result.budgetMet=true;error.clear();return result;
+        }
+        if(ec)throw std::system_error(ec);
+        if(!fs::is_directory(root))throw std::runtime_error("analysis folder is not a real directory");
+        std::vector<Candidate> candidates;
+        audio::fileIoPoint();
+        // Inventory and validate everything before deleting anything. Unknown,
+        // damaged and future-envelope files remain for explicit repair, not GC.
+        for(const auto& entry:fs::directory_iterator(folder_)) {
+            if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
+            const auto status=entry.symlink_status();
+            const auto& path=entry.path();
+            if(!fs::is_regular_file(status) || path.extension()!=".adia") {++result.ignoredEntries;continue;}
+            // Reject foreign native names before a Windows narrow conversion:
+            // an unrelated Unicode .adia filename must not abort maintenance.
+            if(!hashValid(path.stem().native())){++result.ignoredEntries;continue;}
+            const auto hash=path.stem().string(); // proven lowercase ASCII
+            const auto size=fs::file_size(path);const auto stamp=fs::last_write_time(path);
+            auto data=readFile(path,nullptr,stop);
+            if(data.problem==AnalysisCacheProblem::Invalid || (data && data.data->identity.hash!=hash)) {++result.ignoredEntries;continue;}
+            if(!data){result.problem=data.problem;error=std::move(data.error);return result;}
+            if(fs::file_size(path)!=size || fs::last_write_time(path)!=stamp)throw std::runtime_error("analysis changed during inventory");
+            if(size>std::numeric_limits<std::uint64_t>::max()-result.bytesBefore)throw std::overflow_error("analysis inventory size overflow");
+            candidates.push_back({path,static_cast<std::uint64_t>(size),stamp});
+            result.bytesBefore+=static_cast<std::uint64_t>(size);result.bytesAfter=result.bytesBefore;
+        }
+        result.inventoryComplete=true;
+        std::sort(candidates.begin(),candidates.end(),[](const Candidate& a,const Candidate& b){
+            return a.stamp!=b.stamp?a.stamp<b.stamp:a.path<b.path;
+        });
+        for(const auto& candidate:candidates) {
+            if(result.bytesAfter<=maximumBytes)break;
+            if(stop.stop_requested()){result.problem=AnalysisCacheProblem::Cancelled;return result;}
+            // This detects ordinary external changes; it is not a cross-process
+            // compare-and-unlink. Ownership and the in-process mutex are needed.
+            if(!fs::is_regular_file(fs::symlink_status(candidate.path)) ||
+               fs::file_size(candidate.path)!=candidate.bytes || fs::last_write_time(candidate.path)!=candidate.stamp)
+                throw std::runtime_error("analysis changed before eviction");
+            if(!fs::remove(candidate.path))throw std::runtime_error("analysis disappeared before eviction");
+            result.bytesAfter-=candidate.bytes;++result.filesRemoved;
+        }
+        result.budgetMet=result.bytesAfter<=maximumBytes;error.clear();return result;
+    }catch(const std::bad_alloc&){result.problem=AnalysisCacheProblem::Resource;return result;}
+    catch(const std::exception& e){result.problem=AnalysisCacheProblem::Io;error=e.what();return result;}
 }
 AnalysisCache& defaultAnalysisCache(){static AnalysisCache cache([]{const auto paths=appdata::pathsFor(appdata::App::Daw);return paths.cache.empty()?fs::path{}:paths.cache/"analysed";}());return cache;}
 } // namespace adi::media
