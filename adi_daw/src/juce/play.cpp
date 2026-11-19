@@ -114,6 +114,8 @@ struct Options {
     std::int64_t toneTrack = 0;
     bool dry = false;
     bool list = false;
+    bool cacheOnly = false;
+    bool searchOnly = false;
     bool fixture = false;
     /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
     /// a render through a missing plug-in is a SUCCESS: the project played,
@@ -155,7 +157,9 @@ int usage() {
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
-        "adi_play --list [--search DIR]... [--fixture]\n"
+        "adi_play --list [--cache-only] [--search DIR]... [--search-only DIR]... [--fixture]\n"
+        "  --list performs explicit incremental discovery; --cache-only reads only\n"
+        "  validated stored metadata. --search-only excludes platform default roots.\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
@@ -187,6 +191,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--seconds") { const char* v = next(i); if (!v) return false; o.seconds = std::atoi(v); }
         else if (a == "--resize")  { const char* v = next(i); if (!v) return false; o.resize = std::atoi(v); }
         else if (a == "--search")  { const char* v = next(i); if (!v) return false; o.searchDirs.emplace_back(v); }
+        else if (a == "--search-only") { const char* v = next(i); if (!v || !*v) return false; o.searchOnly=true; o.searchDirs.emplace_back(v); }
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
         else if (a == "--expect-no-edits") o.expectNoEdits = true;
@@ -204,6 +209,7 @@ bool parse(int argc, char** argv, Options& o) {
         }
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
+        else if (a == "--cache-only") o.cacheOnly = true;
         else if (a == "--fixture") o.fixture = true;
         else if (a == "--require-devices") o.requireDevices = true;
         else if (a == "--require-peak") {
@@ -220,6 +226,7 @@ bool parse(int argc, char** argv, Options& o) {
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
+    if ((o.cacheOnly || o.searchOnly) && !o.list) return false;
     if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
@@ -443,7 +450,7 @@ int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("adi_play -- %s\n\n", juce::SystemStats::getJUCEVersion().toRawUTF8());
 
-    adi::device::JuceDeviceLoader loader;
+    adi::device::JuceDeviceLoader loader(!o.searchOnly);
     for (const std::string& d : o.searchDirs) {
         const juce::String s(d);
         loader.addSearchPath(juce::File::isAbsolutePath(s)
@@ -457,10 +464,17 @@ int main(int argc, char** argv) {
 #endif
 
     if (o.list) {
-        loader.scan();
+        const auto discovery=loader.discover(o.cacheOnly?adi::device::DiscoveryMode::CacheOnly:adi::device::DiscoveryMode::Incremental);
+        if(!discovery)return 1;
+        for(const auto& failure:discovery->report.failures)
+            std::printf("  discovery issue: %s -- %s\n",failure.path.c_str(),failure.error.c_str());
+        if(discovery->outcome!=adi::device::DiscoveryOutcome::Published) {
+            std::printf("FAILED -- plug-in discovery: %s\n",discovery->error.c_str());return 1;
+        }
         const std::vector<std::string> lines = loader.knownPlugins();
         for (const std::string& l : lines) std::printf("  %s\n", l.c_str());
-        std::printf("\n%s plugins\n", n(static_cast<std::int64_t>(lines.size())).c_str());
+        std::printf("\n%s plugins (validated metadata; %s)\n",n(static_cast<std::int64_t>(lines.size())).c_str(),
+            o.cacheOnly?"cache only":"incremental discovery");
         return 0;
     }
 

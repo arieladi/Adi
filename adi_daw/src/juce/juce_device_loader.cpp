@@ -16,65 +16,128 @@
 
 namespace adi::device {
 
-JuceDeviceLoader::JuceDeviceLoader()
-    : vst3Paths_(vst3_.defaultSearchPaths()), clapPaths_(ClapHost::defaultSearchPaths()) {}
+JuceDeviceLoader::JuceDeviceLoader(bool includeDefaultSearchPaths) {
+    if(includeDefaultSearchPaths) {
+        vst3Paths_=vst3_.defaultSearchPaths();clapPaths_=ClapHost::defaultSearchPaths();
+    }
+}
 
 void JuceDeviceLoader::addSearchPath(const juce::File& dir) {
+    if(audio::onAudioThread)return;
     vst3Paths_.add(dir);
     clapPaths_.push_back(dir.getFullPathName().toStdString());
     scanned_ = false;
 }
 
 void JuceDeviceLoader::scan() {
-    if(audio::onAudioThread)return;
-    auto stagedVst3=std::make_unique<juce::KnownPluginList>();
-    scanReport_=vst3_.scan(vst3Paths_,*stagedVst3,scanConfig_);
-    auto clapReport=clap_.scan(clapPaths_,scanConfig_);
-    scanReport_.complete=scanReport_.complete && clapReport.complete;
-    scanReport_.cancelled=scanReport_.cancelled || clapReport.cancelled;
-    for(auto& failure:clapReport.failures)scanReport_.failures.push_back(std::move(failure));
-    scanned_ = scanReport_.complete && !scanReport_.cancelled;
-    if(scanned_){
-        auto stagedClap=clap_.plugins();
-        known_.swap(stagedVst3);clapCatalogue_.swap(stagedClap);
-        hydrationAttempted_=true;catalogueHydrated_=true;hydrationError_.clear();
-    }
-    ++stats_.scans;
+    (void)discover(DiscoveryMode::Incremental);
 }
 
 bool JuceDeviceLoader::hydrateCatalogue(std::string& error) {
     if(audio::onAudioThread)return false;
-    error.clear();hydrationAttempted_=true;
+    const auto result=discoverOwned(DiscoveryMode::CacheOnly,true);
+    const bool accepted=result->outcome==DiscoveryOutcome::Published ||
+        result->outcome==DiscoveryOutcome::Missing || result->outcome==DiscoveryOutcome::Legacy;
+    error=accepted?std::string{}:result->error;return accepted;
+}
+
+std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discover(DiscoveryMode mode) {
+    if(audio::onAudioThread)return {};
+    return discoverOwned(mode,false);
+}
+
+std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(DiscoveryMode mode,bool allowLegacyFallback) {
+    auto result=std::make_shared<DiscoveryResult>();result->mode=mode;result->catalogue=publishedCatalogue_;
+    const auto failed=[&](const std::string& message,scan::State state) {
+        result->error=message;result->report.complete=false;
+        if(result->report.failures.empty())result->report.failures.push_back({"",message,state});
+        result->outcome=result->report.cancelled?DiscoveryOutcome::Cancelled:DiscoveryOutcome::Failed;
+        scanReport_=result->report;scanned_=false;
+        // Corrupt persisted metadata fails closed even if a previous snapshot
+        // remains available to a browser. A failed refresh otherwise retains
+        // the last accepted runtime catalogue, not its successful prefix.
+        if(mode==DiscoveryMode::CacheOnly || !publishedCatalogue_)hydrationError_=message;
+    };
     try {
-        const auto file=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
-        ++stats_.catalogueReads;
-        scan::CatalogueReadStatus status{};
-        auto stored=scan::readCatalogue(file,error,{},&status);
-        if(status==scan::CatalogueReadStatus::Missing || status==scan::CatalogueReadStatus::Legacy){
-            hydrationError_.clear();error.clear();return true;
+        if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly) {
+            failed("invalid discovery mode",scan::State::Invalid);return result;
         }
-        if(!stored)throw std::runtime_error(error);
+        hydrationAttempted_=true;
+        // Explicit discovery never silently switches to the legacy lazy path.
+        // The ordinary hydrateCatalogue compatibility call is distinct.
+        if(!allowLegacyFallback)catalogueHydrated_=true;
         auto stagedVst3=std::make_unique<juce::KnownPluginList>();
         std::vector<ClapPluginRef> stagedClap;
-        for(const auto& module:stored->modules) {
-            if(module.format=="vst3") {
-                std::vector<juce::PluginDescription> descriptions;
-                if(!decodeVst3Metadata(module.plugins,module.canonicalPath,&descriptions,error))
-                    throw std::runtime_error(error);
-                for(const auto& description:descriptions)stagedVst3->addType(description);
-            } else {
-                for(const auto& plugin:module.plugins) {
-                    ClapPluginRef ref;ref.bundlePath=module.canonicalPath;ref.id=plugin.id;
-                    ref.name=plugin.name;ref.vendor=plugin.vendor;ref.version=plugin.version;
-                    ref.features=plugin.features;ref.isInstrument=plugin.instrument;
-                    stagedClap.push_back(std::move(ref));
+        if(mode==DiscoveryMode::Incremental) {
+            ++stats_.scans;
+            if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
+                result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
+            }
+            result->report=vst3_.scan(vst3Paths_,*stagedVst3,scanConfig_);
+            if(result->report.complete && !result->report.cancelled) {
+                auto clapReport=clap_.scan(clapPaths_,scanConfig_);
+                result->report.complete=clapReport.complete;result->report.cancelled=clapReport.cancelled;
+                for(auto& failure:clapReport.failures)result->report.failures.push_back(std::move(failure));
+                if(result->report.complete && !result->report.cancelled)stagedClap=clap_.plugins();
+            }
+            if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed))
+                result->report.cancelled=true;
+            if(!result->report.complete || result->report.cancelled) {
+                const auto diagnostic=result->report.failures.empty() || result->report.failures.front().error.empty()
+                    ?(result->report.cancelled?std::string{"discovery cancelled"}:std::string{"discovery did not complete"})
+                    :result->report.failures.front().error;
+                failed(diagnostic,
+                    result->report.cancelled?scan::State::Cancelled:scan::State::Unavailable);
+                return result;
+            }
+        } else {
+            const auto file=scanConfig_.registry.empty()?appdata::pluginRegistryFile():scanConfig_.registry;
+            ++stats_.catalogueReads;
+            scan::CatalogueReadStatus status{};std::string error;
+            auto stored=scan::readCatalogue(file,error,{},&status);
+            if(status==scan::CatalogueReadStatus::Missing || status==scan::CatalogueReadStatus::Legacy) {
+                result->outcome=status==scan::CatalogueReadStatus::Missing?DiscoveryOutcome::Missing:DiscoveryOutcome::Legacy;
+                result->report.complete=false;
+                result->error=status==scan::CatalogueReadStatus::Missing?"plug-in catalogue does not exist":"plug-in catalogue requires explicit discovery of its legacy registry";
+                scanReport_=result->report;hydrationError_.clear();return result;
+            }
+            if(!stored)throw std::runtime_error(error);
+            for(const auto& module:stored->modules) {
+                if(module.format=="vst3") {
+                    std::vector<juce::PluginDescription> descriptions;
+                    if(!decodeVst3Metadata(module.plugins,module.canonicalPath,&descriptions,error))
+                        throw std::runtime_error(error);
+                    for(const auto& description:descriptions)stagedVst3->addType(description);
+                } else {
+                    for(const auto& plugin:module.plugins) {
+                        ClapPluginRef ref;ref.bundlePath=module.canonicalPath;ref.id=plugin.id;
+                        ref.name=plugin.name;ref.vendor=plugin.vendor;ref.version=plugin.version;
+                        ref.features=plugin.features;ref.isInstrument=plugin.instrument;
+                        stagedClap.push_back(std::move(ref));
+                    }
                 }
             }
         }
-        // Both formats have passed their whole input before replacing either.
+        if(stagedClap.size()>scan::kMaximumPlugins ||
+            static_cast<std::size_t>(stagedVst3->getNumTypes())>scan::kMaximumPlugins-stagedClap.size())
+            throw std::runtime_error("combined catalogue descriptor bound");
+        auto snapshot=std::make_shared<DiscoveryCatalogue>();snapshot->clap=stagedClap;
+        for(const auto& description:stagedVst3->getTypes())snapshot->vst3.push_back(description);
+        std::sort(snapshot->vst3.begin(),snapshot->vst3.end(),[](const auto& a,const auto& b) {
+            return a.fileOrIdentifier==b.fileOrIdentifier?a.createIdentifierString()<b.createIdentifierString():a.fileOrIdentifier<b.fileOrIdentifier;
+        });
+        std::sort(snapshot->clap.begin(),snapshot->clap.end(),[](const auto& a,const auto& b) {
+            return a.bundlePath==b.bundlePath?a.id<b.id:a.bundlePath<b.bundlePath;
+        });
+        auto report=result->report;
+        // Both formats, snapshot ownership and the copied report are prepared
+        // before replacing either runtime catalogue. Old const snapshots live on.
         known_.swap(stagedVst3);clapCatalogue_.swap(stagedClap);
-        catalogueHydrated_=true;hydrationError_.clear();return true;
-    } catch(const std::exception& failure){hydrationError_=failure.what();error=hydrationError_;return false;}
+        publishedCatalogue_=std::move(snapshot);result->catalogue=publishedCatalogue_;
+        result->outcome=DiscoveryOutcome::Published;scanReport_=std::move(report);
+        scanned_=true;catalogueHydrated_=true;hydrationError_.clear();
+    } catch(const std::exception& failure){failed(failure.what(),scan::State::Invalid);}
+    return result;
 }
 
 engine::DeviceLoader JuceDeviceLoader::fn() {

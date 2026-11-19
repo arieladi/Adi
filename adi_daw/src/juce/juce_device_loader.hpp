@@ -40,9 +40,28 @@
 
 namespace adi::device {
 
+enum class DiscoveryMode { Incremental, CacheOnly };
+enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled };
+
+/// Owned format-validated metadata, not instantiated/restored/audio readiness.
+/// Reuses the actual host metadata types; no second registry/wire schema.
+struct DiscoveryCatalogue {
+    std::vector<juce::PluginDescription> vst3;
+    std::vector<ClapPluginRef> clap;
+};
+struct DiscoveryResult {
+    DiscoveryMode mode = DiscoveryMode::CacheOnly;
+    DiscoveryOutcome outcome = DiscoveryOutcome::Failed;
+    scan::Report report;
+    std::string error;
+    /// New snapshot only for Published. Other outcomes retain the last
+    /// accepted snapshot (possibly null), never a partially scanned prefix.
+    std::shared_ptr<const DiscoveryCatalogue> catalogue;
+};
+
 class JuceDeviceLoader {
 public:
-    JuceDeviceLoader();
+    explicit JuceDeviceLoader(bool includeDefaultSearchPaths = true);
 
     /// A directory searched by explicit discovery, ahead of the defaults.
     /// Adding a root does not invalidate or bypass a hydrated snapshot.
@@ -51,6 +70,16 @@ public:
     /// Explicit owner scan. A fresh loader with no cache-capable registry retains legacy
     /// lazy discovery; after hydration, misses report NeedsDiscovery instead.
     void scan();
+
+    /// Synchronous owner-side operation. Incremental enumerates configured roots
+    /// and reuses the isolated scanner/cache. CacheOnly reads stored metadata
+    /// without checking a helper or touching candidates. Both publish an owned
+    /// const result, safe to retain after later operations or loader destruction.
+    /// Explicit CacheOnly with missing/legacy storage never opts into lazy scan;
+    /// hydrateCatalogue below preserves that separate compatibility policy.
+    /// No job scheduling, Clean mode, runtime loading or automatic startup here.
+    /// Callback refusal returns null before allocation or state mutation.
+    [[nodiscard]] std::shared_ptr<const DiscoveryResult> discover(DiscoveryMode);
 
     /// Read-only owner hydration of stored metadata, independent of helper
     /// deployment. Stages all common/format validation before publication.
@@ -68,6 +97,7 @@ public:
         if(audio::onAudioThread)return;
         scanConfig_=config;scanned_=false;known_->clear();clapCatalogue_.clear();
         hydrationAttempted_=false;catalogueHydrated_=false;hydrationError_.clear();
+        publishedCatalogue_.reset();
     }
     /// Borrowed on the owner between jobs; copy/publish for another thread.
     [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
@@ -97,6 +127,7 @@ public:
     [[nodiscard]] std::vector<std::string> knownPlugins() const;
 
 private:
+    std::shared_ptr<const DiscoveryResult> discoverOwned(DiscoveryMode, bool allowLegacyFallback);
     std::unique_ptr<DeviceInstance> make(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeVst3(const engine::DeviceRequest& rq, std::string& err);
     std::unique_ptr<DeviceInstance> makeClap(const engine::DeviceRequest& rq, std::string& err);
@@ -114,6 +145,7 @@ private:
     Stats stats_;
     scan::Config scanConfig_;
     scan::Report scanReport_;
+    std::shared_ptr<const DiscoveryCatalogue> publishedCatalogue_;
 };
 
 }  // namespace adi::device

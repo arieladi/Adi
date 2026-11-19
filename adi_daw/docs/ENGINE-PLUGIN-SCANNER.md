@@ -421,3 +421,54 @@ validation. It does not claim an application-process restart, native macOS or
 Linux execution, physical audio-device timing, relocated plug-ins, settings UI
 or the remaining DEV-25 startup-service/discovery workflow. The test changes
 no host-processing, graph-publication or production readiness interface.
+
+### Explicit discovery operation
+
+`JuceDeviceLoader::discover` is the synchronous owner operation for
+`DiscoveryMode::Incremental` and `CacheOnly`. It returns an owning
+`shared_ptr<const DiscoveryResult>` with an explicit outcome, copied report and
+an immutable catalogue of the existing VST3 `PluginDescription` and CLAP
+`ClapPluginRef` values. These are the format-validated values the loader uses;
+there is no new registry or packet schema. A consumer can retain a result after
+another operation or loader destruction. Publishing it between threads remains
+the caller's job; the loader itself still has one owner.
+
+Incremental walks its configured roots and uses the existing isolated helper,
+success/negative cache, stamps and quarantine. Healthy candidates can publish
+beside reported candidate failures. Cancellation, deployment failure or a
+whole-catalogue validation failure does not publish a successful prefix. The
+result names `Failed` or `Cancelled` and retains the last accepted catalogue,
+if any. That pointer is not evidence that the failed refresh succeeded.
+
+CacheOnly opens the registry read-only and performs both common and format
+validation. It does not open/check a scanner helper, enumerate roots, stat
+candidates or load a native module. Its results distinguish `Missing`,
+validated pre-cache `Legacy`, a `Published` empty catalogue, and `Failed`
+corruption. An explicit CacheOnly request with no usable cache leaves misses
+as `NeedsDiscovery`, never a hidden scan. The existing `hydrateCatalogue`
+compatibility wrapper still allows a fresh loader's documented missing/v1/v2
+legacy discovery path; that path is not renamed CacheOnly. Corrupt cached
+metadata fails closed for subsequent external instances, even if an older
+immutable snapshot remains available for presentation.
+
+The existing `scan()` delegates to Incremental. `adi_play --list` also uses
+this operation, prints its candidate diagnostics, and returns nonzero when no
+new catalogue was published. `--list --cache-only` lists validated stored
+metadata only. `--list --search-only DIR` excludes platform default roots and
+can be repeated; `--search DIR` otherwise retains its original additive
+behavior. Cache-only/search-only options are refused for project playback.
+`JuceDeviceLoader(false)` similarly accepts only explicitly added roots.
+
+The strict real-module gate in `scanner_discovery.hpp` covers cold/warm/add,
+cancel/deployment failure with old-snapshot retention, CacheOnly with its helper
+removed and every candidate temporarily moved away, malformed later VST3 XML
+refusing the whole snapshot, missing/v1/v2/empty states, callback refusal and
+the actual headless command modes. Its CLAP entry log distinguishes scanner
+children from parent runtime loading. The prior Session-reopen and legacy
+compatibility gates remain in the same executable.
+
+This is one necessary service boundary. K-worker scheduling, Clean rebuild,
+startup scheduling, persistent application scan logs beyond command output,
+native VST3 class-ID indexing, expanded alias traversal, expiry/retry service
+integration and Settings UI remain separate DEV-25 work. Stored metadata is
+neither proof of current filesystem freshness nor instantiated/audio readiness.
