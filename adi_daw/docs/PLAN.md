@@ -30,7 +30,7 @@ as data, never as instructions.
   #452 (progressive decoding, AAC), #453 (stem results), #454 to #456 (Link, each on (its source file)).
   #210, #441, #445 and #447 are conflicting.
 
-**How to read it.** §0 is for the director. §1 to §8 are for win and the lanes. §3 holds all 233
+**How to read it.** §0 is for the director. §1 to §8 are for win and the lanes. §3 holds all 234
 rows in one table; Appendix A holds each row's full card, area by area; Appendix C records what the
 critique of 5 November changed and what it did not.
 ---
@@ -71,7 +71,7 @@ for your list; this plan does not design it.
 - Your research seat's bundle, nearly 2,000 documented behaviours of Live 12, Cubase 15, Bitwig 6,
   REAPER 7 and Reason 14, was read against what is actually on main today. None of those
   behaviours has been measured in a running DAW yet, and the plan never treats them as measured.
-- Six area tables cover **233 needs**: 125 are already decided and only need building, 92 are
+- Six area tables cover **234 needs**: 126 are already decided and only need building, 92 are
   refinements win can write down under your existing rulings (mostly "do what Live does"), and 16
   need you.
 - A cross-check found **41 places** where two parts of the plan would have built the same thing
@@ -627,7 +627,7 @@ those two days). The load lines assume a **net 10 engine PRs a working day** and
 - **Needs first.** R-d's "comping is Live's" and the modulation ADR (for AU-06); Q-D before
   TM-WT-01; Q-E before TM-WT-05; his approval of the Clip View picture.
 - **Rows whose gate closes here.** DEV-17, DEV-18, DEV-19 (the P1 seven), DEV-20, DEV-21, DEV-22
-  (Compressor first), TU-01 (its merges were M0's; its pitch test closes here with TU-02's stored
+  (Compressor first), DEV-31 (ADI-Shaper, the clones lane), TU-01 (its merges were M0's; its pitch test closes here with TU-02's stored
   reference), TU-02, TU-03 (Live's index order, XC-28), MI-04, MI-06, MI-08, CT-01 (with XC-21's
   accessor; its comping ADR is R-d's), CT-02, CT-03 (the Arrangement Overdub cases included), CT-04,
   CT-05, AU-02, AU-03, AU-06 (on the modulation ADR), AU-07, AU-08, ED-07, ED-08, RE-03, TM-WT-01
@@ -739,16 +739,16 @@ P3: the Control Room in version 2 (MX-18), MIDI-CI (SRF-11), TUIO and touch (SRF
 | M3 | Link, media and capture merges; AUDIOENGINE-1 | Link consumer, tempo ramps, Global Quantization, #452 fix, MP4/MOV/ALAC, relink, PD-04, PD-03, PD-11, EX-01, Track tap, SRF-03, SRF-04 | Link toggle, Quantization menu, decode state, missing files, Save; port host; Focus Dial; palette | | |
 | M4 | harness; a Live round if seated | taps, In/Out, monitoring (D11), loopback, meter rewiring, Reference, Drive, visual taps; the meter if on loan | choosers, Arm, Reference strip, strip scopes, Scope window, STACK | the meter, visual kernels (or on loan) | measurement seat |
 | M5 | `third_party` rows; Export in LANES §3b; readings | crash marker, one capture, bounces, consolidate, recipe key, freeze, export core, DAWproject, time base, job states | Export page, reopen question, Unused Files, templates | limiter true peak (or on loan) | his Cubase (DP-7) |
-| M6 | census; readings | DEV-17, DEV-18, lanes and comping, automation passes, tuning, warp analysis | Clip View tabs, lanes, Scale Mode, Sample Editor | MIDI effects, OneShot, effect parity | measurement seat |
+| M6 | census; readings | DEV-17, DEV-18, lanes and comping, automation passes, tuning, warp analysis | Clip View tabs, lanes, Scale Mode, Sample Editor | MIDI effects, OneShot, effect parity | measurement seat; clones (DEV-31) |
 | M7 | Graph threads ADR; the director's Windows workstation measurements; Pd packaging | threads, CPU timings, modulation nodes and routes, Pd tier, scanner v3, AudioGridder | ring and map mode, Plug-Ins page, Pd editor menus | envelope follower, volume shaper, modulators, Pd templates | |
 | C | pins, LANES rows | control core (or its own seat) | Clients page, test kit | | a seat per Q-C |
 
 ### Every row's place
 
-Each of the 233 rows has exactly one place: the milestone where its gate closes (a row's work may
+Each of the 234 rows has exactly one place: the milestone where its gate closes (a row's work may
 start earlier, as above). The cross-check placed them by script; this plan keeps that placement,
 except TU-01 (gate moved to M6: its pitch test cannot pass on the merged stack), and adds SRF-16
-and TM-WT-09 at P2.
+and TM-WT-09 at P2 and DEV-31 at M6 (ADR-0247 d5, ADR-0248 d11).
 
 | Milestone | Rows | Row ids |
 |---|---|---|
@@ -758,7 +758,7 @@ and TM-WT-09 at P2.
 | M3 | 20 | TM-SV-01, TM-TT-01, TM-LS-01, TM-MD-01, TM-MD-02, TM-MD-03, TM-MD-04, TM-MD-05, PD-01, PD-02, PD-03, PD-04, PD-11, EX-01, SRF-03, SRF-04, SRF-05, SRF-06, WIN-05, WIN-06 |
 | M4 | 20 | DEV-05, DEV-28, DEV-30, MX-03, MX-09, MX-12, MX-13, MX-17, MX-22, MX-24, MX-25, MX-26, MX-27, MX-29, MX-30, MX-32, MX-33, MX-35, MX-36, WTS-11 |
 | M5 | 28 | ED-06, TM-FC-01, TM-FC-02, TM-FC-03, TM-FC-04, TM-IC-01, TM-IC-03, TM-IC-05, DEV-29, PD-05, PD-06, PD-07, PD-09, PD-12, PD-13, PD-14, EX-02, EX-03, EX-04, EX-05, EX-06, EX-07, EX-08, EX-09, EX-10, EX-11, IC-01, AGT-04 |
-| M6 | 30 | TU-01, ED-07, ED-08, CT-01, CT-02, CT-03, CT-04, CT-05, AU-02, AU-03, AU-06, AU-07, AU-08, MI-04, MI-06, MI-08, RE-03, TU-02, TU-03, TM-WT-01, TM-WT-02, TM-WT-03, TM-WT-05, TM-WT-06, DEV-17, DEV-18, DEV-19, DEV-20, DEV-21, DEV-22 |
+| M6 | 31 | TU-01, ED-07, ED-08, CT-01, CT-02, CT-03, CT-04, CT-05, AU-02, AU-03, AU-06, AU-07, AU-08, MI-04, MI-06, MI-08, RE-03, TU-02, TU-03, TM-WT-01, TM-WT-02, TM-WT-03, TM-WT-05, TM-WT-06, DEV-17, DEV-18, DEV-19, DEV-20, DEV-21, DEV-22, DEV-31 |
 | M7 | 11 | DEV-07, DEV-10, DEV-11, DEV-12, DEV-13, DEV-14, DEV-15, DEV-23, DEV-24, DEV-27, MX-28 |
 | Track C | 14 | CTL-02, CTL-03, CTL-04, CTL-05, CTL-08, CTL-09, AGT-01, AGT-02, AGT-08, WTS-03, WTS-04, WTS-05, WTS-06, WTS-10 |
 | P2 | 60 | AU-09, MI-05, MI-07, MI-09, HI-04, RE-02, TU-04, TM-SV-02, TM-SV-03, TM-SV-04, TM-SV-05, TM-WT-04, TM-WT-07, TM-WT-08, TM-WT-09, TM-LS-02, TM-LS-03, TM-IC-02, TM-IC-04, DEV-01, DEV-02, DEV-03, DEV-04, DEV-06, DEV-16, MX-15, MX-16, MX-19, MX-20, MX-21, MX-31, PD-08, PD-15, EX-12, IC-02, IC-03, CO-01, CO-02, CO-03, CO-04, CO-05, CTL-06, CTL-07, AGT-03, AGT-05, AGT-06, AGT-07, SRF-07, SRF-08, SRF-09, SRF-10, SRF-13, SRF-14, SRF-15, SRF-16, WIN-07, WIN-08, WIN-10, WTS-07, WTS-08 |
@@ -771,18 +771,18 @@ the owner row does the work. In XC-02, XC-12 and XC-13 each row keeps a distinct
 
 ## 3. The decision matrix
 
-All 233 rows in one table, grouped by kind (decided, then refinement, then new choice) and within
+All 234 rows in one table, grouped by kind (decided, then refinement, then new choice) and within
 each kind by area. Each row carries what the research handoff asks for: the ADI need and the
 decision that governs it now, the relevant research IDs, the proposed contract, what to reuse,
 what to reject or defer, the evidence's strength, the unresolved test and the affected lane, plus
 the milestone where its gate closes. Appendix A holds every row's full card.
 
-**Counts.** 125 decided, 92 refinements, 16 new choices for the director. The cross-check moved four
+**Counts.** 126 decided, 92 refinements, 16 new choices for the director. The cross-check moved four
 rows (EX-10 and MX-24 to decided, DEV-24 and MX-35 to refinement). This plan's first draft moved
 CTL-05 to refinement (XC-44); its revision moves it back to a new choice (Q-O), moves CT-01 to
 refinement (its contract supersedes ADR-0037's comping wording under ADR-0203 d1, so an ADR is
 owed), and adds two decided rows, SRF-16 (the Windows MIDI Services backend, ADR-0188 d7's P2
-item) and TM-WT-09 (Live's audio-to-MIDI conversions, under d1). The six matrices counted 123, 91
+item) and TM-WT-09 (Live's audio-to-MIDI conversions, under d1). ADR-0248 adds one more decided row, DEV-31 (ADI-Shaper, ADR-0247 d5). The six matrices counted 123, 91
 and 17.
 
 **How to read a row.**
@@ -853,7 +853,7 @@ and 17.
 | TM-IC-03 | **DAWproject both ways (P1) and the converter rules** · 0127 d7; 0144 d3; 0012; 0036 | E24, C4-018, DR-13-17, M3-EXPORT-INTERCHANGE, M4-C-EXPORT | A converter ADR: JUCE-free src/adi/interchange; prepare on a worker, commit as one step (actor import); a per-field loss report; unmapped XML parked and re-exported verbatim; nested clips flattened; VST3 matched by hashing its class UUID; colours to the 70 palette indexes; the missing ops first (extension.write, noteExpression.write, clip.createMidi); the devices lane maps the built-in EQ, Compressor, Gate and Limiter. [XC-11] | IC1, IC2, IC3, IC4, IC5 (v), IC6, IC12 (d), IC13 | Tracktion's JUCE glue and its random round trip as the fuzzer; a drop-frame column; .als and Pro Tools import (not raised). | doc | DP-1 (every export validates against the XSDs) to DP-6; DP-7, his Cubase 15 round trip with a VST3 insert, automation and notes. | engine, devices, window, win | M5 |
 | TM-IC-04 | **OTIO and AAF (P2), OMF read (P3)** · 0206 d4, d5; 0127 d7; 0071; 0115 | C4-016, C4-017, R11X-023, R11X-024, DR-13-17 +3 | TM-IC-03's converter rules; AAF import through LibAAF (static, behind a mutex) with Ardour's mapping; AAF export through a clean-room compound-file writer lowered from rows::Model; separate essence files as export jobs that read the project when each job starts; OTIO as a JSON subset with integer time; the timecode and frame-rate ops rise to P2. [XC-11] | IC9 (v), IC10, IC8, IC11 | The AAF SDK; OTIO's C++ library; reading or writing .fcproj and .scraft. | doc | AAF-1 (65 files match their dumps); AAF-2 (an ADI file reads back through LibAAF and pyaaf2); AAF-3 (Pro Tools or Resolve, his gate); OTIO-1. | engine, win, window | P2 |
 | TM-IC-05 | **NI Stems import and export, and N-stem results (P1)** · 0205 d8; 0191 d4; 0204 d5; 0071 | DR-13-11, R11X-013, A11R-001, ERRATA-11 | Kept as built: the job reads its revision when it starts (ERRATA-11). After the macOS fix, prove the Windows Media Foundation path really runs rather than skipping; the NI reader becomes a strict filter over the general one; #453 (N-stem results) after. [XC-05] | MD2, MD1 | A container CDJs read (AWAITING 17). | meas | Both heavy macOS legs green on the AAC and NI suites at one headSha; a Windows run that shows the codec path executed. | win, engine | M5 |
-| **DECIDED · Devices and processing (13)** | | | | | | | | | |
+| **DECIDED · Devices and processing (14)** | | | | | | | | | |
 | DEV-02 | **Zones, chain select and note identity where chains rejoin (level 1)** · 0060; 0203 d1 | A6H-042, A6H-043, A3-026, A3-027, A8D-017 +2 | The zone BLOB is exactly 4 bytes (low, high, low_fade, high_fade; NULL is the full range); a note passes every applicable zone; the router runs in the transform phase; the selector is an automatable rack parameter; per-chain note ids where chains rejoin; both fade laws built, Live's measured law the default. | RK3, RK6, RK2 (d) | sfizz's normalized velocity offset in integer zones; Bitwig's Selector modes. | doc | sfizz's key-fade vectors under both laws; a note-off reaches its chain after the zones move; Live 12: the fade laws and the Filters MIDI Ctrl default (M6-A6H-042/043). | engine, win | P2 |
 | DEV-03 | **Rack structure: ops, exact undo, copy and paste (level 1)** · 0003; 0110; 0060; 0203 d10 | N11H-006, N11H-007, N11H-008, N11H-013, N11H-015 +2 | Every structural edit is one transaction with a captured inverse; device.remove and chain.delete capture the whole subtree (parameters, state, panels, routes, macros, mappings that target it); device.move refuses a cycle; Group, Ungroup and reparent are each one transaction; paste is a graph fragment with fresh ids (lifts #394's refusal). [XC-22] | RK4 (d) | A universal move-modifier rule (ERRATA-11: Reason's chapters disagree); undo-manager command objects. | doc | Remove a populated rack, undo and redo: the digest is identical; a self-nest is refused; a rack paste gets fresh ids; OPS §6.3's lossy_undo threshold; hosts11 rack-relationship-rewrite. | engine, win | P2 |
 | DEV-04 | **Drum Rack (level 1)** · 0060; 0169 d4; 0177 | M8-A8D-001, A6H-044, A8D-004, A8D-007, A8D-010 | Drum mode of the rack router: Receive, then Play translation; choke as router-tagged events sorted before same-position note-ons, symmetric within a group; return chains as rack branches with post-fader sends to the rack or a Set return; pads show Receive notes; a pad swap rewrites mappings, never clips; a sample drop makes a OneShot chain. | RK2 (d), RK3, RK4 (d) | sfizz's directed off_by; the beatbox drum tab (P3); kit instruments (Impulse). | doc | A8D-004 (choke release with OneShot and with a long-release plug-in); simultaneous hits; choke against a reverb inside the chain; A6H-045; M8-A8D-001 to -025. | engine, devices, window | P2 |
@@ -867,7 +867,7 @@ and 17.
 | DEV-26 | **The director's plug-ins load as ordinary plug-ins** · 5 Nov ruling; 0204 d1, d3; 0209 d1; 0041; 0110; +2 | N11H-028, N11H-033, A5H-021, A11N-009, B3-005 +1 | His builds take the ordinary path: scanned in a child process and listed under Plug-ins; inserted in one undo step; edited in their own windows (one op per knob gesture, one per preset); state round-trips through save and reopen; ADI-L's lookahead compensated, also while bypassed; a missing build becomes a placeholder keeping its state. Nothing in ADI depends on their source until his list. [plan] *[ADR-0245 d8: his tempo-synced plug-ins need the transport, which no hosted plug-in is told on main; DF-E21.]* | none; in tree | Designing the unified feature, the native slot contract or any built-in that hosts the VST3; requiring a CLAP target. | inf | On the director's Windows workstation, never on his desktop: ADI-Q 0.3.17, ADI-L 0.1.6 and ADI-Clip 0.1.3 scan, load, edit as single undo steps and reopen with identical state hashes; ADI-L's lookahead nulls against a dry track; a missing build is a placeholder; AWAITING 11. | win, engine, window | M1 |
 | DEV-27 | **AudioGridder remote devices** · 0053; 0083; 0134 d3; 0145 d6; +1 | B3-009, B3-010, N11H-032 | A remote device is a DeviceInstance with remote_host_id (format unchanged); the network stays off the audio thread through an SPSC queue; pipelined one block behind with that latency declared; a missed deadline outputs silence and counts; an unreachable server loads the plug-in locally, else a placeholder; the LAN-only authentication posture stated before shipping. [XC-40] | none | A wrapper plug-in (ADR-0053); PTP until a measured need. | unk | A spike answering ADR-0083's open items (CLAP note expression on the wire; link latency); a remote Surge XT matches the local one within the declared block; losing the server mid-play never glitches another track. | engine | M7 |
 | DEV-29 | **Export loudness: NI Stems guard, "together", brickwall, more targets** · 0203 d14; 0205 d5, d8, d9; 0071 d5 | R10H-073, R11X-002, R11X-025, R11X-034, R11X-043 +4 | Now: validateNiStems refuses normalization. Then (a) an after-AAC check lifts the refusal; (b) "together" is one gain from the summed, time-aligned capture; (c) an off-by-default true-peak brickwall in ADI's LookaheadLimiter with a refine loop of at most four trials; (d) RMS-I and max M/S targets. WITH and VIA master stay distinct; job values at enqueue, revision and names at job start. [XC-04] | LD5, EX4, LD3 (v) | An enqueue-time snapshot (ERRATA-11); one checkbox for both master modes; normalizing by default; ADI-L as the export limiter. | inf | An NI Stems job with normalization is refused (no test today); WAV and AAC within 0.5 LU of target with true peak at most ceiling + 0.1 dB; three stems "together" checked by libebur128 and ffmpeg; REAPER 7.79's render-normalize compared. | engine, devices, window, win | M5 |
-| DEV-31 | **ADI-Shaper: a multiband shaper as a Pd-tier device, measured against ShaperBox 3** · 0247 d5, d7; 5 Nov ruling; 0244 d3, d9; 0245 d3 | the clones lane's measured contract (`collab/clones.md`, 19 November) | Eleven stages in one device, each built after its measured contract: Volume, Width, Pan, Filter, Liquid (flanger and phaser; its name waits for the director), Drive and Crush, then Time, Pitch, Noise and Reverb. The Pd tier's layout (`cmake/devices/adi_shaper.cmake`, `pd/devices/ADI-Shaper.pd`, `src/adi/pd_builtins/adi_shaper_tilde.cpp`, `src/adi/dsp/adi_shaper_*`) with an editable canvas and native parity; beat sync from the device transport (ADR-0245 d8); earlier parameter ids keep their meaning as stages are added; a catalog flag, not special cases in shared code. Its Volume stage is the "Grid-locked volume shaper" FEATURES lists at P1, delivered as a device; DEV-07 keeps the modulator form (a shaper curve driving any parameter) and takes the same curve model rather than a second one. The curve editor waits for an agreed sheet. | none; in tree (the clones stack) | The source's artwork, presets, factory impulse responses, text and module names (the 5 November ruling); a curve editor before an agreed sheet (ADR-0244 d3, d9); a second pitch kernel beside the devices lane's Shifter. | meas | Each stage against its measured contract; native and Pd parity, also at PD_FLOATSIZE=64 through FloatSignals; CPU at 2,048 and 256 frames; its beat gate in a real Session once DF-E29 lands; a saved state reopening after a stage is added; the canvas under MSVC's 65,535-byte literal limit. | clones; window (the editor's sheet); devices (the catalogue) | P1 |
+| DEV-31 | **ADI-Shaper: a multiband shaper as a Pd-tier device, measured against ShaperBox 3 (P1)** · 0247 d5, d7; 5 Nov ruling; 0244 d3, d9; 0245 d3; +1 | the clones lane's measured contract (`collab/clones.md`, 19 November) | Eleven stages in one device, each built after its measured contract: Volume, Width, Pan, Filter, Sweep (flanger and phaser; renamed from the source's module name in the clones stack before its pull request, ADR-0248 d14), Drive and Crush, then Time, Pitch, Noise and Reverb. The Pd tier's layout (`cmake/devices/adi_shaper.cmake`, `pd/devices/ADI-Shaper.pd`, `src/adi/pd_builtins/adi_shaper_tilde.cpp`, `src/adi/dsp/adi_shaper_*`) with an editable canvas and native parity; beat sync from the device transport (ADR-0245 d8); earlier parameter ids keep their meaning as stages are added; a catalog flag, not special cases in shared code. Its Volume stage is the "Grid-locked volume shaper" FEATURES lists at P1, delivered as a device, so the row is a P1 feature. It is related to DEV-07's volume shaper, the modulator form (a shaper curve driving any parameter). The curve editor waits for an agreed sheet. | none; in tree (the clones stack) | The source's artwork, presets, factory impulse responses, text and module names (the 5 November ruling); a curve editor before an agreed sheet (ADR-0244 d3, d9); a second pitch kernel beside the devices lane's Shifter. | meas | Each stage against its measured contract; native and Pd parity, also at PD_FLOATSIZE=64 through FloatSignals; CPU at 2,048 and 256 frames; its beat gate in a real Session once DF-E29 lands; a saved state reopening after a stage is added; the canvas under MSVC's 65,535-byte literal limit. | clones; window (the editor's sheet); devices (the catalogue) | M6 |
 | **DECIDED · Mixer, routing, monitoring and the Mix View (23)** | | | | | | | | | |
 | MX-01 | **Strip meters on the engine's scalar meter** · 0050 d4 | A5C-001, A5C-004, A-BASE-18.1, A-BASE-18.1.1, M5-A5C-001 | Each visible strip reads {peak, rms} relaxed per frame from the engine's StripMeter; ballistics and the Peak Level hold stay the window's; no ScopeTap per strip; while a track monitors its input the meter shows the input (MX-09). | Mix View program refs | The per-strip 0.1 s tap that never closes; K-meter, PPM and VU scales (additions not asked for). | doc | A new AWAITING row: Live 12's meter ballistics and when the MIDI meter lights; M5-A5C-001. | window | M1 |
 | MX-02 | **Split Stereo Pan** · 0203 d9 | A5C-003, A5C-023, A-BASE-18.1, M5-A5C-003 | The pan menu ticks from panMode and writes mixer.setPanMode (one step); a split strip draws Live's two sliders; each drag is one step of setPanLeft or setPanRight; double-click resets; the two pans' lanes come with the automation lanes. | none | Width or phase controls on the strip (Utility keeps them, ADR-0203 d9). | doc | A5C-023's split gains at the extremes; Live's lane names for the two pans. | window | M1 |
@@ -1562,7 +1562,7 @@ touched (mapped at the end of this section).
 ## 6. The director's choices
 
 Only choices that are his: an addition Live lacks, a case where Live's way would undo something he
-directed, one of his own rulings, or a seat. Everything else in the 233 rows is decided, Live's way
+directed, one of his own rulings, or a seat. Everything else in the 234 rows is decided, Live's way
 under ADR-0203 d1, or win's placement to strike if wrong. The same choices are in
 the choices file (win's working files) (one object each: id, question, recommendation, why,
 options, needed_by).
@@ -3480,6 +3480,20 @@ Live reading named in a card is NOT RUN.
 - **Research IDs:** R10H-073; R11X-002, R11X-025, R11X-034, R11X-043, R11X-047; A11R-001; M3-EXPORT-INTERCHANGE; A5C-022.
 - **Unresolved test (NOT RUN):** an NI Stems job with normalization on is refused (no test today); WAV and AAC exports land within 0.5 LU of target, with true peak ≤ ceiling + 0.1 dB; three stems "together" are checked by libebur128 and ffmpeg; REAPER 7.79's render-normalize compared (−14 LUFS-I at −1 dBTP, brickwall on and off, three stems together). NOT RUN.
 - **Cross-check and this plan:** XC-04: EX-05 owns these items; the refusal lands once, as EX-10's, in M0.
+
+#### DEV-31 ADI-Shaper: a multiband shaper as a Pd-tier device, measured against ShaperBox 3 (P1)
+
+*decided* · size L · evidence measured · lane clones, window, devices · milestone M6 · after: DEV-09
+
+- **Need:** the director's multiband shaper, measured against ShaperBox 3, as a device of the Pure Data tier: eleven stages in one device (Volume, Width, Pan, Filter, Sweep, Drive and Crush, then Time, Pitch, Noise and Reverb), beat-synced from the device transport. A P1 feature: its Volume stage is FEATURES' "Grid-locked volume shaper".
+- **Decision now:** ADR-0247 d5 and d7 (the director asked for a Pd version of ShaperBox 3 and named it ADI-Shaper); the 5 November ruling on his measured tools (measured behaviour, his own name, ADI's own drawing, nothing of the original's artwork, presets or text); ADR-0244 d3 and d9 (no curve editor before an agreed sheet); ADR-0245 d3 (Time, Pitch, Noise and Reverb); ADR-0248 d11 and d14 (the exact spelling; the stage "Sweep").
+- **On main:** nothing; the clones lane's stack (`clones/adi-shaper` and the branches above it) has not landed.
+- **Proposed contract:** as the row in §3: each stage built after its measured contract; the Pd tier's layout with an editable canvas and native parity; parameter ids that keep their meaning as stages are added; a catalog flag, not special cases in shared code.
+- **Reuse:** the Pd tier and FloatSignals (#658), in tree.
+- **Reject or defer:** the source's artwork, presets, factory impulse responses, text and module names; a curve editor before an agreed sheet; a second pitch kernel beside the devices lane's Shifter.
+- **Research IDs:** none in the bundle; the clones lane's measured contract (`collab/clones.md`).
+- **Unresolved test (NOT RUN):** each stage against its measured contract; native and Pd parity, also at PD_FLOATSIZE=64; CPU at 2,048 and 256 frames; the beat gate in a real Session once DF-E29 lands; a saved state reopening after a stage is added; the canvas under MSVC's 65,535-byte literal limit.
+- **Cross-check and this plan:** added after the cross-check, on 19 November (ADR-0247 d5, ADR-0248 d11); related to DEV-07's volume shaper, the modulator form.
 
 #### DEV-01 Racks play (level 1)
 

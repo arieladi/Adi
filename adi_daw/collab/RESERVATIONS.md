@@ -19,7 +19,7 @@ Main is at 1.21. PLAN PD-10's register of pending minors is this table.
 
 | Minor | Seat | What | Pull request | Status |
 |---|---|---|---|---|
-| 1.22 | mixview | the device key taps, `routing_key_taps` (DEV-05, MX-24, DF-M11) | #651 (#674 carries the same) | in flight; lands first |
+| 1.22 | mixview | the device key taps, `routing_key_taps` (DEV-05, MX-24, DF-M11) | #651 (#674 carries the same) | in flight; lands first, once DF-M60 (c) is fixed on its branch (ADR-0248 d10) |
 | 1.23 | engine | the send taps, `routing_send_taps` (DF-E22, ADR-0245 d10) | #677 (#665 carries the same) | in flight; renumbered from 1.22 once #651 lands, with its line in `store.hpp`'s comment |
 | 1.24 | — | the next minor, by reservation here | — | free |
 
