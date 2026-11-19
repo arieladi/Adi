@@ -464,6 +464,34 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
               "the expanded card uses the same owned control as the compact card");
     }
     check(!ordinary->beginFunctionDrag(), "ordinary plug-ins cannot enter the native function drag path");
+    {
+        constexpr auto oldRefusal = "Earlier device action was refused.";
+        constexpr auto newRefusal = "Fixture device cannot be loaded.";
+        constexpr auto uid = "fixture.builtin";
+        bool allow = false;
+        root.loadBuiltin = [&](const std::string &device, std::int64_t track, std::optional<std::int64_t> before) {
+            if (device != uid || track != 2 || before != ordinary->id) return false;
+            if (!allow) root.say(newRefusal);
+            return allow;
+        };
+        root.say(oldRefusal);
+        check(!root.insertDevice(uid, 2, ordinary->id) && root.error() == newRefusal,
+              "a refused built-in insertion retains its own status");
+        allow = true;
+        check(root.insertDevice(uid, 2, ordinary->id) && root.error().empty(),
+              "a successful built-in insertion clears the earlier device status");
+        root.loadBuiltin = {};
+
+        strip.holdsCopy = [] { return true; };
+        strip.paste = [&](std::int64_t track, std::optional<std::int64_t> before) {
+            return track == 2 && before == ordinary->id;
+        };
+        root.say(oldRefusal);
+        check(strip.clipboard(DeviceChainStrip::Clip::Paste, ordinary->id) && root.error().empty(),
+              "a successful device paste clears the earlier status on the real chain-strip path");
+        strip.holdsCopy = {};
+        strip.paste = {};
+    }
     int duplicates = 0;
     strip.duplicate = [&](std::int64_t, std::int64_t, std::optional<std::int64_t>) { ++duplicates; return true; };
     const auto commandItems = menuItems(native->commands());
