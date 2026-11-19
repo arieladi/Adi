@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/import_choices.hpp"
 #include "adi/ui/locator_edits.hpp"
@@ -336,6 +337,14 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // `reenableAutomation`, which says why in the Status Bar when it refuses. Automation Arm reads
     // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
     // Unset, a click says the switch has no session.
+    // A mixer drag heard while it moves (MX-23, SRF-02): the document's live gesture. The strip begins it
+    // on the control's drag start with its kind and its track or send, and the selected tracks go with
+    // it when the dragged one is among them; each value goes to `mixerDrag`; the release commits one undo
+    // step and Esc cancels. Unset outside the application: the strip commits on release, as before.
+    std::function<bool(const gesture::RelativeScalarSelection &, double, const std::string &)> beginMixerDrag;
+    std::function<bool(double)> mixerDrag;
+    std::function<bool()> endMixerDrag;
+    std::function<void()> cancelMixerDrag;
     std::function<bool()> reenableAutomation;
     std::function<bool()> automationArmed;
     std::function<void(bool)> armAutomation;

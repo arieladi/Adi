@@ -9716,6 +9716,103 @@ void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
           "and Automation Arm says so, showing Live's default, on");
     document->release();
 }
+// MX-23 and SRF-02 from the strip: the fader's own drag is the document's live gesture, one undo step at
+// the release, the selected tracks moving together by the same move, Esc putting them back.
+void mixerDragLive(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "drag-live.adi", true, {}, error);
+    check(document != nullptr, "a project for the strip's drags");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "drag");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.beginMixerDrag = [&](const gesture::RelativeScalarSelection &selection, double value, const std::string &label) {
+        return document->beginMixerDrag(selection, value, label);
+    };
+    root.mixerDrag = [&](double value) { return document->mixerDrag(value); };
+    root.endMixerDrag = [&] { return document->endMixerDrag(); };
+    root.cancelMixerDrag = [&] { document->cancelMixerDrag(); };
+    root.setSize(1440, 900);
+    root.frame();
+    MixerStrip *three = nullptr, *midi = nullptr;
+    for (const auto &strip : root.mixer.strips()) {
+        if (strip->track() == 4)
+            three = strip.get();
+        if (strip->track() == 3)
+            midi = strip.get();
+    }
+    check(three != nullptr && midi != nullptr, "3 Audio's and 2 MIDI's rows");
+    if (three == nullptr || midi == nullptr) {
+        document->release();
+        return;
+    }
+    const auto volumeOf = [&](std::int64_t id) {
+        SQLite::Statement q(document->store().db(), "SELECT volume_db FROM mixer_strip WHERE track_id = ?");
+        q.bind(1, id);
+        return q.executeStep() ? q.getColumn(0).getDouble() : 999.0;
+    };
+    const auto opCount = [&] { return document->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+    const auto before = opCount();
+    // A drag: start, three moves, release.
+    three->volume.onDragStart();
+    for (const double db : {-3.0, -6.0, -9.0}) {
+        three->volume.setValue(db, juce::dontSendNotification);
+        three->volume.onValueChange();
+    }
+    check(document->mixerDragging() && opCount() == before && volumeOf(4) == 0,
+          "while the fader moves nothing is written; the document's gesture holds it");
+    three->volume.onDragEnd();
+    root.frame();
+    check(!document->mixerDragging() && opCount() == before + 1 && std::abs(volumeOf(4) + 9) < 1e-6 &&
+              root.undoTitle(false) == "Undo Change Track Volume",
+          "released, one op and one undo step, at the value let go");
+    // Two tracks selected, the drag on one of them: both move by the same amount.
+    auto &sel = root.arrangement.geometry.selection;
+    sel.track = 3;
+    sel.toTrack = 4;
+    root.frame();
+    midi->volume.onDragStart();
+    midi->volume.setValue(-6.0, juce::dontSendNotification);
+    midi->volume.onValueChange();
+    midi->volume.onDragEnd();
+    root.frame();
+    check(std::abs(volumeOf(3) + 6) < 1e-6 && std::abs(volumeOf(4) + 15) < 1e-6 && document->ops().nextUndo() &&
+              document->ops().nextUndo()->opCount == 2 && document->ops().nextUndo()->label == "Change Track Volume",
+          "with 2 MIDI and 3 Audio selected, a drag on 2 MIDI moves both by -6 dB, in one step");
+    check(root.command(AppCommands::Undo) && std::abs(volumeOf(3)) < 1e-6 && std::abs(volumeOf(4) + 9) < 1e-6,
+          "one Undo takes both back");
+    sel.track = sel.toTrack = 0;
+    root.frame();
+    // Esc while dragging puts the value back, and the release commits nothing.
+    const auto stepBefore = document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0;
+    three->volume.onDragStart();
+    three->volume.setValue(-30.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    check(three->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !document->mixerDragging(), "Esc cancels the drag");
+    three->volume.onDragEnd();
+    root.frame();
+    check((document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0) == stepBefore && std::abs(volumeOf(4) + 9) < 1e-6,
+          "and the release after it writes nothing");
+    // Pan, the same way.
+    three->pan.onDragStart();
+    three->pan.setValue(-.5, juce::dontSendNotification);
+    three->pan.onValueChange();
+    three->pan.onDragEnd();
+    root.frame();
+    check(root.undoTitle(false) == "Undo Change Track Panning" &&
+              std::abs(document->store().db().execAndGet("SELECT pan FROM mixer_strip WHERE track_id = 4").getDouble() + .5) < 1e-9,
+          "a pan drag is one step too");
+    // Without the live gesture, the release commits as before.
+    root.beginMixerDrag = nullptr;
+    three->volume.onDragStart();
+    three->volume.setValue(-12.0, juce::dontSendNotification);
+    three->volume.onValueChange();
+    three->volume.onDragEnd();
+    root.frame();
+    check(std::abs(volumeOf(4) + 12) < 1e-6, "without the live gesture the release commits the value");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool headlessOnly = false) {
@@ -14280,6 +14377,7 @@ int main(int argc, char **argv) {
     deviceClipboard(commands, temp.path());
     pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
+    mixerDragLive(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     importPrompt(commands, settings, temp.path());

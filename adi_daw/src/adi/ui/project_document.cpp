@@ -3,6 +3,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
 #include "adi/mix_function_edit.hpp"
+#include "adi/gesture_presentation.hpp"
 #include "juce/mix_function_host.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -723,6 +724,65 @@ void ProjectDocument::prepare(double rate, std::int32_t frames) {
     analysis_->refreshSources(true);
 }
 void ProjectDocument::release() { session_.release(); }
+bool ProjectDocument::beginMixerDrag(const gesture::RelativeScalarSelection &selection, double coordinate,
+                                     const std::string &label) {
+    if (mixerDrag_)
+        endMixerDrag();
+    if (!coordinator_) {
+        // The live values are the session's and the view's: one presentation for the store's gestures.
+        auto attached = gesture::Coordinator::attach(*store_, std::make_shared<gesture::EnginePresentation>(view_, session_));
+        if (!attached.status.ok() || !attached.value) {
+            error_ = "The mixer cannot be dragged live: " + attached.status.message;
+            return false;
+        }
+        coordinator_ = std::move(attached.value);
+    }
+    gesture::Spec spec;
+    spec.strategy = gesture::Strategy::LiveValues;
+    spec.label = label;
+    auto begun = coordinator_->begin(spec, gesture::relativeScalarProducer(selection));
+    if (!begun.status.ok() || !begun.session) {
+        error_ = begun.status.message.empty() ? "The drag could not begin." : begun.status.message;
+        return false;
+    }
+    mixerDrag_ = std::move(begun.session);
+    return mixerDrag(coordinate);
+}
+bool ProjectDocument::mixerDrag(double coordinate) {
+    if (!mixerDrag_)
+        return false;
+    const auto updated = mixerDrag_->update(std::make_unique<gesture::RelativeScalarInput>(coordinate));
+    if (!updated.status.ok()) {
+        error_ = updated.status.message;
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::endMixerDrag() {
+    if (!mixerDrag_)
+        return false;
+    auto drag = std::move(mixerDrag_);
+    const auto outcome = drag->commit();
+    if (!outcome.status.ok()) {
+        error_ = outcome.status.message;
+        (void)drag->cancel(); // nothing written: the values go back
+        synchronise();
+        return false;
+    }
+    // The committed rows reach the view and the session as any commit does.
+    view_.refresh(*store_);
+    synchronise();
+    error_.clear();
+    return true;
+}
+void ProjectDocument::cancelMixerDrag() {
+    if (!mixerDrag_)
+        return;
+    auto drag = std::move(mixerDrag_);
+    (void)drag->cancel();
+    synchronise();
+}
 void ProjectDocument::process(const engine::AudioIo &io) noexcept {
     mailbox_.drain(session_.transport());
     session_.process(io);

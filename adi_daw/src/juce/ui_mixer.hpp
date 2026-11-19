@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/gesture_producers.hpp"
 #include "adi/ops.hpp"
 #include <array>
 #include <functional>
@@ -46,6 +47,8 @@ double meterLevel(double depth) noexcept;
 // any Mix View function: those are added in the Mix View like every other one (ADR-0243).
 class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
   public:
+    // Esc during a live drag cancels it (MX-23).
+    bool keyPressed(const juce::KeyPress &) override;
     explicit MixerStrip(MixerPanel &);
     ~MixerStrip() override { pan.setLookAndFeel(nullptr); }
     void bind(std::int64_t track);
@@ -205,6 +208,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
+    // A drag heard while it moves (MX-23): begun on the control's drag start, ended on its release.
+    bool live_ = false, cancelled_ = false; // cancelled: Esc came before the release, which commits nothing
+    void beginLive(gesture::ScalarKind, std::int64_t id, gesture::ScalarControlDomain, double value, const std::string &label);
+    bool endLive();
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
     bool onSplitLine(const juce::MouseEvent &) const noexcept;
     // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),

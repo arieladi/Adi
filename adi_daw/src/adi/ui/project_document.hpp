@@ -4,6 +4,7 @@
 #include "adi/device_copy.hpp"
 #include "adi/sample_slots.hpp"
 #include "adi/engine/param_ops.hpp"
+#include "adi/gesture_producers.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
 #include "adi/mix_functions.hpp"
@@ -120,6 +121,18 @@ class ProjectDocument final : public engine::BlockProcessor {
     // does not record yet, so the session is never told that recording is on.
     void setAutomationArmed(bool armed) noexcept;
     bool automationArmed() const noexcept { return session_.automationArmed(); }
+    // A mixer drag heard while it moves (MX-23, SRF-02; Live 12 manual 18.1): a fader, a pan or a send
+    // knob, on its track or, when that track is among the selected, on every selected track by the same
+    // move. Begin captures the values where the drag starts; each Value is heard at once, with no op;
+    // End commits ONE transaction of the final values, one undo step named `label`, or nothing when
+    // nothing changed; Cancel (Esc) puts every value back. The engine's gesture session does the work
+    // (`gesture::relativeScalarProducer`); `coordinate` is the control's own value (a fader's dB, a
+    // pan's -1..1). False with `error()` saying why; a drag already running is ended first.
+    bool beginMixerDrag(const gesture::RelativeScalarSelection &, double coordinate, const std::string &label);
+    bool mixerDrag(double coordinate);
+    bool endMixerDrag();
+    void cancelMixerDrag();
+    bool mixerDragging() const noexcept { return mixerDrag_ != nullptr; }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -214,6 +227,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     };
     std::map<std::pair<std::int64_t, std::string>, SurfaceGesture> surfaceGestures_;
     double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
+    // The mixer drag's gesture (MX-23): the coordinator of this store's gestures, and the open session.
+    std::shared_ptr<gesture::Coordinator> coordinator_;
+    std::unique_ptr<gesture::Session> mixerDrag_;
     ParameterFeed feed_;
     struct AnalysisSource { engine::ScopeLease lease; double seconds = 0; };
     std::map<engine::ScopeSource, AnalysisSource> analysisSources_;
