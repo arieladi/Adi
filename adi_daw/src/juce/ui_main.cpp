@@ -85,6 +85,13 @@ class AdiApplication final : public juce::JUCEApplication,
             settings_ = std::make_unique<settings::AppSettings>(
                 settings::AppSettings::forApp(appdata::App::Daw));
         commands_ = std::make_unique<AppCommands>(*settings_);
+        // The plug-in folders the Settings' Plug-Ins page names, searched ahead of the system's for
+        // both formats (DF-W9), before any project asks the loader for a plug-in.
+        for (const char *key : {"plugins.vst3Folders", "plugins.clapFolders"})
+            if (const auto folders = settings_->get(key); folders.is_array())
+                for (const auto &folder : folders)
+                    if (folder.is_string() && !folder.get<std::string>().empty())
+                        loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.get<std::string>().c_str())));
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -173,6 +180,24 @@ class AdiApplication final : public juce::JUCEApplication,
             lock.unlock();
             index.reset();
         });
+    }
+    // The loader's catalogue as the Browser lists it: its VST3 lines and its CLAP descriptors, with the
+    // files its last scan could not read.
+    PluginListing pluginListing() {
+        if (loader_.stats().scans == 0)
+            loader_.scan();
+        PluginListing out;
+        for (const auto &line : loader_.knownPlugins())
+            if (auto entry = parseKnownVst3(line))
+                out.plugins.push_back(std::move(*entry));
+        for (const auto &p : loader_.clap().plugins())
+            out.plugins.push_back({"clap", p.id, p.name, p.vendor, p.version, p.bundlePath,
+                                   clapKind(p.isInstrument, p.features)});
+        const auto &report = loader_.lastScanReport();
+        out.failed = report.failures.size();
+        if (report.cancelled)
+            out.error = "the scan was cancelled.";
+        return out;
     }
     void stopLibrary() {
         if (!libraryThread_.joinable())
@@ -366,6 +391,10 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // The Browser's Plug-Ins (DF-W9): what the app's loader found, scanning once first if it has not.
+        // The one loader the projects load from lists them, so no second scan races its registry (N58
+        // asks for the scan off the message thread).
+        root->browser.listPlugins = [this] { return pluginListing(); };
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);

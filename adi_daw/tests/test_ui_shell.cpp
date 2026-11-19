@@ -2518,8 +2518,74 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     browser.choose(pdDevices);
     check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr,
           "Pd Devices lists ADI's own: Chord Comb and Color Cab");
+    // Plug-Ins (DF-W9): outside the app nothing scans, and it says where they list.
     browser.choose(plugIns);
-    check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
+    check(root.error().find("list in the application") != std::string::npos && browser.rows().empty(),
+          "Plug-Ins outside the app says the plug-ins list in the application");
+    {
+        // The loader's VST3 lines as `knownPlugins` writes them, and a line of another format.
+        const auto echo = parseKnownVst3("vst3  VST3-Echo-1a2b-3c4d  Echo -- Zeta Audio 1.2.0  (/x/Echo.vst3)");
+        const auto bare = parseKnownVst3("vst3  VST3-Hiss-1  Hiss --  0.9  (/x/Hiss.vst3)");
+        check(echo && echo->uid == "VST3-Echo-1a2b-3c4d" && echo->name == "Echo" && echo->vendor == "Zeta Audio" &&
+                  echo->version == "1.2.0" && echo->path == "/x/Echo.vst3" &&
+                  echo->kind == PluginEntry::Kind::Unknown && bare && bare->name == "Hiss" && bare->vendor.empty() &&
+                  !parseKnownVst3("clap  org.x  X -- Y 1  (/x.clap)") && !parseKnownVst3("vst3  broken"),
+              "a VST3 line of the loader reads as its uid, name, vendor, version and file");
+        check(clapKind(true, "instrument synthesizer") == PluginEntry::Kind::Instrument &&
+                  clapKind(false, "note-effect utility") == PluginEntry::Kind::MidiEffect &&
+                  clapKind(false, "audio-effect delay") == PluginEntry::Kind::Effect,
+              "a CLAP is an instrument, a MIDI effect (a note effect) or an audio effect");
+        PluginListing found;
+        found.plugins = {*echo,
+                         {"clap", "org.adi.glass", "Glass Piano", "Northwind Audio", "1.0", "/x/glass.clap",
+                          PluginEntry::Kind::Instrument},
+                         {"clap", "org.adi.arp", "Arpeggiate", "Northwind Audio", "1.0", "/x/arp.clap",
+                          PluginEntry::Kind::MidiEffect},
+                         *bare};
+        found.failed = 1;
+        int asked = 0;
+        browser.listPlugins = [&found, &asked] {
+            ++asked;
+            return found;
+        };
+        root.say({});
+        browser.choose(plugIns);
+        std::vector<std::pair<juce::String, int>> layout;
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        const std::vector<std::pair<juce::String, int>> expected{
+            {"CLAP", 0}, {"Northwind Audio", 1}, {"Arpeggiate", 2}, {"Glass Piano", 2},
+            {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2}};
+        check(asked == 1 && layout == expected,
+              "Plug-Ins lists a folder per format, then per vendor, the plug-ins by name; no vendor goes in Other");
+        check(root.error() == "1 plug-in files could not be scanned; the rest are listed.",
+              "a file the scan could not read is counted; the rest are listed");
+        const auto rowNamed = [&browser](const char *name) {
+            for (std::size_t i = 0; i < browser.rows().size(); ++i)
+                if (browser.rows()[i].plugin != nullptr && browser.rows()[i].plugin->name == name)
+                    return static_cast<int>(i);
+            return -1;
+        };
+        const int glass = rowNamed("Glass Piano");
+        check(glass >= 0 && !browser.load(glass) && root.error().find("waits for the engine's insert") != std::string::npos &&
+                  root.error().find("N57") != std::string::npos,
+              "a double-click on a plug-in says its load waits for the engine's insert (N57)");
+        browser.search.setText("zeta", true);
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(asked == 1 && layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0}, {"Zeta Audio", 1}, {"Echo", 2}},
+              "the search keeps a plug-in by its vendor too, and asks the loader nothing more");
+        browser.search.setText({}, true);
+        found = {};
+        browser.choose(plugIns);
+        check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
+              "with none found, it says where to add their folders");
+        found.error = "the scan was cancelled.";
+        browser.choose(plugIns);
+        check(root.error() == "The plug-ins could not be scanned: the scan was cancelled.", "and a scan that failed says so");
+        browser.listPlugins = nullptr;
+    }
     browser.choose(audioEffects);
     const auto chainOf = [&](std::int64_t track) {
         std::vector<std::string> out;
