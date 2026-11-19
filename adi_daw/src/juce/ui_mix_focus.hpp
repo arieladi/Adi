@@ -71,7 +71,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::vector<const SharedAnalysis::Result *> scopeSources_;
     std::optional<FocusScopeRange> scopeRange_;
     SharedAnalysis::BarScopeLease barScope_;
-    std::shared_ptr<const engine::Snapshot> barTimeline_;
+    std::shared_ptr<const engine::TempoMap> barTempo_;
+    std::vector<textproj::Meter> barMeters_;
     std::optional<FocusScopeBar> requestedBar_;
     std::shared_ptr<const SharedAnalysis::BarScopeResult> shownBar_;
     std::optional<FocusSumReading> sum_;

@@ -411,7 +411,8 @@ void MixFocus::clearBarScopeData() {
     redraw_ |= static_cast<bool>(shownBar_);
     shownBar_.reset();
     requestedBar_.reset();
-    barTimeline_.reset();
+    barTempo_.reset();
+    barMeters_.clear();
 }
 void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_ptr<SharedAnalysis> &broker) {
     const auto *tempo = reader.tempo();
@@ -423,18 +424,16 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
     }
     const SafePointer<MixFocus> alive(this);
     const auto pose = membershipPose_;
-    if (barTimeline_.get() != reader.get()) {
-        const auto sameMeter = [](const auto &a, const auto &b) {
-            return a.start_ticks == b.start_ticks && a.numerator == b.numerator && a.denominator == b.denominator;
-        };
-        if (barTimeline_ && (barTimeline_->tempo.get() != tempo ||
-            !std::ranges::equal(barTimeline_->meters, reader.meters(), sameMeter))) {
-            clearBarScopeData();
-            barScope_.reset();
-            if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
-                return;
-        }
-        barTimeline_ = root_.current();
+    const auto sameMeter = [](const auto &a, const auto &b) {
+        return a.start_ticks == b.start_ticks && a.numerator == b.numerator && a.denominator == b.denominator;
+    };
+    if (barTempo_.get() != tempo || !std::ranges::equal(barMeters_, reader.meters(), sameMeter)) {
+        clearBarScopeData();
+        barScope_.reset();
+        if (!alive || pose != membershipPose_ || !isShowing() || suspended_ || root_.sharedAnalysis != broker)
+            return;
+        barTempo_ = reader.get()->tempo;
+        barMeters_ = reader.meters();
     }
 
     if (!barScope_) {
@@ -458,10 +457,15 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
     }
 
     const auto heard = root_.renderedSamplePosition();
-    if (shownBar_ && std::any_of(members_.begin(), members_.end(), [&](const auto &member) {
-            return member.data && member.data->advancing &&
-                member.data->transportRevision != shownBar_->transportRevision;
-        })) {
+    std::uint64_t heardRevision = 0;
+    for (const auto &member : members_)
+        if (member.data && member.data->advancing)
+            heardRevision = std::max(heardRevision, member.data->transportRevision);
+    const auto barEnd = [](const auto &bar) {
+        return focusWindowEnd(bar.firstStamp, static_cast<std::int64_t>(bar.frames));
+    };
+    if (shownBar_ && (heardRevision > shownBar_->transportRevision ||
+        heard < barEnd(*shownBar_).value_or(heard))) {
         shownBar_.reset();
         redraw_ = true;
     }
@@ -472,14 +476,15 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
         const auto status = barScope_.status();
         if (status == Status::Pending) return;
         if (status == Status::Ready) {
-            if (const auto current = barScope_.read()) {
-                const auto end = focusWindowEnd(current->firstStamp, static_cast<std::int64_t>(current->frames));
+            if (const auto current = barScope_.read(); current && current->transportRevision >= heardRevision) {
+                const auto end = barEnd(*current);
                 if (!end || *end > heard) return;
                 if (shownBar_ != current) {
                     shownBar_ = current;
                     redraw_ = true;
                 }
                 tick = requestedBar_->nextTick;
+                heardRevision = current->transportRevision;
             }
         } else if (status == Status::Missed) {
             if (shownBar_) redraw_ = true;
@@ -491,7 +496,7 @@ void MixFocus::updateBarScope(const SnapshotReader &reader, const std::shared_pt
     auto next = focusScopeBarAtTick(*tick, rate, *tempo, reader.meters());
     if (missed && next && next->firstTick == requestedBar_->firstTick)
         next = focusScopeBarAtTick(next->nextTick, rate, *tempo, reader.meters());
-    if (next && barScope_.request(next->range))
+    if (next && barScope_.request(next->range, heardRevision))
         requestedBar_ = next;
 }
 void MixFocus::rebuildPlot() {
