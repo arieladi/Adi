@@ -1,0 +1,290 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Browser sheet</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, the Browser, proposal 1 (19 November 2026). DF-W20 (the Browser's sheet) with DF-W9 (the Plug-Ins
+// category lists the installed VST3 and CLAP plug-ins and loads one onto the selected track).
+// Live 12's Browser in Live's order and places, drawn in the agreed language. ADI's own drawing.
+// Every plug-in and maker on this sheet is invented.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','arr').replace('1.  1.  1','13.  2.  3').replace('3.  1.  1','9.  1.  1').replace('4.  0.  0','8.  0.  0');
+s+=R(1716,2,198,20,C.acc,{r:5});s+=T(1815,17,'BROWSER SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+
+const BOT=782,SB=H-26;
+const MARK=[];                                   // the numbers, drawn last so nothing covers them
+const qmark=(x,y)=>CI(x,y,11,C.win,{s:C.acc,sw:1.6})+T(x,y+4.5,'?',{z:13,w:700,a:'middle',f:C.acc});
+
+// ---------------- the Browser ----------------
+// 326 px, as on the agreed Arrangement sheet. Live 12's order: history arrows, search, the filter button;
+// the sidebar (Collections, Library, Places) with Live 12's small icons; the filter groups; the list; the preview.
+const bx=6,bw=326,by=74,bh=BOT-by-6;s+=R(bx,by,bw,bh,C.panel,{r:6});
+// back and forward, the search, the button that shows the filter groups (lit: they are shown)
+s+=grp(bx+8,by+8,46,24);s+=P(`M${bx+24} ${by+15}l-4.5 5l4.5 5`,{s:C.text,sw:1.7});s+=sep(bx+31,by+8,24);s+=P(`M${bx+39} ${by+15}l4.5 5l-4.5 5`,{s:C.faint,sw:1.7});
+s+=R(bx+58,by+8,bw-102,24,C.well,{r:5,s:'#3a3a3a'});s+=CI(bx+71,by+19,4.2,'none',{s:C.faint,sw:1.5})+L(bx+74,by+22,bx+77,by+25,C.faint,1.5,{cap:'round'});s+=T(bx+84,by+24,'Search (Ctrl + F)',{z:11.5,f:C.faint});
+s+=R(bx+bw-38,by+8,30,24,C.acc,{r:5});s+=P(`M${bx+bw-30} ${by+16}h14M${bx+bw-27} ${by+20}h8M${bx+bw-25} ${by+24}h4`,{s:C.ink,sw:1.7});
+MARK.push([bx+bw-58,by+20,1]);
+// the sidebar's icons, drawn as the language draws its icons: round, a little heavy
+const ic=(k,x,y,c)=>{const o={s:c,sw:1.3};switch(k){
+ case 'Sounds':return CI(x-2.5,y+3,2.6,'none',o)+P(`M${x+0.1} ${y+3}v-8.5l4.5 1.6`,o);
+ case 'Drums':return P(`M${x-5.5} ${y-2.5}a5.5 2.2 0 1 0 11 0a5.5 2.2 0 1 0 -11 0v5.5a5.5 2.2 0 0 0 11 0v-5.5`,o);
+ case 'Instruments':return R(x-6,y-4.5,12,9,'none',{r:1.6,...o})+L(x-2,y-4.5,x-2,y+1,c,1.3)+L(x+2,y-4.5,x+2,y+1,c,1.3);
+ case 'Audio Effects':return [-4.5,-1.5,1.5,4.5].map((dx,k)=>L(x+dx,y-[2,5,3.5,1.5][k],x+dx,y+[2,5,3.5,1.5][k],c,1.4,{cap:'round'})).join('');
+ case 'MIDI Effects':return P(`M${x-6} ${y-4}h12M${x-6} ${y}h7M${x-6} ${y+4}h10`,o);
+ case 'Pd Devices':return R(x-6.5,y-5,5,4,'none',{r:1,...o})+R(x+1.5,y+1,5,4,'none',{r:1,...o})+P(`M${x-4} ${y-1}v2.5c0 1.5 1 1.5 2.5 1.5h3`,o);
+ case 'Plug-Ins':return R(x-2.5,y-4,7,8,'none',{r:1.6,...o})+P(`M${x-6.5} ${y}h4M${x+4.5} ${y-2}h2.5M${x+4.5} ${y+2}h2.5`,o);
+ case 'Clips':return R(x-6,y-4.5,12,9,'none',{r:1.6,...o})+P(`M${x-1.5} ${y-2}l3.5 2l-3.5 2z`,{f:c,s:c,sw:1});
+ case 'Samples':return R(x-6,y-4.5,12,9,'none',{r:1.6,...o})+P(`M${x-4} ${y}h1l1 -2.5l1.5 5l1.5 -4l1 2.5h1.5`,{s:c,sw:1.1});
+ case 'Grooves':return P(`M${x-6} ${y-2}c2 -3 4 -3 6 0s4 3 6 0M${x-6} ${y+3}c2 -3 4 -3 6 0s4 3 6 0`,o);
+ case 'Tunings':return P(`M${x-6} ${y-4}h12M${x-3} ${y}h9M${x-6} ${y+4}h12M${x-6} ${y-4}v8`,o);
+ case 'Templates':return R(x-6,y-4.5,12,9,'none',{r:1.6,...o})+L(x-1.5,y-4.5,x-1.5,y+4.5,c,1.3);
+ case 'Packs':return R(x-6,y-3,10,8,'none',{r:1.5,...o})+P(`M${x-4} ${y-5}h8a2 2 0 0 1 2 2v6`,o);
+ case 'User Library':return CI(x,y-2.5,2.6,'none',o)+P(`M${x-5} ${y+5}a5 4 0 0 1 10 0`,o);
+ case 'Current Project':return P(`M${x-6} ${y+4.5}v-9h4l1.5 1.8h6.5v7.2z`,o)+P(`M${x-3} ${y+0.5}h6M${x-3} ${y+2.7}h4`,{s:c,sw:1});
+ case 'Add Folder...':return P(`M${x-6} ${y+4.5}v-9h4l1.5 1.8h6.5v7.2z`,o)+P(`M${x} ${y-1}v4.5M${x-2.25} ${y+1.25}h4.5`,{s:c,sw:1.2});}return ''};
+const cw=116;let yy=by+56;
+const cat=(t,o={})=>{if(o.sel)s+=R(bx+4,yy-13,cw-4,19,'#44444a',{r:4});
+  if(o.c)s+=CI(bx+17,yy-4,4,o.c);else s+=ic(t,bx+17,yy-4,o.sel?C.text:C.dim);
+  s+=T(bx+29,yy,t,{z:11.5,f:o.sel?C.text:'#bdbdbd',w:o.sel?600:400});yy+=20};
+const sect=(t,n)=>{s+=T(bx+10,yy,t,{z:10.5,f:C.faint});if(n)MARK.push([bx+cw-16,yy-4,n]);yy+=20};
+sect('Collections',2);cat('Favorites',{c:C.rec});cat('Mix tools',{c:C.acc});cat('Vocal chain',{c:C.grn});cat('Synths',{c:C.val});yy+=10;
+sect('Library',3);['Sounds','Drums','Instruments','Audio Effects','MIDI Effects','Pd Devices'].forEach(t=>cat(t));cat('Plug-Ins',{sel:1});['Clips','Samples','Grooves','Tunings','Templates'].forEach(t=>cat(t));yy+=10;
+sect('Places',4);['Packs','User Library','Current Project','Add Folder...'].forEach(t=>cat(t));
+s+=L(bx+cw,by+40,bx+cw,by+bh-72,'#1c1c1c');
+// the content pane: the filter groups, as Live 12's (a group's name, then its tags; a closed group shows only its name)
+const cx0=bx+cw,cr=bx+bw-8;let ty=by+40;
+const fgroup=(t,open,n)=>{s+=T(cx0+10,ty+12,t,{z:10.5,f:C.dim});s+=open?P(`M${cx0+16+t.length*5.9} ${ty+6}l3.5 4l3.5 -4`,{s:C.dim,sw:1.4}):P(`M${cx0+17+t.length*5.9} ${ty+4.5}l3.5 3.5l-3.5 3.5`,{s:C.dim,sw:1.4});if(n)s+=T(cr,ty+12,n,{z:9.5,f:C.dim,a:'end'})};
+fgroup('Devices',1);MARK.push([cx0+90,ty+8,5]);ty+=18;let tx=cx0+8;
+const tag=(t,on)=>{const w=12+t.length*5.6;if(tx+w>cr){tx=cx0+8;ty+=21}s+=pill(tx,ty,w,17,t,{on:on,z:9.5});tx+=w+4};
+['Instrument','Audio Effect','MIDI Effect'].forEach(t=>tag(t,0));ty+=24;s+=L(cx0+6,ty,cr+2,ty,'#3a3a3a');ty+=3;
+fgroup('Format',1);tx=cx0+62;[['VST3',0],['CLAP',0]].forEach(([t,on])=>{s+=pill(tx,ty+1,40,17,t,{on:on,z:9.5});tx+=44});ty+=22;s+=L(cx0+6,ty,cr+2,ty,'#3a3a3a');ty+=3;
+fgroup('Creator',0,'6 makers');ty+=22;
+// the Name column: its sort arrow, the result count and the column menu
+s+=R(cx0+1,ty,bw-cw-2,20,C.head);s+=T(cx0+10,ty+14,'Name',{z:10.5,w:600});s+=P(`M${cx0+46} ${ty+12}l3.5 -4l3.5 4`,{s:C.dim,sw:1.4});
+s+=T(cr-22,ty+14,'35 results',{z:10,f:C.dim,a:'end'});[0,4,8].forEach(d=>s+=CI(cr-12+d,ty+10,1.3,C.dim));MARK.push([cx0+74,ty+10,6]);ty+=22;
+// the rows
+// the kind, as the Arrangement sheet's list shows it: right-aligned text at 9.5 px
+const KC={'Instrument':C.val,'Audio Effect':C.text,'MIDI Effect':C.yel};
+const kind=(x,y,t)=>T(x,y,t,{z:9.5,f:KC[t],a:'end'});
+const tri=(x,y,open,c)=>open?P(`M${x-3.5} ${y-2}l3.5 4l3.5 -4z`,{f:c,s:c,sw:1}):P(`M${x-2} ${y-4}l4 4l-4 4z`,{f:c,s:c,sw:1});
+const folderIc=(x,y,c)=>P(`M${x} ${y+8}v-8h4l1.5 1.5h6.5v6.5z`,{s:c,sw:1.3});
+const plugIc=(x,y,c)=>ic('Plug-Ins',x+5,y+5,c);
+const rows=[
+ {l:0,f:1,o:1,n:'VST3',cnt:'23',mk:7},
+ {l:1,f:1,o:1,n:'Northwind Audio',cnt:'4',q:1},
+ {l:2,n:'Glass Piano',k:'Instrument',mk:8},
+ {l:2,n:'Plate 140',k:'Audio Effect',sel:1},
+ {l:2,n:'Saturator X',k:'Audio Effect'},
+ {l:2,n:'Tape Echo 2',fail:'Scan failed: plug-in crashed',mk:10},
+ {l:1,f:1,n:'Ostinato Works',cnt:'4'},
+ {l:1,f:1,n:'Quarry Sound',cnt:'7'},
+ {l:1,f:1,n:'Redline Labs',cnt:'8'},
+ {l:0,f:1,o:1,n:'CLAP',cnt:'12'},
+ {l:1,f:1,n:'Kestrel DSP',cnt:'6'},
+ {l:1,f:1,o:1,n:'Lumen Instruments',cnt:'5'},
+ {l:2,n:'Arc Synth',k:'Instrument',drag:1},
+ {l:2,n:'Chord Arp',k:'MIDI Effect'},
+ {l:2,n:'Drift Pad',k:'Instrument'},
+ {l:2,n:'Shimmer',k:'Audio Effect',q:1},
+ {l:2,n:'Sub Forge',k:'Instrument'},
+ {l:1,f:1,o:1,n:'Northwind Audio',cnt:'1'},
+ {l:2,n:'Saturator X',k:'Audio Effect',q:1},
+];
+let SELY=0,DRAGY=0;const QM=[];
+rows.forEach(r=>{const rh=r.fail?32:21,ry=ty,ix=cx0+10+r.l*12;
+  if(r.sel){s+=R(cx0+3,ry,bw-cw-6,20,'#3f5866',{r:4});SELY=ry}
+  if(r.drag){s+=R(cx0+3,ry,bw-cw-6,20,'none',{r:4,s:C.acc,d:'4 3'});DRAGY=ry}
+  if(r.f){s+=tri(ix+3,ry+10,r.o,C.dim);s+=folderIc(ix+11,ry+6,r.l?C.dim:'#bdbdbd');s+=T(ix+28,ry+14,r.n,{z:11.5,w:r.l?400:600,f:C.text});s+=T(cr,ry+14,r.cnt,{z:9.5,f:C.dim,a:'end'});if(r.q)QM.push([cr-34,ry+10])}
+  else if(r.fail){s+=plugIc(ix+3,ry+5,C.faint);s+=T(ix+20,ry+14,r.n,{z:11.5,f:C.faint});s+=CI(ix+20+80,ry+10,6,'none',{s:C.rec,sw:1.3,op:0.8});s+=T(ix+20+80,ry+13.5,'!',{z:9.5,w:700,a:'middle',f:C.rec,op:0.85});
+    s+=T(ix+20,ry+27,r.fail,{z:9.5,f:C.dim})}
+  else{s+=plugIc(ix+3,ry+5,r.drag?C.acc:r.sel?C.text:C.dim);s+=T(ix+20,ry+14,r.n,{z:11.5,f:r.drag?C.dim:C.text,w:r.sel?600:400});s+=kind(cr,ry+14,r.k);if(r.q)QM.push([cr-70,ry+10])}
+  if(r.mk===7)MARK.push([cx0+96,ry+10,7]);if(r.mk===8)MARK.push([cr-62,ry+10,8]);if(r.mk===10)MARK.push([cr-10,ry+10,10]);
+  ty+=rh});
+// the scan's state, and the way to rescan (where it lives is a question)
+ty+=6;s+=L(cx0+8,ty,cr,ty,'#3a3a3a');ty+=15;s+=T(cx0+10,ty,'35 plug-ins  ·  1 failed  ·  today 09:12',{z:9.5,f:C.dim});ty+=8;
+s+=btn(cx0+10,ty,62,19,'',{r:4,z:10,w:500});s+=P(`M${cx0+26} ${ty+6}a4.5 4.5 0 1 0 1.5 4`,{s:C.text,sw:1.4})+P(`M${cx0+24.5} ${ty+3.5}l2.5 2.6l-3.3 1`,{s:C.text,sw:1.4});s+=T(cx0+34,ty+13.5,'Rescan',{z:10,w:500});
+s+=btn(cx0+78,ty,98,19,'Plug-In sources...',{r:4,z:9.5,w:500});const QY=ty+10,QX=cx0+190;
+// the preview strip: the Preview switch, the sample's waveform with its play position, the volume
+{const py=by+bh-66;s+=R(bx+4,py,bw-8,62,C.well,{r:5});
+ s+=R(bx+12,py+7,26,14,C.acc,{r:7});s+=CI(bx+31,py+14,5,C.ink);s+=T(bx+44,py+18,'Preview',{z:10.5,f:C.text,w:600});
+ s+=T(bx+100,py+18,'last previewed: Vox Chop 03.wav',{z:9.5,f:C.dim});
+ MARK.push([bx+bw-23,py+14,11]);
+ const wx=bx+12,wy=py+27,ww=bw-62,wh=28;s+=R(wx,wy,ww,wh,C.well,{r:3,s:'#3a3a3a'});
+ const r=rng(77);let up='',dn='';const n=Math.floor(ww/1.5);// a sung chop: three syllables, breath between
+ const syl=[[0.03,0.30,0.95],[0.36,0.58,0.75],[0.64,0.97,0.85]];
+ for(let k=0;k<=n;k++){const u=k/n;let e=0.02;syl.forEach(([a,b,amp])=>{if(u>=a&&u<=b){const t=(u-a)/(b-a);e=Math.max(e,amp*Math.min(1,t*9)*Math.pow(1-t,0.6))}});const v=e*(0.75+0.25*r());
+  up+=(k?'L':'M')+(wx+k*1.5).toFixed(1)+' '+(wy+wh/2-v*(wh/2-2)).toFixed(1);dn=`L${(wx+k*1.5).toFixed(1)} ${(wy+wh/2+v*(wh/2-2)).toFixed(1)}`+dn}
+ const id='pv'+(UID++),pp=0.42;s+=`<clipPath id="${id}"><rect x="${wx}" y="${wy}" width="${ww*pp}" height="${wh}"/></clipPath>`;
+ s+=P(up+dn+'Z',{f:C.dim,op:0.55});s+=`<g clip-path="url(#${id})">${P(up+dn+'Z',{f:C.val,op:0.9})}</g>`;s+=L(wx+ww*pp,wy,wx+ww*pp,wy+wh,'#f0f0f0',1.3);
+ s+=knob(bx+bw-23,py+38,10,0.7,C.val,'','',{ring:2.6});s+=T(bx+bw-23,py+59,'Vol',{z:9.5,f:C.dim,a:'middle'})}
+
+// ---------------- the Arrangement ----------------
+const ax=338,aw=W-ax-6,ay=74,HW=392,lw=aw-HW,hx=ax+lw;
+s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+const BAR=lw/32;const X=b=>ax+(b-1)*BAR;      // bars 1 to 33 in view
+// overview of the whole song (64 bars), the part in view framed
+s+=R(ax+4,ay+4,lw-8,16,C.well,{r:3});{const ov=[['#f08a5d',[[1,8],[9,16],[25,8],[41,16],[57,8]]],['#f2e15a',[[9,16],[25,8],[41,16],[57,8]]],['#8f8cff',[[1,8],[9,16],[25,8],[33,8],[41,16],[57,8]]],['#c479ff',[[1,8],[17,16],[49,16]]],['#7fd36b',[[17,8],[25,8],[49,16]]],['#5ec8ff',[[9,16],[25,8],[41,16],[57,8]]],['#5eb4ff',[[25,8],[57,8]]]];
+ const ow=(lw-12)/64;ov.forEach(([c,cl],i)=>cl.forEach(([b,l])=>s+=R(ax+6+(b-1)*ow,ay+6+i*1.9,l*ow-2,1.3,c)));s+=R(ax+4,ay+4,(lw-8)*0.5,16,'none',{r:3,s:'#d0d0d0',sw:1.2})}
+// ruler: a number every 4 bars, a tick every bar; the loop brace on bars 9 to 17; locators
+const ry=ay+24;s+=R(ax,ry,lw,26,'#262626');for(let b=1;b<=33;b++){const x0=X(b);if((b-1)%4===0){s+=L(x0,ry+14,x0,ry+26,'#5a5a5a');s+=T(x0+4,ry+12,String(b),{z:10.5,f:C.dim})}else s+=L(x0,ry+21,x0,ry+26,'#444')}
+s+=R(X(9),ry+16,8*BAR,7,C.acc,{r:3,op:0.9});
+[[9,'Verse'],[17,'Build'],[25,'Chorus']].forEach(([b,t])=>{s+=P(`M${X(b)+18} ${ry+3}l8 5l-8 5z`,{f:C.dim});s+=T(X(b)+30,ry+12,t,{z:10,f:C.dim})});
+// the buttons over the track names, as on the Arrangement sheet
+{const by2=ry+3;s+=R(hx,ry,HW,26,'#262626');let x=hx+6;
+ s+=btn(x,by2,26,20,'',{r:4});s+=iSwap(x+13,by2+10,C.text);x+=30;
+ s+=btn(x,by2,112,20,'',{r:4});s+=T(x+7,by2+14,'Show',{z:10.5,f:C.dim});s+=T(x+40,by2+14,'All groups',{z:10.5,w:600});s+=P(`M${x+98} ${by2+8}l3.5 3.5l3.5 -3.5`,{s:C.dim,sw:1.5});x+=118;
+ s+=grp(x,by2,122,20);[['I·O',1],['S',1],['R',1],['M',1],['D',0]].forEach(([t,on],k)=>{if(on)s+=R(x+2+k*24,by2+2,22,16,C.acc,{r:4});s+=T(x+13+k*24,by2+14,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})});x+=128;
+ s+=grp(x,by2,50,20);s+=T(x+13,by2+14,'H',{z:10,a:'middle',w:700,f:C.dim});s+=sep(x+25,by2,20);s+=T(x+37,by2+14,'W',{z:10,a:'middle',w:700,f:C.dim});x+=56;
+ s+=btn(x,by2,26,20,'',{r:4,on:1});s+=iArm(x+13,by2+10,C.ink).replace(/stroke-width="2.2"/,'stroke-width="1.8"');x+=30;
+ s+=btn(x,by2,22,20,'',{r:4});s+=R(x+6,by2+9,10,7,'none',{r:1.5,s:C.dim,sw:1.4})+P(`M${x+8} ${by2+9}v-2a3 3 0 0 1 6 0v2`,{s:C.dim,sw:1.4});}
+
+// the song: C# minor, C#m A E B, one chord every two bars
+const CH=[{root:37,tri:[61,64,68]},{root:33,tri:[61,64,69]},{root:40,tri:[59,64,68]},{root:35,tri:[59,63,66]}];
+const chordAt=bar=>CH[Math.floor((bar-1)/2)%4];
+const GD='#f08a5d';
+const tracks=[
+ {n:'Drums',c:GD,k:'g',h:44,clips:[[1,8,'Drums'],[9,16,'Drums'],[25,8,'Drums']]},
+ {n:'Kick',c:'#ff6f61',k:'a',h:50,lines:[GD],drum:'kick',clips:[[1,8,'Kick Intro'],[9,16,'Kick Verse'],[25,8,'Kick Chorus']]},
+ {n:'Percussion',c:'#e8b04a',k:'a',h:44,lines:[GD],drum:'perc',clips:[[9,16,'Hats & Clap'],[25,8,'Hats & Clap 2']]},
+ {n:'Bass',c:'#f2e15a',k:'m',h:58,midi:'bass',clips:[[9,16,'Bass Verse'],[25,8,'Bass Chorus']]},
+ {n:'Keys',c:'#8f8cff',k:'m',h:52,midi:'keys',clips:[[1,8,'Keys Intro'],[9,16,'Keys Verse'],[25,8,'Keys Chorus']]},
+ {n:'Pads',c:'#c479ff',k:'m',h:44,midi:'pad',clips:[[1,8,'Pad Intro'],[17,16,'Pad Build']]},
+ {n:'Arp',c:'#7fd36b',k:'m',h:58,midi:'arp',drop:1,clips:[[17,8,'Arp Build'],[25,8,'Arp Chorus']]},
+ {n:'Lead Vocals',c:'#5ec8ff',k:'a',h:66,sel:1,vox:'lead',clips:[[9,16,'Lead Vox Verse tk3'],[25,8,'Lead Vox Chorus']]},
+ {n:'Backing Vox',c:'#5eb4ff',k:'a',h:44,vox:'bv',clips:[[25,8,'Chorus Oohs']]},
+];
+// an audio clip's waveform, from an envelope over the clip's bars
+function wave(x0,w,y,h,env,seed){const r=rng(seed);let up='',dn='';const st=1.2,n=Math.floor(w/st),mid=y+15+(h-17)/2,amp=(h-21)/2;
+  for(let k=0;k<=n;k++){const b=k*st/BAR;const v=Math.min(1,env(b,r)*(0.82+0.18*r()));up+=(k?'L':'M')+(x0+k*st).toFixed(1)+' '+(mid-amp*v).toFixed(1);dn=`L${(x0+k*st).toFixed(1)} ${(mid+amp*v).toFixed(1)}`+dn}
+  return P(up+dn+'Z',{f:'#141414',op:0.85})}
+const envKick=b=>{const ph=(b*4)%1;return 0.04+0.92*Math.exp(-ph*6)};
+const envPerc=b=>{const q=b*4,ph8=(q*2)%1,beat=Math.floor(q)%4,phb=q%1;let e=0.30*Math.exp(-ph8*9);if(beat===1||beat===3)e=Math.max(e,0.82*Math.exp(-phb*4.5));return 0.03+e};
+function envVox(seed,len){const r=rng(seed),syl=[];// phrases of about a bar and a half, every two bars, made of syllables
+  for(let p=0;p<len;p+=2){let t=p+0.08+r()*0.2;const end=p+1.35+r()*0.45;while(t<end){const last=t>end-0.5,d=last?Math.min(0.75,end-t+0.3):0.06+r()*r()*0.4;syl.push([t,d,last?0.85:0.4+0.5*r()]);t+=d+(r()<0.25?0.08:0.005)}}
+  return b=>{let e=0.015;for(const[t0,d,a]of syl){if(b>=t0&&b<=t0+d){const u=(b-t0)/d;e=Math.max(e,a*Math.min(1,u*10)*Math.pow(1-u,0.3)*(0.85+0.15*Math.sin(b*90)))}}return e}}
+const envBv=b=>{const u=(b%2)/2;return 0.02+0.62*Math.pow(Math.sin(Math.PI*Math.min(1,u/0.94)),0.8)};
+// a MIDI clip's notes: [start in bars from the clip start, length in beats, pitch]
+function notesFor(kind,len,bar0){const N=[];for(let b=0;b<len;b++){const c=chordAt(bar0+b);
+  if(kind==='bass')[[0,0.75,0],[1.5,0.5,0],[2,0.75,12],[3,0.5,0],[3.5,0.5,7]].forEach(([bt,l,o])=>N.push([b+bt/4,l,c.root+o]));
+  if(kind==='keys'){[0,2.5].forEach((bt,k)=>c.tri.forEach(p=>N.push([b+bt/4,k?1:1.5,p])))}
+  if(kind==='pad'&&b%2===0)[c.root+12,...c.tri].forEach(p=>N.push([b,7.6,p]));
+  if(kind==='arp'){const seq=[c.tri[0],c.tri[1],c.tri[2],c.tri[0]+12,c.tri[1]+12,c.tri[0]+12,c.tri[2],c.tri[1]];seq.forEach((p,k)=>N.push([b+k/8,0.45,p]))}}
+  return N}
+function drawNotes(x0,w,y,h,N){let lo=1e9,hi=-1e9;N.forEach(n=>{lo=Math.min(lo,n[2]);hi=Math.max(hi,n[2])});lo-=1;hi+=1;const top=y+17,bot=y+h-4,rh=(bot-top)/(hi-lo+1);let g='';
+  N.forEach(([t,l,p])=>{const nx=x0+t*BAR+1,nw=Math.max(1.6,l/4*BAR-1.2);if(nx>x0+w-2)return;g+=R(nx.toFixed(1),(top+(hi-p)*rh).toFixed(1),Math.min(nw,x0+w-1-nx).toFixed(1),Math.max(1.8,rh-0.6).toFixed(1),'#141414',{r:0.8,op:0.9})});return g}
+
+let ty0=ry+28;const ROWY={};
+tracks.forEach((tr,i)=>{const h=tr.h,y=ty0;ROWY[tr.n]=[y,h];s+=R(ax,y,lw,h,tr.sel?'#3a3a3a':(i%2?C.lane2:C.lane));
+  for(let b=2;b<=32;b++)s+=L(X(b),y,X(b),y+h,'#000',1,{op:(b-1)%4===0?0.22:0.08});
+  tr.clips.forEach(([b0,bl,name],ci)=>{const x0=X(b0)+1,cwid=bl*BAR-2;s+=R(x0,y+1,cwid,h-2,tr.c,{r:3,op:0.30});s+=R(x0,y+1,cwid,13,tr.c,{r:3});s+=T(x0+5,y+11.5,name,{z:10,f:C.ink,w:600});
+    if(tr.k==='g'){// a group shows a summary of its tracks
+      s+=wave(x0,cwid,y,h*0.62,envKick,5+ci).replace('opacity="0.85"','opacity="0.5"');if(b0>=9)s+=wave(x0,cwid,y+h*0.3,h*0.7,envPerc,9+ci).replace('opacity="0.85"','opacity="0.45"')}
+    else if(tr.drum==='kick')s+=wave(x0,cwid,y,h,envKick,11+ci);
+    else if(tr.drum==='perc')s+=wave(x0,cwid,y,h,envPerc,21+ci);
+    else if(tr.vox==='lead')s+=wave(x0,cwid,y,h,envVox(40+ci,bl),31+ci);
+    else if(tr.vox==='bv')s+=wave(x0,cwid,y,h,envBv,41);
+    else if(tr.midi)s+=drawNotes(x0,cwid,y,h,notesFor(tr.midi,bl,b0))});
+  // the header: name, In/Out, mixer, meter
+  const ln=tr.lines||[],ind=ln.length*5;s+=R(hx,y,HW,h,tr.sel?'#3a3a3a':C.panel);s+=R(hx+ind,y,128-ind,h,tr.c);ln.forEach((c,k)=>s+=R(hx+k*5,y-1,4,h+2,c));s+=CI(hx+ind+12,y+12,6,'none',{s:C.ink,sw:1.6})+P(`M${hx+ind+9} ${y+11}l3 3l3 -3`,{s:C.ink,sw:1.6});s+=T(hx+ind+24,y+16,tr.n,{z:11.5,f:C.ink,w:700});
+  if(h>=58&&tr.k!=='g'){s+=chooser(hx+134,y+4,104,16,tr.k==='m'?'All Ins':'Ext. In',{z:9.5});s+=chooser(hx+134,y+22,104,16,tr.k==='m'?'All Channels':'1/2',{z:9.5});
+    s+=grp(hx+134,y+40,104,16);s+=T(hx+152,y+52,'In',{z:9.5,a:'middle',f:C.dim,w:600});s+=R(hx+170,y+42,34,12,C.acc,{r:3});s+=T(hx+187,y+52,'Auto',{z:9.5,a:'middle',f:C.ink,w:700});s+=T(hx+221,y+52,'Off',{z:9.5,a:'middle',f:C.dim,w:600})}
+  else s+=chooser(hx+134,y+4,104,16,tr.k==='g'?'Main':(tr.k==='m'?'All Ins':'Ext. In'),{z:9.5});
+  const mx=hx+246;s+=btn(mx,y+4,34,16,String(i+1),{on:1,r:4,z:10});s+=btn(mx+38,y+4,20,16,'S',{r:4,z:10,f:C.dim});if(tr.k!=='g'){s+=btn(mx+62,y+4,20,16,'',{r:4});s+=CI(mx+72,y+12,3.6,C.dim)}
+  s+=box(mx,y+24,46,16,['-3.0','-6.5','-9.5','-9.0','-7.5','-12','-10','0.0','-8.0'][i],{fill:0.6,z:9.5});s+=knob(mx+68,y+32,7.5,0.5,C.val,'','',{bi:1,ring:2});
+  if(h>=58){s+=box(mx,y+42,28,14,'-12',{z:9});s+=box(mx+32,y+42,28,14,'-inf',{z:9,f:C.dim})}
+  const mv=[0.8,0.74,0.56,0.66,0.5,0.38,0,0.7,0.48][i];s+=meterV(hx+HW-48,y+4,5,h-8,mv)+meterV(hx+HW-41,y+4,5,h-8,mv*0.94);
+  s+=L(ax,y+h,ax+aw,y+h,'#1a1a1a');ty0+=h+1});
+// the drop area, then the returns and Main at the foot
+const footH=3*24,dropBot=BOT-6-20-footH;s+=T(ax+lw/2,(ty0+dropBot)/2+4,'Drop Files and Devices Here',{z:12,f:C.faint,a:'middle'});
+[['A Reverb','#b7b7c2','A'],['B Delay','#b7b7c2','B'],['Main','#e8e8ee','']].forEach(([n,c,l],i)=>{const y=dropBot+i*24;s+=R(ax,y,lw,23,'#2a2a2a');s+=R(hx,y,HW,23,C.panel);s+=R(hx,y,128,23,c);s+=T(hx+24,y+15.5,n,{z:11.5,f:C.ink,w:700});s+=CI(hx+12,y+11.5,6,'none',{s:C.ink,sw:1.6});
+  s+=chooser(hx+134,y+3,104,16,i<2?'Main':'1/2',{z:9.5});const mx=hx+246;if(l){s+=btn(mx,y+3,34,16,l,{on:1,r:4,z:10});s+=btn(mx+38,y+3,20,16,'S',{r:4,z:10,f:C.dim});s+=btn(mx+62,y+3,34,16,'Post',{r:4,z:9,f:C.dim})}else{s+=box(mx,y+3,46,16,'0.0',{fill:0.7,z:9.5});s+=knob(mx+68,y+11.5,7,0.5,C.val,'','',{bi:1,ring:2})}
+  s+=meterV(hx+HW-48,y+3,5,17,[0.4,0.3,0.82][i])+meterV(hx+HW-41,y+3,5,17,[0.38,0.28,0.8][i])});
+// the playhead at 13.2.3 (bar 13, beat 2, sixteenth 3: 12 bars + 1/4 + 2/16 from the start; a 4/4 bar holds 16 sixteenths),
+// starting under the bar numbers; the time ruler at the foot (120 BPM: a bar is two seconds)
+const PHX=X(13+1/4+2/16);s+=L(PHX,ry+14,PHX,dropBot,'#f0f0f0',1.3);
+const fy=BOT-6-20;s+=R(ax,fy,lw,20,'#262626');for(let b=1;b<=33;b+=4){const x0=X(b);s+=L(x0,fy,x0,fy+6,'#5a5a5a');if((b-1)%8===0){const sec=(b-1)*2;s+=T(x0+4,fy+14,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),{z:10,f:C.dim})}}
+s+=R(hx,fy,HW,20,'#262626');s+=box(hx+6,fy+2,52,16,'1.00x',{z:9.5});s+=T(hx+HW-8,fy+14,'1/16',{z:10,f:C.dim,a:'end'});
+
+// ---- moment (b): the drag of Arc Synth (CLAP) from the Browser onto Arp, a MIDI track with no instrument yet ----
+// The whole track is framed and lit (a drop onto the track); a line on a track boundary is kept for a drop between tracks.
+{const [y,h]=ROWY['Arp'];s+=R(ax,y,aw,h,C.acc,{op:0.07});s+=R(hx+1,y+1,127,h-2,'#ffffff',{op:0.16});s+=R(ax+1,y+1,aw-2,h-2,'none',{r:3,s:C.acc,sw:2});
+ const gx=574,gy=y+15;// the path the pointer took, then the ghost of the plug-in under the pointer, drawn as its row
+ s+=P(`M${bx+bw-6} ${DRAGY+10}C${bx+bw+90} ${DRAGY+10} ${gx-120} ${gy+12} ${gx-4} ${gy+12}`,{s:C.acc,sw:1.4,op:0.55}).replace('/>',' stroke-dasharray="5 4"/>');
+ s+=`<g filter="url(#sh)">`+R(gx,gy,150,26,C.head,{r:5,s:C.acc,sw:1.4})+'</g>';s+=plugIc(gx+7,gy+8,C.acc);s+=T(gx+26,gy+17.5,'Arc Synth',{z:11.5,w:600});s+=kind(gx+142,gy+17.5,'Instrument');
+ s+=P(`M${gx-6} ${gy-8}l0 15l4 -3.5l2.6 5.6l2.4 -1.1l-2.6 -5.5l5.2 -0.3z`,{f:'#f0f0f0',s:'#101012',sw:1});
+ s+=pill(gx-30,gy-14,16,16,'b',{on:1,z:10.5});
+ MARK.push([gx+168,gy+13,12])}
+
+// ---- moment (a): the pointer over the selected plug-in, and its hint (over the Bass lane's empty first bars) ----
+{const px=bx+bw-74,py=SELY+11;s+=P(`M${px} ${py}l0 15l4 -3.5l2.6 5.6l2.4 -1.1l-2.6 -5.5l5.2 -0.3z`,{f:'#f0f0f0',s:'#101012',sw:1});
+ const tx2=bx+bw+16,ty2=ROWY['Bass'][0]+8;s+=`<g filter="url(#sh)">`+R(tx2,ty2,272,38,C.head,{r:5,s:C.edge})+'</g>';
+ s+=T(tx2+12,ty2+15,'Double-click or Enter: load onto Lead Vocals',{z:11,w:600});s+=T(tx2+12,ty2+30,'Plate 140  ·  Northwind Audio  ·  VST3  ·  Audio Effect',{z:9.5,f:C.dim});
+ s+=pill(tx2-6,ty2-8,16,16,'a',{on:1,z:10.5});
+ MARK.push([tx2+272,ty2,9])}
+
+// ---------------- the Info box and the Device View ----------------
+// The Lead Vocals chain of the Arrangement sheet (EQ, Compressor, Auto Filter, Reverb, Saturator X), scrolled as Live
+// scrolls a long chain: Auto Filter is cut at the right edge; Reverb and Saturator X follow out of view.
+const ph=SB-BOT-6;s+=infoBox(6,BOT,326,ph,{seed:9});
+const dx=ax,dvw=672;s+=R(dx,BOT,dvw,ph,'#202020',{r:6});
+{const py=BOT+8,h=ph-16;let px=dx+8;
+ s+=R(px,py,22,h,'#5ec8ff',{r:5});s+=`<text transform="translate(${px+15} ${py+h-10}) rotate(-90)" font-size="11.5" font-weight="700" fill="${C.ink}">Lead Vocals</text>`;px+=28;
+ s+=eqPanel(px,py,276,h);px+=284;
+ s+=compPanel(px,py,220,h,1,{hot:1});px+=228;
+ // where Plate 140 lands: after the selected device, as in Live
+ s+=L(px-4,py+4,px-4,py+h-4,C.acc,2,{cap:'round'});
+ const sw2=64;s+=R(px,py,sw2,h,'none',{r:6,s:C.acc,d:'5 4'});
+ s+=plugIc(px+sw2/2-5,py+h/2-46,C.acc);s+=T(px+sw2/2,py+h/2-14,'Plate 140',{z:11.5,w:600,a:'middle'});s+=T(px+sw2/2,py+h/2+2,'lands here',{z:10,f:C.dim,a:'middle'});s+=T(px+sw2/2,py+h/2+16,'on Enter',{z:10,f:C.dim,a:'middle'});
+ MARK.push([px+sw2/2,py+h/2+50,13]);px+=sw2+8;
+ // Auto Filter, cut by the Device View's edge
+ {const id='dv'+(UID++),w=292;s+=`<clipPath id="${id}"><rect x="${dx}" y="${BOT}" width="${dvw-8}" height="${ph}"/></clipPath><g clip-path="url(#${id})">`;
+  s+=panel(px,py,w,h,'Auto Filter','Clean ▾');s+=filterd(px+8,py+30,184,92);s+=knob(px+218,py+60,13,0.62,C.val,'Freq','1.2 kHz',{lz:9.5});s+=knob(px+264,py+60,13,0.4,C.val,'Res','40 %',{lz:9.5});
+  s+=pill(px+10,py+130,32,16,'LP',{on:1});s+=pill(px+46,py+130,32,16,'HP');s+=pill(px+82,py+130,32,16,'BP');s+=pill(px+118,py+130,42,16,'Notch');s+=pill(px+202,py+130,38,16,'12');s+=pill(px+244,py+130,38,16,'24',{on:1});
+  s+=T(px+10,py+166,'Envelope',{z:10,f:C.dim});s+=T(px+156,py+166,'LFO',{z:10,f:C.dim});s+=L(px+146,py+154,px+146,py+h-8,'#404044');
+  [['Amount','+12',0.6],['Attack','6 ms',0.2],['Release','200 ms',0.5]].forEach(([l,v,pv],n)=>s+=knob(px+28+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5,bi:n===0}));
+  [['Amount','20 %',0.2],['Rate','1/8',0.45],['Phase','180°',1]].forEach(([l,v,pv],n)=>s+=knob(px+174+n*44,py+188,10,pv,C.acc,l,v,{lz:9.5}));s+='</g>'}}
+
+// ---------------- the numbers ----------------
+MARK.forEach(([x,y,n])=>s+=note(x,y,n));
+s+=qmark(QX,QY);QM.forEach(([x,y])=>s+=qmark(x,y));
+
+// ---------------- the sheet's notes (not part of the window) ----------------
+{const lx=dx+dvw+8,ly=BOT,lwd=W-6-lx,lh=ph;s+=R(lx+0.75,ly+0.75,lwd-1.5,lh-1.5,C.win,{s:C.acc,sw:1.5,d:'6 4'});
+ s+=T(lx+14,ly+20,'The Browser, DF-W20: the numbers',{z:12.5,w:700,f:C.acc});
+ s+=T(lx+lwd-14,ly+20,'Two moments on one sheet: (a) the pointer over Plate 140 (9), later (b) the drag of Arc Synth (12)',{z:10.5,f:C.text,a:'end'});
+ const cv=document.createElement('canvas').getContext('2d'),FONT='"Segoe UI", Arial, sans-serif';
+ const mw=(t,b)=>{cv.font=(b?'700 ':'400 ')+'10.5px '+FONT;return cv.measureText(t).width};
+ const item=(cx,cy,n,head,body,tw,draw)=>{if(draw){if(n==='?')s+=qmark(cx+11,cy+5);else s+=note(cx+11,cy+5,n)}
+   const words=[...head.split(' ').map(w=>[w,1]),...body.split(' ').map(w=>[w,0])];const lines=[[]];let cur=0;
+   words.forEach(([w,b])=>{const ww=mw(w+' ',b);if(cur+ww-mw(' ',b)>tw&&lines[lines.length-1].length){lines.push([]);cur=0}lines[lines.length-1].push([w,b]);cur+=ww});
+   if(draw)lines.forEach((ln,k)=>{let t='';ln.forEach(([w,b],j)=>{t+=`<tspan font-weight="${b?700:400}" fill="${b?(n==='?'?C.acc:C.text):'#bdbdbd'}">${(j?' ':'')+w}</tspan>`});
+     s+=`<text x="${cx+28}" y="${cy+9+k*12.5}" font-size="10.5">${t}</text>`});return Math.max(22,9+lines.length*12.5)};
+ const items=[
+  [1,'Search (Ctrl + F).','Filter button lit while the groups show (unlit on the Arrangement sheet).'],
+  [2,'Collections.','Favorites and his own colours; dots as on the Arrangement sheet.'],
+  [3,'Library.','Live’s categories, Pd Devices in Max for Live’s place. Plug-Ins selected (DF-W9).'],
+  [4,'Places.','Packs, User Library, Current Project, his folders.'],
+  [5,'Filter groups.','Devices, Format, Creator (closed). None lit: all listed.'],
+  [6,'Name, with the count.','It follows the search and the tags.'],
+  [7,'Folders.','Format, then maker, with counts. VST3 › Northwind Audio, CLAP › Lumen Instruments and CLAP › Northwind Audio unfolded.'],
+  [8,'Kind.','Instrument, Audio Effect or MIDI Effect, right-aligned as on the Arrangement sheet.'],
+  [9,'(a) Selected, with the hint.','Double-click or Enter loads Plate 140 onto the selected track, Lead Vocals.'],
+  [10,'Failed scan.','Greyed, with the reason. Rescan tries it again.'],
+  [11,'Preview.','The switch, the last sample previewed with its play position, the volume. Plug-ins have none.'],
+  [12,'(b) Drag onto a track.','Arc Synth onto Arp (MIDI, no instrument): framed and lit. A line between two tracks would mean a new track.'],
+  [13,'Where it lands.','After the selected Compressor, before Auto Filter; the chain scrolls on to Reverb, Saturator X.'],
+  ['?','Rescan, Plug-In sources.','Live has them in Settings › Plug-Ins. Here too, or only there?'],
+  ['?','Open.','Folders by maker, or flat? Instruments and effects in subfolders, or the Kind column only? Both formats: one row or two?'],
+  ['?','Width.','326 px as on the Arrangement sheet; Live 12’s default to be checked.']];
+ const NC=3,colW=(lwd-28-(NC-1)*14)/NC,top=ly+33,bot=ly+lh-8,GAP=3;
+ // split the items into three columns as evenly as their heights allow
+ const hs=items.map(it=>item(0,0,it[0],it[1],it[2],colW-32,0)+GAP),sum=(a,b)=>hs.slice(a,b).reduce((x,y)=>x+y,0);let best=null;
+ for(let i=1;i<items.length-1;i++)for(let j=i+1;j<items.length;j++){const m=Math.max(sum(0,i),sum(i,j),sum(j,items.length));if(!best||m<best[0])best=[m,i,j]}
+ const placed=[];[[0,best[1]],[best[1],best[2]],[best[2],items.length]].forEach(([a,b],c)=>{let cy=top;for(let k=a;k<b;k++){placed.push([lx+14+c*(colW+14),cy,items[k]]);cy+=hs[k]}});
+ placed.forEach(([cx,cy,[n,h,t]])=>item(cx,cy,n,h,t,colW-32,1));
+ window.LEGEND_OVER=[best,bot-top,hs.join(' ')]}
+// ---------------- the Status Bar ----------------
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Arc Synth  ·  CLAP  ·  Lumen Instruments  ·  Instrument  ·  release on Arp to load it there',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Lead Vocals',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-154,SB+5,68,16,C.acc,{r:4});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.ink,w:700});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.dim,w:600});
+finish(W,H,s);
+</script></body></html>

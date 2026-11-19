@@ -1,0 +1,307 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Mixer and Track Rows</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, the track rows and the Mixer in detail, proposal 1 (19 November 2026). DF-W20; ADR-0243's order.
+// Real size, Compact density, the song "Norway". Top: the Arrangement's track headers with their mixer
+// section. Bottom: Live 12's Mixer in the lower panel. The Browser and the Info box are closed on this
+// sheet to make room for the legend at the left.
+// Second pass, after the critic: every meter, held-peak line, fader and value box is placed from its dB
+// value on one scale, -60 to +6 dB; the moment drawn is a second after Bass's Solo was pressed.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','arr').replace('1.  1.  1','14.  3.  1').replace('3.  1.  1','13.  1.  1').replace('4.  0.  0','8.  0.  0');
+s+=R(1652,2,262,20,C.acc,{r:5});s+=T(1783,17,'MIXER AND TRACK ROWS SHEET  ·  proposal 1',{z:11.5,w:700,a:'middle',f:C.ink});
+
+// a small circled number, for the parts the legend explains
+const num=(x,y,n)=>CI(x,y,8.5,'#ffffff',{s:'#101013',sw:1})+`<text x="${x}" y="${y+3.8}" font-size="10.5" font-weight="700" text-anchor="middle" fill="#101013">${n}</text>`;
+// text measured in the browser, for the legend and the choosers
+const MC=document.createElement('canvas').getContext('2d');
+const fnt=(w,z)=>`${w} ${z}px "Segoe UI", Arial, sans-serif`;
+function para(x,y,title,body,maxW,z,lh,o={}){MC.font=fnt(700,z);const tw=title?MC.measureText(title+'  ').width:0;MC.font=fnt(400,z);
+  const words=body.split(' ');const lines=[];let line='';
+  words.forEach(w=>{const t=line?line+' '+w:w;const lim=lines.length?maxW:maxW-tw;if(MC.measureText(t).width>lim&&line){lines.push(line);line=w}else line=t});if(line)lines.push(line);
+  let g=title?T(x,y,title,{z,w:700,f:o.tf||C.text}):'';lines.forEach((l,k)=>g+=T(k?x:x+tw,y+k*lh,l,{z,f:o.f||C.text}));return{g,h:lines.length*lh}}
+// a chooser's label cut as Live cuts it, with an ellipsis, when it would run into the chevron
+const fit=(t,z,maxw)=>{MC.font=fnt(400,z);if(MC.measureText(t).width<=maxw)return t;while(t.length>1&&MC.measureText(t+'…').width>maxw)t=t.slice(0,-1);return t+'…'};
+const ch=(x,y,w,h,t,z)=>chooser(x,y,w,h,fit(t,z,w-22),{z});
+// the sheet's own boxes (not the window's): an orange dashed edge
+const sheetBox=(x,y,w,h,cap)=>R(x+0.75,y+0.75,w-1.5,h-1.5,C.win,{r:6,s:C.acc,sw:1.5,d:'6 4'})+T(x+10,y+17,cap,{z:10.5,f:C.dim,w:600});
+
+// ---------------- one dB scale for the meter, its held peak, the fader and the volume box ----------------
+const lv=db=>db==null?0:Math.max(0,Math.min(1,(db+60)/66));                 // -60 dB at the foot, +6 dB at the top
+const fmt=db=>db==null?'-inf':(db>0?'+':'')+db.toFixed(1);
+const dbt=v=>v===0?'0.0':v.toFixed(1);
+
+// ---------------- the song: Norway, C# minor, 120 BPM ----------------
+const GD='#f08a5d';
+const SDB={0:'-inf',0.248:'-35.0',0.575:'-17.0',0.857:'-5.7',1:'0.0'};    // the send taper, as measured in Live 12.4
+// pk: the held peak in dB from before the solo (the box over the meter keeps it); now: the level a second after
+// Bass's Solo, null where the track is silenced by the solo. Pan [knob 0..1, text], 50L..50R.
+const TR=[
+ {n:'Drums',c:GD,k:'g',h:44,num:'1',vol:-3.0,pk:-2.6,now:null,io:['Main'],to:'Main',sends:[0.248,0],pan:[0.5,'C'],dly:'0.00'},
+ {n:'Kick',c:'#ff6f61',k:'a',h:44,num:'2',vol:-4.5,pk:0.4,now:null,lines:[GD],drum:'kick',io:['Ext. In','3','mon','Group'],in:['Ext. In','3'],to:'Group',sends:[0,0],pan:[0.5,'C'],dly:'0.00'},
+ {n:'Snare',c:'#e8b04a',k:'a',h:44,num:'3',off:1,vol:-6.0,pk:null,now:null,lines:[GD],drum:'snare',io:['Ext. In','4','mon','Group'],in:['Ext. In','4'],to:'Group',sends:[0.575,0],pan:[0.42,'8L'],dly:'0.00'},
+ {n:'Bass',c:'#f2e15a',k:'m',h:76,num:'4',solo:1,vol:-7.5,pk:-9.1,now:-13.0,io:['All Ins','All Channels','mon','Main'],in:['All Ins','All Channels'],to:'Main',sends:[0,0],pan:[0.5,'C'],dly:'-4.00'},
+ {n:'Lead Vocals',c:'#5ec8ff',k:'a',h:92,num:'5',sel:1,arm:1,vol:-2.5,pk:-5.2,now:null,vox:'lead',io:['Ext. In','1/2','mon','Main'],in:['Ext. In','1/2'],to:'Main',sends:[0.575,0.857],pan:[0.5,'C'],dly:'0.00'},
+];
+const RET=[
+ {n:'A Reverb',c:'#b7b7c2',k:'r',h:44,num:'A',vol:-9.0,pk:-14.6,now:-31.0,io:['Main'],to:'Main',sends:[0,0],sdis:[1,1],pan:[0.5,'C'],dly:'0.00'},
+ {n:'B Delay',c:'#b7b7c2',k:'r',h:24,num:'B',vol:-12.0,pk:-18.9,now:-37.0,io:['Main'],to:'Main',sends:[0.248,0],sdis:[0,1],pan:[0.62,'12R'],dly:'0.00'},
+ {n:'Main',c:'#e8e8ee',k:'main',h:44,vol:0,pk:-0.3,now:-12.4,io:['1/2'],pan:[0.5,'C'],dly:'0.00'},
+];
+// clips: [first bar, bars, name]
+TR[0].clips=[[1,4,'Drums Intro'],[5,8,'Drums Verse'],[13,8,'Drums Chorus'],[21,8,'Drums Verse 2']];
+TR[1].clips=[[1,4,'Kick Intro'],[5,8,'Kick Verse'],[13,8,'Kick Chorus'],[21,8,'Kick Verse 2']];
+TR[2].clips=[[5,8,'Snare Verse'],[13,8,'Snare Chorus'],[21,8,'Snare Verse 2']];
+TR[3].clips=[[5,8,'Bass Verse'],[13,8,'Bass Chorus'],[21,8,'Bass Verse 2']];
+TR[4].clips=[[5,8,'Lead Vox V1 tk3'],[13,8,'Lead Vox Ch tk1'],[21,8,'Lead Vox V2 tk2']];
+// C#m, A, E, B: one chord a bar
+const ROOT=[37,33,40,35];
+function drumHits(kind,bar,chorus,last){ // [beat, amplitude, decay in beats]
+  if(kind==='kick')return(chorus?[0,1,2,2.5,3]:[0,1.5,2.5]).map(b=>[b,0.95,0.3]);
+  let h=[[1,0.9,0.32],[3,0.9,0.32],[3.75,0.28,0.12]];if(last)h=[[1,0.9,0.32],[2.5,0.55,0.15],[2.75,0.6,0.15],[3,0.75,0.2],[3.25,0.8,0.2],[3.5,0.9,0.2],[3.75,0.95,0.25]];return h}
+function env(tr,bars,name,r){const chorus=/Ch/.test(name);
+  if(tr.drum){const hits=[];for(let b=0;b<bars;b++)drumHits(tr.drum,b,chorus,b===bars-1&&bars>=8).forEach(([t,a,d])=>hits.push([b*4+t,a*(0.9+0.1*r()),d]));
+    return t=>{let v=0;for(const[t0,a,d]of hits){if(t>=t0&&t<t0+d*6)v=Math.max(v,a*Math.exp(-(t-t0)/d))}return v}}
+  if(tr.vox==='lead'){const syl=[];const phr=chorus?[[0,7],[8,15],[16,23],[24,31.5]]:[[0.5,6.5],[8.5,14],[16.5,22.5],[24.5,30]];
+    phr.forEach(([a,b])=>{let t=a;while(t<b-0.3){const d=[0.5,0.5,1,0.5,0.75,1.5][Math.floor(r()*6)];const end=Math.min(b,t+d);syl.push([t,end,(chorus?0.72:0.55)+0.3*r()]);t=end+0.06}syl[syl.length-1][1]=b});
+    return t=>{for(const[a,b,amp]of syl)if(t>=a&&t<b){const u=(t-a)/(b-a);return amp*Math.min(1,u*6)*Math.pow(Math.sin(Math.PI*Math.min(0.999,0.15+0.85*u)),0.5)*(b-a>1.2?1+0.06*Math.sin(t*18):1)}return 0.02}}
+  return()=>0}
+function bassNotes(bars,name){const chorus=/Chorus/.test(name),out=[];
+  for(let b=0;b<bars;b++){const r0=ROOT[b%4];(chorus?[0,0.5,1,1.5,2,2.5,3,3.5].map((t,k)=>[t,0.42,r0+(k===3||k===7?12:0)]):[[0,1.4,r0],[1.5,0.45,r0],[2,0.9,r0],[3,0.45,r0+12],[3.5,0.45,r0]]).forEach(([t,l,p])=>out.push([b*4+t,l,p]))}
+  return out}
+
+// ---------------- the legend at the left (the sheet's, not the window's) ----------------
+const LX=6,LW=420;s+=R(LX,74,LW,H-26-74-6,'#202020',{r:6,s:'#3a3a3a'});
+{let y=96;const tx=LX+40,tw=LW-54,Z=11,LH=13.5;
+ s+=T(LX+16,y,'The track rows and the Mixer',{z:18,w:700});y+=19;
+ const sub=para(LX+16,y,'','DF-W20. Real size, Compact density, the song "Norway". Top: the track headers with their mixer section. Bottom: Live 12\'s Mixer in the lower panel. Boxes with an orange dashed edge are the sheet\'s, not the window\'s. One number marks one part in both halves. The moment drawn: a second after Bass\'s Solo was pressed. Only Bass, the returns\' tails and Main still move; the other bars have dropped, and their held-peak lines still stand.',LW-32,10.5,13.5,{f:C.dim});s+=sub.g;y+=sub.h+8;
+ const item=(n,title,body)=>{s+=num(LX+24,y-4,n);const b=para(tx,y,title,body,tw,Z,LH);s+=b.g;y+=b.h+4};
+ item(1,'Track activator','The track\'s number; lit while the track is on, grey when off (Snare: silent, its clips grey).');
+ item(2,'Solo','Blue while on: Bass.');
+ item(3,'Arm','Red while on: Lead Vocals. A group and a return have none.');
+ item(4,'Volume','A value box in dB, its blue fill the level; drag or type. In the Mixer also the fader on the meter\'s scale. New to the language: the fader, Live 12\'s triangle handle on a thin track.');
+ item(5,'Pan','A ring knob drawn from the centre: "C", "8L" on Snare, "12R" on B Delay.');
+ item(6,'Sends A and B','A ring knob per return. In the Mixer each reads its level under it, on the send taper measured in Live 12.4 (dashed box). A return\'s own sends start off, grey.');
+ item(7,'Track Delay','-1,000 to +1,000 ms, in ms. Tracks, returns and Main have one (read on screen in Live 12). Bass plays 4 ms early.');
+ item(8,'Meter','Two bars on one scale with the fader, -60 to +6 dB. The white line is the held peak the window takes from the engine once a frame, so a peak shorter than a frame still shows (DF-W32). The red mark on top: that bar passed 0 dB (Kick). The box over the meter keeps the highest peak in dB, red after a clip.');
+ item(9,'In/Out','Audio From and its channel (MIDI: All Ins, All Channels), Monitor In / Auto / Off, Audio To. A group and a return show Audio To only; a track in a group plays to "Group".');
+ item(10,'Height','The split line under a row: drag it to make the row taller or shorter.');
+ item(11,'Rec-Q, Play-Q','ADI\'s own boxes under a MIDI track\'s name: the quantize for recording and for playing (DF-W7).');
+ item(12,'Group','Drums: its fold switch, a filled circle, folds its tracks away (drawn open); no Arm. Its tracks carry a line in its colour, in both halves; in the Mixer a band over their strips too.');
+ item(13,'Return','Its activator shows its letter (A, B) where a track\'s shows its number; Solo; Pre/Post for all sends to it. An empty circle in its title.');
+ item(14,'Main','Last, no activator. Main Out 1/2, Cue Out 3/4, Solo / Cue, the Cue volume knob. In the Mixer its loudness: momentary, short-term, integrated LUFS and true peak.');
+ item(15,'Title','The name in the track\'s colour. Selected (Lead Vocals): title bar lighter and outlined, strip lighter and outlined.');
+ item(16,'Section switches','I·O, S (sends), R (returns), M (mixer), D (Track Delay): over the track names, and at the Mixer\'s right edge.');
+ s+=L(LX+16,y-4,LX+LW-16,y-4,'#3a3a3a');y+=11;
+ s+=T(LX+16,y,'Open, for the director',{z:12.5,w:700,f:C.acc});y+=16;
+ const q=t=>{s+=CI(LX+24,y-4,2.5,C.acc);const b=para(LX+34,y,'',t,LW-50,Z,LH);s+=b.g;y+=b.h+2};
+ q('The held peak line: fall back after a moment (drawn: holds 2 s, then falls), or hold until clicked, as the number box does?');
+ q('The clip mark: cleared by a click on it, by Play, or both?');
+ q('The fader: Live\'s triangle on a thin track, as drawn, or a cap the language does not have yet?');
+ q('Widths: header 500 px with Track Delay shown, strip 76 px, Main 128 px. Wider with Open density, or by dragging?');
+ q('Send readouts under every knob always, or only under the pointer? Track Delay in ms only, or with Live\'s switch to samples?');
+ q('Rec-Q, Play-Q under the name, or in the I·O section (DF-W7)? Main\'s loudness on its row too?');
+}
+
+// ---------------- the Arrangement, top ----------------
+const BOT=536,SB=H-26;
+const ax=LX+LW+6,aw=W-ax-6,ay=74,HW=500,lw=aw-HW,hx=ax+lw;
+const BW=36,PXB=72,bx=b=>ax+(b-1)*BW;
+s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+// ruler: bar numbers, the song's locators, the loop brace over the chorus
+const ry=ay;s+=R(ax,ry,lw,26,'#262626',{r:6});s+=R(ax,ry+8,lw,18,'#262626');
+const LOC={5:'Verse',13:'Chorus',21:'Verse 2'};
+for(let b=0;b*PXB<lw;b++){const x0=ax+b*PXB,bar=b*2+1;s+=L(x0,ry+14,x0,ry+26,'#5a5a5a');if(x0+22<ax+lw)s+=T(x0+4,ry+12,String(bar),{z:10.5,f:C.dim});for(let q=1;q<4;q++)s+=L(x0+q*PXB/4,ry+21,x0+q*PXB/4,ry+26,'#444');
+  if(LOC[bar]){const tw=bar<10?12:19;s+=P(`M${x0+tw+2} ${ry+3}l7 4.5l-7 4.5z`,{f:C.dim});s+=T(x0+tw+12,ry+11.5,LOC[bar],{z:10,f:C.dim})}}
+s+=R(bx(13),ry+16,8*BW,7,C.acc,{r:3,op:0.9});
+// the buttons over the track names, as on the Arrangement sheet; D (Track Delay) is on here
+function sectionBtns(x,y,vert){let g='';const L5=[['I·O',1],['S',1],['R',1],['M',1],['D',1]];
+  if(!vert){g+=grp(x,y,122,20);L5.forEach(([t,on],k)=>{if(on)g+=R(x+2+k*24,y+2,22,16,C.acc,{r:4});g+=T(x+13+k*24,y+14,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})})}
+  else{g+=grp(x,y,26,112);L5.forEach(([t,on],k)=>{if(on)g+=R(x+2,y+2+k*21.6,22,19.6,C.acc,{r:4});g+=T(x+13,y+15.5+k*21.6,t,{z:9.5,a:'middle',w:700,f:on?C.ink:C.dim})})}return g}
+let SWX;
+{const by2=ry+3;s+=R(hx,ry,HW,26,'#262626');let x=hx+6;
+ s+=btn(x,by2,26,20,'',{r:4});s+=iSwap(x+13,by2+10,C.text);x+=30;
+ s+=btn(x,by2,112,20,'',{r:4});s+=T(x+7,by2+14,'Show',{z:10.5,f:C.dim});s+=T(x+40,by2+14,'All groups',{z:10.5,w:600});s+=P(`M${x+98} ${by2+8}l3.5 3.5l3.5 -3.5`,{s:C.dim,sw:1.5});x+=118;
+ SWX=x;s+=sectionBtns(x,by2);x+=128;
+ s+=grp(x,by2,50,20);s+=T(x+13,by2+14,'H',{z:10,a:'middle',w:700,f:C.dim});s+=sep(x+25,by2,20);s+=T(x+37,by2+14,'W',{z:10,a:'middle',w:700,f:C.dim});x+=56;
+ s+=btn(x,by2,26,20,'',{r:4,on:1});s+=iArm(x+13,by2+10,C.ink).replace(/stroke-width="2.2"/,'stroke-width="1.8"');x+=30;
+ s+=btn(x,by2,22,20,'',{r:4});s+=R(x+6,by2+9,10,7,'none',{r:1.5,s:C.dim,sw:1.4})+P(`M${x+8} ${by2+9}v-2a3 3 0 0 1 6 0v2`,{s:C.dim,sw:1.4});}
+
+// the header's columns
+const IX=hx+134,MXc=hx+246,KA=hx+350,KB=hx+374,DX=hx+394,MTX=hx+466;
+// the meter, two bars: the clip mark over each, the level now, the held-peak line (the R bar a little under the L)
+function meter2(x,y,h,bw,gap,tr){let g='';const clip=tr.pk!=null&&tr.pk>0;
+  [0,bw+gap].forEach(k=>g+=R(x+k,y,bw,3,clip?C.rec:'#0d0d0f',{r:1}));
+  const pk2=tr.pk==null?null:tr.pk-0.5,n2=tr.now==null?null:tr.now-0.6;
+  g+=meterV(x,y+4,bw,h-4,lv(tr.now),lv(tr.pk))+meterV(x+bw+gap,y+4,bw,h-4,lv(n2),lv(pk2));return g}
+function monitor(x,y,w){let g=grp(x,y,w,16);const a=w*0.19,b=w*0.62;g+=R(x+a+1,y+2,b-a-2,12,C.acc,{r:3});
+  g+=T(x+a/2+1,y+12,'In',{z:9.5,a:'middle',f:C.dim,w:600});g+=T(x+(a+b)/2,y+12,'Auto',{z:9.5,a:'middle',f:C.ink,w:700});g+=T(x+(b+w)/2,y+12,'Off',{z:9.5,a:'middle',f:C.dim,w:600});return g}
+const prePost=(x,y)=>btn(x,y,34,16,'Post',{r:4,z:9,f:C.dim});
+// the title's switch: a track's unfold switch (a circled chevron, as on the Arrangement sheet); the group's fold
+// switch, filled so it is told apart; a return's and Main's empty circle
+function titleSw(x,y,tr){if(tr.k==='g')return CI(x,y,6.5,C.ink)+P(`M${x-3} ${y-1}l3 3l3 -3`,{s:tr.c,sw:1.7});
+  if(tr.k==='r'||tr.k==='main')return CI(x,y,6,'none',{s:C.ink,sw:1.6});
+  return CI(x,y,6,'none',{s:C.ink,sw:1.6})+P(`M${x-3} ${y-1}l3 3l3 -3`,{s:C.ink,sw:1.6})}
+// the title block, lighter and outlined when selected
+const titleSel=(x,y,w,h,r)=>R(x,y,w,h,'#ffffff',{r,op:0.24})+R(x+0.5,y+0.5,w-1,h-1,'none',{r,s:C.text});
+function header(tr,y){const h=tr.h;let g='';const ln=tr.lines||[],ind=ln.length*5;
+  g+=R(hx,y,HW,h,tr.sel?C.head:C.panel);g+=R(hx+ind,y,128-ind,h,tr.c);if(tr.sel)g+=titleSel(hx+ind,y,128-ind,h,0);
+  ln.forEach((c,k)=>g+=R(hx+k*5,y-1,4,h+2,c)+R(hx+k*5+4,y,1,h,C.line));
+  g+=titleSw(hx+ind+12,y+12,tr);g+=T(hx+ind+24,y+16,tr.n,{z:11.5,f:C.ink,w:700});
+  if(tr.k==='m'){g+=T(hx+8,y+39,'Rec-Q',{z:9.5,f:C.ink,w:600});g+=box(hx+52,y+28,48,15,'1/16',{z:9});g+=T(hx+8,y+58,'Play-Q',{z:9.5,f:C.ink,w:600});g+=box(hx+52,y+47,48,15,'Off',{z:9,f:C.dim})}
+  // In/Out
+  tr.io.forEach((v,k)=>{const yy=y+4+k*18;if(yy+16>y+h-2)return;g+=v==='mon'?monitor(IX,yy,104):ch(IX,yy,104,16,v,9.5)});
+  // the mixer section
+  if(tr.k!=='main'){g+=btn(MXc,y+4,34,16,tr.num,{on:!tr.off,r:4,z:10,f:C.faint});
+    g+=btn(MXc+38,y+4,20,16,'S',{on:tr.solo,c:C.val,r:4,z:10,f:C.dim});
+    if(tr.k==='a'||tr.k==='m'){g+=btn(MXc+62,y+4,20,16,'',{r:4,on:tr.arm,c:C.rec});g+=CI(MXc+72,y+12,3.6,tr.arm?C.ink:C.dim)}
+    if(tr.k==='r')g+=prePost(MXc+62,y+4);
+    if(h>=44){g+=box(MXc,y+24,46,16,dbt(tr.vol),{fill:lv(tr.vol),z:9.5});g+=knob(MXc+68,y+32,7.5,tr.pan[0],C.val,'','',{bi:1,ring:2})}}
+  else{g+=box(MXc,y+4,46,16,dbt(tr.vol),{fill:lv(tr.vol),z:9.5});g+=knob(MXc+68,y+12,7.5,tr.pan[0],C.val,'','',{bi:1,ring:2});
+    g+=T(MXc+46,y+35.5,'Cue',{z:9,f:C.dim,a:'end',w:600});g+=knob(MXc+68,y+32,7.5,0.72,C.val,'','',{ring:2})}
+  // sends: the A and B letters over a track's knobs; a return's own sends start off and carry none
+  if(tr.sends&&h>=44)[[KA,'A'],[KB,'B']].forEach(([kx,l],k)=>{const dis=tr.sdis&&tr.sdis[k];if(tr.k!=='r')g+=T(kx,y+14,l,{z:9,f:C.dim,a:'middle'});g+=knob(kx,y+31,7.5,dis?0:tr.sends[k],C.val,'','',{ring:2,dis})});
+  // Track Delay, in ms
+  g+=box(DX,y+4,46,16,tr.dly,{z:9.5,f:tr.dly==='0.00'?C.dim:C.text});g+=T(DX+50,y+15.5,'ms',{z:9,f:C.dim});
+  g+=meter2(MTX,y+3,h-6,5,2,tr);
+  return g}
+
+// the tracks
+let ty0=ry+28;const rowY={};
+s+=`<clipPath id="lanes"><rect x="${ax}" y="${ty0}" width="${lw}" height="${BOT-ty0}"/></clipPath>`;
+TR.forEach((tr,i)=>{const h=tr.h,y=ty0;rowY[tr.n]=y;s+=R(ax,y,lw,h,tr.sel?C.head:(i%2?C.lane2:C.lane));
+  for(let b=1;b*PXB<lw;b++)s+=L(ax+b*PXB,y,ax+b*PXB,y+h,'#000',1,{op:0.2});
+  let lane='';const r=rng(31+i);const cc=tr.off?'#8a8a8a':tr.c;
+  tr.clips.forEach(([b0,bars,name])=>{const x0=bx(b0)+1,cw=bars*BW-2;lane+=R(x0,y+1,cw,h-2,cc,{r:3,op:0.30});lane+=R(x0,y+1,cw,13,cc,{r:3});lane+=T(x0+5,y+11.5,name,{z:10,f:C.ink,w:600});
+    const top=y+16,bh=h-18;
+    if(tr.k==='g'){ // a group's lane: its tracks' clips, one thin row each with its hits; the muted Snare's row grey
+      ['kick','snare'].forEach((kd,k)=>{if(kd==='snare'&&b0<5)return;const off=kd==='snare',sy=top+k*(bh/2),sh=bh/2-2;lane+=R(x0+3,sy,cw-6,sh,off?'#8a8a8a':C.ink,{r:1,op:off?0.55:0.35});
+        const f=env({drum:kd},bars,name,rng(7+k));for(let px=0;px<cw-8;px+=1){const v=f(px/9);if(v>0.25)lane+=L(x0+4+px,sy+sh*(1-v),x0+4+px,sy+sh,'#141414',1,{op:off?0.45:0.8})}})}
+    else if(tr.k==='a'){const f=env(tr,bars,name,r);let up='',dn='';const mid=top+bh/2,amp=bh/2-1;
+      for(let px=0;px<=cw-2;px+=1){const v=Math.min(1,f(px/9)*(0.82+0.18*r()));up+=(px?'L':'M')+(x0+1+px)+' '+(mid-amp*v).toFixed(1);dn=`L${x0+1+px} ${(mid+amp*v).toFixed(1)}`+dn}
+      lane+=P(up+dn+'Z',{f:'#141414',op:0.85})}
+    else if(tr.k==='m'){const ns=bassNotes(bars,name);const lo=Math.min(...ns.map(n=>n[2])),hi=Math.max(...ns.map(n=>n[2])),rows=hi-lo+1,nh=(bh-4)/rows;
+      ns.forEach(([t,l,p])=>{const nx=x0+2+t*9;if(nx>x0+cw-3)return;lane+=R(nx,top+2+(hi-p)*nh,Math.min(l*9-1,x0+cw-2-nx),Math.max(2,nh-0.6),'#141414',{r:0.8,op:0.9})})}
+  });
+  s+=`<g clip-path="url(#lanes)">${lane}</g>`;
+  s+=header(tr,y);
+  s+=L(ax,y+h,ax+aw,y+h,'#1a1a1a');ty0+=h+1});
+// returns and Main at the foot
+const footY=BOT-6-4-(44+1+24+1+44);
+s+=R(ax,ty0,aw,footY-ty0,'#1d1d1d');
+{let y=footY;RET.forEach(tr=>{rowY[tr.n]=y;s+=R(ax,y,lw,tr.h,'#2a2a2a');s+=header(tr,y);s+=L(ax,y+tr.h,ax+aw,y+tr.h,'#1a1a1a');y+=tr.h+1})}
+// the playhead, at 14.3.1, starting under the locators' names
+s+=L(bx(14.5),ry+14,bx(14.5),footY,'#f0f0f0',1.3);
+// the height split line under Lead Vocals, with the pointer on it
+{const y=rowY['Lead Vocals']+TR[4].h,cx=hx+64;s+=L(hx,y,hx+HW,y,C.acc,2);
+ const ar=`M${cx} ${y-9}v18M${cx-4} ${y-5}l4 -4l4 4M${cx-4} ${y+5}l4 4l4 -4M${cx-7} ${y}h14`;s+=P(ar,{s:'#101010',sw:4.2})+P(ar,{s:'#f3f3f3',sw:1.6});
+ s+=num(hx+92,y-12,10)}
+// numbers on the rows
+{const lv0=rowY['Lead Vocals'],ny=lv0+58,bs=rowY['Bass']+58;
+ s+=num(MXc+23,ny,4);s+=num(MXc+68,ny,5);s+=num((KA+KB)/2,ny,6);s+=num(DX+23,ny,7);
+ s+=num(hx+118,lv0+52,9);s+=num(hx+116,lv0+12,15);
+ // 1, 2, 3 under Bass's activator, Solo and Arm
+ s+=num(MXc+17,bs,1);s+=num(MXc+48,bs,2);s+=num(MXc+72,bs,3);
+ s+=num(hx+HW-11,rowY['Drums']+22,8);
+ s+=num(hx+118,rowY['Bass']+46,11);
+ s+=num(hx+12,rowY['Drums']+30,12);
+ s+=num(hx-14,rowY['A Reverb']+12,13);s+=num(hx-14,rowY['Main']+22,14);
+ // 16 in the ruler, with a leader under the buttons to the section switches
+ s+=num(hx-14,ry+12,16);s+=P(`M${hx-5.5} ${ry+12}H${hx+1}V${ry+25}H${SWX+61}V${ry+23.5}`,{s:C.dim,sw:1})+CI(SWX+61,ry+24,1.8,C.dim);}
+
+// ---------------- the Mixer in the lower panel (Live 12's Arrangement Mixer), real size ----------------
+const ph=SB-BOT-6;s+=R(ax,BOT,aw,ph,'#202020',{r:6});
+const SW=76,ST=80,MX0=ax+32,Y0=BOT+8,Y1=Y0+19,SBOT=BOT+ph-4;
+const FY=Y1+300,YB=SBOT-42,FH=YB-8-FY;
+const fy=d=>FY+4+(FH-4)*(1-lv(d));     // the meter's scale and the fader share it
+function strip(x,w,tr){let g=R(x,Y1,w,SBOT-Y1,tr.sel?C.head:C.panel,{r:5});
+  g+=R(x,Y1,w,18,tr.c,{r:5})+R(x,Y1+10,w,8,tr.c);if(tr.sel)g+=titleSel(x,Y1,w,18,5);
+  if(tr.k==='g'){g+=titleSw(x+10,Y1+9,tr);g+=T(x+20,Y1+13,tr.n,{z:10,f:C.ink,w:700})}else g+=T(x+(tr.lines?8:6),Y1+13,tr.n,{z:10,f:C.ink,w:700});
+  // a track in the group: the group's line at its left, the strip's full height
+  if(tr.lines)g+=R(x,Y1,3,SBOT-Y1,GD,{r:1.5})+R(x+3,Y1,1,SBOT-Y1,C.line);
+  if(tr.sel)g+=R(x+0.5,Y1+0.5,w-1,SBOT-Y1-1,'none',{r:5,s:C.edge});
+  const cx=x+(tr.lines?6:4),cw=x+w-4-cx,cap=(yy,t)=>T(cx,yy,t,{z:9,f:C.dim});
+  // In/Out
+  if(tr.k==='a'||tr.k==='m'){g+=cap(Y1+29,tr.k==='m'?'MIDI From':'Audio From');g+=ch(cx,Y1+32,cw,16,tr.in[0],9);g+=ch(cx,Y1+51,cw,16,tr.in[1],9);g+=cap(Y1+78,'Monitor');g+=monitor(cx,Y1+81,cw)}
+  if(tr.k==='main'){g+=cap(Y1+29,'Cue Out');g+=ch(cx,Y1+32,cw,16,'3/4',9)}
+  g+=cap(Y1+108,tr.k==='main'?'Main Out':'Audio To');g+=ch(cx,Y1+111,cw,16,tr.k==='main'?'1/2':tr.to,9);
+  // Sends, each with its level under it; Main's loudness in their place
+  if(tr.sends){g+=cap(Y1+140,'Sends');['A','B'].forEach((l,k)=>{const kx=x+w/2+(k?18:-18),dis=tr.sdis&&tr.sdis[k],v=dis?0:tr.sends[k];
+    g+=T(kx,Y1+152,l,{z:9.5,f:dis?C.faint:C.dim,a:'middle',w:600});g+=knob(kx,Y1+166,11,v,C.val,'','',{ring:2.4,dis});g+=T(kx,Y1+191,SDB[v],{z:9,a:'middle',f:dis?C.faint:C.text})})}
+  if(tr.k==='main'){g+=cap(Y1+140,'Loudness');const cell=(cx2,yy,l,v,u,o={})=>T(cx2,yy,l,{z:8.5,f:C.dim})+box(cx2,yy+3,58,15,v+' '+u,{z:8.5,f:o.f});
+    g+=cell(cx,Y1+152,'Momentary','-19.6','LUFS');g+=cell(cx+cw-58,Y1+152,'Short-term','-12.1','LUFS');g+=cell(cx,Y1+180,'Integrated','-11.4','LUFS');g+=cell(cx+cw-58,Y1+180,'True Peak','+0.2','dBTP',{f:C.rec})}
+  // Track Delay
+  g+=cap(Y1+209,'Track Delay');g+=box(cx,Y1+213,44,16,tr.dly,{z:9,f:tr.dly==='0.00'?C.dim:C.text});g+=T(cx+48,Y1+225,'ms',{z:9,f:C.dim});
+  // pan; on Main the Cue volume beside it
+  if(tr.k==='main'){g+=knob(x+w/2-24,Y1+250,11,tr.pan[0],C.val,'',tr.pan[1],{bi:1,ring:2.4});g+=knob(x+w/2+24,Y1+250,11,0.72,C.val,'','Cue -6.0',{ring:2.4})}
+  else g+=knob(x+w/2,Y1+250,11,tr.pan[0],C.val,'',tr.pan[1],{bi:1,ring:2.4});
+  // volume box, the held peak in numbers
+  const vy=Y1+280;g+=box(cx,vy,40,15,dbt(tr.vol),{fill:lv(tr.vol),z:9});
+  if(tr.pk!=null&&tr.pk>0)g+=R(x+w-30,vy,26,15,C.rec,{r:4})+T(x+w-17,vy+10.5,fmt(tr.pk),{z:8.5,a:'middle',f:C.ink,w:700});else g+=box(x+w-30,vy,26,15,fmt(tr.pk),{z:8.5,f:C.dim});
+  // the scale, the fader on it (Live's triangle handle on a thin track), the meter
+  const mb=w>100?7:5,mxx=x+w-14-2*mb-2;
+  [['6',6],['0',0],['-12',-12],['-24',-24],['-36',-36],['-48',-48],['-60',-60]].forEach(([t,d])=>{const yy=fy(d);g+=T(mxx-20,yy+3,t,{z:8,f:C.dim,a:'end'});g+=L(mxx-18,yy,mxx-15,yy,'#555')});
+  g+=R(mxx-12,FY+4,3,FH-4,C.well,{r:1.5});const cy=fy(tr.vol);g+=P(`M${mxx-14} ${cy-5.5}L${mxx-3} ${cy}L${mxx-14} ${cy+5.5}Z`,{f:C.text,s:'#101012',sw:1});
+  g+=meter2(mxx,FY,FH,mb,2,tr);
+  // activator, Solo, Arm; a return's Pre/Post; Main's Solo / Cue
+  const yb=YB;
+  if(tr.k!=='main'){g+=btn(cx,yb,cw,16,tr.num,{on:!tr.off,r:4,z:10,f:C.faint});g+=btn(cx,yb+20,30,16,'S',{on:tr.solo,c:C.val,r:4,z:10,f:C.dim});
+    if(tr.k==='a'||tr.k==='m'){g+=btn(cx+34,yb+20,cw-34,16,'',{r:4,on:tr.arm,c:C.rec});g+=CI(cx+34+(cw-34)/2,yb+28,3.6,tr.arm?C.ink:C.dim)}
+    if(tr.k==='r')g+=prePost(cx+34,yb+20)}
+  else{g+=grp(cx,yb+20,cw,16);g+=R(cx+2,yb+22,cw/2-2,12,C.acc,{r:3});g+=T(cx+cw/4+1,yb+32,'Solo',{z:9.5,a:'middle',w:700,f:C.ink});g+=T(cx+cw*3/4,yb+32,'Cue',{z:9.5,a:'middle',w:600,f:C.dim})}
+  return g}
+// the group's band over its strips, then the tracks
+s+=R(MX0,Y0,3*ST-4,15,GD,{r:4});s+=T(MX0+6,Y0+11.5,'Drums',{z:10,f:C.ink,w:700});
+TR.forEach((tr,i)=>s+=strip(MX0+i*ST,SW,tr));
+// the returns and Main, at the right as in Live; the section switches at the Mixer's right edge
+const MW=128,RX0=ax+aw-38-MW-2*ST;
+RET.forEach((tr,i)=>s+=strip(RX0+i*ST,i<2?SW:MW,tr));
+s+=L(RX0-7,Y1,RX0-7,SBOT,'#3a3a3a');
+s+=sectionBtns(ax+aw-32,Y1,true);s+=num(ax+aw-19,Y1+128,16);
+// numbers on the Mixer: one column at the left, at each section
+{const nx=MX0-16;[[15,Y1+9],[9,Y1+80],[6,Y1+166],[7,Y1+221],[5,Y1+250],[4,Y1+287],[8,FY+FH/2],[1,YB+8],[2,YB+28]].forEach(([n,y])=>s+=num(nx,y,n));
+ s+=num(MX0+4*ST+SW+14,YB+28,3);s+=num(MX0+3*ST-4+14,Y0+7.5,12);s+=num(RX0+SW-10,Y0+6,13);s+=num(RX0+2*ST+MW-10,Y0+6,14);}
+
+// ---------------- the sheet's boxes in the Mixer's empty space ----------------
+const BX0=MX0+4*ST+SW+32,BX1=RX0-24,BWD=BX1-BX0;
+// the send knob's taper, real size
+{const y=Y0,h=222;s+=sheetBox(BX0,y,BWD,h,'The send knob, real size, on its taper as measured in Live 12.4');s+=num(BX1-16,y+14,6);
+ const pts=[[0,'-inf'],[0.248,'-35.0 dB'],[0.575,'-17.0 dB'],[0.857,'-5.7 dB'],[1,'0.0 dB']];
+ pts.forEach(([v,t],k)=>s+=knob(BX0+36+k*60,y+66,11,v,C.val,v.toFixed(3),t,{ring:2.4,lz:9.5}));
+ const pr=para(BX0+12,y+132,'','Bottom is -inf, top is 0.0 dB. The readout under each knob in the Mixer gives its level on this taper; the curve between the measured points is drawn, not measured.',300,10,14,{f:C.dim});s+=pr.g;
+ // the curve: the knob's travel against dB; measured points; the part below 0.248 not measured (dashed)
+ const px=BX0+350,pw=BX1-px-18,py=y+36,ph2=h-66,X=u=>px+pw*u,Y=d=>py+ph2*(-d/48);
+ s+=R(px,py,pw,ph2,C.well,{r:4});[0,-12,-24,-36,-48].forEach(d=>{s+=L(px,Y(d),px+pw,Y(d),'#ffffff',1,{op:0.06});s+=T(px-4,Y(d)+3,String(d),{z:8.5,f:C.dim,a:'end'})});
+ [0,0.25,0.5,0.75,1].forEach(u=>{s+=L(X(u),py,X(u),py+ph2,'#ffffff',1,{op:0.05});s+=T(X(u),py+ph2+12,u.toFixed(2),{z:8.5,f:C.dim,a:'middle'})});
+ const M=[[0.248,-35],[0.575,-17],[0.857,-5.7],[1,0]];let d='';for(let k=0;k<=60;k++){const u=0.248+(1-0.248)*k/60;let i=0;while(i<M.length-2&&u>M[i+1][0])i++;const[a,da]=M[i],[b,db]=M[i+1],t=(u-a)/(b-a);
+   const dd=da+(db-da)*(t*t*(3-2*t)*0.25+t*0.75);d+=(k?'L':'M')+X(u).toFixed(1)+' '+Y(dd).toFixed(1)}
+ s+=P(d,{s:C.val,sw:2});s+=P(`M${X(0.248)} ${Y(-35)}Q${X(0.17)} ${Y(-42)} ${X(0.12)} ${py+ph2}`,{s:C.val,sw:1.5,op:0.6}).replace('/>',' stroke-dasharray="4 3"/>');
+ M.forEach(([u,dd])=>s+=CI(X(u),Y(dd),3.5,C.acc,{s:C.well,sw:1.2}));
+ [[0.248,-35,'-35.0'],[0.575,-17,'-17.0'],[0.857,-5.7,'-5.7']].forEach(([u,dd,t])=>s+=T(X(u)+7,Y(dd)+13,t,{z:9,f:C.text}));
+ s+=T(px,py-6,'dB against the knob\'s travel (0 to 1)',{z:9,f:C.dim});}
+// the meter drawn 3 x wide, on its own scale, and why the held peak
+{const y=Y0+232,h=SBOT-y;s+=sheetBox(BX0,y,BWD,h,'The meter, drawn 3 x wide to read its marks: Kick as it clipped, before the solo');s+=num(BX1-16,y+14,8);
+ const mx=BX0+52,top=y+36,mh=h-50,bw=15,it=top+11,ih=mh-11,Yd=d=>it+ih*(1-lv(d));
+ [['6',6],['0',0],['-12',-12],['-24',-24],['-36',-36],['-48',-48],['-60',-60]].forEach(([t,d])=>{s+=T(mx-8,Yd(d)+3,t,{z:8.5,f:C.dim,a:'end'});s+=L(mx-6,Yd(d),mx-2,Yd(d),'#555')});
+ // left: level -6.0, held peak +0.4; right: level -6.8, held peak -0.1
+ [[0,-6.0,0.4],[bw+6,-6.8,-0.1]].forEach(([k,l,p])=>{s+=R(mx+k,top,bw,8,p>0?C.rec:'#0d0d0f',{r:2});s+=meterV(mx+k,it,bw,ih,lv(l),0);s+=R(mx+k,Yd(p)-1.5,bw,3,'#f3f3f3')});
+ const lab=(yy,t1,t2)=>{s+=L(mx+2*bw+10,yy,mx+2*bw+30,yy,C.dim,1);s+=T(mx+2*bw+36,yy+4,t1,{z:10.5,w:600});if(t2){const p=para(mx+2*bw+36,yy+18,'',t2,236,10,13,{f:C.dim});s+=p.g}};
+ lab(top+4,'Clip mark','the left bar has passed 0 dB; lit until cleared');
+ lab(Yd(0.4)+6,'Held peak','+0.4 dB: the engine\'s highest sample since the last frame, taken once a frame (DF-W32)');
+ lab(Yd(-30),'Level','the bar, green to red at the top');
+ // why: a snare hit between two frames
+ const gx=BX0+352,gw=BX1-gx-18,gy=top+4,gh=mh-66;s+=R(gx,gy,gw,gh,C.well,{r:4});
+ const tx=t=>gx+8+(gw-16)*t/3.2;[0,1,2,3].forEach(f=>{s+=L(tx(f),gy+4,tx(f),gy+gh-4,'#ffffff',1,{op:0.12});s+=T(tx(f),gy+gh+12,'frame '+(f+1),{z:8.5,f:C.dim,a:'middle'})});
+ let w='';for(let k=0;k<=160;k++){const t=k/160*3.2;const e=t<1.35?0.18+0.04*Math.sin(t*20):0.18+0.76*Math.exp(-(t-1.35)/0.16);w+=(k?'L':'M')+tx(t).toFixed(1)+' '+(gy+gh-6-(gh-14)*Math.min(1,e)).toFixed(1)}
+ s+=P(w,{s:'#cfcfcf',sw:1.3,op:0.8});
+ const yv=v=>gy+gh-6-(gh-14)*v;s+=CI(tx(2),yv(0.18+0.76*Math.exp(-0.65/0.16)),4,C.dim,{s:C.well,sw:1});s+=R(tx(2)-9,yv(0.94)-1,18,2.5,'#f3f3f3');
+ s+=T(tx(2)+14,yv(0.94)+4,'held peak,',{z:9.5,f:C.text});s+=T(tx(2)+14,yv(0.94)+17,'shown at frame 3',{z:9.5,f:C.text});s+=T(gx+gw-6,yv(0.2)+16,'the running level at frame 3',{z:9.5,f:C.dim,a:'end'});
+ const cp=para(gx,gy+gh+30,'','A snare hit falls between frames 2 and 3. Read once a frame, the running level misses it; the held peak keeps it.',gw,9.5,13,{f:C.dim});s+=cp.g;}
+
+// ---------------- the Status Bar ----------------
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Lead Vocals  ·  Send B (B Delay)  ·  -5.7 dB',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Lead Vocals',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-82,SB+5,68,16,C.acc,{r:4});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.ink,w:700});
+finish(W,H,s);
+</script></body></html>

@@ -1,0 +1,289 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>ADI Menus, dialogs and Settings sheet</title>
+<style>html,body{margin:0;background:#101010}svg{display:block}text{font-family:"Segoe UI",Arial,sans-serif}</style></head>
+<body><div id="o"></div><script src="../src/lib.js"></script><script src="../src/lib2.js"></script>
+<script>
+// ADI, menus, dialogs and Settings, proposal 1, second pass (19 November 2026). DF-W20 (the last surface
+// in ADR-0243's list) with DF-W23. Every element at real size, Compact density, the dark theme, on the
+// Arrangement of "Norway" with the Device View below (the Browser and the Info View hidden, as Live lets
+// them be). Live 12's items in Live's order, with ADI's own (ui_shell.cpp menuBar()); the Settings tabs
+// and groups as ADI builds them (settings_tabs.hpp). Every colour from C. ADI's own drawing.
+const W=1920,H=1080;let s=R(0,0,W,H,C.win);
+s+=topBars(W,'Norway  ·  ADI','arr').replace('1.  1.  1','15.  1.  1').replace('3.  1.  1','9.  1.  1').replace('4.  0.  0','16.  0.  0');
+s+=R(1594,2,320,20,C.acc,{r:5});s+=T(1754,17,'MENUS, DIALOGS &amp; SETTINGS SHEET  ·  proposal 1',{z:11,w:700,a:'middle',f:C.ink});
+
+const BOT=752,SB=H-26;
+const MARK=[];                                   // the numbers, drawn last so nothing covers them
+const qmark=(x,y)=>CI(x,y,11,C.win,{s:C.acc,sw:1.6})+T(x,y+4.5,'?',{z:13,w:700,a:'middle',f:C.acc});
+const shadow=g=>`<g filter="url(#sh)">${g}</g>`;
+const ptr=(x,y)=>P(`M${x} ${y}l0 15l4 -3.5l2.6 5.6l2.4 -1.1l-2.6 -5.5l5.2 -0.3z`,{f:'#f3f3f3',s:'#101012',sw:1});
+// the language's switch, one-of-two-or-three, value box and chooser, in C's colours
+const sw=(x,y,on)=>on?R(x,y,32,18,C.acc,{r:9})+CI(x+23,y+9,7,C.ink):R(x,y,32,18,C.well,{r:9,s:C.edge})+CI(x+9,y+9,7,C.dim);
+const oneOf=(x,y,w,names,on,o={})=>{const h=o.h||22,cw=(w-4)/names.length;let g=R(x,y,w,h,C.grp,{r:6,s:C.grpEdge});
+  names.forEach((n,k)=>{if(k===on)g+=R(x+2+k*cw,y+2,cw,h-4,C.acc,{r:4});g+=T(x+2+k*cw+cw/2,y+h/2+4,n,{z:11.5,a:'middle',w:k===on?700:600,f:k===on?C.ink:C.dim})});return g};
+const vbox=(x,y,w,t,fill)=>R(x,y,w,22,C.well,{r:4,s:C.edge})+(fill>0?R(x+1,y+1,(w-2)*fill,20,C.val,{r:3,op:0.28}):'')+T(x+w/2,y+15.5,t,{z:11.5,a:'middle'});
+const choose=(x,y,w,t,o={})=>R(x,y,w,22,C.ctl,{r:4,s:C.edge,op:o.dis?0.5:1})+T(x+10,y+15.5,t,{z:11.5,f:o.dis?C.faint:C.text})+P(`M${x+w-16} ${y+9}l4 4l4 -4`,{s:o.dis?C.faint:C.dim,sw:1.8});
+const HELP={z:11,f:C.dim};                       // helper text beside a control
+
+// ================= the Arrangement behind (as on the agreed sheet; Browser and Info View hidden) =================
+const ax=6,aw=W-12,ay=74,HW=392,lw=aw-HW,hx=ax+lw;
+s+=R(ax,ay,aw,BOT-ay-6,'#202020',{r:6});
+const BAR=lw/32;const X=b=>ax+(b-1)*BAR;
+s+=R(ax+4,ay+4,lw-8,16,C.well,{r:3});{const ov=[['#f08a5d',[[1,8],[9,16],[25,8],[41,16],[57,8]]],['#f2e15a',[[9,16],[25,8],[41,16],[57,8]]],['#8f8cff',[[1,8],[9,16],[25,8],[33,8],[41,16],[57,8]]],['#c479ff',[[1,8],[17,16],[49,16]]],['#5ec8ff',[[9,16],[25,8],[41,16],[57,8]]],['#5eb4ff',[[25,8],[57,8]]]];
+ const ow=(lw-12)/64;ov.forEach(([c,cl],i)=>cl.forEach(([b,l])=>s+=R(ax+6+(b-1)*ow,ay+6+i*2.2,l*ow-2,1.4,c)));s+=R(ax+4,ay+4,(lw-8)*0.5,16,'none',{r:3,s:'#d0d0d0',sw:1.2})}
+const ry=ay+24;s+=R(ax,ry,lw,26,'#262626');for(let b=1;b<=33;b++){const x0=X(b);if((b-1)%4===0){s+=L(x0,ry+14,x0,ry+26,'#5a5a5a');s+=T(x0+4,ry+12,String(b),{z:10.5,f:C.dim})}else s+=L(x0,ry+21,x0,ry+26,'#444')}
+s+=R(X(9),ry+16,8*BAR,7,C.acc,{r:3,op:0.9});
+[[9,'Verse'],[17,'Build'],[25,'Chorus']].forEach(([b,t])=>{s+=P(`M${X(b)+22} ${ry+3}l8 5l-8 5z`,{f:C.dim});s+=T(X(b)+34,ry+12,t,{z:10,f:C.dim})});
+s+=R(hx,ry,HW,26,'#262626');
+// the song: C# minor, C#m A E B, a chord every two bars
+const CH=[{root:37,tri:[61,64,68]},{root:33,tri:[61,64,69]},{root:40,tri:[59,64,68]},{root:35,tri:[59,63,66]}];
+const chordAt=bar=>CH[Math.floor((bar-1)/2)%4];
+const GD='#f08a5d';
+const tracks=[
+ {n:'Drums',c:GD,k:'g',h:44,clips:[[1,8,'Drums'],[9,16,'Drums'],[25,8,'Drums']]},
+ {n:'Kick',c:'#ff6f61',k:'a',h:52,lines:[GD],drum:'kick',sel:1,clips:[[1,8,'Kick Intro'],[9,16,'Kick Verse'],[25,8,'Kick Chorus']]},
+ {n:'Percussion',c:'#e8b04a',k:'a',h:44,lines:[GD],drum:'perc',clips:[[9,16,'Hats &amp; Clap'],[25,8,'Hats &amp; Clap 2']]},
+ {n:'Bass',c:'#f2e15a',k:'m',h:58,midi:'bass',clips:[[9,16,'Bass Verse'],[25,8,'Bass Chorus']]},
+ {n:'Keys',c:'#8f8cff',k:'m',h:52,midi:'keys',clips:[[1,8,'Keys Intro'],[9,16,'Keys Verse'],[25,8,'Keys Chorus']]},
+ {n:'Pads',c:'#c479ff',k:'m',h:46,midi:'pad',clips:[[1,8,'Pad Intro'],[17,16,'Pad Build']]},
+ {n:'Lead Vocals',c:'#5ec8ff',k:'a',h:66,vox:'lead',clips:[[9,16,'Lead Vox Verse tk3'],[25,8,'Lead Vox Chorus']]},
+ {n:'Backing Vox',c:'#5eb4ff',k:'a',h:46,vox:'bv',clips:[[25,8,'Chorus Oohs']]},
+ {n:'FX',c:'#ff6fb1',k:'a',h:44,fx:1,clips:[[8,1,'Riser'],[16,1,'Riser 2'],[24,1,'Downlifter']]},
+];
+function wave(x0,w,y,h,env,seed){const r=rng(seed);let up='',dn='';const st=1.2,n=Math.floor(w/st),mid=y+15+(h-17)/2,amp=(h-21)/2;
+  for(let k=0;k<=n;k++){const b=k*st/BAR;const v=Math.min(1,env(b,r)*(0.82+0.18*r()));up+=(k?'L':'M')+(x0+k*st).toFixed(1)+' '+(mid-amp*v).toFixed(1);dn=`L${(x0+k*st).toFixed(1)} ${(mid+amp*v).toFixed(1)}`+dn}
+  return P(up+dn+'Z',{f:'#141414',op:0.85})}
+const envKick=b=>{const ph=(b*4)%1;return 0.04+0.92*Math.exp(-ph*6)};
+const envPerc=b=>{const q=b*4,ph8=(q*2)%1,beat=Math.floor(q)%4,phb=q%1;let e=0.30*Math.exp(-ph8*9);if(beat===1||beat===3)e=Math.max(e,0.82*Math.exp(-phb*4.5));return 0.03+e};
+function envVox(seed,len){const r=rng(seed),syl=[];
+  for(let p=0;p<len;p+=2){let t=p+0.08+r()*0.2;const end=p+1.35+r()*0.45;while(t<end){const last=t>end-0.5,d=last?Math.min(0.75,end-t+0.3):0.06+r()*r()*0.4;syl.push([t,d,last?0.85:0.4+0.5*r()]);t+=d+(r()<0.25?0.08:0.005)}}
+  return b=>{let e=0.015;for(const[t0,d,a]of syl){if(b>=t0&&b<=t0+d){const u=(b-t0)/d;e=Math.max(e,a*Math.min(1,u*10)*Math.pow(1-u,0.3)*(0.85+0.15*Math.sin(b*90)))}}return e}}
+const envBv=b=>{const u=(b%2)/2;return 0.02+0.62*Math.pow(Math.sin(Math.PI*Math.min(1,u/0.94)),0.8)};
+const envRise=b=>0.05+0.9*Math.pow(Math.min(1,b),2.2);
+function notesFor(kind,len,bar0){const N=[];for(let b=0;b<len;b++){const c=chordAt(bar0+b);
+  if(kind==='bass')[[0,0.75,0],[1.5,0.5,0],[2,0.75,12],[3,0.5,0],[3.5,0.5,7]].forEach(([bt,l,o])=>N.push([b+bt/4,l,c.root+o]));
+  if(kind==='keys'){[0,2.5].forEach((bt,k)=>c.tri.forEach(p=>N.push([b+bt/4,k?1:1.5,p])))}
+  if(kind==='pad'&&b%2===0)[c.root+12,...c.tri].forEach(p=>N.push([b,7.6,p]))}
+  return N}
+function drawNotes(x0,w,y,h,N){let lo=1e9,hi=-1e9;N.forEach(n=>{lo=Math.min(lo,n[2]);hi=Math.max(hi,n[2])});lo-=1;hi+=1;const top=y+17,bot=y+h-4,rh=(bot-top)/(hi-lo+1);let g='';
+  N.forEach(([t,l,p])=>{const nx=x0+t*BAR+1,nw=Math.max(1.6,l/4*BAR-1.2);if(nx>x0+w-2)return;g+=R(nx.toFixed(1),(top+(hi-p)*rh).toFixed(1),Math.min(nw,x0+w-1-nx).toFixed(1),Math.max(1.8,rh-0.6).toFixed(1),'#141414',{r:0.8,op:0.9})});return g}
+let ty0=ry+28;const CLIPS={};
+tracks.forEach((tr,i)=>{const h=tr.h,y=ty0;s+=R(ax,y,lw,h,tr.sel?'#3a3a3a':(i%2?C.lane2:C.lane));
+  for(let b=2;b<=32;b++)s+=L(X(b),y,X(b),y+h,'#000',1,{op:(b-1)%4===0?0.22:0.08});
+  tr.clips.forEach(([b0,bl,name],ci)=>{const x0=X(b0)+1,cwid=bl*BAR-2;CLIPS[name]=[x0,y,cwid,h];s+=R(x0,y+1,cwid,h-2,tr.c,{r:3,op:0.30});s+=R(x0,y+1,cwid,13,tr.c,{r:3});s+=T(x0+5,y+11.5,name,{z:10,f:C.ink,w:600});
+    if(tr.k==='g'){s+=wave(x0,cwid,y,h*0.62,envKick,5+ci).replace('opacity="0.85"','opacity="0.5"');if(b0>=9)s+=wave(x0,cwid,y+h*0.3,h*0.7,envPerc,9+ci).replace('opacity="0.85"','opacity="0.45"')}
+    else if(tr.drum==='kick')s+=wave(x0,cwid,y,h,envKick,11+ci);
+    else if(tr.drum==='perc')s+=wave(x0,cwid,y,h,envPerc,21+ci);
+    else if(tr.vox==='lead')s+=wave(x0,cwid,y,h,envVox(40+ci,bl),31+ci);
+    else if(tr.vox==='bv')s+=wave(x0,cwid,y,h,envBv,41);
+    else if(tr.fx)s+=wave(x0,cwid,y,h,name==='Downlifter'?(b=>envRise(1-b)):envRise,51+ci);
+    else if(tr.midi)s+=drawNotes(x0,cwid,y,h,notesFor(tr.midi,bl,b0))});
+  const ln=tr.lines||[],ind=ln.length*5;s+=R(hx,y,HW,h,tr.sel?'#3a3a3a':C.panel);s+=R(hx+ind,y,128-ind,h,tr.c);ln.forEach((c,k)=>s+=R(hx+k*5,y-1,4,h+2,c));s+=CI(hx+ind+12,y+12,6,'none',{s:C.ink,sw:1.6})+P(`M${hx+ind+9} ${y+11}l3 3l3 -3`,{s:C.ink,sw:1.6});s+=T(hx+ind+24,y+16,tr.n,{z:11.5,f:C.ink,w:700});
+  s+=chooser(hx+134,y+4,104,16,tr.k==='g'?'Main':(tr.k==='m'?'All Ins':'Ext. In'),{z:9.5});
+  const mx=hx+246;s+=btn(mx,y+4,34,16,String(i+1),{on:1,r:4,z:10});s+=btn(mx+38,y+4,20,16,'S',{r:4,z:10,f:C.dim});
+  s+=box(mx,y+24,46,16,['-3.0','-6.5','-9.5','-9.0','-7.5','-12','0.0','-8.0','-14'][i],{fill:0.6,z:9.5});s+=knob(mx+68,y+32,7.5,0.5,C.val,'','',{bi:1,ring:2});
+  const mv=[0.8,0.74,0.56,0.66,0.5,0.38,0.7,0.48,0.3][i];s+=meterV(hx+HW-48,y+4,5,h-8,mv)+meterV(hx+HW-41,y+4,5,h-8,mv*0.94);
+  s+=L(ax,y+h,ax+aw,y+h,'#1a1a1a');ty0+=h+1});
+const footH=3*24,dropBot=BOT-6-20-footH;s+=T(ax+lw/2,(ty0+dropBot)/2+4,'Drop Files and Devices Here',{z:12,f:C.faint,a:'middle'});
+[['A Reverb','#b7b7c2','A'],['B Delay','#b7b7c2','B'],['Main','#e8e8ee','']].forEach(([n,c,l],i)=>{const y=dropBot+i*24;s+=R(ax,y,lw,23,'#2a2a2a');s+=R(hx,y,HW,23,C.panel);s+=R(hx,y,128,23,c);s+=T(hx+24,y+15.5,n,{z:11.5,f:C.ink,w:700});s+=CI(hx+12,y+11.5,6,'none',{s:C.ink,sw:1.6});
+  s+=chooser(hx+134,y+3,104,16,i<2?'Main':'1/2',{z:9.5});const mx=hx+246;if(l){s+=btn(mx,y+3,34,16,l,{on:1,r:4,z:10});s+=btn(mx+38,y+3,20,16,'S',{r:4,z:10,f:C.dim})}else s+=box(mx,y+3,46,16,'0.0',{fill:0.7,z:9.5});
+  s+=meterV(hx+HW-48,y+3,5,17,[0.4,0.3,0.82][i])+meterV(hx+HW-41,y+3,5,17,[0.38,0.28,0.8][i])});
+const PHX=X(15);s+=L(PHX,ry,PHX,dropBot,'#f0f0f0',1.3);
+const fy=BOT-6-20;s+=R(ax,fy,lw,20,'#262626');for(let b=1;b<=33;b+=4){const x0=X(b);s+=L(x0,fy,x0,fy+6,'#5a5a5a');if((b-1)%8===0){const sec=(b-1)*2;s+=T(x0+4,fy+14,Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0'),{z:10,f:C.dim})}}
+s+=R(hx,fy,HW,20,'#262626');
+
+// ================= the Device View for Kick, as on the agreed sheet =================
+const ph=SB-BOT-6;s+=R(ax,BOT,aw,ph,'#202020',{r:6});
+{const py=BOT+8,h=ph-16;let px=ax+8;
+ s+=R(px,py,22,h,'#ff6f61',{r:5});s+=`<text transform="translate(${px+15} ${py+h-10}) rotate(-90)" font-size="11.5" font-weight="700" fill="${C.ink}">Kick</text>`;px+=28;
+ // the kick's EQ: high-pass under the sub, a lift at 60 Hz, the box cut at 380 Hz, a little air
+ s+=eqPanel(px,py,400,h,{seed:17,bands:[{t:'hp',f:0.04,c:'#ffad3b'},{f:0.17,g:0.45,q:0.06,c:'#c479ff'},{f:0.42,g:-0.42,q:0.06,c:'#62d36b'},{t:'hs',f:0.8,g:0.25,c:'#4fc3ea'}]}).replace('2.84 kHz   +4.1 dB   Q 1.20','380 Hz   -3.5 dB   Q 1.40');px+=408;
+ s+=compPanel(px,py,300,h,1).replace('Vocal ▾','Punch ▾');px+=308;
+ {const w=292;s+=panel(px,py,w,h,'Auto Filter','Clean ▾');s+=filterd(px+8,py+30,184,92);s+=knob(px+218,py+60,13,0.62,C.val,'Freq','1.2 kHz',{lz:9.5});s+=knob(px+264,py+60,13,0.4,C.val,'Res','40 %',{lz:9.5});
+  s+=pill(px+10,py+130,32,16,'LP',{on:1});s+=pill(px+46,py+130,32,16,'HP');s+=pill(px+82,py+130,32,16,'BP');s+=pill(px+118,py+130,42,16,'Notch')}}
+// the window dims behind a modal; drawn on the Device View only, so the parts above stay readable
+s+=R(ax,BOT,aw,ph,C.line,{r:6,op:0.5});
+
+// ================= menus =================
+// A menu: rows 20 high (Compact), separators 9; tick column at the left, keys or the arrow at the right.
+// The row under the pointer, and an open parent row, take the language's pointer-over grey (C.edge);
+// the accent marks only what is on (the tick).
+const RH=20,SEP=9;
+function menu(x,y,w,items,o={}){const h=8+items.reduce((a,it)=>a+(it==='-'?SEP:RH),0)+(o.foot||0);let g=shadow(R(x,y,w,h,C.panel,{r:8,s:C.grpEdge}));let yy=y+4;const rows={};
+  items.forEach(it=>{if(it==='-'){g+=L(x+10,yy+SEP/2,x+w-10,yy+SEP/2,C.ctl);yy+=SEP;return}
+    const[t,k,f={}]=it;rows[t]=yy;
+    if(f.hot||f.open)g+=R(x+4,yy,w-8,RH,C.edge,{r:5});
+    const col=f.dis?C.faint:C.text;
+    if(f.tick)g+=P(`M${x+11} ${yy+10}l3.5 3.5l6.5 -7`,{s:C.acc,sw:2});
+    g+=T(x+28,yy+14,t,{z:12,f:col});
+    if(f.sub)g+=P(`M${x+w-17} ${yy+6}l4.5 4l-4.5 4`,{s:f.open?C.text:C.dim,sw:1.7});
+    else if(k)g+=T(x+w-12,yy+14,k,{z:11,f:f.dis?C.faint:C.dim,a:'end'});
+    yy+=RH});
+  return{g,h,rows,end:yy}}
+
+// ---- (1) the menu bar with the Edit menu open: Live 12's items, with ADI's (ui_shell.cpp menuBar()) ----
+s+=R(110,3,42,18,C.ctl,{r:4});s+=T(120,16,'Edit',{z:12,f:C.text,w:600});
+const EX=112,EY=24,EW=272;
+const edit=menu(EX,EY,EW,[
+ ['Undo Move Clip','Ctrl+Z'],['Redo','Ctrl+Y',{dis:1}],'-',
+ ['Cut','Ctrl+X'],['Copy','Ctrl+C'],['Paste','Ctrl+V',{dis:1}],['Duplicate','Ctrl+D'],['Delete','Del'],'-',
+ ['Cut Time','Ctrl+Shift+X'],['Copy Time','Ctrl+Shift+C'],['Paste Time','Ctrl+Shift+V',{dis:1}],['Duplicate Time','Ctrl+Shift+D'],['Delete Time','Ctrl+Shift+Del'],['Insert Silence','Ctrl+I'],'-',
+ ['Loop Selection','Ctrl+L'],['Select Loop','Ctrl+Shift+L'],['Split','Ctrl+E'],['Consolidate','Ctrl+J'],['Crop Clip','Ctrl+Shift+J'],'-',
+ ['Rename','Ctrl+R'],['Edit Info Text',''],['Select All','Ctrl+A'],['Invert Selection','Ctrl+Shift+A'],'-',
+ ['Record Quantization','',{sub:1,open:1}],['Quantize','Ctrl+U'],['Quantize Settings...','Ctrl+Shift+U'],['Fit to Time Range','Ctrl+Alt+J'],'-',
+ ['Group Tracks','Ctrl+G'],['Ungroup Tracks','Ctrl+Shift+G']]);
+s+=edit.g;MARK.push([EX+EW+30,EY+14,1]);
+// ---- (2) its submenu, open on the row under the pointer ----
+const QY=edit.rows['Record Quantization']-4,QX=EX+EW-4;
+const qm=menu(QX,QY,196,[['No Quantization',''],['1/4 Note',''],['1/8 Note',''],['1/8 Note Triplet',''],['1/8 Note + Triplet',''],['1/16 Note','',{tick:1}],['1/16 Note Triplet','',{hot:1}],['1/16 Note + Triplet',''],['1/32 Note','']]);
+s+=qm.g;s+=ptr(QX+168,qm.rows['1/16 Note Triplet']+8);MARK.push([QX+196+16,QY+16,2]);
+
+// ---- (3) a clip's menu: right-click on Kick Verse ----
+{const[x0,y,cw,h]=CLIPS['Kick Verse'];s+=R(x0-1,y,cw+2,h,'none',{r:3,s:'#f0f0f0',sw:1.5});
+ const CX=x0+300,CY=y+14,MW=286;
+ // Live's 70 clip colours, 14 wide and 5 deep, 17 apart as ADI builds them (ColourChooser): the
+ // track colours, a paler row, then three deeper ones drawn from the same colours
+ const PAL=['#ff6f61','#f08a5d','#e8b04a','#f2cf5a','#f2e15a','#7fd36b','#62d36b','#5ec8ff','#5eb4ff','#4fc3ea','#8f8cff','#c479ff','#ff6fb1','#b7b7c2'];
+ const PITCH=17,SWT=14,FOOT=8+4*PITCH+SWT+8;
+ const cm=menu(CX+2,CY+2,MW,[
+  ['Cut','Ctrl+X'],['Copy','Ctrl+C'],['Duplicate','Ctrl+D'],['Delete','Del'],'-',
+  ['Split','Ctrl+E'],['Consolidate','Ctrl+J'],['Crop Clip','Ctrl+Shift+J'],'-',
+  ['Rename','Ctrl+R'],['Edit Info Text',''],'-',
+  ['Deactivate Clip','0'],['Loop Selection','Ctrl+L'],'-',
+  ['Create Fade In/Out','Ctrl+Alt+F'],['Delete Fades/Crossfades','',{dis:1}],'-',
+  ['Bounce to New Track',''],['Bounce in Place',''],'-',
+  ['Convert Harmony to New MIDI Track',''],['Convert Melody to New MIDI Track',''],['Convert Drums to New MIDI Track','',{hot:1}],['Slice to New MIDI Track',''],'-'],{foot:FOOT});
+ s+=cm.g;const py=cm.end+4,px=CX+2+(MW-(13*PITCH+SWT))/2;
+ PAL.forEach((c,k)=>{const x=px+k*PITCH;
+   s+=R(x,py,SWT,SWT,c,{r:3});
+   s+=R(x,py+PITCH,SWT,SWT,c,{r:3})+R(x,py+PITCH,SWT,SWT,'#ffffff',{r:3,op:0.38});
+   [0.78,0.56,0.36].forEach((op,j)=>s+=R(x,py+(j+2)*PITCH,SWT,SWT,c,{r:3,op}))});
+ s+=R(px-2,py-2,SWT+4,SWT+4,'none',{r:4,s:'#f3f3f3',sw:1.6});
+ s+=ptr(CX+2+252,cm.rows['Convert Drums to New MIDI Track']+8);
+ MARK.push([CX+2+MW+16,CY+18,3])}
+
+// ---- (4) a tooltip, on the Control Bar's Arrangement Record button ----
+{const bx2=776+125,by2=44;s+=ptr(bx2+2,by2+2);const tx=bx2-6,ty=by2+22;
+ s+=shadow(R(tx,ty,262,35,C.head,{r:5,s:C.edge}));s+=T(tx+10,ty+14,'Arrangement Record',{z:11,w:600});s+=T(tx+252,ty+14,'F9',{z:11,f:C.dim,a:'end'});
+ s+=T(tx+10,ty+28,'Records into the armed tracks from the marker.',{z:10.5,f:C.dim});MARK.push([tx-16,ty+18,4])}
+
+// ================= (7 to 12) the Settings window, at real size =================
+const SX=1124,SY=128,SW=786,SH=616;
+s+=shadow(R(SX,SY,SW,SH,C.bar,{r:8,s:C.grpEdge}));
+s+=R(SX+1,SY+1,SW-2,29,C.panel,{r:7});s+=R(SX+1,SY+20,SW-2,10,C.panel);s+=L(SX+1,SY+30,SX+SW-1,SY+30,C.line);
+s+=T(SX+14,SY+20,'Settings',{z:12,w:600});s+=P(`M${SX+SW-24} ${SY+10}l9 9M${SX+SW-15} ${SY+10}l-9 9`,{s:C.dim,sw:1.6});
+// the Find box (searches every tab), then the tabs
+const TX=SX+10,TW=168;s+=R(TX,SY+40,TW,24,C.well,{r:5,s:C.edge});s+=CI(TX+13,SY+51,4.2,'none',{s:C.faint,sw:1.5})+L(TX+16,SY+54,TX+19,SY+57,C.faint,1.5,{cap:'round'});s+=T(TX+26,SY+56,'Find a setting',{z:11.5,f:C.faint});
+MARK.push([TX+TW-14,SY+52,7]);
+const PX=TX+TW+10,PY=SY+40,PW=SX+SW-10-PX,PH=SH-40-46;   // the page
+s+=R(PX,PY,PW,PH,C.panel,{r:6});
+const LIVE=['Display &amp; Input','Theme &amp; Colors','Audio','Link','Tempo &amp; MIDI','File &amp; Folder','Library','Plug-Ins','Record, Warp &amp; Launch','Licenses &amp; Updates'];
+const OWN=['Editing','AI','Export','Mixing','Transport','Sync','Engine','Windows','Devices','Music','Shortcuts','Project'];
+const TR=21;let ty=SY+72;
+s+=R(TX,ty,TW,LIVE.length*TR+6,C.win,{r:7});
+LIVE.forEach((n,k)=>{const yy=ty+3+k*TR;if(k===1){s+=R(TX+3,yy,PX-TX-3+6,TR,C.panel,{r:5});s+=R(TX+3,yy+4,3,TR-8,C.acc,{r:1.5});s+=T(TX+14,yy+14.5,n,{z:12,w:600})}else s+=T(TX+14,yy+14.5,n,{z:12,f:C.dim})});
+ty+=LIVE.length*TR+6+20;s+=T(TX+4,ty-6,'ADI',{z:10.5,f:C.faint,w:600,ls:0.5});
+s+=R(TX,ty,TW,OWN.length*TR+6,C.win,{r:7});OWN.forEach((n,k)=>s+=T(TX+14,ty+3+k*TR+14.5,n,{z:12,f:C.dim}));
+MARK.push([TX+TW-14,SY+72+3+5*TR+10,8]);
+// the page, clipped to its scroll view: Live's sections in Live's order. Names at 17, controls at 191.
+let pg='';const NX=PX+17,KX=PX+191;let yy=PY+12;
+const sect=t=>{pg+=T(NX,yy+12,t,{z:12,w:700});const tw=t.replace(/&amp;/g,'&').length*6.9+8;pg+=L(NX+tw,yy+8,PX+PW-20,yy+8,C.ctl);yy+=25};
+const row=(n,draw,o={})=>{if(o.hover)pg+=R(PX+6,yy-3,PW-20,(o.h||22)+6,C.lane,{r:5});pg+=T(NX,yy+15.5,n,{z:12});draw(yy);yy+=(o.h||22)+6};
+sect('Theme');
+// the four themes, each a card drawn in its own colours (the language's swatches)
+const THEMES=[['Dark',['#1b1b1b','#2b2b2b','#3d3d3d','#dcdcdc','#ffad3b','#4fc3ea']],['Mid grey',['#7d7d7d','#8e8e8e','#a5a5a5','#111111','#ffb532','#62d0f3']],['Light',['#e9e9e9','#f6f6f6','#ffffff','#1c1c1c','#ff9d1c','#1fa3d1']],['Mix View',['#131316','#202027','#30303a','#d9d9de','#ffb13b','#5ec8ff']]];
+row('Theme',y=>{THEMES.forEach(([n,[wn,pn,cn,tn,an,vn]],k)=>{const cx=KX+k*92,cy=y;const on=k===0;
+   pg+=R(cx,cy,84,54,wn,{r:6,s:on?C.acc:C.line,sw:on?2:1});pg+=R(cx+6,cy+6,72,10,pn,{r:2});pg+=R(cx+9,cy+9,30,4,tn,{r:1,op:0.8});
+   pg+=R(cx+6,cy+20,46,28,pn,{r:3});pg+=R(cx+10,cy+25,22,8,cn,{r:2});pg+=R(cx+35,cy+25,13,8,an,{r:2});pg+=R(cx+10,cy+38,38,5,vn,{r:2,op:0.9});
+   pg+=R(cx+56,cy+20,22,28,pn,{r:3});pg+=R(cx+62,cy+26,3,18,vn,{r:1});pg+=R(cx+68,cy+32,3,12,an,{r:1});
+   pg+=T(cx+42,cy+69,n,{z:11,a:'middle',f:on?C.text:C.dim,w:on?600:400})});
+   MARK.push([KX+4*92+4,y+27,9])},{h:72});
+row('Follow the System',y=>{pg+=sw(KX,y+2,0);pg+=T(KX+42,y+15.5,'Dark and Light follow the OS',HELP)});
+row('Palette Tone',y=>pg+=oneOf(KX,y,197,['Neutral','Cool','Warm'],0));
+row('Density',y=>{pg+=oneOf(KX,y,197,['Compact','Open'],0);pg+=ptr(KX+182,y+13);pg+=T(KX+210,y+15.5,'Compact: Live 12’s sizes',HELP);MARK.push([KX+368,y+11,10])},{hover:1});
+row('Contrast',y=>pg+=vbox(KX,y,97,'0',0));
+sect('Customization');
+row('Grid Line Intensity',y=>pg+=vbox(KX,y,97,'50 %',0.5));
+row('Brightness',y=>pg+=vbox(KX,y,97,'50 %',0.5));
+row('Color Intensity',y=>pg+=vbox(KX,y,97,'50 %',0.5));
+row('Hue',y=>pg+=vbox(KX,y,97,'0°',0));
+sect('Track and Clip Colors');
+row('Auto-Assign Track Colors',y=>{pg+=sw(KX,y+2,1);MARK.push([KX+56,y+11,11])});
+row('Clip Color',y=>pg+=choose(KX,y,197,'Track'));
+const swatchChoose=(y,c,t)=>{pg+=choose(KX,y,197,'');pg+=R(KX+8,y+5,12,12,c,{r:3});pg+=T(KX+26,y+15.5,t,{z:11.5})};
+row('Accent Color',y=>swatchChoose(y,C.acc,'The theme’s own'));
+row('Default Color: Audio Tracks',y=>swatchChoose(y,'#5ec8ff','The theme’s own'));
+row('Default Color: MIDI Tracks',y=>swatchChoose(y,'#8f8cff','The theme’s own'));
+// below the fold: the other five default colours (instrument, group, return, main, VCA), then the
+// settings with no section, which groupFor() heads with the tab's name, "Theme & Colors" (Perceptual
+// Waveforms, Waveform Brightness, ...)
+s+=`<clipPath id="pgclip"><rect x="${PX}" y="${PY}" width="${PW}" height="${PH}" rx="6"/></clipPath><g clip-path="url(#pgclip)">${pg}</g>`;
+// the scrollbar: the page runs on below (five more default colours, then Theme & Colors)
+s+=R(PX+PW-8,PY+8,4,PH-16,C.well,{r:2});s+=R(PX+PW-8,PY+8,4,(PH-16)*0.64,C.edge,{r:2});
+// the foot: the hovered setting's help, Restore Defaults
+{const fy2=SY+SH-38;s+=T(PX+4,fy2+12,'Density',{z:11,w:600});s+=T(PX+56,fy2+12,'Compact draws every panel at Live 12’s sizes;',{z:11,f:C.dim});
+ s+=T(PX+4,fy2+27,'Open is the same panel with more room. Applies at once.',{z:11,f:C.dim});
+ s+=btn(SX+SW-10-118,fy2+4,118,24,'Restore Defaults',{r:5,z:11,w:500});MARK.push([SX+SW-10-118-16,fy2+16,12])}
+
+// ================= (5, 6) dialogs, at real size, over the dimmed Device View =================
+// Live's question when a Set is closed with changes
+{const x=40,y=BOT+58,w=440,h=146;s+=shadow(R(x,y,w,h,C.panel,{r:8,s:C.grpEdge}));
+ s+=R(x+1,y+1,w-2,26,C.head,{r:7});s+=R(x+1,y+16,w-2,11,C.head);s+=T(x+12,y+18,'ADI',{z:12,w:600});
+ s+=CI(x+30,y+64,14,'none',{s:C.acc,sw:2});s+=T(x+30,y+70,'!',{z:16,w:700,a:'middle',f:C.acc});
+ s+=T(x+58,y+61,'Save changes to “Norway” before closing?',{z:13,w:600});
+ s+=T(x+58,y+80,'Norway  ·  edited since 10:42',{z:11,f:C.dim});
+ const by3=y+h-38;s+=btn(x+w-12-3*82-16,by3,82,26,'Yes',{on:1,r:5,z:12});s+=btn(x+w-12-2*82-8,by3,82,26,'No',{r:5,z:12,w:500});s+=btn(x+w-12-82,by3,82,26,'Cancel',{r:5,z:12,w:500});
+ s+=T(x+12,by3+17,'Enter: Yes  ·  Esc: Cancel',{z:10.5,f:C.dim});
+ MARK.push([x+w-18,y+14,5])}
+// ADI's own import prompt (E5): what dropped audio is imported with, shown at its defaults
+{const x=498,y=BOT+14,w=326,h=ph-28;s+=shadow(R(x,y,w,h,C.panel,{r:8,s:C.grpEdge}));
+ s+=R(x+1,y+1,w-2,26,C.head,{r:7});s+=R(x+1,y+16,w-2,11,C.head);s+=T(x+12,y+18,'Import 2 Audio Files',{z:12,w:600});s+=T(x+w-12,y+18,'onto Backing Vox',{z:11,f:C.dim,a:'end'});
+ s+=T(x+12,y+46,'Chorus Oohs L.wav   ·   Chorus Oohs R.wav',{z:11,f:C.dim});
+ let ry2=y+60;const opt=(on,t,extra)=>{s+=sw(x+12,ry2+2,on);s+=T(x+54,ry2+15.5,t,{z:12});if(extra)extra(ry2);ry2+=30};
+ opt(0,'Warp',r=>s+=choose(x+130,r,180,'Beats',{dis:1}));opt(0,'Create Fades on Clip Edges');opt(0,'Copy into the project’s folder');
+ s+=T(x+12,ry2+12,'Shown at its defaults: all off, Beats. The last',HELP);s+=T(x+12,ry2+27,'choices are kept; Settings › Editing › Audio import',HELP);s+=T(x+12,ry2+42,'options turns this prompt off.',HELP);
+ const by3=y+h-38;s+=btn(x+w-12-80-8-80,by3,80,26,'Import',{on:1,r:5,z:12});s+=btn(x+w-12-80,by3,80,26,'Cancel',{r:5,z:12,w:500});
+ MARK.push([x+w-16,y+46,6])}
+
+// ================= the numbers =================
+MARK.forEach(([x,y,n])=>s+=note(x,y,n));
+
+// ================= the sheet's notes (not part of the window) =================
+{const lx=830,ly=BOT,lwd=W-6-lx,lh=SB-6-ly;s+=R(lx+0.75,ly+0.75,lwd-1.5,lh-1.5,C.win,{s:C.acc,sw:1.5,d:'6 4'});
+ s+=T(lx+14,ly+20,'Menus, dialogs and Settings: the numbers',{z:12.5,w:700,f:C.acc});s+=T(lx+lwd-14,ly+20,'DF-W20, DF-W23  ·  ADR-0243  ·  Live 12, Windows keys shown',{z:10.5,f:C.dim,a:'end'});
+ const cv=document.createElement('canvas').getContext('2d'),FONT='"Segoe UI", Arial, sans-serif';
+ const mw=(t,b)=>{cv.font=(b?'700 ':'400 ')+'10.5px '+FONT;return cv.measureText(t.replace(/&amp;/g,'&')).width};
+ const LH=12.5;
+ const lay=(head,body,tw)=>{const words=[...head.split(' ').map(w=>[w,1]),...body.split(' ').map(w=>[w,0])];const lines=[[]];let cur=0;
+   words.forEach(([w,b])=>{const ww=mw(w+' ',b);if(cur+ww-mw(' ',b)>tw&&lines[lines.length-1].length){lines.push([]);cur=0}lines[lines.length-1].push([w,b]);cur+=ww});return lines};
+ const item=(cx,cy,n,lines)=>{if(n==='?')s+=qmark(cx+11,cy+5);else s+=note(cx+11,cy+5,n);
+   lines.forEach((ln,k)=>{let t='';ln.forEach(([w,b],j)=>{t+=`<tspan font-weight="${b?700:400}" fill="${b?(n==='?'?C.acc:C.text):'#bdbdbd'}">${(j?' ':'')+w}</tspan>`});
+     s+=`<text x="${cx+28}" y="${cy+9+k*LH}" font-size="10.5">${t}</text>`})};
+ const items=[
+  [1,'The Edit menu.','Live 12’s items with their keys, and ADI’s own: Invert Selection, Select Loop, Fit to Time Range, Group and Ungroup Tracks. Grey: cannot act now (nothing to redo, nothing cut or copied). Undo names the step it takes back.'],
+  [2,'A submenu.','Opens on hover. The tick, in the accent, is the value in force (1/16, ADI’s default); the row under the pointer and its open parent take the pointer-over grey. Live’s list; ADI’s setting today has Off, 1/4, 1/8, 1/16, 1/32, and the triplet rows are to be added.'],
+  [3,'A clip’s menu.','Right-click on Kick Verse: Live’s menu for an audio clip, with Live’s 70 colours at the foot, 14 by 5, the clip’s own ringed.'],
+  [4,'Tooltip.','After 600 ms (500 to 800 in Settings): the name, the key, one line on what it does. The Info View stays instant.'],
+  [5,'Closing with changes.','Live’s question and buttons: Yes, No, Cancel. ADI writes each edit to the file as it goes, so whether this dialog ever appears is an open question (see ?). Opens centred; the window dims behind it.'],
+  [6,'Import prompt.','ADI’s own (Live asks nothing): Warp and its mode, fades on clip edges, copy into the project’s folder; drawn at its defaults. Opens centred on the window.'],
+  [7,'Settings and Find.','Its own window, as Live’s. Find searches every tab and lists the hits under their tabs.'],
+  [8,'Tabs.','Live’s ten in Live’s order, one line each as Live 12; ADI’s twelve after the gap. The open tab runs into its page.'],
+  [9,'Theme.','Dark (default), Mid grey, Light, Mix View, each card in its own colours; a click applies it at once. Mix View is the darker, cooler theme the Mix View uses; chosen here, it dresses the whole window.'],
+  [10,'Density.','Compact (Live 12’s sizes, the default) or Open: the same panels with more room.'],
+  [11,'The language’s controls.','Switches, one-of-three, value boxes with their fill, colour choosers. Each change applies at once; no OK. Below the fold: five more default colours, then the tab’s own group, “Theme &amp; Colors”.'],
+  [12,'Help line, Restore Defaults.','The help of the setting under the pointer; Restore Defaults puts this tab back.'],
+  ['?','Open questions.','(a) On the Mac, menus in the system’s menu bar, or ADI’s own? (b) Button order per system (Windows: Yes, No, Cancel; macOS: Don’t Save at the left, Cancel, Save)? (c) Settings its own window, as Live, or a panel in the main window? (d) ADI writes each edit as it goes: does the save question (5) ever appear?']];
+
+ // three columns, the items in order, split where the tallest column is lowest
+ const NC=3,GAP=14,IG=5,colW=(lwd-28-(NC-1)*GAP)/NC,top=ly+34,bottom=ly+lh-6;
+ const laid=items.map(([n,h,t])=>{const lines=lay(h,t,colW-32);return[n,lines,9+lines.length*LH]});
+ const colH=(i,j)=>laid.slice(i,j).reduce((a,x)=>a+x[2]+IG,0)-IG;let best=null;
+ for(let i=1;i<laid.length-1;i++)for(let j=i+1;j<laid.length;j++){const m=Math.max(colH(0,i),colH(i,j),colH(j,laid.length));if(!best||m<best[0])best=[m,i,j]}
+ window.__legendOverflow=Math.max(0,top+best[0]-bottom);
+ [[0,best[1]],[best[1],best[2]],[best[2],laid.length]].forEach(([i,j],c)=>{let cy=top;laid.slice(i,j).forEach(([n,lines,ih])=>{item(lx+14+c*(colW+GAP),cy,n,lines);cy+=ih+IG})})}
+
+// ================= the Status Bar =================
+s+=R(0,SB,W,26,'#0f0f10');s+=T(12,SB+17,'Kick Verse  ·  Kick  ·  Convert Drums to New MIDI Track: a new MIDI track with the kick’s hits as notes',{z:11.5,f:C.dim});
+s+=grp(W-290,SB+3,284,20);s+=T(W-250,SB+17,'Kick',{z:11,a:'middle',w:600});s+=sep(W-210,SB+3,20);s+=T(W-182,SB+17,'Clip',{z:11,a:'middle',f:C.dim,w:600});s+=R(W-154,SB+5,68,16,C.acc,{r:4});s+=T(W-120,SB+17,'Devices',{z:11,a:'middle',f:C.ink,w:700});s+=T(W-48,SB+17,'Mixer',{z:11,a:'middle',f:C.dim,w:600});
+finish(W,H,s);
+</script></body></html>
