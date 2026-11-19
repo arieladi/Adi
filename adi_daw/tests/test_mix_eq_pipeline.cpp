@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <numbers>
 #include <type_traits>
 #include <utility>
 
@@ -65,51 +66,72 @@ template<class Sample> void splitAudio(double rate, int channels) {
     check(peakError < 2e-7, "actual canonical band gain reaches audio rather than a dry stand-in");
     whole->release(); split->release();
 }
-void externalDynamics() {
+template<class Sample> void externalDynamics() {
+    enum class Key { Absent, Silent, Tone, Removed };
+    struct Case { bool external, dynamic; Key key; bool reducing; };
+    constexpr std::array cases{
+        Case{false, true, Key::Absent, true},
+        Case{false, true, Key::Silent, true},
+        Case{false, true, Key::Tone, true},
+        Case{false, false, Key::Tone, false},
+        Case{true, true, Key::Tone, true},
+        Case{true, true, Key::Silent, false},
+        Case{true, true, Key::Absent, false},
+        Case{true, true, Key::Removed, false},
+        Case{true, false, Key::Tone, false},
+    };
     constexpr int frames = 256;
-    for (bool external : {false, true})
-        for (bool active : {false, true})
-            for (bool silent : {false, true}) {
-                auto device = make();
-                for (const auto &[id, value] : std::array<std::pair<const char *, double>, 4>{
-                         {{"9", 1}, {"17", active ? 1. : 0.}, {"15", .3}, {"1", external ? 1. : 0.}}})
-                    check(device->setParam(id, device::ParamValue::fromNormalized(value)),
-                          "native dynamics setup accepts exact control IDs");
-                device->prepare(48000, frames);
-                std::array<float, frames> l{}, r{}, k{};
-                std::array<const float *, 2> input{l.data(), r.data()}, key{k.data(), k.data()};
-                std::array<float *, 2> output{l.data(), r.data()};
-                double inEnergy = 0, outEnergy = 0;
-                engine::NodeIo io;
-                io.in = input.data();
-                io.out = output.data();
-                io.sidechain = key.data();
-                io.channels = 2;
-                io.frames = frames;
-                io.sampleRate = 48000;
-                io.configuredLatency = device->latencySamples();
-                for (int block = 0; block < 650; ++block) {
-                    for (int i = 0; i < frames; ++i) {
-                        const auto tone =
-                            std::sin((block * frames + i) * 2 * 3.141592653589793 * 1000 / 48000);
-                        l[i] = r[i] = static_cast<float>(std::pow(10., -.9) * tone);
-                        k[i] = silent ? 0.f : static_cast<float>(.5 * tone);
-                        if (block > 550)
-                            inEnergy += double(l[i]) * l[i];
-                    }
-                    io.renderBlock = static_cast<std::uint64_t>(block + 1);
-                    device->process(io);
-                    if (block > 550)
-                        for (const auto x : l)
-                            outEnergy += double(x) * x;
-                }
-                const auto gain = 10 * std::log10(outEnergy / inEnergy);
-                const bool reducing = active && (!external || !silent);
-                check(reducing ? gain < -10 : std::abs(gain) < .01,
-                      "native EQ external/internal/silent-key controls produce the "
-                      "intended audible dynamics");
-                device->release();
+    constexpr double rate = 48000.;
+    const auto programme = std::pow(10., -.9);
+    for (const auto& test : cases) {
+        auto device = make();
+        const auto set = [&](const char* id, double value) {
+            return device && device->setParam(id, device::ParamValue::fromNormalized(value));
+        };
+        const auto ready = set("9", 1.) && set("17", test.dynamic ? 1. : 0.) && set("15", .3) &&
+                           set("1", test.external ? 1. : 0.);
+        check(ready, "native EQ dynamics controls can be set through the actual device");
+        if (!ready) continue;
+        device->prepare(rate, frames);
+        std::array<Sample, frames> l{}, r{}, k{};
+        std::array<const Sample*, 2> input{l.data(), r.data()}, key{k.data(), k.data()};
+        std::array<Sample*, 2> output{l.data(), r.data()};
+        engine::NodeIo io;
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = rate;
+        io.configuredLatency = device->latencySamples();
+        double inEnergy = 0., outEnergy = 0., beforeIn = 0., beforeOut = 0.;
+        for (int block = 0; block < 650; ++block) {
+            const bool connected = test.key != Key::Absent && (test.key != Key::Removed || block < 200);
+            if constexpr (std::is_same_v<Sample, double>) {
+                io.in64 = input.data(); io.out64 = output.data(); io.sidechain64 = connected ? key.data() : nullptr;
+            } else {
+                io.in = input.data(); io.out = output.data(); io.sidechain = connected ? key.data() : nullptr;
             }
+            const bool beforeRemoval = test.key == Key::Removed && block >= 150 && block < 200;
+            for (std::size_t frame = 0; frame < l.size(); ++frame) {
+                const auto sample = static_cast<double>(block * frames) + static_cast<double>(frame);
+                const auto tone = std::sin(sample * 2. * std::numbers::pi * 1000. / rate);
+                l[frame] = r[frame] = static_cast<Sample>(programme * tone);
+                k[frame] = static_cast<Sample>(test.key == Key::Silent ? 0. : .5 * tone);
+                if (block > 550) inEnergy += static_cast<double>(l[frame]) * l[frame];
+                if (beforeRemoval) beforeIn += static_cast<double>(l[frame]) * l[frame];
+            }
+            io.renderBlock = static_cast<std::uint64_t>(block + 1);
+            device->process(io);
+            for (const auto sample : l) {
+                if (block > 550) outEnergy += static_cast<double>(sample) * sample;
+                if (beforeRemoval) beforeOut += static_cast<double>(sample) * sample;
+            }
+        }
+        const auto gain = 10. * std::log10(outEnergy / inEnergy);
+        if (test.key == Key::Removed)
+            check(10. * std::log10(beforeOut / beforeIn) < -10., "connected external key reduces before disconnection");
+        const auto expected = test.reducing ? gain < -10. : std::abs(gain) < .01;
+        check(expected, "external missing/silent key settles static while a real selected key reduces");
+        device->release();
+    }
 }
 void documentAuthority() {
     test::TempDirectory temp("mix_eq_pipeline", "document");
@@ -162,7 +184,8 @@ void documentAuthority() {
 int main() {
     for (double rate : {44100., 48000., 96000.})
         for (int channels : {1, 2}) { splitAudio<float>(rate, channels); splitAudio<double>(rate, channels); }
-    externalDynamics();
+    externalDynamics<float>();
+    externalDynamics<double>();
     documentAuthority();
     std::printf("mix EQ pipeline: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

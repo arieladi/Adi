@@ -325,13 +325,19 @@ struct Core::Implementation {
         consider(desired);
         const auto s = pinned(desired);
         apply(s);
-        const bool external = s.externalSidechain && keyChannels > 0, bypass = forced || s.bypass;
+        const bool bypass = forced || s.bypass;
+        const bool missingExternalKey = s.externalSidechain && keyChannels == 0;
         for (int offset = 0; offset < frames;) {
             const int count = std::min(spec.maximumFrames, frames - offset);
             for (int ch = 0; ch < 2; ++ch) {
                 const auto channel = static_cast<std::size_t>(ch);
                 const auto *input = main[std::min(ch, spec.channels - 1)] + offset;
-                const auto *detector = external ? key[std::min(ch, keyChannels - 1)] + offset : input;
+                if (missingExternalKey) {
+                    std::copy_n(input, count, mainPointers[channel]);
+                    std::fill_n(keyPointers[channel], count, 0.);
+                    continue;
+                }
+                const auto *detector = s.externalSidechain ? key[std::min(ch, keyChannels - 1)] + offset : input;
                 for (int i = 0; i < count; ++i) {
                     mainPointers[channel][i] = static_cast<double>(input[i]);
                     keyPointers[channel][i] = static_cast<double>(detector[i]);
