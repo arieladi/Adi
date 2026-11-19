@@ -160,7 +160,8 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
             if(asset.target.empty())continue;
             const auto stagedHash=media::blake3File(asset.staged);
             if(!stagedHash || stagedHash.hex!=asset.hash){error="recording publication staging changed after capture";return false;}
-            const auto published=media::publishFile(asset.staged,asset.target);
+            const auto published = media::publishFile(asset.staged, asset.target, {},
+                                                      media::PublishPolicy::AtomicOnly);
             if(published.status==media::PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
                 const auto existing=media::blake3File(asset.target);if(existing && existing.hex==asset.hash)continue;
             }

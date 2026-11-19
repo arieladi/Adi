@@ -596,7 +596,8 @@ fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
         },stop,hooks_.checkpoint);
         cancelled(stop);const auto after=media::blake3File(source,stop);cancelled(stop);
         if(!after || after.hex!=hash.hex)throw DecodeError(DecodeProblem::Unreadable,"source changed during decoding");
-        const auto published=media::publishFile(partial,target);
+        const auto published = media::publishFile(partial, target, {},
+                                                  media::PublishPolicy::VerifiedCopyFallback);
         if(published.status==media::PublishStatus::exists) {
             if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
             {
