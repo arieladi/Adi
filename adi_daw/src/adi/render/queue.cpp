@@ -134,6 +134,11 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
     return name;
 }
 
+void validateOutputName(const fs::path& output) {
+    if (media::pathUtf8(output.filename()).size() > 200)
+        throw std::invalid_argument("final export name exceeds 200 UTF-8 bytes");
+}
+
 Result renderWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
     Result result;
@@ -184,6 +189,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         }
         const auto filename = resolveName(job.nameTemplate, names) + ".wav";
         result.output = job.directory / media::pathFromUtf8(filename);
+        validateOutputName(result.output);
         if (!fs::is_directory(job.directory)) throw std::runtime_error("export directory does not exist");
         if (fs::exists(result.output)) throw std::runtime_error("export destination already exists");
         const auto* graph = session.graph().currentGraph();

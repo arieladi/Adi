@@ -531,6 +531,30 @@ void namesAndValidation() {
     check(resolveName("{{literal}}",c)=="{literal}" && resolveName("CON",c)=="_CON","literal braces and Windows reserved names are portable");
     check(resolveName("COM\xC2\xB9.wav",c)=="_COM\xC2\xB9.wav" && resolveName("lpt\xC2\xB2",c)=="_lpt\xC2\xB2",
           "Windows superscript device names are escaped, including names with extensions");
+    for (const auto* reserved : {"CON", "con.txt", "PRN", "AUX", "nul.tar.gz", "COM9", "LPT9", "CONIN$", "CONOUT$"})
+        check(resolveName(reserved,c)==std::string("_")+reserved,"reserved filename stem is escaped without changing case or extension");
+    check(resolveName("COM0",c)=="COM0" && resolveName("COM10",c)=="COM10" && resolveName("LPT10",c)=="LPT10",
+          "ordinary names sharing a device prefix remain unchanged");
+    check(resolveName("Mix. . ",c)=="Mix" && resolveName("con. ",c)=="_con",
+          "trailing ASCII dots and spaces are trimmed before reserved-name escaping");
+    const auto finalNameAccepted=[](const std::string& name) {
+        try { validateOutputName(media::pathFromUtf8(name)); return true; }
+        catch (const std::invalid_argument&) { return false; }
+    };
+    for (const std::string suffix : {".wav", ".stem.mp4"}) {
+        for (const std::size_t bytes : {199u,200u,201u}) {
+            const auto plain=resolveName(std::string(bytes-suffix.size(),'n'),c)+suffix;
+            check(plain.size()==bytes && finalNameAccepted(plain)==(bytes<=200),
+                  "final byte cap includes the complete format suffix");
+            const auto reserved=resolveName("CON."+std::string(bytes-suffix.size()-5,'n'),c)+suffix;
+            check(reserved.size()==bytes && finalNameAccepted(reserved)==(bytes<=200),
+                  "final byte cap includes the reserved-name underscore and complete suffix");
+        }
+    }
+    check(resolveName(std::string(200,'n'),c).size()==200,
+          "standalone resolveName retains its existing extension-free contract");
+    check(finalNameAccepted(resolveName("Mix"+std::string(25,' ')+"...",c)+".wav"),
+          "trimmed trailing bytes do not count against the final name");
     for (const char* bad : {"{unknown}","{project","project}","{}","..."}) {
         bool threw=false; try {(void)resolveName(bad,c);} catch(const std::invalid_argument&) {threw=true;}
         check(threw,"invalid name syntax fails explicitly");
@@ -544,9 +568,43 @@ void namesAndValidation() {
     job=f.job(); job.session.maxFrames=0;
     check(renderMasterWav(job,{}).state==JobState::Failed,"zero block size fails");
 }
+void finalNamesAndCaseCollisions() {
+    Fixture f;
+    // UTF-8 byte boundaries with shorter native UTF-16 paths: this tests the
+    // export policy independently of the operating system's full-path limit.
+    for (const std::size_t bytes : {199u,200u,201u}) {
+        std::string stem;
+        for (std::size_t i=0;i<(bytes-4)/2;++i) stem+="\xC3\xA9";
+        if ((bytes-4)%2) stem+='x';
+        const auto result=renderWav(f.job(stem),{});
+        check(media::pathUtf8(result.output.filename()).size()==bytes,"WAV result records the actual final UTF-8 filename");
+        if (bytes<=200)
+            check(result.state==JobState::Completed && fs::exists(result.output) && f.noStage(),
+                  "WAV publishes names of 199 and 200 final UTF-8 bytes");
+        else
+            check(result.state==JobState::Failed && result.error=="final export name exceeds 200 UTF-8 bytes" &&
+                      !fs::exists(result.output) && f.noStage(),"201-byte WAV name fails before staging or publication");
+    }
+    const auto first=renderWav(f.job("CaseOnly"),{});
+    check(first.state==JobState::Completed,"case collision fixture is published");
+    const auto folded=f.job().directory/"caseonly.wav";
+    const bool aliases=fs::exists(folded);
+    std::printf("Export names: case-only filesystem alias %s\n",aliases?"yes":"no");
+    auto caseJob=f.job("caseonly");
+    caseJob.beginSample=200; // A mistaken replacement would change the first file's length.
+    const auto second=renderWav(caseJob,{});
+    if (aliases)
+        check(second.state==JobState::Failed && second.error=="export destination already exists",
+              "case-insensitive filesystem refuses a case-only destination collision");
+    else
+        check(second.state==JobState::Completed && !fs::equivalent(first.output,second.output),
+              "case-sensitive filesystem retains distinct names until EX-07 preflight policy is implemented");
+    audio::WavReader retained(first.output);
+    check(retained.frames()==866 && f.noStage(),"case-only publication leaves the first file intact and no stage");
+}
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation(); finalNamesAndCaseCollisions();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

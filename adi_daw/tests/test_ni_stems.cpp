@@ -196,6 +196,18 @@ void integration() {
     job.endSample = 11003;
     job.session = {2, 48000, 64};
     job.niStems = render::NiStems{{{{1, engine::OfflineTap::PostFader}, "Drums", "#fd4a4a"}}, 256000};
+    auto boundary=job;
+    boundary.nameTemplate.clear();
+    for (unsigned i=0;i<95;++i) boundary.nameTemplate+="\xC3\xA9";
+    boundary.nameTemplate+='x'; // 191-byte stem plus the nine-byte .stem.mp4 suffix.
+    const auto longest=render::renderNiStems(boundary,{});
+    check(longest.state==render::JobState::Completed && media::pathUtf8(longest.output.filename()).size()==200 &&
+              fs::exists(longest.output) && clean(dir.path()),"NI Stems publishes a 200-byte final UTF-8 filename");
+    boundary.nameTemplate+='y';
+    const auto tooLong=render::renderNiStems(boundary,{});
+    check(tooLong.state==render::JobState::Failed && media::pathUtf8(tooLong.output.filename()).size()==201 &&
+              tooLong.error=="final export name exceeds 200 UTF-8 bytes" && !fs::exists(tooLong.output) && clean(dir.path()),
+          "NI Stems rejects its final suffix overflow although the intermediate WAV name fits");
     render::Queue queue;
     const auto id = queue.add(job);
     unsigned services = 0;
