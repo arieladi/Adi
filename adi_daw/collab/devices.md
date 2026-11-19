@@ -51,10 +51,38 @@ method); Live's files and renders stay in the director's research.
 13. **Crop (DF-E38 b; the engine's).** Whether the selection is read in source or arrangement
     coordinates; whether Crop keeps the clip's span and moves the source window, or trims the span;
     what becomes of a note crossing the edge (its length and expression).
+15. **Reverb's and Hybrid Reverb's controls of another shape (DEV-22).** A fresh Reverb, as shown:
+    Spin's Amount; the input filter's Lo Cut and Hi Cut (the band's frequency and width, or its two
+    edges); Diffusion and Scale; the Density chooser's entries and which is selected; the Size
+    Smoothing chooser's entries and which is selected. A fresh Hybrid Reverb, as shown: Routing,
+    Predelay, the synced predelay value, Decay and Size.
 14. **(Max, not Live; optional, DEV-16.)** A `[line~]` ramp 0 → 1 over 100 ms from a loadbang: the
     value of its first sample. Two boxes at the same x fed from one outlet: which fires first.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
+
+## 2026-11-19 — DEV-22: Reverb's other defaults, where the control means what Live's does
+
+**PR requested:** head `devices/reverb-defaults` (ee00241c, one commit stacked on `devices/reverb-equal-power`,
+69c75a50; review that first), base `main`. The rest of Live 12.4's Reverb browser default, read
+from the device's own default state in the director's research. A value is taken only where ADI's
+control has Live's unit and range:
+- Lo Cut on, Spin on at 0.30 Hz, the high shelf on at 4.5 kHz and 0.70, the low shelf's (off)
+  values 90 Hz and 0.75, Chorus on at 0.02 and 0.02 Hz, Predelay 2.5 ms, Decay 1.2 s, Stereo 100.
+- Unchanged and confirmed: Hi Cut off, the low shelf off, Size 100, Freeze off, Flat and Cut on,
+  Reflect and Diffuse at 0 dB, Dry/Wet 55 %.
+- Left at ADI's values: Spin's amount (Live's 17.5 does not fit ADI's 0–5 ms), the input band's two
+  frequencies (Live stores a centre of 830 Hz and a width of 5.85), Diffusion and Scale (Live's
+  all-pass gain 0.6 and size 0.4), Density (Live's index 1 of a chooser whose entries are not in
+  the state). Hybrid Reverb's Routing, Predelay, Decay and Size are in the same position. All of
+  them are reading 15 under FOR THE DIRECTOR.
+
+The test is first: `test_reverb.cpp` checks each default against Live's stored value (14 failures before
+the fix). The canvas's `[adi.param]` defaults match the native ones. The mechanism tests (Predelay,
+Freeze and Cut, Flat) start from the plain tank, with Lo Cut, Spin, Chorus and the high shelf off,
+as they did before. The Pd suite's far-bin floor (1e-7) turns Spin and Chorus off: their modulated
+delays interpolate above that floor, which is expected, not a fault. `adi_reverb_tests` 51,
+`adi_reverb_pd_tests` 43; CTest 245/245 (MSVC Debug, /W4 /WX; the branch's base predates one suite).
 
 ## 2026-11-19 — DF-E20 (d) and (e); the clones seat's three items and the count lines
 
