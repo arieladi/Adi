@@ -1,5 +1,19 @@
 # Clones lane log
 
+## 2026-11-19 — Kick-and-bass waveform drawing cost for Mix View
+
+The offscreen benchmark draws the two stereo sources, their sample-aligned arithmetic sum and an optional sum with B advanced 137 samples. Each row measures sampling, per-column extrema, path construction and software rasterization at 512 × 180 physical pixels, 1,024 source frames per window and 30 drawings per represented second. Six paired trials used the same 240 frames, width, strokes and input for both algorithms. Each trial subtracts that renderer's background/centerline thread time. Percentages express one logical CPU core.
+
+| Drawn stereo signals | Full vertex list | Simplified line | Median paired reduction |
+|---|---:|---:|---:|
+| Kick and bass | 9.96% | 2.15% | 77.5% |
+| Kick, bass and sum | 15.04% | 3.61% | 77.5% |
+| Kick, bass, sum and shifted sum | 20.51% | 4.59% | 77.7% |
+
+At most 16 consecutive line segments are simplified at a time. Keep both endpoints; split recursively at the original vertex with the greatest vertical deviation from the endpoint line whenever it exceeds 0.2 physical pixel. A vertical chord uses distance to the closed vertical interval. Every source vertex on the fixture was within 0.199997 pixel of its replacement segment, and 4,026,353 of 26,910,660 vertices remained (14.96%). The tolerance applies to geometry before stroking. Test dense noise and other zooms separately. A timing shift on the musical pair here exercises the drawing only; the automatic preview correctly withheld a lag for the six measured kick-and-bass regions.
+
+The capture/broker/measurement test separately took 1.77–1.82% of one core. Its min/max work overlaps this offscreen measurement. The director's window, its compositor and GPU presentation were outside this test. The Mix View seat owns display integration, scheduling and final in-application measurement.
+
 ## 2026-11-19 — ADi-SHAPER source and cyclic pitch file reservation
 
 The next device branch is `clones/adi-shaper-sources`. The clones seat takes the new `src/adi/dsp/adi_shaper_pitch.*`, `adi_shaper_noise.*`, `adi_shaper_reverb.*` and their own test files. It also retains the shaper-specific integration files and canvas from prior increments. Work starts with independent measured modes. The performance, timing and resource behavior of each stage will be checked after integration. The stock Shifter, Noise-generating devices, Reverb, shared Pd engine and Mix View files remain with their owners.
