@@ -164,7 +164,7 @@ void testRightToLeftIsMadeExplicit() {
 void testWhatIsRefusedIsNamed() {
     section("DEV-16 -- what cannot be translated is refused, box by box");
     const auto r = translateMaxPatcher(
-        patcher({box("obj-1", "+ 1", 10, 10, R"("int")"), box("obj-2", "cycle~ 440", 10, 50, kSig),
+        patcher({box("obj-1", "% 1.", 10, 10, R"("float")"), box("obj-2", "cycle~ 440", 10, 50, kSig),
                  box("obj-3", "sig~ 0.1", 100, 10, kSig), box("obj-4", "line~", 10, 90, kSig),
                  box("obj-5", "zl.group 4", 10, 130, R"("","")"), box("obj-6", "+ 1.", 200, 10, R"("float")")},
                 {line("obj-3", 0, "obj-2", 1)}),
@@ -172,10 +172,16 @@ void testWhatIsRefusedIsNamed() {
     check(!r.ok() && r.pdPatch.empty(), "nothing is produced when any box is refused");
     std::vector<std::string> ids;
     for (const auto& b : r.refused) ids.push_back(b.id + ":" + b.maxClass);
-    check(ids == std::vector<std::string>{"obj-1:+", "obj-2:cycle~", "obj-4:line~", "obj-5:zl.group"},
-          "refused: [+ 1] (int), [cycle~] with its phase inlet in use, [line~], [zl.group]; [+ 1.] and [sig~] pass");
+    check(ids == std::vector<std::string>{"obj-1:%", "obj-2:cycle~", "obj-4:line~", "obj-5:zl.group"},
+          "refused: [% 1.] (float modulo), [cycle~] with its phase inlet in use, [line~], [zl.group]; [+ 1.] and [sig~] pass");
     if (!r.refused.empty())
-        check(r.refused[0].reason.find("integer") != std::string::npos, "with the reason: " + r.refused[0].reason);
+        check(r.refused[0].reason.find("modulo") != std::string::npos, "with the reason: " + r.refused[0].reason);
+    // Inside a subpatcher, a refusal names the path to it.
+    const std::string inner = R"(,"patcher":{"boxes":[)" + box("obj-1", "zl.len", 10, 10, R"("")") + R"(],"lines":[]})";
+    const auto sub = translateMaxPatcher(patcher({box("obj-9", "p helper", 10, 10, "", "newobj", inner)}, {}),
+                                         AmxdKind::AudioEffect);
+    check(sub.refused.size() == 1 && sub.refused[0].id == "p helper/obj-1",
+          "a box inside [p helper] is named 'p helper/obj-1'");
 }
 
 #if defined(ADI_WITH_PD)
@@ -250,6 +256,101 @@ void testTranslationsWalkAndPlay() {
     }
 }
 
+/// Opens a translated control patch and returns what its [print]s printed.
+std::vector<std::string> printed(const std::string& pd) {
+    const auto dir = std::filesystem::temp_directory_path() / "adi-amxd-test";
+    std::filesystem::create_directories(dir);
+    { std::ofstream(dir / "control.pd", std::ios::binary) << pd; }
+    LibPdEngine eng(dir.string(), "control.pd", 0, 0);
+    PdLatencyReceiver lat;
+    std::string error;
+    std::vector<std::string> out;
+    if (!eng.open(lat, error)) return {"open failed: " + error};
+    for (const auto& l : eng.consoleLines())
+        if (l.rfind("X:", 0) == 0) out.push_back(l);
+    return out;
+}
+
+/// loadbang -> [message] -> <box> -> [print X], every outlet of the box printed.
+std::string probe(const std::string& message, const std::string& text, const std::string& outlets, int outs = 1) {
+    std::vector<std::string> boxes{box("obj-1", "loadbang", 10, 10, R"("bang")"),
+                                   box("obj-2", message, 10, 40, R"("")", "message"),
+                                   box("obj-3", text, 10, 80, outlets)};
+    std::vector<std::string> lines{line("obj-1", 0, "obj-2", 0), line("obj-2", 0, "obj-3", 0)};
+    for (int k = 0; k < outs; ++k) {
+        boxes.push_back(box("obj-p" + std::to_string(k), "print X", 10.0 + 100.0 * k, 140, ""));
+        lines.push_back(line("obj-3", k, "obj-p" + std::to_string(k), 0));
+    }
+    return patcher(boxes, lines);
+}
+
+void testMaxIntegersAreHeard() {
+    section("DEV-16 step 2 -- Max's integers, made explicit with [i], as Pd plays them");
+    struct Case { const char* what; std::string json; std::vector<std::string> expect; };
+    const std::vector<Case> cases{
+        {"[+ 1] fed 2.7 gives 3 (Max truncates its input)", probe("2.7", "+ 1", R"("int")"), {"X: 3"}},
+        {"[+ 1.] fed 2.7 gives 3.7 (the float form)", probe("2.7", "+ 1.", R"("float")"), {"X: 3.7"}},
+        {"[/ 2] fed 7 gives 3 (integer division)", probe("7", "/ 2", R"("int")"), {"X: 3"}},
+        {"[> 0] fed 0.5 gives 0 (0 > 0 in ints)", probe("0.5", "> 0", R"("int")"), {"X: 0"}},
+        {"[pack] fed 2.9 gives the list 2 0", probe("2.9", "pack", R"("")"), {"X: 2 0"}},
+        {"[pack 0 0.] fed 2.9 gives 2 0", probe("2.9", "pack 0 0.", R"("")"), {"X: 2 0"}},
+        {"[unpack] fed 3.7 4.2 gives 4 then 3, right to left", probe("3.7 4.2", "unpack", R"("int","int")", 2),
+         {"X: 4", "X: 3"}},
+        {"[t i f] fed 2.5 gives 2.5 then 2", probe("2.5", "t i f", R"("int","float")", 2), {"X: 2.5", "X: 2"}},
+    };
+    for (const auto& c : cases) {
+        const auto t = translateMaxPatcher(c.json, AmxdKind::AudioEffect);
+        const auto got = t.ok() ? printed(t.pdPatch) : std::vector<std::string>{"refused"};
+        std::string shown;
+        for (const auto& g : got) shown += (shown.empty() ? "" : " | ") + g;
+        check(got == c.expect, std::string(c.what) + ": " + shown);
+    }
+}
+
+void testSubpatchersCarrySignalsAndControls() {
+    section("DEV-16 step 2 -- [p name] becomes [pd name], with ~ ports where signals cross");
+    // [p half]: inlet -> *~ 0.5 -> outlet, between plugin~ and plugout~.
+    const std::string half = R"(,"patcher":{"boxes":[)" + box("obj-1", "", 10, 10, R"("")", "inlet") + "," +
+                             box("obj-2", "*~ 0.5", 10, 50, kSig) + "," + box("obj-3", "", 10, 90, "", "outlet") +
+                             R"(],"lines":[)" + line("obj-1", 0, "obj-2", 0) + "," + line("obj-2", 0, "obj-3", 0) +
+                             "]}";
+    const std::string json =
+        patcher({box("obj-1", "plugin~", 20, 20, kSig2), box("obj-2", "p half", 20, 80, kSig, "newobj", half),
+                 box("obj-3", "p half", 120, 80, kSig, "newobj", half), box("obj-4", "plugout~", 20, 140, "")},
+                {line("obj-1", 0, "obj-2", 0), line("obj-1", 1, "obj-3", 0), line("obj-2", 0, "obj-4", 0),
+                 line("obj-3", 0, "obj-4", 1)});
+    const auto t = translateMaxPatcher(json, AmxdKind::AudioEffect);
+    check(t.ok() && t.pdPatch.find("#X obj 10 10 inlet~;") != std::string::npos &&
+              t.pdPatch.find("#X obj 10 90 outlet~;") != std::string::npos &&
+              t.pdPatch.find("#X restore 20 80 pd half;") != std::string::npos,
+          "the subpatcher's ports are inlet~/outlet~ and it is restored as [pd half]");
+    float gain = 0;
+    int latency = -1;
+    std::string error;
+    const auto residue = render(t.pdPatch, gain, latency, error);
+    double worst = 0;
+    for (float r : residue) worst = std::max(worst, std::fabs(static_cast<double>(r)));
+    check(error.empty() && std::fabs(gain - 0.5f) < 1e-6 && worst < 1e-6,
+          "and plays input x " + std::to_string(gain) + " (worst residue " + std::to_string(worst) + ")" + error);
+
+    // A control subpatcher: [p inc] = inlet -> [+ 1] -> outlet.
+    const std::string inc = R"(,"patcher":{"boxes":[)" + box("obj-1", "", 10, 10, R"("")", "inlet") + "," +
+                            box("obj-2", "+ 1", 10, 50, R"("int")") + "," + box("obj-3", "", 10, 90, "", "outlet") +
+                            R"(],"lines":[)" + line("obj-1", 0, "obj-2", 0) + "," + line("obj-2", 0, "obj-3", 0) +
+                            "]}";
+    const auto c = translateMaxPatcher(probe("1.5", "p inc", R"("")"), AmxdKind::AudioEffect);
+    std::string withInc = probe("1.5", "p inc", R"("")");
+    const auto pos = withInc.find(R"("text":"p inc")");
+    if (pos != std::string::npos) {
+        const auto end = withInc.find('}', pos);
+        withInc.insert(end, inc);
+    }
+    const auto ci = translateMaxPatcher(withInc, AmxdKind::AudioEffect);
+    check(!c.ok(), "a [p] with no patcher in it is refused");
+    check(ci.ok() && printed(ci.pdPatch) == std::vector<std::string>{"X: 2"},
+          "[p inc] (inlet -> [+ 1] -> outlet) fed 1.5 prints 2, through a control inlet and outlet");
+}
+
 void testTheOrderIsHeard() {
     section("DEV-16 -- and the right-to-left order is what Pd does");
     const auto t = translateMaxPatcher(
@@ -283,6 +384,8 @@ int main() {
 #if defined(ADI_WITH_PD)
     testTranslationsWalkAndPlay();
     testTheOrderIsHeard();
+    testMaxIntegersAreHeard();
+    testSubpatchersCarrySignalsAndControls();
 #endif
     std::printf("\n%s -- %d checks, %d failure(s)\n", failures ? "FAILED" : "PASS", checks, failures);
     return failures ? 1 : 0;

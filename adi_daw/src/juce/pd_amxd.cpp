@@ -4,7 +4,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "juce/pd_object_walk.hpp"
+
 #include <algorithm>
+#include <array>
+#include <set>
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -72,30 +76,38 @@ struct Line {
     int outlet = 0, inlet = 0;
 };
 
-class Translator {
-public:
-    AmxdTranslation run(std::string_view text, AmxdKind kind) {
-        out_.kind = kind;
-        if (kind != AmxdKind::AudioEffect) {
-            out_.error = "only audio effects are translated in this step";
-            return std::move(out_);
-        }
-        const json doc = json::parse(text, nullptr, false);
-        if (doc.is_discarded() || !doc.is_object() || !doc.contains("patcher") ||
-            !doc["patcher"].is_object()) {
-            out_.error = "the patcher is not readable JSON";
-            return std::move(out_);
-        }
-        read(doc["patcher"]);
-        if (!out_.error.empty()) return std::move(out_);
-        for (const auto& b : boxes_) translate(b);
-        if (!out_.refused.empty()) return std::move(out_);
-        emit();
-        return std::move(out_);
+/// What one Max box becomes: Pd boxes (a subpatcher is one record holding its
+/// whole canvas), the connections among them, and where the Max box's inlets
+/// and outlets landed. No maps: inlet n is box 0's inlet n, and so on.
+struct Fragment {
+    std::vector<std::string> records;
+    std::vector<std::array<int, 4>> internal;   ///< local src, outlet, local dst, inlet
+    std::vector<std::pair<int, int>> inlets, outlets;
+    [[nodiscard]] std::pair<int, int> in(int n) const {
+        return static_cast<std::size_t>(n) < inlets.size() ? inlets[static_cast<std::size_t>(n)]
+                                                           : std::pair<int, int>{0, n};
     }
+    [[nodiscard]] std::pair<int, int> out(int n) const {
+        return static_cast<std::size_t>(n) < outlets.size() ? outlets[static_cast<std::size_t>(n)]
+                                                            : std::pair<int, int>{0, n};
+    }
+};
 
-private:
-    void read(const json& patcher) {
+std::string at(double x, double y) {
+    return std::to_string(static_cast<long>(std::lround(x))) + " " +
+           std::to_string(static_cast<long>(std::lround(y)));
+}
+
+bool isIntLiteral(const std::string& s) { return isNumber(s) && !isFloatLiteral(s); }
+
+/// One Max patcher -- the device's, or a subpatcher's -- as one Pd canvas.
+class Canvas {
+public:
+    Canvas(AmxdTranslation& out, std::string prefix, std::set<int> signalInlets, int depth)
+        : out_(out), prefix_(std::move(prefix)), signalInlets_(std::move(signalInlets)), depth_(depth) {}
+
+    /// False when the patcher could not be read; refusals go to `out`.
+    bool read(const json& patcher) {
         if (patcher.contains("boxes") && patcher["boxes"].is_array())
             for (const auto& entry : patcher["boxes"]) {
                 if (!entry.contains("box") || !entry["box"].is_object()) continue;
@@ -131,14 +143,125 @@ private:
                 line.inlet = l["destination"][1].get<int>();
                 if (index_.count(line.src) == 0 || index_.count(line.dst) == 0) {
                     out_.error = "a patch line names a box that is not there";
-                    return;
+                    return false;
                 }
                 lines_.push_back(line);
             }
+        // Inlet boxes carry a signal when the parent feeds that inlet one;
+        // Max numbers a patcher's inlets and outlets left to right, as Pd does.
+        inletBoxes_ = sortedByX("inlet");
+        outletBoxes_ = sortedByX("outlet");
+        for (std::size_t k = 0; k < inletBoxes_.size(); ++k) {
+            Box& b = boxes_[index_.at(inletBoxes_[k])];
+            b.signalOutlet = {signalInlets_.count(static_cast<int>(k)) != 0};
+        }
+        // A subpatcher box's outlets: signal where its inner outlet is fed one.
+        for (auto& b : boxes_)
+            if (isSubpatcher(b) && b.raw.contains("patcher")) {
+                AmxdTranslation scratch;
+                Canvas probe(scratch, "", signalInletsOf(b), depth_ + 1);
+                if (probe.read(b.raw["patcher"])) b.signalOutlet = probe.outletSignals();
+            }
+        return true;
+    }
+
+    /// The canvas's records and connections; empty if anything was refused.
+    std::string body() {
+        for (const auto& b : boxes_) translate(b);
+        if (!out_.refused.empty() || !out_.error.empty()) return {};
+        std::ostringstream o, connects;
+        std::map<std::string, int> base;
+        int n = 0;
+        for (const auto& b : boxes_) {
+            const auto f = frags_.find(b.id);
+            if (f == frags_.end()) continue;
+            base[b.id] = n;
+            for (const auto& r : f->second.records) o << r << ";\n";
+            for (const auto& c : f->second.internal)
+                connects << "#X connect " << n + c[0] << " " << c[1] << " " << n + c[2] << " " << c[3] << ";\n";
+            n += static_cast<int>(f->second.records.size());
+        }
+        const auto src = [&](const Line& l) {
+            const auto p = frags_.at(l.src).out(l.outlet);
+            return std::pair<int, int>{base.at(l.src) + p.first, p.second};
+        };
+        const auto dst = [&](const Line& l) {
+            const auto p = frags_.at(l.dst).in(l.inlet);
+            return std::pair<int, int>{base.at(l.dst) + p.first, p.second};
+        };
+        std::map<std::pair<std::string, int>, std::vector<const Line*>> fan;
+        for (const auto& l : lines_) fan[{l.src, l.outlet}].push_back(&l);
+        for (auto& [key, ls] : fan) {
+            const Box& from = boxes_[index_.at(key.first)];
+            const auto o2 = static_cast<std::size_t>(key.second);
+            const bool signal = o2 < from.signalOutlet.size() && from.signalOutlet[o2];
+            if (signal || ls.size() == 1) {
+                for (const Line* l : ls) {
+                    const auto s = src(*l), d = dst(*l);
+                    connects << "#X connect " << s.first << " " << s.second << " " << d.first << " " << d.second
+                             << ";\n";
+                }
+                continue;
+            }
+            // Max: right to left by destination x; equal x, lower box first.
+            std::sort(ls.begin(), ls.end(), [&](const Line* a, const Line* b) {
+                const Box& da = boxes_[index_.at(a->dst)];
+                const Box& db = boxes_[index_.at(b->dst)];
+                if (da.x != db.x) return da.x > db.x;
+                return da.y > db.y;
+            });
+            std::string t = "t";
+            for (std::size_t i = 0; i < ls.size(); ++i) t += " a";
+            o << "#X obj " << at(from.x, from.y + 25) << " " << t << ";\n";
+            const int trig = n++;
+            const auto s = src(*ls.front());
+            connects << "#X connect " << s.first << " " << s.second << " " << trig << " 0;\n";
+            // [t] fires its rightmost outlet first: the first destination.
+            for (std::size_t i = 0; i < ls.size(); ++i) {
+                const auto d = dst(*ls[i]);
+                connects << "#X connect " << trig << " " << (ls.size() - 1 - i) << " " << d.first << " "
+                         << d.second << ";\n";
+            }
+        }
+        return o.str() + connects.str();
+    }
+
+    [[nodiscard]] std::vector<bool> outletSignals() const {
+        std::vector<bool> s;
+        for (const auto& id : outletBoxes_) s.push_back(fedSignal(boxes_[index_.at(id)], 0));
+        return s;
+    }
+
+private:
+    static bool isSubpatcher(const Box& b) {
+        return b.maxClass == "newobj" && !b.words.empty() && (b.words[0] == "p" || b.words[0] == "patcher");
+    }
+
+    std::vector<std::string> sortedByX(const char* cls) const {
+        std::vector<const Box*> v;
+        for (const auto& b : boxes_)
+            if (b.maxClass == cls) v.push_back(&b);
+        std::stable_sort(v.begin(), v.end(), [](const Box* a, const Box* b) { return a->x < b->x; });
+        std::vector<std::string> ids;
+        for (const Box* b : v) ids.push_back(b->id);
+        return ids;
+    }
+
+    std::set<int> signalInletsOf(const Box& b) const {
+        std::set<int> s;
+        for (const auto& l : lines_)
+            if (l.dst == b.id && isSignalSource(l)) s.insert(l.inlet);
+        return s;
+    }
+
+    bool isSignalSource(const Line& l) const {
+        const Box& s = boxes_[index_.at(l.src)];
+        const auto o = static_cast<std::size_t>(l.outlet);
+        return o < s.signalOutlet.size() && s.signalOutlet[o];
     }
 
     void refuse(const Box& b, const std::string& cls, std::string why) {
-        out_.refused.push_back(AmxdRefusedBox{b.id, cls, b.text, std::move(why)});
+        out_.refused.push_back(AmxdRefusedBox{prefix_ + b.id, cls, b.text, std::move(why)});
     }
 
     bool connected(const Box& b, bool asSource, int port) const {
@@ -147,13 +270,9 @@ private:
                 return true;
         return false;
     }
-    bool signalInto(const Box& b, int inlet) const {
-        for (const auto& l : lines_) {
-            if (l.dst != b.id || l.inlet != inlet) continue;
-            const Box& s = boxes_[index_.at(l.src)];
-            const auto o = static_cast<std::size_t>(l.outlet);
-            if (o < s.signalOutlet.size() && s.signalOutlet[o]) return true;
-        }
+    bool fedSignal(const Box& b, int inlet) const {
+        for (const auto& l : lines_)
+            if (l.dst == b.id && l.inlet == inlet && isSignalSource(l)) return true;
         return false;
     }
     bool anyConnection(const Box& b) const {
@@ -161,102 +280,192 @@ private:
                            [&](const Line& l) { return l.src == b.id || l.dst == b.id; });
     }
 
-    /// Pd text for one box, or a refusal.
+    void single(const Box& b, const std::string& record) { frags_[b.id] = Fragment{{record}, {}, {}, {}}; }
+    void obj(const Box& b, const std::string& text) { single(b, "#X obj " + at(b.x, b.y) + " " + text); }
+
+    /// A Max integer box: each listed inlet goes through [i] first; with
+    /// `truncateOut`, the result through [i] too (integer division).
+    void integer(const Box& b, const std::string& pdText, int inlets, bool truncateOut) {
+        Fragment f;
+        for (int k = 0; k < inlets; ++k) f.records.push_back("#X obj " + at(b.x + 40.0 * k, b.y - 20) + " i");
+        const int op = inlets;
+        f.records.push_back("#X obj " + at(b.x, b.y) + " " + pdText);
+        for (int k = 0; k < inlets; ++k) {
+            f.internal.push_back({k, 0, op, k});
+            f.inlets.emplace_back(k, 0);
+        }
+        f.outlets = {{op, 0}};
+        if (truncateOut) {
+            f.records.push_back("#X obj " + at(b.x, b.y + 20) + " i");
+            f.internal.push_back({op, 0, op + 1, 0});
+            f.outlets = {{op + 1, 0}};
+        }
+        frags_[b.id] = std::move(f);
+    }
+
     void translate(const Box& b) {
         const std::string& mc = b.maxClass;
-        if (mc == "comment" || mc == "live.comment") {
-            pd_[b.id] = "#X text " + at(b) + " " + pdEscape(b.text);
-            return;
-        }
+        if (mc == "comment" || mc == "live.comment") return single(b, "#X text " + at(b.x, b.y) + " " + pdEscape(b.text));
         if (mc == "panel" || mc == "fpic" || mc == "live.line") {
             if (anyConnection(b)) refuse(b, mc, "a decoration with connections");
-            else dropped_.push_back(b.id);
             return;
         }
-        if (mc == "message") {
-            pd_[b.id] = "#X msg " + at(b) + " " + pdEscape(b.text);
+        if (mc == "message") return single(b, "#X msg " + at(b.x, b.y) + " " + pdEscape(b.text));
+        if (mc == "flonum") return single(b, "#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0");
+        if (mc == "number") {
+            // Max's number box holds an int: what arrives is truncated first.
+            Fragment f;
+            f.records = {"#X obj " + at(b.x, b.y - 20) + " i", "#X floatatom " + at(b.x, b.y) + " 5 0 0 0 - - - 0"};
+            f.internal = {{0, 0, 1, 0}};
+            f.inlets = {{0, 0}};
+            f.outlets = {{1, 0}};
+            frags_[b.id] = std::move(f);
             return;
         }
-        if (mc == "flonum") {
-            pd_[b.id] = "#X floatatom " + at(b) + " 5 0 0 0 - - - 0";
-            return;
+        if (mc == "inlet" || mc == "outlet") {
+            const bool signal = mc == "inlet" ? (!b.signalOutlet.empty() && b.signalOutlet[0]) : fedSignal(b, 0);
+            return obj(b, mc + (signal ? "~" : ""));
         }
-        if (mc == "live.dial" || mc == "live.numbox" || mc == "live.slider") {
-            liveControl(b);
-            return;
-        }
-        if (mc != "newobj") {
-            refuse(b, mc, "no translation for this kind of box yet");
-            return;
-        }
-        if (b.words.empty()) {
-            refuse(b, "newobj", "an empty object box");
-            return;
-        }
-        if (b.text.find('"') != std::string::npos) {
-            refuse(b, b.words[0], "quoted symbols are not translated yet");
-            return;
-        }
+        if (mc == "live.dial" || mc == "live.numbox" || mc == "live.slider") return liveControl(b);
+        if (mc != "newobj") return refuse(b, mc, "no translation for this kind of box yet");
+        if (b.words.empty()) return refuse(b, "newobj", "an empty object box");
+        if (b.text.find('"') != std::string::npos) return refuse(b, b.words[0], "quoted symbols are not translated yet");
+
         const std::string& cls = b.words[0];
         const std::vector<std::string> args(b.words.begin() + 1, b.words.end());
         const auto allNumbers = std::all_of(args.begin(), args.end(), isNumber);
-        const auto obj = [&](const std::string& text) { pd_[b.id] = "#X obj " + at(b) + " " + text; };
 
+        if (cls == "p" || cls == "patcher") return subpatcher(b);
         if (cls == "*~" || cls == "+~" || cls == "-~" || cls == "/~") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "expects one number at most");
             // A signal into the right inlet needs Pd's signal form, which has
             // no argument; otherwise the argument form, whose right inlet
             // takes floats as Max's does.
-            if (signalInto(b, 1)) obj(cls);
-            else obj(cls + " " + (args.empty() ? std::string("0") : args[0]));
-            return;
+            if (fedSignal(b, 1)) return obj(b, cls);
+            return obj(b, cls + " " + (args.empty() ? std::string("0") : args[0]));
         }
         if (cls == "cycle~" || cls == "phasor~" || cls == "sig~") {
             if (args.size() > 1 || !allNumbers) return refuse(b, cls, "only a numeric frequency is translated");
             if (cls == "cycle~" && connected(b, false, 1))
                 return refuse(b, cls, "its phase inlet is an offset in Max and a reset in Pd");
-            obj((cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]));
-            return;
+            return obj(b, (cls == "cycle~" ? std::string("osc~") : cls) + (args.empty() ? "" : " " + args[0]));
         }
         if (cls == "plugin~" || cls == "plugout~") {
+            if (depth_ > 0) return refuse(b, cls, "audio ports belong in the device's own patcher");
             if (!allNumbers) return refuse(b, cls, "channel numbers only");
             std::string t = cls == "plugin~" ? "adc~" : "dac~";
             if (args.empty()) t += " 1 2";
             for (const auto& a : args) t += " " + a;
-            obj(t);
-            return;
+            return obj(b, t);
         }
-        if (cls == "loadbang") return obj("loadbang");
+        if (cls == "loadbang") return obj(b, "loadbang");
         if (cls == "live.thisdevice") {
             if (connected(b, true, 1) || connected(b, true, 2))
                 return refuse(b, cls, "only its load bang (left outlet) is translated");
-            return obj("loadbang");
+            return obj(b, "loadbang");
         }
         if (cls == "metro") {
             if (args.size() != 1 || !isNumber(args[0])) return refuse(b, cls, "only a time in ms is translated");
-            return obj("metro " + args[0]);
+            return obj(b, "metro " + args[0]);
         }
-        if (cls == "t" || cls == "trigger") {
-            std::string t = "t";
-            for (const auto& a : args) {
-                if (a == "b" || a == "f" || a == "l" || a == "s") t += " " + a;
-                else return refuse(b, cls, "only b, f, l and s outlets are translated ('" + a + "')");
+        if (cls == "t" || cls == "trigger") return trigger(b, args);
+        if (cls == "pack" || cls == "unpack") return packing(b, cls, args);
+        static const std::set<std::string> twoInlet{"+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "min", "max"};
+        if (twoInlet.count(cls) != 0 || cls == "abs") {
+            if (args.size() > 1 || !allNumbers) return refuse(b, cls, "expects one number at most");
+            const bool isFloat = !args.empty() && isFloatLiteral(args[0]);
+            if (isFloat) {
+                if (cls == "%") return refuse(b, cls, "a float modulo has no Pd counterpart yet");
+                return obj(b, b.text);
             }
-            return obj(t);
-        }
-        if (cls == "+" || cls == "-" || cls == "*" || cls == "/") {
-            if (args.size() != 1 || !isFloatLiteral(args[0]))
-                return refuse(b, cls, "Max's integer arithmetic (write the argument as a float, e.g. 2.)");
-            return obj(cls + " " + args[0]);
+            // Max's integer form: inputs truncated; '/' truncates its result too.
+            const std::string pdText = cls + (args.empty() || cls == "abs" ? "" : " " + args[0]);
+            return integer(b, pdText, cls == "abs" ? 1 : 2, cls == "/");
         }
         if (cls == "s" || cls == "send" || cls == "r" || cls == "receive") {
             if (args.size() != 1 || isNumber(args[0])) return refuse(b, cls, "one name");
             std::string name = args[0];
             if (name.rfind("---", 0) == 0) name = "\\$0-" + name.substr(3);
-            return obj(std::string(cls[0] == 's' ? "s " : "r ") + name);
+            return obj(b, std::string(cls[0] == 's' ? "s " : "r ") + name);
         }
-        if (cls == "print") return obj(b.text);
+        if (cls == "print") return obj(b, b.text);
         refuse(b, cls, "no translation for this object yet");
+    }
+
+    void trigger(const Box& b, const std::vector<std::string>& args) {
+        Fragment f;
+        std::string t = "t";
+        std::vector<int> ints;
+        for (std::size_t k = 0; k < args.size(); ++k) {
+            const std::string& a = args[k];
+            if (a == "b" || a == "f" || a == "l" || a == "s") t += " " + a;
+            else if (a == "i") { t += " f"; ints.push_back(static_cast<int>(k)); }
+            else return refuse(b, b.words[0], "only b, i, f, l and s outlets are translated ('" + a + "')");
+        }
+        f.records.push_back("#X obj " + at(b.x, b.y) + " " + t);
+        for (std::size_t k = 0; k < args.size(); ++k) f.outlets.emplace_back(0, static_cast<int>(k));
+        for (const int k : ints) {
+            const int i = static_cast<int>(f.records.size());
+            f.records.push_back("#X obj " + at(b.x + 30.0 * k, b.y + 20) + " i");
+            f.internal.push_back({0, k, i, 0});
+            f.outlets[static_cast<std::size_t>(k)] = {i, 0};
+        }
+        frags_[b.id] = std::move(f);
+    }
+
+    /// Max's [pack]/[unpack] are int by default ("0 0"); a slot is float when
+    /// its argument is written as one ("0.") or is "f", a symbol for "s".
+    void packing(const Box& b, const std::string& cls, std::vector<std::string> args) {
+        if (args.empty()) args = {"0", "0"};
+        Fragment f;
+        std::string text = cls;
+        std::vector<int> ints;
+        for (std::size_t k = 0; k < args.size(); ++k) {
+            const std::string& a = args[k];
+            const bool pack = cls == "pack";
+            if (isIntLiteral(a) || a == "i") { text += pack ? " " + (a == "i" ? std::string("0") : a) : " f"; ints.push_back(static_cast<int>(k)); }
+            else if (isFloatLiteral(a)) text += pack ? " " + a : " f";
+            else if (a == "f" || a == "s") text += " " + a;
+            else return refuse(b, cls, "only int, float and symbol slots are translated ('" + a + "')");
+        }
+        if (cls == "pack") {
+            for (const int k : ints) {
+                f.records.push_back("#X obj " + at(b.x + 30.0 * k, b.y - 20) + " i");
+            }
+            const int op = static_cast<int>(f.records.size());
+            f.records.push_back("#X obj " + at(b.x, b.y) + " " + text);
+            for (std::size_t k = 0; k < args.size(); ++k) f.inlets.emplace_back(op, static_cast<int>(k));
+            for (std::size_t j = 0; j < ints.size(); ++j) {
+                f.internal.push_back({static_cast<int>(j), 0, op, ints[j]});
+                f.inlets[static_cast<std::size_t>(ints[j])] = {static_cast<int>(j), 0};
+            }
+            f.outlets = {{op, 0}};
+        } else {
+            f.records.push_back("#X obj " + at(b.x, b.y) + " " + text);
+            for (std::size_t k = 0; k < args.size(); ++k) f.outlets.emplace_back(0, static_cast<int>(k));
+            for (const int k : ints) {
+                const int i = static_cast<int>(f.records.size());
+                f.records.push_back("#X obj " + at(b.x + 30.0 * k, b.y + 20) + " i");
+                f.internal.push_back({0, k, i, 0});
+                f.outlets[static_cast<std::size_t>(k)] = {i, 0};
+            }
+        }
+        frags_[b.id] = std::move(f);
+    }
+
+    void subpatcher(const Box& b) {
+        if (!b.raw.contains("patcher") || !b.raw["patcher"].is_object())
+            return refuse(b, b.words[0], "a subpatcher with no patcher in it");
+        if (depth_ + 1 > kPdWalkMaxDepth) return refuse(b, b.words[0], "nested too deep");
+        std::string name;
+        for (std::size_t k = 1; k < b.words.size(); ++k) name += (k > 1 ? "_" : "") + b.words[k];
+        if (name.empty()) name = "subpatch";
+        Canvas child(out_, prefix_ + "p " + name + "/", signalInletsOf(b), depth_ + 1);
+        if (!child.read(b.raw["patcher"])) return;
+        const std::size_t before = out_.refused.size();
+        const std::string inner = child.body();
+        if (out_.refused.size() != before || !out_.error.empty()) return;
+        single(b, "#N canvas 0 50 600 400 " + name + " 0;\n" + inner + "#X restore " + at(b.x, b.y) + " pd " + name);
     }
 
     void liveControl(const Box& b) {
@@ -291,8 +500,8 @@ private:
         }
         const bool initialOn = num("parameter_initial_enable", 0) != 0;
         double def = initialOn ? num("parameter_initial", lo) : lo;
-        def = std::clamp(def, lo, hi);
         if (!(lo < hi)) return refuse(b, b.maxClass, "its range is empty");
+        def = std::clamp(def, lo, hi);
         static const std::map<int, std::string> units{{2, "ms"}, {3, "Hz"}, {4, "dB"}, {5, "%"}};
         const int style = static_cast<int>(num("parameter_unitstyle", 1));
         const std::string unit = units.count(style) ? units.at(style) : "-";
@@ -306,73 +515,40 @@ private:
                            number(def) + " " + unit + " " + curve + " " + name;
         for (const auto& i : items) text += " " + i;
         out_.parameters.push_back(v.value("parameter_longname", name));
-        pd_[b.id] = "#X obj " + at(b) + " " + text;
+        obj(b, text);
     }
 
-    static std::string at(const Box& b) {
-        return std::to_string(static_cast<long>(std::lround(b.x))) + " " +
-               std::to_string(static_cast<long>(std::lround(b.y)));
-    }
-
-    void emit() {
-        std::ostringstream o;
-        o << "#N canvas 0 50 900 600 12;\n";
-        std::map<std::string, int> pdIndex;
-        int n = 0;
-        for (const auto& b : boxes_) {
-            if (pd_.count(b.id) == 0) continue;
-            o << pd_[b.id] << ";\n";
-            pdIndex[b.id] = n++;
-        }
-        // Group connections by source outlet; fan-outs from control outlets
-        // get an explicit trigger.
-        std::map<std::pair<std::string, int>, std::vector<const Line*>> fan;
-        for (const auto& l : lines_) fan[{l.src, l.outlet}].push_back(&l);
-        std::ostringstream connects;
-        for (auto& [key, ls] : fan) {
-            const Box& src = boxes_[index_.at(key.first)];
-            const auto o2 = static_cast<std::size_t>(key.second);
-            const bool signal = o2 < src.signalOutlet.size() && src.signalOutlet[o2];
-            if (signal || ls.size() == 1) {
-                for (const Line* l : ls)
-                    connects << "#X connect " << pdIndex.at(l->src) << " " << l->outlet << " "
-                             << pdIndex.at(l->dst) << " " << l->inlet << ";\n";
-                continue;
-            }
-            // Max: right to left by destination x; equal x, lower box first.
-            std::sort(ls.begin(), ls.end(), [&](const Line* a, const Line* b) {
-                const Box& da = boxes_[index_.at(a->dst)];
-                const Box& db = boxes_[index_.at(b->dst)];
-                if (da.x != db.x) return da.x > db.x;
-                return da.y > db.y;
-            });
-            std::string t = "t";
-            for (std::size_t i = 0; i < ls.size(); ++i) t += " a";
-            o << "#X obj " << static_cast<long>(std::lround(src.x)) << " "
-              << static_cast<long>(std::lround(src.y)) + 25 << " " << t << ";\n";
-            const int trig = n++;
-            connects << "#X connect " << pdIndex.at(key.first) << " " << key.second << " " << trig << " 0;\n";
-            // [t] fires its rightmost outlet first: the first destination.
-            for (std::size_t i = 0; i < ls.size(); ++i)
-                connects << "#X connect " << trig << " " << (ls.size() - 1 - i) << " "
-                         << pdIndex.at(ls[i]->dst) << " " << ls[i]->inlet << ";\n";
-        }
-        o << connects.str();
-        out_.pdPatch = o.str();
-    }
-
-    AmxdTranslation out_;
+    AmxdTranslation& out_;
+    std::string prefix_;
+    std::set<int> signalInlets_;
+    int depth_ = 0;
     std::vector<Box> boxes_;
     std::vector<Line> lines_;
     std::map<std::string, std::size_t> index_;
-    std::map<std::string, std::string> pd_;
-    std::vector<std::string> dropped_;
+    std::map<std::string, Fragment> frags_;
+    std::vector<std::string> inletBoxes_, outletBoxes_;
 };
 
 }  // namespace
 
-AmxdTranslation translateMaxPatcher(std::string_view json, AmxdKind kind) {
-    return Translator{}.run(json, kind);
+AmxdTranslation translateMaxPatcher(std::string_view text, AmxdKind kind) {
+    AmxdTranslation out;
+    out.kind = kind;
+    if (kind != AmxdKind::AudioEffect) {
+        out.error = "only audio effects are translated in this step";
+        return out;
+    }
+    const json doc = json::parse(text, nullptr, false);
+    if (doc.is_discarded() || !doc.is_object() || !doc.contains("patcher") || !doc["patcher"].is_object()) {
+        out.error = "the patcher is not readable JSON";
+        return out;
+    }
+    Canvas top(out, "", {}, 0);
+    if (!top.read(doc["patcher"])) return out;
+    const std::string body = top.body();
+    if (!out.ok()) return out;
+    out.pdPatch = "#N canvas 0 50 900 600 12;\n" + body;
+    return out;
 }
 
 AmxdTranslation translateAmxd(std::span<const std::uint8_t> bytes) {
