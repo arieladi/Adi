@@ -414,6 +414,78 @@ void precisionAndStaticLaws() {
     check(ok && std::abs(dc[1].back() - expected) < 2e-6 && std::abs(dc[0].back() - expected * .1) < 2e-7,
           "linked steady DC follows analytic threshold ratio law");
 }
+void makeupAutomation() {
+    struct Timing { double rate; int downward, midpoint, reversal; };
+    constexpr Timing timings[]{
+        {44100, 6600, 3072, 6608}, {48000, 7184, 3584, 7192}, {96000, 14369, 7168, 14384},
+    };
+    constexpr float level = .01f;
+    const double base = std::pow(10.0, 13.5 / std::exp(1.0) / 20.0);
+    const double target = std::pow(10.0, 18.0 / std::exp(1.0) / 20.0);
+    const auto near = [](double actual, double expected) { return std::abs(actual - expected) < 3e-6; };
+
+    for (const auto &timing : timings) {
+        c::Core core;
+        c::Settings settings;
+        settings.thresholdDb = -18;
+        settings.ratio = 4;
+        settings.attack = 0;
+        settings.autoGain = true;
+        const auto read = [&](int frames) {
+            std::array<float, 127> audio{};
+            while (frames > 0) {
+                const int n = std::min(frames, static_cast<int>(audio.size()));
+                std::fill_n(audio.begin(), n, level);
+                float *main[]{audio.data()};
+                {
+                    AudioCall guard;
+                    const auto block = core.beginBlock(n);
+                    if (core.process(block, 0, n, main, nullptr, 0, settings) != c::Status::Ok)
+                        return std::numeric_limits<double>::quiet_NaN();
+                }
+                if (n == frames) return static_cast<double>(audio[static_cast<std::size_t>(n - 1)]) / level;
+                frames -= n;
+            }
+            return std::numeric_limits<double>::quiet_NaN();
+        };
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "Clean starts directly at its prepared make-up");
+        settings.thresholdDb = -24;
+        const double first = read(1);
+        const double last = read(timing.downward - 1);
+        check(near(first, base) && near(last, target - (target - base) / timing.downward) && near(read(1), target),
+              "a lowering Threshold ramps its linear make-up across split callbacks");
+
+        settings.thresholdDb = -18;
+        const double reverse = read(1);
+        const double reverseLast = read(timing.downward - 1);
+        check(near(reverse, target) && near(reverseLast, base + (target - base) / timing.downward) && near(read(1), base),
+              "a raising Threshold ramps in the other direction with the same duration");
+
+        settings.thresholdDb = -24;
+        read(timing.midpoint);
+        const double mid = base + (target - base) * timing.midpoint / timing.downward;
+        settings.thresholdDb = -18;
+        const double held = read(1);
+        const double heldLast = read(timing.reversal - 1);
+        check(near(held, mid) && near(heldLast, base + (mid - base) / timing.reversal) && near(read(1), base),
+              "a mid-ramp reversal starts at the interpolated gain and gets its own duration");
+
+        settings.thresholdDb = -24;
+        read(100);
+        core.reset();
+        check(near(read(1), target), "reset finishes the ramp at its authored destination");
+        settings.autoGain = false;
+        check(read(1) == 1.0, "explicit Auto Gain Off switches immediately");
+        settings.autoGain = true;
+        check(near(read(1), target), "explicit Auto Gain On switches immediately");
+        settings.thresholdDb = -18;
+        read(100);
+        check(core.prepare({timing.rate, 256, 1}, settings) == c::Status::Ok && near(read(1), base),
+              "explicit preparation starts fresh at the destination");
+    }
+}
+
 template <class Sample>
 void nonFiniteInput() {
     for (const bool external : {false, true}) {
@@ -459,6 +531,7 @@ int main() {
     splitsAndControls<double>();
     keyAndLink();
     precisionAndStaticLaws();
+    makeupAutomation();
     nonFiniteInput<float>();
     nonFiniteInput<double>();
     check(allocations == 0 && deallocations == 0, "audio callbacks allocate and deallocate nothing");
