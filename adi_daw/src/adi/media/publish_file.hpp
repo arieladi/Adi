@@ -17,6 +17,19 @@ struct FileIdentity {
     std::uint64_t volume = 0, file = 0;
     friend bool operator==(const FileIdentity&, const FileIdentity&) = default;
 };
+// Off-callback identity of a regular file, following symlinks. Reuses the
+// publisher's native volume/file key; this is not a persistent content hash or
+// an open-file lease. Failure retains the native error (no path-only fallback).
+[[nodiscard]] std::optional<FileIdentity> readFileIdentity(const std::filesystem::path&,
+                                                          std::error_code&) noexcept;
+// Roll back one exposed publication only when a Windows DELETE handle proves
+// its expected identity. The handle denies concurrent opens/rename/delete and
+// never follows a final reparse point. Missing paths are already clean.
+// Other hosts conservatively retain the path: pathname unlink is not a
+// compare-and-remove operation. Errors require the owner to report retention.
+// This verifies object identity, not unchanged contents; owner/off-callback.
+[[nodiscard]] std::error_code removePublishedFile(const std::filesystem::path&,
+                                                  const FileIdentity&) noexcept;
 // Owner-only native protection for an open project, before SQLite opens and
 // until it closes. Shared leases permit existing SQLite reader/writer policy;
 // an authoritative replacement alone takes an exclusive lease. POSIX uses a
@@ -50,16 +63,18 @@ struct PublishResult {
     bool durabilityConfirmed = false;
 };
 enum class PublishPolicy { VerifiedCopyFallback, AtomicOnly };
-// Test support, off-callback: refuse native rename or disturb a completed copy
-// before verification. Null hooks use the real OS and unmodified bytes.
+// Test support, off-callback: refuse native rename or disturb a completed
+// private staging copy before verification. Null hooks use the real OS.
 struct PublishHooks {
     std::error_code (*rename)(const std::filesystem::path&, const std::filesystem::path&) = nullptr;
     void (*afterCopy)(const std::filesystem::path&) = nullptr;
+    std::error_code (*syncDirectory)(const std::filesystem::path&) = nullptr;
 };
 // Source is a private, closed staging file on the destination filesystem.
-// Never replaces a destination. Fallback becomes successful only after flush,
-// close and BLAKE3 verification; it is visible during copying, unlike rename.
-// On ordinary failure only the destination created by this call is removed.
+// Never replaces a destination. Fallback flushes, closes and verifies a private
+// copy, then links it at the destination exclusively. Filesystems without
+// exclusive rename or hard links report failure with the source retained.
+// Failure cleanup acts only on private copy staging.
 [[nodiscard]] PublishResult publishFile(const std::filesystem::path& source,
     const std::filesystem::path& target, PublishHooks hooks = {},
     PublishPolicy policy = PublishPolicy::VerifiedCopyFallback) noexcept;

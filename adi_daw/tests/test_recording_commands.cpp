@@ -10,6 +10,7 @@
 #include "adi/media/blake3.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -29,14 +30,17 @@ struct Fixture {
     Fixture(){StoreError error{};store=Store::createEmpty(temporary.path()/"song.adi",error);if(!store)throw std::runtime_error(toString(error));
         store->db().exec("INSERT INTO tracks(id,kind,name,record_armed) VALUES(21,'audio','One',1),(22,'audio','Two',1),(9,'master','Main',0)");}
     static float sample(std::size_t frame){return static_cast<float>(frame%17)/32-0.25f;}
-    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32) {
+    AudioRecordingResult capture(bool two=false,Precision precision=Precision::Float32,bool loop=false,int totalFrames=300) {
         Session session;SessionSpec format{2,48000,128};format.precision=precision;session.graph().setFadeFrames(0);
         if(!session.load(*store,{},format))throw std::runtime_error(session.error());
         AudioRecordingSpec request;request.workFolder=temporary.path();request.sampleRate=48000;request.maxFrames=128;request.ringFrames=4096;request.targets={{21,{0}}};if(two)request.targets.push_back({22,{0}});
+        if(loop)request.loop=AudioRecordingLoop{512,640,8};
         std::string error;if(!session.startRecording(request,error))throw std::runtime_error(error);
+        if(loop)session.transport().loop(512,640);
         session.transport().locate(512);session.transport().play();std::array<float,128> source{};const float* inputs[]={source.data()};std::array<float,256> out{};float* outputs[]={out.data(),out.data()+128};
         std::int64_t stream=0;
-        for(const auto count:{128,128,44}) {
+        for(int consumed=0;consumed<totalFrames;) {
+            const auto count=std::min(128,totalFrames-consumed);consumed+=count;
             for(int frame=0;frame<count;++frame)source[static_cast<std::size_t>(frame)]=sample(static_cast<std::size_t>(stream+frame));
             AudioIo io;io.in=inputs;io.numIn=1;io.out=outputs;io.numOut=2;io.frames=count;io.streamTimeSamples=stream;session.process(io);stream+=count;
         }
@@ -121,5 +125,17 @@ void groupDedupAndGuards() {
     {std::ofstream bytes(another.tracks[0].file,std::ios::binary|std::ios::app);bytes<<"changed";}
     check(changed.ok && !recording::commit(*f.store,changed).ok && digestProject(*f.store).text==before && std::filesystem::exists(another.tracks[0].file),"changed take bytes roll back the complete attachment while preserving recovery files");another.discard();
 }
+void loopPublicationRefusesFlattening() {
+    for(const auto frames:{32,300}) {
+        Fixture fixture;auto recorded=fixture.capture(false,Precision::Float32,true,frames);
+        check(recorded.failure==RecordingFailure::None && recorded.loopSpec() && recorded.passes().size()==(frames==32?1u:3u),"actual Session supplies valid partial-single and multiple-pass loop sources");
+        const auto before=digestProject(*fixture.store).text;
+        const std::array<recording::ClipIds,1> ids={{{7,8,"Loop"}}};
+        const auto edit=recording::prepareCommit(*fixture.store,recorded,ids);
+        check(!edit.ok && edit.requests.empty() && edit.error.find("take-pass publication")!=std::string::npos,"linear materializer explicitly refuses opted-in loop captures, even a single partial pass");
+        check(digestProject(*fixture.store).text==before && std::filesystem::exists(recorded.tracks[0].file),"refused loop publication leaves project and recoverable continuous source unchanged");
+        recorded.discard();
+    }
 }
-int main(){try{heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+}
+int main(){try{heardPlacementAndHistory();lateSqlAndOwnedReuse();existingMediaAndHistoryPaths();groupDedupAndGuards();loopPublicationRefusesFlattening();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

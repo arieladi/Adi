@@ -28,6 +28,8 @@ private:
 /// Retain the originating document generation on the caller; source identity
 /// is also checked here. Actual sample boundaries must round-trip through the
 /// current musical clock exactly. Does not change project rows or publish files.
+/// Opted-in loop captures are refused, including a single partial pass: their
+/// take-lane/main-copy publication and per-pass history are a separate contract.
 [[nodiscard]] RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
 /// One undo step for every take in the capture. Failure rolls back project
 /// rows and only newly published assets; private takes remain for retry.

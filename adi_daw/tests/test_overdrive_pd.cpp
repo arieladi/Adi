@@ -105,7 +105,7 @@ void run() {
     engine.prepare(48000, 64);
     engine.bindParameters(declarations);
     engine.requestLatencyReport();
-    check(latency.latencySamples() == 0, "zero intrinsic latency");
+    check(latency.latencySamples() == 5, "reports Live 12.4's 5 samples");
     check(engine.sendParameter(3, 80), "Drive parameter reaches external");
     engine.sendParameter(5, 0);
     engine.sendParameter(4, 100);

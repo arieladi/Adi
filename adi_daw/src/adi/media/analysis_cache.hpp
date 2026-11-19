@@ -31,6 +31,15 @@ struct AnalysisCacheResult {
     std::optional<SampleAnalysis> data;
     explicit operator bool()const noexcept{return problem==AnalysisCacheProblem::None && data.has_value();}
 };
+struct AnalysisTrimResult {
+    AnalysisCacheProblem problem=AnalysisCacheProblem::None;
+    // Logical bytes of validated, directly owned ADIA files only. Unrecognised
+    // entries are neither charged nor removed. Counts remain valid on partial
+    // cancellation/failure; bytesBefore is complete only with inventoryComplete.
+    std::uint64_t bytesBefore=0,bytesAfter=0,filesRemoved=0,ignoredEntries=0;
+    bool inventoryComplete=false,budgetMet=false;
+    explicit operator bool()const noexcept{return problem==AnalysisCacheProblem::None && budgetMet;}
+};
 // Bounded explicit little-endian envelope; source identity and body digest are
 // checked before section allocation. No native structs, JSON or recursive parse.
 [[nodiscard]] std::vector<std::byte> encodeAnalysis(const SampleAnalysis&);
@@ -45,6 +54,14 @@ public:
     [[nodiscard]] AnalysisCacheProblem update(const AnalysisIdentity&,const std::string& tag,
                                              const AnalysisSection&,std::string& error,std::stop_token={});
     [[nodiscard]] AnalysisCacheProblem remove(const std::string& hash,std::string& error);
+    // Owner-worker maintenance, never a callback. Evict validated direct-child
+    // <hash>.adia files by oldest last-write/access stamp to a caller's budget.
+    // Successful reads refresh that stamp best-effort. No recursive cleanup,
+    // source/library deletion, global settings policy or physical-free-space
+    // guarantee. This process's reads/updates finish before eviction; returned
+    // analysis owns its bytes. External writers need separate coordination.
+    [[nodiscard]] AnalysisTrimResult trimToBytes(std::uint64_t maximumBytes,std::string& error,
+                                               std::stop_token={});
     [[nodiscard]] const std::filesystem::path& folder()const noexcept{return folder_;}
 private:
     std::filesystem::path folder_;
