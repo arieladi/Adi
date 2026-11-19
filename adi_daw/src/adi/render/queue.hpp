@@ -116,6 +116,9 @@ struct ReplacementBinding {
     std::string blake3; // Detect in-place edits as well as changed native identity.
     std::vector<std::string> foldedNames; // Exact spellings in the colliding set.
 };
+// Pure job-input validation shared by the queue and its JSON codec. Does not
+// open the project, resolve its revision/names, enqueue or render anything.
+void validateJob(const Job&);
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;

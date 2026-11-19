@@ -4,6 +4,7 @@
 #include "blake3.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <thread>
 #include <array>
@@ -96,10 +97,43 @@ struct ExclusiveFile {
     ExclusiveFile(const ExclusiveFile&) = delete;
     ExclusiveFile& operator=(const ExclusiveFile&) = delete;
 };
-struct Cleanup {
-    const fs::path& target;
-    bool owned = false;
-    ~Cleanup() { if (owned) { std::error_code ignored; fs::remove(target, ignored); } }
+class CopyStage {
+public:
+    explicit CopyStage(const fs::path& parent) {
+        static std::atomic<unsigned long long> sequence{0};
+        const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            auto candidate = parent / (".adi-publish-" + std::to_string(now) + "-" +
+                                       std::to_string(sequence.fetch_add(1, std::memory_order_relaxed)));
+            auto file = candidate / "copy";
+            std::error_code error;
+#if defined(_WIN32)
+            const bool created = fs::create_directory(candidate, error);
+#else
+            const bool created = ::mkdir(candidate.c_str(), 0700) == 0;
+            if (!created) error = {errno, std::generic_category()};
+#endif
+            if (created) {
+                directory_ = std::move(candidate);
+                path = std::move(file);
+                return;
+            }
+            if (error && error != std::errc::file_exists)
+                throw fs::filesystem_error("reserve publication staging", candidate, error);
+        }
+        throw std::runtime_error("cannot reserve publication staging");
+    }
+    ~CopyStage() {
+        std::error_code ignored;
+        if (createdCopy) fs::remove(path, ignored);
+        fs::remove(directory_, ignored);
+    }
+    CopyStage(const CopyStage&) = delete;
+    CopyStage& operator=(const CopyStage&) = delete;
+    fs::path path;
+    bool createdCopy = false;
+private:
+    fs::path directory_;
 };
 }
 namespace {
@@ -446,7 +480,7 @@ std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) 
 }
 PublishResult publishFile(const fs::path& source, const fs::path& target, PublishHooks hooks,PublishPolicy policy) noexcept {
     if(audio::onAudioThread)return {};
-    Cleanup cleanup{target};
+    bool copying = false;
     try {
         std::error_code identityError;
         const auto sourceLease=ProjectFileLease::openExclusive(source,identityError);
@@ -458,12 +492,15 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
+        copying = true;
         const auto expected = blake3File(source);
         if (!expected) return {PublishStatus::failed, true, "cannot hash staging file"};
+        const auto parent = target.has_parent_path() ? target.parent_path() : fs::current_path();
+        CopyStage copy(parent);
         std::error_code createError;
-        ExclusiveFile out(target, createError);
-        if (createError) return {createError == std::errc::file_exists ? PublishStatus::exists : PublishStatus::failed, true, createError.message()};
-        cleanup.owned = true;
+        ExclusiveFile out(copy.path, createError);
+        if (createError) return {PublishStatus::failed, true, createError.message()};
+        copy.createdCopy = true;
         std::ifstream in(source, std::ios::binary);
         if (!in) throw std::runtime_error("cannot read staging file");
         std::array<char, 65536> buffer{};
@@ -474,15 +511,24 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         }
         if (!in.eof()) throw std::runtime_error("staging read failed");
         out.finish();
-        if (hooks.afterCopy) hooks.afterCopy(target);
-        const auto actual = blake3File(target);
+        if (hooks.afterCopy) hooks.afterCopy(copy.path);
+        const auto actual = blake3File(copy.path);
         if (!actual || actual.hex != expected.hex) throw std::runtime_error("published copy hash mismatch");
+        const auto copyIdentity = identityAt(copy.path, identityError);
+        if (!copyIdentity) throw std::runtime_error("verified copy identity unavailable: " + identityError.message());
+        // The name is claimed exclusively in one filesystem operation. A file
+        // created by another writer while we copied stays wholly that writer's.
+        std::error_code linkError;
+        fs::create_hard_link(copy.path, target, linkError);
+        if (linkError == std::errc::file_exists) return {PublishStatus::exists, true, linkError.message()};
+        if (linkError) return {PublishStatus::failed, true, "publish verified copy: " + linkError.message()};
         in.close();
         // Failure to remove a private staging name does not invalidate the
         // verified destination; its owning staging directory cleans it later.
         std::error_code ignored; fs::remove(source, ignored);
-        cleanup.owned = false;
-        return {PublishStatus::published, true, {}};
-    } catch (const std::exception& e) { return {PublishStatus::failed, true, e.what()}; }
+        auto result = publishedResult(target, *copyIdentity);
+        result.usedFallback = true;
+        return result;
+    } catch (const std::exception& e) { return {PublishStatus::failed, copying, e.what()}; }
 }
 }

@@ -19072,3 +19072,84 @@ here too.
 | `docs/PLAN.md` DEV-23 | taken ahead of its milestone (d13) |
 | `docs/DEFERRED.md` | DF-E19 to DF-E23, DF-W32 and DF-W33 added |
 | `collab/prompts/` | the engine seat's prompt for d8 to d10 |
+
+## ADR-0246 — After ADR-0245: its two additions confirmed by measurement and three of its sentences corrected; a second engine seat on Windows and the devices lane taken up again; every seat works until its limit — `DECIDED` (2026-11-19) — **DIRECTOR'S INSTRUCTIONS OF 18 AND 19 NOVEMBER; CORRECTS THE EVIDENCE WORDING OF ADR-0245 d12; COMPLETES ADR-0245 d8 AND d9; ADDS SEATS UNDER ADR-0208**
+
+**What this records.** The day after ADR-0245 the director's research returned a last, narrow round
+that he had win ask for: how Bitwig's group FX tracks really behave, and what four hosts tell a
+plug-in about time when it sits behind latency. It came with an erratum to the research's own
+summary, which also corrects three sentences win wrote. The same day he asked for prompts that keep
+every seat working until its limit, and added two seats. The relay is `docs/RESEARCH-INTAKE.md`
+§6.10.
+
+### Decisions
+
+1. **ADR-0245 d8 stands, now on measurement.** With a probe that records what the host tells it,
+   placed behind a delay that reports 1,024 or 4,800 samples: REAPER 7.79, Bitwig 6.1 and Cubase
+   15.0.5 give the plug-in the clock of the audio at its input, on a track, on a return and on a
+   group. Live 12.4 does not: the plug-in's clock runs ahead of its audio by exactly the reported
+   delay, with Delay Compensation on or off, while Live's rendered audio is aligned. So d8 is what
+   three hosts do and an addition over Live. Two precisions for the build:
+   - In a loop the boundary that matters is the receiving device's own, which behind latency comes
+     later than the transport's; ADI splits that device's block there. (REAPER and Cubase hand
+     over a block that crosses it unsplit.)
+   - Before the song's start both the sample position and the musical position are negative and
+     continuous, as Cubase gives them. (REAPER holds the musical position at zero.)
+2. **ADR-0245 d9 stands, now on measurement,** and win's placements in it are confirmed. In Bitwig
+   6.1, from sixteen renders: a direct child and a child of a nested group can send to the group's
+   FX track; a track outside cannot; the group itself has no send to its own FX track; wet and dry
+   are summed before the group's devices; soloing a child keeps its wet signal; muting the FX track
+   removes only the wet. Added to d9 from the same runs: a return inside a group may send on to a
+   sibling return, to an outer group's return and to a top-level return; moving a track out of the
+   group removes its send; duplicating the group makes each copied send target the copied return;
+   deleting the group removes the sends.
+3. **Three sentences of ADR-0245 d12 and of `RESEARCH-INTAKE.md` §6.4 said more than was measured,**
+   and are corrected here; the decision against a look-ahead engine does not rest on them and
+   stands.
+   - "Nothing was missed with it on or off" is: no recorded callback span exceeded its deadline at
+     2,048 samples in either mode. Physical output was not captured, so it is not a count of
+     dropouts.
+   - "No processor time was saved" is: the processor-time intervals of the two modes overlap; they
+     are three short runs each.
+   - "It made an edit audible up to 1.4 s late" is: in one short capture an item's volume change
+     first showed at a measuring point before the master fader after about 1.4 s. It is not a
+     measured delay at the loudspeakers, and no general rule follows.
+   Also corrected in §6.10: the "128 to 469 ms ahead" figures are against REAPER's decode clock, not
+   the heard one; Live's meter ballistics were measured after all; a four-state macro's midpoint
+   was measured in both range directions.
+4. **A second engine seat, on Windows ("engine-win").** The cloud engine seat has no Windows
+   compiler, and several of the engine's rows are about Windows itself. The new seat owns the
+   plug-in scanner and registry (DEV-25, DF-E20 (c)), file publication and the export queue (DF-E19,
+   EX-07), take lanes and recording into them (CT-01 to CT-03), the measurement harness and
+   DF-E23's measured gate, and then the plan's project, export, data-safety and media rows. The
+   cloud seat keeps the rest of the engine. Each asks the other through its log. Its log is
+   `collab/engine-win.md` on `engine-win/log`; its branches are `engine-win/<topic>`.
+5. **The devices lane is taken up again** (ADR-0208; empty since 28 October), by a seat on a
+   machine where Live is installed, so that each device is held to Live's own. It starts with the
+   lane's three unlanded pull requests (#278, #207, #208), then DEV-09, DEV-21, DEV-19, DEV-22,
+   DEV-28 and the Pure Data tier the Grid stands on (DEV-13, DEV-14, DEV-10, DEV-15).
+6. **Every seat works until its limit.** His words: "always continue as long as they can and have
+   what to do, only stop on issues and things i need to decide". A seat takes its queue item after
+   item, pushes and logs each, and starts the next in the same turn. A question that is his does
+   not stop it: the seat writes it at the top of its log under "FOR THE DIRECTOR" with its
+   recommendation, parks the item and takes the next. When a seat's listed items are done it goes
+   on down `docs/PLAN.md`, the rows of its lane that are not built, in milestone order. Win reads
+   the logs, opens and lands the pull requests, and brings him the parked questions with options.
+   The prompts are `collab/prompts/2026-11-19-*.md`.
+7. **Take lanes.** He works with them daily and asked that they be well thought of (Show Take
+   Lanes, Ctrl+Alt+U). The plan's CT-01 to CT-05 cover what his picture shows; the key and the
+   naming of the main lane's pieces are now noted on CT-01 and CT-04, the open readings go to
+   engine-win, and the window lane draws the sheet. Their milestone is unchanged until he says
+   otherwise.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0245 d8, d9 | confirmed by measurement and made more precise (d1, d2) |
+| ADR-0245 d12 | three supporting sentences corrected; the decision stands (d3) |
+| ADR-0208, `docs/LANES.md` | a second engine seat and its areas (d4); the devices lane occupied again (d5) |
+| `docs/RESEARCH-INTAKE.md` | §6.10 added |
+| `docs/PLAN.md` CT-01, CT-04 | the key and the naming noted (d7) |
+| `docs/DEFERRED.md` | DF-E24 to DF-E26 added |
+| `collab/prompts/` | the four prompts of 19 November |

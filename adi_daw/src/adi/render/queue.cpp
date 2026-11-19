@@ -88,7 +88,8 @@ void verifyReplacement(const Result& result) {
     if(foldedOccupants(result.output)!=binding.foldedNames)
         throw std::runtime_error("replacement collision set changed during validation");
 }
-void validate(const Job& j) {
+} // namespace
+void validateJob(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
     if (j.collision != Collision::Fail && j.collision != Collision::Increment && j.collision != Collision::Replace)
         throw std::invalid_argument("unsupported export collision policy");
@@ -112,6 +113,7 @@ void validate(const Job& j) {
     (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region",
         j.niStems ? "ni_stems_mp4" : "wav",static_cast<std::uint32_t>(j.session.sampleRate),1});
 }
+namespace {
 struct Stage {
     fs::path path;
     std::optional<StageCleanupFailure>& failure;
@@ -436,7 +438,7 @@ Result detail::renderWavPrepared(Job job, engine::DeviceLoader loader, Control c
     Result result;
     try {
         cancellation(control);
-        validate(job);
+        validateJob(job);
         if (job.niStems) throw std::invalid_argument("renderWav requires a WAV job; use renderNiStems for NI Stems");
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
@@ -629,7 +631,7 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
 }
 
 JobId Queue::add(Job job) {
-    validate(job);
+    validateJob(job);
     if (next_ == std::numeric_limits<JobId>::max()) throw std::overflow_error("export job IDs exhausted");
     const auto id = next_++;
     jobs_.push_back({id, std::move(job), {}});
@@ -638,7 +640,7 @@ JobId Queue::add(Job job) {
 bool Queue::update(JobId id, Job job) {
     const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
     if (it == jobs_.end() || it->result.state != JobState::Pending) return false;
-    validate(job); it->job = std::move(job); return true;
+    validateJob(job); it->job = std::move(job); return true;
 }
 bool Queue::remove(JobId id) {
     const auto it = std::find_if(jobs_.begin(), jobs_.end(), [id](const Entry& e) {return e.id==id;});
