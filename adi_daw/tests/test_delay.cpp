@@ -214,9 +214,12 @@ void partition() {
 // the director's research at 48 kHz. Its first output sample is 0.7071 of an
 // impulse (the dry path, equal-power). Its six tones are dry plus the filtered
 // loop: solved for the loop filter they give a 12 dB/oct high-pass and
-// low-pass (+79 degrees at 71 Hz, where one pole gives +41). The capture was
-// not fully settled (a few percent of the feedback's transient remain after
-// 2 s), so the tones are held to 0.5 dB and 2.5 degrees, not to the decimals.
+// low-pass (+79 degrees at 71 Hz, where one pole gives +41). Measured over
+// the capture's own signal and window, ADI's Butterworth sections at
+// 1 kHz x 2^(-+4) land within 0.30 dB and 1.9 degrees; a free fit of both
+// corners and dampings gets no closer than 0.08 dB, so the exact shape of
+// Live's filter is not identified by these six points. Held to 0.35 dB and
+// 2 degrees.
 void liveDefault() {
     D d;
     d.tempo(120);
@@ -232,11 +235,14 @@ void liveDefault() {
     D t;
     t.tempo(120);
     t.prepare(48000);
-    const std::size_t n = 480000, from = n - 96000;
+    // The capture's own signal and window: six sines at -30 dBFS, all from
+    // phase 0 (the research's multitone probe), measured over 1..3 s after
+    // they start, as a ratio of rectangular-window bins.
+    const std::size_t n = 144000, from = 48000;
     std::vector<float> x(n, 0.f);
     for (const auto& tone : live)
         for (std::size_t i = 0; i < n; ++i)
-            x[i] += static_cast<float>(0.05 * std::sin(2 * std::numbers::pi * tone.hz * static_cast<double>(i) / 48000));
+            x[i] += static_cast<float>(0.03125 * std::sin(2 * std::numbers::pi * tone.hz * static_cast<double>(i) / 48000));
     const auto out = render(t, x, 256);
     double worstDb = 0, worstDeg = 0;
     for (const auto& tone : live) {
@@ -254,7 +260,7 @@ void liveDefault() {
         worstDeg = std::max(worstDeg, std::abs(std::remainder(std::arg(h) * 180 / std::numbers::pi - tone.phaseDeg, 360.)));
     }
     std::printf("Live default: six tones within %.3f dB and %.2f degrees\n", worstDb, worstDeg);
-    check(worstDb < 0.5 && worstDeg < 2.5, "Live default: six tones within 0.5 dB and 2.5 degrees");
+    check(worstDb < 0.35 && worstDeg < 2.0, "Live default: six tones within 0.35 dB and 2 degrees");
 }
 } // namespace
 int main() {
