@@ -29,6 +29,23 @@
 # the spec's prose match the sizes the compilers actually produced, the
 # little-endian precondition is enforced rather than merely asserted, and both
 # Python validators pass on the oldest and the newest Python we support.
+#
+# THE ONE CHECK TO READ is `gate`, the last job in this file. It needs every
+# other job and fails if any of them failed or was cancelled, so "gate is
+# SUCCESS" is the whole answer for a run -- not a count of green ticks, which
+# changes every time a leg is added, skipped or split.
+#
+# WHAT A PULL REQUEST COSTS (since 2026-11-19, win). The account runs about 20
+# jobs at once, and one full run of this file is about 20 jobs, so every run
+# that need not happen is a run that waits. Three rules keep the pool for work
+# that proves something:
+#   - main's runs are never cancelled by the next push (concurrency, below);
+#   - a DRAFT pull request runs nothing until it is marked ready (the `if`s on
+#     `plan` and `validators`; every other job needs `plan`);
+#   - a pull request INTO MAIN that changes only Markdown no leg reads runs
+#     the validators and nothing else (`plan` decides, through
+#     .github/scripts/markdown_only.sh). A stacked pull request, whose base is
+#     another branch, always builds: its top lands with no new run.
 
 name: adi_daw
 
@@ -43,7 +60,12 @@ on:
       - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
+      - '.github/scripts/markdown_only.sh'
+      - '.github/scripts/test_markdown_only.sh'
   pull_request:
+    # GitHub's default three, plus ready_for_review: a draft runs nothing, so
+    # the moment it is marked ready is the moment it has to be built.
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'adi_daw/**'
       # the lanes' logs and notes change nothing a leg builds or checks, except the
@@ -52,14 +74,24 @@ on:
       - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
+      - '.github/scripts/markdown_only.sh'
+      - '.github/scripts/test_markdown_only.sh'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A pull request's run is cancelled by its next push: the older head is
+# superseded and proves nothing anyone will merge. MAIN'S RUNS ARE NOT. On
+# 19 November 7 of 8 runs on main were cancelled by the next merge, so the two
+# heavy macOS legs, which run only on main, never finished for eight merges in
+# a row. Now the run in progress on main always finishes. GitHub still keeps
+# only ONE run waiting per group: a burst of merges runs the one in progress,
+# then the newest, and the waiting ones between are replaced -- the newest
+# contains every merge before it, so nothing goes unbuilt.
 concurrency:
   group: adi_daw-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # bash on every runner, windows-latest included, so a `run:` block means the same
 # thing everywhere. Without this, windows-latest runs pwsh, where the `set -euo
@@ -89,14 +121,55 @@ jobs:
   # the label `full-ci`. If a heavy leg goes red on main, the fix is win's and
   # goes to the head of the queue. The matrices live here, as JSON, because a
   # matrix `include` cannot be filtered by the event; it can only be computed.
+  #
+  # Two more answers live here since 2026-11-19 (win), and every leg below reads
+  # them by needing this job:
+  #   - A DRAFT runs nothing. This job's `if` skips it, and a job whose need was
+  #     skipped is skipped too; `validators`, the one job that does not need
+  #     this one, carries the same `if`. A draft marked ready gets a fresh run
+  #     (ready_for_review, in `on:` above).
+  #   - `code` is 'false' for a pull request into main that changes only
+  #     Markdown no leg reads (never for a stacked one, whose base is another
+  #     branch); every leg but the validators then skips. Only an explicit
+  #     'false' skips: a missing answer builds (`!= 'false'`, never
+  #     `== 'true'`). The build and strict lists are still written in full:
+  #     a skipped job never expands its matrix, and an empty one would be an
+  #     error, not a skip.
   # ---------------------------------------------------------------------------
   plan:
     name: 'which legs run'
     runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
     outputs:
       build: ${{ steps.legs.outputs.build }}
       strict: ${{ steps.legs.outputs.strict }}
+      code: ${{ steps.changes.outputs.code }}
     steps:
+      # Depth 2 is the whole history this needs. A pull request's checkout is
+      # GitHub's merge of its head into its base, and that merge's first parent
+      # is the base, so HEAD^1..HEAD is exactly what the pull request changes
+      # on its base. That is main's view only when the base IS main, so the
+      # script builds everything for any other base: a stack lands through its
+      # top, retargeted to main and merged with no new run, and a top of
+      # Markdown alone would otherwise carry the C++ below it to main unbuilt.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      # The rule's own test table first. A rule gone wrong fails this job,
+      # every leg then skips for want of `plan`, and the gate fails: nothing
+      # lands on a classifier nobody can trust.
+      - name: markdown_only.sh passes its test table
+        run: bash .github/scripts/test_markdown_only.sh
+
+      - name: Only Markdown no leg reads?
+        id: changes
+        env:
+          # Passed in, not left to the default environment alone: the script
+          # answers code=false only when the base is main.
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
+
       - name: Decide
         id: legs
         env:
@@ -144,6 +217,10 @@ jobs:
   validators:
     name: validators (py${{ matrix.python }} · ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # Not `needs: plan`: the validators run for every change, Markdown
+    # included, and waiting for plan would only delay them. The draft rule is
+    # the one plan has, stated again here.
+    if: ${{ !github.event.pull_request.draft }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +274,8 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     needs: plan
+    # Skipped for a pull request of Markdown no leg reads (plan's `code` is 'false').
+    if: needs.plan.outputs.code != 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -391,6 +470,9 @@ jobs:
   abi-ilp32:
     name: 'ubuntu i386 · gcc · ILP32 (32-bit size_t)'
     runs-on: ubuntu-latest
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
     steps:
       - uses: actions/checkout@v4
 
@@ -427,6 +509,9 @@ jobs:
   abi-big-endian:
     name: 'big-endian guard actually fires (s390x)'
     runs-on: ubuntu-latest
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
     steps:
       - uses: actions/checkout@v4
 
@@ -488,6 +573,8 @@ jobs:
     name: '${{ matrix.name }}'
     runs-on: ${{ matrix.os }}
     needs: plan
+    # Skipped for a pull request of Markdown no leg reads (plan's `code` is 'false').
+    if: needs.plan.outputs.code != 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -586,6 +673,9 @@ jobs:
   provenance:
     name: 'dependency provenance'
     runs-on: ubuntu-latest
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
     steps:
       - uses: actions/checkout@v4
 
@@ -654,6 +744,9 @@ jobs:
   fuzz:
     name: 'fuzz StreamReader (clang · ASan + UBSan)'
     runs-on: ubuntu-latest
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
     steps:
       - uses: actions/checkout@v4
 
@@ -774,6 +867,9 @@ jobs:
   juce:
     name: 'JUCE on · ${{ matrix.name }}'
     runs-on: ${{ matrix.os }}
+    # needs plan only for its answers: not on a draft, not for Markdown alone
+    needs: plan
+    if: needs.plan.outputs.code != 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -1064,3 +1160,107 @@ jobs:
             exit 1
           fi
           echo "ok -- devices loaded and nothing heard is a failure"
+
+  # ---------------------------------------------------------------------------
+  # The Pd tier in double: PD_FLOATSIZE=64 (DEV-09 AR17, ADR-0207 d2).
+  #
+  # ADI_PD_FLOATSIZE_64 (src/juce/pd_loader_fix.cmake) is OFF by default, so no
+  # other leg builds the Pd tier this way. At 64 every external's signal
+  # vectors are double, and a change to an external, to FloatSignals or to
+  # pd_engine.cpp that only breaks there would otherwise reach main unseen
+  # until someone built the 64-bit mode by hand -- which is how its 19 failing
+  # suites were found the first time.
+  #
+  # MAIN AND DISPATCH ONLY, never a pull request: one Linux leg after the
+  # merge, the same bargain as the heavy macOS legs (see `plan`), so a pull
+  # request does not pay for it. If it goes red on main, the fix is win's and
+  # goes to the head of the queue. Linux and gcc because it is the cheapest
+  # runner; the configuration is the property under test, and the other
+  # compilers prove the code at 32 on every pull request.
+  # ---------------------------------------------------------------------------
+  pd-double:
+    name: 'Pd tier at PD_FLOATSIZE=64 · ubuntu x86_64 · gcc'
+    runs-on: ubuntu-latest
+    needs: plan
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      # The configure log must say the Pd tier is in double. A leg that built
+      # with the option silently ignored -- the Pd tier off, or the option
+      # renamed -- would pass every suite and prove nothing about 64.
+      - name: Configure with ADI_PD_FLOATSIZE_64, and build
+        env:
+          CC: gcc
+          CXX: g++
+        run: |
+          set -euo pipefail
+          cmake -S adi_daw -B adi_daw/build-pd64 -DCMAKE_BUILD_TYPE=Debug \
+                -DADI_PD_FLOATSIZE_64=ON | tee pd64-configure.log
+          if ! grep -q 'Pd tier: PD_FLOATSIZE=64' pd64-configure.log; then
+            echo "::error::configured with ADI_PD_FLOATSIZE_64=ON, but CMake never" \
+                 "said the Pd tier is in double: the Pd tier is off, or the option" \
+                 "no longer does what this leg exists to test"
+            exit 1
+          fi
+          # Counted, as the build job's Build step says why.
+          cmake --build adi_daw/build-pd64 --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+
+      # Every suite, not only the Pd ones: PD_FLOATSIZE is PUBLIC on
+      # libpd_static, so adi_core and everything linking it is built at 64.
+      # Bounded and counted as the build job's adi_tests step says why.
+      - name: Every suite, at 64
+        timeout-minutes: 45
+        run: |
+          jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
+          ctest --test-dir adi_daw/build-pd64 --output-on-failure \
+                --timeout 600 --parallel "$jobs"
+
+  # ---------------------------------------------------------------------------
+  # gate -- the one check that says whether this run proved the change.
+  #
+  # land_top.sh used to count green ticks and land at 20. A count answers the
+  # wrong question: a Markdown-only run skips most legs on purpose, every new or
+  # split leg moves the number, and a leg that never started is not counted as
+  # anything. This job needs EVERY other job and fails if any of them failed or
+  # was cancelled. A skip is fine, because every skip in this file is a decision
+  # (plan's answers), never an accident. `always()` is what makes it run when a
+  # need failed: without it a failed leg would skip the gate, and a skipped gate
+  # reads as nothing at all.
+  #
+  # Not on a draft. There every job skipped on purpose, and a SUCCESS here
+  # would say that a draft nobody built is ready to land.
+  #
+  # A new job goes into `needs:` below; validate_ci.py check [5] fails until it
+  # does.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [plan, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, juce, pd-double]
+    if: ${{ always() && !github.event.pull_request.draft }}
+    steps:
+      - name: Every job passed, or was skipped on purpose
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          bad = 0
+          for job, out in sorted(needs.items()):
+              result = out.get("result", "")
+              # success and skipped pass; failure and cancelled do not. A
+              # cancelled leg proved nothing, whatever cancelled it.
+              if result in ("success", "skipped"):
+                  print(f"ok    {job}: {result}")
+              else:
+                  print(f"::error::{job}: {result}")
+                  bad += 1
+          print(f"{len(needs)} jobs, {bad} not passed")
+          sys.exit(1 if bad else 0)
+          PY

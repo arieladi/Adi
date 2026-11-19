@@ -156,6 +156,145 @@ void normalizationRefusal() {
         }
     }
 }
+void collisionPublication() {
+    // NI's real shared naming/publication path with opaque staged bytes. This
+    // runs without AAC; it is not a claim of codec integration.
+    test::TempDirectory dir{"ni_stems","collision-publication"};
+    const auto stage=dir.path()/"stage.bin", original=dir.path()/"delivery.stem.mp4";
+    const auto write=[](const fs::path& path,const char* text) {
+        std::ofstream file(path,std::ios::binary);file<<text;file.close();
+        if(!file)throw std::runtime_error("NI collision fixture write");
+    };
+    write(original,"original delivery");write(stage,"replacement candidate");
+    const auto before=media::blake3File(original).hex;
+    render::Result fail;fail.output=original;
+    refuses([&] {render::detail::prepareOutput(fail,render::Collision::Fail,".stem.mp4","NI destination exists");},
+            "NI Fail refuses an existing complete delivery path");
+    check(media::blake3File(original).hex==before && fs::exists(stage),
+          "NI Fail leaves original and private staged bytes intact");
+    render::Result increment;increment.output=original;
+    render::detail::prepareOutput(increment,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(increment.output.filename()=="delivery (2).stem.mp4",
+          "NI Increment inserts numbering before its entire compound suffix");
+    const auto stageHash=media::blake3File(stage).hex;
+    render::detail::publishOutput(stage,increment,{},"NI destination exists");
+    check(increment.state==render::JobState::Completed && increment.publication &&
+          !increment.publication->usedFallback && media::blake3File(increment.output).hex==stageHash &&
+          media::blake3File(original).hex==before && !fs::exists(stage),
+          "NI shared publisher atomically publishes selected bytes and preserves the original");
+    render::Result late;late.output=original;
+    render::detail::prepareOutput(late,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(late.output.filename()=="delivery (3).stem.mp4","NI repeated preflight selects the next available delivery name");
+    write(stage,"private staged again");write(late.output,"external late arrival");
+    const auto lateHash=media::blake3File(late.output).hex;
+    refuses([&] {render::detail::publishOutput(stage,late,{},"NI destination exists");},
+            "NI publisher refuses a collision introduced after numbered preflight");
+    check(!late.publication && media::blake3File(late.output).hex==lateHash && fs::exists(stage) &&
+          !fs::exists(dir.path()/"delivery (4).stem.mp4"),
+          "NI late-arrival refusal neither replaces external bytes nor renumbers");
+    std::string stem;
+    for(unsigned i=0;i<93;++i)stem+="\xC3\xA9";
+    stem+='x'; // 187+4 increment+9 suffix = 200 bytes
+    render::Result boundary;boundary.output=dir.path()/media::pathFromUtf8(stem+".stem.mp4");
+    write(boundary.output,"occupied");
+    render::detail::prepareOutput(boundary,render::Collision::Increment,".stem.mp4","NI destination exists");
+    render::detail::publishOutput(stage,boundary,{},"NI destination exists");
+    check(boundary.state==render::JobState::Completed && media::pathUtf8(boundary.output.filename()).size()==200,
+          "NI actual publication accepts 200 UTF-8 bytes including increment and compound suffix");
+    stem+='y';
+    render::Result overflow;overflow.output=dir.path()/media::pathFromUtf8(stem+".stem.mp4");
+    const auto validOriginal=overflow.output;write(validOriginal,"retained");
+    refuses([&] {render::detail::prepareOutput(overflow,render::Collision::Increment,".stem.mp4","NI destination exists");},
+            "NI increment refuses a 201-byte final compound filename");
+    check(fs::file_size(validOriginal)==8 && !fs::exists(overflow.output),
+          "NI increment overflow leaves the shorter existing delivery untouched");
+    const auto foldedOriginal=dir.path()/media::pathFromUtf8("Stra\xC3\x9F" "e.STEM.MP4");
+    write(foldedOriginal,"folded original");write(stage,"folded NI candidate");
+    render::Result folded;folded.output=dir.path()/"STRASSE.stem.mp4";
+    refuses([&] {render::detail::prepareOutput(folded,render::Collision::Fail,".stem.mp4","NI destination exists");},
+            "NI Fail compares Unicode-expanded names and the entire compound suffix");
+    render::detail::prepareOutput(folded,render::Collision::Increment,".stem.mp4","NI destination exists");
+    check(folded.output.filename()=="STRASSE (2).stem.mp4","NI folded Increment preserves selected spelling and compound suffix");
+    const auto arrival=dir.path()/media::pathFromUtf8("Stra\xC3\x9F" "e (2).STEM.MP4");write(arrival,"late folded NI");
+    const auto retained=media::blake3File(arrival).hex;
+    refuses([&] {render::detail::publishOutput(stage,folded,{},"NI destination exists");},
+            "NI shared commit rechecks fold-only late arrivals");
+    check(!folded.publication && fs::exists(stage) && media::blake3File(arrival).hex==retained &&
+          !fs::exists(dir.path()/"STRASSE (3).stem.mp4"),"NI late folded collision leaves private bytes, arrival and numbering unchanged");
+}
+void deliveryMediaVerification() {
+    test::TempDirectory dir{"ni_stems", "delivery-media"};
+    const auto wave = dir.path() / "source.wav";
+    const auto writeWave = [&](float sample) {
+        std::array<float, 256> pcm;
+        pcm.fill(sample);
+        audio::WavWriter writer(wave, 48000, 2, audio::WavFormat::Float32);
+        writer.write(pcm.data(), 128);
+        writer.close();
+    };
+    writeWave(0.25f);
+    const auto original = media::blake3File(wave).hex;
+    StoreError error{};
+    auto store = Store::createEmpty(dir.path() / "source.adi", error);
+    if (!store) throw std::runtime_error("cannot create NI media fixture");
+    store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'NI Verify',48000);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Source',0),(9,'master','Main',1);"
+        "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,2666667);");
+    SQLite::Statement mediaRow(store->db(),
+        "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(1,?,'source.wav','wav')");
+    mediaRow.bind(1, original);
+    mediaRow.exec();
+    store->db().exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,1,0,128)");
+
+    render::Job job;
+    job.project = store->path();
+    job.directory = dir.path();
+    job.nameTemplate = "private-main";
+    job.beginSample = 0;
+    job.endSample = 64;
+    job.session = {2, 48000, 32};
+    auto main = render::renderWav(job, {});
+    job.nameTemplate = "private-stem";
+    job.source.trackId = 1;
+    auto stem = render::renderWav(job, {});
+    check(main.state == render::JobState::Completed && stem.state == render::JobState::Completed,
+          "Main and stem capture actual offline WAV input identity");
+    render::Result delivery;
+    delivery.output = dir.path() / "delivery.stem.mp4";
+    render::detail::retainIntermediateMedia(delivery, main);
+    render::detail::retainIntermediateMedia(delivery, stem);
+    const auto& captured = delivery.mediaVerification.value();
+    check(captured.identities.size() == 1 && captured.startComplete && !captured.publicationVerified &&
+              !captured.identities.front().blake3BeforePublication,
+          "the private WAV's check does not mark the final delivery verified");
+
+    // The shared final commit gate is independent of platform AAC support.
+    const auto stage = dir.path() / "encoded.bin";
+    fs::copy_file(stem.output, stage);
+    const auto outputHash = media::blake3File(stage).hex;
+    writeWave(0.125f);
+    const auto altered = media::blake3File(wave).hex;
+    refuses([&] {render::detail::publishVerifiedOutput(stage, delivery, {}, "already exists");},
+            "a same-size input rewrite after all WAV renders refuses the final delivery");
+    check(!fs::exists(delivery.output) && fs::exists(stage) && !delivery.publication &&
+              !captured.publicationVerified && captured.identities.front().blake3BeforePublication == altered,
+          "failed final verification leaves staged and source bytes intact and reports both digests");
+    SQLite::Statement replacement(store->db(), "UPDATE media_files SET hash_blake3=? WHERE id=1");
+    replacement.bind(1, altered);
+    replacement.exec();
+    job.nameTemplate = "changed-stem";
+    auto changed = render::renderWav(job, {});
+    check(changed.state == render::JobState::Completed, "independent WAV can validly read the changed source");
+    refuses([&] {render::detail::retainIntermediateMedia(delivery, changed);},
+            "individually verified stems cannot mix different bytes in one delivery");
+    writeWave(0.25f);
+    render::detail::publishVerifiedOutput(stage, delivery, {}, "already exists");
+    check(delivery.state == render::JobState::Completed && delivery.publication && captured.publicationVerified &&
+              media::blake3File(delivery.output).hex == outputHash && !fs::exists(stage),
+          "unchanged inputs complete the same checked exclusive delivery path");
+}
+
 void integration() {
     if (!audio::aacCodecAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
@@ -196,14 +335,40 @@ void integration() {
     job.endSample = 11003;
     job.session = {2, 48000, 64};
     job.niStems = render::NiStems{{{{1, engine::OfflineTap::PostFader}, "Drums", "#fd4a4a"}}, 256000};
+    auto boundary=job;
+    boundary.nameTemplate.clear();
+    for (unsigned i=0;i<95;++i) boundary.nameTemplate+="\xC3\xA9";
+    boundary.nameTemplate+='x'; // 191-byte stem plus the nine-byte .stem.mp4 suffix.
+    const auto longest=render::renderNiStems(boundary,{});
+    check(longest.state==render::JobState::Completed && media::pathUtf8(longest.output.filename()).size()==200 &&
+              fs::exists(longest.output) && clean(dir.path()),"NI Stems publishes a 200-byte final UTF-8 filename");
+    boundary.nameTemplate+='y';
+    const auto tooLong=render::renderNiStems(boundary,{});
+    check(tooLong.state==render::JobState::Failed && media::pathUtf8(tooLong.output.filename()).size()==201 &&
+              tooLong.error=="final export name exceeds 200 UTF-8 bytes" && !fs::exists(tooLong.output) && clean(dir.path()),
+          "NI Stems rejects its final suffix overflow although the intermediate WAV name fits");
     render::Queue queue;
     const auto id = queue.add(job);
+    const auto capturedHead = OpJournal(*store).headSeq();
+    check(capturedHead.has_value(), "NI source has a real journalled media-import head");
+    std::int64_t laterHead = 0;
     unsigned services = 0;
+    static unsigned publicationSyncs = 0;
+    publicationSyncs = 0;
     render::Control control;
+    control.publicationHooks.syncDirectory = [](const fs::path&) {
+        ++publicationSyncs;
+        return std::make_error_code(std::errc::io_error);
+    };
     control.serviceHost = [&] {
         if (++services == 2) {
-            store->db().exec(
-                "UPDATE tracks SET name='Edited After Snapshot' WHERE id=1; DELETE FROM audio_clips;");
+            OpRequest rename;
+            rename.opType = "track.rename";
+            rename.payload = {{"id", 1}, {"name", "Edited After Snapshot"}};
+            const auto committed = OpJournal(*store).commit(rename);
+            check(committed.ok && !committed.seqs.empty(), "NI original project changes after its private capture");
+            if (!committed.seqs.empty()) laterHead = committed.seqs.back();
+            store->db().exec("DELETE FROM audio_clips;");
         }
     };
     queue.run({}, control);
@@ -212,6 +377,25 @@ void integration() {
           result.error.empty() ? "NI queue job completes" : result.error.c_str());
     if (result.state != render::JobState::Completed)
         return;
+    check(publicationSyncs == 1 && result.publication && !result.publication->durabilityConfirmed &&
+              !result.publication->warning.empty(),
+          "NI hook runs only for final publication and keeps a sync warning without failing the job");
+    const auto runManifest = nlohmann::json::parse(render::serializeRunManifest(queue.lastRun()));
+    check(runManifest["members"][0]["state"] == "completed" &&
+              runManifest["members"][0]["result"]["publication"]["durability_confirmed"] == false &&
+              runManifest["members"][0]["job"]["requested_profile"]["container"] == "ni_stems_mp4",
+          "NI publication warning and format are retained in the run manifest");
+    check(result.snapshot && capturedHead && result.snapshot->journalHead == *capturedHead &&
+              laterHead > *capturedHead && result.snapshot->source.trackId == 9 &&
+              result.snapshot->beginSample == 127 && result.snapshot->endSample == 11003 &&
+              result.stemSnapshots.size() == 1 && result.stemSnapshots[0].journalHead == *capturedHead &&
+              result.stemSnapshots[0].source.trackId == 1 && result.stemSnapshots[0].names.track == "Drums",
+          "NI Main and actual stem preserve one original revision, range and names after source edits");
+    check(runManifest["members"][0]["journal_head"] == capturedHead.value_or(-1) &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"].size() == 1 &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"][0]["source"]["track_id"] == 1 &&
+              runManifest["members"][0]["result"]["ni_stem_snapshots"][0]["end_sample"] == 11003,
+          "NI run JSON records actual supplied streams without inventing sources for silent slots");
     check(result.framesWritten == 10876 && result.output.filename() == "NI Export.stem.mp4" &&
               clean(dir.path()),
           "queue publishes exact cropped range and removes only its stage");
@@ -375,6 +559,15 @@ void integration() {
     const auto collided = collision.snapshot().front().result;
     check(collided.state == render::JobState::Failed && fs::exists(result.output) && clean(dir.path()),
           "collision never replaces existing NI export");
+    const auto retainedContainerHash=media::blake3File(result.output).hex;
+    auto numbered=job;numbered.collision=render::Collision::Increment;
+    const auto incremented=render::renderNiStems(numbered,{});
+    check(incremented.state==render::JobState::Completed && incremented.output.filename()=="NI Export (2).stem.mp4" &&
+          media::blake3File(result.output).hex==retainedContainerHash && clean(dir.path()),
+          "explicit NI Increment publishes a separate real encoded delivery with private intermediates unchanged");
+    if(incremented.state==render::JobState::Completed)
+        check(audio::readAacMovie(incremented.output).tracks.at(0).frames==10876,
+              "numbered NI delivery contains the requested encoded range");
     job.nameTemplate = "Cancelled";
     std::stop_source stop;
     render::Control cancel;
@@ -393,6 +586,8 @@ int main() {
     try {
         metadata();
         normalizationRefusal();
+        collisionPublication();
+        deliveryMediaVerification();
         integration();
     } catch (const std::exception &error) {
         check(false, error.what());
