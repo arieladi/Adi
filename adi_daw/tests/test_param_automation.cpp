@@ -120,11 +120,11 @@ struct Emitter {
         transport.play();
     }
     /// One block, emitted as the audio thread would. Returns its events.
-    std::vector<Event> block(std::int32_t frames) {
+    std::vector<Event> block(std::int32_t frames, std::int32_t arrival = 0) {
         list.clear();
         {
             audio::CallbackScope scope;
-            if (device) device->emit(list, frames);
+            if (device) device->emitAtInput(list, frames, arrival);
         }
         std::vector<Event> out(list.begin(), list.end());
         transport.advance(frames);
@@ -206,6 +206,20 @@ void testLoopWrapChases() {
     check(wrapped, "at frame 100, where the loop wraps, the lane's value at sample 0");
     check(!ev.empty() && ev.front().frame == 0 && ev.front().value == valueAt(e.lane(), 900),
           "and the block still starts with the value at 900");
+}
+
+void testCompensatedInputClock() {
+    section("DF-E21 -- addressed automation uses the device's input clock");
+    Emitter e(laneModel({{0, 0.2, 0}, {500, 0.8, 0}}, 48000.0), 48000.0);
+    e.transport.loop(0, 1536);
+    e.transport.locate(1400);
+    const auto first = e.block(512, 1024);
+    check(first.size() == 2 && first[0].frame == 0 && first[0].value == 0.2 &&
+              first[1].frame == 124 && first[1].value == 0.8,
+          "one automation step follows the delayed samples and ignores the global wrap");
+    const auto next = e.block(1024, 1024);
+    check(next.size() == 1 && next[0].frame == 648 && next[0].value == 0.2,
+          "the next callback chases at the receiving device's own wrap");
 }
 
 void testFullListAndAudit() {
@@ -512,6 +526,7 @@ int main() {
         testStepsLandWhereDrawn();
         testFlatAndParked();
         testLoopWrapChases();
+        testCompensatedInputClock();
         testFullListAndAudit();
         testDeterministic();
         testBinding();

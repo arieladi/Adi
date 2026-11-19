@@ -237,7 +237,8 @@ CommitResult commitSeparatedStems(Store& store,PreparedSeparation& prepared,std:
                     copy(asset.privateFile,publication,asset.bytes,data->options);
                     const auto copied=blake3File(publication,data->options.stop);
                     require(copied && copied.hex==asset.hash,"captured stem changed during publication");
-                    const auto published=publishFile(publication,asset.target);
+                    const auto published = publishFile(publication, asset.target, {},
+                                                       PublishPolicy::AtomicOnly);
                     if(published.status==PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
                         const auto existing=blake3File(asset.target,data->options.stop);
                         require(existing && existing.hex==asset.hash,"owned stem target contains different audio");

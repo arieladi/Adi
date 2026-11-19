@@ -21,7 +21,12 @@
 #include "temp_directory.hpp"
 
 #include "juce/clap_host.hpp"
+#include "adi/engine/session.hpp"
+#include "adi/store.hpp"
 
+#include <SQLiteCpp/SQLiteCpp.h>
+
+#include <array>
 #include <cmath>
 #include <algorithm>
 #include <cstring>
@@ -2879,6 +2884,184 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "wide-const"; }
 };
 
+void testTransportAtDeviceInput() {
+    section("DF-E21 -- CLAP sees the clock of its own audio input");
+    struct Probe : Fake {
+        struct Block {
+            clap_event_transport_t transport;
+            std::uint32_t frames;
+        };
+        std::array<Block, 32> blocks{};
+        std::size_t count = 0;
+        std::int64_t noteSample = -1;
+        clap_plugin_render_t render{};
+        clap_plugin_render_mode renderMode = CLAP_RENDER_REALTIME;
+        clap_plugin_render_mode activatedMode = CLAP_RENDER_REALTIME;
+        Probe() {
+            plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
+                auto& probe = static_cast<Probe&>(self(p));
+                return std::strcmp(id, CLAP_EXT_RENDER) == 0 ? &probe.render : nullptr;
+            };
+            render.set = [](const clap_plugin_t* p, clap_plugin_render_mode mode) {
+                static_cast<Probe&>(self(p)).renderMode = mode;
+                return true;
+            };
+            plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t, std::uint32_t) {
+                auto& probe = static_cast<Probe&>(self(p));
+                probe.activatedMode = probe.renderMode;
+                return true;
+            };
+            plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+                auto& probe = static_cast<Probe&>(self(p));
+                if (pd->transport && probe.count < probe.blocks.size())
+                    probe.blocks[probe.count++] = {*pd->transport, pd->frames_count};
+                if (pd->transport && pd->in_events) {
+                    for (std::uint32_t i = 0; i < pd->in_events->size(pd->in_events); ++i) {
+                        const auto* event = pd->in_events->get(pd->in_events, i);
+                        if (event->type == CLAP_EVENT_NOTE_ON)
+                            probe.noteSample = std::llround(
+                                static_cast<double>(pd->transport->song_pos_seconds) *
+                                48000.0 / static_cast<double>(CLAP_SECTIME_FACTOR)) + event->time;
+                    }
+                }
+                auto& output = pd->audio_outputs[0];
+                for (std::uint32_t channel = 0; channel < output.channel_count; ++channel)
+                    std::fill_n(output.data32[channel], pd->frames_count, 0.0f);
+                return CLAP_PROCESS_CONTINUE;
+            };
+        }
+    };
+    test::TempDirectory temp{"clap_transport", "project"};
+    StoreError error{};
+    const auto store = Store::createEmpty(temp.path() / "transport.adi", error);
+    if (!store) {
+        check(false, "create transport project");
+        return;
+    }
+    store->db().exec(
+        "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Track',0),(9,'master','Main',1);"
+        "INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES"
+        "(1,'clap','test.latency','Latency','effect'),(2,'clap','test.clock','Clock','effect');"
+        "INSERT INTO device_chains(id,track_id) VALUES(1,1);"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name,always_process) VALUES"
+        "(1,1,0,1,'Latency',1),(2,1,1,2,'Clock',1);"
+        "INSERT INTO tempo_map(id,pos_ticks,bpm,curve) VALUES(1,0,120,0),(2,5765760,60,0);"
+        "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,7,8),(2,5765760,3,4)");
+    Fake delay;
+    delay.latencyValue = 1024;
+    Probe probe;
+    class Source final : public engine::Node {
+    public:
+        bool sendNote = false;
+        void process(const engine::NodeIo& io) noexcept override { signal_.process(io); }
+        void sourceEvents(engine::EventList& events, std::int32_t) noexcept override {
+            if (sendNote) {
+                events.push(noteOn(1, 60, 0.5, 20));
+                sendNote = false;
+            }
+        }
+    private:
+        WideConst signal_;
+    } source;
+    for (const bool offline : {false, true}) {
+        engine::Session session;
+        engine::SessionSpec spec;
+        spec.maxFrames = 1024;
+        spec.offline = offline;
+        session.setSourcesFor([&](std::int64_t id) {
+            return id == 1 ? std::vector<engine::Node*>{&source} : std::vector<engine::Node*>{};
+        });
+        const auto loader = [&](const engine::DeviceRequest& request, std::string&) {
+            DeviceIdentity identity;
+            identity.format = "clap";
+            return std::make_unique<ClapDevice>(request.device->id == 1 ? &delay.plugin : &probe.plugin, identity);
+        };
+        const bool loaded = session.load(*store, loader, spec);
+        check(loaded, "load two CLAP devices in a real session");
+        if (!loaded) return;
+        auto& clock = session.transport();
+        auto render = [&](std::int32_t frames) {
+            probe.count = 0;
+            engine::AudioIo io;
+            io.frames = frames;
+            session.process(io);
+        };
+        auto sampleAt = [&](std::size_t i) {
+            return std::llround(static_cast<double>(probe.blocks[i].transport.song_pos_seconds) *
+                                48000.0 / static_cast<double>(CLAP_SECTIME_FACTOR));
+        };
+
+        clock.locate(900);
+        clock.play();
+        render(256);
+        check(probe.count == 2 && sampleAt(0) == -124 && sampleAt(1) == 0 &&
+                  probe.blocks[0].frames == 124 && probe.blocks[1].frames == 132,
+              "signed input clock crosses song zero continuously");
+        check(probe.count > 0 && probe.blocks[0].transport.song_pos_beats < 0 &&
+                  probe.blocks[0].transport.bar_number == -1 &&
+                  probe.blocks[0].transport.bar_start == -7 * CLAP_BEATTIME_FACTOR / 2 &&
+                  probe.blocks[0].transport.tsig_num == 7 && probe.blocks[0].transport.tsig_denom == 8,
+              "before bar one, beat and bar are signed in the initial meter");
+        check(probe.count > 0 &&
+                  (probe.blocks[0].transport.flags & CLAP_TRANSPORT_IS_PLAYING) != 0 &&
+                  probe.activatedMode == (offline ? CLAP_RENDER_OFFLINE : CLAP_RENDER_REALTIME),
+              "playing flag and render mode reach the plug-in before processing");
+
+        clock.locate(24400);
+        render(1024);
+        check(probe.count == 2 && sampleAt(0) == 23376 && sampleAt(1) == 24000 &&
+                  probe.blocks[0].frames == 624 && probe.blocks[1].frames == 400 &&
+                  probe.blocks[0].transport.tempo == 120 && probe.blocks[1].transport.tempo == 60 &&
+                  probe.blocks[1].transport.tsig_num == 3 && probe.blocks[1].transport.tsig_denom == 4,
+              "the tempo and meter change at the receiving sample after a seek");
+        render(256);
+        check(probe.count == 1 && sampleAt(0) == 24400,
+              "the next receiving block continues from the preceding block's last sample");
+
+        if (offline) continue;
+        clock.loop(0, 1536);
+        clock.locate(1400);
+        render(512);
+        check(probe.count == 1 && sampleAt(0) == 376 && probe.blocks[0].frames == 512,
+              "global wrap leaves the earlier audio at this receiver contiguous");
+        render(1024);
+        check(probe.count == 2 && sampleAt(0) == 888 && sampleAt(1) == 0 &&
+                  probe.blocks[0].frames == 648 && probe.blocks[1].frames == 376 &&
+                  (probe.blocks[0].transport.flags & CLAP_TRANSPORT_IS_LOOP_ACTIVE) != 0 &&
+                  probe.blocks[0].transport.loop_end_beats > 0,
+              "the next block splits exactly where the receiver wraps");
+        clock.loop(0, 256);
+        clock.locate(0);
+        render(1024);
+        render(1024);
+        check(probe.count == 4 && sampleAt(0) == 0 && sampleAt(1) == 0 &&
+                  sampleAt(2) == 0 && sampleAt(3) == 0 && probe.blocks[3].frames == 256,
+              "a loop shorter than the latency wraps repeatedly");
+
+        clock.loop(0, 0, false);
+        clock.locate(4096);
+        source.sendNote = true;
+        render(1024);
+        render(256);
+        check(probe.noteSample == 4116, "the note lands at its original musical sample on the delayed clock");
+
+        auto* graph = session.graph().currentGraph();
+        delay.latencyValue = 1536;
+        check(graph != nullptr && graph->retapLatency(), "apply a new latency while playing");
+        const auto next = clock.position();
+        render(256);
+        check(probe.count == 1 && sampleAt(0) == next - 1536,
+              "the input clock follows the newly published arrival");
+
+        check(session.setDelayCompensation(false), "turn compensation off");
+        clock.locate(4096);
+        render(256);
+        check(probe.count == 1 && sampleAt(0) == 4096,
+              "with compensation off the device sees the heard time");
+        delay.latencyValue = 1024;
+    }
+}
+
 void testThePortsAreReadOnlyWhileDeactivated() {
     section("audio-ports.h / ADR-0123 item 6 -- the layout, 64-bit flags and all, is read deactivated");
 
@@ -3300,6 +3483,7 @@ int main() {
     testAt64ThePluginIsHandedDouble();
     testAt64AFloatOnlyPluginIsConverted();
     testAt64TheSegmentAndTheErrorAreHonoured();
+    testTransportAtDeviceInput();
     testThePortsAreReadOnlyWhileDeactivated();
     testTheAnswerIsReadAgainAtEachActivation();
     testAReactivationWaitsForTheCallInFlight();
