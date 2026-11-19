@@ -97,9 +97,14 @@ std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& fil
     return text;
 }
 
+Value parseSettingsText(std::string_view bytes) {
+    if (bytes.find('\0') != std::string_view::npos) return Value(Value::value_t::discarded);
+    return Value::parse(bytes, nullptr, false);
+}
+
 Value readSettingsDocument(const std::optional<std::string>& snapshot, appdata::App app) {
     if (!snapshot) return {{"values", Value::object()}};
-    auto migrated = migrateSettingsDocument(Value::parse(*snapshot, nullptr, false), app,
+    auto migrated = migrateSettingsDocument(parseSettingsText(*snapshot), app,
         kSettingsSchema, settingsMigrationSteps());
     if (!migrated.ok()) throw std::runtime_error(migrated.why);
     return std::move(migrated.document);
@@ -154,8 +159,7 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
         return;
     }
     if (!snapshot) return; // Genuine absence: Defaults.
-    Value doc = Value::parse(*snapshot, nullptr,
-                             /*allow_exceptions=*/false);
+    Value doc = parseSettingsText(*snapshot);
     auto migrated = migrateSettingsDocument(doc, app_, kSettingsSchema, settingsMigrationSteps());
     if (migrated.status == MigrationStatus::ForeignApp) {
         status_ = LoadStatus::ForeignApp;

@@ -25,7 +25,9 @@ not a new corruption-recovery or automatic-retry mechanism.
 Construction and saving share the existing settings snapshot reader. Its
 regular-file rule also refuses a symlink instead of treating its target as
 corrupt; save already used this rule. A failure during reading is never parsed
-as an empty or partial JSON document.
+as an empty or partial JSON document. Both readers reject literal NUL bytes
+before parsing. The load path keeps the complete malformed document according
+to the existing corrupt-copy behaviour. The save reread refuses replacement.
 
 `adi_settings_read_failure_tests` uses owned temporary files. Windows cases hold
 a native handle that denies competing reads while permitting rename, exercising

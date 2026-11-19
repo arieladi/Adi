@@ -51,6 +51,26 @@ void absenceAndMalformed() {
           fs::file_size(*empty.keptAside()) == 0, "a truly empty readable file is still malformed, not an I/O failure");
 }
 
+void literalNul() {
+    adi::test::TempDirectory scratch("settings_read", "literal_nul");
+    const auto file = scratch.path() / "settings.json";
+    const auto backup = scratch.path() / "settings.json.bak";
+    const std::string joined = good + '\0' + "{}";
+    write(file, joined);
+    AppSettings malformed(app, file);
+    check(malformed.status() == LoadStatus::CorruptKept && malformed.keptAside() &&
+              read(*malformed.keptAside()) == joined,
+          "settings with a literal NUL and suffix retain the complete malformed bytes");
+
+    write(file, good);
+    AppSettings loaded(app, file);
+    std::string why;
+    check(loaded.set("lookfeel.theme", "dark", {}, why), "a complete valid file loads for ordinary edits");
+    write(file, joined);
+    check(!loaded.save(why) && read(file) == joined && !fs::exists(backup),
+          "save reread refuses a newly malformed document and leaves it intact");
+}
+
 void notAFile() {
     adi::test::TempDirectory scratch("settings_read", "not_file");
     const auto file = scratch.path()/"settings.json";
@@ -196,6 +216,7 @@ void saveRetry() {
 int main() {
     try {
         absenceAndMalformed();
+        literalNul();
 #if defined(_WIN32)
         unreadable(); incompleteRead(); saveRetry();
 #else
