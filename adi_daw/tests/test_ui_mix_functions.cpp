@@ -40,6 +40,28 @@ struct MixFocusTestAccess {
                std::all_of(focus.members_.begin(), focus.members_.end(),
                            [](const auto &member) { return !member.path.isEmpty(); });
     }
+    static bool sumStrokeAt(MixFocus &focus, float value) {
+        const auto plot = focus.plot_;
+        if (plot.isEmpty()) return false;
+        juce::Image image(juce::Image::RGB, focus.getWidth(), focus.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            focus.paint(g);
+        }
+        const auto y = juce::roundToInt(plot.getCentreY() - value * plot.getHeight() * .5f);
+        const juce::Colour stroke = look::text;
+        const auto matches = [stroke](juce::Colour pixel) {
+            return std::abs(pixel.getRed() - stroke.getRed()) <= 12 &&
+                   std::abs(pixel.getGreen() - stroke.getGreen()) <= 12 &&
+                   std::abs(pixel.getBlue() - stroke.getBlue()) <= 12;
+        };
+        for (const float position : {.2f, .4f, .6f, .8f}) {
+            const auto x = juce::roundToInt(plot.getX() + plot.getWidth() * position);
+            if (!matches(image.getPixelAt(x, y - 1)) && !matches(image.getPixelAt(x, y)) &&
+                !matches(image.getPixelAt(x, y + 1))) return false;
+        }
+        return true;
+    }
 };
 } // namespace adi::ui
 namespace {
@@ -1242,6 +1264,8 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     check(root.playing() && retained && detail.read() == retained && !retained->scopeLeft.empty() &&
               MixFocusTestAccess::aligned(focus),
           "the detailed analyzer and waveform share a publication and Focus aligns the two live sources");
+    check(MixFocusTestAccess::sumStrokeAt(focus, .5f),
+          "the Focus Scope visibly overlays the signed sum of two in-phase 0.25 member traces");
     auto floating = std::make_unique<juce::Component>();
     peer.addChildComponent(floating.get());
     floating->setBounds(peer.getLocalBounds());
@@ -1300,6 +1324,16 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     root.frame();
     check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::waitingForAlignment(focus),
           "fresh aligned member data restores combined Focus after a stop and start");
+    const auto beforeSum = broker->stats();
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 3072, true, revision);
+    pcm.fill(-.125f);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 3072, true, revision);
+    broker->pump();
+    root.frame();
+    const auto afterSum = broker->stats();
+    check(MixFocusTestAccess::sumStrokeAt(focus, 0.f) && afterSum.taps == beforeSum.taps &&
+              afterSum.consumers == beforeSum.consumers,
+          "an opposed pair collapses the visible sum to zero immediately without acquiring another analysis reader");
     driver.play(false);
     doc->mailbox().publish(driver);
     focus.scope.setToggleState(false, juce::dontSendNotification);
