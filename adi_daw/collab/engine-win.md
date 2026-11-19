@@ -6,6 +6,10 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ## FOR THE DIRECTOR
 
+PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recovery for ADI-owned takes after a crash, with Stop's normal placement as one Undo step and a recording ID to prevent duplicate placement. This blocks automatic recovery after CT-02 and PD-05 provide the recording plan and session evidence.
+
+EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
+
 PD-12 needs a network project policy. SQLite WAL's shared index supports connections on one host. FULL sync alone does not give safe active editing across networked hosts. Recommend an active local .adi and a closed Save a Copy or backup on the share. If active editing on network storage is needed, rule on a separate rollback-journal mode and its reader/writer restrictions, then test it on the supported share. This blocks the network part of PD-12. [SQLite WAL](https://sqlite.org/wal.html#overview) · [SQLite over a network](https://www.sqlite.org/useovernet.html)
 
 DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
@@ -44,7 +48,7 @@ A fresh strict native Windows x64 MSVC Debug build passed 612 checks across five
 ## 2026-11-19 — Review order for the Windows engine seat
 
 - First, review `engine-win/sqlitecpp-wal-reset-fix` (`8a8f9a00`) independently. This changes the SQLite version actually linked by ADI. Run ADR-0024's full ABI matrix.
-- Take `engine-win/scanner-refresh` (`8adc7a92`) as the scanner review tip. It includes infrastructure-failure handling, validated read-only warm hits, helper self-test and forced Refresh. The cross-machine class identity question is above.
+- Take `engine-win/scanner-settings-roots` (`c800d747`) as the scanner review tip. It includes format-specific Settings sources, infrastructure-failure handling, validated read-only warm hits, helper self-test and forced Refresh. The cross-machine class identity question is above.
 - Review `engine-win/publication-safety-integration` (`20f27d66`) as one stack for export, presets, archive and collected-media publication. `engine-win/archive-document-control` (`dc3a8efc`) adds the cancellable worker entry for Window.
 - Review `engine-win/settings-safety-integration` (`31322dab`) for Settings recovery and the desktop save lifecycle, `engine-win/project-removable-sync` (`8c51acaa`) for project connection policy, and `engine-win/media-cache-root` (`0f4ea92e`) for the cache settings stack. `engine-win/wav-bwf-v2` (`a657d93b`) is ready as a writer prerequisite for EX-08.
 - Git's three-way merge check against main `e8b67c77` was clean for each listed tip individually. The entries below carry the separate native gates. Review the containing tip first where two entries describe the same stack. [Acceptance PR #642](https://github.com/arieladi/Adi/pull/642) is already open.
