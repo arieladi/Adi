@@ -5,6 +5,24 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 2026-11-19 — Stereo Drive oversampling refinement
+
+**PR requested** — `clones/adi-shaper-performance` at `b8f22f7d`. Title **Reduce idle shaper overhead, calibrate Crush and accelerate stereo Drive**. This update belongs to the existing performance request. All twelve focused MSVC Release tests passed with strict warnings, including both Pd paths. The following comparison isolates the effect of this change inside ADI.
+
+### Drive oversampling cost
+
+Drive now processes the two channels' FIR histories together. The center and half-sample interpolation phases use symmetric coefficient pairs. At 4× oversampling, the two odd phases use the sum and difference of their reversed coefficients. Decimation pairs taps around the middle coefficient. The existing nonlinear transfer, oversampling factors and 16-frame delay are preserved.
+
+Each cell gives the median reduction in processor-thread cycles per stereo frame against the previous ADi Drive kernel. Each pair ran the same two-second stereo kick-and-bass excerpt after 4,096 warm-up frames. Eleven pairs alternated execution order per mode and rate, on one pinned thread with precise floating-point arithmetic.
+
+| Sample rate | Saturate | Hard clip | Rectify |
+| --- | ---: | ---: | ---: |
+| 44.1 kHz | 36.97% | 35.53% | 36.09% |
+| 48 kHz | 38.46% | 35.33% | 35.50% |
+| 96 kHz | 23.69% | 23.27% | 21.87% |
+
+Both signed output channels matched bit-for-bit on the music at a fixed drive setting of 0.75, and on a second pass with moving drive, mode changes, trim changes and resets. Signed impulse, 199 Hz tone and 9 kHz alias probes also matched bit-for-bit at all three rates and in all three modes. The existing independent reference-response suite passed, including its 16-frame peak-location check, with maximum errors of 0.0002912 on its impulse matrix, 0.0000563 on its 199 Hz harmonic matrix and 0.0000302 on its 9 kHz alias fixture. These timings cover the Drive DSP kernel only.
+
 ## 2026-11-19 — Programmable processing order ready for review
 
 **PR requested** — `clones/adi-shaper-order` at `98df1ab9`. Title **Add recallable processing order for the eleven shaper stages**. Review after `clones/adi-shaper-performance`. IDs 716–726 set one integer rank per stage. Lower ranks process earlier; tied ranks use the original stage order. The existing 715 IDs and initial routing are preserved. A stage carries its controls and delay history with it across a move. The existing 16-sample Drive compensation follows the active stage in either position.
