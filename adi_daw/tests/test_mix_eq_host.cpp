@@ -440,6 +440,11 @@ template <class Sample> void neutralSilenceCanBeOmitted() {
         cleanPrelude &= exact(render(*parked, input, block, false), input);
     }
     check(cleanPrelude, "neutral EQ preserves the nonzero split-block prelude exactly");
+    check(parked->tailSamples() == 0, "a proven neutral EQ can sleep after the current callback");
+    parked->setOffline(true);
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "offline intent keeps the native EQ running independently of export quality");
+    parked->setOffline(false);
     const Audio silence{};
     bool cleanSilence = true;
     for (std::uint64_t block = 5; block <= 68; ++block)
@@ -455,12 +460,16 @@ template <class Sample> void neutralSilenceCanBeOmitted() {
 
     const bool edited = set(*continuous, 3, .7) && set(*parked, 3, .7); // Output Gain
     check(edited, "both native EQs accept the same subsequent owner edit");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "an owner edit wakes the parked EQ before its first processing callback");
     if (!edited) return;
     const auto next = signal(70);
     const auto expectedEdited = render(*continuous, next, 70, false);
     const auto actualEdited = render(*parked, next, 70, false);
     check(!exact(expectedEdited, next) && exact(actualEdited, expectedEdited),
           "the next owner gain edit changes audio and preserves the same initial transition after wake");
+    check(parked->tailSamples() == engine::kInfiniteTail,
+          "a processed gain transition is outside the proven zero-tail configuration");
 }
 }
 int main() {
