@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — DF-M60 (b) default-active VST3 shape handoff
+
+**PR requested** — branch `engine/vst3-effective-key-shape`, head `b1a9cee854cc87cc4c7265c7a9b05d7966c15cb8`, #651 parent `5500f46598e2544c35fea0bcd797ffc8452291dc`. Title **Preserve VST3 preparation when an active auxiliary bus is retapped**. Gate after #651 lands. Keep its per-bus adapter when the engine send/worker stack catches up.
+
+**For Mix View.** Connect and disconnect update route intent. The native adapter derives its preparation stamp and activation from the same effective auxiliary state. A default-active key keeps its physical width and its prepared SDK state while an unwired key reads silence. A dormant key still changes the shape and activates the changed layout once in either direction.
+
+**Gate** — GCC 14 and Clang 19 compiled the changed VST3 adapter, owned SDK module and native key fixture with warnings as errors. Each passed 97 checks under Xvfb, covering both graph widths, mono and stereo keys, exact programme arrays, silence, in-place processing, stamps and activation counts. With the exact #651 adapter restored, the same fixture produced eight expected stamp and activation failures at the default-active transitions. The four validators passed. This is the adapter follow-up from the Mix View log, independent of the Session and Document loans and Win's Windows shell gate.
+
 ## 2026-11-19 — DF-E12 replay fixture creation diagnostic
 
 **PR requested** — branch `engine/df-e12-store-create-diagnostic`, head `678f2e32c747f4387c1d631a4a9c504dc5c1fa31`, main base `88e2d94e`. Title **DF-E12: Report the StoreError from replay fixture creation**.
