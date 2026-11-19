@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Scanner warm hits without registry writes
+
+**PR requested** `engine-win/scanner-readonly-warm-hit` at `ede21caee28cad18ad13a16d759037df7a11919d`, stacked on the worker CLI branch `aa26f099`. DEV-25. A bounded, validated and unchanged success is read in two fresh statements without a pending ticket or write transaction. Blocked, busy, stale and invalid records use the normal admission/repair path. A manual or pending block installed while validating still wins. An unrelated WAL writer does not prevent a valid warm hit. Native tests count registry changes and exercise revalidation, late blockers, cancellation and mutations.
+
+Strict native MSVC x64 Debug `/W4 /WX` passed 289 checks across six suites. Three native symlink cases skipped for Windows privilege. No new speed claim. Keep the separate infrastructure-abandonment request `79db43b6` when integrating the scanner chains.
+
 ## 2026-11-19 — PD-12 project WAL durability measurement
 
 **PR requested** `engine-win/project-wal-benchmark` at `a3f425f8488798d4345bfa4331aef9e97d2a0e69`, based on main `796fe498`. Opt-in reproducible benchmark and BENCHMARKS evidence. Native x64 MSVC Release `/O2 /W4 /WX` passed the benchmark self-test and 50 project-file checks, with one optional Windows symlink skip.
