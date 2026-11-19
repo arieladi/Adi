@@ -73,6 +73,98 @@ void prefix() {
     cache.setLimits({0,0});check(fs::exists(target),"a live progressive lease prevents completed target eviction");
     file.reset();check(wait([&]{const auto entries=cache.entries();return entries.empty() || entries[0].pins==0;}),"retired worker relinquishes the last completed job pin");cache.trim();check(!fs::exists(target),"last lease closes readers and returns the cache pin for eviction");
 }
+
+void savedHashesOnSessionOpen() {
+    test::TempDirectory temp{"progressive", "saved-hashes"};
+    const auto root = temp.path();
+    const auto input = fixture(ADI_DECODE_FIXTURES, "tone16.flac");
+    std::ifstream stream(input, std::ios::binary);
+    const std::string original{std::istreambuf_iterator<char>(stream), {}};
+    constexpr std::size_t streamInfoEnd = 4 + 4 + 34;
+    if (original.size() <= streamInfoEnd || original.substr(0, 4) != "fLaC" ||
+        original[4] != 0 || original[7] != 34)
+        throw std::runtime_error("unexpected FLAC fixture header");
+    const auto info = inspectPcm(input);
+    if (!info.frames || info.channels != 2 || info.sampleRate != 48000)
+        throw std::runtime_error("unexpected FLAC fixture dimensions");
+    DecodeCache cache(root / "decoded", {1ULL << 30, 0}, cacheHooks());
+    StoreError error{};
+    auto store = Store::createEmpty(root / "project.adi", error);
+    if (!store) throw std::runtime_error("cannot create saved-hash project");
+    store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Saved Digests',48000);"
+                     "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+                     "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Main',1);");
+    std::string firstDigest;
+    fs::path firstSource, firstDecoded;
+    {
+        SQLite::Transaction transaction(store->db());
+        SQLite::Statement mediaRow(store->db(),
+            "INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(?,?,?,'flac')");
+        SQLite::Statement clip(store->db(),
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(?,1,'audio',1,?,200000000)");
+        SQLite::Statement audio(store->db(),
+            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(?,?,0,?)");
+        for (int id = 1; id <= 50; ++id) {
+            const auto name = std::to_string(id) + ".flac";
+            const auto source = root / name;
+            // Distinct valid FLAC digests with the same audio frames. Insert a
+            // PADDING block after STREAMINFO and leave the existing last bit.
+            const std::array<char, 4> paddingHeader{1, 0, 0, static_cast<char>(id)};
+            std::ofstream out(source, std::ios::binary);
+            out.write(original.data(), static_cast<std::streamsize>(streamInfoEnd));
+            out.write(paddingHeader.data(), static_cast<std::streamsize>(paddingHeader.size()));
+            out << std::string(static_cast<std::size_t>(id), '\0');
+            out.write(original.data() + streamInfoEnd, static_cast<std::streamsize>(original.size() - streamInfoEnd));
+            out.close();
+            if (!out) throw std::runtime_error("cannot write saved-hash fixture");
+            const auto digest = media::blake3File(source);
+            if (!digest) throw std::runtime_error("cannot hash saved-hash fixture");
+            const auto decoded = cache.playable(source);
+            cache.release(decoded);
+            if (id == 1) { firstDigest = digest.hex; firstSource = source; firstDecoded = decoded; }
+            mediaRow.bind(1, id); mediaRow.bind(2, digest.hex); mediaRow.bind(3, name);
+            mediaRow.exec(); mediaRow.reset();
+            clip.bind(1, id); clip.bind(2, static_cast<std::int64_t>(id - 1) * 1000000000);
+            clip.exec(); clip.reset();
+            audio.bind(1, id); audio.bind(2, id); audio.bind(3, static_cast<std::int64_t>(*info.frames));
+            audio.exec(); audio.reset();
+        }
+        transaction.commit();
+    }
+    check(cache.entries().size() == 50, "fifty distinct FLAC files have completed cache entries");
+    ProgressiveDecoder decoder(cache);
+    engine::Session session;
+    engine::SessionSpec spec{2, 48000, 64};
+    spec.progressiveDecoder = &decoder;
+    session.graph().setFadeFrames(0);
+    check(session.load(*store, {}, spec) && decoder.sourceHashReads() == 0 &&
+              cache.stats().hits == 50 && session.clips()->problems().empty(),
+          "opening fifty completed saved sources hashes none and uses all fifty cache entries");
+    const auto reference = pcm(firstDecoded);
+    std::array<float, 64> left{}, right{};
+    std::array<float*, 2> output{left.data(), right.data()};
+    session.transport().play();
+    check(session.clips()->prime(), "warm saved clip can prime its first page");
+    engine::AudioIo io;
+    io.out = output.data(); io.numOut = 2; io.frames = 64;
+    session.process(io);
+    bool exact = decoder.sourceHashReads() == 0;
+    for (std::size_t i = 0; i < left.size(); ++i)
+        exact = exact && left[i] == reference[2 * i] && right[i] == reference[2 * i + 1];
+    check(exact, "first real Session block equals saved PCM without a source digest");
+
+    DecodeCache empty(root / "empty", {1ULL << 30, 0}, cacheHooks());
+    ProgressiveDecoder cold(empty);
+    bool mismatch = false;
+    try { (void)cold.openSaved(firstSource, info, std::string(64, 'a')); }
+    catch (const DecodeError& refusal) { mismatch = refusal.problem() == DecodeProblem::Unreadable; }
+    check(mismatch && cold.sourceHashReads() == 1 && empty.entries().empty(),
+          "a cold mismatch hashes once and never enters the cache or starts a job");
+    auto job = cold.openSaved(firstSource, info, firstDigest);
+    check(wait([&] {return job->snapshot().status != ProgressiveStatus::Pending;}) &&
+              job->snapshot().status == ProgressiveStatus::Complete && cold.sourceHashReads() == 3,
+          "a matching cold source is checked at admission and before publishing its decode");
+}
 void cancellationAndFailure() {
     test::TempDirectory temp{"progressive","failure"};DecodeCache cache(temp.path()/"cache",{1ULL<<30,0},cacheHooks());Pause pause;ProgressiveDecoder decoder(cache,pause.hooks());
     const auto source=temp.path()/"source.ogg";fs::copy_file(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),source);
@@ -230,4 +322,4 @@ void nativeAac() {
     session(movie,"aac_session");
 }
 }
-int main(){try{prefix();cancellationAndFailure();poolBounds();publication();conversionAndLoop();session(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),"ogg_session");nativeAac();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{prefix();savedHashesOnSessionOpen();cancellationAndFailure();poolBounds();publication();conversionAndLoop();session(fixture(ADI_PCM_EXTRA_FIXTURES,"long.ogg"),"ogg_session");nativeAac();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

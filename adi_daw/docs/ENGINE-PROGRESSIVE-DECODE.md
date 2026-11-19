@@ -71,6 +71,15 @@ Ordinary LRU eviction/settings apply to completed targets. Private files are
 removed when their job retires; crash leftovers need cache maintenance and are
 never mistaken for complete entries. This change adds no startup orphan reaper.
 
+For a plain clip with a valid saved BLAKE3, Session first inspects the source
+header and can pin the complete named decode when rate, channels and frames
+agree. Those PCM bytes are the project's saved media. This warm route does no
+whole-source digest. If the original pathname now holds a same-shape file, the
+warm route still serves the saved cached audio. A cold route verifies the
+current bytes before sharing or starting a progressive job, then rechecks them
+at the end of decoding. An absent or legacy digest uses the ordinary hash path.
+This read policy leaves filesystem relink and Offline diagnostics separate.
+
 Warp preparation and compressed sources without a cheap exact nonempty length
 still use complete decoding before playback. Warp also retains its existing
 full transient-analysis import path. The job system is not a general-purpose
@@ -81,5 +90,8 @@ then plays actual Sessions at 32/64 without completing or warming that cache.
 It compares 44.1 kHz resampling, source offsets and loop seeks against a separate
 complete WAV, and exercises shared leases, queue/worker bounds, cancellation,
 source mutation, concurrent publication, disk limits, pins and callback I/O and
-allocation guards. Platform execution and final gate details are in the engine
+allocation guards. The saved-digest acceptance opens 50 distinct FLAC sources
+with completed cache entries, checks zero whole-file source digests and matches
+the Session's first PCM block. It also checks the cold mismatch and verified
+publication paths. Platform execution and final gate details are in the engine
 lane log; Linux evidence does not establish Windows/macOS execution or Live parity.
