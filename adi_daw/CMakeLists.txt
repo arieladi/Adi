@@ -1904,6 +1904,19 @@ target_compile_definitions(adi_decode_tests PRIVATE
 add_test(NAME adi_decode_tests COMMAND adi_decode_tests)
 set_tests_properties(adi_decode_tests PROPERTIES TIMEOUT 120)
 
+add_executable(adi_decode_cache_consistency_tests tests/test_decode_cache_consistency.cpp)
+target_link_libraries(adi_decode_cache_consistency_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_decode_cache_consistency_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+add_test(NAME adi_decode_cache_consistency_tests COMMAND adi_decode_cache_consistency_tests)
+
+add_executable(adi_decode_space_tests tests/test_decode_space.cpp)
+target_link_libraries(adi_decode_space_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_decode_space_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+add_test(NAME adi_decode_space_tests COMMAND adi_decode_space_tests)
+set_tests_properties(adi_decode_space_tests PROPERTIES TIMEOUT 120)
+
 add_executable(adi_pcm_stream_tests tests/test_pcm_stream.cpp)
 target_link_libraries(adi_pcm_stream_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_pcm_stream_tests PRIVATE
