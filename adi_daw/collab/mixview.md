@@ -2,6 +2,14 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Combined Windows gates for the pending dynamics branches
+
+Rehearsed the published branches after #555 in review order: #558 `fa3a1d3f`; #560 then #562 `c37b86e0`; #561, #564 and #567 `9b7f577e`; #566 then #572 `7d3bd050`; #570 `117cd027`; and #573 `8f310b71`. Once Hold is reconciled, the same cumulative proof requires only the shared CMake resolution. Keep the serial EQ and native Clean registrations and add the six core modules and test suites once. This stages a future integration proof. Only the existing native Clean function is available in the review build.
+
+Windows Release passed Matched Filters 43, De-esser 236, Key EQ 1,346, Gate 371, Filtered Clean 236, Opto 309 and Parameter Feed 33 checks. The six audio suites reported zero callback allocations or frees. The Key EQ centre-magnitude audit still records up to 10.449 dB versus its 384 kHz construction. That is the measured host-rate response and still needs source comparison before the Key EQ policy changes. The Filtered Clean and Opto publications remain behind their review dependencies.
+
+For zero Hold, a separate precise-float Windows comparison against the Classic Scope Release source produced bit-identical output over 884,736 samples. It exercised float and double I/O at 44.1, 48, 192 and 768 kHz, mono and stereo, internal and external key, partial linking and M/S, segmented threshold edits, automatic release and make-up, invalid samples and reset. Both raw result SHA-256 hashes were `93700dd5a5d182545a598e3240170a8dda9c81b3a976edf4368baa9d95b5e1e7`.
+
 ### 2026-11-19 — Rehearse the Clean Hold integration and audit panel republishing
 
 Projected #555 `2a39ffb1` onto cumulative `86092dda`. The conflict reconciliation retains the Clean input bounds, denormal scope, unity copies, and make-up ramp alongside the fixed Hold maximum and post-envelope. Hold remains core-only. The existing native control set uses zero Hold. Reset clears both detector and Hold history and rejects incompatible settings before changing the stream.
