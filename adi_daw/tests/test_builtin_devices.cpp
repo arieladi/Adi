@@ -38,6 +38,7 @@ std::unique_ptr<DeviceInstance> load(const char* uid) {
     if(!instance)throw std::runtime_error(error);
     return instance;
 }
+#endif
 struct Project {
     test::TempDirectory temporary{"builtin_devices","project"};std::unique_ptr<Store> store;
     Project() {
@@ -46,7 +47,6 @@ struct Project {
         store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Audio'),(9,'master','Main')");
     }
 };
-#endif
 void catalogueAndHost() {
     check(builtinCatalog().size()==18 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
@@ -101,6 +101,24 @@ void paramsAndState() {
 #endif
 }
 void insertionAndHistory() {
+    {
+        Project project;auto& store=*project.store;auto& db=store.db();
+        rows::PluginRef ref;
+        ref.uid="test.shell";ref.name="Third-party effect";ref.vendor="Test vendor";ref.version="2.1";
+        ref.subtype="effect";ref.pathHint="fixture/shell.vst3";ref.format="vst3";ref.isShell=true;ref.shellId=71;
+        const auto added=preparePluginInsert(store,ref,1);
+        check(added.ok && commitBuiltinInsert(store,added).ok &&
+              db.execAndGet("SELECT shell_id FROM plugin_refs").getInt64()==71 &&
+              db.execAndGet("SELECT path_hint FROM plugin_refs").getString()==ref.pathHint,
+              "third-party insertion commits the exact resolved plugin identity, path and channel");
+        check(History(store).undo().ok && db.execAndGet("SELECT count(*) FROM devices").getInt()==0 &&
+              db.execAndGet("SELECT count(*) FROM plugin_refs").getInt()==0 &&
+              db.execAndGet("SELECT count(*) FROM device_chains").getInt()==0,
+              "one Undo removes only the external insertion and its new ref/chain");
+        check(History(store).redo().ok && preparePluginInsert(store,ref,1).referenceId==added.referenceId,
+              "redo and another insertion reuse the resolved third-party identity");
+        ref.format="au";check(!preparePluginInsert(store,ref,1).ok,"unsupported external formats refuse before mutation");
+    }
 #if ADI_WITH_PD
     Project project;auto& store=*project.store;auto& db=store.db();
     const auto prepared=prepareBuiltinInsert(store,"org.adidaw.builtin.utility",1);
@@ -140,6 +158,84 @@ void insertionAndHistory() {
           !prepareBuiltinInsert(store,"org.adidaw.builtin.utility",9,prepared.deviceId).ok,"unknown/unavailable devices, missing track and selection on another track refuse");
 #endif
 }
+void thirdPartyPlacement() {
+    Project project;
+    auto& store = *project.store;
+    auto& db = store.db();
+    const auto plugin = [](const char* uid, const char* name, const char* kind) {
+        rows::PluginRef ref;
+        ref.format = "clap";
+        ref.uid = uid;
+        ref.name = name;
+        ref.subtype = kind;
+        return ref;
+    };
+    const auto order = [&] {
+        std::vector<std::int64_t> result;
+        SQLite::Statement rows(db,"SELECT devices.id FROM devices JOIN device_chains ON device_chains.id=devices.chain_id "
+                                 "WHERE device_chains.track_id=1 ORDER BY devices.ord,devices.id");
+        while (rows.executeStep()) result.push_back(rows.getColumn(0).getInt64());
+        return result;
+    };
+    const auto effect = plugin("test.audio","Audio effect","effect");
+    const auto midi = plugin("test.midi","MIDI effect","midi_effect");
+    const auto instrument = plugin("test.instrument","Existing synth","instrument");
+    const auto replacement = plugin("test.replacement","Replacement synth","instrument");
+    const auto add = [&](const rows::PluginRef& ref,std::optional<std::int64_t> before = {},
+                         const PluginInsertOptions& options = {}) {
+        const auto prepared = preparePluginInsert(store,ref,1,before,options);
+        const auto committed = commitBuiltinInsert(store,prepared);
+        if (!committed.ok) throw std::runtime_error(committed.error);
+        return prepared.deviceId;
+    };
+    const auto e1 = add(effect);
+    const auto m1 = add(midi);
+    const auto i1 = add(instrument,{}, {false,RouteChoice::Plain});
+    const auto i2 = add(instrument);
+    const auto e2 = add(effect,m1);
+    const auto m2 = add(midi,e1);
+    const auto expected = std::vector<std::int64_t>{m1,m2,i1,i2,e2,e1};
+    check(order() == expected, "third-party MIDI effects stay before the first instrument and audio effects after the last");
+    const auto head = OpJournal(store).headSeq();
+    const PluginInsertOptions replace{true,RouteChoice::MpeMidi};
+    check(!preparePluginInsert(store,replacement,1,{},replace).ok &&
+          !preparePluginInsert(store,effect,1,{},replace).ok && OpJournal(store).headSeq()==head,
+          "replacement requires an instrument and an explicit target when several are present");
+    db.exec("INSERT INTO plugin_params(device_id,param_id,normalized_value) VALUES(" +
+            std::to_string(i1) + ",'shape',0.375)");
+    const auto prepared = preparePluginInsert(store,replacement,1,i1,replace);
+    check(prepared.ok && order()==expected && OpJournal(store).headSeq()==head,
+          "preparing an anchored replacement leaves the project and selection order intact");
+    if (!prepared.ok) return;
+    db.exec("CREATE TRIGGER reject_replacement BEFORE INSERT ON devices WHEN NEW.name='Replacement synth' "
+            "BEGIN SELECT RAISE(ABORT,'injected insert failure'); END");
+    check(!commitBuiltinInsert(store,prepared).ok && order()==expected &&
+          db.execAndGet("SELECT normalized_value FROM plugin_params WHERE param_id='shape'").getDouble()==0.375 &&
+          OpJournal(store).headSeq()==head, "a failed insert rolls back removal, reference and instance state");
+    db.exec("DROP TRIGGER reject_replacement");
+    check(commitBuiltinInsert(store,prepared).ok &&
+          order()==std::vector<std::int64_t>{m1,m2,prepared.deviceId,i2,e2,e1} &&
+          db.execAndGet("SELECT route FROM device_expression_routes WHERE device_id=" +
+                       std::to_string(prepared.deviceId)).getString()=="mpe_midi",
+          "anchored replacement preserves the slot and commits the chosen expression route");
+    History history(store);
+    const auto step = history.nextUndo();
+    check(step && step->label=="Insert Replacement synth" && history.undo().ok && order()==expected &&
+          db.execAndGet("SELECT normalized_value FROM plugin_params WHERE param_id='shape'").getDouble()==0.375 &&
+          db.execAndGet("SELECT route FROM device_expression_routes WHERE device_id="+std::to_string(i1)).getString()=="plain" &&
+          db.execAndGet("SELECT COUNT(*) FROM plugin_refs WHERE uid='test.replacement'").getInt()==0,
+          "one Undo restores the previous instrument, its parameter and route, and removes the new reference");
+    check(history.redo().ok && order()==std::vector<std::int64_t>{m1,m2,prepared.deviceId,i2,e2,e1},
+          "Redo restores the replacement with the same identity and placement");
+    const auto rack = i2 + 100;
+    db.exec("INSERT INTO devices(id,chain_id,ord,is_rack,rack_kind) VALUES(" + std::to_string(rack) +
+            "," + std::to_string(prepared.chainId) + ",8,1,'instrument')");
+    const auto afterRack = add(effect,rack);
+    const auto withRack = order();
+    check(withRack.size()==8 && withRack[6]==rack && withRack[7]==afterRack &&
+          !preparePluginInsert(store,replacement,1,rack,replace).ok,
+          "instrument racks bound audio placement while a replacement protects their nested devices");
+}
 void playingSession() {
 #if ADI_WITH_PD
     Project project;auto& store=*project.store;auto& db=store.db();
@@ -160,4 +256,4 @@ void playingSession() {
 #endif
 }
 }
-int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{catalogueAndHost();paramsAndState();insertionAndHistory();thirdPartyPlacement();playingSession();}catch(const std::exception& exception){counting=false;check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
