@@ -33,6 +33,8 @@ namespace adi {
 
 enum class ScanDisposition { Succeeded, Abandoned, Failed, Rejected };
 enum class ScanFailureKind { Rejected, Crashed, TimedOut };
+// Refresh retries metadata, never re-enables a manual/pending/two-strike block.
+enum class ScanCacheMode { Reuse, Refresh };
 struct ScanFailure {
     ScanFailureKind kind = ScanFailureKind::Rejected;
     std::string reason;
@@ -116,8 +118,11 @@ public:
     /// failures, never pending/manual/legacy blocks. Unchanged deterministic
     /// failures or two crashes/timeouts return cachedFailure without a ticket.
     /// A first crash/timeout permits one more explicit probe; no retry loop.
+    /// Refresh bypasses matching rejected results only. Existing cache state
+    /// stays until token-checked completion; abandonment preserves that state.
     std::optional<ScanAdmission> beginStampedScan(const std::string& format,
-        const std::string& path, const std::string& stamp, std::int64_t nowUtc, std::string& error);
+        const std::string& path, const std::string& stamp, std::int64_t nowUtc, std::string& error,
+        ScanCacheMode mode = ScanCacheMode::Reuse);
     /// Atomically retire stale success metadata and finish this ticket with a
     /// typed failure. Only crash/timeout consume strikes; rejected metadata is
     /// immediately reusable as a negative result. Returns the resulting count.

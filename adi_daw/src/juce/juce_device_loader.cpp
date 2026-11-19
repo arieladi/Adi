@@ -59,7 +59,7 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         if(mode==DiscoveryMode::CacheOnly || !publishedCatalogue_)hydrationError_=message;
     };
     try {
-        if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly) {
+        if(mode!=DiscoveryMode::Incremental && mode!=DiscoveryMode::CacheOnly && mode!=DiscoveryMode::Refresh) {
             failed("invalid discovery mode",scan::State::Invalid);return result;
         }
         hydrationAttempted_=true;
@@ -68,14 +68,16 @@ std::shared_ptr<const DiscoveryResult> JuceDeviceLoader::discoverOwned(Discovery
         if(!allowLegacyFallback)catalogueHydrated_=true;
         auto stagedVst3=std::make_unique<juce::KnownPluginList>();
         std::vector<ClapPluginRef> stagedClap;
-        if(mode==DiscoveryMode::Incremental) {
+        if(mode!=DiscoveryMode::CacheOnly) {
             ++stats_.scans;
+            auto config=scanConfig_;
+            config.cacheMode=mode==DiscoveryMode::Refresh?ScanCacheMode::Refresh:ScanCacheMode::Reuse;
             if(scanConfig_.process.cancel && scanConfig_.process.cancel->load(std::memory_order_relaxed)) {
                 result->report.cancelled=true;failed("discovery cancelled",scan::State::Cancelled);return result;
             }
-            result->report=vst3_.scan(vst3Paths_,*stagedVst3,scanConfig_);
+            result->report=vst3_.scan(vst3Paths_,*stagedVst3,config);
             if(result->report.complete && !result->report.cancelled) {
-                auto clapReport=clap_.scan(clapPaths_,scanConfig_);
+                auto clapReport=clap_.scan(clapPaths_,config);
                 result->report.complete=clapReport.complete;result->report.cancelled=clapReport.cancelled;
                 for(auto& failure:clapReport.failures)result->report.failures.push_back(std::move(failure));
                 if(result->report.complete && !result->report.cancelled)stagedClap=clap_.plugins();

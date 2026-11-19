@@ -73,7 +73,10 @@ struct Fixture {
 int helper(const std::vector<std::string>& args) {
     const auto path=native(args[3]);std::ofstream(marker(path),std::ios::app)<<"launch\n";
     const auto module=binary(path);if(!fs::exists(module))return 65;
-    const auto version=content(module);
+    // Owned protocol fixture can vary a reply without changing the module stamp.
+    // This is not represented as a native plug-in factory enumeration.
+    const auto response=native(utf8(path)+".reply");
+    const auto version=content(fs::exists(response)?response:module);
     if (version == "parallel-gate") {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
         for (;;) {
@@ -140,6 +143,103 @@ void reuseAndChanges(const fs::path& self) {
     check(scanner->probe("clap",path).state==State::Quarantined && launches(path)==3,"a manual block beats an otherwise warm success cache");
     registry->unblockScan("clap",utf8(fs::canonical(path)),f.error);
     check(!scanner->probe("clap",path).cacheHit && launches(path)==4,"explicit re-enable discards cached success and performs a new child scan");
+}
+void refreshMetadata(const fs::path& self) {
+    Fixture f(self);const auto path=f.candidate();auto reuse=f.scanner();auto registry=f.registry();
+    check(reuse->probe("clap",path).state==State::Ready && launches(path)==1,"refresh setup seeds one successful child");
+    const auto time=fs::last_write_time(path);const auto size=fs::file_size(path);
+    write(native(utf8(path)+".reply"),"v2 refreshed reply");
+    check(reuse->probe("clap",path).plugins.front().version=="v1" && launches(path)==1,
+          "ordinary reuse ignores the test reply override while candidate stamp is unchanged");
+    f.config.cacheMode=ScanCacheMode::Refresh;auto refresh=f.scanner();
+    const auto result=refresh->probe("clap",path);
+    check(result.state==State::Ready && !result.cacheHit && result.plugins.front().version=="v2 refreshed reply" && launches(path)==2 &&
+          fs::last_write_time(path)==time && fs::file_size(path)==size,"explicit refresh probes an unchanged successful candidate and replaces metadata");
+    auto peer=refresh->openPeer(f.error);if(!peer)throw std::runtime_error(f.error);
+    check(peer->probe("clap",path).state==State::Ready && launches(path)==3,"refresh cache mode survives worker-peer creation");
+    check(reuse->probe("clap",path).cacheHit && launches(path)==3,"default reuse consumes the newly validated packet without a child");
+    const auto rejected=f.candidate("rejected.clap","reject");reuse->probe("clap",rejected);
+    check(reuse->probe("clap",rejected).failureCacheHit && launches(rejected)==1,"deterministic failure remains cached under the default policy");
+    write(native(utf8(rejected)+".reply"),"recovered");
+    check(refresh->probe("clap",rejected).state==State::Ready && launches(rejected)==2 && reuse->probe("clap",rejected).cacheHit,
+          "refresh retries a same-stamp deterministic rejection and replaces it with validated success");
+    write(native(utf8(rejected)+".reply"),"empty");
+    const auto empty=refresh->probe("clap",rejected),negative=reuse->probe("clap",rejected);
+    check(empty.state==State::Failed && !empty.failureCacheHit && negative.state==State::Failed && negative.failureCacheHit &&
+          registry->scanBlocks(f.error)->empty() && launches(rejected)==3,"fresh empty metadata becomes a negative result, never quarantine or old success");
+    write(native(utf8(rejected)+".reply"),"channel-write");
+    check(refresh->probe("clap",rejected).state==State::Unavailable && reuse->probe("clap",rejected).failureCacheHit && launches(rejected)==4,
+          "abandoning refresh preserves the previous deterministic negative result");
+    SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+    db.exec("CREATE TRIGGER refuse_refresh BEFORE INSERT ON plugin_scan_blocks WHEN NEW.state='pending' BEGIN SELECT RAISE(ABORT,'refresh denied'); END");
+    check(refresh->probe("clap",path).state==State::Quarantined && reuse->probe("clap",path).cacheHit && launches(path)==3,
+          "refresh requires durable admission even while ordinary warm reuse remains read-only");
+}
+void refreshSafety(const fs::path& self) {
+    Fixture f(self);const auto path=f.candidate();auto reuse=f.scanner();reuse->probe("clap",path);
+    auto registry=f.registry();SQLite::Database db(utf8(f.config.registry),SQLite::OPEN_READWRITE);
+    const auto packet=[&] {return db.execAndGet("SELECT packet FROM plugin_scan_cache").getString();};
+    const auto before=packet();f.config.cacheMode=ScanCacheMode::Refresh;
+    std::atomic<bool> cancel{false};f.config.process.cancel=&cancel;auto refresh=f.scanner();
+    for(const auto* reason:{"bad-request","channel-setup","channel-write","unsupported"}) {
+        write(native(utf8(path)+".reply"),reason);const auto result=refresh->probe("clap",path);
+        check(result.state==State::Unavailable && packet()==before && registry->scanBlocks(f.error)->empty() && reuse->probe("clap",path).cacheHit,
+              "infrastructure-abandoned refresh retains the previous good packet and no candidate penalty");
+    }
+    write(native(utf8(path)+".reply"),"new valid metadata");
+    struct Late {
+        std::atomic<bool>* cancel=nullptr;PluginRegistry* registry=nullptr;bool mutate=false;
+        static bool validate(const std::vector<Plugin>&,const std::string& path,void* context,std::string& error) {
+            auto& late=*static_cast<Late*>(context);
+            if(late.cancel)late.cancel->store(true);
+            if(late.mutate)write(native(path),"changed during fresh validation");
+            return !late.registry || late.registry->blockScan("clap",path,"late refresh block",124,error);
+        }
+    } late{&cancel};
+    const auto launched=launches(path);cancel=true;
+    check(refresh->probe("clap",path).state==State::Cancelled && launches(path)==launched && packet()==before,
+          "already-cancelled refresh never launches or changes cached success");
+    cancel=false;const auto cancelled=refresh->probe("clap",path,Late::validate,&late);cancel=false;
+    check(cancelled.state==State::Cancelled && cancelled.plugins.empty() && launches(path)==launched+1 && packet()==before &&
+          registry->scanBlocks(f.error)->empty() && reuse->probe("clap",path).cacheHit,"late fresh-validation cancellation preserves existing good metadata");
+    late.registry=registry.get();const auto blocked=refresh->probe("clap",path,Late::validate,&late);cancel=false;
+    check(blocked.state==State::Quarantined && blocked.plugins.empty() && registry->scanBlocks(f.error)->front().state==ScanBlockState::Blocked,
+          "late manual block remains authoritative even when refreshed validation also cancels");
+    const auto count=launches(path);write(path,"changed under manual block");
+    check(refresh->probe("clap",path).state==State::Quarantined && launches(path)==count,
+          "refresh cannot retire a manual block even after a reliable file change");
+    registry->unblockScan("clap",utf8(fs::canonical(path)),f.error);
+    reuse->probe("clap",path);auto pending=registry->beginScan("clap",utf8(fs::canonical(path)),125,f.error);
+    if(!pending)throw std::runtime_error(f.error);const auto pendingCount=launches(path);
+    check(refresh->probe("clap",path).state==State::Quarantined && launches(path)==pendingCount &&
+          registry->finishScan(*pending,ScanDisposition::Abandoned,"",126,f.error),"refresh refuses a live pending owner and leaves its ticket completable");
+    const auto stablePacket=packet();late={nullptr,nullptr,true};
+    check(refresh->probe("clap",path,Late::validate,&late).state==State::Unavailable && packet()==stablePacket &&
+          registry->scanBlocks(f.error)->empty(),"a changed-during-refresh candidate cannot publish under the old stamp");
+    const auto afterChange=reuse->probe("clap",path);
+    check(afterChange.state==State::Ready && !afterChange.cacheHit,"a stored old packet is never reused for the changed candidate");
+    const auto stableAgain=packet();db.exec("CREATE TRIGGER refuse_refresh_cache BEFORE INSERT ON plugin_scan_cache BEGIN SELECT RAISE(ABORT,'cache denied'); END");
+    const auto failed=refresh->probe("clap",path);
+    check(failed.state==State::Quarantined && failed.plugins.empty() && packet()==stableAgain &&
+          registry->scanBlocks(f.error)->front().state==ScanBlockState::Pending,"failed refresh publication rolls back packet replacement and preserves its pending owner");
+}
+void refreshStrikes(const fs::path& self) {
+    Fixture f(self);f.config.cacheMode=ScanCacheMode::Refresh;f.config.process.timeout=std::chrono::milliseconds(500);
+    auto refresh=f.scanner();auto registry=f.registry();
+    for(const auto* reason:{"crash","hang"}) {
+        const auto path=f.candidate((std::string(reason)+".clap").c_str(),reason);
+        const auto first=refresh->probe("clap",path),second=refresh->probe("clap",path),third=refresh->probe("clap",path);
+        check(first.failureStrikes==1 && second.failureStrikes==2 && third.state==State::Quarantined && third.failureCacheHit && launches(path)==2,
+              "explicit refresh does not bypass two crash/timeout strikes");
+        fs::last_write_time(path,fs::last_write_time(path)+std::chrono::seconds(3));write(native(utf8(path)+".reply"),"healthy");
+        check(refresh->probe("clap",path).state==State::Ready && launches(path)==3,
+              "reliable changed stamp still retires only the typed automatic block during refresh");
+    }
+    const auto candidate=f.candidate();
+    check(!registry->beginStampedScan("clap",utf8(fs::canonical(candidate)),std::string(64,'a'),125,f.error,static_cast<ScanCacheMode>(999)),
+          "invalid registry cache mode refuses before admission");
+    Fixture invalid(self);invalid.config.cacheMode=static_cast<ScanCacheMode>(999);
+    check(!Scanner::open(invalid.config,invalid.error) && !fs::exists(invalid.config.registry),"invalid scanner cache mode refuses before registry creation");
 }
 void validationAndRaces(const fs::path& self) {
     Fixture f(self);const auto path=f.candidate();auto scanner=f.scanner();scanner->probe("clap",path);
@@ -647,7 +747,7 @@ void parallelProbeGate(const fs::path& self) {
 
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);refreshMetadata(self);refreshSafety(self);refreshStrikes(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

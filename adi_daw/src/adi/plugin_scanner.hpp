@@ -35,6 +35,9 @@ struct Config {
     std::int64_t (*clock)() noexcept = systemUtcMicros;
     // Explicit batch concurrency. A custom clock must be thread-safe above one worker.
     unsigned workers = 1;
+    // Explicit Refresh bypasses successful/rejected cache metadata, not blocks.
+    // It neither purges other candidates nor changes the persisted schema.
+    ScanCacheMode cacheMode = ScanCacheMode::Reuse;
 };
 inline constexpr unsigned kMaximumProbeWorkers = 4;
 enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };

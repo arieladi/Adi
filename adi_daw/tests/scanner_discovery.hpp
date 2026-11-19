@@ -156,6 +156,63 @@ inline Json modes() {
         {"old_snapshots_unchanged",true},{"cancel_retains_snapshot",true},{"failure_retains_snapshot",true},
         {"bad_candidate_keeps_healthy_siblings",true},{"corrupt_format_whole_publication_refused",true},{"callback_refused",true}};
 }
+inline void refreshModes() {
+    using device::DiscoveryMode;using device::DiscoveryOutcome;
+    TempDirectory scratch("discovery_operation","refresh");const auto root=scratch.path()/"modules";fs::create_directory(root);
+    const auto module=root/"refresh.clap";copyClap(module);
+    scan::Config config;config.registry=scratch.path()/"registry.sqlite";config.executable=scratch.path()/"owned-helper.exe";
+    config.cacheMode=ScanCacheMode::Refresh;config.workers=4;
+    fs::copy_file(media::pathFromUtf8(ADI_CATALOGUE_SCANNER),config.executable);
+    std::atomic<bool> cancel{false};config.process.cancel=&cancel;
+    device::JuceDeviceLoader loader(false);loader.setScanConfig(config);loader.addSearchPath(juce::File(juce::String::fromUTF8(text(root).c_str())));
+    const auto cold=loader.discover(DiscoveryMode::Incremental),warm=loader.discover(DiscoveryMode::Incremental);
+    require(cold && warm && cold->outcome==DiscoveryOutcome::Published && warm->outcome==DiscoveryOutcome::Published &&
+        pids(module).child==1 && pids(module).parent==0,"Incremental must explicitly reuse even if the stored raw Config requested Refresh");
+    const auto binary=fs::is_directory(module)?module/"Contents"/"MacOS"/module.stem():module;
+    const auto stamp=fs::last_write_time(binary);const auto size=fs::file_size(binary);
+    const auto refreshed=loader.discover(DiscoveryMode::Refresh);
+    require(refreshed && refreshed->mode==DiscoveryMode::Refresh && refreshed->outcome==DiscoveryOutcome::Published &&
+        refreshed->catalogue->clap.size()==1 && pids(module).child==2 && pids(module).parent==0 &&
+        fs::last_write_time(binary)==stamp && fs::file_size(binary)==size && loader.clap().libraryCount()==0,
+        "real Refresh must enumerate the unchanged CLAP in one new child and publish metadata only");
+    const auto reused=loader.discover(DiscoveryMode::Incremental);
+    require(reused && reused->outcome==DiscoveryOutcome::Published && pids(module).child==2,
+        "Refresh must not turn the next Incremental into another fresh scan");
+    cancel=true;const auto cancelled=loader.discover(DiscoveryMode::Refresh);cancel=false;
+    require(cancelled && cancelled->outcome==DiscoveryOutcome::Cancelled && cancelled->catalogue==reused->catalogue && pids(module).child==2,
+        "cancelled Refresh must retain the accepted catalogue without native module loading");
+    fs::remove(config.executable);const auto unavailable=loader.discover(DiscoveryMode::Refresh);
+    require(unavailable && unavailable->outcome==DiscoveryOutcome::Failed && unavailable->catalogue==reused->catalogue,
+        "unavailable Refresh helper must retain the accepted immutable catalogue");
+    const auto cached=loader.discover(DiscoveryMode::CacheOnly);
+    require(cached && cached->outcome==DiscoveryOutcome::Published && cached->catalogue->clap.size()==1 && pids(module).child==2,
+        "abandoned Refresh must retain the persisted good metadata for helper-free CacheOnly");
+    fs::copy_file(media::pathFromUtf8(ADI_CATALOGUE_SCANNER),config.executable);
+    const auto rejected=root/"rejected.clap";copyClap(rejected);std::string error;
+    auto scanner=scan::Scanner::open(config,error);require(scanner!=nullptr,"open real scanner for rejected metadata fixture");
+    const auto reject=+[](const std::vector<scan::Plugin>&,const std::string&,void*,std::string& diagnostic) {
+        diagnostic="owned format validation refusal";return false;
+    };
+    require(scanner->probe("clap",rejected,reject).state==scan::State::Failed && pids(rejected).child==1,
+        "actual CLAP factory plus explicit owner rejection must seed a deterministic negative");
+    const auto skipped=loader.discover(DiscoveryMode::Incremental);
+    require(skipped && skipped->outcome==DiscoveryOutcome::Published && skipped->catalogue->clap.size()==1 &&
+        skipped->report.failures.size()==1 && pids(rejected).child==1,"Incremental must retain the deterministic negative without a child");
+    const auto recovered=loader.discover(DiscoveryMode::Refresh);
+    require(recovered && recovered->outcome==DiscoveryOutcome::Published && recovered->report.failures.empty() &&
+        recovered->catalogue->clap.size()==2 && pids(rejected).child==2 && pids(rejected).parent==0,
+        "Refresh must retry and replace the same-stamp owner rejection through the real CLAP factory");
+    auto registry=PluginRegistry::open(config.registry,error);require(registry!=nullptr,"open Refresh block owner");
+    const auto canonical=text(fs::canonical(rejected));require(registry->blockScan("clap",canonical,"manual refresh block",123,error),"write Refresh manual block");
+    const auto blocked=loader.discover(DiscoveryMode::Refresh);
+    require(blocked && blocked->outcome==DiscoveryOutcome::Published && blocked->catalogue->clap.size()==1 &&
+        blocked->report.failures.size()==1 && blocked->report.failures.front().state==scan::State::Quarantined && pids(rejected).child==2,
+        "Refresh must omit a manually blocked module without re-enabling it");
+    require(cold->catalogue->clap.size()==1 && recovered->catalogue->clap.size()==2,"Refresh must not mutate retained snapshots");
+    {audio::CallbackScope callback;require(!loader.discover(DiscoveryMode::Refresh),"audio callback accepted Refresh");}
+    std::printf("DISCOVERY_REFRESH %s\n",Json{{"passed",true},{"real_clap_factory",true},{"same_stamp_refresh",true},
+        {"negative_retried",true},{"manual_preserved",true},{"abandon_retains_catalogue",true},{"parent_loads",0}}.dump().c_str());
+}
 inline void parallelDiscovery() {
     using device::DiscoveryMode;
     using device::DiscoveryOutcome;
@@ -254,12 +311,19 @@ inline void command() {
         "actual headless incremental operation failed or used parent module loading");
     require(cli({"adi_play","--list","--cache-only"})==0 && pids(module).child==1 && pids(module).parent==0,
         "actual headless CacheOnly rescanned its module");
+    require(cli({"adi_play","--list","--refresh","--search-only",text(root),"--scan-workers","4"})==0 &&
+                pids(module).child==2 && pids(module).parent==0,"actual headless Refresh did not reprobe the native module");
+    require(cli({"adi_play","--list","--search-only",text(root)})==0 && pids(module).child==2,
+        "actual headless Incremental failed to reuse refreshed metadata");
+    require(cli({"adi_play","--refresh","never-open.adi"})==2 &&
+                cli({"adi_play","--list","--refresh","--cache-only"})==2,
+        "Refresh must require list and refuse CacheOnly without opening a project");
 }
 } // namespace discovery_test_detail
 inline bool scannerDiscoveryContracts() {
     juce::ScopedJuceInitialiser_GUI initialize;
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
-        auto receipt=discovery_test_detail::modes();discovery_test_detail::parallelDiscovery();
+        auto receipt=discovery_test_detail::modes();discovery_test_detail::refreshModes();discovery_test_detail::parallelDiscovery();
         discovery_test_detail::cacheStates();discovery_test_detail::command();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
         receipt["serial_parallel_catalogue_equal"]=true;

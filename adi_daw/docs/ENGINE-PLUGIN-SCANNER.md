@@ -457,7 +457,7 @@ no host-processing, graph-publication or production readiness interface.
 ### Explicit discovery operation
 
 `JuceDeviceLoader::discover` is the synchronous owner operation for
-`DiscoveryMode::Incremental` and `CacheOnly`. It returns an owning
+`DiscoveryMode::Incremental`, `Refresh` and `CacheOnly`. It returns an owning
 `shared_ptr<const DiscoveryResult>` with an explicit outcome, copied report and
 an immutable catalogue of the existing VST3 `PluginDescription` and CLAP
 `ClapPluginRef` values. These are the format-validated values the loader uses;
@@ -471,6 +471,29 @@ beside reported candidate failures. Cancellation, deployment failure or a
 whole-catalogue validation failure does not publish a successful prefix. The
 result names `Failed` or `Cancelled` and retains the last accepted catalogue,
 if any. That pointer is not evidence that the failed refresh succeeded.
+
+Refresh walks the same configured roots but deliberately bypasses unchanged
+successful packets and deterministic rejected results. This is a prerequisite
+for Clean, not a Clean rebuild: it does not purge the registry, prune unrelated
+or missing roots, re-enable a block, change startup scheduling or change the
+default worker count. Manual/legacy/pending and unchanged two-strike blocks
+retain precedence. Reliable changed stamps retain their existing automatic
+failure-retirement rules; the first crash/timeout still permits only the
+existing second attempt.
+
+The lower-level `scan::Config::cacheMode` defaults to `ScanCacheMode::Reuse`;
+`Refresh` is explicit. The discovery operation selects Reuse for Incremental
+and Refresh for Refresh, overriding that one configuration field for the job
+without mutating the caller's config. Worker peers inherit the selected mode.
+Both fast and ticketed cache-success reuse are bypassed by Refresh, but durable
+admission, fresh metadata decoding, format validation, stamp recheck and
+owner-token completion remain mandatory. A cancelled or infrastructure-abandoned
+same-stamp refresh leaves the prior good packet/rejected result intact; it
+publishes no new catalogue. A fresh plug-in failure replaces stale success
+under the existing failure policy. Successful refresh replaces the whole
+validated module packet transactionally. Per-module persistence remains distinct
+from whole-operation catalogue publication: a later fatal candidate can prevent
+the new runtime catalogue even after earlier module rows completed.
 
 CacheOnly opens the registry read-only and performs both common and format
 validation. It does not open/check a scanner helper, enumerate roots, stat
@@ -489,6 +512,8 @@ new catalogue was published. `--list --cache-only` lists validated stored
 metadata only. `--list --search-only DIR` excludes platform default roots and
 can be repeated; `--search DIR` otherwise retains its original additive
 behavior. Cache-only/search-only options are refused for project playback.
+`--list --refresh` explicitly selects Refresh and can use `--scan-workers 1..4`;
+it refuses `--cache-only` and is not accepted on a project playback command.
 `JuceDeviceLoader(false)` similarly accepts only explicitly added roots.
 
 The strict real-module gate in `scanner_discovery.hpp` covers cold/warm/add,
@@ -499,7 +524,7 @@ the actual headless command modes. Its CLAP entry log distinguishes scanner
 children from parent runtime loading. The prior Session-reopen and legacy
 compatibility gates remain in the same executable.
 
-This is one necessary service boundary. K-worker scheduling, Clean rebuild,
+This is one necessary service boundary. Clean rebuild/root reconciliation,
 startup scheduling, persistent application scan logs beyond command output,
 native VST3 class-ID indexing, expanded alias traversal, expiry/retry service
 integration and Settings UI remain separate DEV-25 work. Stored metadata is

@@ -228,6 +228,8 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
     error.clear();
     try {
         Config resolved=config;
+        require(resolved.cacheMode==ScanCacheMode::Reuse || resolved.cacheMode==ScanCacheMode::Refresh,
+                "invalid scanner cache mode");
         if(resolved.executable.empty())resolved.executable=defaultScannerExecutable();
         if(resolved.registry.empty())resolved.registry=appdata::pluginRegistryFile();
         require(resolved.executable.is_absolute() && resolved.registry.is_absolute() &&
@@ -298,7 +300,7 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             } else {result.state=State::Unavailable;result.error="scan candidate or helper changed during probe; retry required";}
             return false;
         };
-        if(stamp) {
+        if(stamp && config_.cacheMode==ScanCacheMode::Reuse) {
             const auto read=registry_->readScanSuccess(format,result.path,*stamp,result.error);
             if(read && read->packet().size()<=config_.process.maximumOutput) {
                 auto plugins=decodeMetadata(read->packet(),format,result.path,result.error);
@@ -338,7 +340,7 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         }
         std::optional<ScanFailure> cachedFailure;
         if(stamp) {
-            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error);
+            auto admission=registry_->beginStampedScan(format,result.path,*stamp,config_.clock(),result.error,config_.cacheMode);
             if(admission){ticket=std::move(admission->ticket);cachedFailure=std::move(admission->cachedFailure);}
         } else ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
         if(!ticket && !cachedFailure){result.state=State::Quarantined;return result;}
@@ -351,7 +353,8 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
             result.failureCacheHit=true;
             result.failureStrikes=cachedFailure->strikes;result.error=cachedFailure->reason;return result;
         }
-        auto cached=stamp?registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
+        auto cached=stamp && config_.cacheMode==ScanCacheMode::Reuse?
+            registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
         if(!result.error.empty()) {
             std::string finishError;
             if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {

@@ -40,7 +40,7 @@
 
 namespace adi::device {
 
-enum class DiscoveryMode { Incremental, CacheOnly };
+enum class DiscoveryMode { Incremental, CacheOnly, Refresh };
 enum class DiscoveryOutcome { Published, Missing, Legacy, Failed, Cancelled };
 
 /// Owned format-validated metadata, not instantiated/restored/audio readiness.
@@ -72,7 +72,10 @@ public:
     void scan();
 
     /// Synchronous owner-side operation. Incremental enumerates configured roots
-    /// and reuses the isolated scanner/cache. CacheOnly reads stored metadata
+    /// and reuses the isolated scanner/cache. Refresh enumerates the same roots
+    /// with fresh probes for cached successes/rejections, preserving blocks.
+    /// These explicit modes choose their cache policy over Config::cacheMode.
+    /// CacheOnly reads stored metadata
     /// without checking a helper or touching candidates. Both publish an owned
     /// const result, safe to retain after later operations or loader destruction.
     /// Explicit CacheOnly with missing/legacy storage never opts into lazy scan;

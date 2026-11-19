@@ -117,6 +117,7 @@ struct Options {
     bool dry = false;
     bool list = false;
     bool cacheOnly = false;
+    bool refresh = false;
     bool searchOnly = false;
     unsigned scanWorkers = 0; // 0 means the discovery default
     bool fixture = false;
@@ -160,9 +161,10 @@ int usage() {
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
-        "adi_play --list [--cache-only | --scan-workers 1..4] [--search DIR]... [--search-only DIR]... [--fixture]\n"
+        "adi_play --list [--cache-only | --refresh] [--scan-workers 1..4] [--search DIR]... [--search-only DIR]... [--fixture]\n"
         "  --list performs explicit incremental discovery; --cache-only reads only\n"
-        "  validated stored metadata. --search-only excludes platform default roots.\n"
+        "  validated stored metadata. --refresh reprobes successes/rejections, preserving\n"
+        "  blocks. Workers apply to incremental/refresh only. --search-only excludes defaults.\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
@@ -223,6 +225,7 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--dry")     o.dry = true;
         else if (a == "--list")    o.list = true;
         else if (a == "--cache-only") o.cacheOnly = true;
+        else if (a == "--refresh") o.refresh = true;
         else if (a == "--fixture") o.fixture = true;
         else if (a == "--require-devices") o.requireDevices = true;
         else if (a == "--require-peak") {
@@ -239,7 +242,8 @@ bool parse(int argc, char** argv, Options& o) {
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
-    if ((o.cacheOnly || o.searchOnly) && !o.list) return false;
+    if ((o.cacheOnly || o.searchOnly || o.refresh) && !o.list) return false;
+    if (o.cacheOnly && o.refresh) return false;
     if (o.scanWorkers != 0 && (!o.list || o.cacheOnly)) return false;
     if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
@@ -484,7 +488,9 @@ int main(int argc, char** argv) {
             loader.setScanConfig(config);
             std::printf("  scanner workers requested: %u\n", config.workers);
         }
-        const auto discovery=loader.discover(o.cacheOnly?adi::device::DiscoveryMode::CacheOnly:adi::device::DiscoveryMode::Incremental);
+        const auto mode=o.cacheOnly?adi::device::DiscoveryMode::CacheOnly:
+            o.refresh?adi::device::DiscoveryMode::Refresh:adi::device::DiscoveryMode::Incremental;
+        const auto discovery=loader.discover(mode);
         if(!discovery)return 1;
         for(const auto& failure:discovery->report.failures)
             std::printf("  discovery issue: %s -- %s\n",failure.path.c_str(),failure.error.c_str());
@@ -494,7 +500,7 @@ int main(int argc, char** argv) {
         const std::vector<std::string> lines = loader.knownPlugins();
         for (const std::string& l : lines) std::printf("  %s\n", l.c_str());
         std::printf("\n%s plugins (validated metadata; %s)\n",n(static_cast<std::int64_t>(lines.size())).c_str(),
-            o.cacheOnly?"cache only":"incremental discovery");
+            o.cacheOnly?"cache only":o.refresh?"explicit refresh":"incremental discovery");
         return 0;
     }
 
