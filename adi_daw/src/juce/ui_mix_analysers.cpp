@@ -330,7 +330,7 @@ MixAnalysers::MixAnalysers() {
     table_ = std::make_unique<Table>(*this);
     compare_ = std::make_unique<Compare>(*this);
     setTitle("Analysers");
-    pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Scope", "Phase", "Loudness", "Analysis", "1 s Average", "Compare"}, 1);
+    pageBox.addItemList({"All", "Spectrogram", "Spectrum", "Classic Scope", "Phase", "Loudness", "Analysis", "1 s Average", "Compare"}, 1);
     pageBox.setTitle("Analyser page");
     sourceBox.setTitle("Analyser source");
     pageBox.onChange = [this] {

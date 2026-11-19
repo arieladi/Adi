@@ -58,8 +58,8 @@ The shared analysis broker can prepare a continuous capture on a demand lease.
 Identical profiles on one source share their two immutable sweeps, using the
 same physical tap as the spectrum or meters. A discontinuity or source change
 clears both sweeps. The broker's frame budget also bounds capture work.
-Mix View's Scope page and the detached analyser's s(M)exoscope mode use this
-publication. Freeze, hide and close release their leases. Live views on the
+The Analysers page and the detached analyser use this publication in Classic
+Scope mode. Freeze, hide and close release their leases. Live views on the
 same source, lane and settings share the capture. The compact All and Info
 projections still show the existing latest-window Scope.
 

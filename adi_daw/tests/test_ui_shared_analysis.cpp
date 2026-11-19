@@ -1612,7 +1612,8 @@ void classicScopeSurface() {
     pages.frame(f.broker, reader, 1, 2);
     pane.frame(f.broker, 1, 2);
     check(pages.detail.mode() == SharedSpectrumView::Mode::ClassicScope && !pages.detail.channelBox.isVisible() &&
-              pane.modeBox.getText() == "s(M)exoscope" && !pane.channelBox.isVisible() && !pane.freezeButton.isVisible(),
+              pages.pageBox.getText() == "Classic Scope" && pane.modeBox.getText() == "Classic Scope" &&
+              face.getTitle() == "Classic Scope" && !pane.channelBox.isVisible() && !pane.freezeButton.isVisible(),
           "the full and detached Scope views use the original controls");
     f.write(); f.broker->pump(); pages.detail.view.frame(); pane.view.frame();
     const auto capture = [](const SharedSpectrumView &v) { return SharedSpectrumViewTestAccess::capture(v); };

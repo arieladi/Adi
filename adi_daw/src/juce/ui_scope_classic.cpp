@@ -152,6 +152,7 @@ struct ClassicScopePanel::Face final : juce::Component {
     bool begun = false;
 };
 ClassicScopePanel::ClassicScopePanel() : face_(std::make_unique<Face>(*this)) {
+    setTitle("Classic Scope");
     setInterceptsMouseClicks(false, true);
     addAndMakeVisible(*face_);
 }

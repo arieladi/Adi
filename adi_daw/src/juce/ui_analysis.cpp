@@ -268,7 +268,6 @@ void SharedSpectrumView::setMode(Mode mode) {
     sourcePosition_ = {}; freshRequired_ = false;
     if (mode == Mode::ClassicScope && !classicPanel_) {
         classicPanel_ = std::make_unique<ClassicScopePanel>();
-        classicPanel_->setTitle("s(M)exoscope");
         classicPanel_->setBounds(getLocalBounds());
         classicPanel_->onChange = [this](const ClassicScopeControls &controls) { setClassicControls(controls); };
         classicPanel_->onFreeze = [this](bool held) {
@@ -1018,7 +1017,7 @@ AnalysisPane::AnalysisPane() {
     setTitle("Analysis");
     modeBox.addItemList({"Spectrum", "Scope", "Meters", "Phase", "Spectrogram"}, 1);
     modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
-    modeBox.addItem("s(M)exoscope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
+    modeBox.addItem("Classic Scope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
