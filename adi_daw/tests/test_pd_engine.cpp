@@ -41,6 +41,7 @@
 // something that would otherwise have happened.
 extern "C" {
 #include "z_libpd.h"
+#include "s_stuff.h"   // sys_get_dllextensions: the names Pd itself looks for
 }
 
 #include <cmath>
@@ -61,8 +62,12 @@ extern "C" {
 #include <crtdbg.h>
 #endif
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -1207,6 +1212,11 @@ void testPdWouldReachAnExternalBesideThePatch() {
     for (const auto& ext : device::pdLoadableCodeExtensions())
         tmp.write(("adi_probe_external" + ext).c_str(),
                   "not a library, and it does not have to be\n");
+    // And every name Pd itself tries: a PD_FLOATSIZE=64 Pd looks for deken
+    // names such as .windows-amd64-64.dll and never for a bare .dll.
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        tmp.write(("adi_probe_external" + std::string(*ext)).c_str(),
+                  "not a library, and it does not have to be\n");
 
     std::string err;
     check(device::PdRuntime::initialise(err), "libpd initialises: " + err);
@@ -1481,6 +1491,8 @@ void testNativeCodeIsRefusedWhateverNamesIt() {
     TempDir lib("planted-lib");
     for (const auto& ext : device::pdLoadableCodeExtensions())
         lib.write(("adi_probe_external" + ext).c_str(), "not a library\n");
+    for (const char** ext = sys_get_dllextensions(); *ext != nullptr; ++ext)
+        lib.write(("adi_probe_external" + std::string(*ext)).c_str(), "not a library\n");
     std::string where = lib.str();
     std::replace(where.begin(), where.end(), '\\', '/');
     const std::string absolute = where + "/adi_probe_external";
@@ -1534,6 +1546,206 @@ void testAPatchCannotQuitOrReconfigurePd() {
               "[; pd " + std::string(message) + "] refused by name\n          console: " + console);
     }
     check(true, "and the process is still here after `quit 7` and `exit 7`");
+}
+
+// DEV-09 AR8: the audio thread never waits for Pd. A message-thread holder of
+// the instance's lock (an editor, later: DEV-11) makes the audio thread skip
+// its ticks, silent and counted. libpd_process_float took sys_lock and waited
+// out the whole hold inside the callback.
+void testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait() {
+    section("DEV-09 AR8 -- an editor holding the lock for 50 ms: the audio thread skips, never waits");
+    LibPdEngine eng(patchDir(), "adi-proof.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    eng.prepare(48000.0, 64);
+    std::vector<float> sig(64, 0.5f);
+    (void)runSegmented(eng, sig, 0.f, {64});   // running before the hold
+    const auto before = eng.counters();
+
+    std::atomic<int> stage{0};
+    std::thread editor([&] {
+        LibPdEngine::InstanceLock hold(eng);
+        stage.store(1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        stage.store(2);
+    });
+    while (stage.load() == 0) std::this_thread::yield();
+    double worstMs = 0;
+    int segments = 0;
+    while (stage.load() == 1) {
+        const auto start = std::chrono::steady_clock::now();
+        (void)runSegmented(eng, sig, 0.f, {64});
+        const std::chrono::duration<double, std::milli> took = std::chrono::steady_clock::now() - start;
+        worstMs = std::max(worstMs, took.count());
+        ++segments;
+    }
+    editor.join();
+    const auto during = eng.counters();
+    check(segments > 1 && worstMs < 10.0,
+          "every segment returned while the lock was held (" + std::to_string(segments) +
+              " segments, the slowest " + std::to_string(worstMs) + " ms of a 50 ms hold)");
+    check(during.skippedTicks - before.skippedTicks > 0,
+          "and its ticks were skipped and counted (" +
+              std::to_string(during.skippedTicks - before.skippedTicks) + ")");
+    (void)runSegmented(eng, sig, 0.f, {64, 64, 64});
+    check(eng.counters().ticks > during.ticks, "once the lock is released, ticks resume");
+}
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+std::atomic<long> g_audioAllocations{0};
+thread_local bool t_countAllocations = false;
+int countAudioAllocations(int type, void*, size_t, int, long, const unsigned char*, int) {
+    if (t_countAllocations && (type == _HOOK_ALLOC || type == _HOOK_REALLOC)) ++g_audioAllocations;
+    return TRUE;
+}
+#endif
+
+// DEV-09 AR8: a [print] on a 1 ms [metro] prints from inside the audio thread's
+// tick. The print hook took a mutex and appended to a std::string there.
+void testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread() {
+    section("DEV-09 AR8 -- [print] on a 1 ms [metro]: no audio-thread allocation, the lines arrive");
+    TempDir tmp("print-metro");
+    tmp.write("chatty.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 loadbang;\n"
+                           "#X obj 10 40 metro 1;\n#X obj 10 70 print tick;\n"
+                           "#X obj 100 10 adc~ 1 2;\n#X obj 100 70 dac~ 1 2;\n"
+                           "#X connect 0 0 1 0;\n#X connect 1 0 2 0;\n"
+                           "#X connect 3 0 4 0;\n#X connect 3 1 4 1;\n");
+    LibPdEngine eng(tmp.str(), "chatty.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    eng.prepare(48000.0, 256);
+    std::vector<float> sig(256, 0.f);
+    (void)runSegmented(eng, sig, 0.f, {256});   // first use of every buffer
+    (void)eng.consoleLines();
+#if defined(_MSC_VER) && defined(_DEBUG)
+    g_audioAllocations = 0;
+    const auto previous = _CrtSetAllocHook(countAudioAllocations);
+#endif
+    Buffers buffers(2, 256);
+    for (int block = 0; block < 100; ++block) {   // ~0.53 s, ~400 bangs
+        auto io = buffers.io(2, 256, 0, 256);
+#if defined(_MSC_VER) && defined(_DEBUG)
+        t_countAllocations = true;
+#endif
+        eng.process(io);
+#if defined(_MSC_VER) && defined(_DEBUG)
+        t_countAllocations = false;
+#endif
+        if (block % 25 == 24) (void)eng.consoleLines();   // the message thread drains
+    }
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetAllocHook(previous);
+#endif
+    int ticks = 0;
+    for (const auto& line : eng.consoleLines())
+        if (line.find("tick: bang") != std::string::npos) ++ticks;
+    check(ticks > 100, "the printed lines reach the console (" + std::to_string(ticks) + ")");
+#if defined(_MSC_VER) && defined(_DEBUG)
+    check(g_audioAllocations.load() == 0,
+          "the rendering allocated nothing (" + std::to_string(g_audioAllocations.load()) +
+              " allocations, counted at the CRT heap)");
+#endif
+}
+
+// DEV-09 AR8: a published table that shrinks. libpd_read_array returned -2
+// with the instance still locked, so the next tick (or any call) waited on a
+// lock nobody would release: a hang. A watchdog ends the test with a named
+// failure instead of hanging ctest.
+void testAShrunkPublishedTableDoesNotDeadlock() {
+    section("DEV-09 AR8 -- a published table shrinks while it is read: no deadlock");
+    TempDir tmp("shrink");
+    tmp.write("shrink.pd", "#N canvas 0 0 300 200 12;\n#X obj 10 10 adi.array \\$0 1 8 30 -1 1 - T;\n"
+                           "#X obj 10 50 r \\$0-shrink;\n#X msg 10 80 resize 2;\n"
+                           "#X obj 10 110 s \\$0-adiarr-1;\n#X obj 200 10 adc~ 1 2;\n"
+                           "#X obj 200 60 dac~ 1 2;\n#X connect 1 0 2 0;\n#X connect 2 0 3 0;\n"
+                           "#X connect 4 0 5 0;\n#X connect 4 1 5 1;\n");
+    std::atomic<bool> done{false};
+    std::thread watchdog([&] {
+        for (int i = 0; i < 200 && !done.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (!done.load()) {
+            std::printf("  FAIL  a shrunk published table deadlocked the instance (10 s)\n");
+            std::fflush(stdout);
+            std::_Exit(3);
+        }
+    });
+    {
+        LibPdEngine eng(tmp.str(), "shrink.pd", 2, 2);
+        eng.addSearchPath(devicePatchDir());
+        PdLatencyReceiver latency;
+        std::string err;
+        if (eng.open(latency, err)) {
+            eng.prepare(48000.0, 512);
+            eng.bindArrays(parsePdDeclarations(readFile(tmp.str() + "/shrink.pd")));
+            const auto* published = eng.publishedArray(1);
+            check(published != nullptr, "the table is bound at its declared length");
+            std::vector<float> sig(4096, 0.f);
+            (void)runSegmented(eng, sig, 0.f, {128});
+            const auto before = published != nullptr ? published->published() : 0;
+            check(eng.sendFloat("shrink", 1.f), "the patch is told to shrink its table");
+            (void)runSegmented(eng, sig, 0.f, {128});   // reads come due after the shrink
+            check(published != nullptr && published->published() == before,
+                  "nothing is published from a table shorter than declared");
+            std::vector<float> eight(8, 0.f);
+            check(!eng.readArray("adiarr-1", eight), "a message-thread read of 8 is refused");
+            check(eng.sendFloat("shrink", 1.f), "and the instance still answers afterwards");
+            (void)runSegmented(eng, sig, 0.f, {128});
+            check(eng.counters().skippedTicks == 0, "no tick was skipped: the lock was never left held");
+        } else {
+            check(false, "open: " + err);
+        }
+    }
+    done.store(true);
+    watchdog.join();
+}
+
+// DEV-09 AR17: the Pd tier's precision is the build's. ADI_PD_FLOATSIZE_64
+// builds it with PD_FLOATSIZE=64 for the 64-bit Processing Precision mode
+// (ADR-0207 d2); every suite runs in both configurations.
+void testThePdTierHasTheBuildsPrecision() {
+    section("DEV-09 AR17 -- t_float and t_sample have the width PD_FLOATSIZE names");
+    eqi(static_cast<long long>(sizeof(t_float) * 8), PD_FLOATSIZE, "t_float");
+    eqi(static_cast<long long>(sizeof(t_sample) * 8), PD_FLOATSIZE, "t_sample");
+    std::printf("  Pd tier built with PD_FLOATSIZE=%d\n", PD_FLOATSIZE);
+}
+
+// DEV-09 AR18 (PD2: plugdata-pd bdb30eed, BSD-3 like Pd). An abstraction's
+// canvas binds itself to the symbol #A when it finishes loading
+// (canvas_popabstraction) and nothing ever unbinds it. A file load saves and
+// restores #A around itself, so a whole patch opening is safe; an abstraction
+// created at run time (dynamic patching here, an attached editor in DEV-11) is
+// not. Free it and #A points at freed memory, which the next free of an array
+// dereferences (garray_free's pd_findbyclass on #A): a use-after-free under
+// ASan. The MSVC debug heap does not trap that read, so the check is on the
+// binding itself: once its owner is freed, #A must be bound to nothing.
+void testAnAbstractionFreedLeavesNoDanglingHashA() {
+    section("DEV-09 AR18 -- an abstraction freed at run time leaves #A bound to nothing");
+    TempDir tmp("hash-a");
+    tmp.write("an_abs.pd", "#N canvas 0 0 100 100 12;\n#X obj 10 10 inlet;\n");
+    tmp.write("dyn.pd", "#N canvas 0 0 300 200 12;\n"
+                        "#N canvas 0 0 200 200 sub 0;\n#X restore 10 100 pd sub;\n"
+                        "#X obj 10 10 loadbang;\n"
+                        "#X msg 10 40 \\; pd-dyn.pd obj 150 10 table adi-hash-a 4 \\; "
+                        "pd-sub obj 10 10 an_abs \\; pd-sub clear;\n"
+                        "#X connect 1 0 2 0;\n");
+    LibPdEngine eng(tmp.str(), "dyn.pd", 2, 2);
+    PdLatencyReceiver latency;
+    std::string err;
+    if (!eng.open(latency, err)) { check(false, "open: " + err); return; }
+    std::string joined;
+    for (const auto& line : eng.consoleLines()) joined += line + "\n";
+    check(joined.find("couldn't create") == std::string::npos,
+          "the table and the abstraction were made at run time\n          console: " + joined);
+    {
+        // pd_this is this thread's: the engine selected its instance in open.
+        LibPdEngine::InstanceLock hold(eng);
+        check(gensym("#A")->s_thing == nullptr,
+              "after the abstraction is freed, #A is bound to nothing (not to freed memory)");
+    }
+    // Closing frees the table, whose garray_free walks #A: under ASan this is
+    // where a dangling binding was read.
 }
 
 }  // namespace
@@ -1593,6 +1805,11 @@ int main() {
     testTheEngineRefusesADirectoryHoldingLoadableCode();
     testNativeCodeIsRefusedWhateverNamesIt();
     testAPatchCannotQuitOrReconfigurePd();
+    testAnEditorHoldingTheLockMakesTheAudioThreadSkipNotWait();
+    testPrintingFromARunningPatchAllocatesNothingOnTheAudioThread();
+    testAShrunkPublishedTableDoesNotDeadlock();
+    testAnAbstractionFreedLeavesNoDanglingHashA();
+    testThePdTierHasTheBuildsPrecision();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
