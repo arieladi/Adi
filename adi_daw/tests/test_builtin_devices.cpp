@@ -48,7 +48,7 @@ struct Project {
 };
 #endif
 void catalogueAndHost() {
-    check(builtinCatalog().size()==18 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
+    check(builtinCatalog().size()==19 && !findBuiltin("unregistered"),"catalogue has stable known entries and rejects unknown UID");
     std::set<std::string_view> identities;int available=0;
     for(const auto& info:builtinCatalog()) {
         check(identities.insert(info.uid).second && !info.name.empty() && !info.category.empty() && !info.group.empty(),"catalogue identities are unique and labels/category/folder are present");
@@ -57,6 +57,8 @@ void catalogueAndHost() {
         if(!info.available){check(!instance && !error.empty(),"unavailable backend refuses by name");continue;}
         ++available;check(instance && instance->loaded() && instance->identity().uid==info.uid && !builtinCanvas(info.uid).empty(),"canonical factory creates supported device without a binary scan or file path");
         if(!instance)continue;
+        check(instance->wantsDeviceTransport()==info.usesTransportPosition,
+              "host transport demand follows the catalog capability");
         check(instance->paramCount()>0 && instance->paramAt(0) && instance->findParam(instance->paramAt(0)->id),"declared parameter identities and descriptors are readable");
         instance->prepare(48000,64);
         std::array<std::array<float,64>,2> input{},output{};float* in[]={input[0].data(),input[1].data()};float* out[]={output[0].data(),output[1].data()};
@@ -68,7 +70,7 @@ void catalogueAndHost() {
         check(allocations.load(std::memory_order_relaxed)==0,"canonical built-in processing allocates nothing");
     }
 #if ADI_WITH_PD
-    check(available==17,"all registered native canonical factories are available");
+    check(available==18,"all registered native canonical factories are available");
 #else
     check(available==0,"PD-disabled build advertises no unavailable backend as loadable");
 #endif
