@@ -636,9 +636,21 @@ void replaceIdentityInOneJournalStep() {
     };
     using Kind = engine::ParamEventKind;
     constexpr double newValue = .625;
-    check(edit(Kind::Begin, oldValue) && edit(Kind::Value, newValue) && edit(Kind::End, newValue) &&
-              gain->getParam("420").normalized == newValue && OpJournal(doc->store()).headSeq() > beforeGesture,
-          "the current surface can author a complete gesture after the unrelated edit");
+    const bool began = edit(Kind::Begin, oldValue);
+    const auto stale = [&](Kind kind) {
+        return doc->parameterGestureExpected(id, "420", kind, .875, original->runtime, original->instance);
+    };
+    const bool staleBegin = stale(Kind::Begin);
+    const bool staleValue = stale(Kind::Value);
+    const bool staleEnd = stale(Kind::End);
+    check(!staleBegin && !staleValue && !staleEnd && gain->getParam("420").normalized == oldValue &&
+              OpJournal(doc->store()).headSeq() == beforeGesture,
+          "all three gesture messages from the retired runtime leave the current edit alone");
+    const bool changed = edit(Kind::Value, newValue);
+    const bool ended = edit(Kind::End, newValue);
+    check(began && changed && ended && gain->getParam("420").normalized == newValue &&
+              OpJournal(doc->store()).headSeq() > beforeGesture,
+          "the current surface completes its gesture after unrelated publication and stale input");
     check(doc->ops().undo().ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == beforeGesture &&
               gain->getParam("420").normalized == oldValue,
           "one Undo restores the current generation's gesture without undoing the unrelated edit");
