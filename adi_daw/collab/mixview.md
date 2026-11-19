@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Export and normal-quality offline suspension regression
+
+**For Engine.** The test-only branch `mixview/offline-suspension-regression-20261119` at `13ed3175682727019a63de901e53bc74f2df606a` demonstrates the ADR-0043 d5 gap through the normal Session entry point. Exact Windows Release has 25 checks and only two failures. A zero-tail device is skipped on a silent block in both an explicit export and a normal-quality offline render. The live suspension control, offline-to-device setup, and export-quality intent checks pass. The branch adds only the reproduction and is not a landing candidate by itself.
+
+The Graph suspension decision currently ignores both processing contexts. Preserve offline execution separately from export quality. Export must keep its existing quality flag. Freeze and other normal-quality offline work need the suspension exclusion without selecting export quality. This matters before expanding finite-tail native effects.
+
 ### 2026-11-19 — Reproduce the remaining DF-M34 tail declarations
 
 Two headless native-host fixtures now expose the outstanding default-tail behavior. Windows Release EQ host passed 878 of 879 checks. Its only failure was the inherited infinite tail. The default impulse remained sample-exact and its callback allocation gate passed. The Limiter suite passed 284 of 285, with only the default finite declaration failing. Prepared silence stayed exactly zero with dither off. With 16-bit dither on, zero input produced nonzero output and retained the infinite declaration. Preserve that audio when making quiet modes eligible for suspension.
