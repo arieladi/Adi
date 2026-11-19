@@ -59,14 +59,29 @@ void flange(Liquid& band) {
     const auto plus = impulse(band, Mode::Flange, .5f, .5f);
     const auto minus = impulse(band, Mode::Flange, .5f, .5f, true);
     near(minus[73], -.647379, .001, "negative first echo");
-    near(plus[146], .35266, .006, "positive second echo");
-    near(minus[146], .36077, .006, "negative second echo");
+    near(plus[146], .35266, .001, "positive second echo");
+    near(minus[146], .36077, .001, "negative second echo");
     near(plus[75] / plus[74], .986995, .00002, "flanger low-frequency rolloff");
+    // The delayed branch saturates even with no feedback. Its dry component
+    // remained linear across these independently measured excitation levels.
+    for (auto [amplitude, expected] : std::array<std::array<float, 2>, 4>{{
+             {.001f, .745123f}, {.25f, .738365f}, {.9f, .674718f}, {3.f, .496749f}}}) {
+        band.setPolarity(false);
+        band.reset();
+        std::array<float, 74> samples{};
+        for (std::size_t i = 0; i < samples.size(); ++i) {
+            float left = i == 0 ? amplitude : 0.f, right = 0.f;
+            band.processStereo(left, right, .5f, 0.f);
+            samples[i] = left / amplitude;
+        }
+        near(samples[0], .75, .00002, "input-level-independent dry");
+        near(samples[73] + 1.0130051f * samples[72], expected, .0001, "flanger drive curve");
+    }
     const auto none = impulse(band, Mode::Flange, .5f, 0.f);
     const auto full = impulse(band, Mode::Flange, .5f, 1.f);
     near(none[0], .75, .0001, "zero feedback direct");
     near(full[0], .430416, .0001, "maximum feedback direct");
-    near(full[146], .50733, .01, "maximum feedback repeat");
+    near(full[146], .50733, .001, "maximum feedback repeat");
 }
 
 void phaser(Liquid& band) {
@@ -104,6 +119,7 @@ void lifecycle(Liquid& band) {
     }
     for (const auto mode : {Mode::Flange, Mode::Phaser16}) {
         band.setMode(mode);
+        band.reset();
         for (unsigned i = 0; i < 12000; ++i) {
             float left = static_cast<float>(std::sin(i * .1));
             float right = -left;

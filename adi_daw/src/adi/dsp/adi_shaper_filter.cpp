@@ -53,15 +53,16 @@ void AdiShaperFilter::tune(float cutoff, float resonance) noexcept {
     if (cutoff != lastCutoff_) {
         lastCutoff_ = cutoff;
         g_ = warpAt(cutoff);
+        inverseG_ = 1.0 / g_;
         poleGain_ = g_ / (1.0 + g_);
     }
     if (resonance != lastResonance_) {
         lastResonance_ = resonance;
         damping_ = 2.0 - 1.995 * std::cbrt(static_cast<double>(resonance));
+        gentleResonance_ = (2.0 - damping_) * (2.0 / 3.0);
     }
     a1_ = 1.0 / (1.0 + g_ * (g_ + damping_));
-    a2_ = g_ * a1_;
-    a3_ = g_ * a2_;
+    resonanceScale_ = 1.0 / 12.0 + (4.0 / 27.0) * g_ * a1_;
 }
 
 float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
@@ -76,21 +77,26 @@ float AdiShaperFilter::tick(float input, Channel& state) const noexcept {
     const bool gentle = mode_ == Mode::LowPass6 || mode_ == Mode::HighPass6;
     double band = 0.0, low = 0.0, pole = 0.0, highSum = 0.0;
     for (int step = 0; step < 2; ++step) {
-        const double v = x - state.low;
-        band = a1_ * state.band + a2_ * v;
-        low = state.low + a2_ * state.band + a3_ * v;
-        state.band = 2.0 * band - state.band;
-        state.low = 2.0 * low - state.low;
+        double excitation = x;
         if (gentle) {
             const double difference = poleGain_ * (x - state.pole);
             pole = state.pole + difference;
             state.pole = pole + difference;
-        } else if (mode_ == Mode::HighPass12) {
-            highSum += x - damping_ * band - low;
+            excitation = pole;
         }
+        // Impulse amplitude sweeps show additional damping proportional to
+        // the preceding band output squared, saturating at large amplitudes.
+        const double squared = state.previousBand * state.previousBand;
+        const double gain = a1_ * (1.0 + squared / 12.0) / (1.0 + resonanceScale_ * squared);
+        band = gain * (state.band + g_ * (excitation - state.low));
+        low = state.low + g_ * band;
+        if (mode_ == Mode::HighPass12) highSum += (band - state.band) * inverseG_;
+        state.band = 2.0 * band - state.band;
+        state.low = 2.0 * low - state.low;
+        state.previousBand = band;
     }
     if (gentle) {
-        const double output = (pole + 2.0 * (band + low)) / 3.0;
+        const double output = pole + gentleResonance_ * band;
         return static_cast<float>(mode_ == Mode::LowPass6 ? output : x - output);
     }
     if (mode_ == Mode::HighPass12) return static_cast<float>(0.5 * highSum);

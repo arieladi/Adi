@@ -28,12 +28,14 @@ void bandwidth() {
         Filter filter;
         std::complex<double> a{}, b{};
         for (int n = 0; n < 16000; ++n) {
-            float l = n == 0 ? 1.0f : 0.0f, r = 0.0f;
+            float l = n == 0 ? 0.5f : 0.0f, r = 0.0f;
             filter.process(l, r, cutoffs[i], 0.0f);
             const double phase = -2.0 * std::numbers::pi * n / 48000.0;
-            a += static_cast<double>(l) * std::polar(1.0, 400.0 * phase);
-            b += static_cast<double>(l) * std::polar(1.0, 8000.0 * phase);
+            a += 2.0 * l * std::polar(1.0, 400.0 * phase);
+            b += 2.0 * l * std::polar(1.0, 8000.0 * phase);
         }
+        std::printf("Cutoff %.2f, gains at 400 Hz and 8 kHz %.7f %.7f\n",
+                    static_cast<double>(cutoffs[i]), std::abs(a), std::abs(b));
         check(std::abs(std::abs(a) - at400[i]) < 0.00003, "400 Hz gain at the three cutoff anchors");
         check(std::abs(std::abs(b) - at8000[i]) < 0.00003, "8 kHz gain at the three cutoff anchors");
     }
@@ -81,17 +83,41 @@ void sampleRatesAndReset() {
     filter.setMode(Mode::LowPass12);
     for (std::size_t i = 0; i < rates.size(); ++i) {
         filter.prepare(rates[i]);
-        float l = 1.0f, r = 0.0f;
+        constexpr float excitation = 0.025f;
+        float l = excitation, r = 0.0f;
         filter.process(l,r,1.0f,.7f);
-        check(std::abs(l-first[i]) < 5e-5 && r == 0.0f, "rate-specific upper corner and stereo isolation");
+        check(std::abs(l/excitation-first[i]) < 5e-5 && r == 0.0f, "rate-specific upper corner and stereo isolation");
         l = 0.0f;
         filter.process(l,r,1.0f,.7f);
-        check(std::abs(l-second[i]) < 5e-5, "upper corner impulse phase at a different sample rate");
+        check(std::abs(l/excitation-second[i]) < 5e-5, "upper corner impulse phase at a different sample rate");
         filter.reset();
         l = 0.0f;
         filter.process(l,r,std::numeric_limits<float>::quiet_NaN(),-2.0f);
         check(l == 0.0f && r == 0.0f, "reset clears feedback and malformed control leaves silence");
     }
+}
+
+void resonantLevel() {
+    // A half-scale impulse at maximum resonance distinguishes the measured
+    // level-dependent damping from a linear high-Q filter.
+    constexpr std::array indices{0,1,4,9,31,64};
+    constexpr std::array expected{.15795082,.46266505,-.44627717,-.11943652,.34469840,-.27456656};
+    Filter filter;
+    filter.setMode(Mode::LowPass12);
+    double worst = 0;
+    std::size_t i = 0;
+    for (int n = 0; n <= indices.back(); ++n) {
+        float l = n == 0 ? .5f : 0.0f;
+        float r = -l;
+        filter.process(l, r, .86f, 1.0f);
+        if (n == indices[i]) {
+            worst = std::max(worst, std::abs(l - expected[i]));
+            worst = std::max(worst, std::abs(r + expected[i]));
+            ++i;
+        }
+    }
+    std::printf("Full-resonance level test maximum error %.9g\n", worst);
+    check(worst < 0.0002, "half-scale impulse excites the measured damped resonance");
 }
 
 void movingContours() {
@@ -133,6 +159,7 @@ int main() {
     bandwidth();
     heldOutResonantImpulses();
     sampleRatesAndReset();
+    resonantLevel();
     movingContours();
     return failures == 0 ? 0 : 1;
 }

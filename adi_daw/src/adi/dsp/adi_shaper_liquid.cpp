@@ -10,10 +10,18 @@
 
 namespace adi::dsp {
 namespace {
-// The five measured centers pass through E0, E2.5, E5, E7.5 and E10.
+// The measured center spans ten octaves above E0.
 constexpr double minimumHz = 20.601722307054366;
 float clean(float sample) noexcept {
     return std::abs(sample) < 1.0e-26f ? 0.0f : sample;
+}
+// Measured flanger loop transfer, including its dry component. Outside the
+// fitted region the nonlinear half reaches its limit continuously at ±3.
+float softDrive(float sample) noexcept {
+    if (std::abs(sample) > 3.0f)
+        return 0.5f * sample + std::copysign(0.5f, sample);
+    const float square = sample * sample;
+    return sample * ((27.0f + 5.0f * square) / (27.0f + 9.0f * square));
 }
 float height(float input) noexcept {
     return std::isfinite(input) ? std::clamp(input, 0.0f, 1.0f) : 0.5f;
@@ -103,9 +111,9 @@ void AdiShaperLiquid::updateFeedback(float value) noexcept {
         const float amount = 0.99f * std::sqrt(feedback_);
         dry_ = 0.75f / (1.0f + 0.75f * amount);
         const float sign = negative_ ? -1.0f : 1.0f;
-        // Fit to the first arrival and feedback repeat of a half-scale impulse.
-        wet_ = sign * 0.959532f * (1.0f + amount) * dry_;
-        loop_ = sign * 0.992295f * amount;
+        const float highpassGain = 1.0f - 0.5f * highpassAmount_;
+        wet_ = sign * highpassGain * (1.0f + amount) * dry_;
+        loop_ = sign * highpassGain * amount;
     } else {
         if (negative_) {
             dry_ = 0.5f;
@@ -132,7 +140,7 @@ void AdiShaperLiquid::flange(float& left, float& right) noexcept {
         const float delayed = first[ch] + (second[ch] - first[ch]) * delayFraction_;
         const float filtered = delayed - low_[ch];
         low_[ch] = clean(low_[ch] + highpassAmount_ * filtered);
-        delay_[write_][ch] = clean(input[ch] + loop_ * filtered);
+        delay_[write_][ch] = clean(softDrive(input[ch] + loop_ * filtered));
         output[ch] = dry_ * input[ch] + wet_ * filtered;
     }
     left = output[0];

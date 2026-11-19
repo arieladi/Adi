@@ -18,7 +18,7 @@ class AdiShaperFilter {
 
   private:
     struct Channel {
-        double pole = 0.0, band = 0.0, low = 0.0;
+        double pole = 0.0, band = 0.0, low = 0.0, previousBand = 0.0;
     };
     struct Knot {
         double value = 0.0, slope = 0.0;
@@ -29,7 +29,7 @@ class AdiShaperFilter {
     Mode mode_ = Mode::LowPass6;
     float lastCutoff_ = -1.0f, lastResonance_ = -1.0f;
     double sampleRate_ = 0.0, g_ = 0.0, damping_ = 2.0, poleGain_ = 0.0;
-    double a1_ = 0.0, a2_ = 0.0, a3_ = 0.0;
+    double a1_ = 0.0, resonanceScale_ = 0.0, inverseG_ = 0.0, gentleResonance_ = 0.0;
 
     [[nodiscard]] double warpAt(float cutoff) const noexcept;
     void tune(float cutoff, float resonance) noexcept;
