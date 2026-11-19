@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E48(a,b) media and forwarded MIDI used by Freeze
+
+**PR requested** · `engine/df-e48-freeze-media-scope` · `c5f4ae0c164eeeea0ad78af70f2c83c1b21969d9`
+**Title** — Scope Freeze capture media to playable clips.
+
+Freeze pins the requested tracks' unmuted main-lane audio and keeps existing verified caches and parked sources intact. Unrelated active audio is muted in the private render copy. A muted clip needs no reader, and a missing selected asset still refuses capture when made playable. The single-track forwarded-MIDI test now uses the same audible-lane rule as group capture.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Freeze capture 31, Freeze commands 81, group 65, Track Bounce 69 and audio clip playback 489 pass in both. Each new regression failed on the previous code. The exact dry merge with the Windows DF-E35(b) extent candidate passed GCC Freeze commands 144, group 65, Track Bounce 69 and Freeze capture 31, including cached fallback and parked-originals cases. `git diff --check` passes.
+
+**Dependency** — Current main, before Window wires Freeze. The Windows DF-E35(b) hunk at `759014e9` merges cleanly and can land independently.
+
 ## 2026-11-19 — DF-E47(a,b) linear clip and remark snapshots
 
 **PR requested** · `engine/df-e47-linear-clip-snapshot` · `f26b6396a9057b460686ba1350a6f026ac24c330`
