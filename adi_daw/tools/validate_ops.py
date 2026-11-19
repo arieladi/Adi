@@ -44,13 +44,16 @@ ROW = re.compile(
 # P4) does not match it and simply drops out of every count. While OPS.md wrote
 # its total down, the prose count was what noticed; it no longer writes one
 # (check 7), so check 1 now fails any such line that ROW cannot parse.
-OP_LIKE = re.compile(r"^\|\s*`[A-Za-z][^`|]*\.[^`|]*`\s*\|")
+# Leading whitespace is allowed in all of these: Markdown still renders " | ..."
+# as a table row, and anchored at '^\|' such a row dropped out of every count
+# with no failure (and ended the op-table tracking below for the rows after it).
+OP_LIKE = re.compile(r"^\s*\|\s*`[A-Za-z][^`|]*\.[^`|]*`\s*\|")
 # The header every op table has; a row in such a table is an op row whatever
 # its first cell holds (a name that lost its backticks still counts).
-OP_TABLE_HEADER = re.compile(r"^\|\s*Op\s*\|\s*S\s*\|\s*E\s*\|\s*Inv\s*\|\s*P\s*\|\s*$")
+OP_TABLE_HEADER = re.compile(r"^\s*\|\s*Op\s*\|\s*S\s*\|\s*E\s*\|\s*Inv\s*\|\s*P\s*\|\s*$")
 # A retired op is struck through (check 8) and has no scope or priority.
-STRUCK = re.compile(r"^\|\s*~~`")
-SEPARATOR = re.compile(r"^\|[\s:|-]+$")
+STRUCK = re.compile(r"^\s*\|\s*~~`")
+SEPARATOR = re.compile(r"^\s*\|[\s:|-]+$")
 
 
 def unparsed_op_rows(txt: str) -> list[tuple[int, str]]:
@@ -62,11 +65,12 @@ def unparsed_op_rows(txt: str) -> list[tuple[int, str]]:
         if OP_TABLE_HEADER.match(line):
             in_table = True
             continue
-        if not line.startswith("|"):
+        is_row = line.lstrip().startswith("|")
+        if not is_row:
             in_table = False
         if SEPARATOR.match(line):
             continue
-        in_op_table = in_table and line.startswith("|") and not STRUCK.match(line)
+        in_op_table = in_table and is_row and not STRUCK.match(line)
         if (OP_LIKE.match(line) or in_op_table) and not ROW.match(line):
             out.append((no, line))
     return out
