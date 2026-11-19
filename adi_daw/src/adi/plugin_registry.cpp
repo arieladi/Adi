@@ -16,8 +16,8 @@ namespace adi {
 
 namespace {
 
-// Version 2 adds durable scan quarantine. A later version appends the scan
-// cache/AudioGridder catalogue (ADR-0145 d6); older builds refuse newer files.
+// Version 2 adds durable scan quarantine; version 3 appends the success cache.
+// Existing route and quarantine rows keep their meaning. Older builds refuse v3.
 constexpr const char* kSchema =
     "CREATE TABLE IF NOT EXISTS plugin_routes ("
     "  format      TEXT    NOT NULL,"
@@ -34,7 +34,15 @@ constexpr const char* kSchema =
     "  reason      TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),"
     "  updated_utc INTEGER NOT NULL CHECK (updated_utc >= 0),"
     "  UNIQUE (format,path)"
-    ") STRICT;";
+    ") STRICT;"
+    "CREATE TABLE IF NOT EXISTS plugin_scan_cache ("
+    "  format TEXT NOT NULL CHECK (format IN ('clap','vst3')),"
+    "  path TEXT NOT NULL CHECK (length(CAST(path AS BLOB)) BETWEEN 1 AND 65536),"
+    "  stamp TEXT NOT NULL CHECK (length(stamp)=64),"
+    "  packet TEXT NOT NULL CHECK (length(CAST(packet AS BLOB)) BETWEEN 1 AND 8388608),"
+    "  updated_utc INTEGER NOT NULL CHECK (updated_utc >= 0),"
+    "  PRIMARY KEY (format,path)"
+    ") STRICT, WITHOUT ROWID;";
 
 bool text(const std::string& value, std::size_t maximum, bool empty = false) {
     if (value.size() > maximum || (!empty && value.empty()) || value.find('\0') != value.npos) return false;
@@ -59,6 +67,13 @@ void require(bool condition, const char* message) {
 void verifyScanColumns(SQLite::Database& db) {
     SQLite::Statement probe(db,"SELECT id,format,path,state,reason,updated_utc FROM plugin_scan_blocks LIMIT 0");
     probe.executeStep();
+    SQLite::Statement cache(db,"SELECT format,path,stamp,packet,updated_utc FROM plugin_scan_cache LIMIT 0");
+    cache.executeStep();
+}
+bool cacheStamp(const std::string& stamp) {
+    if(stamp.size()!=64)return false;
+    for(const char ch:stamp)if(!((ch>='0' && ch<='9') || (ch>='a' && ch<='f')))return false;
+    return true;
 }
 
 // SQLite takes UTF-8 file names; path::string() is the ANSI code page on
@@ -228,13 +243,64 @@ bool PluginRegistry::blockScan(const std::string& format, const std::string& pat
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 
+std::optional<std::string> PluginRegistry::cachedScan(const ScanTicket& ticket,
+    const std::string& stamp, std::string& error) const {
+    if(audio::onAudioThread)return std::nullopt;
+    error.clear();
+    try {
+        require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp),
+                "invalid cache ticket or stamp");
+        SQLite::Statement query(*db_,
+            "SELECT c.packet, length(CAST(c.packet AS BLOB)), c.updated_utc "
+            "FROM plugin_scan_cache c JOIN plugin_scan_blocks b "
+            "ON c.format=b.format AND c.path=b.path "
+            "WHERE b.id=? AND b.format=? AND b.path=? AND b.state='pending' AND c.stamp=?");
+        query.bind(1,ticket.id_);query.bind(2,ticket.format_);query.bind(3,ticket.path_);query.bind(4,stamp);
+        if(!query.executeStep())return std::nullopt;
+        require(query.getColumn(0).isText() && query.getColumn(1).isInteger() &&
+                query.getColumn(2).isInteger() && query.getColumn(2).getInt64()>=0,
+                "invalid stored scan cache types");
+        const auto bytes=query.getColumn(1).getInt64();
+        require(bytes>0 && bytes<=static_cast<std::int64_t>(kMaximumScanPacket),
+                "stored scan packet exceeds bounds");
+        return query.getColumn(0).getString();
+    } catch(const std::exception& failure) {error=failure.what();return std::nullopt;}
+}
+
+bool PluginRegistry::finishCachedScan(const ScanTicket& ticket, const std::string& stamp,
+    const std::string& packet, std::int64_t nowUtc, std::string& error) {
+    if(audio::onAudioThread)return false;
+    error.clear();
+    try {
+        require(ticket.owner_.lock()==scanOwner_ && ticket.id_>0 && cacheStamp(stamp) && nowUtc>=0,
+                "invalid cache completion ticket, stamp or time");
+        require(text(packet,kMaximumScanPacket),"invalid scan cache packet bounds or text");
+        SQLite::Transaction transaction(*db_);
+        SQLite::Statement finish(*db_,
+            "DELETE FROM plugin_scan_blocks WHERE id=? AND format=? AND path=? AND state='pending'");
+        finish.bind(1,ticket.id_);finish.bind(2,ticket.format_);finish.bind(3,ticket.path_);
+        require(finish.exec()==1,"scan ticket is no longer pending");
+        // A changed module replaces its whole entry; no stale class rows survive.
+        SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+        remove.bind(1,ticket.format_);remove.bind(2,ticket.path_);remove.exec();
+        SQLite::Statement insert(*db_,"INSERT INTO plugin_scan_cache(format,path,stamp,packet,updated_utc) VALUES(?,?,?,?,?)");
+        insert.bind(1,ticket.format_);insert.bind(2,ticket.path_);insert.bind(3,stamp);
+        insert.bind(4,packet);insert.bind(5,nowUtc);insert.exec();
+        transaction.commit();return true;
+    } catch(const std::exception& failure) {error=failure.what();return false;}
+}
+
 bool PluginRegistry::unblockScan(const std::string& format, const std::string& path, std::string& error) {
     if (audio::onAudioThread) return false;
     error.clear();
     try {
         require(key(format,path),"invalid scan identity");
+        SQLite::Transaction transaction(*db_);
         SQLite::Statement remove(*db_,"DELETE FROM plugin_scan_blocks WHERE format=? AND path=?");
-        remove.bind(1,format);remove.bind(2,path);remove.exec();return true;
+        remove.bind(1,format);remove.bind(2,path);remove.exec();
+        SQLite::Statement cache(*db_,"DELETE FROM plugin_scan_cache WHERE format=? AND path=?");
+        cache.bind(1,format);cache.bind(2,path);cache.exec();
+        transaction.commit();return true;
     } catch(const std::exception& failure) {error=failure.what();return false;}
 }
 

@@ -57,8 +57,9 @@ public:
     /// 'ADIP'. Distinct from the project's `application_id`, so neither file
     /// can be mistaken for the other.
     static constexpr std::int32_t kApplicationId = 0x41444950;
-    static constexpr int kVersion = 2;
+    static constexpr int kVersion = 3;
     static constexpr std::size_t kMaximumScanBlocks = 65536;
+    static constexpr std::size_t kMaximumScanPacket = 8U * 1024U * 1024U;
 
     /// Open, creating the file and its folder when missing. Null with `error`
     /// set when it cannot: the caller then proposes no defaults, which is Auto.
@@ -97,7 +98,20 @@ public:
     /// completion against a newer ticket. Existing quarantine remains intact.
     bool finishScan(const ScanTicket&, ScanDisposition, const std::string& reason,
                     std::int64_t nowUtc, std::string& error);
+    /// Success-cache lookup under the still-pending admission ticket. A miss
+    /// is nullopt with an empty error. Packet bytes are bounded but UNTRUSTED:
+    /// the scanner must decode and format-validate them as a fresh child reply.
+    /// Stamps are 64 lowercase hex digits; this layer does no filesystem I/O.
+    std::optional<std::string> cachedScan(const ScanTicket&, const std::string& stamp,
+                                          std::string& error) const;
+    /// Replace the complete module packet and finish the exact pending ticket
+    /// in ONE transaction. A stale/foreign ticket cannot publish a cache row.
+    /// There is no successful-but-uncached capacity path: a write failure
+    /// rolls back and is reported, so warm scans never silently reprobe.
+    bool finishCachedScan(const ScanTicket&, const std::string& stamp,
+                          const std::string& packet, std::int64_t nowUtc, std::string& error);
     /// Explicit owner/user controls; no automatic retry, expiry or rescan.
+    /// Re-enable also removes any cached success, so the next probe is fresh.
     bool blockScan(const std::string& format, const std::string& path,
                    const std::string& reason, std::int64_t nowUtc, std::string& error);
     bool unblockScan(const std::string& format, const std::string& path, std::string& error);

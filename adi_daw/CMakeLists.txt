@@ -289,6 +289,7 @@ add_library(adi_core STATIC
     src/adi/plugin_registry.cpp
     src/adi/scan_process.cpp
     src/adi/plugin_scanner.cpp
+    src/adi/scan_stamp.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -933,6 +934,10 @@ target_compile_definitions(adi_plugin_scanner_tests PRIVATE
     ADI_SCAN_STATIC_FIXTURE="$<TARGET_FILE:adi_scan_clap_static_fixture>")
 add_dependencies(adi_plugin_scanner_tests adi_plugin_scanner adi_scan_clap_fixture adi_scan_clap_static_fixture)
 add_test(NAME adi_plugin_scanner_tests COMMAND adi_plugin_scanner_tests)
+
+add_executable(adi_scan_cache_tests tests/test_scan_cache.cpp)
+target_link_libraries(adi_scan_cache_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_cache_tests COMMAND adi_scan_cache_tests)
 
 add_executable(adi_scan_process_tests tests/test_scan_process.cpp)
 target_link_libraries(adi_scan_process_tests PRIVATE adi_core adi_warnings)

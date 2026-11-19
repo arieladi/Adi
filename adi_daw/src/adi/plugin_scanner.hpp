@@ -13,6 +13,7 @@ struct Plugin {
 };
 inline constexpr std::size_t kMaximumPlugins = 65536;
 inline constexpr std::size_t kMaximumPacket = 8U * 1024U * 1024U;
+inline constexpr unsigned kPacketSchema = 1;
 
 /// Owner protocol APIs: strict schema 1, exact format/path, no duplicate keys,
 /// ids or unknown fields, bounded tokens/depth/string bytes. No partial result.
@@ -32,6 +33,8 @@ struct Config {
 enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };
 struct Result {
     State state = State::Invalid;
+    bool cacheHit = false; // validated success packet; does not mean instantiated
+    std::string cacheWarning; // no reliable bounded stamp: fresh child result is not cached
     std::string path, error; // canonical request path; error is an owned diagnostic
     std::vector<Plugin> plugins;
 };
@@ -49,14 +52,19 @@ using Validator = bool(*)(const std::vector<Plugin>&, const std::string&,
 class Scanner {
 public:
     static std::unique_ptr<Scanner> open(const Config&, std::string& error);
-    /// Canonicalize an existing file/bundle, commit pending, launch one helper,
-    /// validate whole metadata, then token-check completion. Never loads a
+    /// Canonicalize/stamp an existing file/bundle, commit pending, validate a
+    /// matching cached packet or launch one helper, then token-check completion.
+    /// The stamp is checked again after validation. Never loads a
     /// plug-in in this process, and never falls back in process. Owner only.
     Result probe(const std::string& format, const std::filesystem::path& path,
                  Validator validate = nullptr, void* context = nullptr);
 private:
-    Scanner(Config config, std::unique_ptr<PluginRegistry> registry);
+    Scanner(Config config, std::unique_ptr<PluginRegistry> registry, std::string buildHash,
+            std::uintmax_t helperSize, std::filesystem::file_time_type helperTime);
     Config config_;
     std::unique_ptr<PluginRegistry> registry_;
+    std::string helperBuildHash_;
+    std::uintmax_t helperSize_ = 0;
+    std::filesystem::file_time_type helperTime_;
 };
 } // namespace adi::scan

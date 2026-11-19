@@ -2,6 +2,8 @@
 #include "adi/plugin_scanner.hpp"
 #include "adi/appdata.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/scan_stamp.hpp"
+#include "adi/media/blake3.hpp"
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
 #include <array>
@@ -120,7 +122,7 @@ std::optional<std::vector<Plugin>> decodeMetadata(std::string_view packet,
         UniqueKeys keys;require(Json::sax_parse(packet,&keys),"invalid/duplicate scanner fields");
         const auto document=Json::parse(packet);
         fields(document,rootFields);
-        require(document.at("schema").is_number_integer() && document.at("schema")==1,"unsupported scanner schema");
+        require(document.at("schema").is_number_integer() && document.at("schema")==kPacketSchema,"unsupported scanner schema");
         require(string(document,"format")==format && string(document,"path")==path,"scanner reply identity mismatch");
         const auto& rows=document.at("plugins");
         require(rows.is_array() && rows.size()<=kMaximumPlugins,"scanner descriptor count");
@@ -150,7 +152,7 @@ std::optional<std::string> encodeMetadata(const std::string& format,const std::s
             rows.push_back({{"id",value.id},{"name",value.name},{"vendor",value.vendor},{"version",value.version},
                 {"features",value.features},{"instrument",value.instrument},{"data",value.data}});
         }
-        auto result=Json{{"schema",1},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
+        auto result=Json{{"schema",kPacketSchema},{"format",format},{"path",path},{"plugins",std::move(rows)}}.dump();
         // Escapes/field overhead count in the actual packet, not just authored
         // text. Keep encoder and decoder bounds identical before child output.
         preflight(result);return result;
@@ -186,8 +188,10 @@ std::filesystem::path defaultScannerExecutable() {
 std::int64_t systemUtcMicros() noexcept {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
-Scanner::Scanner(Config config,std::unique_ptr<PluginRegistry> registry)
-    :config_(std::move(config)),registry_(std::move(registry)){}
+Scanner::Scanner(Config config,std::unique_ptr<PluginRegistry> registry,std::string buildHash,
+    std::uintmax_t helperSize,std::filesystem::file_time_type helperTime)
+    :config_(std::move(config)),registry_(std::move(registry)),helperBuildHash_(std::move(buildHash)),
+     helperSize_(helperSize),helperTime_(helperTime){}
 std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) {
     if(audio::onAudioThread)return nullptr;
     error.clear();
@@ -200,8 +204,14 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
         const auto& process=resolved.process;
         require(process.timeout.count()>0 && process.timeout.count()<=300000 && process.maximumOutput>0 &&
             process.maximumOutput<=kMaximumPacket,"invalid scanner process bounds");
+        const auto helperSize=std::filesystem::file_size(resolved.executable);
+        const auto helperTime=std::filesystem::last_write_time(resolved.executable);
+        const auto build=media::blake3File(resolved.executable);
+        require(static_cast<bool>(build),"scanner helper build identity unavailable");
+        require(helperSize==std::filesystem::file_size(resolved.executable) &&
+                helperTime==std::filesystem::last_write_time(resolved.executable),"scanner helper changed during identification");
         auto registry=PluginRegistry::open(resolved.registry,error);if(!registry)return nullptr;
-        return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry)));
+        return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry),build.hex,helperSize,helperTime));
     } catch(const std::exception&) {error="scanner configuration unavailable";return nullptr;}
 }
 Result Scanner::probe(const std::string& format,const std::filesystem::path& path,Validator validate,void* context) {
@@ -212,11 +222,60 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         if(format!="clap" && (format!="vst3" || validate==nullptr)) {
             result.error="unsupported scanner format/validator";return result;
         }
+        const auto helperSize=std::filesystem::file_size(config_.executable);
+        const auto helperTime=std::filesystem::last_write_time(config_.executable);
+        if(helperSize!=helperSize_ || helperTime!=helperTime_) {
+            const auto build=media::blake3File(config_.executable);
+            require(static_cast<bool>(build) && helperSize==std::filesystem::file_size(config_.executable) &&
+                    helperTime==std::filesystem::last_write_time(config_.executable),"scanner helper changed during identification");
+            helperBuildHash_=build.hex;helperSize_=helperSize;helperTime_=helperTime;
+        }
         std::error_code ec;const auto canonical=std::filesystem::canonical(path,ec);
         if(ec){result.state=State::Unavailable;result.error="scan candidate path unavailable";return result;}
         result.path=utf8(canonical);require(identity(format,result.path),"invalid canonical scan identity");
+        const auto stamp=candidateStamp(format,canonical,helperBuildHash_,result.error);
+        if(!stamp){result.cacheWarning=result.error;result.error.clear();}
         auto ticket=registry_->beginScan(format,result.path,config_.clock(),result.error);
         if(!ticket){result.state=State::Quarantined;return result;}
+        auto cached=stamp?registry_->cachedScan(*ticket,*stamp,result.error):std::nullopt;
+        if(!result.error.empty()) {
+            std::string finishError;
+            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+                result.state=State::Quarantined;result.error=finishError;
+            } else result.state=State::Unavailable;
+            return result;
+        }
+        auto stable=[&]() {
+            const auto after=candidateStamp(format,canonical,helperBuildHash_,result.error);
+            std::error_code sizeError,timeError;
+            const auto currentSize=std::filesystem::file_size(config_.executable,sizeError);
+            const auto currentTime=std::filesystem::last_write_time(config_.executable,timeError);
+            if(after && *after==*stamp && !sizeError && !timeError &&
+               currentSize==helperSize && currentTime==helperTime)return true;
+            std::string finishError;
+            if(!registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),finishError)) {
+                result.state=State::Quarantined;result.error=finishError;
+            } else {result.state=State::Unavailable;result.error="scan candidate or helper changed during probe; retry required";}
+            return false;
+        };
+        if(cached && cached->size()<=config_.process.maximumOutput) {
+            auto plugins=decodeMetadata(*cached,format,result.path,result.error);
+            if(plugins && validate && !validate(*plugins,result.path,context,result.error))plugins.reset();
+            if(plugins) {
+                if(config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed)) {
+                    result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
+                        State::Cancelled:State::Quarantined;return result;
+                }
+                if(!stable())return result;
+                if(!registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error)) {
+                    result.state=State::Quarantined;return result;
+                }
+                result.state=State::Ready;result.cacheHit=true;result.plugins=std::move(*plugins);return result;
+            }
+            // Corrupt/obsolete stored metadata is not a plug-in crash. Reprobe
+            // under the same admission ticket; fresh replies still validate.
+            result.error.clear();
+        }
         const auto process=runProcess(config_.executable,{"--scan",format,result.path},config_.process);
         const bool cancel=process.succeeded() && config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
         const bool abandoned=cancel || process.status==ProcessStatus::Cancelled || process.status==ProcessStatus::LaunchFailed ||
@@ -239,7 +298,11 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
                 result.state=registry_->finishScan(*ticket,ScanDisposition::Abandoned,"",config_.clock(),result.error)?
                     State::Cancelled:State::Quarantined;return result;
             }
-            if(!registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error)) {
+            if(stamp && !stable())return result;
+            const bool finished=stamp?
+                registry_->finishCachedScan(*ticket,*stamp,process.output,config_.clock(),result.error):
+                registry_->finishScan(*ticket,ScanDisposition::Succeeded,"",config_.clock(),result.error);
+            if(!finished) {
                 result.state=State::Quarantined;return result;
             }
             result.state=State::Ready;result.plugins=std::move(*plugins);return result;

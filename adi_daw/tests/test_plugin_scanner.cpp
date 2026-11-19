@@ -159,6 +159,12 @@ void realLibraries() {
     std::ifstream marker(native(utf8(good)+".pids"));long long pid=0;bool seen=false,foreign=true;
     while(marker>>pid){seen=true;foreign=foreign && pid!=static_cast<long long>(test::processId());}
     check(seen && foreign,"every actual plug-in init runs under a different PID");
+    const auto initBytes=fs::file_size(native(utf8(good)+".pids"));
+    const auto warm=scanner->probe("clap",good);scanner.reset();scanner=f.scanner();
+    const auto reopened=scanner->probe("clap",good);
+    check(warm.state==State::Ready && warm.cacheHit && reopened.state==State::Ready && reopened.cacheHit &&
+          fs::file_size(native(utf8(good)+".pids"))==initBytes,
+          "real CLAP module has no further init calls over three unchanged probes including Scanner reopen");
     const auto noisy=scanner->probe("clap",f.bundle("noisy"));
     check(noisy.state==State::Ready && noisy.plugins.size()==2,"plug-in stdout/stderr chatter cannot corrupt reserved metadata channel");
     bool contained=true;for(const auto* mode:std::array{"init-crash","factory-crash","descriptor-crash","deinit-crash","unload-crash","duplicate","too-many","oversized","bad-utf8","null-descriptor"}) {

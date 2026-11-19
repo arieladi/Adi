@@ -1,12 +1,13 @@
 # Always-child plug-in discovery
 
-Phase D/R-17/D-03 discovery now uses `adi_plugin_scanner` for every CLAP/VST3
-candidate, including a project's direct VST3 path hint. There is no in-process
+Phase D/R-17/D-03 discovery uses `adi_plugin_scanner` for every CLAP/VST3
+cache miss, including a project's direct VST3 path hint. A validated success
+cache avoids another child for an unchanged candidate. There is no in-process
 discovery switch or fallback. Runtime instantiation/audio remain in process as
 D-03 requires. This branch depends on both independent foundations,
 `engine/plugin-scanner-process` and `engine/plugin-scan-quarantine`.
 
-`scan::Scanner::open(Config,error)` opens the shared version-2 PluginRegistry.
+`scan::Scanner::open(Config,error)` opens the shared version-3 PluginRegistry.
 Config defaults to appdata's registry and an `adi_plugin_scanner[.exe]` beside
 the current executable. Explicit paths must be absolute. Process bounds and
 cancellation use ProcessOptions; the default deadline is 30 seconds and output
@@ -15,7 +16,7 @@ owner at a time per Scanner/registry connection, on an owner worker. These are
 blocking services, not UI/audio callback work.
 
 `probe(format,path,validator,context)` resolves an existing native canonical
-path, commits a pending marker before launch and invokes the helper with an
+path, commits a pending marker before cache lookup or launch and invokes the helper with an
 explicit argument vector. It checks exit status and validates the whole packet,
 then optional format validation, before token-checked completion. Only Ready
 contains descriptors. Crashes, timeout, bad/oversized/mismatched metadata,
@@ -26,6 +27,80 @@ means unsupported deployment. Completion failure/stale tickets publish nothing
 and retain quarantine. Resource exceptions retain pending state. A pending row
 means in-progress/interrupted, not proof of a plug-in crash. Native alias
 resolution binds admission; no filename/Unicode case heuristic is used.
+
+## Version 3 success cache (DEV-25 first slice)
+
+Version 3 adds only `plugin_scan_cache`: keyed by format and canonical path,
+holding a stamp, the entire bounded schema-1 packet, and an explicit timestamp.
+Version-1/2 route and quarantine rows are preserved; old applications refuse
+the newer registry rather than misreading it. Failure/strike policy is unchanged.
+
+The BLAKE3 stamp incorporates its own version, the shared protocol version,
+format, canonical candidate identity and the helper executable's BLAKE3 digest.
+The helper digest changes with its linked discovery code, including JUCE. It is
+read on Scanner open and refreshed when helper size/time changes; a helper
+changed during a probe prevents publication. An identical helper copy does not
+invalidate the cache solely because its installation path differs.
+
+For a flat candidate, both file size and full native modification time are
+stamped. For a bundle, native module files (`.vst3`, `.clap`, `.dll`, `.so`,
+`.dylib`, and files under `Contents/MacOS`) and `moduleinfo.json` are sorted and
+stamped individually with their relative and canonical paths, sizes and times.
+Directory modification time is not used. A bundle walk is sorted and bounded to
+16,384 entries, 4,096 stamped files and 16 MiB of fingerprint text. Internal
+directory links use canonical cycle detection; directory links leading outside
+the bundle are not traversed. Unrecognized layouts use their ordinary files
+as the fallback list; an empty layout still reaches the child and its normal
+failure policy. If a reliable bounded stamp is unavailable, discovery still
+runs in the child and returns an explicit `cacheWarning`; that result is not
+cached. A large/unusual bundle therefore does not abort the discovery batch
+solely because of cache policy. Candidate-level native aliases, including
+relocated bundles, are resolved before admission.
+Changing bytes while preserving **both** size and time is outside this metadata
+invalidation contract; this is not a content-integrity or tamper-detection cache.
+CLAP-declared invalidation sources and shortcut-folder discovery remain later
+DEV-25 work.
+
+A cache hit still takes a pending ScanTicket. This is the same cross-application
+admission as a child probe, so a pending or manually blocked candidate cannot
+bypass quarantine by using cached descriptors. The packet is untrusted: bounded
+SQL extraction, ordinary strict JSON decoding, and the VST3 format validator all
+run again. A malformed packet is replaced only through a fresh isolated probe;
+an oversized or invalid stored row reports unavailable. No ABI object bytes are
+serialized. A valid cache packet is not evidence of runtime instantiation,
+restored state or processed audio.
+
+The candidate stamp is checked again after validation. If it changed, the
+attempt is abandoned with no descriptors and no new quarantine; a subsequent
+explicit probe can retry the stable candidate. A new success replaces the
+whole module packet in the same transaction that completes its exact pending
+ticket. A late user block or stale/foreign ticket cannot publish it, and a
+failed SQL insert rolls the ticket deletion back. Warm hits complete their
+ticket without rewriting the cached packet. Explicit re-enable removes both
+the block and cached success, so its next probe is fresh.
+
+Packets and stored-packet extraction cap at 8 MiB. Every reliably stamped success
+is stored; a write failure rolls back and is reported. No full-cache count/sum
+is performed per candidate, and no aggregate byte cap silently causes an endless
+reprobe. Total persistent storage grows with discovered modules; seen-set cleanup
+and retention policy remain later service work. These bounds do not weaken
+existing process output limits or metadata decoding. SQL/file work stays off
+the audio callback.
+
+`adi_scan_cache_tests` exercises the real process runner and shared registry:
+three unchanged probes including reopen launch one child; timestamp-only and
+size-only/restored-time changes reprobe; bundle modules and moduleinfo invalidate
+independently of directory time; canonical aliases reuse a success; helper build
+changes invalidate; corrupt packets, late blocks, cancellation and mid-probe
+file changes do not publish unvalidated/stale data; a late SQL refusal rolls
+back; v2 migration preserves routes/blocks. `adi_plugin_scanner_tests` also
+repeats a real CLAP module and checks that no new init PID records appear.
+
+This is a cache foundation, not the whole DEV-25 row. It does not add automatic
+failure expiry/retry, a worker pool, a UI, a startup service, or catalogue-first
+instance loading. The loader's lazy/hint scans still call this service; moving
+discovery out of project open is a separate change. Saved JUCE identifier/path
+spelling is unchanged. Readiness stages need separate runtime observations.
 
 The child reserves a dedicated copy of its stdout pipe before loading any
 plug-in. It redirects ordinary stdout to the null stderr channel, so constructor,
