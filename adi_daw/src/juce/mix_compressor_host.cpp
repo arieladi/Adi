@@ -152,10 +152,6 @@ class CompressorDevice final : public DeviceInstance {
             passThrough(io);
             return;
         }
-        if (wakeReset_) {
-            core_.reset();
-            wakeReset_ = false;
-        }
         auto v = read();
         for (std::int32_t n = 0; n < io.events.count; ++n) {
             const auto &e = io.events.first[n];
@@ -300,6 +296,13 @@ class CompressorDevice final : public DeviceInstance {
                 if (in[other] && overlaps(out[ch] + io.blockOffset, in[other] + io.blockOffset) &&
                     !(ch == other && out[ch] == in[other]))
                     return;
+        if (wakeReset_) {
+            if (core_.reset(s) != c::Status::Ok) {
+                passThrough(io);
+                return;
+            }
+            wakeReset_ = false;
+        }
         std::array<T *, 2> main{};
         for (int ch = 0; ch < channels_; ++ch) {
             const auto cidx = static_cast<std::size_t>(ch);

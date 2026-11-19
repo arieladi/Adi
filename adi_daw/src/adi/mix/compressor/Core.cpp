@@ -508,6 +508,18 @@ void Core::reset() noexcept {
     if (impl_)
         impl_->clear();
 }
+Status Core::reset(const Settings &s) noexcept {
+    if (!impl_)
+        return Status::NotPrepared;
+    if (!validSettings(s))
+        return Status::InvalidSettings;
+    if (!sameRouting(s, impl_->routing) || (s.autoGain && s.stereoLink > 1.0f))
+        return Status::UnsupportedConfiguration;
+    impl_->controlsInitialized = false;
+    impl_->update(s);
+    impl_->clear();
+    return Status::Ok;
+}
 bool Core::isPrepared() const noexcept { return impl_ != nullptr; }
 BlockContext Core::beginBlock(std::int32_t frames) noexcept {
     if (!impl_ || frames <= 0 || frames > impl_->spec.maximumFrames || impl_->cursor != impl_->blockFrames)
