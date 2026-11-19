@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — Clip-admission unavailable-page fixture handshake
+
+**PR requested** — updated `engine/clip-admission-fixture-order`, head `50ae0d857d05e9513688f554ce8b4123449bdb3e`, fast-forward from `fc14ccbb` on main `88e2d94e`. Title **Wait for the clip worker before testing unavailable pages**. Both commits go in the same fixture PR.
+
+The owner-timeout and callback cold-page fixtures now hold the worker on an observed empty request before they publish missing pages. The previous stall flag let an in-flight worker iteration see the new request. This left the worker free to fill the very page the fixture meant to keep unavailable. The live readiness API, deadlines and PCM checks stay in place.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors, 90 checks each. A forced schedule let a worker iteration pass the old stall flag before the owner posted the request, giving the old fixture one named failure in seven checks. The revised fixture passed all seven against that scratch build. Four validators and binary layout passed.
+
 ## 2026-11-19 — N52 independent fade start and end handles
 
 **PR requested** — branch `engine/n52-fade-start-handles`, head `65c0dd4c88e1a9063eaf3f27491f575ba46311b7`, main base `88e2d94e`. Title **N52: Add independent zero-gain handles for clip fades**.
