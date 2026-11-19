@@ -8,6 +8,14 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+### DF-M37 — Clean callback recovery
+
+**PR requested.** `mixview/clean-callback-recovery-20261119` at `a2ff97e5065c4ca5e0c7000100dc22a23a5158b4`.
+
+The float and double adapters preserve dry input at the callback's actual offset before preparation and after release. They fill silence when there is no input. A refused or incomplete checked block resets the core after the dry copy so the next segment can recover. The live prepared path still uses its existing capacity check.
+
+The regression at `ec8819af` failed the four float/double callback cases. The exact Release passed all 104 native Clean host checks with zero callback allocations or frees, the three targeted CTest suites, and 870 shell checks. Release ADI.exe SHA-256 `069f4f64f19608d64e9fafc8181a63c262f4b5ed00d5fdfb8303083291bec75d`. Evidence is in the private seat folder `dfm37-built-20261119`. This defensive path has no new review package.
+
 ## 19 November 2026 — DF-M36 unchanged-format prepare keeps audio admitted
 
 **PR requested.** `mixview/native-noop-prepare-20261119` is pushed at `bf221a35`. Exact-format and sufficient-capacity prepares return before taking the reactivation Hold in native EQ, Clean, and the built-in host. The EQ still updates the advertised read-only latency. Real format changes retain the guarded prepare path.
