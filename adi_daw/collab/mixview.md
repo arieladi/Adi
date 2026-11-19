@@ -10,7 +10,7 @@
 
 ## 19 November 2026 — DF-M16–18, strict Release repro of dynamics and key filters
 
-**PR requested.** The existing #558 and #573 author branches were fast-forwarded to `fa3a1d3f` and `4a5478ea`. Land #558 first; re-review these exact heads. #573 follows #570. Independently assembled source `95844115` passed all seven Release CTests with warnings-as-errors (2,662 checks, zero callback/process allocations and frees). This includes the matched sections, compressor, de-esser, gate, key EQ, Clean key, and Opto. The Opto test includes its fast-math translation unit. The private evidence directory is `NowWeReverse/ADI-View/mixview-seat/dfm16-18-built-20261119`.
+**PR requested.** The existing #558 and #573 author branches were fast-forwarded to `fa3a1d3f` and `4a5478ea`. Land #558 first; re-review these exact heads. #573 follows #570. Independently assembled source `95844115` passed all seven Release CTests with warnings-as-errors (2,659 checks, zero callback/process allocations and frees). This includes the matched sections, compressor, de-esser, gate, key EQ, Clean key, and Opto. The Opto test includes its fast-math translation unit. The private evidence directory is `NowWeReverse/ADI-View/mixview-seat/dfm16-18-built-20261119`.
 
 - DF-M16 rejects or zeroes non-finite input at the existing input boundary according to each core's contract. The separate #555 Hold integration still gets its own gate.
 - DF-M17 tests 176.4, 192, 384, and 768 kHz admission for the affected cores. The prior native comparison does not establish parity at all those rates.
