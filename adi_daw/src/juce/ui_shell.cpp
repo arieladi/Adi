@@ -23,13 +23,6 @@ bool deviceOrTrackEditCommand(int id) noexcept {
     return id == AppCommands::Cut || id == AppCommands::Copy || id == AppCommands::Paste ||
            id == AppCommands::Duplicate || id == AppCommands::RenameTrack || id == AppCommands::DeleteTrack;
 }
-// A letter's key is down whichever case its code names.
-bool keyIsDown(int code) {
-    return juce::KeyPress::isKeyCurrentlyDown(code) ||
-           (code > 0 && code < 128 && std::isalpha(code) &&
-            (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
-             juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
-}
 // Live's measures, in points at 100 %: the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTabHeight = 20;
 constexpr int kInfoWidth = 200, kPreviewHeight = 27;
@@ -723,9 +716,9 @@ bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
     // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
     if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
-        if (root.latch().held() && !keyIsDown(root.latch().key()))
+        if (root.latch().held() && !root.input.down(root.latch().key()))
             root.letGoUnseen();
-        return root.latchKey(id, key.getKeyCode(), true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        return root.latchKey(id, key.getKeyCode(), true, root.input.ms());
     }
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
@@ -1539,13 +1532,13 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
     return true;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
-    const auto now = static_cast<std::int64_t>(juce::Time::getMillisecondCounter());
+    const auto now = input.ms();
     // A latching key let go: after a hold, the window goes back (Live 42.25).
     bool handled = false;
-    if (latch_.held() && !keyIsDown(latch_.key()))
+    if (latch_.held() && !input.down(latch_.key()))
         handled = latchKey(0, latch_.key(), false, now);
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !keyIsDown('r'))
+    if (reference_.held() && !input.down('r'))
         return referenceKey(false, now) || handled;
     return handled || juce::Component::keyStateChanged(isKeyDown);
 }
@@ -3294,11 +3287,15 @@ bool AdiRootComponent::command(int id) {
         arrangement.firstShownIfHidden();
         break;
     case AppCommands::PlayReference:
-        // The key goes down; keyStateChanged lets it go. From a menu, a tap.
-        referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-        if (!juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
-            referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    {
+        // The key goes down; keyStateChanged lets it go. From a menu, a tap: up at the moment it went
+        // down, however long the machine took between the two (DF-W18).
+        const auto now = input.ms();
+        referenceKey(true, now);
+        if (!input.down('r'))
+            referenceKey(false, now);
         return true;
+    }
     case AppCommands::ToggleMixView:
         state_.mixView = !state_.mixView;
         if (!persist()) {

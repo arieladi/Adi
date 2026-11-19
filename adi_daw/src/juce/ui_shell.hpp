@@ -10,6 +10,7 @@
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/tap_tempo.hpp"
+#include "ui_input_clock.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -453,6 +454,9 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     const MomentaryLatch &latch() const noexcept { return latch_; }
     void letGoUnseen() noexcept { latch_.letGo(); }
     const ReferenceAudition &reference() const noexcept { return reference_; }
+    // Where the window reads the time and the keys held (ADR-0231 d2; DF-W18): the system's unless a
+    // test gives its own.
+    InputClock input;
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};

@@ -2364,14 +2364,14 @@ void ArrangementCanvas::mouseExit(const juce::MouseEvent &) {
 }
 void ArrangementCanvas::focusLost(FocusChangeType) {
     // F released where the canvas cannot hear it: the handles go back.
-    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+    if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }
 }
 bool ArrangementCanvas::keyStateChanged(bool) {
     // F up: the handles go back to the clip under the mouse and the selected ones.
-    if (showFades && !juce::KeyPress::isKeyCurrentlyDown('f') && !juce::KeyPress::isKeyCurrentlyDown('F')) {
+    if (showFades && !view.root.input.down('f')) {
         showFades = false;
         repaint();
     }

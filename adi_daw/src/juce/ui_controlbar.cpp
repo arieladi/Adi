@@ -217,7 +217,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     tempo.onClick = [this] { beginTempoEdit(); };
     // On the press, so each tap is timed when it lands.
     tap.setTriggeredOnMouseDown(true);
-    tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
+    tap.onClick = [this] { root_.tapTempo(root_.input.ms()); };
     signature.onClick = [this] { beginSignatureEdit(); };
     // The metronome and the Arrangement Loop (manual 19.4.1, 6.6; #383, N19): outside undo, saved
     // with the project, lit from the snapshot.

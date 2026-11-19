@@ -9754,9 +9754,14 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
         check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
               "the stub names no Reference track until the format carries a track's role (N38)");
+        // The window's clock is the test's (ADR-0231 d2; DF-W18): no key is held, and every reading is
+        // 300 ms after the last, slower than any machine; the menu's Play Reference is still a tap.
+        auto clockMs = std::make_shared<std::int64_t>(0);
+        root.input.keyDown = [](int) { return false; };
+        root.input.now = [clockMs] { return *clockMs += 300; };
         check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
-                  root.error().find("No track is the Reference") != std::string::npos,
-              "Shift+R with none says so");
+                  root.error().find("No track is the Reference") != std::string::npos && !root.reference().held(),
+              "Shift+R with none says so, and lets go at once: a tap, however slow the machine");
         root.referenceKey(true, 0);
         root.referenceKey(false, 50);
         // A provider that names Lead, as the snapshot's will once tracks carry their role.
@@ -9790,6 +9795,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
               "and hides it again");
         // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
+        check(root.command(AppCommands::PlayReference) && root.reference().latched() && !root.reference().held(),
+              "Play Reference from the menu latches it, with the clock 300 ms on at each reading");
+        check(root.command(AppCommands::PlayReference) && !root.reference().on(), "and a second lets it go");
         check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
         check(!root.referenceKey(false, 1100) && root.reference().latched() &&
                   root.error().find("cue path") != std::string::npos,
