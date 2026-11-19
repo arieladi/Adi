@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, after midnight — make the Stack release assertion deterministic
+
+An extra repeat of the earlier software-peer shell hit one intermittent assertion. The test checked the rectangle on a wall-clock frame after End, by which time the intended easing could already have moved it. The fixture now stages an intermediate pose, checks the exact release origin and stable tile, and checks resumed enlargement at the model's next deadline. The one host gesture and one labelled Undo remain covered. The exact test-only MSVC Release shell passed all 901 checks on three sequential runs. Queue the fixture with the next cumulative review. There is no change to the application behavior.
+
 ## 2026-11-19, night — reproduce grouped history at the shared broker
 
 The new private spectrogram fixture ran 465 Release checks with six expected failures on the current broker. Raw one-hop history still shares one tap and transform plan with the comparison. The unfinished group becomes visible early, then Clear and seek have no first contributing sequence to reject an old peak. The contract is one publication per complete group, exact per-bin maxima and a view-local Clear fence on the first contributing window. It also preserves the second viewer and starts a fresh group after seek.
