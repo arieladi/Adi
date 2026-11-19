@@ -228,7 +228,9 @@ void MixOutputMeter::frame(const std::shared_ptr<SharedAnalysis> &broker, std::i
                      !next->formatSequence || std::isnan(next->truePeakDb) || std::isnan(next->momentaryLufs)))
             next.reset();
     }
-    if (changed || main_ != next) repaint(plot_);
+    const bool overlayChanged = main_.has_value() != next.has_value() ||
+        (main_ && next && (main_->truePeakDb != next->truePeakDb || main_->momentaryLufs != next->momentaryLufs));
+    if (changed || overlayChanged) repaint(plot_);
     main_ = next;
 }
 void MixOutputMeter::resized() {
