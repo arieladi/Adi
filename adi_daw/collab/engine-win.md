@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Cache Folder for decoded audio
+
+**PR requested** `engine-win/decode-cache-folder` at `b89e9a5b4ec91330715f2d51fd6ca4f1c2962a54`, stacked on cache limits `4af5e656`. The desktop uses the `decoded` child of the absolute configured Cache Folder. An empty value selects the app cache. Only a decode that needs it creates the folder. Changing location takes effect on relaunch to keep pinned PCM readers on their existing paths. The tests use a Unicode path and prove trim leaves a neighboring file alone. Analysis has a separate cache and this entry covers decoded audio.
+
+Five strict native MSVC x64 Debug `/W4 /WX` suites passed 413 checks. The matching four settings, decoder and application sources linked in the JUCE desktop target. Native AAC progress still followed its unavailable gate. The UI was compile/link checked.
+
 ## 2026-11-19 — PD-02 cancellation while copying archive media
 
 **PR requested** `engine-win/collect-media-stream` at `85fe86e7c07847a3829ee5f3d909f21e844fb0c1`, stacked on ZIP streaming `734f7b6f`. External media copied into an archive's private snapshot can stop between chunks of at most 64 KiB and reports per-file source bytes. Ordinary Collect All and Save keeps its existing path. The closed stage is validated before publication; cancellation uses the existing identity-aware rollback and carries its warnings to the worker result. Tests cover an earlier completed copy, callback failure, a cancel just before SQL commit and unchanged source bytes.
