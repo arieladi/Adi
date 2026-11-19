@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-19, night — reuse identical Focus FIR work
+
+The private 192 kHz Focus proof now avoids duplicate programme and key FFTs when an entire internal-key capture has identical inputs and no active phase change. It reuses the inverse only when both source tags permit it, then adds it to each independent overlap ring in budgeted passes. Separate histories survive a route or kernel change. Fully internal ten-band processing spent 44.1% fewer counted convolution operations at 192 kHz and 43.7% fewer at 48 kHz. External and phase-processed streams keep their own transforms. These are operation counts, with CPU and the external-route callback limit still to measure.
+
+The Release Focus suite passed 424 checks with zero callback allocations or frees. All 26 extra F32/F64 comparisons, 1,772,306 stereo frames, preserved audio byte for byte, latency and job counts. The fixture changes internal and external keys inside a capture and admits same-latency Q, frequency and enable changes while jobs are in flight. All jobs met the counted deadline. This is local proof for DF-M13, outside the pending production review branches.
+
 ## 2026-11-19, night — close two private component proofs
 
 Fixed Flat Tilt for the compressor key EQ passes all nine saved streams at their original rates and block sizes, across 1,190,849 stereo frames. Peak difference is 1.49e-8 and RMS difference 1.88e-9. Whole blocks and 17-sample segments match byte for byte. The test uses the unchanged authored matched sections and Clean engine, with no callback allocation or free. Moving Flat Tilt remains gated.
