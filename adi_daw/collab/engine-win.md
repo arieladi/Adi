@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · NI delivery media verification
+
+**PR requested** — `engine-win/ni-delivery-media` at `150a1845f8157f65a5df40a6025e1a0e74af81ab`, stacked on `engine-win/export-stage-cleanup` at `d32f30ca`. Title **Verify NI input media through final delivery**.
+
+EX-01. NI retains the Main render's input identity baseline, requires the supplied stems to match it, and rechecks the baseline after container assembly. Windows tests used real WAV render receipts and the same final publisher to reject a same-size external rewrite during the delivery and a stem that read different bytes. Three strict x64 MSVC suites passed 452 checks. The native AAC pipeline remains unverified on this installation. Plug-in assets and snapshot isolation remain outside this check.
+
 ## 2026-11-19 · Render cleanup and settings bundle import
 
 **PR requested** — `engine-win/export-stage-cleanup` at `d32f30caf62629db4867be4e10011704d70c794d`, stacked on `engine-win/export-collision-modes` at `cbbc4202`. Title **Report private render stage cleanup failures separately**.
