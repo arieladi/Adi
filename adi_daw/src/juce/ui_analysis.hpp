@@ -59,7 +59,7 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed() const noexcept { return paletteReversed_; }
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
-    enum class SpectrumScale { Wide, Detail };
+    enum class SpectrumScale { Wide, Detail, Extended };
     void setSpectrumScale(SpectrumScale);
     SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
     enum class HistoryMotion { Scroll, Sweep };
@@ -110,8 +110,8 @@ class SharedSpectrumView final : public juce::Component,
     struct Raster;
     void updateRaster();
     void updateSpectrumProjection();
-    void updateDetailSpectrum() noexcept;
-    juce::Rectangle<float> paintDetailGrid(juce::Graphics &, juce::Rectangle<float>) const;
+    void updateScaledSpectrum() noexcept;
+    juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
@@ -149,8 +149,8 @@ class SharedSpectrumView final : public juce::Component,
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
-    struct DetailSpectrum;
-    std::unique_ptr<DetailSpectrum> detailSpectrum_;
+    struct ScaledSpectrum;
+    std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
 };
 

@@ -23,7 +23,7 @@ namespace adi::ui {
 struct SharedSpectrumViewTestAccess {
     static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
-    static bool hasDetailPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.detailSpectrum_); }
+    static bool hasScaledPlot(const SharedSpectrumView &view) { return static_cast<bool>(view.scaledSpectrum_); }
     static bool hasRaster(const SharedSpectrumView &view) { return static_cast<bool>(view.raster_); }
 };
 }
@@ -1099,7 +1099,7 @@ void spectrumDetailScale() {
     root.addAndMakeVisible(sibling);
     pane.frame(f.broker, 1, 1); sibling.present(f.broker, 1);
     check(pane.scaleBox.isVisible() && pane.scaleBox.getSelectedId() == 1 &&
-              pane.view.spectrumScale() == Scale::Wide && !SharedSpectrumViewTestAccess::hasDetailPlot(pane.view),
+              pane.view.spectrumScale() == Scale::Wide && !SharedSpectrumViewTestAccess::hasScaledPlot(pane.view),
           "expanded Spectrum keeps the wide scale by default and allocates no detail geometry");
     writeTone(f, 32); f.broker->pump(); pane.frame(f.broker, 1, 1); sibling.frame();
     const auto source = pane.view.snapshot();
@@ -1110,7 +1110,7 @@ void spectrumDetailScale() {
     pane.scaleBox.setSelectedId(2, juce::dontSendNotification); pane.scaleBox.onChange();
     const auto detail = softwarePicture(pane.view);
     check(source && source == pane.view.snapshot() && source == sibling.snapshot() && f.acquired == 1 &&
-              SharedSpectrumViewTestAccess::hasDetailPlot(pane.view) && !samePixels(original, detail) &&
+              SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) && !samePixels(original, detail) &&
               samePixels(siblingImage, softwarePicture(sibling)) && sameWork(before, f.broker->stats()),
           "detail menu reprojects the existing live publication while a wide sibling keeps the same single tap");
 
@@ -1153,7 +1153,7 @@ void spectrumDetailScale() {
 
     pane.setMode(Mode::Meters);
     check(!pane.scaleBox.isVisible() && pane.view.spectrumScale() == Scale::Detail &&
-              !SharedSpectrumViewTestAccess::hasDetailPlot(pane.view),
+              !SharedSpectrumViewTestAccess::hasScaledPlot(pane.view),
           "non-spectrum mode hides the control and releases geometry but remembers the view preference");
     pane.setMode(Mode::SpectrumAverage);
     writeTone(f, 32); f.broker->pump(); pane.frame(f.broker, 1, 1);
@@ -1164,16 +1164,16 @@ void spectrumDetailScale() {
     pane.setSpectrumScale(Scale::Detail);
     check(pane.scaleBox.isVisible() && pane.scaleBox.getSelectedId() == 2 && average && averageBins &&
               pane.view.snapshot() == average && pane.view.spectrumBins().data() == averageBins &&
-              SharedSpectrumViewTestAccess::hasDetailPlot(pane.view) && sameWork(averageWork, f.broker->stats()),
+              SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) && sameWork(averageWork, f.broker->stats()),
           "one-second average uses the same local scale without a new averaging interval or transform");
     pane.setMode(Mode::Spectrum); pane.view.freeze(false); sibling.setVisible(false); root.setVisible(false);
-    check(!pane.view.subscribed() && !SharedSpectrumViewTestAccess::hasDetailPlot(pane.view) &&
+    check(!pane.view.subscribed() && !SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) &&
               !pane.view.snapshot() && f.broker->stats().consumers == 0 && f.released == 1,
           "ancestor hide drops all demand and the detail geometry without waiting on a frame");
     const auto hidden = f.broker->stats();
     pane.setSpectrumScale(Scale::Wide); pane.setSpectrumScale(Scale::Detail);
     pane.frame(f.broker, 1, 1); f.broker->pump();
-    check(!SharedSpectrumViewTestAccess::hasDetailPlot(pane.view) && sameWork(hidden, f.broker->stats()) && f.acquired == 1,
+    check(!SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) && sameWork(hidden, f.broker->stats()) && f.acquired == 1,
           "hidden scale changes and frames do not reacquire a tap, analyse, publish or prepare a trace");
 
     lowRate.tap = std::make_shared<ScopeTap>(32000, SharedAnalysis::kTapSeconds);
@@ -1186,6 +1186,76 @@ void spectrumDetailScale() {
               limited.getPixelAt(available.x, available.y + 12) != look::display &&
               limited.getPixelAt(beyond.x, beyond.y + 12) == look::display,
           "20 kHz axis is fixed while the trace stops at Nyquist on a lower-rate source");
+}
+
+void spectrumExtendedScale() {
+    using namespace adi::ui;
+    using Scale = SharedSpectrumView::SpectrumScale;
+    Fixture f;
+    f.tap = std::make_shared<ScopeTap>(32000., SharedAnalysis::kTapSeconds);
+    Root root; root.setBounds(0, 0, 680, 720); root.setVisible(true); root.addToDesktop(0);
+    AnalysisPane pane; pane.setBounds(0, 0, 640, 360);
+    SharedSpectrumView sibling; sibling.setBounds(0, 380, 640, 320);
+    root.addAndMakeVisible(pane);
+    root.addAndMakeVisible(sibling);
+    pane.frame(f.broker, 1, 1); sibling.present(f.broker, 1);
+    std::array<float, 1024> samples{};
+    const auto amplitude = std::pow(10., -30. / 20.);
+    // Spread several coherent tones around 15 kHz so the fill remains visible
+    // when the last octave is compressed onto a few screen pixels.
+    for (int bin = 472; bin <= 488; bin += 2) {
+        const auto radiansPerSample = 2. * std::numbers::pi * bin / 1024.;
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] += static_cast<float>(amplitude * std::sin(radiansPerSample * static_cast<double>(i)));
+    }
+    f.tap->write(samples.data(), samples.data(), static_cast<int>(samples.size()), 0, true);
+    f.broker->pump(); pane.frame(f.broker, 1, 1); sibling.frame();
+    const auto source = pane.view.snapshot();
+    const auto before = f.broker->stats();
+    pane.scaleBox.setSelectedId(3, juce::dontSendNotification); pane.scaleBox.onChange();
+    const auto extended = softwarePicture(pane.view);
+    const auto unchanged = [&](const auto &stats) {
+        const auto now = f.broker->stats();
+        return now.transforms == stats.transforms && now.publications == stats.publications &&
+            now.cursorReads == stats.cursorReads && now.consumers == stats.consumers && now.taps == stats.taps;
+    };
+    check(pane.view.spectrumScale() == Scale::Extended && source && source == pane.view.snapshot() &&
+              source == sibling.snapshot() && f.acquired == 1 && unchanged(before),
+          "Extended projects the same visible immutable result while Wide shares its one analysis");
+
+    const float width = static_cast<float>(extended.getWidth()) - 10.f - 18.f - look::fontCaption * 3.f;
+    const float height = static_cast<float>(extended.getHeight()) - 10.f - 16.f - 29.f - look::fontCaption;
+    const auto x = [width](double hz) {
+        return juce::roundToInt(5.f + (width - 1.f) * static_cast<float>(std::log(hz / 10.) / std::log(3000.)));
+    };
+    const auto y = [height](float level) { return juce::roundToInt(21.f - (height - 1.f) * level / 100.f); };
+    const auto peak = y(-30.f);
+    check(source && source->sampleRate == 32000. && extended.getPixelAt(x(15000.), peak - 12) == look::display &&
+              extended.getPixelAt(x(15000.), peak + 12) != look::display &&
+              extended.getPixelAt(x(23000.), peak + 12) == look::display,
+          "Extended fill uses its 30 kHz projection and calibrated ordinate while stopping at Nyquist");
+    bool grid = true;
+    for (const float level : {-10.f, -20.f, -30.f})
+        grid = grid && extended.getPixelAt(x(37.), y(level)) != look::display &&
+            extended.getPixelAt(x(37.), y(level) + 2) == look::display;
+    check(grid, "Extended paints 10 dB divisions on the shared plot");
+
+    pane.view.freeze(true);
+    const auto held = f.broker->stats();
+    const auto frozen = softwarePicture(pane.view);
+    pane.setSpectrumScale(Scale::Detail);
+    check(pane.view.snapshot() == source && !pane.view.subscribed() && unchanged(held) &&
+              !samePixels(frozen, softwarePicture(pane.view)),
+          "switching a frozen Extended spectrum remaps its display without renewing analysis demand");
+    pane.setSpectrumScale(Scale::Extended);
+    check(samePixels(frozen, softwarePicture(pane.view)) && unchanged(held),
+          "switching back to Extended restores the same frozen pixels and slope");
+    root.setVisible(false);
+    const auto hidden = f.broker->stats();
+    pane.setSpectrumScale(Scale::Detail); pane.setSpectrumScale(Scale::Extended);
+    check(!pane.view.subscribed() && !SharedSpectrumViewTestAccess::hasScaledPlot(pane.view) &&
+              hidden.consumers == 0 && unchanged(hidden),
+          "hidden Extended keeps only its view-local preference");
 }
 
 void spectrogramHistoryMotion() {
@@ -1775,7 +1845,7 @@ int main() {
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale();
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrogramHistoryMotion(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
