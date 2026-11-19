@@ -59,6 +59,9 @@ class SharedSpectrumView final : public juce::Component,
     bool paletteReversed() const noexcept { return paletteReversed_; }
     void setSpectrumSlope(SpectrumSlope);
     SpectrumSlope spectrumSlope() const noexcept { return spectrumSlope_; }
+    enum class SpectrumScale { Wide, Detail };
+    void setSpectrumScale(SpectrumScale);
+    SpectrumScale spectrumScale() const noexcept { return spectrumScale_; }
     // Weak owner token: closing/replacing the document revokes future reads.
     // Main-only eligibility is checked before invoking the callback.
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
@@ -104,6 +107,8 @@ class SharedSpectrumView final : public juce::Component,
     struct Raster;
     void updateRaster();
     void updateSpectrumProjection();
+    void updateDetailSpectrum() noexcept;
+    juce::Rectangle<float> paintDetailGrid(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
@@ -140,6 +145,9 @@ class SharedSpectrumView final : public juce::Component,
     bool freshRequired_ = false;
     SpectrumSlope spectrumSlope_ = SpectrumSlope::Flat;
     SpectrumSlopeCache spectrumProjection_;
+    struct DetailSpectrum;
+    std::unique_ptr<DetailSpectrum> detailSpectrum_;
+    SpectrumScale spectrumScale_ = SpectrumScale::Wide;
 };
 
 // A full analyzer and the compact Info renderer use SharedSpectrumView above. Controls are
@@ -167,12 +175,13 @@ class AnalysisPane final : public juce::Component {
     std::string_view requestedPalette() const noexcept;
     std::function<void()> onPaletteChange;
     void setSpectrumSlope(SpectrumSlope);
+    void setSpectrumScale(SharedSpectrumView::SpectrumScale);
     void restoreSlopeControls(SpectrumSlope);
     SpectrumSlope requestedSpectrumSlope() const noexcept;
     std::function<void()> onSpectrumSlopeChange;
     std::function<void(std::int64_t)> onExpand;
     SharedSpectrumView view;
-    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox;
+    juce::ComboBox modeBox, sourceBox, pointBox, channelBox, paletteBox, slopeBox, scaleBox;
     juce::ToggleButton reverseButton{"Reverse"};
     juce::TextButton freezeButton{"Freeze"}, resetButton{"Reset"}, expandButton{"Window"};
   private:

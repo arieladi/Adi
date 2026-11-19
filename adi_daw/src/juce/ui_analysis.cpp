@@ -8,6 +8,18 @@
 namespace adi::ui {
 namespace {
 constexpr float floorDb = -96.f;
+constexpr double detailLowHz = 20., detailHighHz = 20000.;
+constexpr int detailTopDb = -18, detailBottomDb = -78, detailDivisionDb = 6;
+
+float detailX(double hz) {
+    static const auto width = std::log(detailHighHz / detailLowHz);
+    return static_cast<float>(std::log(hz / detailLowHz) / width);
+}
+
+float detailY(float value) {
+    if (!std::isfinite(value)) return 1.f;
+    return std::clamp((detailTopDb - value) / (detailTopDb - detailBottomDb), 0.f, 1.f);
+}
 float db(float value) {
     return std::isfinite(value) && value > 0 ? std::max(floorDb, 20.f * std::log10(value)) : floorDb;
 }
@@ -60,6 +72,64 @@ juce::Colour analysisPaletteColour(std::size_t palette, std::uint8_t sample, boo
     }();
     return original[currentThemeIndex()][reverse ? 255u - sample : sample];
 }
+struct SharedSpectrumView::DetailSpectrum {
+    // Store unit coordinates so resizing and repainting never rewalk the bins.
+    double rate = 0.;
+    int size = 0;
+    std::size_t count = 0, firstBin = 0;
+    std::vector<float> x;
+    juce::Path line, fill;
+
+    void setFormat(double nextRate, int nextSize, std::size_t nextCount) {
+        if (nextRate == rate && nextSize == size && nextCount == count) return;
+        x.clear();
+        if (std::isfinite(nextRate) && nextRate > 0 && nextSize > 0) {
+            const auto hzPerBin = nextRate / nextSize;
+            const auto lastHz = std::min(detailHighHz, nextRate * .5);
+            for (std::size_t i = 1; i < nextCount; ++i) {
+                const auto hz = hzPerBin * static_cast<double>(i);
+                if (hz > lastHz) break;
+                if (hz < detailLowHz) continue;
+                if (x.empty()) firstBin = i;
+                x.push_back(detailX(hz));
+            }
+        }
+        rate = nextRate; size = nextSize; count = nextCount;
+    }
+
+    void update(std::span<const float> bins, std::span<const float> offsets) {
+        line.clear();
+        fill.clear();
+        if (x.size() < 2) return;
+        for (std::size_t i = 0; i < x.size(); ++i) {
+            const auto bin = firstBin + i;
+            const auto y = detailY(bins[bin] + (offsets.empty() ? 0.f : offsets[bin]));
+            if (i == 0) {
+                line.startNewSubPath(x[i], y);
+                fill.startNewSubPath(x[i], y);
+            } else {
+                line.lineTo(x[i], y);
+                fill.lineTo(x[i], y);
+            }
+        }
+        fill.lineTo(x.back(), 1.f);
+        fill.lineTo(x.front(), 1.f);
+        fill.closeSubPath();
+    }
+
+    void paint(juce::Graphics &g, juce::Rectangle<float> plot) const {
+        if (line.isEmpty() || plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return;
+        const auto transform = juce::AffineTransform::scale(plot.getWidth() - 1.f, plot.getHeight() - 1.f)
+            .translated(plot.getX(), plot.getY());
+        juce::Graphics::ScopedSaveState state(g);
+        g.reduceClipRegion(plot.toNearestInt());
+        g.setColour(look::value.withAlpha(.28f));
+        g.fillPath(fill, transform);
+        g.setColour(look::value);
+        g.strokePath(line, juce::PathStrokeType(look::line), transform);
+    }
+};
+
 struct SharedSpectrumView::Raster {
     static constexpr int width = 128, height = 256;
     static constexpr std::uint16_t gap = 256;
@@ -183,7 +253,35 @@ void SharedSpectrumView::setSpectrumSlope(SpectrumSlope slope) {
     if (spectrumSlope_ == slope) return;
     spectrumSlope_ = slope;
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
+    if (spectrumScale_ == SpectrumScale::Detail) updateDetailSpectrum();
     repaint();
+}
+void SharedSpectrumView::setSpectrumScale(SpectrumScale scale) {
+    if (spectrumScale_ == scale) return;
+    spectrumScale_ = scale;
+    if (!spectrumMode() || !eligible()) return;
+    updateDetailSpectrum();
+    repaint();
+}
+void SharedSpectrumView::updateDetailSpectrum() noexcept {
+    if (spectrumScale_ != SpectrumScale::Detail || !shown_) {
+        detailSpectrum_.reset();
+        return;
+    }
+    const auto bins = spectrumBins();
+    const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
+    const auto offsets = tilted ? spectrumProjection_.offsets() : std::span<const float>{};
+    if (bins.empty() || (tilted && offsets.size() != bins.size())) {
+        detailSpectrum_.reset();
+        return;
+    }
+    try {
+        if (!detailSpectrum_) detailSpectrum_ = std::make_unique<DetailSpectrum>();
+        detailSpectrum_->setFormat(shown_->sampleRate, shown_->request.fftSize, bins.size());
+        detailSpectrum_->update(bins, offsets);
+    } catch (...) {
+        detailSpectrum_.reset();
+    }
 }
 void SharedSpectrumView::updateSpectrumProjection() {
     if (!spectrumMode() || !shown_) return;
@@ -197,6 +295,7 @@ std::span<const float> SharedSpectrumView::spectrumBins() const noexcept {
 void SharedSpectrumView::resetPicture() noexcept {
     shown_.reset();
     averageBins_.reset();
+    detailSpectrum_.reset();
     averageStatus_ = SharedAnalysis::AverageStatus::Waiting;
 }
 SharedSpectrumView::Status SharedSpectrumView::pictureStatus() const noexcept {
@@ -479,7 +578,8 @@ void SharedSpectrumView::frame() noexcept {
     if (!next) raster_.reset();
     // An explicit source/transport epoch may invalidate a result without dropping the lease.
     const auto nextBins = next && average ? average->binsDbfs : nullptr;
-    if (next != shown_ || nextBins != averageBins_ || averageStatus != averageStatus_) {
+    const bool pictureChanged = next != shown_ || nextBins != averageBins_ || averageStatus != averageStatus_;
+    if (pictureChanged) {
         shown_ = std::move(next);
         averageBins_ = nextBins;
         averageStatus_ = averageStatus;
@@ -490,6 +590,7 @@ void SharedSpectrumView::frame() noexcept {
     updateMainMeter();
     try { updateRaster(); } catch (...) { raster_.reset(); }
     try { updateSpectrumProjection(); } catch (...) { spectrumProjection_.reset(); }
+    if (spectrumScale_ == SpectrumScale::Detail && pictureChanged) updateDetailSpectrum();
 }
 void SharedSpectrumView::updateRaster() {
     if (mode_ != Mode::Spectrogram || !shown_) return;
@@ -632,6 +733,43 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
         g.drawText(values[i], row.withX(x).withWidth(end - x).reduced(look::border, 0), juce::Justification::centredLeft, true);
     }
 }
+juce::Rectangle<float> SharedSpectrumView::paintDetailGrid(juce::Graphics &g, juce::Rectangle<float> area) const {
+    const auto scaleWidth = look::fontCaption * 3.f;
+    const auto stepHeight = area.getHeight() / ((detailTopDb - detailBottomDb) / detailDivisionDb);
+    const bool labels = area.getWidth() >= scaleWidth * 4.f && stepHeight > look::fontCaption;
+    const auto plot = labels ? area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption) : area;
+    if (plot.getWidth() <= 1.f || plot.getHeight() <= 1.f) return {};
+    const auto xAt = [&](double hz) { return plot.getX() + (plot.getWidth() - 1.f) * detailX(hz); };
+    g.setFont(look::font(look::fontCaption));
+    for (int levelDb = detailTopDb; levelDb >= detailBottomDb; levelDb -= detailDivisionDb) {
+        const auto y = plot.getY() + (plot.getHeight() - 1.f) * detailY(static_cast<float>(levelDb));
+        g.setColour(look::outline);
+        g.drawHorizontalLine(juce::roundToInt(y), plot.getX(), plot.getRight());
+        if (labels) {
+            g.setColour(look::textOnBand);
+            g.drawText(juce::String(levelDb), juce::Rectangle<float>(plot.getRight(), y - look::fontCaption * .5f,
+                       scaleWidth, look::fontCaption), juce::Justification::centredRight);
+        }
+    }
+    const auto tick = [&](double hz, const char *label) {
+        const auto x = xAt(hz);
+        g.setColour(look::outline);
+        g.drawVerticalLine(juce::roundToInt(x), plot.getY(), plot.getBottom());
+        if (labels && label) {
+            const auto left = std::clamp(x - scaleWidth * .5f, plot.getX(), plot.getRight() - scaleWidth);
+            g.setColour(look::textOnBand);
+            g.drawText(label, juce::Rectangle<float>(left, plot.getBottom(), scaleWidth, look::fontCaption),
+                       juce::Justification::centred);
+        }
+    };
+    tick(detailLowHz, "20");
+    tick(100., "100");
+    tick(1000., "1k");
+    tick(10000., xAt(detailHighHz) - xAt(10000.) >= scaleWidth ? "10k" : nullptr);
+    tick(detailHighHz, "20k");
+    return plot;
+}
+
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
@@ -650,7 +788,9 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     auto plot = area.withTrimmedTop(16.f).withTrimmedBottom(29.f + meterHeight).withTrimmedRight(18.f);
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
-    if (spectrumMode() || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
+    const bool detail = spectrumMode() && spectrumScale_ == SpectrumScale::Detail;
+    const auto detailPlot = detail ? paintDetailGrid(g, plot) : juce::Rectangle<float>{};
+    if ((spectrumMode() && !detail) || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
         const float value = static_cast<float>(step) * -24.f;
         const float y = heightFor(value, plot);
         g.setColour(look::outline);
@@ -718,7 +858,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     const auto xFor = [&](double hz) {
         return plot.getX() + plot.getWidth() * static_cast<float>(std::log(hz / 20.0) / std::log(topHz / 20.0));
     };
-    if (spectrumMode()) for (const double hz : {100., 1000., 10000.}) {
+    if (spectrumMode() && !detail) for (const double hz : {100., 1000., 10000.}) {
         if (hz > topHz) continue;
         const auto x = xFor(hz);
         g.setColour(look::outline);
@@ -730,7 +870,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     const bool tilted = spectrumSlope_ == SpectrumSlope::Tilt45;
     const auto bins = spectrumBins();
     const bool projectionReady = !tilted || offsets.size() == bins.size();
-    if (spectrumMode() && projectionReady) for (std::size_t i = 1; i < bins.size(); ++i) {
+    if (spectrumMode() && !detail && projectionReady) for (std::size_t i = 1; i < bins.size(); ++i) {
         const double hz = static_cast<double>(i) * shown_->sampleRate / shown_->request.fftSize;
         if (hz < 20 || hz > topHz) continue;
         auto value = std::isfinite(bins[i]) ? bins[i] : floorDb;
@@ -739,8 +879,12 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
         if (!started) { curve.startNewSubPath(x, y); started = true; }
         else curve.lineTo(x, y);
     }
-    g.setColour(look::value);
-    g.strokePath(curve, juce::PathStrokeType(1.4f));
+    if (detail) {
+        if (detailSpectrum_) detailSpectrum_->paint(g, detailPlot);
+    } else {
+        g.setColour(look::value);
+        g.strokePath(curve, juce::PathStrokeType(1.4f));
+    }
     if (spectrumMode() && tilted) {
         g.setFont(look::font(9.f));
         g.drawText(projectionReady ? "Display +4.5 dB/oct @ 1 kHz" : "Spectrum display unavailable",
@@ -802,6 +946,15 @@ AnalysisPane::AnalysisPane() {
         else setSpectrumSlope(requestedSpectrumSlope());
     };
     restoreSlopeControls(SpectrumSlope::Flat); addAndMakeVisible(slopeBox);
+    scaleBox.addItemList({"Scale: Wide", "Scale: Detail"}, 1);
+    scaleBox.setTitle("Spectrum display scale");
+    scaleBox.setTooltip("Detail plots 20 Hz to 20 kHz and -18 to -78 dBFS in 6 dB steps.");
+    scaleBox.onChange = [this] {
+        using Scale = SharedSpectrumView::SpectrumScale;
+        setSpectrumScale(scaleBox.getSelectedId() == 2 ? Scale::Detail : Scale::Wide);
+    };
+    setSpectrumScale(SharedSpectrumView::SpectrumScale::Wide);
+    addAndMakeVisible(scaleBox);
     palettePreviewTheme_ = look::themeId();
     for (std::size_t i = 0; i < palettes::count; ++i) {
         const auto name = palettes::id(i);
@@ -842,12 +995,17 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     freezeButton.setToggleState(view.frozen(), juce::dontSendNotification);
     const bool spectral = mode == SharedSpectrumView::Mode::Spectrum || mode == SharedSpectrumView::Mode::SpectrumAverage;
     channelBox.setEnabled(spectral || mode == SharedSpectrumView::Mode::Spectrogram);
-    paletteBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
-    reverseButton.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
+    const bool spectrogram = mode == SharedSpectrumView::Mode::Spectrogram;
+    paletteBox.setVisible(spectrogram);
+    paletteBox.setEnabled(spectrogram);
+    reverseButton.setVisible(spectrogram);
+    reverseButton.setEnabled(spectrogram);
+    slopeBox.setVisible(spectral);
     slopeBox.setEnabled(spectral);
+    scaleBox.setVisible(spectral);
     const bool classic = mode == SharedSpectrumView::Mode::ClassicScope;
-    for (auto *control : std::array<juce::Component *, 5>{&channelBox, &paletteBox, &reverseButton, &slopeBox, &freezeButton})
-        control->setVisible(!classic);
+    channelBox.setVisible(!classic);
+    freezeButton.setVisible(!classic);
     resized();
 }
 void AnalysisPane::setSource(Source source) {
@@ -876,6 +1034,10 @@ void AnalysisPane::restoreSlopeControls(SpectrumSlope slope) {
 void AnalysisPane::setSpectrumSlope(SpectrumSlope slope) {
     view.setSpectrumSlope(slope); restoreSlopeControls(view.spectrumSlope());
 }
+void AnalysisPane::setSpectrumScale(SharedSpectrumView::SpectrumScale scale) {
+    view.setSpectrumScale(scale);
+    scaleBox.setSelectedId(scale == SharedSpectrumView::SpectrumScale::Detail ? 2 : 1, juce::dontSendNotification);
+}
 void AnalysisPane::frame(std::shared_ptr<SharedAnalysis> broker, std::int64_t main, std::int64_t selected) {
     if (const auto theme = look::themeId(); theme != palettePreviewTheme_) {
         palettePreviewTheme_ = theme;
@@ -894,8 +1056,8 @@ void AnalysisPane::usePageControls() {
     resized();
 }
 void AnalysisPane::resized() {
-    const std::array<juce::Component *, 10> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
-        &reverseButton, &freezeButton, &resetButton, &expandButton};
+    const std::array<juce::Component *, 11> controls{&modeBox, &sourceBox, &pointBox, &channelBox, &paletteBox, &slopeBox,
+        &scaleBox, &reverseButton, &freezeButton, &resetButton, &expandButton};
     const bool pageControls = !modeBox.isVisible();
     const int columns = std::clamp(getWidth() / (pageControls ? look::mixPageWidth : 96), 1, 4);
     const int count = static_cast<int>(std::ranges::count_if(controls, [](const auto *control) { return control->isVisible(); }));

@@ -422,6 +422,7 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     pane->channelBox.setSelectedId(static_cast<int>(pane->view.channel()) + 1, juce::dontSendNotification);
     pane->setPalette(settings.view.palette(), settings.view.paletteReversed());
     pane->setSpectrumSlope(settings.view.spectrumSlope());
+    pane->setSpectrumScale(settings.view.spectrumScale());
     pane->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
     pane->expandButton.setButtonText("Mix View");
     pane->onExpand = [&host, owner = juce::Component::SafePointer<AdiRootComponent>(&root)](std::int64_t channel) {
