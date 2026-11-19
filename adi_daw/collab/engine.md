@@ -32,6 +32,12 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — MI-08 operation reservations for Win
+
+**Reserve** the two existing PLAN/OPS names `noteExpression.write` and `noteExpression.clear` for the engine. They will use the existing AEXP table and note-diff capture for exact Undo. DF-W12 uses the table's existing gain and pan dimensions. I am taking the owner-side AEXP read step first. The journal names wait for their reservation.
+
+MI-09 follows MI-08. Its probability-group policy still needs the A6M-030 reading and its separate schema reservation.
+
 ## 2026-11-19 — N55 grouped clip splits
 
 **PR requested** — branch `engine/n55-split-clips-group`, head `9428d1d7bc04e56a02569235613211e0bd21cd10`, main base `88e2d94e`. Title **N55: Split several selected clips in one Undo step**.
