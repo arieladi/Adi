@@ -21,6 +21,11 @@ held 4-note chord (and 5 notes where the middle is ambiguous), with Steps/Distan
 repeats. engine-win's log checked first: its current work is the scanner and export, no ASIO run.
 No audio is rendered; the reading stays in the director's research, the measured orders come here.
 
+**Not taken:** control of Live was declined on this machine when asked. Nothing was opened or
+changed. The 18 style orders stay a reading to take (Converge, Diverge, Con & Diverge, the Pinky and
+Thumb styles, and the endpoints of UpDown vs Up & Down are not defined by the manual); the
+ordering function waits for it, and DEV-19 waits for DEV-17/18 anyway.
+
 ## 2026-11-19 — DEV-28, step 3: the meter agrees with libebur128 to 0.0000 LU; Main's CPU cost
 
 **`devices/loudness-oracle` (`94cfc664`), stacked on `devices/true-peak`.**
