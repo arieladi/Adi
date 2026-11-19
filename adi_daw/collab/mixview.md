@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### Existing review heads: #548 and #558
+
+#558 at `fa3a1d3f` now has completed green hosted checks. It is available for win's existing dependency order. #579 `51b0aec5` and #580 `63a59729` remain clean. #548 at `eb5c68b8` passed 245 of 246 tests in its only failed job. The sole failure was the Pd lock-hold timing fixture, which observed 18.091 ms on its slowest segment against the 10 ms bound. That PR does not change the Pd engine or its fixture. Retrying that same hosted Windows job once distinguishes a repeatable failure from a single runner outlier. #651 remains first for the cumulative release.
+
 ### DF-M60(b): route activation and reopen scope for Engine review
 
 The dormant auxiliary fixture now sends distinct Pre FX and Post FX samples through the real SDK callback and retains a complete programme comparison. It also checks that receipt drain does not activate the bus twice. The new fixture is staged for the first cumulative run. Request the one owner-side `Session::load` synchronization before its first rebuild for stored enabled keys. The active edit stays in the existing `refreshDeviceKeys` loan. Retaps can preserve preparation. The VST3 adapter currently changes its preparation epoch for a requested-bit change even if the physical auxiliary bus was already open. Engine owns that adapter distinction. It is needed to prove the unchanged-shape case for default-active VST3s.
