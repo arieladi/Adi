@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/pd_builtins/native_devices.hpp"
 
+#include "adi/dsp/adi_shaper.hpp"
+#include "adi/pd_builtins/adi_shaper_transport.hpp"
 #include "adi/dsp/auto_filter.hpp"
 #include "adi/dsp/chorus_ensemble.hpp"
 #include "adi/dsp/combchord.hpp"
@@ -30,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <vector>
 
 namespace adi::device {
@@ -227,6 +230,16 @@ template <class Core> class NativeDevice final : public NativePdDevice {
     void midi(const engine::MpeOut& message) noexcept override { midiMessage(core_, message); }
     void process(const engine::NodeIo& io) noexcept override {
         if (io.frames <= 0 || io.blockOffset < 0 || capacity_ == 0) return;
+        if constexpr (std::is_same_v<Core, dsp::AdiShaper>) {
+            if (const auto* position = io.deviceTransport) {
+                core_.tempo(position->bpm);
+                core_.sync(position->quarterNotes, position->playing);
+            } else if (const auto* t = io.transport) {
+                applyShaperTransport(core_, t->playing, static_cast<float>(t->bpm),
+                    t->timeSigNumerator, t->timeSigDenominator, static_cast<float>(t->bar),
+                    static_cast<float>(t->beat), static_cast<float>(t->ticksInQuarter));
+            }
+        }
         const auto frames = static_cast<std::size_t>(io.frames);
         const auto offset = static_cast<std::size_t>(io.blockOffset);
         const int channels = std::max(0, io.channels);
@@ -301,6 +314,7 @@ std::unique_ptr<NativePdDevice> makeNativePdDevice(std::string_view patchText, i
             return create<dsp::MultibandDynamics>(patchText, 4);
         if (sameCanvas(patchText, canonical::vocoder)) return create<dsp::Vocoder>(patchText, 4);
     } else if (inChannels == 2) {
+        if (sameCanvas(patchText, canonical::adiShaper)) return create<dsp::AdiShaper>(patchText, 2);
         if (sameCanvas(patchText, canonical::chordComb)) return create<ChordCombStereo>(patchText, 2);
         if (sameCanvas(patchText, canonical::chorusEnsemble)) return create<dsp::ChorusEnsemble>(patchText, 2);
         if (sameCanvas(patchText, canonical::colorCab)) return create<ColorCabStereo>(patchText, 2);
