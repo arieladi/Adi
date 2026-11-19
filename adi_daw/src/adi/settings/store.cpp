@@ -5,13 +5,18 @@
 #include "adi/media/publish_file.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <fstream>
-#include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <system_error>
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 namespace adi::settings {
 namespace {
@@ -26,10 +31,26 @@ constexpr const char* kWindowZoomKey = "window.zoom";
 constexpr const char* kNewerSchemaReadOnly = "settings from a newer build are read-only";
 
 bool readText(const std::filesystem::path& p, std::string& out) {
-    std::ifstream in(p, std::ios::binary);
+    // Like the media reader, keep native Windows paths and permit other
+    // readers/writers. FILE's error flag distinguishes a read error from EOF;
+    // MSVC's filebuf can present a locked later byte range as stream EOF.
+#if defined(_WIN32)
+    auto* file = _wfsopen(p.c_str(), L"rb", _SH_DENYNO);
+#else
+    auto* file = std::fopen(p.c_str(), "rb");
+#endif
+    const std::unique_ptr<std::FILE, decltype(&std::fclose)> in(file, &std::fclose);
     if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
+    out.clear();
+    std::array<char, 4096> block{};
+    for (;;) {
+        const auto count = std::fread(block.data(), 1, block.size(), in.get());
+        out.append(block.data(), count);
+        if (count != block.size()) break;
+    }
+    // An open succeeded, but a later read can still fail (for example a locked
+    // byte range). Never parse that partial prefix as the settings document.
+    return std::feof(in.get()) && !std::ferror(in.get());
 }
 
 // Each save owns its staging name even when two instances write side by side.
@@ -65,10 +86,11 @@ private:
 std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& file) {
     std::error_code error;
     const auto status = std::filesystem::symlink_status(file, error);
-    if (error == std::errc::no_such_file_or_directory ||
-        status.type() == std::filesystem::file_type::not_found)
+    if (error == std::errc::no_such_file_or_directory)
         return std::nullopt;
-    if (error || !std::filesystem::is_regular_file(status))
+    if (error) throw std::runtime_error("cannot inspect the settings destination: " + error.message());
+    if (status.type() == std::filesystem::file_type::not_found) return std::nullopt;
+    if (!std::filesystem::is_regular_file(status))
         throw std::runtime_error("cannot inspect the settings destination");
     std::string text;
     if (!readText(file, text)) throw std::runtime_error("cannot read the settings destination");
@@ -111,6 +133,7 @@ const char* toString(LoadStatus s) {
         case LoadStatus::ForeignApp:  return "another application's file";
         case LoadStatus::NewerSchema: return "written by a newer build";
         case LoadStatus::MigrationFailed: return "settings migration unavailable or failed";
+        case LoadStatus::Unavailable: return "settings unavailable; reload required";
     }
     return "?";
 }
@@ -122,11 +145,16 @@ AppSettings AppSettings::forApp(appdata::App app) {
 
 AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
     : app_(app), file_(std::move(file)) {
-    std::error_code ec;
-    if (file_.empty() || !std::filesystem::exists(file_, ec)) return;   // Defaults
-
-    std::string text;
-    Value doc = Value::parse(readText(file_, text) ? text : std::string{}, nullptr,
+    if (file_.empty()) return;
+    std::optional<std::string> snapshot;
+    try { snapshot = readSettingsSnapshot(file_); }
+    catch (const std::exception& error) {
+        loadError_ = std::string(error.what()) + "; reload settings before editing or saving";
+        status_ = LoadStatus::Unavailable;
+        return;
+    }
+    if (!snapshot) return; // Genuine absence: Defaults.
+    Value doc = Value::parse(*snapshot, nullptr,
                              /*allow_exceptions=*/false);
     auto migrated = migrateSettingsDocument(doc, app_, kSettingsSchema, settingsMigrationSteps());
     if (migrated.status == MigrationStatus::ForeignApp) {
@@ -141,9 +169,10 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
         return;
     }
     if (migrated.status == MigrationStatus::InvalidDocument) {
-        // Never overwrite what we could not read: it may be a newer build's
-        // format, or a user's hand edit one comma short of valid.
+        // These bytes were read completely but are malformed. Read/inspection
+        // failures above must never enter this recovery path.
         const auto aside = asideName(file_);
+        std::error_code ec;
         std::filesystem::rename(file_, aside, ec);
         if (!ec) aside_ = aside;
         status_ = LoadStatus::CorruptKept;
@@ -173,6 +202,7 @@ bool AppSettings::write(const std::string& key, const Value& value, const Change
                         std::string& why, bool removeOverride) {
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     if (status_ == LoadStatus::MigrationFailed) { why = migrationError_; return false; }
+    if (status_ == LoadStatus::Unavailable) { why = loadError_; return false; }
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
     if (s->scope == Scope::Project) {
@@ -215,6 +245,7 @@ bool AppSettings::save(std::string& why) {
     if (file_.empty()) { why = "this machine gives no settings folder"; return false; }
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     if (status_ == LoadStatus::MigrationFailed) { why = migrationError_; return false; }
+    if (status_ == LoadStatus::Unavailable) { why = loadError_; return false; }
     if (status_ == LoadStatus::ForeignApp) {
         why = file_.string() + " belongs to another application and is not overwritten";
         return false;

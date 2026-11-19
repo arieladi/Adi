@@ -833,6 +833,10 @@ add_executable(adi_settings_migration_tests tests/test_settings_migration.cpp)
 target_link_libraries(adi_settings_migration_tests PRIVATE adi_settings adi_core adi_warnings)
 add_test(NAME adi_settings_migration_tests COMMAND adi_settings_migration_tests)
 
+add_executable(adi_settings_read_failure_tests tests/test_settings_read_failures.cpp)
+target_link_libraries(adi_settings_read_failure_tests PRIVATE adi_settings adi_core adi_warnings)
+add_test(NAME adi_settings_read_failure_tests COMMAND adi_settings_read_failure_tests)
+
 add_executable(adi_changeset_tests tests/test_changeset.cpp)
 target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
 add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)

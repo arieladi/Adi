@@ -11,6 +11,8 @@
 //   * A key this build does not know -- a newer build's -- survives a save.
 //   * A file that does not parse is moved aside, never overwritten silently,
 //     and the application starts from defaults.
+//     A read/inspection failure instead leaves the path untouched and refuses
+//     edits/save until a fresh instance loads successfully.
 //   * Only App-scope settings are written here. A Project setting is a row in
 //     the .adi and changes through its op; the store refuses it by name.
 //
@@ -44,6 +46,7 @@ enum class LoadStatus {
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
     NewerSchema,   // written by a newer build: read familiar values, refuse writes
     MigrationFailed, // unsupported/broken older migration: original untouched, writes refused
+    Unavailable,   // could not inspect/read: original untouched; reload before edits/save
 };
 [[nodiscard]] const char* toString(LoadStatus);
 
@@ -70,6 +73,7 @@ public:
     [[nodiscard]] const std::optional<std::filesystem::path>& keptAside() const { return aside_; }
     [[nodiscard]] appdata::App app() const { return app_; }
     [[nodiscard]] const std::string& migrationError() const { return migrationError_; }
+    [[nodiscard]] const std::string& loadError() const { return loadError_; }
 
     /// The value in force: the stored one if it is legal for this build, the
     /// registry's default otherwise. Unknown keys return null.
@@ -112,6 +116,7 @@ private:
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
     std::string migrationError_;
+    std::string loadError_;
     Value values_ = Value::object();
     std::set<std::string> pendingKeys_;
     bool logUsers_ = true;
