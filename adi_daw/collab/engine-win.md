@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-05 WAL evidence at project open
+
+**PR requested** `engine-win/project-wal-observation` at `64c591169b8cbea8464dbddc5b328ed968bf65dd`. An optional Store open report records the file size of a WAL sidecar observed before opening SQLite. `adi_tool info` uses this receipt. It reports the possible live-writer and unclean-close causes together and leaves crash classification to the planned session marker.
+
+Strict native Windows x64 MSVC Debug passed 602 checks across five suites. The real CLI also witnessed a 4,152-byte WAL and its newly committed project name while a writer was open. The closed and cleared cases emitted no sidecar notice.
+
 ## 2026-11-19 — PD-13 read-only project integrity check
 
 **PR requested** `engine-win/project-quick-check` at `288d6a9e1ff0f9f4a0f4a5a289d50de3aa44da6c`. The recovery flow can ask SQLite for one page-level diagnostic over a separate read-only connection using the same finding format as the full checker. The path accepts Unicode and refuses empty or embedded-NUL input. SQLite's WAL read semantics still apply.
