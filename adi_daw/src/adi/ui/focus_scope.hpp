@@ -70,16 +70,6 @@ struct FocusScopeBarBlock {
     bool advancing = false;
     std::span<const float> left, right;
 };
-class FocusScopeBarProjection {
-  public:
-    bool prepare(FocusScopeRange, std::span<const FocusScopeBarSource>, std::size_t, std::uint64_t) { return false; }
-    bool append(std::span<const FocusScopeBarBlock>) noexcept { return false; }
-    [[nodiscard]] std::size_t frames() const noexcept { return 0; }
-    [[nodiscard]] bool complete() const noexcept { return false; }
-    [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t) const noexcept { return {}; }
-    [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return {}; }
-    [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept { return {}; }
-};
 struct FocusScopePoint {
     float x = 0.f, y = 0.f;
     bool operator==(const FocusScopePoint &) const = default;
@@ -117,6 +107,130 @@ inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64
     if (length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length) return {};
     return first + length;
 }
+// A worker may prepare storage before reading the bar and append only its
+// contiguous slices. The source identities and revision describe heard audio;
+// this collector neither acquires taps nor advances the transport.
+class FocusScopeBarProjection {
+  public:
+    bool prepare(FocusScopeRange range, std::span<const FocusScopeBarSource> sources,
+                 std::size_t requestedColumns, std::uint64_t transportRevision) {
+        const auto columns = std::min({requestedColumns, range.frames,
+                                       static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)});
+        if (sources.size() < 2 || columns == 0 || !transportRevision || range.first < 0 ||
+            !std::isfinite(range.sampleRate) || range.sampleRate <= 0. ||
+            !std::in_range<std::int64_t>(range.frames) ||
+            !focusWindowEnd(range.first, static_cast<std::int64_t>(range.frames)) ||
+            sources.size() >= bins_.max_size() / columns)
+            return false;
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            const auto &source = sources[i];
+            if (source.source.track <= 0 || !source.generation ||
+                std::ranges::any_of(sources.first(i), [&](const auto &earlier) { return earlier.source == source.source; }))
+                return false;
+        }
+
+        constexpr auto inf = std::numeric_limits<double>::infinity();
+        std::vector<FocusSumColumn> bins((sources.size() + 1) * columns, FocusSumColumn{{inf, inf}, {-inf, -inf}});
+        std::vector<FocusScopeBarSource> identities(sources.begin(), sources.end());
+        bins_ = std::move(bins);
+        sources_ = std::move(identities);
+        range_ = range;
+        transportRevision_ = transportRevision;
+        columns_ = columns;
+        framesPerColumn_ = range.frames / columns;
+        remainder_ = range.frames % columns;
+        frames_ = column_ = endOfColumn_ = carry_ = visibleColumns_ = 0;
+        peak_ = energy_ = {};
+        extendColumn();
+        return true;
+    }
+
+    // The caller slices the last block at the half-open bar edge. An invalid
+    // block leaves the accumulated prefix intact, so it can be retried exactly.
+    bool append(std::span<const FocusScopeBarBlock> blocks) noexcept {
+        if (bins_.empty() || blocks.empty() || blocks.size() != sources_.size()) return false;
+        const auto count = blocks.front().left.size();
+        if (!count || count > range_.frames - frames_) return false;
+        const auto stamp = range_.first + static_cast<std::int64_t>(frames_);
+        const auto finite = [](float sample) { return std::isfinite(sample); };
+        for (std::size_t i = 0; i < blocks.size(); ++i) {
+            const auto &block = blocks[i];
+            if (block.source != sources_[i] || block.firstStamp != stamp || !block.advancing ||
+                block.transportRevision != transportRevision_ || block.sampleRate != range_.sampleRate ||
+                block.left.size() != count || block.right.size() != count ||
+                !std::ranges::all_of(block.left, finite) || !std::ranges::all_of(block.right, finite))
+                return false;
+        }
+
+        const auto remember = [](FocusSumColumn &column, const std::array<double, 2> &sample) {
+            for (std::size_t ch = 0; ch < sample.size(); ++ch) {
+                column.low[ch] = std::min(column.low[ch], sample[ch]);
+                column.high[ch] = std::max(column.high[ch], sample[ch]);
+            }
+        };
+        for (std::size_t begin = 0; begin < count;) {
+            const auto added = std::min(count - begin, endOfColumn_ - frames_);
+            const auto end = begin + added;
+            auto &sum = bins_[sources_.size() * columns_ + column_];
+            for (auto at = begin; at < end; ++at) {
+                std::array<double, 2> value{};
+                for (std::size_t member = 0; member < blocks.size(); ++member) {
+                    const std::array<double, 2> sample{blocks[member].left[at], blocks[member].right[at]};
+                    remember(bins_[member * columns_ + column_], sample);
+                    value[0] += sample[0];
+                    value[1] += sample[1];
+                }
+                remember(sum, value);
+                for (std::size_t ch = 0; ch < value.size(); ++ch) {
+                    peak_[ch] = std::max(peak_[ch], std::abs(value[ch]));
+                    energy_[ch] += value[ch] * value[ch];
+                }
+            }
+            frames_ += added;
+            begin = end;
+            visibleColumns_ = column_ + 1;
+            if (frames_ == endOfColumn_ && ++column_ < columns_) extendColumn();
+        }
+        return true;
+    }
+
+    [[nodiscard]] std::size_t frames() const noexcept { return bins_.empty() ? 0 : frames_; }
+    [[nodiscard]] bool complete() const noexcept { return range_.frames != 0 && frames() == range_.frames; }
+    [[nodiscard]] std::span<const FocusSumColumn> memberColumns(std::size_t member) const noexcept {
+        return member < sources_.size() ? lane(member) : std::span<const FocusSumColumn>{};
+    }
+    [[nodiscard]] std::span<const FocusSumColumn> sumColumns() const noexcept { return lane(sources_.size()); }
+    [[nodiscard]] std::optional<FocusSumReading> sumReading() const noexcept {
+        if (!frames()) return {};
+        const auto count = static_cast<double>(frames_);
+        return FocusSumReading{peak_, {std::sqrt(energy_[0] / count), std::sqrt(energy_[1] / count)}};
+    }
+
+  private:
+    void extendColumn() noexcept {
+        // Same floor(c * frames / columns) edges as the short Scope projection,
+        // without a potentially overflowing product on a long bar.
+        endOfColumn_ += framesPerColumn_;
+        carry_ += remainder_;
+        if (carry_ >= columns_) {
+            carry_ -= columns_;
+            ++endOfColumn_;
+        }
+    }
+    std::span<const FocusSumColumn> lane(std::size_t index) const noexcept {
+        if (bins_.empty() || !visibleColumns_) return {};
+        return std::span(bins_).subspan(index * columns_, visibleColumns_);
+    }
+
+    FocusScopeRange range_;
+    std::vector<FocusScopeBarSource> sources_;
+    std::vector<FocusSumColumn> bins_;
+    std::uint64_t transportRevision_ = 0;
+    std::size_t columns_ = 0, framesPerColumn_ = 0, remainder_ = 0;
+    std::size_t frames_ = 0, column_ = 0, endOfColumn_ = 0, carry_ = 0, visibleColumns_ = 0;
+    std::array<double, 2> peak_{}, energy_{};
+};
+
 inline std::optional<FocusScopeRange> focusScopeMember(const SharedAnalysis::Result &source) noexcept {
     const auto frames = source.scopeLeft.size();
     if (!source.advancing || !source.transportRevision || !std::isfinite(source.sampleRate) ||
