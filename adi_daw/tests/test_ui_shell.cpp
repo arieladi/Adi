@@ -10169,7 +10169,7 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         auto document = ProjectDocument::open(dir / "mixview-devices.adi", true, test::knobsLoader(), error);
         check(document != nullptr, "a document for actual-chain Mix View controls");
         if (document) {
-            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(30,'clap','") +
+            document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(30,'internal','") +
                                         test::kKnobsUid + "','UI knobs')");
             std::vector<OpRequest> make(3);
             make[0].opType = "chain.create";
@@ -10345,13 +10345,15 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 const auto compactTime = std::max(dragTime + 20,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
                 surface.model().setAutoZoom(false, compactTime);
+                actual.devices.fold(30);
+                actual.devices.fold(31);
                 surface.model().focusRow(surface.model().rowRef(2), compactTime);
                 surface.model().setBaseHeight(surface.model().constants().tierFloors[0], compactTime);
                 surface.frameAt(actual.reader(), compactTime + 200);
                 stack::ItemGeo folded;
                 if (const auto i = surface.model().shownIndex(2))
                     surface.model().forEachChainItem(*i, [&](const auto &item) { if (item.ref.device == 30) folded = item; });
-                check(folded.pill && !findPanel(30), "compact tiers fold a plug-in without leaving hidden controls active");
+                check(folded.pill && !findPanel(30), "explicit folds park the built-in controls without leaving a hidden editor active");
                 if (folded.pill) {
                     const auto geo = surface.model().row(*surface.model().shownIndex(2));
                     const auto p = surface.listArea().getPosition().toFloat() +
@@ -10385,6 +10387,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                 }
                 const auto restoreTime = std::max(compactTime + 210,
                     static_cast<stack::TimeMs>(juce::Time::getMillisecondCounterHiRes()));
+                actual.devices.fold(30);
+                actual.devices.fold(31);
                 surface.model().setBaseHeight(pluginBase, restoreTime);
                 surface.model().setAutoZoom(true, restoreTime);
                 surface.model().focusItem(stable, restoreTime);
