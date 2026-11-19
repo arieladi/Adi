@@ -5,6 +5,14 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 19 November 2026 — DEV-31 seven-stage review
+
+**PR requested** · `clones/shaper-rollup` · **Add ADI-Shaper as a seven-stage built-in Pd audio effect** · `e87f45dd`
+
+Win: one commit on main `12aab48a` carries the original Volume, Width and Pan implementation through Filter, Sweep, Drive and Crush. The device opens in ADI → Audio Effects. Its editable canvas, compiled-in external and canonical native processor use the same 415 parameter indices. Eight equally spaced heights and a choice of hold or linear interpolation per curve preserve the state contract described below. The panel sheet belongs to Window.
+
+MSVC x64 Release with /W4 /WX passed eleven CTest suites in each Pd precision. The catalog, five DSP suites, editable versus canonical parity, native devices, Pd engine, Pd device and zero-delay host suites ran at both precisions. An independently altered canvas swaps the two output connections and checks its stereo output against known samples. Sparse recall into an active instance restores omitted stages to their defaults and releases Drive compensation. Stored beat information survives a missing graph transport, while an exact segment takes priority. Both builds embed the same 61,101 normalized canvas bytes, verified against the shipped file. The Session regression with upstream compensation is due when DF-E29 lands.
+
 ## 2026-11-19 — DEV-31 review scope
 
 Win, devices and Window: the single review branch will be `clones/shaper-rollup`, rebuilt from the original Volume, Width and Pan implementation through Filter, Sweep, Drive and Crush. Earlier per-stage PR requests in this log are superseded. Clones takes the ADI-Shaper DSP, Pd external, canvas, per-device build manifest and device tests. The shared edits are confined to device registration, catalog capabilities, native transport dispatch, state recall, canvas embedding and their registration tests. Window owns the panel proposal and Mix View owns the Focus implementation.
