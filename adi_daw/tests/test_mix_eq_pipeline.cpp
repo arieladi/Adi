@@ -3,6 +3,7 @@
 #include "juce/builtin_host.hpp"
 #include "juce/mix_function_host.hpp"
 #include "temp_directory.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
