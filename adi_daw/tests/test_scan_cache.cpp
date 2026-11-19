@@ -88,6 +88,9 @@ int helper(const std::vector<std::string>& args) {
         }
     }
     if(version=="reject")return 65;
+    if(version=="bad-request")return 64;
+    if(version=="channel-setup")return 74;
+    if(version=="channel-write")return 75;
     if(version=="unsupported")return 78;
     if(version=="hang")std::this_thread::sleep_for(std::chrono::seconds(10));
     if(version=="crash" || (version=="flaky" && launches(path)==1)) {
@@ -487,6 +490,23 @@ void strikesAndAbandonment(const fs::path& self) {
     check(busy.state==State::Quarantined && busy.plugins.empty() && launches(coldBusy)==0,
         "busy registry admission for a cache miss launches no child and returns no success metadata");
 }
+void infrastructureFailures(const fs::path& self) {
+    Fixture f(self);
+    auto scanner = f.scanner();
+    auto registry = f.registry();
+    for (const auto* reason : {"bad-request", "channel-setup", "channel-write", "unsupported"}) {
+        const auto path = f.temp.path() / (std::string(reason) + ".clap");
+        write(path, reason);
+        const auto first = scanner->probe("clap", path);
+        const auto second = scanner->probe("clap", path);
+        const auto blocks = registry->scanBlocks(f.error);
+        check(first.state == State::Unavailable && second.state == State::Unavailable &&
+              !first.failureCacheHit && !second.failureCacheHit &&
+              first.failureStrikes == 0 && second.failureStrikes == 0 &&
+              blocks && blocks->empty() && launches(path) == 2,
+              "helper infrastructure failure remains retriable without marking the candidate");
+    }
+}
 void retryAliases(const fs::path& self) {
     Fixture f(self);auto scanner=f.scanner();auto registry=f.registry();const auto path=f.candidate();
     fs::create_directory(f.temp.path()/"alias");auto slash=utf8(path);std::replace(slash.begin(),slash.end(),'\\','/');
@@ -627,7 +647,7 @@ void parallelProbeGate(const fs::path& self) {
 
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);readOnlyWarmSuccess(self);warmRowRecheck(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);infrastructureFailures(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

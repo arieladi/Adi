@@ -23,8 +23,10 @@ contains descriptors. Bad/oversized/mismatched metadata, ordinary nonzero child
 exit and format rejection retain a named negative result. Reliably stamped
 crashes/timeouts allow one further explicit probe before two strikes block more
 children. Pending and manual/legacy blocks always need explicit re-enable.
-Cancellation and helper launch/configuration/I/O failures abandon their own marker; helper exit 78
-means unsupported deployment. Completion failure/stale tickets publish nothing
+Cancellation and helper launch, configuration or I/O failures abandon their own marker.
+The dedicated helper reserves exit 64 for an invalid request, 74 for metadata channel
+setup before the module is opened, 75 for a metadata write or flush failure after
+enumeration and 78 for unavailable format support. Completion failure/stale tickets publish nothing
 and retain quarantine. Resource exceptions retain pending state. A pending row
 means in-progress/interrupted, not proof of a plug-in crash. Native alias
 resolution binds admission; no filename/Unicode case heuristic is used.
@@ -164,8 +166,8 @@ older immediate-block policy; those untyped results remain conservative legacy
 blocks. Earlier success-only v3 writers do not understand negative results and
 may reprobe them, but cannot bypass a pending/manual/two-strike block. Negative
 results and first strikes are stored only in the failure table, never advertised
-as active blocks by `scanBlocks`. Exit 78, launch failure, cancellation, unavailable
-registry and process I/O infrastructure errors do not consume strikes. Output
+as active blocks by `scanBlocks`. Reserved helper infrastructure exits, launch failure,
+cancellation, unavailable registry and process I/O errors do not consume strikes. Output
 limit or malformed protocol is a deterministic rejection. Changing timeout or
 output limits alone does not change the module stamp: explicit retry is needed
 to reconsider an already blocked result under changed process limits.

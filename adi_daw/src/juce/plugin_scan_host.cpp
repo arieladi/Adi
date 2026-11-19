@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Dedicated executable. No parent calls its factory-enumeration functions.
 #include "adi/plugin_scanner.hpp"
+#include "adi/scan_helper_protocol.hpp"
 #include "juce/clap_host.hpp"
 #if defined(ADI_SCAN_WITH_VST3)
 #include "juce/vst3_scan_host.hpp"
@@ -73,7 +74,22 @@ struct Channel {
         return file!=nullptr;
     }
 };
+int selfTest() {
+    Channel channel;if(!channel.reserve())return 74;
+    // Compiled capability only. Do not construct a library, enumerate roots,
+    // open a registry, or invoke either plug-in format's probe on this path.
+    const int written=std::fprintf(channel.file,
+        "{\"kind\":\"%s\",\"protocol\":%u,\"metadata_schema\":%u,\"formats\":[\"clap\""
+#if defined(ADI_SCAN_WITH_VST3)
+        ",\"vst3\""
+#endif
+        "],\"evidence\":\"structural\",\"plugin_loaded\":false}\n",
+        adi::scan::kHelperSelfTestKind.data(),adi::scan::kHelperSelfTestProtocol,adi::scan::kPacketSchema);
+    return written<0 || static_cast<std::size_t>(written)>adi::scan::kMaximumHelperSelfTestPacket ||
+        std::fflush(channel.file)!=0 ? 74 : 0;
+}
 int entry(const std::vector<std::string>& arguments) {
+    if(arguments.size()==2 && arguments[1]=="--self-test")return selfTest();
     if(arguments.size()!=4 || arguments[1]!="--scan")return 64;
     Channel channel;if(!channel.reserve())return 74;
     try {
@@ -88,7 +104,9 @@ int entry(const std::vector<std::string>& arguments) {
         } else return 78;
         std::string error;const auto packet=adi::scan::encodeMetadata(arguments[2],arguments[3],plugins,error);
         if(!packet)return 65;
-        if(std::fwrite(packet->data(),1,packet->size(),channel.file)!=packet->size() || std::fflush(channel.file)!=0)return 74;
+        // 74 is channel setup before opening a module. A completed domain
+        // probe whose output pipe fails has its own infrastructure status.
+        if(std::fwrite(packet->data(),1,packet->size(),channel.file)!=packet->size() || std::fflush(channel.file)!=0)return 75;
         return 0;
     } catch(const std::exception&) {return 65;}
 }

@@ -380,10 +380,11 @@ Result Scanner::probe(const std::string& format,const std::filesystem::path& pat
         }
         const auto process=runProcess(config_.executable,{"--scan",format,result.path},config_.process);
         const bool cancel=process.succeeded() && config_.process.cancel && config_.process.cancel->load(std::memory_order_relaxed);
+        const bool helperFailure = process.status == ProcessStatus::Exited &&
+            (process.exitCode == 64 || process.exitCode == 74 || process.exitCode == 75 || process.exitCode == 78);
         const bool abandoned=cancel || process.status==ProcessStatus::Cancelled || process.status==ProcessStatus::LaunchFailed ||
             process.status==ProcessStatus::Invalid || process.status==ProcessStatus::CallbackRefused ||
-            process.status==ProcessStatus::IoFailed ||
-            (process.status==ProcessStatus::Exited && process.exitCode==78);
+            process.status==ProcessStatus::IoFailed || helperFailure;
         if(abandoned) {
             const auto state=cancel || process.status==ProcessStatus::Cancelled?State::Cancelled:State::Unavailable;
             std::string error;
