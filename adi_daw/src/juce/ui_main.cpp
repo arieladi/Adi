@@ -276,6 +276,11 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->sharedAnalysis = document_->analysis();
         const auto meterOwner = juce::Component::SafePointer<AdiRootComponent>(root_);
+        root->mixViewPanel.stack.setLimiterObserver([this, meterOwner](const DevicePanelData &target) {
+            if (!meterOwner || !document_ || root_ != meterOwner.getComponent())
+                return mix::limiter::ReductionMailbox::Lease{};
+            return document_->observeLimiterReduction(target.id, target.runtime);
+        });
         const auto mainTrack = root->analysisTrack();
         mainMeterSource_ = std::make_shared<MainMeterSource>(MainMeterSource{
             mainTrack, [this, meterOwner, mainTrack]() -> std::optional<MainMeterSnapshot> {

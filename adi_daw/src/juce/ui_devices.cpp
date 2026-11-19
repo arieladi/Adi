@@ -368,6 +368,13 @@ void DevicePanelView::releaseEqSpectrum() {
     repaint(eqPreviewBounds().toNearestInt());
 }
 
+bool DevicePanelView::previewVisible(juce::Rectangle<int> visible) const {
+    if (!isShowing()) return false;
+    for (auto *p = getParentComponent(); p != nullptr && !visible.isEmpty(); p = p->getParentComponent())
+        visible = visible.getIntersection(getLocalArea(p, p->getLocalBounds()));
+    return !visible.isEmpty();
+}
+
 bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &broker) {
     if (!eqPreview_) return false;
     if (!broker || !isShowing() || !data || !data->available || strip.folded(id)) {
@@ -375,10 +382,7 @@ bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &bro
         return false;
     }
     const auto graph = eqPreviewBounds().toNearestInt();
-    auto visible = graph;
-    for (auto *p = getParentComponent(); p != nullptr && !visible.isEmpty(); p = p->getParentComponent())
-        visible = visible.getIntersection(getLocalArea(p, p->getLocalBounds()));
-    if (visible.isEmpty()) {
+    if (!previewVisible(graph)) {
         releaseEqSpectrum();
         return false;
     }
@@ -464,6 +468,134 @@ bool DevicePanelView::frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &bro
     preview.spectrumResult = std::move(next);
     repaint(graph);
     return static_cast<bool>(preview.spectrumLease);
+}
+
+struct DevicePanelView::LimiterPreview {
+    static constexpr float gap = -1.f;
+    static constexpr float displayRangeDb = 24.f;
+    std::array<float, 64> peaks;
+    mix::limiter::ReductionMailbox::Lease lease;
+    std::optional<mix::limiter::ReductionFrame> previous;
+    std::uint64_t instance = 0;
+    juce::String readout{"-- dB"};
+
+    LimiterPreview() { peaks.fill(gap); }
+
+    bool present(const mix::limiter::ReductionFrame &next) {
+        const auto oldPeak = peaks.back();
+        const bool samePeak = previous && next.reduction.available == previous->reduction.available &&
+            next.reduction.peakLoss == previous->reduction.peakLoss;
+        const auto peak = samePeak ? oldPeak : next.reduction.available
+            ? -20.f * std::log10(std::max(1.e-8f, 1.f - next.reduction.peakLoss)) : gap;
+        const bool discontinuity = previous &&
+            (next.transportRevision != previous->transportRevision || next.advancing != previous->advancing ||
+             next.renderBlock < previous->renderBlock);
+        if (discontinuity) peaks.fill(gap);
+        const bool continuation = previous && !discontinuity;
+        const bool sameBlock = continuation && previous->renderBlock == next.renderBlock && next.renderBlock != 0;
+        const auto blockGap = continuation && next.advancing && previous->renderBlock != 0 &&
+            next.renderBlock > previous->renderBlock ? next.renderBlock - previous->renderBlock : 1;
+        previous = next;
+        // Parked callbacks with steady reduction leave the same view. A split
+        // callback overwrites its own column as more segments become audible.
+        if ((sameBlock || (!next.advancing && !discontinuity)) && peaks.back() == peak) return false;
+        if (!sameBlock) {
+            const auto shift = static_cast<std::ptrdiff_t>(std::min<std::uint64_t>(blockGap, peaks.size()));
+            std::move(peaks.begin() + shift, peaks.end(), peaks.begin());
+            std::fill(peaks.end() - shift, peaks.end(), gap);
+        }
+        peaks.back() = peak;
+        if (peak != oldPeak)
+            readout = peak == gap ? juce::String("-- dB") : juce::String(peak == 0 ? 0.f : -peak, 1) + " dB";
+        return true;
+    }
+};
+
+juce::Rectangle<int> DevicePanelView::limiterPreviewBounds() const {
+    if (!mixCard_ || getHeight() < (look::mixStackNearRow + look::fieldHeight) || selectedPage_ != "limiter" ||
+        configuring || strip.folded(id)) return {};
+    const auto *function = nativeFunction();
+    if (!function || function->kind != mix::Function::Limiter) return {};
+    const int inset = look::gap;
+    const int top = kTitleHeight + kPageHeight + 2 * inset;
+    const int free = getHeight() - top - ParameterControl::kHeight - 2 * inset;
+    const int reading = look::fieldHeight;
+    if (free < 2 * reading || getWidth() < 2 * ParameterControl::kWidth) return {};
+    const int height = std::min(free, juce::roundToInt(static_cast<float>(getHeight()) * .36f));
+    const int left = inset + look::fieldHeight;
+    return {left, top, std::max(0, getWidth() - left - inset), height};
+}
+
+void DevicePanelView::releaseLimiterReduction() {
+    if (!limiterPreview_) return;
+    limiterPreview_.reset();
+    repaint(limiterPreviewBounds());
+}
+
+void DevicePanelView::frameLimiterReduction(
+    const std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>* observer) {
+    const auto area = limiterPreviewBounds();
+    if (!observer || !*observer || !data || !data->available || !data->enabled ||
+        !previewVisible(area)) {
+        releaseLimiterReduction();
+        return;
+    }
+    if (limiterPreview_ && limiterPreview_->instance != data->instance) releaseLimiterReduction();
+    if (!limiterPreview_ || !limiterPreview_->lease) {
+        const auto expected = data->runtime;
+        const auto stamp = data->instance;
+        const auto safe = SafePointer<DevicePanelView>(this);
+        const auto acquire = *observer;
+        auto acquired = acquire(*data);
+        if (!safe || !data || !data->available || !data->enabled || data->instance != stamp ||
+            !expected.sameInstance(data->runtime) || !previewVisible(limiterPreviewBounds())) return;
+        if (!acquired) {
+            releaseLimiterReduction();
+            return;
+        }
+        if (!limiterPreview_ || !limiterPreview_->lease) {
+            limiterPreview_ = std::make_unique<LimiterPreview>();
+            limiterPreview_->instance = stamp;
+            limiterPreview_->lease = std::move(acquired);
+            repaint(area);
+        }
+    }
+    const auto snapshot = limiterPreview_->lease.read();
+    if (snapshot && limiterPreview_->present(*snapshot)) repaint(area);
+}
+
+void DevicePanelView::paintLimiterReduction(juce::Graphics &g, juce::Rectangle<int> area) const {
+    using Preview = LimiterPreview;
+    juce::Graphics::ScopedSaveState save(g);
+    g.reduceClipRegion(area);
+    g.setColour(look::display);
+    g.fillRoundedRectangle(area.toFloat(), look::radiusBox);
+    auto inner = area.reduced(look::gap);
+    const auto captions = inner.removeFromTop(look::fieldHeight);
+    g.setFont(look::font(look::fontTiny));
+    g.setColour(look::textDim);
+    g.drawText("Reduction", captions, juce::Justification::centredLeft);
+    const auto* preview = limiterPreview_ && data && data->available && data->enabled &&
+        limiterPreview_->instance == data->instance && limiterPreview_->lease ? limiterPreview_.get() : nullptr;
+    const auto latest = preview ? preview->peaks.back() : Preview::gap;
+    g.setColour(latest == Preview::gap ? look::textDim : look::text);
+    g.drawText(preview ? preview->readout : juce::String("-- dB"),
+        captions, juce::Justification::centredRight);
+    if (inner.isEmpty()) return;
+
+    const auto plot = inner.toFloat();
+    g.setColour(look::gridLine);
+    g.drawHorizontalLine(inner.getY(), plot.getX(), plot.getRight());
+    g.drawHorizontalLine(inner.getCentreY(), plot.getX(), plot.getRight());
+    if (!preview) return;
+    const auto &peaks = preview->peaks;
+    const auto width = plot.getWidth() / static_cast<float>(peaks.size());
+    g.setColour(look::meterPeak);
+    for (std::size_t i = 0; i < peaks.size(); ++i) {
+        if (peaks[i] <= 0) continue;
+        const auto depth = std::min(peaks[i] / Preview::displayRangeDb, 1.f) * plot.getHeight();
+        g.fillRect(plot.getX() + static_cast<float>(i) * width, plot.getY(), width, depth);
+    }
 }
 
 juce::Rectangle<float> DevicePanelView::eqPreviewBounds() const {
@@ -977,6 +1109,7 @@ bool DevicePanelView::chooseParameterPage(const std::string &page) {
     selectedPage_ = requested;
     if (selectedPage_ != "eq") releaseEqSpectrum();
     if (!safe) return false;
+    if (selectedPage_ != "limiter") releaseLimiterReduction();
     for (auto &p : parameterPages) p.selector->setToggleState(p.id == selectedPage_, juce::dontSendNotification);
     if (eqPresentation()) present(*data);
     if (!safe) return false;
@@ -1076,7 +1209,9 @@ void DevicePanelView::visibilityChanged() {
     if (isShowing()) return;
     const auto safe = SafePointer<DevicePanelView>(this);
     releaseEqSpectrum();
-    if (safe && !parameterPages.empty()) cancelInteractions();
+    if (!safe) return;
+    releaseLimiterReduction();
+    if (!parameterPages.empty()) cancelInteractions();
 }
 void DevicePanelView::present(const DevicePanelData &d) {
     if (!presentParameterPages(d)) return;
@@ -1252,6 +1387,7 @@ void DevicePanelView::resized() {
         const auto graph = eqPreviewBounds();
         if (!graph.isEmpty()) top = static_cast<int>(graph.getBottom()) + 2;
         if (getHeight() < look::mixStackNearRow + look::fieldHeight) {
+            releaseLimiterReduction();
             for (auto &page : parameterPages) {
                 page.selector->setVisible(false);
                 page.enabled->setVisible(false);
@@ -1271,6 +1407,9 @@ void DevicePanelView::resized() {
         page.selector->setBounds(pageX, top + 1, width, kPageHeight - 3); pageX += width + 3;
     }
     if (!parameterPages.empty()) top += kPageHeight;
+    const auto reduction = limiterPreviewBounds();
+    if (reduction.isEmpty()) releaseLimiterReduction();
+    else top = std::max(top, reduction.getBottom() + static_cast<int>(look::gap));
     const bool functionControls = !isFolded && eqPresentation() && parameterPageUnavailableReason().empty() &&
                                   (!functionBands_.empty() || !functionSections_.empty());
     functionBand.setVisible(functionControls && !functionBands_.empty());
@@ -1329,6 +1468,8 @@ void DevicePanelView::paint(juce::Graphics &g) {
             drawEqNodes(g, graph);
         }
     }
+    const auto reduction = limiterPreviewBounds();
+    if (!reduction.isEmpty()) paintLimiterReduction(g, reduction);
     // Live's fold switch beside the activator.
     const auto fold = foldSwitch().toFloat();
     if (!fold.isEmpty()) {

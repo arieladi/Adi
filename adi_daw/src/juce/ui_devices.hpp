@@ -2,6 +2,7 @@
 #pragma once
 #include <optional>
 #include "adi/engine/param_ops.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/mix_functions.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
@@ -108,6 +109,9 @@ class DevicePanelView final : public juce::Component {
     void present(const DevicePanelData &);
     bool frameEqSpectrum(const std::shared_ptr<SharedAnalysis> &);
     void releaseEqSpectrum();
+    void frameLimiterReduction(
+        const std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>* observer);
+    void releaseLimiterReduction();
     void resized() override;
     void paint(juce::Graphics &) override;
     bool keyPressed(const juce::KeyPress &) override;
@@ -198,6 +202,10 @@ class DevicePanelView final : public juce::Component {
     void updateEqPreview(const DevicePanelData &);
     int eqBandAt(juce::Point<float>) const;
     void drawEqNodes(juce::Graphics &, juce::Rectangle<float>) const;
+    struct LimiterPreview;
+    [[nodiscard]] juce::Rectangle<int> limiterPreviewBounds() const;
+    [[nodiscard]] bool previewVisible(juce::Rectangle<int>) const;
+    void paintLimiterReduction(juce::Graphics &, juce::Rectangle<int>) const;
     void layoutCompactControls(int top);
     bool textInteraction_ = false, menuInteraction_ = false;
     std::uint64_t menuEpoch_ = 0;
@@ -226,6 +234,8 @@ class DevicePanelView final : public juce::Component {
     const panel::Record *pageEnableRecord(const ParameterPageControl &) const;
     static int pageSelectorWidth(const ParameterPageControl &) noexcept;
     static constexpr int kPageHeight = 22;
+    static constexpr int kCompactCardHeight = 144;
+    std::unique_ptr<LimiterPreview> limiterPreview_;
     friend class DeviceChainStrip;
 };
 class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {

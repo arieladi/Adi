@@ -462,6 +462,119 @@ void stackEqSpectrum(AppCommands &commands, const std::filesystem::path &directo
     peer.removeChildComponent(&surface); peer.removeFromDesktop();
 }
 
+void stackLimiterReduction(AppCommands &commands, const std::filesystem::path &directory) {
+    namespace l = mix::limiter;
+    std::string error;
+    auto document = ProjectDocument::open(directory / "stack-limiter-reduction.adi", true,
+        device::withBuiltinDevices(), error);
+    check(document && document->addMixFunction(mix::Function::Limiter, 2),
+          "Stack reduction opens a native limiter fixture");
+    if (!document) return;
+    document->tick(0);
+    const auto publication = document->parameterFeed().current();
+    const auto row = std::ranges::find(*publication, "org.adidaw.mix.limiter", &DevicePanelData::uid);
+    check(row != publication->end(), "fixture exposes the same exact native runtime to the Stack");
+    if (row == publication->end()) return;
+    const auto runtime = row->runtime;
+    const auto device = row->id;
+    auto mailbox = std::make_shared<l::ReductionMailbox>();
+    mailbox->setPrepared(true);
+    int acquisitions = 0;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands,
+                          document->views(), document->sessionState(), "stack-limiter-reduction");
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.parameterDemand = [&](const void *owner, const auto &ids) { document->setParameterDemand(owner, ids); };
+    root.state().mixView = true;
+    root.state().mixViewTab = static_cast<int>(MixViewPanel::Tab::Stack);
+    root.arrangement.geometry.selection.track = 2;
+    UiPeerRoot peer;
+    peer.setBounds(0, 0, 1200, 720);
+    peer.setVisible(true); peer.addToDesktop(0);
+    StackTab surface(root);
+    surface.setBounds(peer.getLocalBounds()); peer.addAndMakeVisible(surface);
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.model().setAutoZoom(false, 0);
+    surface.model().setBaseHeight(184, 0);
+    surface.setLimiterObserver([&](const DevicePanelData &target) {
+        if (target.id != device || !target.runtime.sameInstance(runtime)) return l::ReductionMailbox::Lease{};
+        ++acquisitions;
+        return l::ReductionMailbox::observe(mailbox);
+    });
+    surface.frameAt(root.reader(), 500);
+    check(mailbox->observed() && acquisitions == 1, "expanded visible Limiter card acquires one reading lease");
+    const auto locate = [&](const auto &walk, juce::Component &parent) -> DevicePanelView * {
+        if (auto *card = dynamic_cast<DevicePanelView *>(&parent); card && card->id == device) return card;
+        for (auto *child : parent.getChildren())
+            if (auto *found = walk(walk, *child)) return found;
+        return nullptr;
+    };
+    auto *found = locate(locate, surface);
+    check(found != nullptr, "the reduction plot lives in the existing Stack device card");
+    if (!found) return;
+    juce::Component::SafePointer<DevicePanelView> card(found);
+    const auto paint = [](DevicePanelView &panel) {
+        juce::Image image(juce::Image::RGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType());
+        juce::Graphics g(image);
+        panel.paint(g);
+        return image;
+    };
+    const auto rightPeakPixels = [](const juce::Image &image) {
+        const auto colour = static_cast<juce::Colour>(look::meterPeak);
+        const int x = image.getWidth() - 2 * static_cast<int>(look::gap) - 2;
+        int pixels = 0;
+        for (int y = DevicePanelView::kTitleHeight; y < image.getHeight(); ++y)
+            if (image.getPixelAt(x, y) == colour) ++pixels;
+        return pixels;
+    };
+    const auto empty = paint(*card);
+    l::ReductionFrame summary;
+    summary.renderBlock = 1;
+    summary.observedFrames = 128;
+    summary.reduction = {.75f, true};
+    mailbox->publishSegment(mailbox->observationEpoch(), summary);
+    surface.frameAt(root.reader(), 520);
+    const auto peak = paint(*card);
+    check(rightPeakPixels(peak) > rightPeakPixels(empty) && acquisitions == 1,
+          "the latest measured peak paints a right-hand column without reacquiring the source");
+    summary.renderBlock = 2;
+    summary.reduction = {};
+    mailbox->publishSegment(mailbox->observationEpoch(), summary);
+    surface.frameAt(root.reader(), 540);
+    const auto missing = paint(*card);
+    check(rightPeakPixels(missing) == rightPeakPixels(empty) && mailbox->observed(),
+          "an unavailable block paints a genuine gap in place of the latest peak");
+
+    surface.model().setBaseHeight(112, 600);
+    surface.frameAt(root.reader(), 950);
+    check(!mailbox->observed(), "a compact card releases its reduction lease");
+    surface.model().setBaseHeight(184, 980);
+    surface.frameAt(root.reader(), 1330);
+    check(mailbox->observed() && acquisitions == 2, "re-expansion reacquires an empty observation");
+    root.devices.fold(device);
+    surface.frameAt(root.reader(), 1360);
+    check(!mailbox->observed(), "folded Limiter has no reduction subscription");
+    root.devices.fold(device);
+    surface.frameAt(root.reader(), 1600);
+    check(mailbox->observed() && acquisitions == 3, "unfolding reopens one subscription");
+    surface.filterChannels(std::nullopt);
+    surface.setSize(1200, 165);
+    surface.frameAt(root.reader(), 1640);
+    surface.model().scrollTo(surface.model().maxScroll(), 1660);
+    surface.frameAt(root.reader(), 2090);
+    check(!mailbox->observed(), "a retained Limiter card with its plot fully offscreen releases demand");
+
+    surface.filterChannels(std::vector<std::int64_t>{2});
+    surface.setBounds(peer.getLocalBounds());
+    surface.frameAt(root.reader(), 2410);
+    const auto shown = mailbox->observed();
+    auto sibling = l::ReductionMailbox::observe(mailbox);
+    surface.setVisible(false);
+    check(shown && mailbox->observed(), "hiding a Stack reader preserves a compatible sibling");
+    sibling.reset();
+    check(!mailbox->observed(), "the last hidden view leaves no producer demand");
+    peer.removeChildComponent(&surface); peer.removeFromDesktop();
+}
+
 } // namespace
 int main() {
     juce::ScopedJuceInitialiser_GUI init;
@@ -471,6 +584,7 @@ int main() {
     functions(commands, temporary.path());
     parameterPages(commands, temporary.path());
     stackEqSpectrum(commands, temporary.path());
+    stackLimiterReduction(commands, temporary.path());
     std::printf("%d checks, %d failures (software-peer components)\n", checks, failures);
     return failures ? 1 : 0;
 }

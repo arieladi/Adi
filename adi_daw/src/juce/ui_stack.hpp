@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/engine/param_ops.hpp"
+#include "adi/mix/limiter/ReductionMailbox.h"
 #include "adi/ui/mix_view_provider.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/stack_model.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -45,6 +47,8 @@ class StackTab final : public juce::Component {
     explicit StackTab(AdiRootComponent &);
     ~StackTab() override;
     void suspendParameters(bool);
+    using LimiterObserver = std::function<mix::limiter::ReductionMailbox::Lease(const DevicePanelData &)>;
+    void setLimiterObserver(LimiterObserver);
     void frame(const SnapshotReader &);
     // Deterministic component-test entry; normal frames use the window's monotonic clock.
     void frameAt(const SnapshotReader &, stack::TimeMs);
@@ -94,7 +98,7 @@ class StackTab final : public juce::Component {
     std::vector<std::unique_ptr<StackRow>> rows_;
     void effects(const stack::Effects &, bool takeFocus = true);
     void layoutRows();
-    void releaseEqSpectra();
+    void releaseCardObservations();
     void updateParameterDemand(std::vector<std::int64_t>);
     void refreshRows(const SnapshotReader &, stack::TimeMs);
     void syncScroll();

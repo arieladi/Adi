@@ -94,6 +94,7 @@ struct StackTab::State : juce::ScrollBar::Listener {
         bool waitingForCancel = false;
     };
     std::optional<PairEdit> pairEdit;
+    LimiterObserver limiterObserver;
 };
 struct StackRow::State {
     stack::RowGeo geo;
@@ -256,6 +257,7 @@ void StackRow::present(const stack::RowGeo &input) {
         const bool spectrum = panel->frameEqSpectrum(stack_.state_->parametersSuspended ? nullptr : stack_.root.sharedAnalysis);
         if (!alive || !panel || state_->presentation != presentation) return;
         state_->spectrumDemand |= spectrum;
+        panel->frameLimiterReduction(stack_.state_->parametersSuspended ? nullptr : &stack_.state_->limiterObserver);
     };
     const auto count = state_->pendingItems.size();
     for (std::size_t j = 0; j < count; ++j) {
@@ -641,13 +643,21 @@ void StackTab::layoutRows() {
     syncScroll();
     if (spectrumDemand && root.sharedAnalysis) root.sharedAnalysis->requestFrame();
 }
-void StackTab::releaseEqSpectra() {
+void StackTab::setLimiterObserver(LimiterObserver observer) {
+    state_->limiterObserver = std::move(observer);
+    for (const auto &row : rows_)
+        for (const auto &tile : row->state_->tiles)
+            tile.view->releaseLimiterReduction();
+}
+void StackTab::releaseCardObservations() {
     std::vector<juce::Component::SafePointer<DevicePanelView>> tiles;
     for (const auto &row : rows_)
         for (const auto &tile : row->state_->tiles)
             tiles.emplace_back(tile.view.get());
-    for (auto &tile : tiles)
+    for (auto &tile : tiles) {
         if (tile) tile->releaseEqSpectrum();
+        if (tile) tile->releaseLimiterReduction();
+    }
 }
 void StackTab::effects(const stack::Effects &fx, bool takeFocus) {
     if (state_->destroying) return;
@@ -1000,7 +1010,7 @@ void StackTab::focusOfChildComponentChanged(FocusChangeType type) {
 void StackTab::visibilityChanged() {
     if (!isShowing()) {
         const auto safe = SafePointer<StackTab>(this);
-        releaseEqSpectra();
+        releaseCardObservations();
         if (!safe) return;
         cancelInteractions();
         effects(model().pointerExit(clockNow()), false);
@@ -1020,7 +1030,7 @@ void StackTab::suspendParameters(bool suspended) {
     state_->parametersSuspended = suspended;
     if (suspended) {
         const auto safe = SafePointer<StackTab>(this);
-        releaseEqSpectra();
+        releaseCardObservations();
         if (!safe) return;
         cancelInteractions();
         if (safe) updateParameterDemand({});
