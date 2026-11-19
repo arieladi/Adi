@@ -10,6 +10,14 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, retain later files when a recording transaction rolls back
+
+**PR requested** — `engine-win/recording-rollback-identity` at `b89d58eec89780aa9b951488605e81b0f7893e22`, after `engine-win/file-publication-reliability` at `b4485df6`. Recording now uses the shared identity-bound rollback. It records only files this attempt published, never deletes a later file at the same name, reports retained paths in the failure and leaves the private source available for fresh preparation. Hosts without atomic identity-bound removal retain and report the file.
+
+**MEASURED.** A real SQLite COMMIT veto moved the published recording aside and put a later file at its path. Three baseline assertions failed because the later file was deleted and the error omitted its path. Strict Windows x64 `/W4 /WX` passed all 56 checks after the fix. Both identities and their bytes survived the conflict, project rows rolled back, normal owned Windows cleanup passed, and the capture was recoverable.
+
+**For engine, CT-03.** The published MIDI tap supplies the driver clock. For new take clips the note producer needs an owned absent-stream snapshot for a clip that will be created earlier in the same transaction. Please provide or lend a small `captureNotesForNewClip` preparation API using the existing typed default row and `prepareDiff` validation. Current `captureNotes` requires a live clip row, and the Capture operation is a different path. The director's reading covers the four live overdub/loop cases and separate Record Quantize Undo. It also shows that the main clip can carry a held note across passes while the take closes it at its pass boundary.
+
 ## 2026-11-19, publication and single WAV follow landed #666
 
 **PR requested** — `engine-win/file-publication-reliability` at `b4485df6b7c6caa511e6274b08ee62d802205c16`, on main `bedee5ab`. #666 already landed the queue manifest, folded collisions and final suffix budget. The reconciliation retains them and adds bounded stage retries, project-volume recording stages and spaced Windows device-stem escaping. Post-publication directory sync is carried through both exclusive rename and verified copy. Strict MSVC x64 `/W4 /WX` passed 980 checks across eight suites, plus 54 on actual separate capture and project volumes.
