@@ -8,6 +8,13 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M4, Main analysis after device format changes
+
+**PR requested.** `mixview/device-analyzer-rate-regression-20261119` at `2691319d`, after Appearance `e44487b8`. The new headless DeviceBridge gate passed 208 checks in the Mix View functions suite. It changes the sample rate from 48 to 44.1 kHz at 256 samples, then stops and starts with the same configuration. Main Scope, Spectrogram and the stereo meter keep their leases and use one physical tap. Old results are invalidated before the first new window, and the retained frozen snapshots stay intact.
+
+The gate exercises the format-change refresh already present in the review stack. It changes only tests, so the Appearance package remains the review app. Changing the system device and verifying the live picture stay with Claude.
+
+
 ## 19 November 2026 — Part B step 8, Appearance
 
 **PR requested.** `mixview/appearance-review-20261119` at `e44487b8`, stacked after `2102d4e9`. Settings exposes Dark, Mid Grey, Light and Mix View, with Dark and Compact as the defaults and Open as the other density. Existing `os` theme values resolve to Dark. An open Mix View applies the theme and its density roles when any held edit releases. A frozen spectrogram keeps its columns and source state when recoloured. The default swatch reflects the theme when the palette menu next opens.
