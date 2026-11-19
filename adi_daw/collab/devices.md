@@ -56,6 +56,30 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E37 (d) and (f): the looped release; an idempotent OneShot prepare — DF-E37 done
+
+**Both on #656's branch, `devices/oneshot-live-params` (`c8363f0b`, `14181dfb`).**
+
+- **(d) Failing first:** a 2 s 100 Hz sample, Loop Length 5 % (100 ms), Release 1000 ms, note-off
+  2.5 s in: 200–300 ms after note-off, rms **0** (stopped at the loop's end). **Fix:** a Classic
+  voice with Loop on loops through its release (crossfade included) and ends at zero. Now rms
+  0.2123 (expected 0.2121), exact zero after the release, no step above 1.2× the tone's slope;
+  Loop off still ends at End; a Sampler zone sounds through a release longer than its loop.
+  Live's manual covers Sampler; Simpler is reading 3.
+- **(f) Confirmed** (the review's "to confirm"): a same-format `prepare` cut the note. **Fix:**
+  early return at an unchanged rate and block size (ADR-0090 d5); `release()` makes the next
+  prepare fresh; the Pd external's DSP restart calls `resetVoices()`; the Sampler releases each
+  layer before its own fresh prepare (a plant without that fails). OneShot.md updated.
+- OneShot 324, Sampler 39; CTest **245/245**. Plants: held-only loop → OneShot and Sampler fail;
+  no layer release → Sampler fails.
+
+**DF-E37 is done:** (a) on #659, (b) on #660, (c) on `devices/builtin-real-values` (lands first),
+(d) (e) (f) on #656. #656's head is now `14181dfb`.
+
+**Next (ADR-0248 d8 (2)):** OneShot and the Sampler as loadable instruments, on win's loan of
+`builtin_catalog.cpp` and `makeBuiltinDevice`'s instrument dispatch; the clones seat adds
+ADI-Shaper's entry to the same file, so the count lines are agreed in both logs.
+
 ## 2026-11-19 — DF-E37 (e): the Sampler's zone fades are a gain, not a scaled velocity
 
 **On #656's branch, `devices/oneshot-live-params` (`892830ac`).**
