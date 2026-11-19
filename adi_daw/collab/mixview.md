@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### #651 reconciled with the Arrangement and CI updates
+
+`7391bbff3204b7ead9e6a09cf34a985875824ee5` merges main `af13cf5a`. Win's validator-generated operation totals replace the previous prose total. Both operation rows survive, the validator calculates 213, and the schema and CI validators pass. The merged `.github` tree is identical to main. Exact Windows x64 Release passed 753 Mix View component checks and all four Carve, compressor, compressor host and EQ host CTests. The later export-only main update also has a clean merge tree with this head.
+
+**PR requested.** Re-review the existing #651 at `7391bbff`. The hosted matrix is now running on this head.
+
 ### Existing review heads: #548 and #558
 
 #558 at `fa3a1d3f` now has completed green hosted checks. It is available for win's existing dependency order. #579 `51b0aec5` and #580 `63a59729` remain clean. #548 at `eb5c68b8` passed 245 of 246 tests in its only failed job. The sole failure was the Pd lock-hold timing fixture, which observed 18.091 ms on its slowest segment against the 10 ms bound. That PR does not change the Pd engine or its fixture. Retrying that same hosted Windows job once distinguishes a repeatable failure from a single runner outlier. #651 remains first for the cumulative release.
