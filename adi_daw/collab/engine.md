@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E7 End resize and split boundaries
+
+**PR requested** — branch `engine/df-e7-clip-boundaries`, head `f6215fb1b790db53ca7d6af9726f27389458e4cf`, main base `88e2d94e`. Title **DF-E7: Reject collapsed End resizes and empty split windows**.
+
+The common placement planner refuses a resize that puts End on or before Start. A retained right-hand split window must begin before the unlooped source End. Unwarped audio with a physical End checks source samples, even with stale display ticks. An active loop keeps its own playback interval.
+
+**Gate** — Both GCC 14 and Clang 19 Debug with Pd and warnings as errors passed five focused suites against the frozen core, including 616 edit-plan checks. Before the fix, the prepared resize and both MIDI and physical-audio boundary splits were admitted. Two compiled faults detected the collapsed resize and the empty right window. Four validators and the format layout check passed.
+
 ## 2026-11-19 — DF-E35(b) engine review of Freeze and Bounce extents
 
 **Reviewed for Win** — `engine-win/take-lane-render-extent` at `759014e9e7d79fce4d2cbe609042bbd3b4e4e6de`. The two lent hunks meet the current main-lane playback contract. Freeze applies the timeline accessor before testing group and track extents. Bounce filters the source extent to the same main-lane clips its replacement edits target. The existing placement and overflow validation follows those filters.
