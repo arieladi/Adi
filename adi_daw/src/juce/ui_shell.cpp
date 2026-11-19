@@ -712,7 +712,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
             info.setTicked(notes.time.grid.fixed);
         }
     }
-    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if (active_ && (active_->mixViewPanel.stack.hasToolbarFocus() || active_->mixViewPanel.hasAnalyzerControlFocus() ||
+                    active_->mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         info.setActive(false);
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
@@ -3117,13 +3118,8 @@ bool AdiRootComponent::focusView(int id) {
         return true;
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
-        if (state_.mixView && !state_.mixViewDetached) {
-            if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack))) return false;
-            mixViewPanel.frame(reader());
-            mixViewPanel.stack.search.grabKeyboardFocus();
-            mixViewPanel.stack.search.selectAll();
-            return true;
-        }
+        if (state_.mixView && !state_.mixViewDetached)
+            return mixViewPanel.focusChannelSearch();
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
         if (id == AppCommands::FocusBrowser) {
@@ -3149,7 +3145,8 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus()) && deviceOrTrackEditCommand(id))
+    if ((mixViewPanel.stack.hasToolbarFocus() || mixViewPanel.hasAnalyzerControlFocus() ||
+         mixViewPanel.hasChannelControlFocus()) && deviceOrTrackEditCommand(id))
         return false;
     if (id == AppCommands::Undo || id == AppCommands::Redo) {
         mixViewPanel.stack.cancelInteractions();

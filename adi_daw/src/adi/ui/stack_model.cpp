@@ -988,9 +988,13 @@ void StackModel::recountScope() {
         scopeAdd(r, +1);
 }
 
+bool StackModel::inChannelSubset(TrackId id) const noexcept {
+    return !channelSubset_ || std::binary_search(channelSubset_->begin(), channelSubset_->end(), id);
+}
+
 bool StackModel::memberPlain(std::uint32_t rec) const noexcept {
     const Rec &r = rows_[rec];
-    if (!inScope(r))
+    if (!inScope(r) || !inChannelSubset(r.id))
         return false;
     if (view_.channelScope == ChannelScope::WithTools && !r.hasMixFunction)
         return false;
@@ -1035,7 +1039,7 @@ bool StackModel::computeUnderFold(std::uint32_t rec, ChannelScope scope) const n
     for (std::size_t steps = 0; up != kNoRec && steps <= rows_.size(); ++steps) {
         // A group omitted by With tools has no fold affordance in this list.
         // Keep its saved fold for All channels without hiding eligible children.
-        if ((scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
+        if (inChannelSubset(rows_[up].id) && (scope == ChannelScope::AllChannels || rows_[up].hasMixFunction) &&
             std::binary_search(view_.folded.begin(), view_.folded.end(), rows_[up].id))
             return true;
         up = rows_[up].parentRec;
@@ -3175,6 +3179,28 @@ void StackModel::membershipChanged(TimeMs now, bool toTop) {
     bump();
 }
 
+Effects StackModel::setChannelSubset(std::optional<std::vector<TrackId>> ids, TimeMs now) {
+    Effects fx;
+    const auto before = beginEvent();
+    now = advanceTo(now);
+    if (ids) {
+        std::sort(ids->begin(), ids->end());
+        ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
+    }
+    if (ids != channelSubset_) {
+        const auto cursor = jumpTarget().track;
+        channelSubset_ = std::move(ids);
+        ++stats_.fullPasses;
+        for (std::uint32_t i = 0; i < rows_.size(); ++i)
+            rows_[i].underFold = computeUnderFold(i);
+        membershipChanged(now, false);
+        if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
+            rebuildMatches(cursor);
+    }
+    endEvent(fx, before);
+    return fx;
+}
+
 Effects StackModel::setFilterPinned(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
@@ -4241,7 +4267,7 @@ bool StackModel::hiddenOnlyByToolScope(TrackId id) const noexcept {
     if (view_.channelScope != ChannelScope::WithTools || shownIndex(id))
         return false;
     const auto rec = recOf(id);
-    if (rec == kNoRec || !inScope(rows_[rec]) || rows_[rec].hasMixFunction)
+    if (rec == kNoRec || !inScope(rows_[rec]) || !inChannelSubset(id) || rows_[rec].hasMixFunction)
         return false;
     const Rec &r = rows_[rec];
     const bool searching = view_.searchMode == SearchMode::Filter && !queryFold_.empty();
