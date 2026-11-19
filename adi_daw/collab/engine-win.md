@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Persisted hosted Session reopen
+
+**PR requested** — `engine-win/session-catalogue-reopen` at `ecdf7cfd994a80de023de5229e62368093c3451b`, stacked on `engine-win/scanner-case-sequence` at `2ebd09ee`. Title **Verify saved VST3 and CLAP Sessions reopen without scanning**.
+
+DEV-25. Both real plug-in formats were captured through Session-bound ParamOps and the journal, then restored into fresh owners and a fresh Store after removing their private scanner helper. State bytes matched and the first PCM after three seeks was exact. A VST3 process counter independently established that its passthrough blocks reached the actual processor. Three strict x64 MSVC suites passed. This is a headless project reopen in one process. Native platform CI and full app startup discovery need separate verification.
+
 ## 2026-11-19 · One-step verified media relink
 
 **PR requested** — `engine-win/relink-contract` at `a8c9ce4a2db228c5b81b85e4b8064c94dfed1c86`, based on `a0a31168`. Title **Relink verified media batches in one undoable transaction**.
