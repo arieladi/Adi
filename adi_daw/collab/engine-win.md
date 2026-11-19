@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-13 read-only project integrity check
+
+**PR requested** `engine-win/project-quick-check` at `288d6a9e1ff0f9f4a0f4a5a289d50de3aa44da6c`. The recovery flow can ask SQLite for one page-level diagnostic over a separate read-only connection using the same finding format as the full checker. The path accepts Unicode and refuses empty or embedded-NUL input. SQLite's WAL read semantics still apply.
+
+A fresh strict native Windows x64 MSVC Debug build passed 612 checks across five suites. The regression covers a live WAL reader, a closed project, an actually damaged ops page, unchanged source bytes and an absent input. Scheduling after an unclean launch needs PD-05's crash evidence. The salvage command has a separate gate. [SQLite quick check](https://sqlite.org/pragma.html#pragma_quick_check)
+
 ## 2026-11-19 — Current scanner timing attempt, partial
 
 - **MEASURED.** The exact Refresh player and helper at `8adc7a92` built under strict native MSVC x64 Debug. The helper self-test and the owned VST3 positive control passed. Four accepted invocations in one paired repeat returned the same 96 ordered classes. Both warm arms made zero observed CLAP initializations and zero VST3 factory calls.
