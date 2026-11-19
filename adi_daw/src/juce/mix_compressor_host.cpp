@@ -142,13 +142,10 @@ class CompressorDevice final : public DeviceInstance {
         const ReactivationGate::Pass pass(gate_);
         if (io.frames <= 0 || io.blockOffset < 0)
             return;
-        if (!pass) {
-            passThrough(io);
+        // Only a live stream has a maximum. Out-of-stream calls still write the supplied span.
+        if (pass && prepared_ && (io.blockOffset > maximum_ || io.frames > maximum_ - io.blockOffset))
             return;
-        }
-        if (io.blockOffset > maximum_ || io.frames > maximum_ - io.blockOffset)
-            return;
-        if (!prepared_ || io.channels != channels_ || (io.events.count > 0 && !io.events.first)) {
+        if (!pass || !prepared_ || io.channels != channels_ || (io.events.count > 0 && !io.events.first)) {
             passThrough(io);
             return;
         }
@@ -316,7 +313,11 @@ class CompressorDevice final : public DeviceInstance {
         // latency-changing controls and beginBlock never resets its envelope;
         // each contiguous segment is a checked logical block of the same stream.
         const auto block = core_.beginBlock(io.frames);
-        static_cast<void>(core_.process(block, 0, io.frames, main.data(), nullptr, 0, s));
+        if (!block.valid() || core_.process(block, 0, io.frames, main.data(), nullptr, 0, s) != c::Status::Ok) {
+            // A refusal leaves the copied input in out. Retire the incomplete
+            // block so the next valid segment can start without a re-prepare.
+            core_.reset();
+        }
     }
     int channels_;
     double rate_ = 0;
