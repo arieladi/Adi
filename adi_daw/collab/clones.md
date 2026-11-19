@@ -4,6 +4,18 @@
 
 Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visibility checks in `ui_devices.cpp` for the ADI-Shaper UID. Its existing click opens the editor. The built-in and native wrappers need to forward the shaper scope accessor in `builtin_host.cpp` and `native_devices.cpp`. The latter also needs one Time transport call forwarding the exact sample and transport revision. The device owns the scope, panel build rules and tests. The existing device-state capture can group a point edit and its parameter changes. The seven-stage candidate stays in the evening landing window.
 
+## 19 November 2026 — ADI-Shaper panel and local preset recall
+
+**PR requested** · `clones/shaper-panel` · **Add the ADI-Shaper curve editor and live waveform** · `afe32533`
+
+This review is stacked on Time. The panel draws its own stage tabs, band display, contour points and tools, stage and master wet controls, output meters and the input and output waveforms. Selected bands expose their crossover and clock controls. The device has 512 shared point slots and preserves all 463 existing parameter identities. The full-range Volume and Time comparisons use matching 1920 × 1080 renders of both editors on the same kick and bass. The Time picture uses the registered processor’s actual stereo output.
+
+Dragging changes the audio before release. One project undo restores the whole edit, including a multi-point curve or a preset. Tests open a real project, recall sparse states, undo and redo, cancel a preview, reopen the project and refuse an editor whose device was removed. The combined Release build passed all ten device and Pd suites with warnings as errors. The device panel can load local programs from its preset directory. Verification opened 873 local state files on the integrated processor, read back 231,922 explicit settings, verified omitted settings returned to defaults and rendered finite stereo. The private catalog also identifies programs whose active effects need additional stages.
+
+Opening the Volume editor enabled real waveform capture and a 2,048-frame analysis window. Across three alternating passes at 48 kHz the median callbacks closed/open were 1.5/4.5 microseconds at 256 frames and 9.5/34.6 at 2,048 frames. Average callback budget use open was 0.137% and 0.080%, respectively. Software painting at the comparison size took about 15.15 and 13.76 ms per displayed frame. A dependent piece measures the effect of caching the drawing.
+
+The shared opener and instance-feed hunks are with Win for review. The existing click, registered device, actual project state and editor render were exercised in private. The same-position Time transport regression also fails before the proposed forwarding change and passes with it. The core test distinguishes a new transport revision at exactly the same sample and quarter-note position.
+
 ## 19 November 2026 — Time stage ready for Win
 
 **PR requested** · `clones/shaper-time` · **Add sample-history Time processing to ADI-Shaper** · `72cd8281`
