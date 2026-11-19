@@ -10901,17 +10901,17 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     return at != demands.end() && !at->second.empty();
                 };
                 check(stackSurface.model().windowView().channelScope == stack::ChannelScope::WithTools &&
-                          !stackSurface.model().shownIndex(2) && has(&observed.devices) && !has(&stackSurface),
-                      "With tools omits generic plug-in rows and requests no Stack parameters");
+                          !stackSurface.model().shownIndex(2) && !has(&observed.devices) && !has(&stackSurface),
+                      "With tools omits generic rows and the hidden Device View has no demand");
                 stackSurface.channelScope.setSelectedId(2, juce::sendNotificationSync);
                 observed.frame();stackSurface.frameAt(observed.reader(), time + 200);
                 check(stackSurface.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
-                          stackSurface.model().shownIndex(2) && has(&observed.devices) && has(&stackSurface),
-                      "device strip and realised Stack controls own independent parameter demand");
+                          stackSurface.model().shownIndex(2) && !has(&observed.devices) && has(&stackSurface),
+                      "only visible Stack controls demand parameters in the full Mix View");
                 window.minimisationStateChanged(true);observed.frame();
-                check(demands.empty(), "minimizing the main window releases both attached parameter consumers");
+                check(demands.empty(), "minimizing the main window releases the docked Mix View demand");
                 window.minimisationStateChanged(false);observed.frame();stackSurface.frameAt(observed.reader(), time + 220);
-                check(has(&observed.devices) && has(&stackSurface), "restoring the main window refreshes both visible consumers");
+                check(!has(&observed.devices) && has(&stackSurface), "restoring Mix View refreshes Stack and leaves Device View hidden");
                 FloatingHost host(observed, commands, document->views(), document->view(),
                     [](std::int64_t) { return true; }, false);
                 check(detachMixView(host, observed, true), "parameter demand detaches Stack to its own software window");
@@ -10938,11 +10938,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                     observed.frame();
                     check(demands.empty(), "docking into minimized main does not revive hidden parameter work");
                     window.minimisationStateChanged(false);observed.frame();
-                    check(has(&observed.devices) && has(&stackSurface), "main restore after redocking refreshes current controls");
+                    check(!has(&observed.devices) && has(&stackSurface), "restoring a redocked Mix View refreshes Stack only");
                     floatingPeer.removeFromDesktop();
                 } else check(false, "detached parameter window exists");
                 check(observed.setMixView(false, false), "close the parameter-demand Stack");
-                check(!has(&stackSurface) && has(&observed.devices), "closing Stack keeps the visible device strip's demand");
+                observed.frame();
+                check(!has(&stackSurface) && has(&observed.devices), "returning to Arrangement resumes its visible Device View");
                 mainPeer.removeChildComponent(&window);mainPeer.removeFromDesktop();
             }
             check(demands.empty(), "surface destruction releases all parameter demand owners");
