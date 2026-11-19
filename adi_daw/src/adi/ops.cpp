@@ -587,12 +587,10 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         // SPEC §8.2: "Undoing and then doing something new does not destroy the
         // branch you left; it forks."
         //
-        // A fork is detectable here and nowhere else: if the head already has a
-        // non-ephemeral child, we are committing from a position that is not the
-        // tip, which means an undo happened and this work diverges from what
-        // followed. Save the abandoned line as a branch BEFORE writing, or it
-        // becomes unreachable the moment the new op takes its place in redo.
-        {
+        // An edit at a head that already has an undoable child diverts redo.
+        // Preserve the abandoned line before writing. Performance-only batches
+        // add audit rows outside the tree, so the redo line stays reachable.
+        if (std::any_of(descs.begin(), descs.end(), [](const OpDescriptor* d) { return !d->ephemeral; })) {
             SQLite::Statement kids(db,
                 "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
                 "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
@@ -614,10 +612,12 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
                 }
                 SQLite::Statement mk(db,
                     "INSERT INTO op_branches(name, head_seq, created_utc, is_current, "
-                    "created_by) VALUES (?,?,?,0,'system')");
-                mk.bind(1, "forked at " + std::to_string(head ? *head : 0));
+                    "created_by) SELECT ?,?,?,0,'system' "
+                    "WHERE NOT EXISTS (SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?)");
+                mk.bind(1, "forked at " + std::to_string(head.value_or(0)));
                 mk.bind(2, tip);
                 mk.bind(3, ts);
+                mk.bind(4, tip);
                 mk.exec();
             }
         }

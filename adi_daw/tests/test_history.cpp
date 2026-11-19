@@ -465,7 +465,7 @@ void testUndoDoesNotGrowTheLog() {
 }
 
 void testEphemeralSkipped() {
-    section("OPS.md 10: ephemeral ops are outside the tree");
+    section("OPS.md 10: ephemeral ops stay outside the tree while undone");
     Scratch sc("ephemeral");
     auto s = project(sc / "p.adi");
     if (!s) return;
@@ -473,22 +473,57 @@ void testEphemeralSkipped() {
     History h(*s);
 
     check(j.commit(mkTrack(1, "Real")).ok, "a real edit");
-    const auto headAfterEdit = h.head();
+    check(j.commit(mkTrack(2, "Original")).ok, "a second edit to leave in the redo tail");
+    const auto originalTip = h.head();
+    check(h.undo().ok, "undo the second edit");
+    const auto fork = h.head();
+    const auto before = h.branches().size();
 
-    // No ephemeral op is registered yet, so simulate one as the journal writes
-    // it: in the log, tagged, with no parent, and not moving the head.
-    s->db().exec(
-        "INSERT INTO ops(txn_id, parent_seq, ts_utc, actor, op_type, label, tags) "
-        "VALUES (99, NULL, 0, 'user', 'transport.play', 'Play', 'ephemeral')");
-
-    check(h.head() == headAfterEdit, "an ephemeral op does not move the head");
+    OpRequest play, stop;
+    play.opType = "transport.play";
+    stop.opType = "transport.stop";
+    play.payload = Payload::object();
+    stop.payload = Payload::object();
+    for (const auto& op : {play, stop, play, stop})
+        check(j.commit(op).ok, "Play or Stop commits to the audit log while undone");
+    const std::array transport{play, stop};
+    check(j.commit(transport).ok, "a whole batch of Play and Stop commits");
+    check(h.branches().size() == before, "Play and Stop while undone create no history branches");
+    check(h.head() == fork, "an ephemeral batch does not move the head");
     const auto step = h.nextUndo();
     check(step && step->label == "Create Real",
-          "Ctrl-Z still lands on the last real EDIT, not on Play");
-    check(j.count() == 2, "but it is in the log -- the audit trail keeps it");
+          "Undo still lands on the last real edit");
+    const auto redo = h.nextRedo();
+    check(redo && redo->label == "Create Original", "the existing redo tail survives performance");
+    check(j.count() == 8, "the audit trail keeps two edits and six performance ops");
     const auto audited = s->db()
-        .execAndGet("SELECT COUNT(*) FROM ops WHERE tags='ephemeral'").getInt();
-    check(audited == 1, "and is queryable as ephemeral");
+        .execAndGet("SELECT COUNT(*) FROM ops WHERE tags='ephemeral' AND parent_seq IS NULL AND inverse IS NULL")
+        .getInt();
+    check(audited == 6, "ephemeral audit rows have no parent or inverse");
+    if (!originalTip) return;
+
+    const auto beforeMixed = h.branches().size();
+    const std::array mixed{play, mkTrack(3, "Mixed")};
+    check(j.commit(mixed).ok && trackCount(*s) == 2, "mixed Play and edit applies a real edit");
+    check(h.branches().size() == beforeMixed + 1, "a mixed batch preserves the branch it diverges from");
+    SQLite::Statement original(s->db(), "SELECT 1 FROM op_branches WHERE is_current=0 AND head_seq=?");
+    original.bind(1, *originalTip);
+    check(original.executeStep(), "the preserved branch points to the original redo tip");
+    original.reset();
+
+    const auto mixedTip = h.head();
+    check(h.undo().ok && h.head() == fork && trackName(*s, 3) == "<gone>",
+          "Undo of the mixed batch reverts its durable edit");
+    if (!mixedTip) return;
+    SQLite::Statement pin(s->db(),
+        "INSERT INTO op_branches(name,head_seq,created_utc,is_current,created_by) VALUES('Kept mix',?,0,0,'user')");
+    pin.bind(1, *mixedTip);
+    pin.exec();
+    const auto beforePinned = h.branches().size();
+    check(j.commit(mkTrack(4, "Alternate")).ok, "a subsequent edit diverges from the pinned tip");
+    check(h.branches().size() == beforePinned, "a fork preserves an existing named tip without a duplicate branch");
+    check(h.undo().ok && h.redo().ok && trackName(*s, 4) == "Alternate",
+          "redo follows the latest durable line");
 }
 
 void testSelBeforeIsCarried() {
