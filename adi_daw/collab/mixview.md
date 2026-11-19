@@ -8,6 +8,21 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — Part B step 7, Focus workspace
+
+**PR requested.** `mixview/focus-review-20261119` at `2102d4e9`, stacked after `f79a0dc4`. Two or more solos open Focus from Arrangement. Unsolo removes the member and promotes the first remaining solo if Main left. Focus keeps stable member identities and uses their live chains. Hear A, B, C and All use track solos and leaving keeps them. Together and Scope use shared, sample-stamped views, with the live stereo sum restricted to valid common windows.
+
+When a loop repeats the same audio timestamp, individual traces continue. The combined scope and mask wait for an observed stop and fresh windows after restart. This is a conservative safeguard until the taps carry a shared loop iteration. Closing or hiding the hosting window releases only Focus's leases. Native Unmask apply and Match remain separate work. The Removed and Align actions wait on the two recorded director choices.
+
+Release gates: 834 Mix View software-peer checks and six targeted suites (masking, shared analysis, shared spectrum, Stack model, window state and Mix View functions). The tests cover entry and unsolo policy, detach and reparent release, identical-time summing, cancellation, seek and loop boundaries. See the brief for live layout and comparison.
+
+Review `ADI-MixView-Focus-Workspace-20261119-2102d4e967-win64-Release`.
+- App SHA-256 `2ae7bdc9b6e1b61796accaa1b61184d7428e7f279eff35543a5e796c5151bf49`
+- ZIP SHA-256 `ea01a929a2e32aadffdfd08c7272f695f7fe0c09e635520cd9ee2825c212cac8`
+- Scanner SHA-256 `96ea249cb7dfe3038fc099986e2e808ec3171386223976ab01f469f03a6478e6`
+- Brief `ADI-Q-MixView-Focus-Workspace-20261119-2102d4e9-CLAUDE-RETEST.txt`
+
+
 ## 19 November 2026 — Part B step 6, Analysers page and shared meter data
 
 **PR requested.** `mixview/analysers-review-20261119` at `f79a0dc4`, stacked after `3603a1c5`. All and individual Spectrum, Spectrogram, Scope, Phase and Loudness views use Main, the selected channel or a fixed stable ID. The Analysis table subscribes to metering only and reads clipping counts from the shared meter calculation. Source choices refresh on actual project view changes, including rename and removal at the initial generation. Hiding the table or its window releases its meter leases. The Mix View Info preview reads the shared spectrum and spectrogram presentation settings through its own display lease.
