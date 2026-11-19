@@ -1063,13 +1063,16 @@ AppliedDeliveryStatus ParamOps::Runtime::retryApplied(std::int64_t nowMs) {
                 if(row==replay.session->model().devices.end())return Target::Retired;
                 const auto& reference=facts->device->at("plugin_ref_id");
                 const auto expected=reference.is_null()?std::optional<std::int64_t>{}:
-                    std::optional<std::int64_t>{reference.get<std::int64_t>()};
+                    std::optional<std::int64_t>{reference.template get<std::int64_t>()};
                 if(row->pluginRefId!=expected)return Target::Invalid;
                 const auto* entry=replay.session->entryFor(id);
                 if(!entry || entry->resolvedPluginRef!=expected)return Target::Invalid;
                 if(facts->pluginRef && expected) {
-                    const auto& expectedFormat=facts->pluginRef->at("format").get_ref<const std::string&>();
-                    const auto& expectedUid=facts->pluginRef->at("uid").get_ref<const std::string&>();
+                    // `template` here and on `reference` above: MSVC 14.52 (the CI runner's image since
+                    // 19 November) reads these as dependent template names and warns C4864 without the
+                    // keyword, which is valid either way.
+                    const auto& expectedFormat=facts->pluginRef->at("format").template get_ref<const std::string&>();
+                    const auto& expectedUid=facts->pluginRef->at("uid").template get_ref<const std::string&>();
                     const auto ref=std::find_if(replay.session->model().pluginRefs.begin(),replay.session->model().pluginRefs.end(),
                         [&](const auto& item){return item.id==*expected;});
                     if(ref==replay.session->model().pluginRefs.end() || ref->format!=expectedFormat ||
