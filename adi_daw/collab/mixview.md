@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Graph proof for the neutral EQ suspension slice
+
+The staged DF-M34 candidate limits its zero tail to an EQ that has only processed a neutral Minimum-phase plan. A stopped format handoff can retain that history proof. A changed owner revision wakes the EQ before its first new callback. An EQ previously used nonneutrally stays running. Offline mode also keeps it running.
+
+Exact Windows Release passed 909 native EQ host, 72 native serial, 136 EQ pipeline and 124 backend checks. The real Graph skipped the neutral EQ during silence, woke it on the gain edit with silence still present, and applied the gain on the first resumed block. Float and double sample comparisons, the 512-frame to granted-format handoff, and zero callback allocations passed. This is staged for the DF-M34 order after the current landing sequence. Limiter and stateful EQ tails remain separate work.
+
 ### 2026-11-19 — Verify the default EQ after omitted silence
 
 The exact cumulative Windows Release EQ host suite passed 887 checks. Two real backends used 17+47-sample segments at 48 kHz. One omitted 64 silent blocks after a nonzero prelude. Both precisions resumed bit for bit at zero latency and took the same first transition on a subsequent owner gain edit. The callback allocation gate stayed green.
