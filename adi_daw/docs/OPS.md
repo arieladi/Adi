@@ -448,12 +448,37 @@ the five existing relational scale tables. No schema/binary-layout change.
 | `track.setTimeBase` | e | S | sym | P0 |
 | `track.setAutomationMode` | e | N | sym | P2 |
 | `track.setLocked` | e | N | sym | P1 |
-| `lane.create` | e | S | pair `lane.delete` | P1 |
-| `lane.delete` | e | S | cap | P1 |
-| `lane.reorder` | e | S | sym | P1 |
-| `lane.rename` | e | N | sym | P1 |
-| `lane.setMute` | e | S | sym | P1 |
+| `lane.create` | e | S | pair `lane.restore` | P1 |
+| `lane.delete` | e | S | pair `lane.restore` | P1 |
+| `lane.reorder` | e | S | pair `lane.restore` | P1 |
+| `lane.rename` | e | N | pair `lane.restore` | P1 |
+| `lane.setMute` | e | S | pair `lane.restore` | P1 |
+| `lane.restore` | e | S | cap | P1 |
 | `lane.setCompTarget` | e | S | sym | P1 |
+
+CT-01 journal slice: `createTakeLane(store,id,track,name="Lane")` prepares
+`lane.create {id,track,row}` with a complete typed native row. Creation inserts
+at the top (`ord=0`) and renumbers this track's existing take lanes in their
+prior `(ord,id)` order. The helper resolves SQL defaults once into the recorded
+row; replay does not reevaluate them. Identities are explicit, positive and must
+be free. Supported owners are audio, MIDI and instrument tracks; the created
+kind is `take`, with mute and legacy comp-target flags initially zero.
+
+`lane.delete {id}` explicitly deletes its clips and every captured child stream
+before deleting the lane, then compacts the remaining take-lane order. It never
+uses `ON DELETE SET NULL` to promote material to main. Source media rows and
+paths remain pooled. Inverse `lane.restore {changes}` preserves complete typed
+rows, extension columns/BLOBs, aliases and the exact previous order; unknown
+cascade/SET NULL effects refuse the whole journal transaction.
+
+`lane.reorder {track,lanes:[ids...]}` names every take lane of that track exactly
+once, in the desired order. `lane.rename {id,name}` and `lane.setMute {id,on}`
+change stored metadata; mute does not implement audition. These operations also
+use captured `lane.restore` inverses. Missing/foreign/duplicate IDs, unsupported
+lane kinds and unchanged requests refuse without a history entry. The legacy
+`lane.setCompTarget` row remains designed, **not registered**: its meaning needs
+resolution under the main-lane-copies model. See `ENGINE-TAKE-LANE-OPS.md` for the
+implemented boundary and remaining CT-01 work.
 
 N31 per-track policy (schema 1.14): track.setRecordQuantize {id,on,grid?},
 track.setPlayQuantize {id,on,grid?,forgivenessMs?}, and
@@ -505,11 +530,17 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setAlias` | e | S | sym | P2 |
 | `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
-| `clip.setLane` | e | S | sym | P1 |
+| `clip.setLane` | e | S | pair `lane.restore` | P1 |
 | `clip.setStartMarker` | e | S | cap | P1 |
 | `clip.setEndMarker` | e | S | cap | P1 |
 | `clip.setTimeSignature` | e | S | cap | P1 |
 | `clip.setScale` | e | S | cap | P1 |
+
+`clip.setLane {id,lane?}` preserves the clip identity and all child rows. A
+positive lane must exist, be a take lane and belong to the clip's track; omission
+or null selects main (`lane_id IS NULL`). Cross-track attachment refuses. A
+`clip.move` across tracks also refuses while a take lane is attached; compose
+explicit detach, move and attach operations in one journal batch when intended.
 
 N17 compatibility: when the optional clip_playback_details table is present,
 Start clears its content offset and retained fade domains, End clears its
@@ -1960,6 +1991,22 @@ released when metadata capture ends.
   file's BLAKE3. Captures the old three location fields as a symmetric inverse.
   Moving/renaming content does not allocate a new media id.
 
+`media::relinkMediaBatch` accepts an owner-side selection of media ids and
+candidate paths. It verifies every candidate's BLAKE3 before submitting the
+ordinary `media.relink` requests in one journal transaction. A mismatch,
+unreadable file, unknown or embedded media id, duplicate id, empty selection,
+read-only project or journal failure changes no selected media location. One
+Undo restores every old location; Redo replays the captured locations without
+filesystem reads. The existing single-file `relinkMedia` uses the same path.
+Clip attachments, content identities and source metadata remain unchanged.
+
+This is the atomic publication part of TM-MD-03 for caller-selected exact
+matches. Automatic discovery/ranking, `resolveSession`, `searchMissing`,
+playback hash verification and its metadata memo, explicit Offline state and
+different-content Replace remain separate work. Verification does not lock
+external files against changes after capture; it is not a playback integrity
+guarantee.
+
 `adi_tool extract-media` is legacy maintenance, not the retired embedding op.
 `collect-export` snapshots and relocates a copy, never the original. These
 commands do not invent schema migrations or rewrite historical op payloads.
@@ -2100,9 +2147,13 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**212 ops** — 71 P0, 85 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
-has a corresponding op, or is explicitly a runtime concern with no persisted
-state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
+**How many ops:** `tools/validate_ops.py` counts the tables above and prints the
+total and the count per priority (check 7). No number is written here: every
+pull request that added an op rewrote it to the same new value, so two such pull
+requests merged cleanly and left the count wrong. Every P0 and P1 feature in
+FEATURES.md has a corresponding op, or is explicitly a runtime concern with no
+persisted state. Counted and consistency-checked by `tools/validate_ops.py`, not
+asserted.
 
 ---
 

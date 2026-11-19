@@ -328,6 +328,10 @@ std::error_code renameReplacing(const fs::path& source,const fs::path& target) n
     std::error_code error;fs::rename(source,target,error);return error;
 #endif
 }
+std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+    return identityAt(path,error);
+}
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
     fs::path path;
@@ -464,6 +468,33 @@ std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) 
     std::error_code error;fs::rename(source,target,error);return error;
 #endif
 }
+std::error_code removePublishedFile(const fs::path& path,const FileIdentity& expected) noexcept {
+    if(audio::onAudioThread)return std::make_error_code(std::errc::operation_not_permitted);
+#if defined(_WIN32)
+    NativeOwner file;
+    file.value=CreateFileW(path.c_str(),DELETE|FILE_READ_ATTRIBUTES,0,nullptr,OPEN_EXISTING,
+                           FILE_FLAG_OPEN_REPARSE_POINT,nullptr);
+    if(file.value==invalidFile) {
+        const auto error=GetLastError();
+        if(error==ERROR_FILE_NOT_FOUND || error==ERROR_PATH_NOT_FOUND)return {};
+        return {static_cast<int>(error),std::system_category()};
+    }
+    BY_HANDLE_FILE_INFORMATION info{};
+    if(!GetFileInformationByHandle(file.value,&info))return nativeError();
+    if((info.dwFileAttributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY))!=0)
+        return std::make_error_code(std::errc::operation_not_permitted);
+    const FileIdentity current{static_cast<std::uint64_t>(info.dwVolumeSerialNumber),
+        (static_cast<std::uint64_t>(info.nFileIndexHigh)<<32)|info.nFileIndexLow};
+    if(current!=expected)return std::make_error_code(std::errc::state_not_recoverable);
+    FILE_DISPOSITION_INFO disposition{};disposition.DeleteFile=TRUE;
+    if(!SetFileInformationByHandle(file.value,FileDispositionInfo,&disposition,sizeof(disposition)))return nativeError();
+    if(!CloseHandle(file.value))return nativeError();
+    file.value=invalidFile;return {};
+#else
+    (void)path;(void)expected;
+    return std::make_error_code(std::errc::operation_not_supported);
+#endif
+}
 PublishResult publishFile(const fs::path& source, const fs::path& target, PublishHooks hooks,PublishPolicy policy) noexcept {
     if(audio::onAudioThread)return {};
     bool copying = false;
@@ -475,7 +506,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         const auto synced=syncStaged(source);
         if(synced)return {PublishStatus::failed,false,"sync staging file: "+synced.message()};
         const auto error = hooks.rename ? hooks.rename(source, target) : renameExclusive(source, target);
-        if (!error) return publishedResult(target,*identity);
+        if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
         copying = true;

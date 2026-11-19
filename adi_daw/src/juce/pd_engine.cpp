@@ -43,6 +43,10 @@ constexpr int kMaxInstances = 256;
 struct InstanceSlot {
     std::atomic<void*> instance{nullptr};
     std::atomic<PdReceiverTable*> table{nullptr};
+    /// Who prints for this instance (DEV-09). Read by the print hook on any
+    /// thread without a lock; set after the slot is registered, cleared before
+    /// it is forgotten.
+    std::atomic<LibPdEngine*> console{nullptr};
 };
 InstanceSlot g_slots[kMaxInstances];
 
@@ -64,12 +68,22 @@ void floatHook(const char* recv, float value) {
 }
 
 
-/// instance -> engine, for the print hook. A separate registry from the slots
-/// above, and deliberately so: the float hook runs on the audio thread and may
-/// not touch a mutex, while the print hook runs on the message thread and a
-/// mutex there costs nothing.
-std::mutex g_consoleMutex;
-std::vector<std::pair<void*, LibPdEngine*>> g_consoleOwners;
+/// instance -> engine for the print hook, in the same lock-free table as the
+/// float hook (DEV-09). It was a mutex-guarded vector, taken on whatever thread
+/// Pd printed on -- the audio thread included, for a [print] in a running patch.
+void setConsoleOwner(void* instance, LibPdEngine* engine) noexcept {
+    for (int i = 0; i < kMaxInstances; ++i)
+        if (g_slots[i].instance.load(std::memory_order_acquire) == instance) {
+            g_slots[i].console.store(engine, std::memory_order_release);
+            return;
+        }
+}
+LibPdEngine* consoleOwner(void* instance) noexcept {
+    for (int i = 0; i < kMaxInstances; ++i)
+        if (g_slots[i].instance.load(std::memory_order_acquire) == instance)
+            return g_slots[i].console.load(std::memory_order_acquire);
+    return nullptr;
+}
 
 }  // namespace
 
@@ -133,6 +147,7 @@ void PdRuntime::forgetInstance(void* instance) noexcept {
         // table pointer can then be cleared without racing a dispatch.
         g_slots[i].instance.store(nullptr, std::memory_order_release);
         g_slots[i].table.store(nullptr, std::memory_order_release);
+        g_slots[i].console.store(nullptr, std::memory_order_release);
         return;
     }
 }
@@ -150,7 +165,26 @@ LibPdEngine::LibPdEngine(std::string patchDir, std::string patchFile,
                          Execution execution, BlockMode blockMode)
     : dir_(std::move(patchDir)), file_(std::move(patchFile)),
       inCh_(inChannels > 0 ? inChannels : 1),
-      outCh_(outChannels > 0 ? outChannels : 1), execution_(execution), blockMode_(blockMode) {}
+      outCh_(outChannels > 0 ? outChannels : 1), execution_(execution), blockMode_(blockMode),
+      printSlots_(std::make_unique<PrintSlot[]>(kPrintSlots)) {
+    // Vyukov's bounded queue: slot i starts at sequence i.
+    for (std::size_t i = 0; i < kPrintSlots; ++i)
+        printSlots_[i].sequence.store(static_cast<std::uint64_t>(i), std::memory_order_relaxed);
+}
+
+LibPdEngine::InstanceLock::InstanceLock(LibPdEngine& engine) noexcept
+    : instance_(engine.instance_) {
+    if (instance_ == nullptr) return;
+    libpd_set_instance(static_cast<t_pdinstance*>(instance_));
+    sys_lock();
+}
+LibPdEngine::InstanceLock::~InstanceLock() {
+    if (instance_ == nullptr) return;
+    // pd_this is per thread: select again, in case this thread used another
+    // instance while the lock was held.
+    libpd_set_instance(static_cast<t_pdinstance*>(instance_));
+    sys_unlock();
+}
 
 LibPdEngine::~LibPdEngine() { close(); }
 
@@ -270,10 +304,7 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     // on each one rather than once for the process. The print hook is too, and
     // it is set here rather than in PdRuntime for the same reason.
     libpd_set_floathook(&floatHook);
-    {
-        const std::lock_guard<std::mutex> lock(g_consoleMutex);
-        g_consoleOwners.emplace_back(instance_, this);
-    }
+    setConsoleOwner(instance_, this);
     libpd_set_printhook(&LibPdEngine::printHookThunk);
 
     block_ = PdRuntime::blockSize();
@@ -355,16 +386,12 @@ void LibPdEngine::close() noexcept {
         patch_ = nullptr;
         dollarZero_ = 0;
     }
+    // The console owner goes with the slot, before the instance is freed: a
+    // hook that fired after the free would otherwise find this engine.
     PdRuntime::forgetInstance(instance_);
-    // The console owner goes before the instance is freed: a hook that fired
-    // after the free would look up a dangling pointer.
-    {
-        const std::lock_guard<std::mutex> lock(g_consoleMutex);
-        g_consoleOwners.erase(
-            std::remove_if(g_consoleOwners.begin(), g_consoleOwners.end(),
-                           [this](const auto& o) { return o.second == this; }),
-            g_consoleOwners.end());
-    }
+    sendTail_.store(sendHead_.load(std::memory_order_acquire), std::memory_order_release);
+    pendingMidiCount_ = 0;
+    transportPending_ = false;
     libpd_free_instance(static_cast<t_pdinstance*>(instance_));
     instance_ = nullptr;
 }
@@ -421,6 +448,10 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     midiRouter_.reset();
     midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
                         engine::MpeOut{});
+    // DEV-09: what is routed waits here for the next locked tick. Twice the
+    // scratch, because a segment shorter than a tick hands its events on.
+    pendingMidi_.assign(midiScratch_.size() * 2, engine::MpeOut{});
+    pendingMidiCount_ = 0;
 
     // Prime the output with one block of silence. This is what makes the delay
     // CONSTANT: every segment can then pop exactly as many frames as it pushed,
@@ -509,7 +540,13 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // tempo snap to 120 and the bar to 1 -- a patch synced to the host would
     // hear that as a jump. Nothing changing is the honest report of nothing
     // being known.
-    if (transportSet_) deliverTransport();
+    // DEV-09: on the Pd path the transport and the MIDI below are QUEUED and
+    // delivered inside the next locked tick (lockedTick), never into a running
+    // instance without its lock. Pd acts on both at its next tick either way.
+    if (transportSet_) {
+        if (native_ != nullptr) deliverTransport();
+        else transportPending_ = true;
+    }
 
     // --- MIDI in, before the audio it belongs to (ADR-0194) ------------------
     //
@@ -523,7 +560,16 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
         engine::MpeOutList list(midiScratch_.data(),
                                 static_cast<std::int32_t>(midiScratch_.size()));
         midiRouter_.route(io.events.first, io.events.count, io.blockOffset, list);
-        for (std::int32_t i = 0; i < list.size(); ++i) deliverMidi(list.at(i));
+        if (native_ != nullptr) {
+            for (std::int32_t i = 0; i < list.size(); ++i) deliverMidi(list.at(i));
+        } else {
+            for (std::int32_t i = 0; i < list.size(); ++i) {
+                if (static_cast<std::size_t>(pendingMidiCount_) < pendingMidi_.size())
+                    pendingMidi_[static_cast<std::size_t>(pendingMidiCount_++)] = list.at(i);
+                else
+                    ++midiDropped_;
+            }
+        }
         midiDropped_ += list.dropped();
     }
 
@@ -554,9 +600,84 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
         if (a->due > 0.0) continue;
         a->due += a->framesPerRead;
         if (a->due < 0.0) a->due = a->framesPerRead;
-        if (libpd_read_array(a->scratch.data(), a->tableName.c_str(), 0, a->length) == 0)
-            a->buffer.publish(a->scratch.data(), a->length);
+        // DEV-09: under our own trylock, never libpd_read_array (it returns
+        // with the lock held when the table is shorter than asked). Busy means
+        // this read waits for the next due time; a display loses one frame.
+        if (sys_trylock() != 0) continue;
+        pd_this->pd_islocked = 1;
+        const bool read = readArrayLocked(a->tableSymbol, a->scratch.data(), a->length);
+        sys_unlock();
+        if (read) a->buffer.publish(a->scratch.data(), a->length);
     }
+}
+
+bool LibPdEngine::readArrayLocked(void* symbol, float* out, std::int32_t length) noexcept {
+    if (symbol == nullptr || length <= 0) return false;
+    auto* const array = reinterpret_cast<t_garray*>(
+        pd_findbyclass(static_cast<t_symbol*>(symbol), garray_class));
+    int size = 0;
+    t_word* words = nullptr;
+    if (array == nullptr || !garray_getfloatwords(array, &size, &words) || size < length)
+        return false;
+    for (std::int32_t i = 0; i < length; ++i) out[i] = static_cast<float>(words[i].w_float);
+    return true;
+}
+
+bool LibPdEngine::lockedTick() noexcept {
+    if (sys_trylock() != 0) {
+        skippedTicks_.fetch_add(1, std::memory_order_relaxed);
+        std::fill(tickOut_.begin(), tickOut_.end(), 0.f);
+        return false;
+    }
+    // sys_trylock does not mark the instance locked, as sys_lock does; Pd's
+    // own pd_globallock checks the mark.
+    pd_this->pd_islocked = 1;
+    deliverPendingLocked();
+    // libpd_process_float's body for one tick, without its sys_lock (blocking)
+    // and its sys_pollgui (sockets and GUI, never on the audio thread).
+    const int inChannels = STUFF->st_inchannels, outChannels = STUFF->st_outchannels;
+    t_sample* const soundIn = STUFF->st_soundin;
+    t_sample* const soundOut = STUFF->st_soundout;
+    for (int frame = 0; frame < DEFDACBLKSIZE; ++frame)
+        for (int c = 0; c < inChannels; ++c)
+            soundIn[c * DEFDACBLKSIZE + frame] =
+                c < inCh_ ? tickIn_[static_cast<std::size_t>(frame * inCh_ + c)] : 0.f;
+    std::memset(soundOut, 0,
+                static_cast<std::size_t>(outChannels) * static_cast<std::size_t>(DEFDACBLKSIZE) * sizeof(t_sample));
+    sched_tick();
+    for (int frame = 0; frame < DEFDACBLKSIZE; ++frame)
+        for (int c = 0; c < outCh_; ++c)
+            tickOut_[static_cast<std::size_t>(frame * outCh_ + c)] =
+                c < outChannels ? static_cast<float>(soundOut[c * DEFDACBLKSIZE + frame]) : 0.f;
+    sys_unlock();
+    return true;
+}
+
+void LibPdEngine::deliverPendingLocked() noexcept {
+    // Message-thread sends first, in the order they were made.
+    const auto head = sendHead_.load(std::memory_order_acquire);
+    auto tail = sendTail_.load(std::memory_order_relaxed);
+    for (; tail != head; ++tail) {
+        const auto& send = sends_[static_cast<std::size_t>(tail % kSendSlots)];
+        auto* const symbol = static_cast<t_symbol*>(send.symbol);
+        if (symbol != nullptr && symbol->s_thing != nullptr) pd_float(symbol->s_thing, send.value);
+    }
+    sendTail_.store(tail, std::memory_order_release);
+    // Then the parameters (ADR-0188 d3), the latest value of each.
+    for (std::size_t i = 0; i < paramDirty_.size() && i < paramSymbols_.size(); ++i) {
+        if (paramDirty_[i] == 0) continue;
+        paramDirty_[i] = 0;
+        auto* const symbol = static_cast<t_symbol*>(paramSymbols_[i].second);
+        if (symbol != nullptr && symbol->s_thing != nullptr) pd_float(symbol->s_thing, paramValues_[i]);
+    }
+    // Then the transport and the MIDI that belong to the coming audio.
+    if (transportPending_) {
+        transportPending_ = false;
+        deliverTransport();
+    }
+    for (std::int32_t i = 0; i < pendingMidiCount_; ++i)
+        deliverMidi(pendingMidi_[static_cast<std::size_t>(i)]);
+    pendingMidiCount_ = 0;
 }
 
 void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
@@ -584,8 +705,7 @@ void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
     // --- render whole Pd blocks ---------------------------------------------
     while (inFill_ >= block_) {
         std::memcpy(tickIn_.data(), in_.data(), tickIn_.size() * sizeof(float));
-        libpd_process_float(1, tickIn_.data(), tickOut_.data());
-        ticks_.fetch_add(1, std::memory_order_relaxed);
+        if (lockedTick()) ticks_.fetch_add(1, std::memory_order_relaxed);
 
         inFill_ -= block_;
         if (inFill_ > 0) {
@@ -648,6 +768,11 @@ void LibPdEngine::bindArrays(const PdDeclarations& decls) {
         // EITHER side, which its header says plainly.
         const int actual = libpd_arraysize(b->tableName.c_str());
         if (actual < b->length) continue;
+        // Resolved once, under the lock: gensym writes this instance's symbol
+        // table, which a running tick reads (DEV-09).
+        sys_lock();
+        b->tableSymbol = static_cast<void*>(gensym(b->tableName.c_str()));
+        sys_unlock();
 
         b->scratch.assign(static_cast<std::size_t>(b->length), 0.f);
         b->buffer.prepare(b->length);
@@ -666,7 +791,24 @@ bool LibPdEngine::sendFloat(const char* suffix, float value) noexcept {
     if (patch_ == nullptr || suffix == nullptr) return false;
     selectInstance();
     const std::string recv = std::to_string(dollarZero_) + "-" + suffix;
-    return libpd_float(recv.c_str(), value) == 0;
+    // DEV-09: the name is resolved under the lock (gensym writes the symbol
+    // table), then the value goes through a single-producer ring and is
+    // delivered by the audio thread inside its next locked tick: the message
+    // thread never holds the instance while a value travels, so the audio
+    // thread never has to skip a tick for it.
+    sys_lock();
+    t_symbol* const symbol = gensym(recv.c_str());
+    const bool bound = symbol->s_thing != nullptr;
+    sys_unlock();
+    if (!bound) return false;
+    const auto head = sendHead_.load(std::memory_order_relaxed);
+    if (head - sendTail_.load(std::memory_order_acquire) >= kSendSlots) {
+        sendsDropped_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    sends_[static_cast<std::size_t>(head % kSendSlots)] = {static_cast<void*>(symbol), value};
+    sendHead_.store(head + 1, std::memory_order_release);
+    return true;
 }
 
 void LibPdEngine::bindSamples(const PdDeclarations& decls) {
@@ -686,17 +828,23 @@ void LibPdEngine::bindParameters(const PdDeclarations& decls) {
     if (patch_ == nullptr) return;
     selectInstance();
     paramSymbols_.reserve(decls.params.size());
+    paramValues_.assign(decls.params.size(), 0.f);
+    paramDirty_.assign(decls.params.size(), 0);
+    // gensym HERE, on the message thread, once, and under the lock: it writes
+    // the symbol table a running tick reads. Every later send reads `s_thing`
+    // off the symbol this returns.
+    sys_lock();
     for (const auto& p : decls.params) {
-        // gensym HERE, on the message thread, once. Every later send reads
-        // `s_thing` off the symbol this returns.
         const std::string name = pdParamReceiveName(dollarZero_, p.id);
         paramSymbols_.emplace_back(p.id, static_cast<void*>(gensym(name.c_str())));
     }
+    sys_unlock();
 }
 
 bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
     if (!std::isfinite(value)) return false;
-    for (const auto& entry : paramSymbols_) {
+    for (std::size_t i = 0; i < paramSymbols_.size(); ++i) {
+        const auto& entry = paramSymbols_[i];
         if (entry.first != id) continue;
         if (native_ != nullptr) {
             const bool sent = native_->sendParameter(id, value);
@@ -704,14 +852,13 @@ bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
             return sent;
         }
         t_symbol* const sym = static_cast<t_symbol*>(entry.second);
-        if (sym == nullptr || sym->s_thing == nullptr) return false;
-        selectInstance();
-        // `pd_float` is a dispatch through the receiver's class, and nothing
-        // else. No `sys_lock`, deliberately: d3 puts this call on the audio
-        // thread immediately before the block, where it is the only thread
-        // touching this instance. A message-thread send belongs in
-        // `sendFloat`, which does take the lock.
-        pd_float(sym->s_thing, value);
+        if (sym == nullptr || sym->s_thing == nullptr || i >= paramDirty_.size()) return false;
+        // DEV-09: kept, latest value wins, and delivered by `pd_float` inside
+        // the next locked tick (lockedTick), which is still before the block's
+        // first Pd tick, as ADR-0188 d3 asks. Never into a running instance
+        // without its lock.
+        paramValues_[i] = value;
+        paramDirty_[i] = 1;
         return true;
     }
     return false;
@@ -824,19 +971,29 @@ bool LibPdEngine::readArray(const char* suffix, std::vector<float>& out) noexcep
     if (patch_ == nullptr || suffix == nullptr) return false;
     selectInstance();
     const std::string name = std::to_string(dollarZero_) + "-" + suffix;
-    const int len = libpd_arraysize(name.c_str());
-    if (len < 0) return false;
-    if (out.size() > static_cast<std::size_t>(len)) return false;
-    if (out.empty()) return true;
-    return libpd_read_array(out.data(), name.c_str(), 0,
-                            static_cast<int>(out.size())) == 0;
+    // DEV-09: not libpd_read_array, whose range error returns with the
+    // instance still locked (every later call on it then waits forever).
+    sys_lock();
+    t_symbol* const symbol = gensym(name.c_str());
+    auto* const array = reinterpret_cast<t_garray*>(pd_findbyclass(symbol, garray_class));
+    int size = 0;
+    t_word* words = nullptr;
+    const bool found = array != nullptr && garray_getfloatwords(array, &size, &words);
+    const bool fits = found && out.size() <= static_cast<std::size_t>(size);
+    if (fits)
+        for (std::size_t i = 0; i < out.size(); ++i) out[i] = static_cast<float>(words[i].w_float);
+    sys_unlock();
+    return fits;
 }
 
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {
     return {ticks_.load(std::memory_order_relaxed),
             segments_.load(std::memory_order_relaxed),
             starved_.load(std::memory_order_relaxed),
-            rejectedSegments_.load(std::memory_order_relaxed)};
+            rejectedSegments_.load(std::memory_order_relaxed),
+            skippedTicks_.load(std::memory_order_relaxed),
+            consoleDropped_.load(std::memory_order_relaxed),
+            sendsDropped_.load(std::memory_order_relaxed)};
 }
 
 
@@ -886,20 +1043,56 @@ std::vector<std::string> pdLoadableCodeIn(const std::string& dir) {
 }
 
 void LibPdEngine::printHookThunk(const char* line) {
-    void* const self = static_cast<void*>(libpd_this_instance());
-    LibPdEngine* engine = nullptr;
-    {
-        const std::lock_guard<std::mutex> lock(g_consoleMutex);
-        for (const auto& owner : g_consoleOwners) {
-            if (owner.first == self) { engine = owner.second; break; }
-        }
-    }
-    if (engine != nullptr) engine->appendConsole(line);
+    // Any thread, the audio thread included: no lock, no allocation.
+    LibPdEngine* const engine = consoleOwner(static_cast<void*>(libpd_this_instance()));
+    if (engine != nullptr && line != nullptr) engine->enqueuePrint(line);
 }
 
-void LibPdEngine::appendConsole(const char* line) {
+void LibPdEngine::enqueuePrint(const char* piece) noexcept {
+    // A piece longer than a slot continues in the next one; the reader joins
+    // pieces into lines, so a split costs nothing.
+    std::size_t length = std::strlen(piece);
+    do {
+        const std::size_t part = std::min(length, sizeof(PrintSlot::text) - 1);
+        // Vyukov's bounded multi-producer queue: claim the slot whose sequence
+        // equals the position, publish by advancing its sequence.
+        auto position = printHead_.load(std::memory_order_relaxed);
+        PrintSlot* slot = nullptr;
+        for (;;) {
+            slot = &printSlots_[static_cast<std::size_t>(position % kPrintSlots)];
+            const auto sequence = slot->sequence.load(std::memory_order_acquire);
+            const auto difference = static_cast<std::int64_t>(sequence - position);
+            if (difference == 0) {
+                if (printHead_.compare_exchange_weak(position, position + 1,
+                                                     std::memory_order_relaxed))
+                    break;
+            } else if (difference < 0) {
+                consoleDropped_.fetch_add(1, std::memory_order_relaxed);   // full
+                return;
+            } else {
+                position = printHead_.load(std::memory_order_relaxed);
+            }
+        }
+        std::memcpy(slot->text, piece, part);
+        slot->text[part] = '\0';
+        slot->sequence.store(position + 1, std::memory_order_release);
+        piece += part;
+        length -= part;
+    } while (length > 0);
+}
+
+void LibPdEngine::drainConsole() const {
+    for (;;) {
+        PrintSlot& slot = printSlots_[static_cast<std::size_t>(printTail_ % kPrintSlots)];
+        if (slot.sequence.load(std::memory_order_acquire) != printTail_ + 1) return;
+        appendConsole(slot.text);
+        slot.sequence.store(printTail_ + kPrintSlots, std::memory_order_release);
+        ++printTail_;
+    }
+}
+
+void LibPdEngine::appendConsole(const char* line) const {
     if (line == nullptr) return;
-    const std::lock_guard<std::mutex> lock(consoleMutex_);
     // Pd prints a line in pieces and ends it with a newline of its own, so the
     // hook is called several times for one message. They are joined here and
     // split on the newline, which is what makes a "couldn't create" line
@@ -915,6 +1108,7 @@ void LibPdEngine::appendConsole(const char* line) {
 
 std::vector<std::string> LibPdEngine::consoleLines() const {
     const std::lock_guard<std::mutex> lock(consoleMutex_);
+    drainConsole();
     std::vector<std::string> out = console_;
     if (!pending_.empty()) out.push_back(pending_);   // a line Pd has not ended yet
     return out;
