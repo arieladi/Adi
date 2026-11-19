@@ -42,6 +42,31 @@ until then a need is named by its item.
 
 ---
 
+## 2026-11-19, window-fn — DF-W9's load half on N57: a plug-in from the Browser onto a track (PR requested)
+
+**What it does** (`src/adi/ui/plugin_listing.hpp`, `src/juce/ui_browser.cpp`, `ui_main.cpp`, `ui_shell.hpp`):
+a double-click or Enter on a plug-in in the Browser's Plug-Ins loads it onto the selected track, in front
+of the device chosen in the strip or where Live places its kind, through the engine's insert
+(`ProjectDocument::insertPlugin`, N57): reference, chain, device and route in one undo step. A CLAP's kind
+comes from its descriptor. A VST3's is not known until engine-win's catalogue (N58): the window takes it
+for an instrument on a MIDI track and an audio effect on an audio track, and says so; a plug-in the
+project already holds keeps the kind its one reference stores. A plug-in that does not load stays in the
+chain as a bypassed placeholder, and the Status Bar says why. The names are no longer dimmed. A drag of a
+plug-in is not built yet.
+
+**Review:** two dimensions, each finding checked by a skeptic: 4 confirmed, 5 refuted, all fixed in the
+branch's last commit.
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app`, all 27 of `ui.yml`'s suites
+and `adi_builtin_devices_tests` (N57's own); `adi_ui_shell_tests` 2787 checks, 0 failures.
+
+**PR requested.** Branch `window-fn/plugin-load` at `942873bd`. Title: **adi_daw: window-fn: DF-W9's load
+on N57, a VST3 or CLAP from the Browser onto the selected track, one undo step**. **Depends on**
+`window-fn/plugin-scan` (DF-W34, itself after #676) **and** `engine/n57-plugin-insertion` (N57, the
+engine's): land it after both. Its own diff is one commit of six files. **DF-W9 can close with it.**
+
+---
+
 ## 2026-11-19, window-fn — MX-23 and SRF-02: faders, pans and sends heard while dragging (PR requested)
 
 **What it does** (`src/adi/ui/project_document.*`, `src/juce/ui_mixer.*`, `ui_shell.hpp`, `ui_main.cpp`):
