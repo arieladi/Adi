@@ -11,6 +11,7 @@
 #include "adi/version.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <atomic>
 #include <chrono>
@@ -25,6 +26,15 @@ namespace {
 std::string sqlitePath(const std::filesystem::path& path) {
     const auto bytes=path.generic_u8string();
     return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
+
+std::unique_ptr<SQLite::Database> openStoreDatabase(const std::filesystem::path& path, int flags) {
+    auto database = std::make_unique<SQLite::Database>(sqlitePath(path), flags);
+    int enabled = 0;
+    const int status = sqlite3_db_config(database->getHandle(), SQLITE_DBCONFIG_DEFENSIVE, 1, &enabled);
+    if (status != SQLITE_OK || enabled != 1)
+        throw SQLite::Exception("could not enable defensive project connection", status == SQLITE_OK ? SQLITE_ERROR : status);
+    return database;
 }
 
 std::int64_t nowUtcMicros() {
@@ -360,8 +370,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             lease=media::ProjectFileLease::createShared(path,ec);
             if(!lease){err=ec==std::errc::file_exists?StoreError::AlreadyExists:StoreError::CannotCreate;return nullptr;}
         }
-        auto db = std::make_unique<SQLite::Database>(
-            sqlitePath(lease?lease->path():path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+        auto db = openStoreDatabase(lease ? lease->path() : path, SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
 
         // SPEC §3.1. page_size must be set before the first write, so it goes
         // first — after any table exists it is silently ignored, which is the
@@ -438,8 +447,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     }
     std::unique_ptr<SQLite::Database> db;
     try {
-        db = std::make_unique<SQLite::Database>(
-            sqlitePath(lease?lease->path():path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
+        db = openStoreDatabase(lease ? lease->path() : path, readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
     } catch (const SQLite::Exception&) {
         err = StoreError::CannotOpen;
         return nullptr;
@@ -477,7 +485,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     if (major > kSchemaMajor) {
         if (!readOnly) {
             try {
-                db = std::make_unique<SQLite::Database>(sqlitePath(path), SQLite::OPEN_READONLY);
+                db = openStoreDatabase(path, SQLite::OPEN_READONLY);
             } catch (const SQLite::Exception&) {
                 err = StoreError::CannotOpen;
                 return nullptr;

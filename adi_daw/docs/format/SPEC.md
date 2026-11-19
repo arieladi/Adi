@@ -110,6 +110,12 @@ PRAGMA busy_timeout = 5000;
 `WAL` is what makes autosave-during-playback cheap and lets the render/export
 path read a consistent snapshot while the user keeps editing.
 
+Store connections enable `SQLITE_DBCONFIG_DEFENSIVE` when opened, including
+read-only connections and the read-only reopen of a newer major. SQLite can
+then refuse direct writes to its schema tables even if SQL requests
+`writable_schema`. Ordinary project edits and migrations continue through
+their existing transactions.
+
 ### 3.3 Close policy — the WAL sidecar rule
 
 **A cleanly closed `.adi` MUST be exactly one file on disk.**
