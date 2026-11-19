@@ -110,6 +110,8 @@ struct FloatingHost::Entry {
                 h.zoom(e.key, id == AppCommands::ZoomIn);
                 return true;
             }
+            if (e.key == "Mix View" && (id == AppCommands::FocusBrowser || id == AppCommands::SearchBrowser))
+                return h.root_.mixViewPanel.focusChannelSearch();
             return h.commands_.key(k, h.root_);
         }
         // A key held from here comes up here: the main window lets it go.

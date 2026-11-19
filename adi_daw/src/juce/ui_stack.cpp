@@ -962,6 +962,12 @@ void StackTab::focus(std::int64_t track) {
     if (!alive) return;
     layoutRows();
 }
+void StackTab::filterChannels(std::optional<std::vector<std::int64_t>> tracks) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const auto fx = model().setChannelSubset(std::move(tracks), clockNow());
+    effects(fx, false);
+    if (alive && fx.repaint && isVisible()) layoutRows();
+}
 std::int64_t StackTab::focused() const noexcept { return model().focus().row.track; }
 void StackTab::hover(std::int64_t track) {
     const auto time = clockNow();

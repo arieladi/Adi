@@ -661,6 +661,8 @@ class StackModel {
     stack::Effects setShowChain(bool, stack::TimeMs now);
     stack::Effects setShowDormant(bool, stack::TimeMs now);
     stack::Effects setNavigator(bool shown, bool collapsed, stack::TimeMs now);
+    // Restrict channels to the current group and its descendants.
+    stack::Effects setChannelSubset(std::optional<std::vector<stack::TrackId>>, stack::TimeMs now);
     stack::Effects setFilterPinned(bool, stack::TimeMs now);
     stack::Effects setChannelScope(stack::ChannelScope, stack::TimeMs now);
     stack::Effects setSearch(std::string_view, stack::TimeMs now); // allocates only past the reserved bound
@@ -899,6 +901,8 @@ class StackModel {
     bool rolePartnersStale() const noexcept;
     stack::TrackId rolePartnerFor(std::uint8_t roleBit, stack::TrackId notThis) const noexcept;
     bool inScope(const Rec &r) const noexcept { return r.valid && r.inView && !r.reference; }
+    std::optional<std::vector<stack::TrackId>> channelSubset_;
+    bool inChannelSubset(stack::TrackId id) const noexcept;
     bool memberPlain(std::uint32_t rec) const noexcept;
     bool member(std::uint32_t rec) const noexcept;
     bool computeMatch(std::uint32_t rec) const noexcept;

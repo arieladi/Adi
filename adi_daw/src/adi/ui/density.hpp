@@ -32,6 +32,12 @@ enum class DensityId { Compact, Open };
     ADI_DENSITY_INT(mixSongRulerHeight) \
     ADI_DENSITY_INT(mixSongLabelSpacing) /* minimum space between printed bar numbers */ \
     ADI_DENSITY_INT(mixSongLoopBraceHeight) \
+    ADI_DENSITY_INT(mixPageWidth) /* a Mix View page tab */ \
+    ADI_DENSITY_INT(mixChannelMinWidth) /* left channel column */ \
+    ADI_DENSITY_INT(mixChannelMaxWidth) \
+    ADI_DENSITY_INT(mixChannelRowHeight) \
+    ADI_DENSITY_INT(mixChannelLevelWidth) \
+    ADI_DENSITY_INT(mixInfoHeight) /* the compact analyser in the left column */ \
     /* corners */ \
     ADI_DENSITY_FLOAT(radiusSmall) /* a small mark, a pill's ends at the smallest */ \
     ADI_DENSITY_FLOAT(radiusThumb) /* a scroll bar's thumb */ \
