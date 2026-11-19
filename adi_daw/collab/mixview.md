@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M35 Clean make-up and wake Release
+
+**PR requested.** `mixview/clean-makeup-wake-20261119` is pushed at `36fc0109`. Ordinary make-up edits use a continuous linear-amplitude ramp, including reversals. The steady loop has no ramp branch. Explicit Auto Gain toggles and reset use the current target. The first valid wake segment adopts current authored settings before resetting state, so a parked Threshold edit is present on its first sample.
+
+The test-only `21bab98b` failed precisely the first-sample wake case. Release passed 98 Clean host checks with zero callback allocations or frees, all three selected CTests, and 870 software-peer checks. The exact Release core also passed all nine private matched stereo replay pairs. The matched scripts, hypotheses and numerical evidence stay in `NowWeReverse/Deep-Research/20261119-dfm35-clean-makeup`; the app build gates are in `NowWeReverse/ADI-View/mixview-seat/dfm35-built-20261119`.
+
+- ZIP `outputs/ADI-MixView-Clean-Makeup-36fc010926-win64-Release.zip`, SHA-256 `33fc1b2415a51af40781a86cce862f5753acc99fb01a8cb6ce9b34ce57e0b103`.
+- ADI.exe SHA-256 `8dabc29abcbebcb11e264d5d44b159304a16a24f56dac801d9c430d7844d3d90`, scanner SHA-256 `8ad088dc002b43e06c5ae20f8e62ab3a7e1eeb66818ff8cc30e248ae12944492`, corresponding source SHA-256 `bf5bec6b1132a84b9707e8da75738550a4a37842b1d6f2966b4f64dc00b1ed69`.
+- Claude brief `outputs/ADI-Q-MixView-Clean-Makeup-36fc0109-CLAUDE-RETEST.txt`.
+
 ## 19 November 2026 — DF-M34 native Clean silence and wake
 
 **PR requested.** `mixview/clean-suspension-20261119` is pushed at `6a71f323` after the native serial EQ assembly. Clean runs a bounded 48-second quiet release, clears its output once, and resets on the audio owner before the first real sample. The Release passed 870 software-peer checks, three CTests and 93 Clean host checks with zero callback allocations and frees. A short silent gap matches uninterrupted processing sample for sample. A rested node wakes at the fresh waveform and matches the continuously running fixture within 1e-7 peak.
