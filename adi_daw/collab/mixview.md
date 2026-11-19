@@ -8,6 +8,15 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M13, schedule Focus FIR work across each hop
+
+**PR requested.** `mixview/focus-fir-pacing-20261119` at `b0f1dcc2`, after `ead20df4`. The negative gate at `8c67dd2f` reproduced two scheduling failures at 192 kHz / 512 with one and ten enabled nodes. The paced version passed all 424 Focus assertions and the four adjoining key, EQ chain, backend and pipeline suites. The Focus oracle reads 3,639,758 compared samples with zero callback allocations or frees. At 192 kHz the reference comparison is exact in float and within `1.12e-16` peak in double.
+
+Per-hop work follows the actually active node masks and lands within the fixed source deadline. The calculated peak work at 192 kHz / 512 drops from 348,672 to 53,257 counted operations for one node. Ten nodes still require up to 348,196. These are work counts. The 2.667 ms wall-time gate remains open for a quiet matched run.
+
+Release test SHA-256 `cfa6b0826515b4928869f607a2181459f3752cb667b2f3357b83d343f65ed938`. Red and green logs are sealed in the private `dfm13-built-20261119` folder. The Release app hash is still `8cbf49097b2d0adb707405f82c2fc9cf91da73ae367096904bf0fffbbbe59b16`. The serial Focus path is not exposed in this app. The live FIR brief can be used when that path is available.
+
+
 ## 19 November 2026 — DF-M11 and main integration
 
 **PR requested.** `mixview/stack-main-integration-20261119` at `ead20df4`, after Stack persistence `8bb87bc3`, brings in main `4e11edd9`. The integration retains the schema 1.22 device-key path and its prepared PDC handover, combines it with arriving-audio transport for hosted plug-ins, and preserves the shared control sources, appearance settings and analyser refresh. This is the current forward base for subsequent Mix View work.
