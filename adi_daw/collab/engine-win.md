@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 command-line worker selection
+
+**PR requested** — `engine-win/scanner-worker-cli`, `aa26f09989fe4e425d412ce483379b80663e4d25`, stacked on `engine-win/scanner-parallel-probes`. The scoped `adi_play --list --search-only DIR --scan-workers N` command accepts 1 through 4, rejects use with CacheOnly or project playback, and prints the requested count. The command lists validated metadata through existing discovery. The strict native Windows player build and its integration suite passed. GUI/default-worker policy remains its own slice.
+
 ## 2026-11-19 — EX-07 output format, sample rate and index tokens
 
 **PR requested** — `engine-win/export-format-name-tokens`, `fa9534a672f6c5926387b4a46c82af08774335ae`, stacked on `engine-win/export-identity-replace`. `{format}` uses the delivery container label, `{rate}` uses integer output Hz, and `{index}` uses the stable enqueue/delivery ordinal shared with `{counter}`. The run manifest carries the resolved context. NI expands its final name at prepared Main using the NI profile before audio and includes the full compound suffix in its byte budget. Strict x64 MSVC passed 549 checks, including actual WAV and the prepared NI route. Full AAC encoding remains gated. Date/time tokens still need a shared run clock and timezone policy.
