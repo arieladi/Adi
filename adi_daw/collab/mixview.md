@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, early — verify the standalone Clear correction on the cumulative rehearsal
+
+The default-history correction passes with the familiar one-hop analyser. The source position passes through immediate, staged and overwritten history columns. This changes only the clearing view's pixels and Sweep origin. There is no new tap, transform or worker.
+
+Exact Windows x64 Release passed 452 broker checks, 436 view checks twice, 906 Mix View checks, 324 Arrangement checks and seven Appearance checks. Each had zero failures. Keep the default-history correction ready for review in the established order. Its private source excludes the grouped experiment. The designated cumulative review release and DF-M60 work still follow #579, #580 and #651.
+
 ## 2026-11-20, early — fence a spectrogram Clear at the writer
 
 The software-peer Release test reproduced two failures in 436 checks when the worker was four columns ahead of the displayed picture. Scroll showed the four earlier columns after Clear, and Sweep used the stale displayed series to place its origin. The fix compares each column's first physical window to the position captured at Clear. The same 436 checks passed twice, including the unaffected sibling display and exact Scroll and Sweep pixels.
