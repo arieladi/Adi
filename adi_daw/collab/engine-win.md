@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — EX-09 native render job JSON
+
+**PR requested** — `engine-win/render-job-json`, `3e6b6352670808ac5ec944fc91c141a772824565`, fresh main base `315b9433`. The strict versioned codec records the persistent Job fields on that base, keeps native UTF-8 paths and exact integer values, and rejects unknown fields, duplicate keys, unsupported enums and live-only objects. It shares the pure validator with queue admission and rendering. Native strict x64 MSVC passed 364 checks across the codec, render queue and NI metadata suites. The NI AAC codec was unavailable in that build. EX-07's unmerged collision field must join the codec and its tests before persisted jobs can use it. User and project preset stores, field-group application and queue API work remain open.
+
 ## 2026-11-19 — TM-MD-05 native Opus feasibility
 
 A private strict x64 MSVC diagnostic decoded a newly generated Ogg Opus file directly through libopusfile. Eight checks passed, including a 312-sample pre-skip, 9,600 declared and decoded 48 kHz frames, bounded reads, and aligned finite PCM. The inputs were the pinned JUCE 9.0.5 distribution's Xiph sources. This establishes feasibility for one owned mono file. ADI still needs the product decoder, chained and multichannel policy, and its error/cancellation tests.
