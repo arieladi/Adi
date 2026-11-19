@@ -34,7 +34,8 @@ void set(DeviceInstance& device, int id, double value) {
     check(device.setParam(std::to_string(id), ParamValue::fromNormalized(value)), "parameter write");
 }
 
-void modulationPd(bool filterOn, bool liquidOn, bool driveOn = false, bool crushOn = false) {
+void modulationPd(bool filterOn, bool liquidOn, bool driveOn = false, bool crushOn = false,
+                  adi::dsp::AdiShaper::Stage source = adi::dsp::AdiShaper::Stage::Volume) {
     using Engine = adi::device::LibPdEngine;
     using Shaper = adi::dsp::AdiShaper;
     using Stage = Shaper::Stage;
@@ -87,6 +88,40 @@ void modulationPd(bool filterOn, bool liquidOn, bool driveOn = false, bool crush
         for (int j = 0; j < 8; ++j)
             send(Shaper::driveParam(mid, static_cast<Shaper::DriveControl>(Shaper::Drive1 + j)),
                  80.f - 7.f * static_cast<float>(j));
+        if (source >= Stage::Pitch) {
+            const auto start = source == Stage::Pitch ? Shaper::PitchOn : source == Stage::Noise ? Shaper::NoiseOn : Shaper::ReverbOn;
+            send(start, 1);
+            send(static_cast<Shaper::Param>(start + 1), 3);
+            for (auto band : {Shaper::Band::Low, mid, Shaper::Band::High}) {
+                send(Shaper::modParam(source, band, Shaper::ModClock), 1);
+                send(Shaper::modParam(source, band, Shaper::ModRate), 31.f + 13.f * static_cast<float>(band));
+                send(Shaper::modParam(source, band, Shaper::ModMix), 75.f);
+                send(Shaper::modParam(source, band, Shaper::PrimaryCurve), 1);
+                send(Shaper::modParam(source, band, Shaper::SecondaryCurve), 1);
+                for (int j = 0; j < 8; ++j) {
+                    const float value = static_cast<float>(j);
+                    send(Shaper::modParam(source, band, static_cast<Shaper::ModControl>(Shaper::Primary1 + j)),
+                         source == Stage::Pitch ? -12.f + 3.f * value : 42.f + 6.f * value);
+                    send(Shaper::modParam(source, band, static_cast<Shaper::ModControl>(Shaper::Secondary1 + j)),
+                         source == Stage::Noise ? 8.f - 2.f * value : 82.f - 6.f * value);
+                }
+                if (source == Stage::Noise) {
+                    send(Shaper::modParam(source, band, Shaper::Type), band == mid ? 1.f : 2.f);
+                    send(Shaper::noiseParam(band, Shaper::NoiseMono), 0);
+                    send(Shaper::noiseParam(band, Shaper::NoiseOnly), 1);
+                    send(Shaper::noiseParam(band, Shaper::NoiseTrim), 85);
+                    send(Shaper::noiseParam(band, Shaper::NoiseHighPass), 12);
+                    send(Shaper::noiseParam(band, Shaper::NoiseLowPass), 92);
+                } else if (source == Stage::Reverb) {
+                    send(Shaper::reverbParam(band, Shaper::RoomSize), 38);
+                    send(Shaper::reverbParam(band, Shaper::RoomDecay), 83);
+                    send(Shaper::reverbParam(band, Shaper::RoomGate), 1);
+                    send(Shaper::reverbParam(band, Shaper::RoomWidth), 73);
+                    send(Shaper::reverbParam(band, Shaper::RoomPredelay), 4);
+                    send(Shaper::reverbParam(band, Shaper::RoomClearTails), 1);
+                }
+            }
+        }
     }
     check(native.isNative() && !pd.isNative() && native.adapterLatencySamples() == 0
           && pd.adapterLatencySamples() == 64, "separate native and buffered editable paths");
@@ -307,10 +342,23 @@ int main() try {
           && device->getParam("463").real == 100, "old state restores Drive, Crush and neutral Time defaults");
     set(*device, 416, 1);
     set(*device, 463, .31);
-    const auto eightStageState = device->saveState("state");
+    auto eightStageState = adi::Payload::from_cbor(device->saveState("state"));
+    for (int id = 464; id <= count; ++id) eightStageState.at("params").erase(std::to_string(id));
     device = open();
-    check(device->loadState("state", eightStageState) && device->getParam("416").real == 1
+    check(device->loadState("state", adi::Payload::to_cbor(eightStageState)) && device->getParam("416").real == 1
           && std::abs(device->getParam("463").real - 31) < 1e-4, "Time enable and last curve point persist");
+    check(device->getParam("464").real == 0 && device->getParam("536").real == 0
+          && device->getParam("626").real == 0 && device->getParam("632").real == 25,
+          "eight-stage sessions restore with the three new stages off and the measured Reverb mix default");
+    set(*device, 464, 1);
+    set(*device, 536, 1);
+    set(*device, 626, 1);
+    set(*device, 715, 1);
+    const auto sourceState = device->saveState("state");
+    device = open();
+    check(device->loadState("state", sourceState) && device->getParam("464").real == 1
+          && device->getParam("536").real == 1 && device->getParam("626").real == 1 && device->getParam("715").real == 1,
+          "three additional stage switches and the final high-band option recall");
     set(*device, 287, 0);
     device->process(io);
     check(device->latencySamples() == 0, "host removes Drive PDC when disabled");
@@ -320,6 +368,9 @@ int main() try {
     modulationPd(false, false, true, false);
     modulationPd(false, false, false, true);
     modulationPd(false, false, true, true);
+    using Stage = adi::dsp::AdiShaper::Stage;
+    for (auto source : {Stage::Pitch, Stage::Noise, Stage::Reverb})
+        modulationPd(false, false, false, false, source);
     timePd();
     std::puts("ADi-SHAPER built-in state, transport and editable modulation parity passed.");
     return 0;

@@ -4,6 +4,9 @@
 #include "adi/dsp/adi_shaper_drive.hpp"
 #include "adi/dsp/adi_shaper_filter.hpp"
 #include "adi/dsp/adi_shaper_liquid.hpp"
+#include "adi/dsp/adi_shaper_noise.hpp"
+#include "adi/dsp/adi_shaper_pitch.hpp"
+#include "adi/dsp/adi_shaper_reverb.hpp"
 #include "adi/dsp/adi_shaper_time.hpp"
 #include <array>
 #include <cstddef>
@@ -23,6 +26,9 @@ class AdiShaper {
     static constexpr int modStageParameterCount = modHeaderSize + 3 * modBandParameterCount;
     static constexpr int driveBandParameterCount = 16;
     static constexpr int timeBandParameterCount = 14;
+    static constexpr int pitchBandParameterCount = modBandParameterCount - 1;
+    static constexpr int noiseBandParameterCount = modBandParameterCount + 5;
+    static constexpr int reverbBandParameterCount = pitchBandParameterCount + 6;
     enum Param { MasterMix, VolumeBands, WidthBands = VolumeBands + stageParameterCount,
                  PanBands = WidthBands + stageParameterCount,
                  VolumeLowSlope = PanBands + stageParameterCount, WidthLowSlope, PanLowSlope,
@@ -31,8 +37,11 @@ class AdiShaper {
                  LiquidMidPolarity, LiquidHighPolarity, DriveOn,
                  CrushOn = DriveOn + modHeaderSize + 3 * driveBandParameterCount,
                  TimeOn = CrushOn + modStageParameterCount,
-                 Count = TimeOn + modHeaderSize + 3 * timeBandParameterCount };
-    enum class Stage { Volume, Width, Pan, Filter, Liquid, Drive, Crush, Time };
+                 PitchOn = TimeOn + modHeaderSize + 3 * timeBandParameterCount,
+                 NoiseOn = PitchOn + modHeaderSize + 3 * pitchBandParameterCount,
+                 ReverbOn = NoiseOn + modHeaderSize + 3 * noiseBandParameterCount,
+                 Count = ReverbOn + modHeaderSize + 3 * reverbBandParameterCount };
+    enum class Stage { Volume, Width, Pan, Filter, Liquid, Drive, Crush, Time, Pitch, Noise, Reverb };
     enum class Band { Low, Mid, High };
     enum BandControl { Mix, Clock, Cycle, Rate, Curve, Point1, Point2, Point3, Point4,
                        Point5, Point6, Point7, Point8 };
@@ -43,10 +52,25 @@ class AdiShaper {
     enum ModControl { Type, ModMix, ModClock, ModCycle, ModRate, PrimaryCurve, SecondaryCurve,
                       Primary1, Primary2, Primary3, Primary4, Primary5, Primary6, Primary7, Primary8,
                       Secondary1, Secondary2, Secondary3, Secondary4, Secondary5, Secondary6, Secondary7, Secondary8 };
+    struct ParameterLayout { Param start; int stride; };
+    static constexpr std::array<ParameterLayout, 8> effectParameters{{
+        {FilterOn, modBandParameterCount}, {LiquidOn, modBandParameterCount},
+        {DriveOn, driveBandParameterCount}, {CrushOn, modBandParameterCount}, {TimeOn, timeBandParameterCount},
+        {PitchOn, pitchBandParameterCount}, {NoiseOn, noiseBandParameterCount}, {ReverbOn, reverbBandParameterCount}
+    }};
     static constexpr Param modParam(Stage stage, Band band, ModControl control) noexcept {
-        const int start = stage == Stage::Crush ? CrushOn : stage == Stage::Liquid ? LiquidOn : FilterOn;
-        return static_cast<Param>(start + modHeaderSize + modBandParameterCount * static_cast<int>(band)
-                                  + static_cast<int>(control));
+        const auto layout = effectParameters[static_cast<std::size_t>(stage) - static_cast<std::size_t>(Stage::Filter)];
+        const int first = stage == Stage::Pitch || stage == Stage::Reverb ? ModMix : Type;
+        return static_cast<Param>(layout.start + modHeaderSize + layout.stride * static_cast<int>(band)
+                                  + static_cast<int>(control) - first);
+    }
+    enum NoiseOption { NoiseMono, NoiseOnly, NoiseTrim, NoiseHighPass, NoiseLowPass };
+    enum ReverbOption { RoomSize, RoomDecay, RoomGate, RoomWidth, RoomPredelay, RoomClearTails };
+    static constexpr Param noiseParam(Band band, NoiseOption option) noexcept {
+        return static_cast<Param>(modParam(Stage::Noise, band, Secondary8) + 1 + static_cast<int>(option));
+    }
+    static constexpr Param reverbParam(Band band, ReverbOption option) noexcept {
+        return static_cast<Param>(modParam(Stage::Reverb, band, Secondary8) + 1 + static_cast<int>(option));
     }
     enum DriveControl { DriveStyle, DriveMix, DriveClock, DriveCycle, DriveRate, DriveCurve,
                         Drive1, Drive2, Drive3, Drive4, Drive5, Drive6, Drive7, Drive8, InputTrim, OutputTrim };
@@ -88,7 +112,7 @@ class AdiShaper {
         Contour primary, secondary;
         std::uint64_t phase = 0, step = 0;
         double beats = 4.0, hz = 1.0;
-        float mix = 1.0f, blend = 1.0f;
+        float mix = 1.0f, blend = 1.0f, returnDry = 0.0f, returnWet = 1.0f;
         int type = 0;
         bool hertz = false, active = false;
         std::array<Gain, 8> heldGains{};
@@ -124,6 +148,7 @@ class AdiShaper {
         std::size_t index = 0;
         void advance(float& l, float& r) noexcept;
     };
+    struct ReverbSettings { float size = .5f, decay = 1.0f, predelay = 0.0f; bool gate = false; };
     static Gain gain(Stage kind, float amount, float mix) noexcept;
     void updateBand(Stage kind, CurveBand& band) const noexcept;
     void updateActivity(StageData& stage) noexcept;
@@ -134,6 +159,8 @@ class AdiShaper {
     void slope(Split& split, float value) noexcept;
     void clock(CurveBand& band, BandControl control, float value) const noexcept;
     void setMod(Param id, float value) noexcept;
+    void setNoiseOption(std::size_t band, NoiseOption option, float value) noexcept;
+    void setReverbOption(std::size_t band, ReverbOption option, float value) noexcept;
     void prepareStages(double sampleRate) noexcept;
     void syncClock(double quarterNotes, bool playing) noexcept;
     void updateTimeRanges() noexcept;
@@ -141,12 +168,17 @@ class AdiShaper {
     void resetKernels(Stage kind) noexcept;
     template <Stage kind> void render(StageData& stage, const float* inL, const float* inR,
                                      float* outL, float* outR, std::size_t frames) noexcept;
-    std::array<StageData, 8> stages_;
+    std::array<StageData, 11> stages_;
     std::array<AdiShaperFilter, 3> filters_;
     std::array<AdiShaperLiquid, 3> liquids_;
     std::array<AdiShaperDrive, 3> drives_;
     std::array<AdiShaperCrush, 3> crush_;
     std::array<AdiShaperTime, 3> times_;
+    std::array<AdiShaperPitch, 3> pitch_;
+    std::array<AdiShaperNoise, 3> noise_;
+    std::array<AdiShaperReverb, 3> reverb_;
+    std::array<std::array<float, 2>, 3> noiseFilters_{{{.254f, 1}, {.254f, 1}, {.254f, 1}}};
+    std::array<ReverbSettings, 3> reverbSettings_;
     std::array<double, 3> timeSpans_{};
     std::array<std::array<float, 2>, 3> driveTrims_{{{.5f, .5f}, {.5f, .5f}, {.5f, .5f}}};
     std::array<DriveDryDelay, 3> driveDry_;

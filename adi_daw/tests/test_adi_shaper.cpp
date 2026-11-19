@@ -18,8 +18,12 @@ using Stage = Shaper::Stage;
 static_assert(Shaper::bandParam(Stage::Pan, Band::High, Shaper::Point8) + 1 == Shaper::VolumeLowSlope);
 static_assert(Shaper::VolumeLowSlope == 127 && Shaper::VolumeHighSlope == 130 && Shaper::FilterOn == 133);
 static_assert(Shaper::LiquidOn == 208 && Shaper::LiquidLowPolarity == 283 && Shaper::DriveOn == 286);
-static_assert(Shaper::CrushOn == 340 && Shaper::TimeOn == 415 && Shaper::Count == 463);
-static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::Count);
+static_assert(Shaper::CrushOn == 340 && Shaper::TimeOn == 415 && Shaper::PitchOn == 463);
+static_assert(Shaper::NoiseOn == 535 && Shaper::ReverbOn == 625 && Shaper::Count == 715);
+static_assert(Shaper::timeParam(Band::High, Shaper::Time8) + 1 == Shaper::PitchOn);
+static_assert(Shaper::modParam(Stage::Pitch, Band::High, Shaper::Secondary8) + 1 == Shaper::NoiseOn);
+static_assert(Shaper::noiseParam(Band::High, Shaper::NoiseLowPass) + 1 == Shaper::ReverbOn);
+static_assert(Shaper::reverbParam(Band::High, Shaper::RoomClearTails) + 1 == Shaper::Count);
 static_assert(Shaper::driveParam(Band::High, Shaper::OutputTrim) + 1 == Shaper::CrushOn);
 static_assert(Shaper::modParam(Stage::Crush, Band::High, Shaper::Secondary8) + 1 == Shaper::TimeOn);
 int failures = 0;
@@ -697,6 +701,90 @@ void timeBandHistory() {
         matches &= near(actual[i], sum[i], 1e-6) && near(actualRight[i], sum[i], 1e-6);
     check(matches, "three independent Time histories sum the separately delayed split-band impulses");
 }
+
+void reverbReturnMix() {
+    constexpr std::size_t frames = 4096;
+    std::vector<float> left(frames), right(frames), wetL(frames), wetR(frames), actualL(frames), actualR(frames);
+    adi::dsp::AdiShaperReverb room;
+    check(room.prepare(48000), "room fixture preparation");
+    auto renderWet = [&] {
+        room.reset();
+        wetL = left;
+        wetR = right;
+        for (std::size_t i = 0; i < frames; ++i) room.processStereo(wetL[i], wetR[i], 1, 1);
+    };
+    left[0] = 1.f;
+    right[0] = -.5f;
+    renderWet();
+    const auto peak = static_cast<std::size_t>(std::max_element(wetL.begin(), wetL.end(),
+        [](float a, float b) { return std::abs(a) < std::abs(b); }) - wetL.begin());
+    check(peak > 0 && std::abs(wetL[peak]) > .001f, "room impulse has an audible delayed reflection");
+    left[peak] = std::copysign(1.f, wetL[peak]);
+    renderWet();
+
+    Shaper rack;
+    rack.prepare(48000);
+    for (int layout = 0; layout < 4; ++layout) {
+        rack.set(static_cast<Shaper::Param>(Shaper::ReverbOn + 1), static_cast<float>(layout));
+        for (const float mix : {0.f, .25f, .5f, .75f, 1.f}) {
+            rack.set(Shaper::ReverbOn, 0);
+            const float master = mix == .25f ? .5f : 1.f;
+            rack.set(Shaper::MasterMix, master * 100.f);
+            for (auto band : {Band::Low, Band::Mid, Band::High})
+                rack.set(Shaper::modParam(Stage::Reverb, band, Shaper::ModMix), mix * 100.f / master);
+            rack.set(Shaper::ReverbOn, 1);
+            rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+            const float dry = std::min(1.f, 2.f - 2.f * mix), wet = std::min(1.f, 2.f * mix);
+            bool matches = true;
+            for (std::size_t i = 0; i < frames; ++i)
+                matches &= near(actualL[i], dry * left[i] + wet * wetL[i], 3e-6)
+                        && near(actualR[i], dry * right[i] + wet * wetR[i], 3e-6);
+            check(matches && rack.latency() == 0, "every layout follows the independently summed Reverb dry/return law");
+            if (mix == .5f) check(std::abs(actualL[peak]) > 1.f, "parallel unity dry and wet can add past full scale");
+        }
+    }
+}
+
+void pitchAndNoise() {
+    constexpr std::size_t frames = 1600;
+    std::array<float, frames> left{}, right{}, actualL{}, actualR{};
+    left[0] = .75f;
+    right[0] = -.25f;
+    Shaper rack;
+    rack.prepare(48000);
+    rack.set(Shaper::PitchOn, 1);
+    rack.set(Shaper::NoiseOn, 1);
+    rack.set(Shaper::noiseParam(Band::Mid, Shaper::NoiseOnly), 1);
+    rack.set(Shaper::modParam(Stage::Noise, Band::Mid, Shaper::ModMix), 25);
+    rack.set(Shaper::modParam(Stage::Pitch, Band::Mid, Shaper::ModMix), 50);
+    // With the source off, Noise Only removes the chosen wet share of Pitch.
+    adi::dsp::AdiShaperPitch expected;
+    check(expected.prepare(48000), "pitch fixture preparation");
+    bool matches = true;
+    rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+    for (std::size_t i = 0; i < frames; ++i) {
+        float l = left[i], r = right[i];
+        expected.processStereo(l, r, .5f, .5f);
+        matches &= near(actualL[i], .75f * (.5f * left[i] + .5f * l))
+                && near(actualR[i], .75f * (.5f * right[i] + .5f * r));
+    }
+    check(matches && rack.latency() == 0, "cyclic audible delay coexists with zero PDC and linear Noise Only mix");
+
+    rack.set(Shaper::PitchOn, 0);
+    rack.set(Shaper::modParam(Stage::Noise, Band::Mid, Shaper::Type), 1);
+    rack.set(Shaper::modParam(Stage::Noise, Band::Mid, Shaper::ModMix), 100);
+    rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+    float peak = 0;
+    for (std::size_t i = 0; i < frames; ++i) peak = std::max(peak, std::abs(actualL[i]));
+    check(actualL == actualR && peak > .02f && peak < .2f, "activated white source uses the calibrated mono defaults");
+    rack.set(Shaper::PitchOn, 1);
+    rack.set(Shaper::ReverbOn, 1);
+    rack.set(Shaper::MasterMix, 0);
+    left[1] = -0.f;
+    rack.process(left.data(), right.data(), actualL.data(), actualR.data(), frames);
+    check(actualL == left && actualR == right && std::signbit(actualL[1]),
+          "Pitch, Noise and Reverb preserve the exact zero-wet signal");
+}
 } // namespace
 
 int main() {
@@ -715,6 +803,8 @@ int main() {
     driveAndCrush();
     timeRanges();
     timeBandHistory();
+    reverbReturnMix();
+    pitchAndNoise();
     if (failures == 0) std::puts("ADi-SHAPER DSP fixtures passed");
     return failures == 0 ? 0 : 1;
 }
