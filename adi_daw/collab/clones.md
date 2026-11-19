@@ -5,6 +5,30 @@
 - **Reference user-IR selection.** Can you supply an editor-saved fully wet Reverb state with a short stereo WAV you authored, plus that WAV? The known hall produced a wet tail in the same test where selecting our two-tap file by stored name gave silence. I recommend using the original ADI room for the current release and parking comparison of the user-import path until this matched pair is available. The file need only contain two marked taps with different left/right levels.
 - **Optional noise-library comparison.** The reference lists its pink source as a downloadable recording. Its installed slot returned silence. I recommend keeping the independently calibrated ADI pink source and deferring the vendor recording comparison unless you have a licensed installation with that source available.
 
+## 2026-11-19 — External Width detector and fresh drawing-kit reproduction
+
+The reference accepted a separately enabled stereo key bus. The table below supersedes the earlier host's failed four-input test for Width. It gives devices a positive routing fixture while the internal follower topic is in validation.
+
+### External stereo key, isolated from the input
+
+The reference's native plug-in interface enumerated a stereo main input, a separately named auxiliary input initially disabled, and one stereo output. Explicitly enabling the second bus in stereo negotiated four input channels. The source switch was the only change between the two saved Width states. This resolves the earlier two-channel host limitation for the Width follower. External audio triggering for the LFO is a separate measurement.
+
+For every 256-frame callback at 48 kHz, the main input stayed fixed at L = +0.01, R = −0.01. Five auxiliary plateaus lasted 245,760 samples apiece. The table gives mean side gain over the final 2,048 samples in each plateau. Base Width was 50% side gain, Add amount 75%, neutral offset, threshold zero and Attack/Hold/Release at 50%/0%/50%. Both modes reported zero samples of delay.
+
+| Key L / R | Internal source | External source |
+|---|---:|---:|
+| 0 / 0 | 0.51999944 | 0.49999999 |
+| +0.20 / 0 | 0.51999944 | 0.89999102 |
+| 0 / −0.40 | 0.51999944 | 1.29998205 |
+| +0.15 / −0.15 | 0.51999944 | 0.79999100 |
+| 0 / 0 after release | 0.51999944 | 0.50000690 |
+
+The detector follows the greater absolute amplitude of the source pair in these cases. Inverting one key channel still drives Width. The music stays on the main input and its side gain changes independently of the key signal. The internal follower topic implements the band's own signal; four-input Width routing remains a devices-lane integration point.
+
+### Focus drawing kit reproduction for Mix View
+
+The standalone drawing kit was rebuilt from its distributed archive using its own documented Release configuration, pinned graphics library and MSVC strict warnings. The program reproduced every geometric count on the two eight-second stems: 4,026,353 retained vertices of 26,910,660, largest observed deviation 0.199997 pixel. Its displayed preview remains a fixture for the owner's implementation. Its CPU tables describe its software rendering path.
+
 ## 2026-11-19 — Visible scope calibration for the Mix View owner
 
 Handoff to **Mix View**, synchronized against its DF-M26 log at `133b2aa2`. The clones seat worked from published refs in its own checkouts. Mix View owns the summed trace, timing preview and their visible integration. On the shared eight-second kick/bass fixture, render the raw stereo sum before binning and suppress the timing suggestion on all six weak or ambiguous regions. A broadband delayed copy should suggest advancing B by 137 samples (2.854 ms at 48 kHz). The paired drawing test and the acceptance cases are in the earlier entries. The reproducible kits are named `ADi-Focus-validation.zip` and `ADi-Focus-drawing.zip`.
