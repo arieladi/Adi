@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Scanner stack reconciled with the current main probe
+
+**PR requested** `engine-win/scanner-current-main` at `fe7dda00fb3ee4a4ba887e72c3ef2cab6d8bc9d6`. This review candidate brings the integrated scanner `926f6078` onto main `796fe498` in the topic only. The single conflicted owned VST3 fixture retains both independent readers, for signed transport and for completed scanner `process` calls. The PE export receipt confirms both.
+
+Strict native MSVC x64 Debug `/W4 /WX` passed 997 checks in eleven suites and 211 direct VST3 fixture checks, with 16 separate editor subchecks. Actual fixture realtime and offline signed transport passed. Three cache symlink cases skipped for privilege and the VST3 scanner used the original-path fallback. This is the combined review tip against that main revision.
+
 ## 2026-11-19 — PD-02 partial WAL checkpoint warning
 
 **PR requested** `engine-win/collect-checkpoint-warning` at `99b0309436757f4b7c04bad348c97db87c4d6358`, stacked on archive media streaming `85fe86e7`. Collection inspects both PASSIVE frame counts. A pinned SQLite reader can leave frames pending with SQLITE_OK, so the operation retains committed success and reports the pending checkpoint. The regression verifies the collected file, the older snapshot and warning removal after the reader ends.
