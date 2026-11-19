@@ -576,6 +576,61 @@ void permanentMainMeter() {
     root.removeFromDesktop();
 }
 
+void linkedMainMeter() {
+    using namespace adi::ui;
+    Fixture f;
+    Root root;
+    MixOutputMeter meter;
+    root.setSize(240, 520);
+    meter.setBounds(root.getLocalBounds());
+    root.addAndMakeVisible(meter);
+    root.setVisible(true);
+    root.addToDesktop(0); // software peer only
+    int auditionCalls = 0;
+    meter.setAuditionSink([&](auto) { ++auditionCalls; });
+    auto other = f.broker->acquireStereoMeter(1, {});
+    meter.frame(f.broker, 1, {});
+    check(meter.channelBox.getSelectedId() == 1 && meter.channelBox.getNumItems() == 3 &&
+              meter.channelBox.getItemText(2) == "Link", "the Main meter offers a distinct Link mode with Stereo as default");
+    meter.channelBox.setSelectedId(3, juce::sendNotificationSync);
+    meter.frame(f.broker, 1, {});
+    const auto shared = f.broker->stats();
+    check(shared.consumers == 2 && shared.domains == 2 && shared.taps == 1 && f.acquired == 1,
+          "Link uses its own meter profile and shares the existing physical tap with Stereo");
+    f.write();
+    f.broker->pump();
+    meter.frame(f.broker, 1, {});
+    const auto linked = meter.reading();
+    const auto stereo = other.readStereoMeter();
+    check(linked && linked->reading.linkedDynamicDb && stereo && !stereo->reading.linkedDynamicDb &&
+              linked->reading.maximumPeak == stereo->reading.maximumPeak &&
+              linked->reading.sineReferencedRms == stereo->reading.sineReferencedRms && auditionCalls == 0,
+          "only Link exposes the combined dynamic result and both modes retain the same levels without a monitor change");
+
+    meter.resetButton.onClick();
+    meter.frame(f.broker, 1, {});
+    check(!meter.reading() && other.readStereoMeter() == stereo,
+          "Link Reset clears the linked interval without resetting a Stereo observer");
+    meter.channelBox.setSelectedId(1, juce::sendNotificationSync);
+    meter.frame(f.broker, 1, {});
+    check(meter.reading() == stereo && f.broker->stats().domains == 1 && auditionCalls == 0,
+          "changing back to Stereo reuses its existing publication and releases Link work");
+
+    meter.channelBox.setSelectedId(3, juce::sendNotificationSync);
+    meter.frame(f.broker, 1, {});
+    other.reset();
+    root.setVisible(false);
+    const auto hidden = f.broker->stats();
+    f.write(1024);
+    f.broker->pump();
+    meter.frame(f.broker, 1, {});
+    check(!meter.subscribed() && !meter.reading() && hidden.taps == 0 && f.released == 1 &&
+              hidden.workerPasses == f.broker->stats().workerPasses && auditionCalls == 0,
+          "an unseen linked meter holds no tap and executes no analysis");
+    meter.setAuditionSink({});
+    root.removeFromDesktop();
+}
+
 void parkedMainLoudnessProjection() {
     using namespace adi::ui;
     Fixture f;
@@ -2125,7 +2180,7 @@ void compareHoldSurvivesInvalidA() {
 int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
-          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); parkedMainLoudnessProjection();
+          mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); linkedMainMeter(); parkedMainLoudnessProjection();
           compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
           freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); spectrumDetailScale(); spectrumExtendedScale();
           spectrumDeviceScale(); spectrogramHistoryMotion(); classicScopeSurface();
