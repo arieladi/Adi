@@ -98,7 +98,8 @@ bool ended(unsigned pid){const auto handle=OpenProcess(SYNCHRONIZE,FALSE,pid);
     const bool result=WaitForSingleObject(handle,0)==WAIT_OBJECT_0;CloseHandle(handle);return result;}
 const char* name(State state){switch(state){case State::Ready:return "Ready metadata";case State::Quarantined:return "Quarantined";
     case State::Unavailable:return "Unavailable";case State::Cancelled:return "Cancelled";case State::Failed:return "Failed";
-    case State::Invalid:return "Invalid";case State::CallbackRefused:return "CallbackRefused";}return "unknown";}
+    case State::Invalid:return "Invalid";case State::CallbackRefused:return "CallbackRefused";
+    case State::HelperCouldNotStart:return "HelperCouldNotStart";}return "unknown";}
 struct Sequence {
     test::TempDirectory temp{"scanner_cases","real_factory"};Environment restore;
     Config config;std::unique_ptr<Scanner> scanner;std::unique_ptr<PluginRegistry> registry;

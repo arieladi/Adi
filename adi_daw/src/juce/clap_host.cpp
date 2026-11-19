@@ -1979,7 +1979,7 @@ scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Co
         const auto& path = bundles[index];
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?path:result.path,result.error,result.state});
-            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+            if(scan::stopsDiscovery(result.state)) {
                 report.cancelled=result.state==scan::State::Cancelled;
                 return false;
             }
@@ -1997,9 +1997,10 @@ scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Co
         return true;
     };
     std::string error;
-    report.complete = scan::detail::visitProbes(bundles.size(), config, probe, accept, error);
+    auto openFailure=scan::State::Unavailable;
+    report.complete = scan::detail::visitProbes(bundles.size(), config, probe, accept, error, &openFailure);
     if (!report.complete) {
-        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        if (!error.empty()) report.failures.push_back({"", std::move(error), openFailure});
         return report;
     }
     found_=std::move(found);return report;

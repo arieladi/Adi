@@ -96,7 +96,7 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
         const auto bytes = files[index].toStdString();
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
-            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+            if(scan::stopsDiscovery(result.state)) {
                 report.cancelled=result.state==scan::State::Cancelled;
                 return false;
             }
@@ -110,9 +110,10 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
         return true;
     };
     std::string error;
-    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error);
+    auto openFailure=scan::State::Unavailable;
+    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error, &openFailure);
     if (!report.complete) {
-        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        if (!error.empty()) report.failures.push_back({"", std::move(error), openFailure});
         return report;
     }
     into.clear();for(const auto& description:found)into.addType(description);return report;
