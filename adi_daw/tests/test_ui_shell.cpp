@@ -10300,6 +10300,16 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
     const auto lanes = root.arrangement.getBounds();
     const auto browserBeforeMix = root.browser.getBounds();
     const auto devicesBeforeMix = root.devices.getBounds();
+    const auto namesBeforeMix = root.namesBar.getBounds();
+    const auto arrangementNamesVisible = [&] {
+        const auto bar = root.namesBar.getBounds();
+        const auto headers = root.arrangement.headers.getBounds() + root.arrangement.getPosition();
+        return root.namesBar.isVisible() && bar.getWidth() > 0 &&
+               bar.getHorizontalRange().contains(headers.getHorizontalRange()) &&
+               bar.getY() == root.arrangement.getY() + root.arrangement.overviewHeight() &&
+               root.namesBar.inOut.getToggleState() == root.state().inOut &&
+               root.namesBar.flip.getToggleState() == root.arrangement.namesFirst();
+    };
     const auto workspaceBody = root.getLocalBounds().withTrimmedTop(root.transport.getHeight())
                                                     .withTrimmedBottom(root.status.getHeight());
     check(!panel.isVisible() && root.arrangement.isVisible() && !root.state().mixView,
@@ -10311,7 +10321,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               info.defaultKeypresses[0] == juce::KeyPress(juce::KeyPress::F4Key) &&
               (info.flags & juce::ApplicationCommandInfo::isTicked) == 0,
           "the View menu's Mix View, on F4 (ADR-0209 d9)");
+    check(arrangementNamesVisible(), "the Arrangement names bar follows its current ruler and controls");
     check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
+    check(!root.namesBar.isVisible(), "the Arrangement names bar is hidden before the first Mix View frame");
     root.frame();
     check(panel.stack.model().windowView().channelScope == stack::ChannelScope::AllChannels &&
               panel.stack.channelScope.getSelectedId() == 2 && panel.stack.model().shownIndex(10),
@@ -10765,6 +10777,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
               root.browser.getBounds() == browserBeforeMix && root.devices.getBounds() == devicesBeforeMix &&
               root.transport.arrangementPage.getToggleState() && !root.transport.mix.getToggleState(),
           "the Arrangement segment restores its panels to their prior bounds");
+    check(arrangementNamesVisible() && root.namesBar.getBounds() == namesBeforeMix,
+          "closing Mix View restores the names bar at its original ruler position");
     // While it is closed the project changes; opened, it shows the change on its first picture, before
     // any frame (the director's R3: no flash of what it held before).
     {
@@ -10841,7 +10855,9 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                   panel.getBounds() == root.mixViewArea() && root.mixViewArea() == root.mixViewDock() &&
                   !root.arrangement.isVisible() && root.state().mixView && !root.state().mixViewDetached,
               "its window button docks it where it stood, open");
+        check(!root.namesBar.isVisible(), "redocking the full Mix View hides the names bar on the same action");
         panel.floating.onClick();
+        check(arrangementNamesVisible(), "detaching Mix View restores the Arrangement names bar");
         check(host.content("Mix View") == &panel && (!displays || host.window("Mix View")->getBounds() == moved),
               "and puts it back in its window where it was left");
         check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && !root.state().mixView &&
