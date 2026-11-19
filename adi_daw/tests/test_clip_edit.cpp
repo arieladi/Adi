@@ -98,21 +98,26 @@ void independentFadeHandles() {
             "INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(7,57000000)");
     const Payload both={{"in",{{"ticks",q/4},{"startTicks",q/8}}},{"out",{{"ticks",q/4},{"startTicks",q/8}}}};
     const ClipFadeHandles expected{q/8,q/4};
+    const auto clipById=[](const Snapshot& frame,std::int64_t id)->const ClipNode& {
+        for(const auto& clip:frame.tracks.front()->clips)
+            if(clip->id==id)return *clip;
+        throw std::runtime_error("missing authored fade clip");
+    };
     auto linear=both;linear["id"]=7;
     check(p.fade(linear),"offset fade start and end are one edit on a linear clip");
     auto snapshot=SnapshotBuilder::fromStore(*p.store);
-    check(p.clip(*snapshot).fadeInHandles==expected && p.clip(*snapshot).fadeOutHandles==expected,
+    check(clipById(*snapshot,7).fadeInHandles==expected && clipById(*snapshot,7).fadeOutHandles==expected,
           "linear snapshot projects both authored handle pairs across a tempo change");
     check(db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=7 AND "
           "in_begin_ns=119499983 AND in_end_ns=181999983 AND out_begin_ns=556999983 AND out_end_ns=681999983").getInt()==1,
           "linear handles pin to the existing physical source offset and exact placement clock");
     check(p.fade({{"id",7},{"in",{{"startTicks",q/16}}}}),"lower handle can move without restating the peak");
     auto moved=SnapshotBuilder::fromStore(*p.store,*snapshot);
-    check(p.clip(*moved).fadeInHandles==ClipFadeHandles{q/16,q/4} && p.clip(*moved).fadeOutHandles==expected,
+    check(clipById(*moved,7).fadeInHandles==ClipFadeHandles{q/16,q/4} && clipById(*moved,7).fadeOutHandles==expected,
           "moving the lower handle leaves both peaks and the opposite fade fixed");
     check(History(*p.store).undo().ok,"undo lower handle by itself");
     auto restored=SnapshotBuilder::fromStore(*p.store,*moved);
-    check(p.clip(*restored).fadeInHandles==expected && p.clip(*restored).fadeOutHandles==expected,
+    check(clipById(*restored,7).fadeInHandles==expected && clipById(*restored,7).fadeOutHandles==expected,
           "undo restores the exact lower handle and unchanged opposite fade");
     const auto head=OpJournal(*p.store).headSeq();
     check(!p.fade({{"id",7},{"in",{{"startTicks",0}}},{"out",{{"startTicks",q/4}}}}) &&
@@ -125,7 +130,7 @@ void independentFadeHandles() {
           "Warp keeps its handle pairs in the unrolled musical source clock");
     check(p.fade({{"id",9},{"out",{{"startTicks",0}}}}),"zero offset puts the selected lower handle back at the edge");
     auto atEdge=SnapshotBuilder::fromStore(*p.store);
-    check(p.clip(*atEdge,2).fadeInHandles==expected && p.clip(*atEdge,2).fadeOutHandles==ClipFadeHandles{0,q/4},
+    check(clipById(*atEdge,9).fadeInHandles==expected && clipById(*atEdge,9).fadeOutHandles==ClipFadeHandles{0,q/4},
           "resetting one Warp handle leaves its opposite bound alone");
     check(History(*p.store).undo().ok && History(*p.store).undo().ok &&
           db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id=9").getInt()==0 &&
@@ -133,7 +138,7 @@ void independentFadeHandles() {
     p.store.reset();StoreError error{};p.store=Store::open(p.temporary.path()/"song.adi",error);
     if(!p.store)throw std::runtime_error(toString(error));
     const auto reopened=SnapshotBuilder::fromStore(*p.store);
-    check(p.clip(*reopened,2).fadeInHandles==expected && p.clip(*reopened,2).fadeOutHandles==expected,
+    check(clipById(*reopened,9).fadeInHandles==expected && clipById(*reopened,9).fadeOutHandles==expected,
           "reopened Warp clip has both authored handle pairs");
 }
 void clipboardAndSplits() {

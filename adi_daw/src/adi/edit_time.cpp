@@ -43,13 +43,7 @@ std::int64_t TimeMap::ticks(std::int64_t nanos)const {
     const long double bound=static_cast<long double>(nanos)/1e9L*fastest_*textproj::kPPQ/60;
     if(!std::isfinite(bound) || bound>static_cast<long double>(std::numeric_limits<std::int64_t>::max())-4096)
         throw std::runtime_error("edit time is outside tick range");
-    const auto floor=tempo_.secondsToTicks(static_cast<double>(nanos)*1e-9);
-    if(floor==std::numeric_limits<std::int64_t>::max())return floor;
-    // A stored integer nanosecond can be slightly below the exact tick that
-    // produced it. Recover that tick only if it rounds to these same bytes.
-    const auto following=static_cast<long double>(tempo_.ticksToSeconds(floor+1))*1e9L;
-    const auto requested=static_cast<long double>(nanos);
-    return following>=requested-0.5L && following<requested+0.5L?floor+1:floor;
+    return tempo_.storedNanosecondsToTicks(nanos);
 }
 std::int64_t TimeMap::duration(std::int64_t origin,std::int64_t ticks)const {
     if(origin<0 || ticks<0)throw std::runtime_error("edit duration must be nonnegative");

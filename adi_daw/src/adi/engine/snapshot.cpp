@@ -18,6 +18,8 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <tuple>
+#include <unordered_set>
 #include <sqlite3.h>
 
 namespace adi::engine {
@@ -36,6 +38,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
+           a.timeBase==b.timeBase && a.posNs==b.posNs && a.lengthNs==b.lengthNs &&
            a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
@@ -45,24 +48,21 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.controllers == b.controllers;
 }
 
-void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks,
-                        std::optional<std::int64_t> posNs,std::optional<std::int64_t> lengthNs) {
+void projectFadeHandles(ClipNode& clip,const TempoMap& tempo,std::int64_t offsetTicks) {
     clip.fadeInHandles={0,clip.fadeInTicks};
     clip.fadeOutHandles={0,clip.fadeOutTicks};
     if(!clip.audio)return;
     const auto& domain=clip.audio->warpEnabled?clip.fadeClockTicks:clip.fadeClockNs;
     if(!domain[0] && !domain[2])return;
     constexpr auto limit=std::numeric_limits<std::int64_t>::max();
-    auto begin=clip.posTicks;
+    const auto begin=clip.posTicks;
     if(begin<0 || clip.lengthTicks<0 || clip.lengthTicks>limit-begin)return;
-    auto end=begin+clip.lengthTicks;
+    const auto end=begin+clip.lengthTicks;
     double beginSeconds=tempo.ticksToSeconds(begin),endSeconds=tempo.ticksToSeconds(end);
-    if(posNs && lengthNs) {
-        if(*posNs<0 || *lengthNs<0 || *lengthNs>limit-*posNs)return;
-        beginSeconds=static_cast<double>(*posNs)*1e-9;
-        endSeconds=static_cast<double>(*posNs+*lengthNs)*1e-9;
-        begin=tempo.secondsToTicks(beginSeconds);
-        end=tempo.secondsToTicks(endSeconds);
+    if(clip.timeBase==1 && clip.posNs && clip.lengthNs) {
+        if(*clip.posNs<0 || *clip.lengthNs<0 || *clip.lengthNs>limit-*clip.posNs)return;
+        beginSeconds=static_cast<double>(*clip.posNs)*1e-9;
+        endSeconds=static_cast<double>(*clip.posNs+*clip.lengthNs)*1e-9;
     }
     if(end<begin || offsetTicks<0 || offsetTicks>limit-begin ||
        !std::isfinite(beginSeconds) || !std::isfinite(endSeconds) || endSeconds<beginSeconds)return;
@@ -167,6 +167,16 @@ std::int64_t TempoMap::secondsToTicks(double seconds) const noexcept {
         bpm = e.bpm;
     }
     return tickAt();
+}
+
+std::int64_t TempoMap::storedNanosecondsToTicks(std::int64_t nanos) const noexcept {
+    if(nanos<0 || events.empty())return 0;
+    const auto floor=secondsToTicks(static_cast<double>(nanos)*1e-9);
+    if(floor==std::numeric_limits<std::int64_t>::max())return floor;
+    // An integer nanosecond can round just below its originating tick.
+    const auto following=static_cast<long double>(ticksToSeconds(floor+1))*1e9L;
+    const auto requested=static_cast<long double>(nanos);
+    return following>=requested-0.5L && following<requested+0.5L?floor+1:floor;
 }
 
 // --- snapshot -------------------------------------------------------------------
@@ -358,7 +368,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
             "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-            "content_offset_ticks,pos_ns,length_ns "
+            "content_offset_ticks,time_base,pos_ns,length_ns "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
@@ -380,7 +390,19 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             const auto linear=[&](int column)->std::optional<std::int64_t> {
                 return st.getColumn(column).isNull()?std::nullopt:std::optional{st.getColumn(column).getInt64()};
             };
-            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64(),linear(12),linear(13));
+            c.timeBase=st.getColumn(12).getInt64();
+            c.posNs=linear(13);
+            c.lengthNs=linear(14);
+            if(c.timeBase==1) {
+                c.posTicks=c.posNs?snap->tempo->storedNanosecondsToTicks(*c.posNs):0;
+                c.lengthTicks=0;
+                if(c.posNs && c.lengthNs && *c.posNs>=0 && *c.lengthNs>=0 &&
+                   *c.lengthNs<=std::numeric_limits<std::int64_t>::max()-*c.posNs) {
+                    const auto end=snap->tempo->storedNanosecondsToTicks(*c.posNs+*c.lengthNs);
+                    c.lengthTicks=std::max(std::int64_t{0},end-c.posTicks);
+                }
+            }
+            projectFadeHandles(c,*snap->tempo,st.getColumn(11).getInt64());
             if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
                 c.controllers = lanes->second;
 
@@ -392,6 +414,12 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+    const auto clipOrder=[](const auto& a,const auto& b) {
+        return std::tie(a->posTicks,a->id)<std::tie(b->posTicks,b->id);
+    };
+    for(auto& [track,clips]:clipsByTrack)
+        if(!std::is_sorted(clips.begin(),clips.end(),clipOrder))
+            std::sort(clips.begin(),clips.end(),clipOrder);
 
     struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
     std::map<std::int64_t,PanSettings> panSettings;
@@ -506,6 +534,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // Resolve weak remark anchors from the same read snapshot. Build small
     // ownership maps once; no per-device filesystem/host/state queries.
     std::map<std::int64_t,std::int64_t> clipTrack,deviceChain;
+    std::unordered_set<std::int64_t> trackIds;
+    trackIds.reserve(snap->tracks.size());
+    for(const auto& track:snap->tracks)trackIds.insert(track->id);
     struct ChainOwner {std::optional<std::int64_t> track,parentDevice;};
     std::map<std::int64_t,ChainOwner> chainOwner;
     try {
@@ -546,7 +577,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             else if(remark.targetKind=="clip") {
                 const auto owner=clipTrack.find(remark.targetId);if(owner!=clipTrack.end())remark.trackId=owner->second;
             }else if(remark.targetKind=="device")remark.trackId=deviceTrack(remark.targetId);
-            if(remark.trackId && !snap->findTrack(*remark.trackId))remark.trackId.reset();
+            if(remark.trackId && !trackIds.contains(*remark.trackId))remark.trackId.reset();
             remark.anchorMissing=!remark.trackId;
             const auto old=previousRemarks.find(remark.id);
             if(old!=previousRemarks.end() && *old->second==remark)snap->remarks.push_back(old->second);
