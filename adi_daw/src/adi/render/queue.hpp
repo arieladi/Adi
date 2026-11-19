@@ -54,6 +54,9 @@ struct Job {
     std::optional<NiStems> niStems = {};
     Normalization normalization{};
 };
+// Pure job-input validation shared by the queue and its JSON codec. Does not
+// open the project, resolve its revision/names, enqueue or render anything.
+void validateJob(const Job&);
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
