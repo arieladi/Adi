@@ -81,6 +81,7 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
         if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
         Read read(store.db());result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
         if(recorded.sourceProject().empty() || recorded.sourceProject()!=result.sourceProject)throw std::runtime_error("recording belongs to a different project");
+        if(recorded.loopSpec())throw std::runtime_error("loop recording needs take-pass publication; linear attachment is not permitted");
         if(recorded.failure!=engine::RecordingFailure::None || recorded.frames==0 || recorded.sampleRate<8000 || recorded.sampleRate>768000 ||
            recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
            ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");

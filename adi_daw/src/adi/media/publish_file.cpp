@@ -361,6 +361,10 @@ std::error_code renameReplacing(const fs::path& source,const fs::path& target) n
     std::error_code error;fs::rename(source,target,error);return error;
 #endif
 }
+std::optional<FileIdentity> readFileIdentity(const fs::path& path,std::error_code& error) noexcept {
+    if(audio::onAudioThread){error=std::make_error_code(std::errc::operation_not_permitted);return {};}
+    return identityAt(path,error);
+}
 struct ProjectFileLease::Impl {
     NativeFile file=invalidFile;
     fs::path path;
@@ -587,7 +591,7 @@ PublishResult publishFile(const fs::path& source, const fs::path& target, Publis
         const auto synced=syncStaged(source);
         if(synced)return {PublishStatus::failed,false,"sync staging file: "+synced.message()};
         const auto error = hooks.rename ? hooks.rename(source, target) : renameExclusive(source, target);
-        if (!error) return publishedResult(target,*identity);
+        if (!error) return publishedResult(target,*identity,hooks.syncDirectory);
         if (error == std::errc::file_exists) return {PublishStatus::exists, false, error.message()};
         if(policy==PublishPolicy::AtomicOnly)return {PublishStatus::failed,false,"atomic publication: "+error.message()};
         copying = true;
