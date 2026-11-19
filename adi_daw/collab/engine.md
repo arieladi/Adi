@@ -24,6 +24,14 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — DF-E4 library discovery and hash admission
+
+**PR requested** — branch `engine/df-e4-library-scan`, head `47243494b7ed54c18cfe104242b9e230e961adf1`, main base `88e2d94e`. Title **DF-E4: Keep library discovery and hash admission atomic**. Follows the scanner cancellation work already on main.
+
+Separate directory cursors keep the parent scan alive when a child disappears. The child is checked again before opening it. Hash queue changes stage under the index mutex before SQLite commits. A failed enqueue, cancellation or COMMIT removes the new queue entries and releases their deduplication keys. The worker sees the changes after publication succeeds.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors passed 74 library and 65 sample-defaults checks. Main failed the vanished child case first. A deferred foreign-key COMMIT failure preserves an earlier queued job and allows retry. An injected allocation exception passes with the staged order and reproduces the misleading rollback report with COMMIT moved first. The vanished-child fault also failed its intended check. Four validators and the layout check passed.
+
 ## 2026-11-19 — DF-E3 retire unapplied progressive decode jobs
 
 **PR requested** — branch `engine/df-e3-progressive-queue`, head `83cca8a5e1a59c2ffc7590d3db327007278c4373`, main base `88e2d94e`. Title **DF-E3: Release queued decode admission on the last lease**.
