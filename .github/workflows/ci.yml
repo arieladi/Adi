@@ -30,6 +30,11 @@
 # little-endian precondition is enforced rather than merely asserted, and both
 # Python validators pass on the oldest and the newest Python we support.
 #
+# THE ONE CHECK TO READ is `gate`, the last job in this file. It needs every
+# other job and fails if any of them failed or was cancelled, so "gate is
+# SUCCESS" is the whole answer for a run -- not a count of green ticks, which
+# changes every time a leg is added, skipped or split.
+#
 # WHAT A PULL REQUEST COSTS (since 2026-11-19, win). The account runs about 20
 # jobs at once, and one full run of this file is about 20 jobs, so every run
 # that need not happen is a run that waits. Three rules keep the pool for work
@@ -1137,3 +1142,48 @@ jobs:
           fi
           echo "ok -- devices loaded and nothing heard is a failure"
 
+  # ---------------------------------------------------------------------------
+  # gate -- the one check that says whether this run proved the change.
+  #
+  # land_top.sh used to count green ticks and land at 20. A count answers the
+  # wrong question: a Markdown-only run skips most legs on purpose, every new or
+  # split leg moves the number, and a leg that never started is not counted as
+  # anything. This job needs EVERY other job and fails if any of them failed or
+  # was cancelled. A skip is fine, because every skip in this file is a decision
+  # (plan's answers), never an accident. `always()` is what makes it run when a
+  # need failed: without it a failed leg would skip the gate, and a skipped gate
+  # reads as nothing at all.
+  #
+  # Not on a draft. There every job skipped on purpose, and a SUCCESS here
+  # would say that a draft nobody built is ready to land.
+  #
+  # A new job goes into `needs:` below; validate_ci.py check [5] fails until it
+  # does.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    needs: [plan, validators, build, abi-ilp32, abi-big-endian, strict, provenance, fuzz, juce]
+    if: ${{ always() && !github.event.pull_request.draft }}
+    steps:
+      - name: Every job passed, or was skipped on purpose
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          bad = 0
+          for job, out in sorted(needs.items()):
+              result = out.get("result", "")
+              # success and skipped pass; failure and cancelled do not. A
+              # cancelled leg proved nothing, whatever cancelled it.
+              if result in ("success", "skipped"):
+                  print(f"ok    {job}: {result}")
+              else:
+                  print(f"::error::{job}: {result}")
+                  bad += 1
+          print(f"{len(needs)} jobs, {bad} not passed")
+          sys.exit(1 if bad else 0)
+          PY
