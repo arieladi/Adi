@@ -12,6 +12,18 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — PD-02 partial WAL checkpoint warning
+
+**PR requested** `engine-win/collect-checkpoint-warning` at `99b0309436757f4b7c04bad348c97db87c4d6358`, stacked on archive media streaming `85fe86e7`. Collection inspects both PASSIVE frame counts. A pinned SQLite reader can leave frames pending with SQLITE_OK, so the operation retains committed success and reports the pending checkpoint. The regression verifies the collected file, the older snapshot and warning removal after the reader ends.
+
+Native MSVC x64 Debug `/W4 /WX` reproduced one missing-warning failure, then passed 286 checks across collection, ZIP and project files. Three optional symlink checks skipped.
+
+## 2026-11-19 — EX-08 Broadcast Wave v2 writer prerequisite
+
+**PR requested** `engine-win/wav-bwf-v2` at `a657d93b9bf0b226674e8d52f717279cc49b21fe`, based on main `796fe498`. Optional BWF v2 writes supplied originator, time reference, date/time, UMID, coding history and five loudness fields. It validates before opening the output, encodes signed centi-units with the unknown sentinel, and preserves the old v0 layout when the option is absent. [EBU Tech 3285](https://tech.ebu.ch/docs/tech/tech3285.pdf)
+
+The actual writer and WAV suite compiled in strict native MSVC x64 Debug and passed 221 checks, including byte-level assertions and refused-input preservation. The optional physical file over 4 GiB and whole app were not run. Job metadata and checked-output field patching still need EX-05's statistics and stage contract.
+
 ## 2026-11-19 — Cache Folder for decoded audio
 
 **PR requested** `engine-win/decode-cache-folder` at `b89e9a5b4ec91330715f2d51fd6ca4f1c2962a54`, stacked on cache limits `4af5e656`. The desktop uses the `decoded` child of the absolute configured Cache Folder. An empty value selects the app cache. Only a decode that needs it creates the folder. Changing location takes effect on relaunch to keep pinned PCM readers on their existing paths. The tests use a Unicode path and prove trim leaves a neighboring file alone. Analysis has a separate cache and this entry covers decoded audio.
