@@ -107,6 +107,7 @@ ready.
 - **Order:** both go ahead of this lane's other branches, `pd-param-float` before
   `chorus-ensemble-defaults` and `reverb-defaults`. The combined tree of the 18 branches (entry
   below) passes 253/253 at 32. At 64 it fails exactly these two suites, both fixed here.
+- **Under ASan:** the same 18 branches plus these two fixes, merged onto 88e2d94e (3a1c822c, a local trial) and built with MSVC's `/fsanitize=address`. 252 of 253 suites pass with no memory error. The one failure is `adi_changeset_tests`'s 60-second wall-clock bound, which ASan's slowdown exceeds (151 s), as on main alone.
 
 ## 2026-11-19 — ADR-0249 read: the new effects come after 3 December; Beat Repeat's questions are on the list
 
