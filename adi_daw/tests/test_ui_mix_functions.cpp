@@ -3,7 +3,7 @@
 // No native host, OS window, desktop input, capture or audio device is involved.
 #include "../src/juce/ui_shell.hpp"
 #include "../src/juce/ui_look.hpp"
-#include "juce/builtin_host.hpp"
+#include "../src/juce/ui_stack_picker.hpp"
 #include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include "juce/builtin_host.hpp"
@@ -338,6 +338,55 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     strip.frame(3); strip.frame(2);
     staleAction();
     check(additions == 1, "leaving and returning to the channel cannot revive its prior add menu");
+    {
+        root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
+        root.setMixView(true, false);
+        root.frame();
+        auto &stack = root.mixViewPanel.stack;
+        stack.frame(root.reader());
+        rows::PluginRef reference;
+        reference.format = "vst3";
+        reference.uid = "fixture.vendor.unique";
+        reference.name = "Fixture VST";
+        root.catalogPlugins = [reference] { return std::vector{reference, reference}; };
+        int plugIns = 0;
+        root.loadPlugin = [&](const auto& picked, std::int64_t track) {
+            if (picked.uid == reference.uid && track == 2) ++plugIns;
+            return true;
+        };
+        auto menu = stack.rowAddMenu(stack.model().rowRef(2));
+        const auto result = menuItems(menu);
+        const auto named = [&](const auto& label) {
+            return std::find_if(result.begin(), result.end(), [&](const auto &item) { return item.name == label; });
+        };
+        const auto plugin = named("Fixture VST (VST3)");
+        const auto limiter = named("Limiter");
+        check(!result.empty() && result.front().name == "Mix View tools" && named("Devices") < named("Plug-ins") &&
+              named("Plug-ins") < plugin && plugin != result.end() &&
+              limiter != result.end() && limiter->ticked && !limiter->enabled &&
+              std::count_if(result.begin(), result.end(), [&](const auto& item) { return item.name == plugin->name; }) == 1,
+              "the picker orders devices after tools, deduplicates plug-ins and ticks the existing function");
+        StackAddPicker picker(menu);
+        auto* search = dynamic_cast<juce::TextEditor*>(picker.getChildComponent(0));
+        auto* list = dynamic_cast<juce::ListBox*>(picker.getChildComponent(1));
+        check(search && list, "the picker exposes a search field and a named menu");
+        if (search && list) {
+            search->setText("fixture vst", false);
+            search->onTextChange();
+            check(list->getModel()->getNumRows() == 2 && list->getSelectedRow() == 1 &&
+                      list->getModel()->getNameForRow(1) == "Fixture VST (VST3)",
+                  "case-insensitive search focuses the matching device and exposes its accessible name");
+            search->onReturnKey();
+        }
+        check(plugIns == 1, "Enter loads the matching plug-in on the captured row");
+        stack.cancelInteractions();
+        if (plugin != result.end()) plugin->action();
+        check(plugIns == 1, "a stale picker action is refused after cancellation");
+        root.catalogPlugins = {};
+        root.loadPlugin = {};
+        root.setMixView(false, false);
+        strip.frame(2);
+    }
     ordinary = strip.panels[0].get(); native = strip.panels[1].get();
     native->enabled.onClick();
     check(op == "device.remove" && payload.at("id").get<std::int64_t>() == 20,

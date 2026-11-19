@@ -128,6 +128,8 @@ Constants Constants::scaled(double k) const {
         px(w);
     for (auto &w : s.w100Dormant)
         px(w);
+    px(s.chainEndSpace);
+    px(s.pluginChipWidth);
     px(s.chainItemMin);
     px(s.pill);
     px(s.itemGap);
@@ -158,6 +160,8 @@ Constants mixChannelGeometry(DensityId id) noexcept {
     auto c = Constants{}.scaled(static_cast<double>(density.mixStackRow) / compactRow);
     c.continuousLens = true;
     c.anchor = Anchor::PointerRowFraction;
+    c.chainEndSpace = density.fieldHeight + 2 * density.gap;
+    c.pluginChipWidth = density.mixPluginChipWidth;
     c.baseDefault = density.mixStackRow;
     c.detents = {c.baseMin, c.baseDefault * 4 / 5, c.baseDefault,
                  density.mixStackOuterRow, density.mixStackNearRow, c.baseMax};
@@ -271,7 +275,8 @@ ProcessorPlan planProcessor(double listWidth, int base, std::span<const KindScop
     const double navFull = view.navigator ? (view.navigatorCollapsed ? c.navigatorCollapsed : c.navigatorWidth) : 0;
     const auto fixedFor = [&](double procW, double navW) {
         const std::size_t parts = 1 + (view.showChain ? 1u : 0u) + (procW > 0 ? 1u : 0u);
-        return static_cast<double>(c.chipColumn) + static_cast<double>(parts - 1) * gap + procW + navW;
+        const double trailing = view.showChain ? c.chainEndSpace : 0;
+        return static_cast<double>(c.chipColumn) + static_cast<double>(parts - 1) * gap + procW + navW + trailing;
     };
     const auto fits = [&](double fixed) {
         const double lane = listWidth - fixed;
@@ -316,7 +321,7 @@ ProcessorPlan planProcessor(double listWidth, int base, std::span<const KindScop
     if (view.layout == RowLayout::ChainFirst) {
         if (view.showChain) {
             p.laneX = x;
-            x += p.laneW + gap;
+            x += p.laneW + c.chainEndSpace + gap;
         }
         p.processorX = x;
     } else {
@@ -2195,6 +2200,7 @@ double StackModel::itemHeight(const Rec &r, std::size_t index, double h, bool ta
 
 double StackModel::itemWidth(const Rec &r, std::size_t index, double h, bool target) const noexcept {
     const auto &item = r.items[index];
+    if (item.cls == ItemClass::Plugin && item.folded && c_.pluginChipWidth > 0) return c_.pluginChipWidth;
     const double height = itemHeight(r, index, h, target);
     if (item.folded || plan().laneMode == LaneMode::Pills || tierFor(height, false, c_) < c_.foldBelow[classAt(item.cls)])
         return c_.pill;

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_stack.hpp"
+#include "ui_stack_picker.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "ui_devices.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
@@ -10,6 +12,7 @@
 #include <limits>
 #include <set>
 #include <utility>
+#include <tuple>
 namespace adi::ui {
 namespace {
 stack::TimeMs clockNow() noexcept {
@@ -111,6 +114,7 @@ struct StackRow::State {
     std::array<int,2> levelPixels{};
     juce::Component lane;
     juce::TextButton mute{"M"}, solo{"S"};
+    juce::TextButton add{"+"};
     struct Tile {
         stack::ItemRef target;
         std::unique_ptr<DevicePanelView> view;
@@ -140,6 +144,10 @@ StackRow::StackRow(StackTab &s, std::int64_t track)
     state_->solo.onClick = [this, valid] {
         if (valid()) stack_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown());
     };
+    state_->add.setTitle("Add device to channel");
+    state_->add.setTooltip("Add a Mix View function, device or plug-in to this channel.");
+    state_->add.onClick = [this] { stack_.showRowAddMenu(state_->presentedRow.ref, state_->add); };
+    addAndMakeVisible(state_->add);
     setTitle("Channel");
     setTooltip("The channel's actual devices. Hover to enlarge; pin to retain a channel.");
 }
@@ -306,6 +314,13 @@ void StackRow::present(const stack::RowGeo &input) {
     }
     state_->presentedLane = lane;
     state_->presentedItems.swap(state_->pendingItems);
+    const int laneEnd = static_cast<int>(std::ceil(lane.x + lane.width));
+    const double lastEnd = state_->presentedItems.empty() ? lane.x
+        : state_->presentedItems.back().x + state_->presentedItems.back().width;
+    const auto anchor = lane.right ? laneEnd : std::min(laneEnd, static_cast<int>(std::ceil(lastEnd)));
+    const auto size = std::clamp(getHeight() - look::border, 0, look::fieldHeight);
+    state_->add.setBounds(anchor + look::gap, (getHeight() - size) / 2, size, size);
+    state_->add.setVisible(size > 0 && lane.mode != stack::LaneMode::None && state_->add.getRight() <= getWidth());
 }
 void StackRow::paint(juce::Graphics &g) {
     const auto &row = state_->presentedRow;
@@ -353,16 +368,15 @@ void StackRow::paint(juce::Graphics &g) {
             const auto resolved = m.resolve(item.ref);
             const bool current = data && resolved && resolved->identity == data->instance;
             if (!item.pill && current) continue;
-            const juce::Rectangle<float> box(static_cast<float>(item.x), static_cast<float>(item.top - row.top) + 3.f,
-                                              static_cast<float>(item.width),
-                                              static_cast<float>(std::max(0.0, item.height - 6)));
+            const auto inset = static_cast<float>(look::border);
+            const auto box = rect({item.x, item.top - row.top, item.width, item.height}).reduced(0.f, inset);
             look::box(g, box, item.focused ? look::field : look::button);
             g.setColour(current && item.enabled && item.available ? look::accent : look::textDim);
             g.fillEllipse(pillActivator({item.x, item.top - row.top, item.width, item.height}));
             g.setColour(current && item.available ? look::text : look::textDim);
-            g.setFont(look::font(11.5f));
+            g.setFont(look::font(look::fontBody));
             const juce::String label = current ? juce::String(data->name) : "Device changed";
-            if (box.getHeight() > box.getWidth() * 2) {
+            if (!(current && data->plugin) && box.getHeight() > box.getWidth() * 2) {
                 juce::Graphics::ScopedSaveState rotated(g);
                 g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi,
                                                                box.getCentreX(), box.getCentreY()));
@@ -370,15 +384,8 @@ void StackRow::paint(juce::Graphics &g) {
                                                   box.getCentreY() - box.getWidth() / 2,
                                                   box.getHeight() - 18, box.getWidth());
                 g.drawText(label, labelArea.reduced(2, 0), juce::Justification::centred, true);
-            } else g.drawFittedText(label, box.withTrimmedTop(13).reduced(2, 1).toNearestInt(),
+            } else g.drawFittedText(label, box.withTrimmedTop(static_cast<float>(look::fieldHeight)).reduced(inset, 0.f).toNearestInt(),
                                    juce::Justification::centred, 1);
-        }
-        if (lane.count == 0) {
-            g.setColour(look::textDim);
-            g.setFont(look::font(11.5f));
-            g.drawText("No devices", juce::Rectangle<float>(static_cast<float>(lane.x + 8), 0,
-                            static_cast<float>(std::max(0.0, lane.width - 16)), static_cast<float>(getHeight())),
-                       juce::Justification::centredLeft);
         }
     }
     if (lane.left) look::triangle(g, local(lane.leftChevron).reduced(5.f), juce::MathConstants<float>::pi, look::text);
@@ -538,7 +545,7 @@ void StackTab::refreshRows(const SnapshotReader &reader, stack::TimeMs time) {
             for (const auto &d : *state_->publication)
                 state_->chain.push_back({d.track, d.id, d.instance,
                     d.plugin ? stack::ItemClass::Plugin : stack::ItemClass::View, d.name, d.available, d.enabled,
-                    !d.plugin && mix::functionForUid(d.uid) != nullptr, folded.contains(d.id)});
+                    !d.plugin && mix::functionForUid(d.uid) != nullptr, d.plugin || folded.contains(d.id)});
         stack::tracksFromSnapshot(reader, root.arrangement.geometry, provider(), state_->chain, state_->input);
         effects(model().setRows(state_->input.input(generation, state_->revision), time), false);
         if (!alive || state_->frame != frame || state_->layout != layout) return;
@@ -781,6 +788,61 @@ juce::PopupMenu StackTab::functionMenu() {
                safe->root.current()->findTrack(track);
     });
 }
+
+juce::PopupMenu StackTab::rowAddMenu(stack::RowRef row) {
+    const auto safe = juce::Component::SafePointer<StackTab>(this);
+    const auto epoch = ++state_->addMenuEpoch;
+    const auto snapshot = root.current();
+    const auto current = [safe, row, epoch, snapshot] {
+        return safe && safe->isShowing() && safe->state_->addMenuEpoch == epoch && safe->root.current() == snapshot && snapshot &&
+               snapshot->findTrack(row.track) && safe->model().rowRef(row.track) == row;
+    };
+    juce::PopupMenu menu;
+    if (!row.valid() || !current()) return menu;
+    menu.addSectionHeader("Mix View tools");
+    const auto functions = root.devices.functionMenuFor(row.track, current);
+    for (juce::PopupMenu::MenuItemIterator it(functions); it.next();) menu.addItem(it.getItem());
+    menu.addSectionHeader("Devices");
+    for (const auto &info : builtinCatalog()) {
+        if (mix::functionForUid(info.uid)) continue;
+        juce::PopupMenu::Item item(juce::String(std::string(info.name)));
+        item.isEnabled = info.available && static_cast<bool>(root.loadBuiltin);
+        item.action = [safe, row, current, uid = std::string(info.uid)] {
+            if (current()) safe->root.insertDevice(uid, row.track, {});
+        };
+        menu.addItem(std::move(item));
+    }
+    menu.addSectionHeader("Plug-ins");
+    auto plugins = root.catalogPlugins ? root.catalogPlugins() : std::vector<rows::PluginRef>{};
+    std::set<std::tuple<std::string,std::string,std::optional<std::int64_t>>> seen;
+    std::stable_sort(plugins.begin(), plugins.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.name,a.format) < std::tie(b.name,b.format);
+    });
+    for (const auto& plugin : plugins) {
+        if ((plugin.format != "vst3" && plugin.format != "clap") || plugin.uid.empty() ||
+            !seen.emplace(plugin.format,plugin.uid,plugin.shellId).second) continue;
+        juce::PopupMenu::Item item(juce::String(plugin.name) + " (" + juce::String(plugin.format).toUpperCase() + ")");
+        item.isEnabled = static_cast<bool>(root.loadPlugin);
+        item.action = [safe, row, current, plugin] { if (current() && safe->root.loadPlugin) safe->root.loadPlugin(plugin,row.track); };
+        menu.addItem(std::move(item));
+    }
+    if (root.scanPlugins)
+        menu.addItem("Scan installed plug-ins...", [safe, current] { if (current() && safe->root.scanPlugins) safe->root.scanPlugins(); });
+    return menu;
+}
+void StackTab::showRowAddMenu(stack::RowRef row, juce::Component& anchor) {
+    const juce::Component::SafePointer<StackTab> alive(this);
+    const juce::Component::SafePointer<juce::Component> button(&anchor);
+    cancelInteractions();
+    if (!alive || !button) return;
+    auto menu = rowAddMenu(row);
+    if (!menu.getNumItems()) return;
+    auto picker = std::make_unique<StackAddPicker>(menu);
+    const juce::Component::SafePointer<StackAddPicker> search(picker.get());
+    auto& popup = juce::CallOutBox::launchAsynchronously(std::move(picker), button->getScreenBounds(), nullptr);
+    popup.setDismissalMouseClicksAreAlwaysConsumed(true);
+    if (search) search->focusSearch();
+}
 juce::String StackTab::emptyMessage() const {
     if (!search.getText().isEmpty())
         return "No matching channels or devices.";
@@ -897,27 +959,26 @@ void StackTab::mouseDown(const juce::MouseEvent &e) {
     const juce::Component::SafePointer<StackTab> alive(this);
     if (!fromList(e)) return;
     if (auto *row = dynamic_cast<StackRow*>(e.eventComponent->getParentComponent());
-        row && (e.eventComponent == &row->state_->mute || e.eventComponent == &row->state_->solo)) return;
+        row && (e.eventComponent == &row->state_->add || e.eventComponent == &row->state_->mute || e.eventComponent == &row->state_->solo)) return;
     const auto p = modelPoint(e);
     // Hit the geometry that supplied the visible components. Reflowing a newer document
     // here would hit an unseen row at this screen point. Validate the seen identity against
     // current state instead; the next frame adopts its new position.
     const auto presented = presentedHit(p.x, p.y);
     const auto current = root.current();
-    if (presented.row.valid() && (!current || !current->findTrack(presented.row.track)))
-        return;
-    if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item))
-        return;
-    const auto button = e.mods.isPopupMenu()          ? stack::Button::Right
-                        : e.mods.isMiddleButtonDown() ? stack::Button::Middle
-                                                      : stack::Button::Left;
-    const auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods),
-                                                 e.getNumberOfClicks(), presented, clockNow());
+    if (presented.row.valid() && (!current || !current->findTrack(presented.row.track))) return;
+    if (presented.item.place == stack::ItemPlace::Chain && !validTarget(presented.item)) return;
+    const auto button = e.mods.isPopupMenu() ? stack::Button::Right
+                      : e.mods.isMiddleButtonDown() ? stack::Button::Middle : stack::Button::Left;
+    auto fx = model().pointerDownPresented(p.x, p.y, button, mods(e.mods), e.getNumberOfClicks(), presented, clockNow());
+    const auto* selected = device(fx.hit.item.device);
+    const bool pluginChip = fx.hit.part == stack::HitPart::ChainPill && selected && selected->plugin;
+    if (pluginChip && button == stack::Button::Left) fx.showDevices = {};
     effects(fx, e.eventComponent == &state_->canvas);
     if (!alive) return;
     if (fx.hit.part == stack::HitPart::ChainPill && validTarget(fx.hit.item)) {
         const auto target = fx.hit.item;
-        const bool folded = root.devices.folded(target.device);
+        const bool folded = !pluginChip && root.devices.folded(target.device);
         if (button == stack::Button::Right && folded) {
             showFoldedDeviceMenu(target, e.getScreenPosition());
             return;
@@ -937,6 +998,10 @@ void StackTab::mouseDown(const juce::MouseEvent &e) {
             if (alive) layoutRows();
             return;
         }
+    }
+    if (pluginChip && button == stack::Button::Left) {
+        if (validTarget(fx.hit.item)) root.openPluginWindow(fx.hit.item.device);
+        return;
     }
     if ((fx.hit.part == stack::HitPart::ChainPill || fx.hit.part == stack::HitPart::ChainItem) &&
         e.getNumberOfClicks() > 1 && e.eventComponent == &state_->canvas && validTarget(fx.hit.item)) {
@@ -1030,7 +1095,13 @@ bool StackTab::keyPressed(const juce::KeyPress &key) {
     const auto target = model().focus().item;
     if (target.place == stack::ItemPlace::Chain) {
         const auto code = key.getKeyCode();
-        if (code == juce::KeyPress::returnKey && unfoldDevice(target)) return true;
+        if (code == juce::KeyPress::returnKey && validTarget(target)) {
+            if (const auto* data = device(target.device); data && data->plugin) {
+                root.openPluginWindow(target.device);
+                return true;
+            }
+            if (unfoldDevice(target)) return true;
+        }
         if (key.getModifiers().isCommandDown()) {
             std::optional<DeviceChainStrip::Clip> clip;
             if (code == 'x' || code == 'X') clip = DeviceChainStrip::Clip::Cut;
@@ -1277,8 +1348,9 @@ bool StackTab::editParameter(const stack::ItemRef &target, const std::string &pa
     return accepted;
 }
 void StackTab::cancelInteractions() {
-    if (!state_ || state_->ending) return;
+    if (!state_) return;
     ++state_->addMenuEpoch;
+    if (state_->ending) return;
     const juce::Component::SafePointer<StackTab> alive(this);
     endRename(false);
     if (!alive) return;

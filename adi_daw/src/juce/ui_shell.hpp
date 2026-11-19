@@ -402,6 +402,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     };
     std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
     FloatingHost *pluginHost = nullptr;
+    bool openPluginWindow(std::int64_t device);
     bool togglePluginWindow(std::int64_t device, bool several);
     bool pluginWindowOpen(std::int64_t device) const;
     static std::string pluginWindowKey(std::int64_t device);

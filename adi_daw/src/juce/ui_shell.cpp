@@ -983,6 +983,14 @@ std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plu
 bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
     return pluginHost != nullptr && pluginHost->contains(pluginWindowKey(device));
 }
+bool AdiRootComponent::openPluginWindow(std::int64_t device) {
+    if (!pluginWindowOpen(device)) return togglePluginWindow(device, false);
+    pluginWindowsShown_ = true;
+    commands_.manager.commandStatusChanged();
+    followPluginWindows();
+    if (auto *window = pluginHost->window(pluginWindowKey(device))) window->toFront(true);
+    return true;
+}
 bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
     if (pluginHost == nullptr || !pluginEditor)
         return fail("Plug-in windows open in the application.");

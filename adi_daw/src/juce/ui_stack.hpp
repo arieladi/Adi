@@ -82,6 +82,7 @@ class StackTab final : public juce::Component {
     bool hasDeviceContext() const;
     bool hasToolbarFocus() const;
     bool deviceCommand(int command);
+    juce::PopupMenu rowAddMenu(stack::RowRef);
     // Ends a held edit exactly once before hiding/rebinding/removing its component.
     void cancelInteractions();
     AdiRootComponent &root;
@@ -107,6 +108,7 @@ class StackTab final : public juce::Component {
     void syncScroll();
     int toolbarHeight() const noexcept;
     void focusTile(const stack::ItemRef &);
+    void showRowAddMenu(stack::RowRef, juce::Component& anchor);
     bool unfoldDevice(const stack::ItemRef &);
     void showFoldedDeviceMenu(const stack::ItemRef &, juce::Point<int> screenPoint);
     stack::Hit presentedHit(double x, double y) const;

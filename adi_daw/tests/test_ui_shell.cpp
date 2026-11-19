@@ -9061,6 +9061,35 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
         view.gone = [&] { return editorGone; };
         return view;
     };
+    root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
+    root.setMixView(true, false);
+    auto &stack = root.mixViewPanel.stack;
+    refresh();
+    stack.frame(root.reader());
+    const auto row = stack.model().shownIndex(2);
+    stack::ItemGeo chip;
+    if (row) stack.model().forEachChainItem(*row, [&](const auto &item) {
+        if (item.ref.device == 3) chip = item;
+    });
+    check(chip.pill && chip.ref.device == 3 && chip.width >= look::workspaceSegmentWidth,
+          "an external insert presents a named chip at the normal row height");
+    if (chip.ref.device == 3) {
+        const auto point = stack.listArea().getPosition().toFloat() + juce::Point<float>(
+            static_cast<float>(chip.x + chip.width / 2), static_cast<float>(chip.top + chip.height / 2));
+        const auto before = root.undoTitle(false);
+        stack.mouseDown(pressAt(stack, point));
+        stack.mouseUp(pressAt(stack, point));
+        check(opened == 1 && host.contains(AdiRootComponent::pluginWindowKey(3)) && root.state().mixView &&
+                  root.undoTitle(false) == before, "one chip click opens the software editor over Stack with no edit");
+        stack.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+        check(opened == 1 && host.contains(AdiRootComponent::pluginWindowKey(3)) && root.state().mixView,
+              "Enter on the focused chip reuses its software editor");
+        host.close(AdiRootComponent::pluginWindowKey(3));
+        check(root.state().mixView, "closing the software editor retains Mix View");
+    }
+    root.setMixView(false, false);
+    opened = 0;
+    refresh();
     auto &panels = root.devices.panels;
     check(panels.size() == 3 && panels[0]->wrench.isVisible() && !panels[1]->wrench.isVisible() &&
               panels[2]->wrench.isVisible(),
@@ -11109,6 +11138,7 @@ int main(int argc, char **argv) {
         // Fake plug-ins and UiFakePeer only; no native window, desktop input/capture or audio device.
         mixChannelNavigation(commands, temp.path());
         mixViewShell(commands, temp.path(), true);
+        pluginWindows(commands, temp.path());
         std::printf("%d checks, %d failures (Mix View fake-peer components)\n", checks, failures);
         return failures ? 1 : 0;
     }

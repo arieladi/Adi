@@ -127,6 +127,8 @@ struct Constants {
     std::array<int, kItemClasses> w100Dormant{240, 260, 240, 300, 360, 320, 300, 280, 240, 240, 240}; // a column no row engages; win's placement, provisional until experiment X1
     std::array<Tier, kItemClasses> foldBelow{Tier::T0, Tier::T0, Tier::T0, Tier::T0, Tier::T2, Tier::T0,
                                              Tier::T0, Tier::T1, Tier::T0, Tier::T3, Tier::T0}; // a chain item folds to a pill below this tier; win's placement, provisional until experiment X10
+    int chainEndSpace = 0; // trailing action gutter, if the chain exposes an add control
+    int pluginChipWidth = 0; // fixed named chip width in the Mix View
     int chainItemMin = 120;     // the narrowest unfolded chain item; win's placement, provisional until experiment X1
     int pill = 22;              // a folded item or a dormant or refused module pill; win's placement, provisional until experiment X1
     int itemGap = 10;           // between items, columns and the row's parts; win's placement, provisional until experiment X1
