@@ -7,8 +7,10 @@
 #include "adi/digest.hpp"
 #include "adi/check.hpp"
 #include "adi/history.hpp"
+#include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <miniz.h>
 #include <cstdio>
 #include <cstdlib>
@@ -85,6 +87,13 @@ std::error_code refuseRename(const fs::path&, const fs::path&) {
 }
 void corruptCopy(const fs::path& path) { write(path, "corrupt"); }
 void failCopy(const fs::path& path) { write(path, "partial"); throw std::runtime_error("injected copy failure"); }
+void concurrentDestination(const fs::path& copy) {
+    write(copy.parent_path().parent_path() / "target", "another writer's output");
+}
+void concurrentDestinationAndFail(const fs::path& copy) {
+    concurrentDestination(copy);
+    failCopy(copy);
+}
 void publication() {
     adi::test::TempDirectory temp{"publish", "fallback"};
     const auto source = temp.path() / "source", target = temp.path() / "target";
@@ -98,8 +107,14 @@ void publication() {
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::exists && read(target) == bytes, "fallback never overwrites existing file");
     fs::remove(target); write(source, bytes);
+    result = media::publishFile(source, target, {refuseRename, concurrentDestination},
+                                media::PublishPolicy::AtomicOnly);
+    check(result.status == media::PublishStatus::failed && !result.usedFallback &&
+          !fs::exists(target) && read(source) == bytes,
+          "atomic-only refusal reports failure without starting the copy");
     result = media::publishFile(source, target, {refuseRename});
     check(result.status == media::PublishStatus::published && result.usedFallback && read(target) == bytes, "refused rename takes verified streaming fallback");
+    check(result.identity.has_value(), "verified publication reports destination identity");
     check(!fs::exists(source), "fallback consumes staging only after verification");
     fs::remove(target); write(source, bytes);
     result = media::publishFile(source, target, {refuseRename, corruptCopy});
@@ -108,7 +123,56 @@ void publication() {
     result = media::publishFile(source, target, {refuseRename, failCopy});
     check(result.status == media::PublishStatus::failed, "fallback reports injected copy failure");
     check(!fs::exists(target), "failed fallback removes partial target");
+    result = media::publishFile(source, target, {refuseRename, concurrentDestination});
+    check(result.status == media::PublishStatus::exists && read(target) == "another writer's output",
+          "late fallback collision leaves the other writer's output intact");
+    check(read(source) == bytes, "late collision retains the original stage");
+    fs::remove(target);
+    result = media::publishFile(source, target, {refuseRename, concurrentDestinationAndFail});
+    check(result.status == media::PublishStatus::failed && read(target) == "another writer's output",
+          "fallback failure cleanup never touches a concurrently published destination");
+    check(read(source) == bytes, "failed copy retains the original stage");
+    check(std::distance(fs::directory_iterator(temp.path()), fs::directory_iterator{}) == 2,
+          "private copy staging is removed on success, collision and failure");
 }
+void collectionCancellation() {
+    using media::ArchivePhase;
+    Fixture f;
+    f.add("one.wav", "first sample", 1);
+    f.add("two.wav", "second sample", 2);
+    const auto before = digestProject(*f.store).text;
+    const auto output = f.temp.path() / "portable.zip";
+    for (const auto phase : {ArchivePhase::Snapshot, ArchivePhase::CollectMedia,
+                             ArchivePhase::WriteArchive, ArchivePhase::Publish}) {
+        std::stop_source stop;
+        bool sawBoundary = false;
+        const auto result = media::collectExport(f.store->path(), output, {stop.get_token(),
+            [&](media::ArchiveProgress progress) {
+                if (progress.phase != phase ||
+                    (phase == ArchivePhase::WriteArchive && progress.entriesWritten == 0)) return;
+                sawBoundary = true;
+                stop.request_stop();
+            }});
+        check(sawBoundary && result.cancelled && !result.ok && !fs::exists(output),
+              "cancellation at a worker boundary publishes no archive");
+        bool stageRemains = false;
+        for (const auto& entry : fs::directory_iterator(f.temp.path()))
+            stageRemains = stageRemains || entry.path().filename().string().starts_with(".adi-media-");
+        check(!stageRemains && digestProject(*f.store).text == before,
+              "cancel discards private files and leaves the open source intact");
+    }
+
+    bool beforePublish = false;
+    const auto late = media::collectExport(f.store->path(), output, {{},
+        [&](media::ArchiveProgress progress) {
+            if (progress.phase != ArchivePhase::Publish) return;
+            beforePublish = progress.entriesWritten == 3;
+            write(output, "another writer's ZIP");
+        }});
+    check(beforePublish && !late.ok && !late.cancelled && read(output) == "another writer's ZIP",
+          "a late arrival after ZIP finalization survives exclusive publication");
+}
+
 void collection() {
     Fixture f;
     f.add("one/clip.wav", std::string(140000,'A') + "first", 1);
@@ -207,12 +271,24 @@ void collectionRefusals() {
     const bool missingB=a.at("hash_blake3").get<std::string>()<b.at("hash_blake3").get<std::string>();
     const auto missing=f.temp.path()/(missingB?"b.bin":"a.bin");
     fs::remove(missing);
-    check(!f.store->collectAllAndSave().ok,"a missing asset aborts collection");
+    const auto missingResult=f.store->collectAllAndSave();
+    check(!missingResult.ok,"a missing asset aborts collection");
     check(digestProject(*f.store).text==before,"failed collection leaves all rows and captured paths unchanged");
+#if defined(_WIN32)
     check(fs::is_empty(f.temp.path()/"audio"),"failed collection removes only its newly published media and stages");
+#else
+    check(!missingResult.warning.empty() && !fs::is_empty(f.temp.path()/"audio"),"unsupported rollback retains and reports public media");
+    fs::remove_all(f.temp.path()/"audio");fs::create_directory(f.temp.path()/"audio");
+#endif
     write(missing,missingB?"second":"first");
     f.store->db().exec("CREATE TRIGGER refuse_collection BEFORE UPDATE OF rel_path ON media_files BEGIN SELECT RAISE(ABORT,'injected update failure'); END");
-    check(!f.store->collectAllAndSave().ok && fs::is_empty(f.temp.path()/"audio"),"SQL failure after copying removes all files published by collection");
+    const auto sqlResult=f.store->collectAllAndSave();
+#if defined(_WIN32)
+    check(!sqlResult.ok && sqlResult.warning.empty() && fs::is_empty(f.temp.path()/"audio"),"SQL failure after copying removes all files published by collection");
+#else
+    check(!sqlResult.ok && !sqlResult.warning.empty() && !fs::is_empty(f.temp.path()/"audio"),"SQL failure retains and reports public media without pathname unlink");
+    fs::remove_all(f.temp.path()/"audio");fs::create_directory(f.temp.path()/"audio");
+#endif
     check(digestProject(*f.store).text==before,"SQL failure restores pool and captured path bytes");
     f.store->db().exec("DROP TRIGGER refuse_collection");
     const auto aTarget=f.temp.path()/"audio"/(a.at("hash_blake3").get<std::string>()+".bin");
@@ -354,9 +430,14 @@ void resolution() {
 void rollbackAndCli() {
     Fixture f; legacy(f, true, true);
     const auto before = digestProject(*f.store).text;
-    check(!media::extractMedia(*f.store).ok, "bad second embedded hash aborts whole extraction");
+    const auto extracted=media::extractMedia(*f.store);
+    check(!extracted.ok, "bad second embedded hash aborts whole extraction");
     check(digestProject(*f.store).text == before, "failed extraction rolls back all row and blob changes");
-    check(fs::is_empty(f.temp.path() / "audio"), "failed extraction removes first newly published file");
+#if defined(_WIN32)
+    check(extracted.warning.empty() && fs::is_empty(f.temp.path() / "audio"), "failed extraction removes first newly published file");
+#else
+    check(!extracted.warning.empty() && !fs::is_empty(f.temp.path()/"audio"), "failed extraction retains and reports public files on unsupported hosts");
+#endif
     check(f.store->db().execAndGet("SELECT COUNT(*) FROM media_blobs").getInt() == 4, "rollback retains original blobs");
     Fixture good; legacy(good, false);
     const auto path = good.store->path(); check(good.store->close(), "close legacy fixture for command"); good.store.reset();
@@ -365,10 +446,122 @@ void rollbackAndCli() {
     Fixture gap; legacy(gap,false); gap.store->db().exec("DELETE FROM media_blobs WHERE media_id=10 AND chunk_index=0");
     check(!media::extractMedia(*gap.store).ok, "chunk index gap refused");
 }
+struct ReplacementAbort {
+    fs::path folder,target,saved;
+    bool invoked=false,replaced=false;
+    static void run(sqlite3_context* sql,int argc,sqlite3_value** argv) noexcept {
+        auto& self=*static_cast<ReplacementAbort*>(sqlite3_user_data(sql));
+        try {
+            self.invoked=true;
+            if(argc!=1 || sqlite3_value_type(argv[0])!=SQLITE_TEXT)throw std::runtime_error("missing collected path");
+            self.target=self.folder/media::pathFromUtf8(reinterpret_cast<const char*>(sqlite3_value_text(argv[0])));
+            self.saved=self.folder/"owned-before-replacement.bin";
+            fs::rename(self.target,self.saved);
+            write(self.target,"later writer's replacement");self.replaced=true;
+            sqlite3_result_error(sql,"intentional SQL abort after replacement",-1);
+        } catch(const std::exception& error) {sqlite3_result_error(sql,error.what(),-1);}
+    }
+};
+void replacementDuringRollback() {
+    for(const bool extracting:{false,true}) {
+        Fixture f;
+        if(extracting)legacy(f,true);else f.add("source.bin","original owned bytes",10);
+        const auto before=digestProject(*f.store).text;
+        ReplacementAbort abort;abort.folder=f.temp.path();
+        const auto installed=sqlite3_create_function_v2(f.store->db().getHandle(),"replace_and_abort",1,SQLITE_UTF8,
+            &abort,&ReplacementAbort::run,nullptr,nullptr,nullptr);
+        check(installed==SQLITE_OK,"install deterministic SQL replacement fixture");
+        f.store->db().exec("CREATE TEMP TRIGGER replace_before_rollback BEFORE UPDATE OF rel_path ON media_files "
+            "WHEN NEW.id=10 BEGIN SELECT replace_and_abort(NEW.rel_path); END");
+        bool ok=false;std::string error,warning;
+        if(extracting) {const auto result=media::extractMedia(*f.store);ok=result.ok;error=result.error;warning=result.warning;}
+        else {const auto result=f.store->collectAllAndSave();ok=result.ok;error=result.error;warning=result.warning;}
+        check(!ok && abort.invoked && abort.replaced && error.find("intentional SQL abort after replacement")!=std::string::npos,
+            "actual publication is replaced before a forced SQL failure");
+        check(digestProject(*f.store).text==before,"replacement-triggered failure rolls back every SQL change");
+        check(read(abort.target)=="later writer's replacement","rollback preserves a later writer's replacement at the published pathname");
+        check(!warning.empty(),"rollback explicitly reports retained or changed public media");
+        check(fs::exists(abort.saved),"rollback does not chase the original file to a different pathname");
+        f.store->db().exec("DROP TRIGGER replace_before_rollback");
+        check(sqlite3_create_function_v2(f.store->db().getHandle(),"replace_and_abort",1,SQLITE_UTF8,nullptr,nullptr,nullptr,nullptr,nullptr)==SQLITE_OK,
+            "remove SQL replacement fixture");
+    }
+}
+void ownedPublicationRemoval() {
+    Fixture f;const auto staged=f.temp.path()/"stage",target=f.temp.path()/"published.bin";
+    write(staged,"owned bytes");
+    const auto published=media::publishFile(staged,target,{},media::PublishPolicy::AtomicOnly);
+    check(published.status==media::PublishStatus::published && published.identity.has_value(),"removal fixture has actual published identity");
+    if(!published.identity)return;
+#if defined(_WIN32)
+    {std::ifstream reader(target,std::ios::binary);
+        check(reader.good() && media::removePublishedFile(target,*published.identity) && read(target)=="owned bytes",
+              "busy publication is retained instead of falling back to pathname deletion");}
+    check(!media::removePublishedFile(target,*published.identity) && !fs::exists(target),"exclusive DELETE handle removes the expected publication");
+    check(!media::removePublishedFile(target,*published.identity),"already absent publication is clean");
+#else
+    check(media::removePublishedFile(target,*published.identity)==std::errc::operation_not_supported && read(target)=="owned bytes",
+          "unsupported host retains public media rather than unsafe check-then-unlink");
+    fs::remove(target);
+#endif
+    write(target,"another object");
+    check(media::removePublishedFile(target,*published.identity) && read(target)=="another object", "different object at the published path survives");
+    fs::remove(target);fs::create_directory(target);write(target/"keep","directory content");
+    check(media::removePublishedFile(target,*published.identity) && read(target/"keep")=="directory content","directory replacement and its contents survive");
+    fs::remove(target/"keep");fs::remove(target);
+    const auto linked=f.temp.path()/"linked.bin";write(linked,"symlink target bytes");std::error_code linkError;
+    fs::create_symlink(linked,target,linkError);
+    if(linkError) {
+#if defined(_WIN32)
+        std::printf("SKIP rollback symlink fixture unavailable: %s\n",linkError.message().c_str());
+#else
+        check(false,"symlink fixture is available");
+#endif
+    } else {
+        check(media::removePublishedFile(target,*published.identity) && fs::is_symlink(fs::symlink_status(target)) && read(linked)=="symlink target bytes",
+              "symbolic link replacement and its referent survive");
+        fs::remove(target);
+    }
+    write(staged,"hard-link bytes");
+    const auto hard=media::publishFile(staged,target,{},media::PublishPolicy::AtomicOnly);
+    check(hard.status==media::PublishStatus::published && hard.identity.has_value(),"hard-link rollback fixture publishes");
+    if(hard.identity) {
+        const auto alias=f.temp.path()/"alias.bin";fs::create_hard_link(target,alias);
+#if defined(_WIN32)
+        check(!media::removePublishedFile(target,*hard.identity) && !fs::exists(target) && read(alias)=="hard-link bytes",
+              "handle deletion removes only the opened link and preserves another link");
+#else
+        check(media::removePublishedFile(target,*hard.identity) && read(target)=="hard-link bytes" && read(alias)=="hard-link bytes",
+              "unsupported rollback preserves both hard links");
+#endif
+    }
+}
+void documentRollbackWarning() {
+    Fixture f;f.add("source.bin","document-owned bytes",10);
+    f.store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(9,'master','Main')");
+    const auto before=digestProject(*f.store).text;
+    check(f.store->close(),"close collection document fixture");f.store.reset();
+    std::string error;auto document=ui::ProjectDocument::open(f.temp.path()/"song.adi",false,{},error);
+    check(document!=nullptr,"open real collection document");if(!document)return;
+    ReplacementAbort abort;abort.folder=f.temp.path();
+    auto& db=document->store().db();
+    check(sqlite3_create_function_v2(db.getHandle(),"replace_and_abort",1,SQLITE_UTF8,&abort,
+        &ReplacementAbort::run,nullptr,nullptr,nullptr)==SQLITE_OK,"install document replacement fixture");
+    db.exec("CREATE TEMP TRIGGER replace_before_rollback BEFORE UPDATE OF rel_path ON media_files "
+        "WHEN NEW.id=10 BEGIN SELECT replace_and_abort(NEW.rel_path); END");
+    check(!document->collectAllAndSave() && abort.replaced,"document reports real failed collection");
+    check(!document->warning().empty() && document->error().find(document->warning())!=std::string::npos,
+          "document failure text exposes the retained-media warning consumed by the window");
+    check(read(abort.target)=="later writer's replacement" && digestProject(document->store()).text==before,
+          "document failure preserves replacement and project rows");
+    db.exec("DROP TRIGGER replace_before_rollback");
+    check(sqlite3_create_function_v2(db.getHandle(),"replace_and_abort",1,SQLITE_UTF8,nullptr,nullptr,nullptr,nullptr,nullptr)==SQLITE_OK,
+          "remove document SQL replacement fixture");
+}
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
+    try { publication(); collection(); collectionCancellation(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); replacementDuringRollback(); ownedPublicationRemoval(); documentRollbackWarning(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

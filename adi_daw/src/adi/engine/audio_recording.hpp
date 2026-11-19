@@ -21,14 +21,25 @@ struct RecordingTarget {
     std::int64_t trackId=0;
     std::vector<std::uint32_t> channels; // indices in the current AudioIo.in
 };
+/// Explicit frozen sample-domain loop contract. One row per nonempty pass,
+/// allocated before callback publication. Musical loop retiming ends this job.
+struct AudioRecordingLoop {
+    std::int64_t beginSample=0,endSample=0;
+    std::uint32_t maxPasses=1024; // 1..65536; exhaustion refuses a whole callback
+};
+struct RecordedPass {
+    std::uint64_t sourceStartFrame=0,frames=0;
+    std::int64_t timelineStartSample=0,timelineEndSample=0; // half-open
+};
 struct AudioRecordingSpec {
     std::filesystem::path workFolder;
     std::string sourceProject; // Session supplies its resolved project identity
     std::uint32_t sampleRate=44100,maxFrames=512,ringFrames=88200;
     audio::WavFormat format=audio::WavFormat::Float32;
     std::vector<RecordingTarget> targets;
+    std::optional<AudioRecordingLoop> loop; // absent retains linear capture
 };
-enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture};
+enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture,PassLimit};
 struct RecordedTrack {
     std::int64_t trackId=0;
     std::uint16_t channels=0;
@@ -46,6 +57,8 @@ public:
     std::vector<RecordedTrack> tracks;
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
+    [[nodiscard]] const std::optional<AudioRecordingLoop>& loopSpec()const noexcept{return loop_;}
+    [[nodiscard]] std::span<const RecordedPass> passes()const noexcept{return passes_;}
     void discard(); // owner thread, after recording has finished
     // Owner/worker only. Creates a private Float32 WAV, preserving snapshot
     // bits, for the existing prepareCommit/commit publication and undo path.
@@ -57,6 +70,8 @@ private:
     struct Files;
     std::shared_ptr<Files> files_;
     std::string sourceProject_;
+    std::optional<AudioRecordingLoop> loop_;
+    std::vector<RecordedPass> passes_;
     friend class AudioInputRecorder;
 };
 /// Optional off-callback writer adapter. The default is an actual WavWriter.
@@ -71,8 +86,9 @@ using AudioRecordingSinkFactory=std::function<std::unique_ptr<AudioRecordingSink
     const std::filesystem::path&,std::uint32_t,std::uint16_t,audio::WavFormat)>;
 /// One owner and one callback reader, matching SnapshotPublisher. Construction,
 /// start/stop/poll/destruction are off the callback. Destruction requires the
-/// device stopped. Initial implementation captures continuous linear takes;
-/// a seek/loop discontinuity fails explicitly instead of attaching wrong audio.
+/// device stopped. Linear capture remains the default. Explicit loop capture
+/// keeps one source per target and a bounded pass log; it does not publish take
+/// lanes. Seeks, stream discontinuities and loop reconfiguration fail explicitly.
 class AudioInputRecorder {
 public:
     AudioInputRecorder();
