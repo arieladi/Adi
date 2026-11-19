@@ -24,6 +24,13 @@ When a one-bar count-in feeds a path with more than one beat of latency, should 
 
 Please have the Devices seat add the Live 12.4 reading to its single list for the director's session. Compare the count-in cadence, the first bar accent, and first heard program audio at a short delay and above one beat. This blocks choosing the count-in-to-roll transition for DF-E6. The engine keeps the existing compensation design.
 
+## 2026-11-19 — DF-E3 retire unapplied progressive decode jobs
+
+**PR requested** — branch `engine/df-e3-progressive-queue`, head `83cca8a5e1a59c2ffc7590d3db327007278c4373`, main base `88e2d94e`. Title **DF-E3: Release queued decode admission on the last lease**.
+
+Dropping the last public lease cancels the job and removes it from the pending queue under the same lock used for dequeue. Pending cancellation returns both the job slot and its byte reservation. A worker that claimed the job owns release through completion. Leases can outlive the decoder and the shutdown stop callbacks run outside the queue lock.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors passed 97 progressive decode, 56 decode-cache and 90 clip candidate readiness checks. With both workers held, old code refused the next open after dropping the final queued lease. Both compiled admission faults reproduced that failure. The final gate also destroys a decoder whose active stop callback releases a queued lease. Four validators and the layout check passed.
 
 ## 2026-11-19 — DF-E7 End resize and split boundaries
 
