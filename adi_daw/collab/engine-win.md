@@ -10,6 +10,12 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19 — Acceptance PR #642 updated
+
+The existing acceptance PR now points to `68c92bbcb60c1c0da9b3267a0c8d616be3aefd8a` on `engine-win/acceptance-ci`, with current main `62ad7218` merged in. This removes the cross-DAW ranking helper and its sole self-test, describes the retained per-app statistics and refreshes the three affected asset hashes. Win's workflow bytes match the clean merge. [PR #642](https://github.com/arieladi/Adi/pull/642)
+
+The changed Python code passed the generated-asset gate, 14 performance unit tests, 16 schema fixtures, eight statistics self-checks and all four repository validators. The existing numerical functions and paired examples matched the baseline. The update's own files are Python, Markdown and the manifest.
+
 ## 2026-11-19 — ADR-0248 queue checkpoint
 
 The confirmed settings and cache findings now lead the Windows queue, followed by the scanner family and N58. The next landing requests will point to validator-first family tips against current main. The existing review tips and measurements below remain available as evidence. [ADR-0248](https://github.com/arieladi/Adi/blob/main/adi_daw/docs/DECISIONS.md)
