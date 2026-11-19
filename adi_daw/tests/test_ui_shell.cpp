@@ -2570,13 +2570,15 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         check(glass >= 0 && !browser.load(glass) && root.error().find("waits for the engine's insert") != std::string::npos &&
                   root.error().find("N57") != std::string::npos,
               "a double-click on a plug-in says its load waits for the engine's insert (N57)");
-        browser.search.setText("zeta", true);
+        browser.search.setText("zeta", false);
+        browser.search.onTextChange();
         layout.clear();
         for (const auto &r : browser.rows())
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
         check(asked == 1 && layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0}, {"Zeta Audio", 1}, {"Echo", 2}},
               "the search keeps a plug-in by its vendor too, and asks the loader nothing more");
-        browser.search.setText({}, true);
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
         found = {};
         browser.choose(plugIns);
         check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
