@@ -457,8 +457,66 @@ void backendFadeLatency(){
           "bypass service can finish a child fade after admitting the outer claim and then turns off");
     backend->release();
 }
+
+void childFadeWhileNextPlanWaits() {
+    constexpr int frames = 64;
+    chain::Settings settings;
+    settings.limiter.styleIndex = 0;
+    auto backend = chain::makeBackend();
+    backend->prepare(48000, frames, 2, settings);
+    const auto initial = backend->advertisedLatency();
+
+    settings.limiter.oversampling = 2;
+    std::uint64_t serial = 0;
+    const auto service = [&](std::int32_t latency) {
+        Audio scratch;
+        scratch.signal(static_cast<int>(++serial));
+        RT rt;
+        backend->process(scratch.pointers.data(), nullptr, frames, settings, serial, latency);
+    };
+    for (int i = 0; i < 256 && !backend->configurationBusy(); ++i) {
+        service(initial);
+        backend->pumpMainThread(settings);
+        if (!backend->configurationBusy()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto admitted = backend->advertisedLatency();
+    check(admitted != initial && backend->configurationBusy() && backend->needsBypassTransition(admitted),
+          "a real limiter replacement claims a new aggregate latency for the bypassed graph");
+    if (admitted == initial || !backend->configurationBusy()) return;
+
+    service(admitted);
+    check(!backend->configurationBusy() && backend->needsBypassTransition(admitted),
+          "first physical admission unlocks edits while the child still needs private fading");
+
+    // Audio observes a second structural edit while still running with the
+    // already admitted limiter latency. This extra Clip latency is distinct.
+    settings.clipEnabled = true;
+    settings.clip[clip::online] = 2;
+    service(admitted);
+    backend->pumpMainThread(settings);
+    const auto later = backend->advertisedLatency();
+    check(later > admitted && backend->configurationBusy(),
+          "the next Clip offer is claimed while the previous limiter child is still fading");
+    if (later <= admitted || !backend->configurationBusy()) return;
+
+    check(backend->needsBypassTransition(admitted) && backend->needsBypassTransition(later) &&
+              !backend->needsBypassTransition(later + 1),
+          "the current dry plan services its admitted child while a newer plan waits");
+    int served = 0;
+    for (; served < 32 && backend->needsBypassTransition(admitted); ++served)
+        service(admitted);
+    check(served > 0 && served < 32 && backend->configurationBusy() &&
+              !backend->needsBypassTransition(admitted) && backend->needsBypassTransition(later) &&
+              backend->advertisedLatency() == later,
+          "old-plan scratch finishes the previous fade without consuming the newer claim");
+
+    service(later);
+    check(!backend->configurationBusy() && !backend->needsBypassTransition(later),
+          "the newer claim clears only when its physical PDC plan is admitted");
 }
-int main(){try{limiterOnly();blockReduction();clipOnly();serialAndKey();externalKeyAliasing();resetWithdrawsClaim();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();
+
+}
+int main(){try{limiterOnly();blockReduction();clipOnly();serialAndKey();externalKeyAliasing();resetWithdrawsClaim();structuralAdmission();ownerClaimIntent();backendOwnerClaim();keyHistoryWhileLimiterOff();disabledLimiterConfiguration();backendState();backendFadeLatency();childFadeWhileNextPlanWaits();
     check(allocations==0,"no callback C++ allocations in composition or admissions");check(deallocations==0,"no callback C++ deallocations in composition or admissions");
 }catch(const std::exception& e){++failures;std::printf("FAIL exception: %s\n",e.what());}
 std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
