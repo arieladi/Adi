@@ -72,19 +72,19 @@ class StereoEnvelopeMeter {
     Reading reading() const noexcept;
 
   private:
-    template <bool weighted>
+    template <bool weighted, bool linked>
     bool update(std::span<const float>, std::span<const float>) noexcept;
     struct Lane {
         double peak = 0, power = 0, maximum = 0, heldPeak = 0, heldPower = 0, floatingPeak = 0, ratio = .5;
         std::int64_t peakWait = 0, rmsWait = 0;
     };
-    bool prepared_ = false, midSide_ = false;
+    bool prepared_ = false, midSide_ = false, linkedDynamic_ = false;
     double peakDecay_ = 0, powerStep_ = 0, coincidenceStep_ = 0, floor_ = 0, drStep_ = 0, floatStep_ = 0;
     std::int64_t holdSamples_ = 0;
     std::array<Lane, 2> lanes_{};
     StereoMeterWeighting weighting_;
     std::array<StereoMeterWeighting::History, 2> filterState_{};
-    double coincidence_ = 0, balance_ = 0;
+    double coincidence_ = 0, balance_ = 0, linkedRatio_ = 0;
 };
 
 } // namespace adi::dsp

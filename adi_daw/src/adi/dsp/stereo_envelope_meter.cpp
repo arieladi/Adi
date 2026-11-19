@@ -110,6 +110,7 @@ bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
     coincidenceStep_ = coincidenceStep;
     floor_ = s.coincidenceFloor;
     midSide_ = s.midSide;
+    linkedDynamic_ = s.linkedDynamic;
     drStep_ = -std::expm1(-interval / .4);
     floatStep_ = -std::expm1(-interval / .7);
     holdSamples_ = static_cast<std::int64_t>(2. * s.sampleRate);
@@ -121,21 +122,22 @@ bool StereoEnvelopeMeter::prepare(const Settings &s) noexcept {
 void StereoEnvelopeMeter::reset() noexcept {
     lanes_ = {};
     filterState_ = {};
-    balance_ = coincidence_ = 0;
+    balance_ = coincidence_ = linkedRatio_ = 0;
 }
 
 bool StereoEnvelopeMeter::process(std::span<const float> left, std::span<const float> right) noexcept {
     if (!prepared_ || left.size() != right.size()) return false;
-    if (weighting_.flat()) return update<false>(left, right);
+    if (weighting_.flat())
+        return linkedDynamic_ ? update<false, true>(left, right) : update<false, false>(left, right);
     [[maybe_unused]] mix::filters::FlushDenormals flush;
-    return update<true>(left, right);
+    return linkedDynamic_ ? update<true, true>(left, right) : update<true, false>(left, right);
 }
 
-template <bool weighted>
+template <bool weighted, bool linked>
 bool StereoEnvelopeMeter::update(std::span<const float> left, std::span<const float> right) noexcept {
     auto lanes = lanes_;
     auto filterState = filterState_;
-    double coincidence = coincidence_, balance = balance_;
+    double coincidence = coincidence_, balance = balance_, linkedRatio = linkedRatio_;
     for (std::size_t i = 0; i < left.size(); ++i) {
         const double l = left[i], r = right[i];
         if (!std::isfinite(l) || !std::isfinite(r)) return false;
@@ -165,9 +167,19 @@ bool StereoEnvelopeMeter::update(std::span<const float> left, std::span<const fl
             else if (m.rmsWait > 0) --m.rmsWait;
             else m.heldPower = std::max(m.power, m.heldPower * (1. - powerStep_));
         }
+        if constexpr (linked) {
+            const double power = lanes[0].power + lanes[1].power;
+            if (power > 1.e-6) {
+                const double peak = std::max(lanes[0].peak, lanes[1].peak);
+                linkedRatio += drStep_ * (2. * peak * peak / power - linkedRatio);
+            } else {
+                linkedRatio = 0.;
+            }
+        }
     }
     lanes_ = lanes;
     if constexpr (weighted) filterState_ = filterState;
+    if constexpr (linked) linkedRatio_ = linkedRatio;
     coincidence_ = coincidence;
     balance_ = balance;
     return true;
@@ -177,6 +189,7 @@ StereoEnvelopeMeter::Reading StereoEnvelopeMeter::reading() const noexcept {
     Reading out;
     out.signCoincidence = coincidence_;
     out.balance = balance_;
+    if (linkedRatio_ > 0.) out.linkedDynamicDb = 10. * std::log10(.5 * linkedRatio_);
     for (std::size_t i = 0; i < lanes_.size(); ++i) {
         const auto &m = lanes_[i];
         out.peak[i] = m.peak;
