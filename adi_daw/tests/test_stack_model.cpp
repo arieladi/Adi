@@ -2793,8 +2793,16 @@ void actualChainAdapter() {
     };
     SnapshotRows out;
     const auto refresh = [&] { tracksFromSnapshot(reader, geometry, provider, devices, out); };
+    out.tracks.reserve(snapshot->tracks.size());
+    out.items.reserve(devices.size());
+    out.chainOrder.reserve(devices.size());
+    allocations = 0;
+    audit = true;
     refresh();
-    check(out.kinds.empty() && out.modules.empty(), "actual chains reserve no module columns");
+    audit = false;
+    check(allocations == 0, "actual chain projection allocates no reserved module rows on its first refresh");
+    const auto published = out.input(reader.seq());
+    check(published.kinds.empty() && published.modules.empty(), "actual chains reserve no module columns");
     check(out.tracks.size() == 2 && out.items.size() == 4 && out.tracks[0].itemBegin == 0 &&
               out.tracks[0].itemCount == 3 && out.tracks[1].itemBegin == 3 && out.tracks[1].itemCount == 1,
           "actual chain adapter groups interleaved owners, omitting unknown owners and invalid ids");
