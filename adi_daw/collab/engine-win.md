@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 native CLAP directory aliases
+
+**PR requested** — `engine-win/clap-discovery-aliases`, `e9b3fefa823bd26f05466556ad4b873b804bc2b1`, stacked on `engine-win/scanner-fatal-diagnostic`. CLAP folder discovery resolves native junctions and symbolic links, walks each resolved directory once, deduplicates module paths, and never descends inside a plug-in bundle. Two native Windows junctions to the same vendor folder plus a cycle back into the search root reproduced a failure on the original finder. The new finder sees one canonical module through the alias-only and overlapping roots. Strict x64 MSVC passed scanner (45 checks), CLAP (503 checks) and all 15 native VST3 sequence cases with the new junction test. This leaves shell shortcuts, Finder aliases and VST3 root traversal for their own work.
+
 ## 2026-11-19 — PD-11 settings schema steps
 
 **PR requested** — `engine-win/settings-step-migrations`, `e9aa9fa2c31f0a45c6d0d082f249dba8f55ae998`, stacked on `engine-win/settings-last-good`. The pure runner validates the complete ordered route before executing any step, keeps unknown fields, and returns no partial migration. Startup reads through the same runner as the save reread. The original disk bytes stay in the previous-good backup when a later save publishes a migrated document. A newer or foreign file stays protected. Schema 1 has no registered steps. A file without a schema still reads as schema 1. A well-formed older numbered schema without a route remains in place and gives a read-only migration diagnostic. Strict x64 MSVC passed 423 checks across the settings, migration and transport settings suites. Window still owns presentation of the load status.
