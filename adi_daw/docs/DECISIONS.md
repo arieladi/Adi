@@ -19191,8 +19191,15 @@ and "i think ill take all your recommendations". On two he answered in his own w
 4. **The channel name tag** keeps its four fields (name, colour, Mute, Solo); the optional additions
    under DF-W27 stay closed until he asks for one.
 
-**Still open with him.** Where the Mix View seat finds OScope 2 and PsyScope Pro to measure against
-(installers or licensed builds for this machine).
+5. **A multiband shaper, measured against ShaperBox 3, as a device of the Pure Data tier.** His words: "shaperbox3
+   that i want codex to make a pd version of it for us". It joins his other measured tools (the 5 November
+   ruling: measured behaviour, his own name for it, ADI's own drawing, nothing of the original's artwork,
+   presets or text). A new seat builds it and measures OScope 2 and PsyScope Pro for the Mix View seat: the
+   clones lane, a Codex session, logging in `collab/clones.md` on `clones/log` with branches `clones/<topic>`
+   (ADR-0208). It writes each tool's measured contract first. The Mix View's files stay the Mix View seat's
+   and the device's files are named in its log so the devices lane keeps clear. Its name is his to give.
+6. **OScope 2 and PsyScope Pro are installed on the machine the Mix View is built on,** so the Mix View seat's
+   question of where to find them is answered; their measured contracts come from the clones lane (d5).
 
 ### Amendments, in one place
 
@@ -19203,3 +19210,4 @@ and "i think ill take all your recommendations". On two he answered in his own w
 | ADR-0246 d7; `docs/PLAN.md` CT-04, CT-05 | the sheet agreed; seam crossfades off by default confirmed (d1) |
 | `docs/DEFERRED.md` DF-W33, DF-W27 | DF-W33 builds from the sheet; DF-W27's additions closed (d4) |
 | `collab/window/design/proposals/` | the two sheets, agreed |
+| ADR-0208, `docs/LANES.md` | the clones lane as a seat (d5) |
