@@ -18939,3 +18939,136 @@ detail; the Browser; menus, dialogs and Settings. They stay under DF-W20 and DF-
 | ADR-0237 | the analysers' places are the Info box and the Analysers page (d7, d18); one of each tool per channel stands (d13) |
 | `collab/window/design/` | new: the five sheets |
 | `docs/DEFERRED.md` | DF-W24 to DF-W27 and DF-M49 to DF-M55 added; DF-W22, DF-M47 and DF-M48 now build from the sheets |
+
+## ADR-0245 — The November research taken in: folded into the plan's rows, Windows first, proved after the build; cables only in the Grid; clips drawn as Live 12; a hosted plug-in is told the time of the audio it receives; a return may live inside a group; no look-ahead engine; DEV-23 earlier — `DECIDED` (2026-11-18) — **DIRECTOR'S RULINGS OF 18 NOVEMBER; NARROWS ADR-0113; AMENDS ADR-0220 d4 AND ADR-0244 d4; ADDS TO MX-04, MX-05, MX-25 AND DEV-26**
+
+**What this records.** The director's research went on after the bundle that `docs/RESEARCH-INTAKE.md`
+took in on 5 November: a measurement seat ran cases in Live 12.4, REAPER 7.79's engine was measured
+with a test plug-in, Cubase 15's plug-in scanner was run against a test plug-in, and Cubase, Bitwig,
+Reason and the rest of REAPER were read from manuals and from the programs' own files. He gave win
+the programme's own summary and then the whole of it. Win read the summary against main, told him
+where it disagreed, and he answered; then win read all of it (seven readers, one per part, their
+claims about ADI checked against main at `c0f1c8f7`). The relay, reading by reading, is
+`docs/RESEARCH-INTAKE.md` §6. The same day he ruled on the clips' look and on FX channels; those are
+here too.
+
+### Decisions
+
+1. **No second plan.** The research's summary asked for "one dependency-ordered implementation
+   plan". Win's answer was that the right move is to fold its real changes into the existing rows;
+   he agreed. `docs/PLAN.md` stays the plan; `RESEARCH-INTAKE.md` §6 says which row each reading
+   serves and what it does to it. Most of the research's case ids were already cited by rows.
+2. **Windows is first.** His words: "windows is first mac and linux later." Win's reading: when an
+   order has to be chosen (a driver path, a host quirk, a measurement), Windows gets it first; the
+   build stays portable and CI keeps its three systems.
+3. **Planned around, proved after the build.** His words: "its good enough to plan around it. no
+   need measure everything to the point of perfection the measure's will be after the build with
+   real tests then we will make it better if need be." So a reading the research measured is the
+   plan's working value from today, and an AWAITING row it answers is answered for planning.
+   ADR-0220 d4 still stands for what closes a parity row: ADI's own test after the build, against
+   a record in ADR-0220's form. No Live baseline at small buffers is to be taken ("no need for
+   now").
+4. **Racks are Live's Rack; the Grid is the Grid.** He had asked for Bitwig's Grid, and read the
+   research as answering with something from Reason instead. Read whole, the research answers the
+   Grid with the Pure Data tier that DEV-15 already plans (its Grid contracts are DEV-15's test
+   list), and offers Reason only as the model for a saved rack's panel: controls that each drive
+   several targets, and whatever crosses the rack's edge staying outside the preset. That idea goes
+   to DEV-01 and DEV-06, on Live's Rack as the base (ADR-0203 d1).
+5. **Cables.** His words: "no cable diagram in the device area or the mixview but defiantly do use
+   cable diagram in our THE GIRD solution". ADR-0113 keeps the Device View and the Mix View free of
+   any cable diagram; the Grid tier's editor is a cable patcher and is meant to be one. Reason's
+   cables between devices on a rack are therefore not taken.
+6. **The analysers and mixing tools read like their sources, and the list is his:** SPAN, BluPrint,
+   VISU and Live's Spectrum; bx_meter; s(M)exoscope, Oscope2 and Psyscope Pro; Pro-Q; Trackspacer
+   and Fuser (this fills in ADR-0244 d4 to d6). Cubase's analyser settings are not the starting
+   point. What the research read about them is kept as reference only (§6.6).
+7. **Clips are drawn as Live 12 draws them.** His words: MIDI and audio clips "should look as they
+   look in Ableton 12", and that the content must read as real notes and a real waveform. Carried
+   out in #636 (a MIDI clip shows its notes) and #637 (the clip solid in its colour, its content
+   dark on it); shown to him at 1920x1080 on a project of real parts; his word: "your last photo is
+   good".
+8. **A hosted plug-in is told the transport, at the time of the audio it is receiving** (his
+   ruling on a proposal he brought: "we need pr to fill all the gaps"). On main a VST3 or CLAP
+   plug-in is told nothing: no tempo, no position, no playing state (`vst3_host.cpp` passes no
+   process context, `clap_host.cpp` no transport). So a tempo-synced plug-in cannot follow ADI at
+   all. The engine gives each hosted plug-in, every block: playing, tempo, time signature, the loop
+   and its bounds, the position in samples and in musical time, and the start of the bar.
+   - With Delay Compensation on, the position is that of the first sample **at the plug-in's own
+     input**: the block's timeline position less the arrival latency the graph already holds for
+     that device. A plug-in behind 1,024 samples of latency is told a position 1,024 samples
+     earlier than a plug-in on an unlatent track, because that is the audio it has in hand.
+   - The musical position is read from the tempo map at that sample time, never made by taking
+     beats away. Before the song's start it is negative and continuous.
+   - In a loop the position wraps into the loop for audio that left before the wrap, by the loop's
+     length as many times as needed; a block that crosses the loop point is split there.
+   - The device's parameter automation and its note events run on the same clock.
+   - With Delay Compensation off the position is the heard time, as the scope's stamps already are.
+   - A render, a freeze and a bounce use the same clock and tell the plug-in it is not in real time.
+   This is an addition. Live's manual says a synced device behind a latent one can stay out of time
+   (the plan's own open test A6H-034), and nothing in the research measured Live doing otherwise.
+9. **A return may live inside a group** (Bitwig's way; his words: "an fx channel is in a group and
+   can be mixed with audio and synths as a regular channel", and "like in Ableton a group auto
+   route to the group above it"). Such a return sits in the group as a channel. Its output is the
+   group, summed with the group's other channels before the group's devices, so the group's own
+   clipper or limiter takes the tails with the dry sound; the group goes on to the group above as
+   Live's groups do. Its send appears only on the tracks inside that group. The group has no send
+   to its own return. A return at the top level is Live's, unchanged. Win's placements, his to
+   strike: tracks at any depth inside the group see the send; solo and the return's own sends
+   follow Live's returns (a soloed track's return is still heard; a return's sends to its sibling
+   returns exist and start off).
+10. **A send's tap.** Live's switch per return stays as it is: Pre takes the track after its
+    devices and before its fader, Post after the fader. The addition: a single send may be set to
+    one of the three points Live names in its routing choosers, Pre FX, Post FX or Post Mixer, and
+    a return whose sends differ shows as mixed (the model has held that state since the return's
+    tap was built). Compensation uses the latency at the tap, so a Pre FX send does not wait for
+    the track's devices. Not taken: a tap by device number, which moves when a device is added,
+    moved or removed; and a free output chooser on every return, which d9 makes unnecessary and
+    which invites loops.
+11. **What was already there.** The proposal's fourth part, every path aligned at every summing
+    point, is built: the graph computes an arrival for every node and delays the earlier edges,
+    side-chain keys included, and moves the taps with a crossfade when a latency changes while
+    playing (ADR-0058, ADR-0079, ADR-0085). Its null test (a dry path and an inverted path through
+    a return inside the group, 1,024 and 512 samples of latency, cancelling to silence) becomes a
+    test of d9.
+
+12. **A look-ahead engine is not taken** (REAPER's anticipative processing, Cubase's ASIO-Guard).
+    Win recommended it and he said yes. He works at 2,048 samples with a great many channels and
+    kept ASIO-Guard off in Cubase. The measurements agree with him (`RESEARCH-INTAKE.md` §6.4): at
+    2,048 samples nothing was missed with it on or off and no processor time was saved; it bought
+    headroom that was not needed and made an edit audible up to 1.4 s late; and Cubase ships a
+    message that its guard is disabled when the buffer size is too large for the chosen guard level
+    (the rule behind the message was not traced). ADR-0145 d5 stands as it is. The one case it was
+    measured to help is a small buffer under heavy load; if he comes to play through ADI that way,
+    the question may be opened again.
+13. **DEV-23 moves ahead of its milestone.** Win recommended it and he said yes. What limits a
+    session of many channels at a large buffer is that no hosted plug-in may yet run on a graph
+    worker: only the engine's own sum, gain and source nodes may. With its look-ahead off, REAPER
+    still spread 64 independent tracks about twelve times across 16 logical processors. The engine
+    seat takes it after d8 to d10: first that a hosted plug-in may run on a worker, under the
+    plug-in format's own threading rules; then ADR-0229's gate for workers on by default, measured
+    on Windows first (d2). DF-E23.
+
+**What the evidence shows and does not show** (so that nothing is planned on more than it holds).
+- Outside Live almost nothing was run. Every Cubase, Bitwig and Reason case, and REAPER's beyond the
+  engine, is a manual's sentence or a file's content, and the manuals are not the installed
+  builds' manuals. Such rows are proposed contracts and test lists, as in the first intake.
+- Nothing ranks one DAW's efficiency against another's. The research's own engine report says it
+  does not establish comparative efficiency; Live and Cubase were not run for it; the Live CPU
+  figures are process counters on one machine and one driver, and nearly every contrast failed its
+  own noise gate. Reputation is not a reading.
+- What is measured and solid is in §6.2 (Live 12.4), §6.4 (REAPER's engine) and §6.5 (the scanner).
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0113 | its reach is the Device View and the Mix View; the Grid tier's editor is a cable patcher (d5) |
+| ADR-0220 d4 | a reading the research measured answers an AWAITING row for planning; the record after the build still closes the parity row (d3) |
+| ADR-0244 d4 to d6 | the list of sources is d6's |
+| ADR-0203 d1 | unchanged; d8, d9 and d10 are additions where Live lacks the ability |
+| `docs/PLAN.md` MX-04, MX-05, MX-25, DEV-26 | d8 (MX-04, DEV-26), d9 and d10 (MX-05), d10 (MX-25) noted on the rows; TM-SV-01, AU-03, SC2 and the two "P3" lines for pitch editing corrected from the readings and from ADR-0241 |
+| `docs/RESEARCH-INTAKE.md` | §6 added: the relay of the research's returns |
+| ADR-0145 d5 | stands; a look-ahead engine is not taken (d12) |
+| `docs/PLAN.md` DEV-23 | taken ahead of its milestone (d13) |
+| `docs/DEFERRED.md` | DF-E19 to DF-E23, DF-W32 and DF-W33 added |
+| `collab/prompts/` | the engine seat's prompt for d8 to d10 |

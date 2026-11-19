@@ -195,18 +195,29 @@ class ClipSourceMap {
     std::vector<WarpMarker> markers_;
 };
 // The lowest and highest sample of `channel` over the file's frames [from, to), from its peaks;
-// none where the span holds no bin.
+// none where the span holds no bin: an empty or backwards span, one that is not a number, one that
+// ends at or before the file's first frame, one that starts past its last bin.
+//
+// The answer is always the extremes of real bins, never a seed. A float file holds samples past
+// full scale, so a bin can lie wholly above 1 or below -1; and a span shorter than one frame still
+// lies in a bin (three faults a review of 18 November found: the seed was {1, -1}, which clipped
+// such a bin's near edge to full scale and came back as it stood, minimum above maximum, for a
+// span inside one frame; and a span before the file answered with the first bin).
 inline std::optional<media::PeakBin> peakSpan(const media::MediaPeaks &p, double from, double to, std::uint32_t channel) {
-    if (p.channels == 0 || p.framesPerBin == 0 || channel >= p.channels || to <= from)
+    if (p.channels == 0 || p.framesPerBin == 0 || channel >= p.channels || !(to > from) || !(to > 0.))
         return std::nullopt;
     const auto binCount = p.bins.size() / p.channels;
-    const auto first = static_cast<std::size_t>(std::max(0., from) / static_cast<double>(p.framesPerBin));
-    auto last = static_cast<std::size_t>(std::max(0., to - 1.) / static_cast<double>(p.framesPerBin));
-    if (first >= binCount)
+    const auto perBin = static_cast<double>(p.framesPerBin);
+    // Compared as numbers before any cast: a position past the bins (or past what a size_t holds)
+    // is out of the file, and casting it first would be undefined.
+    if (!(std::max(0., from) / perBin < static_cast<double>(binCount)))
         return std::nullopt;
-    last = std::min(last, binCount - 1);
-    media::PeakBin out{1.f, -1.f};
-    for (auto b = first; b <= last; ++b) {
+    const auto first = static_cast<std::size_t>(std::max(0., from) / perBin);
+    const auto lastAt = std::max(0., to - 1.) / perBin;
+    auto last = lastAt < static_cast<double>(binCount) ? static_cast<std::size_t>(lastAt) : binCount - 1;
+    last = std::max(last, first); // a span inside one frame: `to - 1` falls in the bin before
+    auto out = p.bins[first * p.channels + channel];
+    for (auto b = first + 1; b <= last; ++b) {
         const auto &bin = p.bins[b * p.channels + channel];
         out.minimum = std::min(out.minimum, bin.minimum);
         out.maximum = std::max(out.maximum, bin.maximum);

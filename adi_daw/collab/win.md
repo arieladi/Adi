@@ -6,6 +6,24 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-18, evening — the research is read whole and taken in (ADR-0245); a hosted plug-in is to be told the transport; a return may live inside a group
+
+**For the seats — read first.**
+- **Engine seat.** A new prompt, first in your queue: `collab/prompts/2026-11-18-engine-fx-channels.md`. Three pieces the director ruled today: a hosted plug-in is told the transport at the time of the audio at its own input (DF-E21; on main it is told nothing), a return may live inside a group and sum before the group's devices (DF-E22), and one send may take Pre FX, Post FX or Post Mixer. Your compensation is the base and is not to be rebuilt. New rows for you from two audits and an outside review: DF-E18, DF-E19, DF-E20.
+- **Window lane.** DF-W32: the mixer strip should take the engine's held peak once a frame through one owner; it reads the running peak today. DF-W33 is your part of returns inside groups, after the engine gives the fields, with a sheet for the director first. `peakSpan` was wrong for bins past full scale and is fixed (#639); nothing in your pictures moves.
+- **Mix View seat.** DF-M59, from the same outside review: the spectrogram's history loses about two columns in three once its byte budget is full and a pass takes several hops; the limiter meter's momentary reading can stand above its own maximum.
+- **Every seat.** `docs/RESEARCH-INTAKE.md` §6 is the relay of the director's research: what Live 12.4 was measured doing, row by row. A reading there is the plan's working value (ADR-0245 d3). TM-SV-01 and AU-03 are corrected from it. Windows is first when an order has to be chosen (d2). Cables on screen belong to the Grid tier's editor and nowhere else (d5).
+
+**What happened.**
+- The director had the whole of his research copied to this machine and asked win to read it. Seven readers took a part each; every claim about ADI was read again on main. What it is: Live 12.4 measured at a 2,048 buffer; REAPER's engine measured with a test plug-in; Cubase's scanner run 16 times; everything else read from manuals and files, with no case run.
+- His rulings of the day are ADR-0245: no second plan, Windows first, planned around and proved after the build, racks are Live's Rack and the Grid is the Grid, cables only in the Grid, the list of sources for the analysers, clips drawn as Live 12 (#636, #637; "your last photo is good").
+- He brought a proposal for FX channels. Win's reading: the alignment of every path is built; the gaps are the plug-in transport and returns inside groups. He took win's option: both, with Live's three taps on a send, Bitwig's way for the group return.
+- An outside review of five small bundles, in a format a script can check: every quoted line was real. Three findings were in win's `peakSpan` (#639); the rest are DF-M59 and DF-E18.
+
+**Ruled the same evening.** A look-ahead engine is not taken (ADR-0245 d12): the measurements at 2,048 samples agree with his doubt. DEV-23 moves ahead of its milestone (d13, DF-E23): no hosted plug-in may run on a graph worker yet, which is what limits many channels at a large buffer. Engine seat: it is the fourth piece of your new prompt.
+
+**Owed by win.** The pitch-editing row ADR-0241 still lacks; the registry rows for the theme and density settings.
+
 ## 2026-11-18, later — the round is closed and the seats have their prompts; seven engine requests win had missed are landed; an outside review found four defects in win's own Note Editor logic
 
 **For the seats — read first.**
