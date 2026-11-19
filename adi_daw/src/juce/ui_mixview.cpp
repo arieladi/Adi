@@ -252,7 +252,7 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root)
             state.analysisSpectrumSlope = before;
             detail.restoreSlopeControls(spectrumSlopeFromId(before)); return;
         }
-        detail.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+        applySpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
     };
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
@@ -263,8 +263,13 @@ void MixViewPanel::adoptViewState() {
     analyzerDock.configure(state.mixAnalyzerSource, state.mixAnalyzerPoint, state.mixAnalyzerChannel,
                            state.mixAnalyzerWidth);
     analysis.detail.setPalette(state.analysisPalette, state.analysisPaletteReverse);
-    analysis.detail.setSpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
+    applySpectrumSlope(spectrumSlopeFromId(state.analysisSpectrumSlope));
     resized();
+}
+void MixViewPanel::applySpectrumSlope(SpectrumSlope slope) {
+    analysis.detail.setSpectrumSlope(slope);
+    spectrum.setSpectrumSlope(slope);
+    analyzerDock.spectrum.setSpectrumSlope(slope);
 }
 bool MixViewPanel::hasAnalyzerControlFocus() const {
     return AnalysisPane::anyControlsFocused() || analyzerToggle.hasKeyboardFocus(true) ||

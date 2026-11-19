@@ -135,6 +135,7 @@ class MixViewPanel final : public juce::Component {
     DensityId appliedDensity_ = DensityId::Compact;
     juce::Rectangle<int> appliedBody_, appliedStrip_;
     void refreshTheme();
+    void applySpectrumSlope(SpectrumSlope);
     bool persistAnalyzerSettings();
 };
 } // namespace adi::ui

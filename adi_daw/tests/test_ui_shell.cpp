@@ -11378,9 +11378,55 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
                               actual.undoTitle(false) == oldUndo,
                           "detached analyzer control keys/menu cannot edit the stale main track or device context");
                 }
-                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)); mix.frame(actual.reader());
                 mix.analysis.detail.freezeButton.setToggleState(false, juce::dontSendNotification); mix.analysis.detail.freezeButton.onClick();
                 dock.freezeButton.setToggleState(false, juce::dontSendNotification); dock.freezeButton.onClick();
+                {
+                    mix.adoptViewState();
+                    actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Overview));
+                    mix.setSize(900, 650);
+                    mix.frame(actual.reader());
+                    AnalysisPane detached;
+                    detached.setSpectrumSlope(mix.analysis.detail.view.spectrumSlope());
+                    fake.addAndMakeVisible(detached);
+                    detached.setBounds(0, 0, 500, 420);
+                    const auto main = actual.analysisTrack(actual.reader());
+                    detached.frame(broker, main, main);
+                    tap->write(signal.data(), signal.data(), static_cast<std::int32_t>(signal.size()), 3072, true);
+                    broker->pump();
+                    mix.frame(actual.reader());
+                    detached.frame(broker, main, main);
+                    const auto shared = mix.spectrum.snapshot();
+                    check(mix.spectrum.isShowing() && dock.spectrum.isShowing() && shared &&
+                              shared == dock.spectrum.snapshot() && shared == detached.view.snapshot() &&
+                              mix.spectrum.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                              dock.spectrum.spectrumSlope() == SpectrumSlope::Tilt45,
+                          "Overview and the visible dock restore slope and share their spectrum with a detached pane");
+                    const auto prior = broker->stats();
+                    const auto acquisitions = acquired, releases = released;
+                    mix.analysis.detail.slopeBox.setSelectedId(1, juce::sendNotificationSync);
+                    const auto work = broker->pump();
+                    const auto later = broker->stats();
+                    check(actual.state().analysisSpectrumSlope == "flat" &&
+                              mix.spectrum.spectrumSlope() == SpectrumSlope::Flat &&
+                              dock.spectrum.spectrumSlope() == SpectrumSlope::Flat &&
+                              detached.view.spectrumSlope() == SpectrumSlope::Tilt45 &&
+                              shared == mix.spectrum.snapshot() && shared == dock.spectrum.snapshot() &&
+                              shared == detached.view.snapshot() && acquired == acquisitions && released == releases &&
+                              prior.domains == later.domains && prior.consumers == later.consumers &&
+                              prior.publications == later.publications && prior.workerPasses == later.workerPasses &&
+                              prior.cursorReads == later.cursorReads && prior.transforms == later.transforms && work == 0,
+                          "a shared slope change only updates the attached display projections and leaves the broker idle");
+                    tap->write(signal.data(), signal.data(), 256, 4096, true);
+                    const auto transforms = broker->pump();
+                    mix.frame(actual.reader());
+                    detached.frame(broker, main, main);
+                    const auto next = mix.spectrum.snapshot();
+                    check(transforms == 1 && next && next != shared &&
+                              next == dock.spectrum.snapshot() && next == detached.view.snapshot(),
+                          "the next hop still yields one transform and the same immutable spectrum for all three views");
+                    mix.analysis.detail.slopeBox.setSelectedId(2, juce::sendNotificationSync);
+                }
+                actual.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)); mix.frame(actual.reader());
                 actual.sharedAnalysis = savedBroker; mix.setAnalyzerDock(false); mix.frame(actual.reader());
                 mix.setBounds(mixBounds); mix.frame(actual.reader()); surface.grabKeyboardFocus();
             }
