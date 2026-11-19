@@ -193,8 +193,10 @@ bool Core::configurationBusy() const noexcept {
 bool Core::needsBypassTransition(std::int32_t configuredTotal) const noexcept {
     const auto& d = *impl_;
     const auto pending = d.pending.load(std::memory_order_acquire);
-    if (pending & claimedBit)
-        return changeFrom(pending).samples == configuredTotal;
+    if ((pending & claimedBit) && changeFrom(pending).samples == configuredTotal)
+        return true;
+    // A newer offer waits for its own PDC. Until then the admitted graph can
+    // still finish the limiter fade that belongs to its exact applied total.
     return configuredTotal == d.appliedLatency.load(std::memory_order_relaxed) &&
         d.limiterOn && d.limiterToken && d.limiterLatency == d.limiterTarget &&
         d.limiter.latencySamples() != d.limiterTarget;
