@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M34 native Clean silence and wake
+
+**PR requested.** `mixview/clean-suspension-20261119` is pushed at `6a71f323` after the native serial EQ assembly. Clean runs a bounded 48-second quiet release, clears its output once, and resets on the audio owner before the first real sample. The Release passed 870 software-peer checks, three CTests and 93 Clean host checks with zero callback allocations and frees. A short silent gap matches uninterrupted processing sample for sample. A rested node wakes at the fresh waveform and matches the continuously running fixture within 1e-7 peak.
+
+DF-M34's EQ and Limiter parts stay open. EQ's only current full reset re-enters prepare and can allocate. Both need a wet-quiet wake path for structural requests that preserves the pinned PDC epoch. Limiter dither also generates genuine output on silent input, so that mode needs continuous processing. The exact source audit is in `NowWeReverse/ADI-View/mixview-seat/DF-M34-EQ-TAIL-20261119.md`.
+
+- ZIP `outputs/ADI-MixView-Clean-Suspension-6a71f323ba-win64-Release.zip`, SHA-256 `ea3fe1c4f55b6b93038741cdf5689c78bf7c2188d77b3c358319a9a9606ae011`.
+- ADI.exe SHA-256 `67388c85a87e66cfd5595eb8ab6af64325f9d0bc440e8b335c3a235b0736d71b`, scanner SHA-256 `d4a9a59b59a3f7c0831367e5906b3a2674508a1f470e1e2864e16322a4ac54d8`, corresponding source SHA-256 `58468169c093f0c2221f15a0f9181088cc38c061314136d442dc15b73640db9d`.
+- Claude brief `outputs/ADI-Q-MixView-Clean-Suspension-6a71f323-CLAUDE-RETEST.txt`. Raw evidence is in `NowWeReverse/ADI-View/mixview-seat/dfm34-built-20261119`.
+
 ## 19 November 2026 — DF-M29–31, native serial EQ Release and #548 re-review
 
 **PR requested.** #548 `mixview/eq-serial-native-20261113` is fast-forwarded from `770bf1b0` to `eb5c68b8` for re-review. Its merge tree is clean against current main. The cumulative `mixview/native-serial-eq-assembly-20261119` at `f7fab268` is pushed and includes the key route and paired EQ surfaces after DF-M26. It preserves active EQ through float → double → float at the same stream format, renders the requested plan deterministically offline, and tells users to reopen the project after a parked failure. Rolling real-time plan publication still uses the existing safe owner/ready-plan path.
