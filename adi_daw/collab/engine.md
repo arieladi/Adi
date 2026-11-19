@@ -32,6 +32,14 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E45 capture origin and tempo inverse
+
+**PR requested** — branch `engine/df-e45-midi-capture-clock`, head `5a416811205d7ae74a05c567c3d471704b15d4fe`, current main `8416ed0f` and DF-E1's `55fd8bbd`. Title **DF-E45: Preserve MIDI Capture samples across musical origins**. Includes the existing E1 tempo inverse, so land the stack once. CT-03 can use the result before wiring `prepareMidi`.
+
+Capture keeps the authored origin tick. Later offsets start at the rounded origin sample, choose the nearest tick, and verify the exact sample round trip. The integer-nanosecond inverse restores an adjacent tick only when that tick rounds to the same stored nanosecond. Truly fractional values retain the earlier-tick result. DF-E1 already guards the raw inverse against nonfinite and huge input.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Both passed the eight capture, tempo, clip, edit-plan, MIDI, defaults and automation suites. The 51-check capture suite prepares and commits the 110 BPM beat-two case and the 128 BPM bar-two half-sample case at 44.1 kHz. Both play every expected sample through Session. It checks 1,536 integer-nanosecond round trips and their true-floor counterparts at 90, 110 and 140 BPM. Two compiled faults caught the old fractional origin clock and the lost nanosecond round trip. The validators and binary layout passed.
+
 ## 2026-11-19 — DF-E51 (a), (b) and (d) MIDI input note ownership
 
 **PR requested** — branch `engine/df-e51-midi-note-ownership`, head `ba87710e5ecf53ae451a1557a45aabffca32f25e`, main base `8416ed0f`. Title **DF-E51: Keep MIDI note ownership through retriggers and zone changes**. Land before the Window's SRF-05 Track route feeds this parser.
