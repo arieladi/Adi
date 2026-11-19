@@ -10,6 +10,10 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — EX-09 complete JSON byte validation
+
+**PR requested** — `engine-win/render-job-json-full-bytes`, `cd265a59d80913dbcf2e6b7cd663ae25d6468fda`, stacked on `engine-win/render-job-json`. The pinned JSON lexer treated a literal NUL after an otherwise valid job as end-of-input. Two native tests reproduced accepting the prefix, with and without trailing content. The job decoder now requires the complete byte stream and refuses literal NUL before parsing. Strict x64 MSVC passed 94 codec checks and 211 queue checks.
+
 ## 2026-11-19 — DEV-25 bounded parallel discovery
 
 **PR requested** — `engine-win/scanner-parallel-probes`, `95a5288b25b49590b62ab5e1acd256deaf58d5eb`, stacked on `engine-win/scanner-registry-write-admission`. Explicit discovery can request one through four workers, each with an independent SQLite connection and the same identified helper. The owner consumes results in input order and publishes only a complete catalogue. A fatal result stops new submissions. Active probes keep their bounded timeout and observe the caller's cancellation flag. The serial default stays in place.
