@@ -1621,18 +1621,18 @@ UI/host producer wiring is introduced.
 | `device.setPanel` | e | N | sym | P0 |
 | `device.rename` | e | N | sym | P1 |
 | `device.setLatency` | e | G | sym | P0 |
-| `chain.create` | e | G | pair `chain.delete` | P2 |
-| `chain.delete` | e | G | cap | P2 |
-| `chain.reorder` | e | G | sym | P2 |
-| `chain.rename` | e | N | sym | P2 |
+| `chain.create` | e | G | pair `chain.delete` | P1 |
+| `chain.delete` | e | G | cap | P1 |
+| `chain.reorder` | e | G | sym | P1 |
+| `chain.rename` | e | N | sym | P1 |
 | `chain.setZones` | e | S | sym | P2 |
-| `chain.setMute` | e | S | sym | P2 |
-| `chain.setSolo` | e | S | sym | P2 |
-| `macro.setValue` | e | S | sym, coalescable | P2 |
-| `macro.rename` | e | N | sym | P2 |
-| `macro.map` | e | S | pair `macro.unmap` | P2 |
-| `macro.unmap` | e | S | cap | P2 |
-| `macro.setRange` | e | S | sym | P2 |
+| `chain.setMute` | e | S | sym | P1 |
+| `chain.setSolo` | e | S | sym | P1 |
+| `macro.setValue` | e | S | sym, coalescable | P1 |
+| `macro.rename` | e | N | sym | P1 |
+| `macro.map` | e | S | pair `macro.unmap` | P1 |
+| `macro.unmap` | e | S | cap | P1 |
+| `macro.setRange` | e | S | sym | P1 |
 
 N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
 the same first-touch opener and normalization as a plug-in's own edit capture.

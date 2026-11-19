@@ -7,11 +7,17 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 namespace adi { class Store; }
 namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
+struct ClipMediaSource {
+    std::int64_t clipId = 0, mediaId = 0;
+    std::filesystem::path path;
+    std::string storedBlake3;
+};
 // Read the media hints and immutable rows off the callback. No Store survives.
 std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Model&);
 class ClipPlayback {
@@ -23,6 +29,12 @@ public:
     ClipPlayback& operator=(const ClipPlayback&) = delete;
     std::vector<Node*> sourcesFor(std::int64_t trackId);
     const std::vector<std::string>& problems() const noexcept;
+    // Off-callback owner view of the external files successfully selected
+    // by this generation, including Session's frozen-source substitutions.
+    // Names the original input to decode/warp, not a second media resolver or
+    // a promise about plugin-owned samples. Muted/unopened clips are absent.
+    // Immutable for this generation's lifetime; callback use returns empty.
+    [[nodiscard]] std::span<const ClipMediaSource> externalSources() const noexcept;
     // Offline/test driver support ONLY, between callbacks: request the next
     // block and wait for disk. Session::process NEVER calls this.
     bool prime(std::chrono::milliseconds timeout = std::chrono::seconds(10));
