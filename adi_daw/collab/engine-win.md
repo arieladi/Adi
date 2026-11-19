@@ -16,6 +16,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Current main and the shared Media Cache Folder
+
+**PR requested** `engine-win/media-cache-root-current` at `6ad07db6ecb947a5a0d89053820939a64987a69e`. This is the replacement review tip for `0f4ea92e` after [PR #661](https://github.com/arieladi/Adi/pull/661) advanced main to `f256e386`. The resolved cache implementation keeps main's verified waveform-analysis trimming and the single configured parent for the decoded and analysed caches.
+
+The exact merged tree passed 477 strict native Windows x64 MSVC Debug checks across six core suites and compiled and linked the Windows desktop app. Platform AAC progress and interactive Settings were outside these gates.
+
 ## 2026-11-19 — PD-05 session lock ownership in project copies
 
 **PR requested** `engine-win/project-copy-lock-neutral` at `b73f36da2290388e9da090939bc9c030ecbdc01d`. Save a Copy, Save As and the shared SQLite snapshot path clear the advisory writer record while the supported-major copy is still private. The live source keeps its writer record. A newer-major verbatim copy keeps its own format data.
