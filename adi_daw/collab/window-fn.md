@@ -93,9 +93,11 @@ it always lit Auto; no golden changed (outside the application the window shows 
 ## 2026-11-19, window-fn — DF-W34: the plug-in scan off the message thread (PR requested)
 
 **Taken over from the window lane, with win's word in ADR-0248 d14:** the function list, starting with
-DF-W34 on #676. This branch carries #676's two DF-W9 commits (`e88693f8`, `8d067657`) cut onto main, off
-step 4, so `window/plugins-browser` need not be rebased: **#676 can close in favour of it.** Its picture
-commit (`38b143ce`) stays with the window lane, which owns the look.
+DF-W34. **Update, later the same evening:** the window lane requested #676 (`window/plugins-browser`,
+DF-W9's listing with its review fixes, `06698a2c`), so this branch now merges #676's head and main and
+lands **after #676**, as its follow-up: it replaces #676's first scan on the message thread (after the
+first paint) with the worker, and #676's stopped-scan wording with the report's. The window lane leaves
+DF-W34 to this seat.
 
 **What it does** (`src/adi/ui/plugin_scan.hpp`, `plugin_listing.hpp`, `src/juce/ui_main.cpp`,
 `ui_browser.*`, `ui_settings.*`):
@@ -132,12 +134,13 @@ for its cancel (it could hang), and two checks that could not fail made real. Pl
 vendor key; the hold; the generation guard).
 
 **Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
-suites build and pass; `adi_ui_shell_tests` 2776 checks, 0 failures.
+suites build and pass on the merge of #676 and main `bedee5ab`; `adi_ui_shell_tests` 2782 checks, 0
+failures.
 
-**PR requested.** Branch `window-fn/plugin-scan` at `0155622d`, on main `12aab48a`. Title: **adi_daw:
+**PR requested.** Branch `window-fn/plugin-scan` at `73ec8d80`: #676's head and main merged. Title: **adi_daw:
 window-fn: DF-W34, the plug-in scan off the message thread: a worker that owns the loader, a gate for
-loads, Rescan, a stopped scan named, one folder per vendor (DF-W9's listing carried from #676)**. Depends
-on nothing unlanded; supersedes #676.
+loads, Rescan, a stopped scan named, one folder per vendor**. **Depends on #676**; land it after #676 (its
+diff against #676 is DF-W34 alone).
 
 **Asked of engine-win (through win):** a distinct state or a shared constant for "the helper could not
 start" in `scan::Result` (`Scanner::probe` reports it as `Unavailable` with "scanner helper unavailable or
