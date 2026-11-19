@@ -42,6 +42,28 @@ void ringAndCurve() {
     core.process(left.data(), right.data(), left.data(), right.data(), 64);
     require(left[0] == 1 && right.back() == 1, "deleting the free curve restores legacy defaults");
 }
+void timeUsesFreeContour() {
+    Core core;
+    core.prepare(48000);
+    core.set(Core::TimeOn, 1);
+    core.set(Core::timeParam(Core::Band::Mid, Core::TimeRange), 5);
+    constexpr int key = Bank::key(static_cast<int>(Core::Stage::Time), 1, 0);
+    node(core, 0, key, {0.f, 0.f, 0.f, Bank::Shape::Line});
+    node(core, 1, key, {1.f, 1.f, 0.f, Bank::Shape::Hold});
+    core.sync(4.0 * .319, false);
+    std::array<float, 512> l{}, r{};
+    for (int i = 0; i < 512; ++i) {
+        l[i] = static_cast<float>(i) / 1024.f;
+        r[i] = -.25f * l[i];
+    }
+    core.process(l.data(), r.data(), l.data(), r.data(), l.size());
+    for (int i = 240; i < 512; ++i) {
+        const float expected = static_cast<float>((i - ((1.0 - .319) * 240.0 - 1.0)) / 1024.0);
+        require(std::abs(l[i] - expected) < 2e-6f && std::abs(r[i] + .25f * expected) < 2e-6f,
+                "Time's free line overrides constant legacy heights and interpolates the history read");
+    }
 }
-int main() try { ringAndCurve(); return 0; }
+
+}
+int main() try { ringAndCurve(); timeUsesFreeContour(); return 0; }
 catch (const std::exception& e) { std::fprintf(stderr,"%s\n", e.what()); return 1; }

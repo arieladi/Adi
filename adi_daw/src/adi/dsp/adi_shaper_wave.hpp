@@ -66,13 +66,15 @@ public:
         return {nodes_.data() + starts_[k], starts_[k + 1] - starts_[k]};
     }
     bool hasStage(int stage) const noexcept { return starts_[6 * stage] != starts_[6 * stage + 6]; }
-    static float at(View nodes, std::uint64_t phase) noexcept {
+    static float at(View nodes, std::uint64_t phase, bool* moving = nullptr) noexcept {
         const double x = static_cast<double>(phase >> 11) * (8191.0 / 9007199254740992.0);
         const auto upper = std::upper_bound(nodes.begin(), nodes.end(), x,
             [](double needle, const Node& node) { return needle < node.x; });
         const auto& left = upper == nodes.begin() ? nodes.back() : *(upper - 1);
         const auto& right = upper == nodes.end() ? nodes.front() : *upper;
-        if (left.shape == Shape::Hold || left.y == right.y) return left.y;
+        const bool varies = left.shape != Shape::Hold && left.y != right.y;
+        if (moving) *moving = varies;
+        if (!varies) return left.y;
         const double x0 = left.x - (upper == nodes.begin() ? 8191 : 0);
         const double x1 = right.x + (upper == nodes.end() ? 8191 : 0);
         if (x1 <= x0) return right.y;
