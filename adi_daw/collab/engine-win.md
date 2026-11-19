@@ -10,6 +10,16 @@ PD-06 (Q-I) needs a decision on interrupted recordings. Recommend offering recov
 
 EX-06 (Q-J) needs the three shaped export dither modes and their labels. Recommend the three open-reference shapes in the plan (Lipshitz, improved E-weighted and Shibata) with ADI labels. This blocks the shaped presets and their acceptance limits.
 
+## 2026-11-19, audio loop takes with one Undo per pass (CT-02)
+
+**PR requested** — `engine-win/audio-loop-materialization` at `b4907bcc33e29f61105f9d95a33521c92a7cd5ff`, main base `bedee5ab`. Land after the engine grouped-Undo contract `a0a42ebd`, publication `b4485df6`, Stop fix `274f81f5` and recording rollback `b89d58ee`. The materialization work is the final commit on that stack.
+
+**MEASURED.** Real Session fixtures completed 3½ passes into one continuous WAV, four ordered take clips and the main comp. The last partial pass replaced its own interval, preserving the preceding pass's tail. One Undo removed the fourth take and restored the third pass's PCM. The read-only observer saw the preceding database until the complete commit. A failure in the last pass rolled back every pass. Both graph precisions, pre-existing main audio, multi-target deduplication, the saved histories and the identity cleanup regression passed.
+
+Strict Windows x64 MSVC `/W4 /WX` passed six suites with 11,527 checks, including 124 in the recording commands suite. The last test revision reran the recording suite and exercised real distinct capture and project volumes with 174 checks, including the four-take case in both precisions. Ops and schema validators passed.
+
+**For Window.** Once the parents land, pass the completed loop result from `Session::recording()` and one media ID per target with one lane and clip ID per pass to `recording::prepareLoopCommit`. The shared `recording::commit` publishes one transaction. The new take block is above the existing lanes, and its order follows the director's recorded pass order. Existing lane reuse, punch and pre-roll policy, latency compensation and desktop wiring remain open. #677 still gates DF-E35's snapshot loan. The MIDI tap is available on the engine branch and CT-03's note creation seam is requested below.
+
 ## 2026-11-19, settings safety on current main
 
 **PR requested** — `engine-win/settings-portable` at `0e6c6663d9756bf05b804be7fb4b3b33677987b0`, on main `bedee5ab`. This is the single DF-E33 review family for #673 and #672. Strict MSVC x64 `/W4 /WX` passed 533 checks across settings, project replacement, project files and collection. Optional symlink fixture cases lacked privilege.
