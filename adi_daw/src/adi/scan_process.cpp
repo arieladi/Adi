@@ -43,13 +43,45 @@ bool valid(const std::filesystem::path& executable, const std::vector<std::strin
     }
     return true;
 }
+struct StreamOutput {
+    const ProcessOutputConsumer& consumer;
+    std::uint64_t maximum, delivered = 0;
+};
 bool append(ProcessResult& result, const char* bytes, std::size_t size,
-            const ProcessOptions& options) {
+            const ProcessOptions& options, StreamOutput* stream) {
+    if (stream != nullptr) {
+        if (size == 0) return true;
+        if (size > stream->maximum - stream->delivered) {
+            result.status = ProcessStatus::OutputLimit;
+            return false;
+        }
+        try {
+            if (!stream->consumer(std::as_bytes(std::span(bytes, size)))) {
+                result.status = ProcessStatus::ConsumerFailed;
+                return false;
+            }
+        } catch (...) {
+            result.status = ProcessStatus::ConsumerFailed;
+            return false;
+        }
+        stream->delivered += size;
+        return true;
+    }
     if (size > options.maximumOutput - result.output.size()) {
         result.status = ProcessStatus::OutputLimit;
         return false;
     }
     result.output.append(bytes, size);
+    return true;
+}
+bool serviceStream(ProcessResult& result, const ProcessOptions& options,
+                   std::chrono::steady_clock::time_point deadline, const StreamOutput* stream) {
+    if (stream == nullptr) return true; // retain buffered scanner exit precedence
+    if (cancelled(options)) { result.status = ProcessStatus::Cancelled; return false; }
+    if (std::chrono::steady_clock::now() >= deadline) {
+        result.status = ProcessStatus::TimedOut;
+        return false;
+    }
     return true;
 }
 
@@ -83,7 +115,8 @@ std::wstring quote(const std::wstring& arg) {
 }
 
 ProcessResult launch(const std::filesystem::path& executable,
-                     const std::vector<std::string>& arguments, const ProcessOptions& options) {
+                     const std::vector<std::string>& arguments, const ProcessOptions& options,
+                     StreamOutput* stream = nullptr) {
     ProcessResult result;
     result.status = ProcessStatus::LaunchFailed;
     std::wstring command = quote(executable.native());
@@ -138,6 +171,15 @@ ProcessResult launch(const std::filesystem::path& executable,
         TerminateProcess(process.value, 1); WaitForSingleObject(process.value, INFINITE);
         return result;
     }
+    // Declared after the owning handles: even output allocation or consumer
+    // exceptions must terminate and wait before process/job handles are closed.
+    struct ChildGuard {
+        HANDLE job, process;
+        ~ChildGuard() {
+            TerminateJobObject(job, 1);
+            WaitForSingleObject(process, INFINITE);
+        }
+    } child{job.value, process.value};
     CloseHandle(writer.value); writer.value = nullptr;
     result.status = ProcessStatus::Exited;
     const auto deadline = std::chrono::steady_clock::now() + options.timeout;
@@ -157,6 +199,7 @@ ProcessResult launch(const std::filesystem::path& executable,
         bool ok = true;
         // Bound each drain so cancellation/deadline cannot starve under output.
         for (unsigned batch = 0; batch < 16; ++batch) {
+            if (!serviceStream(result, options, deadline, stream)) { ok = false; break; }
             if (!PeekNamedPipe(reader.value, nullptr, 0, nullptr, &available, nullptr)) {
                 if (GetLastError() != ERROR_BROKEN_PIPE) {
                     result.status = ProcessStatus::IoFailed; result.osError = GetLastError(); ok = false;
@@ -169,7 +212,8 @@ ProcessResult launch(const std::filesystem::path& executable,
             if (!ReadFile(reader.value, buffer.data(), wanted, &read, nullptr)) {
                 result.status = ProcessStatus::IoFailed; result.osError = GetLastError(); ok = false; break;
             }
-            if (!append(result, buffer.data(), read, options)) { ok = false; break; }
+            if (!append(result, buffer.data(), read, options, stream) ||
+                !serviceStream(result, options, deadline, stream)) { ok = false; break; }
         }
         if (!ok) break;
         if (state == WAIT_OBJECT_0 && available == 0) {
@@ -184,8 +228,6 @@ ProcessResult launch(const std::filesystem::path& executable,
         if (std::chrono::steady_clock::now() >= deadline) { result.status = ProcessStatus::TimedOut; break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    TerminateJobObject(job.value, 1);
-    WaitForSingleObject(process.value, INFINITE);
     return result;
 }
 #else
@@ -194,7 +236,8 @@ struct Fd {
     ~Fd() { if (value >= 0) ::close(value); }
 };
 ProcessResult launch(const std::filesystem::path& executable,
-                     const std::vector<std::string>& arguments, const ProcessOptions& options) {
+                     const std::vector<std::string>& arguments, const ProcessOptions& options,
+                     StreamOutput* stream = nullptr) {
     ProcessResult result;
     result.status = ProcessStatus::LaunchFailed;
     int descriptors[2] = {-1, -1};
@@ -286,9 +329,11 @@ ProcessResult launch(const std::filesystem::path& executable,
         bool ok = true;
         bool drained = false;
         for (unsigned batch = 0; batch < 16; ++batch) {
+            if (!serviceStream(result, options, deadline, stream)) { ok = false; break; }
             const auto count = ::read(reader.value, buffer.data(), buffer.size());
             if (count > 0) {
-                if (!append(result, buffer.data(), static_cast<std::size_t>(count), options)) { ok = false; break; }
+                if (!append(result, buffer.data(), static_cast<std::size_t>(count), options, stream) ||
+                    !serviceStream(result, options, deadline, stream)) { ok = false; break; }
             } else if (count == 0 || (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))) {
                 drained = true; break;
             } else if (errno != EINTR) {
@@ -325,5 +370,20 @@ ProcessResult runProcess(const std::filesystem::path& executable,
     if (!valid(executable, arguments, options)) return {};
     if (cancelled(options)) return refusal(ProcessStatus::Cancelled);
     return launch(executable, arguments, options);
+}
+ProcessStreamResult runProcessStream(const std::filesystem::path& executable,
+                                    const std::vector<std::string>& arguments,
+                                    const ProcessOutputConsumer& consumer,
+                                    const ProcessStreamOptions& options) {
+    if (audio::onAudioThread) return {ProcessStatus::CallbackRefused};
+    // Reuse argument/lifecycle validation, not the buffered output budget.
+    ProcessOptions lifecycle;
+    lifecycle.timeout = options.timeout;
+    lifecycle.cancel = options.cancel;
+    if (!consumer || options.maximumOutput == 0 || !valid(executable, arguments, lifecycle)) return {};
+    if (cancelled(lifecycle)) return {ProcessStatus::Cancelled};
+    StreamOutput stream{consumer, options.maximumOutput};
+    const auto result = launch(executable, arguments, lifecycle, &stream);
+    return {result.status, result.exitCode, result.signal, result.osError, stream.delivered};
 }
 } // namespace adi::scan

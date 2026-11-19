@@ -11,6 +11,8 @@
 #include "temp_directory.hpp"
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -18,7 +20,12 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace adi::audio;
@@ -426,10 +433,90 @@ void ffprobeMetadata(const fs::path& folder) {
     check(problemOf([&] { (void)probeFfprobeAudio(absent, {}, stopped.get_token()); }) == DecodeProblem::Cancelled,
           "a cancelled ffprobe refuses before looking for the tool");
 }
+
+constexpr std::size_t kTestFfmpegFrames = 700;
+constexpr std::size_t kTestFfmpegChannels = 3;
+constexpr std::array<float, kTestFfmpegChannels> kTestFfmpegSample{0.5f, -0.25f, 0.125f};
+
+int ffmpegTestChild(int argc, char** argv) {
+    const auto input = std::find_if(argv, argv + argc - 1, [](const char* arg) {
+        return std::string_view(arg) == "-i";
+    });
+    if (input == argv + argc - 1) return 2;
+    const auto mode = fs::path(input[1]).filename();
+    if (mode == "empty") return 0;
+#if defined(_WIN32)
+    if (_setmode(_fileno(stdout), _O_BINARY) == -1) return 2;
+#endif
+    constexpr std::array<unsigned char, kTestFfmpegChannels * 4> frame{
+        0, 0, 0, 0x3f, 0, 0, 0x80, 0xbe, 0, 0, 0, 0x3e};
+    if (mode == "partial") return std::fwrite(frame.data(), 1, 5, stdout) == 5 ? 0 : 2;
+    if (std::fwrite(frame.data(), 1, 3, stdout) != 3 || std::fflush(stdout) != 0) return 2;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    if (std::fwrite(frame.data() + 3, 1, frame.size() - 3, stdout) != frame.size() - 3) return 2;
+    for (std::size_t i = 1; i < kTestFfmpegFrames; ++i) {
+        if (std::fwrite(frame.data(), 1, frame.size(), stdout) != frame.size()) return 2;
+    }
+    return mode == "failed" ? 7 : 0;
+}
+
+void ffmpegPcm(const fs::path& executable, const fs::path& folder) {
+    const auto source = [&](const char* name) {
+        auto path = folder / name;
+        std::ofstream(path, std::ios::binary) << "owned process test fixture";
+        return path;
+    };
+    constexpr FfprobeAudioStream layout{1, 48000, 3};
+    const auto accepted = [](std::span<const float>) { return true; };
+    const auto complete = source("complete");
+    std::vector<float> samples;
+    const auto frames = streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+        [&](std::span<const float> chunk) {
+            check(chunk.size() % kTestFfmpegChannels == 0, "every PCM sink batch is frame-aligned");
+            samples.insert(samples.end(), chunk.begin(), chunk.end());
+            return true;
+        });
+    check(frames == kTestFfmpegFrames && samples.size() == frames * kTestFfmpegChannels,
+          "FFmpeg PCM accepts the exact frame budget and reports its delivered frames");
+    bool exact = true;
+    for (std::size_t i = 0; i < samples.size(); ++i)
+        if (samples[i] != kTestFfmpegSample[i % kTestFfmpegChannels]) exact = false;
+    check(exact, "split process reads reconstruct the exact float words and channel order");
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames - 1, accepted);
+    }) == DecodeProblem::NoSpace, "FFmpeg PCM enforces the frame budget");
+    for (const char* input : {"empty", "partial", "failed"}) {
+        check(problemOf([&] {
+            (void)streamFfmpegAudio(executable, source(input), layout, kTestFfmpegFrames, accepted);
+        }) == DecodeProblem::Corrupt, std::string("FFmpeg PCM refuses ") + input + " output");
+    }
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+                               [](std::span<const float>) { return false; });
+    }) == DecodeProblem::CacheWrite, "FFmpeg PCM reports a sink refusal");
+    check(problemOf([&] {
+        (void)streamFfmpegAudio(executable, complete, layout, kTestFfmpegFrames,
+            [](std::span<const float>) -> bool { throw DecodeError(DecodeProblem::NoSpace, "sink quota"); });
+    }) == DecodeProblem::NoSpace, "FFmpeg PCM preserves the sink's typed error");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     try {
+        if (argc > 2 && std::string_view(argv[1]) == "-nostdin")
+            return ffmpegTestChild(argc, argv);
+        if (argc == 6 && std::string_view(argv[1]) == "--ffmpeg-stream") {
+            const auto stream = probeFfprobeAudio(argv[3], argv[4]);
+            double peak = 0.0;
+            const auto frames = streamFfmpegAudio(argv[2], argv[4], stream, std::stoull(argv[5]),
+                [&](std::span<const float> samples) {
+                    for (float value : samples) peak = std::max(peak, std::abs(static_cast<double>(value)));
+                    return true;
+                });
+            std::printf("%u %u %u %llu %.9f\n", stream.index, stream.sampleRate, stream.channels,
+                        static_cast<unsigned long long>(frames), peak);
+            return 0;
+        }
         // Optional native gate against an explicitly chosen ffprobe and owned media.
         if (argc == 4 && std::string_view(argv[1]) == "--ffprobe") {
             const auto stream = probeFfprobeAudio(argv[2], argv[3]);
@@ -447,6 +534,7 @@ int main(int argc, char** argv) {
         settings();
         defaultCacheSettings(tmp.path());
         ffprobeMetadata(tmp.path());
+        ffmpegPcm(fs::absolute(argv[0]), tmp.path());
     } catch (const std::exception& e) {
         check(false, std::string("unexpected exception: ") + e.what());
     }

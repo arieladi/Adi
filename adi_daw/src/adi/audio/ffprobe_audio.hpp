@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <span>
 #include <stop_token>
 #include <string_view>
 
@@ -23,5 +25,15 @@ struct FfprobeAudioStream {
 [[nodiscard]] FfprobeAudioStream probeFfprobeAudio(
     const std::filesystem::path& ffprobe, const std::filesystem::path& source,
     std::stop_token stop = {});
+
+using FfmpegAudioSink = std::function<bool(std::span<const float>)>;
+
+/// Delivers interleaved complete frames from a selected stream. Returns its
+/// exact decoded frame count after exit zero. Sink spans live through the call.
+/// The caller owns staged output and commits it after a successful return.
+[[nodiscard]] std::uint64_t streamFfmpegAudio(
+    const std::filesystem::path& ffmpeg, const std::filesystem::path& source,
+    FfprobeAudioStream stream, std::uint64_t maximumFrames,
+    const FfmpegAudioSink& sink, std::stop_token stop = {});
 
 } // namespace adi::audio

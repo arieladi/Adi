@@ -6,8 +6,13 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/scan_process.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
 #include <charconv>
+#include <cstring>
+#include <exception>
 #include <limits>
 #include <string>
 
@@ -45,6 +50,24 @@ std::uint32_t sampleRate(const nlohmann::json& stream) {
     throw DecodeError(DecodeProblem::Corrupt, "Invalid ffprobe sample_rate");
 }
 
+std::string localInput(const std::filesystem::path& tool, const std::filesystem::path& source,
+                       const char* name, std::stop_token stop) {
+    if (onAudioThread) throw DecodeError(DecodeProblem::AudioThread, "External decoding requires a worker");
+    if (stop.stop_requested()) throw DecodeError(DecodeProblem::Cancelled, "External decoding cancelled");
+
+    std::error_code ec;
+    if (!tool.is_absolute() || !std::filesystem::is_regular_file(tool, ec))
+        throw DecodeError(DecodeProblem::Unsupported, std::string("A valid ") + name + " executable is required");
+    if (source.empty() || source.native().find(std::filesystem::path::value_type{}) !=
+                              std::filesystem::path::string_type::npos)
+        throw DecodeError(DecodeProblem::Unreadable, "Invalid local audio source path");
+    const auto absolute = std::filesystem::absolute(source, ec);
+    if (ec || !std::filesystem::is_regular_file(absolute, ec))
+        throw DecodeError(DecodeProblem::Unreadable, "Cannot open the local audio source");
+    const auto bytes = absolute.generic_u8string();
+    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
 } // namespace
 
 FfprobeAudioStream parseFfprobeAudio(std::string_view text) {
@@ -80,20 +103,7 @@ FfprobeAudioStream parseFfprobeAudio(std::string_view text) {
 
 FfprobeAudioStream probeFfprobeAudio(const std::filesystem::path& ffprobe,
                                    const std::filesystem::path& source, std::stop_token stop) {
-    if (onAudioThread) throw DecodeError(DecodeProblem::AudioThread, "ffprobe is an owner-worker operation");
-    if (stop.stop_requested()) throw DecodeError(DecodeProblem::Cancelled, "Audio probe cancelled");
-
-    std::error_code ec;
-    if (!ffprobe.is_absolute() || !std::filesystem::is_regular_file(ffprobe, ec))
-        throw DecodeError(DecodeProblem::Unsupported, "A valid ffprobe executable is required for this format");
-    if (source.empty() || source.native().find(std::filesystem::path::value_type{}) !=
-                              std::filesystem::path::string_type::npos)
-        throw DecodeError(DecodeProblem::Unreadable, "Invalid local audio source path");
-    const auto absolute = std::filesystem::absolute(source, ec);
-    if (ec || !std::filesystem::is_regular_file(absolute, ec))
-        throw DecodeError(DecodeProblem::Unreadable, "Cannot open the local audio source");
-    const auto bytes = absolute.generic_u8string();
-    const std::string input(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const auto input = localInput(ffprobe, source, "ffprobe", stop);
 
     std::atomic<bool> cancelled{false};
     const std::stop_callback cancellation(stop, [&cancelled] {
@@ -112,6 +122,84 @@ FfprobeAudioStream probeFfprobeAudio(const std::filesystem::path& ffprobe,
         throw DecodeError(DecodeProblem::Unsupported, "Could not start ffprobe");
     if (!result.succeeded()) throw DecodeError(DecodeProblem::Corrupt, "ffprobe could not read the audio stream");
     return parseFfprobeAudio(result.output);
+}
+
+std::uint64_t streamFfmpegAudio(const std::filesystem::path& ffmpeg, const std::filesystem::path& source,
+                                FfprobeAudioStream stream, std::uint64_t maximumFrames,
+                                const FfmpegAudioSink& sink, std::stop_token stop) {
+    const auto input = localInput(ffmpeg, source, "ffmpeg", stop);
+    if (stream.sampleRate == 0 || stream.sampleRate > kMaxDecodeRate ||
+        stream.channels == 0 || stream.channels > kMaxDecodeChannels ||
+        stream.index > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+        throw DecodeError(DecodeProblem::Unsupported, "Invalid FFmpeg stream layout");
+    if (!sink) throw DecodeError(DecodeProblem::CacheWrite, "A PCM sink is required");
+
+    constexpr std::size_t sampleBytes = 4;
+    const auto frameBytes = stream.channels * sampleBytes;
+    if (maximumFrames == 0 || maximumFrames > std::numeric_limits<std::uint64_t>::max() / frameBytes)
+        throw DecodeError(DecodeProblem::NoSpace, "Invalid FFmpeg decode frame budget");
+    constexpr std::size_t bufferBytes = 4096;
+    std::array<std::byte, bufferBytes> raw{};
+    std::array<float, bufferBytes / sampleBytes> floats{};
+    const auto batchBytes = raw.size() / frameBytes * frameBytes;
+    const auto deliver = [&](std::size_t bytes) {
+        for (std::size_t at = 0; at < bytes; at += sampleBytes) {
+            const auto bits = std::to_integer<std::uint32_t>(raw[at]) |
+                (std::to_integer<std::uint32_t>(raw[at + 1]) << 8U) |
+                (std::to_integer<std::uint32_t>(raw[at + 2]) << 16U) |
+                (std::to_integer<std::uint32_t>(raw[at + 3]) << 24U);
+            floats[at / sampleBytes] = std::bit_cast<float>(bits);
+        }
+        return sink(std::span<const float>(floats).first(bytes / sampleBytes));
+    };
+    std::size_t filled = 0;
+    std::exception_ptr sinkFailure;
+    const auto consume = [&](std::span<const std::byte> bytes) {
+        try {
+            while (!bytes.empty()) {
+                const auto count = std::min(batchBytes - filled, bytes.size());
+                std::memcpy(raw.data() + filled, bytes.data(), count);
+                filled += count;
+                bytes = bytes.subspan(count);
+                if (filled == batchBytes) {
+                    if (!deliver(filled)) return false;
+                    filled = 0;
+                }
+            }
+            return true;
+        } catch (...) {
+            sinkFailure = std::current_exception();
+            return false;
+        }
+    };
+
+    std::atomic<bool> cancelled{false};
+    const std::stop_callback cancellation(stop, [&cancelled] {
+        cancelled.store(true, std::memory_order_relaxed);
+    });
+    scan::ProcessStreamOptions options;
+    options.maximumOutput = maximumFrames * frameBytes;
+    options.cancel = &cancelled;
+    const auto result = scan::runProcessStream(ffmpeg,
+        {"-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file",
+         "-format_whitelist", kDemuxers, "-i", input, "-map", "0:" + std::to_string(stream.index),
+         "-vn", "-sn", "-dn", "-c:a", "pcm_f32le", "-ar", std::to_string(stream.sampleRate),
+         "-ac", std::to_string(stream.channels), "-f", "f32le", "pipe:1"}, consume, options);
+    if (sinkFailure) std::rethrow_exception(sinkFailure);
+    if (result.status == scan::ProcessStatus::Cancelled || stop.stop_requested())
+        throw DecodeError(DecodeProblem::Cancelled, "FFmpeg decoding cancelled");
+    if (result.status == scan::ProcessStatus::LaunchFailed)
+        throw DecodeError(DecodeProblem::Unsupported, "Could not start ffmpeg");
+    if (result.status == scan::ProcessStatus::OutputLimit)
+        throw DecodeError(DecodeProblem::NoSpace, "FFmpeg output exceeded the decode frame budget");
+    if (result.status == scan::ProcessStatus::ConsumerFailed)
+        throw DecodeError(DecodeProblem::CacheWrite, "PCM sink refused FFmpeg audio");
+    if (!result.succeeded() || result.bytesDelivered == 0 || filled % frameBytes != 0)
+        throw DecodeError(DecodeProblem::Corrupt, "FFmpeg output failed or ended with an incomplete PCM frame");
+    if (filled != 0 && !deliver(filled))
+        throw DecodeError(DecodeProblem::CacheWrite, "PCM sink refused final FFmpeg frames");
+    if (stop.stop_requested()) throw DecodeError(DecodeProblem::Cancelled, "FFmpeg decoding cancelled");
+    return result.bytesDelivered / frameBytes;
 }
 
 } // namespace adi::audio
