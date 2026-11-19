@@ -1,4 +1,4 @@
-"""CPU run-level statistics. Standard library only. No DAW ranking unless intervals separate.
+"""Per-app CPU run-level statistics. Standard library only. No cross-DAW ranking.
 Counters describe CPU consumption, never callback percentiles. Raw cycles are not seconds.
 """
 import argparse,csv,hashlib,json,math,statistics,sys
@@ -127,9 +127,7 @@ def compare_values(diffs,aa,minimum=5):
     # Transform the signed A/A CI through absolute value; upper bound conservative for |mean|.
     floor=max(abs(control['lower']),abs(control['upper']))
     separated=(delta['lower']>0 or delta['upper']<0) and abs(delta['mean'])>floor
-    return {'difference':delta,'aa_signed_ci':control,'aa_absolute_mean_upper95':floor,'separable':separated,'decision':'separable' if separated else 'not separable','ranking_rule':'no ranking unless intervals separate','limitation':LIMIT}
-
-def rankable(a,b):return bool(a.get('ranking_allowed',True) and b.get('ranking_allowed',True) and a['separable'] and b['separable'] and (a['difference']['upper']<b['difference']['lower'] or b['difference']['upper']<a['difference']['lower']))
+    return {'difference':delta,'aa_signed_ci':control,'aa_absolute_mean_upper95':floor,'separable':separated,'decision':'separable' if separated else 'not separable','ranking_rule':'Per-app condition statistics only; no cross-DAW ranking','limitation':LIMIT}
 
 def compare_manifest(path):
     m=json.loads(path.read_text(encoding='utf-8-sig'));base=path.parent
@@ -167,6 +165,7 @@ def compare_manifest(path):
     result.update({'status':'MEASURED','case_id':m['case_id'],'metric':metricname,'instances_divisor':instances,'roles':roles,'pair_differences':groups,'frequency_flags':freqflags,'runs':runs,'observer_fingerprint':next(iter(fingerprints))})
     # A/A must predate comparison block, not be an afterthought; metadata required from the run plan.
     if m.get('aa_precedes_comparison') is not True:raise ValueError('Missing A/A-before-comparison certification')
+    # Historical output key: within-app frequency gate, not ranking authorization.
     result['ranking_allowed']=not freqflags
     if freqflags:result['interpretation_warning']='Frequency mismatch or unavailable frequency covariate; do not assign difference solely to workload.'
     return result
@@ -207,7 +206,6 @@ def selftest(path):
     ok('Student t df29',abs(tcrit(29)-2.0452296421)<1e-8)
     a=compare_values([.9,1,1.1,1.05,.95],[.01,-.01,.02,-.02,0]);ok('clear difference separable',a['separable'])
     b=compare_values([.001,-.001,0,.002,-.002],[.1,-.1,.2,-.2,0]);ok('noise difference not separable',not b['separable'])
-    c=compare_values([2.9,3,3.1,3.05,2.95],[.01,-.01,.02,-.02,0]);ok('rank only separated intervals',rankable(a,c) and not rankable(a,a))
     ok('reject insufficient device pairs',rejects(lambda:compare_values([1]*5,[0]*5,8)))
     ok('reject unequal AA pairs',rejects(lambda:compare_values([1]*5,[0]*6)))
     result={'status':'MEASURED','scope':'synthetic math/validation only; no target CPU runs','passed':True,'tests':tests}

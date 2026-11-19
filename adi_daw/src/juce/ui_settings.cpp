@@ -312,14 +312,31 @@ void SettingsPageList::paint(juce::Graphics &g) {
     const auto &names = panel_.pageNames();
     for (std::size_t i = 0; i < names.size(); ++i) {
         const bool open = !panel_.finding() && names[i] == panel_.page();
-        // The open tab runs on into its page; the others stop short of it.
+        // The open tab runs on into its page; the others stop short of it. Each is the shared tabs'
+        // (language.png part D): the open one raised, its right corners square where it meets its
+        // page and no edge there; the others on the tabs' ground, their names dim.
         const auto r = open ? rects[i].toFloat() : rects[i].toFloat().withTrimmedRight(7);
-        g.setColour(look::panel);
-        if (open)
-            g.fillRect(r.withTrimmedLeft(8));
-        g.fillRoundedRectangle(r, look::radiusBox);
-        g.setColour(look::text);
-        g.setFont(look::font(look::fontHeading, true));
+        if (open) {
+            const auto shape = [](juce::Rectangle<float> b) {
+                juce::Path p;
+                p.addRoundedRectangle(b.getX(), b.getY(), b.getWidth(), b.getHeight(), look::radiusControl,
+                                      look::radiusControl, true, false, true, false);
+                return p;
+            };
+            g.setColour(look::tabOn);
+            g.fillPath(shape(r));
+            juce::Graphics::ScopedSaveState keep(g);
+            juce::Path edge;
+            edge.addRectangle(r.withTrimmedRight(look::hairline));
+            g.reduceClipRegion(edge);
+            g.setColour(look::tabOnEdge);
+            g.strokePath(shape(r.reduced(look::hairline / 2)), juce::PathStrokeType(look::hairline));
+        } else {
+            g.setColour(look::tabsBack);
+            g.fillRoundedRectangle(r, look::radiusControl);
+        }
+        g.setColour(open ? look::text : look::textDim);
+        g.setFont(look::font(look::fontHeading, open));
         int y = rects[i].getY() + 2;
         for (const auto &line : lines(names[i])) {
             g.drawText(line, rects[i].getX() + 10, y, rects[i].getWidth() - 12, 15, juce::Justification::centredLeft);

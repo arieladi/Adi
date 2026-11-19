@@ -2,6 +2,7 @@
 #include "adi/pd_builtins/sample_bridge.hpp"
 #include "adi/pd_builtins/colorcab_sample.hpp"
 #include "juce/pd_builtins.hpp"
+#include "adi/pd_builtins/float_signals.hpp"
 extern "C" {
 #include "m_pd.h"
 }
@@ -16,9 +17,10 @@ struct Object {
     std::int32_t slot;
     std::uint64_t sequence;
     double rate;
+    adi::device::FloatSignals* signals;
 };
 void* create(t_symbol*, int argc, t_atom* argv) {
-    auto* x = reinterpret_cast<Object*>(pd_new(klass));
+    auto* x = reinterpret_cast<Object*>(pd_new(klass)); x->signals = new adi::device::FloatSignals;
     x->core = new adi::dsp::ColorCab;
     const float id = argc ? atom_getfloat(argv) : 1;
     x->slot = std::isfinite(id) && id >= 1 && id < 2147483648.f ? static_cast<std::int32_t>(id) : 1;
@@ -26,7 +28,7 @@ void* create(t_symbol*, int argc, t_atom* argv) {
     outlet_new(&x->object, &s_signal);
     return x;
 }
-void destroy(Object* x) { delete x->core; }
+void destroy(Object* x) { delete x->core; delete x->signals; }
 t_int* perform(t_int* w) {
     auto* x = reinterpret_cast<Object*>(w[1]);
     const auto* sample = dynamic_cast<const adi::device::PdColorCabSample*>(adi::device::PdSampleBlock::get(x->slot));
@@ -37,13 +39,14 @@ t_int* perform(t_int* w) {
     return w + 5;
 }
 void dsp(Object* x, t_signal** s) {
+    x->signals->begin(s, 1, 1);
     x->rate = s[0]->s_sr; x->sequence = 0;
     x->core->prepare(x->rate);
     // dsp_add reads pointer-sized t_int varargs; an int frame count leaves
     // the upper stack word undefined on Win64. Use its typed vector API.
-    t_int args[] = {reinterpret_cast<t_int>(x), reinterpret_cast<t_int>(s[0]->s_vec),
-                    reinterpret_cast<t_int>(s[1]->s_vec), static_cast<t_int>(s[0]->s_n)};
-    dsp_addv(perform, 4, args);
+    t_int args[] = {reinterpret_cast<t_int>(x), x->signals->at(0),
+                    x->signals->at(1), static_cast<t_int>(s[0]->s_n)};
+    dsp_addv(perform, 4, args); x->signals->end();
 }
 void mix(Object* x, t_floatarg f) { x->core->setMix(f); }
 }
