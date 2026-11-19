@@ -4,6 +4,7 @@
 
 #include "juce/vst3_host.hpp"
 #include "juce/vst3_scan_host.hpp"
+#include "adi/scan_batch.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
@@ -81,25 +82,37 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
                            const scan::Config& config) {
     scan::Report report;
     if(audio::onAudioThread){report.complete=false;return report;}
-    if(files.empty()){into.clear();return report;}
-    std::string error;auto scanner=scan::Scanner::open(config,error);
-    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
     std::vector<juce::PluginDescription> found;
-    for(const auto& file:files) {
-        const auto bytes=file.toStdString();
+    const auto probe = [&](scan::Scanner& scanner, std::size_t index) {
         std::vector<juce::PluginDescription> descriptions;
-        const auto result=scanVst3File(*scanner,file,descriptions);
+        auto result = scanVst3File(scanner, files[index], descriptions);
+        // The validated descriptions already carry the VST3 metadata.
+        result.plugins.clear();
+        return std::pair(std::move(result), std::move(descriptions));
+    };
+    const auto accept = [&](std::size_t index, auto row) {
+        auto& [result, descriptions] = row;
+        const auto bytes = files[index].toStdString();
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
             if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
-                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+                report.cancelled=result.state==scan::State::Cancelled;
+                return false;
             }
-            continue;
+            return true;
         }
         if(descriptions.size()>scan::kMaximumPlugins-found.size()) {
-            report.complete=false;report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});return report;
+            report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});
+            return false;
         }
         for(auto& description:descriptions)found.push_back(std::move(description));
+        return true;
+    };
+    std::string error;
+    report.complete = scan::detail::visitProbes(files.size(), config, probe, accept, error);
+    if (!report.complete) {
+        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        return report;
     }
     into.clear();for(const auto& description:found)into.addType(description);return report;
 }

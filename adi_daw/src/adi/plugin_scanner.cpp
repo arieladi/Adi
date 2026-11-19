@@ -245,6 +245,14 @@ std::unique_ptr<Scanner> Scanner::open(const Config& config,std::string& error) 
         return std::unique_ptr<Scanner>(new Scanner(std::move(resolved),std::move(registry),build.hex,helperSize,helperTime));
     } catch(const std::exception&) {error="scanner configuration unavailable";return nullptr;}
 }
+std::unique_ptr<Scanner> Scanner::openPeer(std::string& error) const {
+    if (audio::onAudioThread) return nullptr;
+    auto registry = PluginRegistry::open(config_.registry, error);
+    if (!registry) return nullptr;
+    return std::unique_ptr<Scanner>(new Scanner(config_, std::move(registry), helperBuildHash_,
+                                                helperSize_, helperTime_));
+}
+
 bool Scanner::retry(const std::string& format,const std::filesystem::path& path,std::string& error) {
     if(audio::onAudioThread)return false;
     error.clear();

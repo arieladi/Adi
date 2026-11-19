@@ -4,6 +4,7 @@
 
 #include "juce/clap_host.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/scan_batch.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1920,27 +1921,37 @@ scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Co
     scan::Report report;
     if(audio::onAudioThread){report.complete=false;return report;}
     const auto bundles=findBundles(paths);
-    if(bundles.empty()){found_.clear();return report;}
-    std::string error;auto scanner=scan::Scanner::open(config,error);
-    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
     std::vector<ClapPluginRef> found;
-    for(const auto& path:bundles) {
-        const auto result=scanner->probe("clap",std::filesystem::path(std::u8string(path.begin(),path.end())));
+    const auto probe = [&](scan::Scanner& scanner, std::size_t index) {
+        const auto& path = bundles[index];
+        return scanner.probe("clap", std::filesystem::path(std::u8string(path.begin(), path.end())));
+    };
+    const auto accept = [&](std::size_t index, const scan::Result& result) {
+        const auto& path = bundles[index];
         if(result.state!=scan::State::Ready) {
             report.failures.push_back({result.path.empty()?path:result.path,result.error,result.state});
             if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
-                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+                report.cancelled=result.state==scan::State::Cancelled;
+                return false;
             }
-            continue;
+            return true;
         }
         if(result.plugins.size()>scan::kMaximumPlugins-found.size()) {
-            report.complete=false;report.failures.push_back({path,"CLAP catalogue descriptor bound",scan::State::Invalid});return report;
+            report.failures.push_back({path,"CLAP catalogue descriptor bound",scan::State::Invalid});
+            return false;
         }
         for(const auto& plugin:result.plugins) {
             ClapPluginRef value;value.bundlePath=result.path;value.id=plugin.id;value.name=plugin.name;
             value.vendor=plugin.vendor;value.version=plugin.version;value.features=plugin.features;
             value.isInstrument=plugin.instrument;found.push_back(std::move(value));
         }
+        return true;
+    };
+    std::string error;
+    report.complete = scan::detail::visitProbes(bundles.size(), config, probe, accept, error);
+    if (!report.complete) {
+        if (!error.empty()) report.failures.push_back({"", std::move(error), scan::State::Unavailable});
+        return report;
     }
     found_=std::move(found);return report;
 }

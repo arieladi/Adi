@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/plugin_scanner.hpp"
+#include "adi/scan_batch.hpp"
 #include "adi/scan_stamp.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -73,6 +74,19 @@ int helper(const std::vector<std::string>& args) {
     const auto path=native(args[3]);std::ofstream(marker(path),std::ios::app)<<"launch\n";
     const auto module=binary(path);if(!fs::exists(module))return 65;
     const auto version=content(module);
+    if (version == "parallel-gate") {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+        for (;;) {
+            unsigned arrivals = 0;
+            for (unsigned peer = 0; peer < 4; ++peer) {
+                const auto sibling = path.parent_path() / ("peer-" + std::to_string(peer) + ".clap");
+                if (launches(sibling) == 1) ++arrivals;
+            }
+            if (arrivals == 4) break;
+            if (std::chrono::steady_clock::now() >= deadline) return 65;
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
     if(version=="reject")return 65;
     if(version=="unsupported")return 78;
     if(version=="hang")std::this_thread::sleep_for(std::chrono::seconds(10));
@@ -482,9 +496,31 @@ void waitsForRegistryWriter(const fs::path& self) {
           "typed failure completion waits for the writer and releases its pending ticket");
 }
 
+void parallelProbeGate(const fs::path& self) {
+    Fixture f(self);
+    std::vector<fs::path> paths;
+    for (unsigned i = 0; i < 4; ++i)
+        paths.push_back(f.candidate(("peer-" + std::to_string(i) + ".clap").c_str(), "parallel-gate"));
+    const auto probe = [&](Scanner& scanner, std::size_t i) { return scanner.probe("clap", paths[i]); };
+    f.config.workers = 4;
+    for (const bool warm : {false, true}) {
+        std::size_t next = 0;
+        const auto visit = [&](std::size_t i, const Result& result) {
+            const bool ordered = i == next++;
+            return ordered && result.state == State::Ready && result.cacheHit == warm &&
+                   result.path == utf8(fs::canonical(paths[i]));
+        };
+        const auto completed = scan::detail::visitProbes(paths.size(), f.config, probe, visit, f.error);
+        check(completed && next == paths.size() &&
+                  std::all_of(paths.begin(), paths.end(), [](const auto& path) { return launches(path) == 1; }),
+              warm ? "four warm probes reuse the results in original order without any new child"
+                   : "four cold children are concurrently alive at the gate and publish in input order");
+    }
+}
+
 int entry(const std::vector<std::string>& args) {
     if(args.size()==4 && args[1]=="--scan")return helper(args);
-    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);}
+    try {const auto self=fs::absolute(native(args[0]));reuseAndChanges(self);validationAndRaces(self);stampsAndTransaction(self);migration(self);helperIdentity(self);uncacheableBundle(self);negativeCache(self);strikesAndAbandonment(self);retryAliases(self);failureTransactions(self);waitsForRegistryWriter(self);parallelProbeGate(self);}
     catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }

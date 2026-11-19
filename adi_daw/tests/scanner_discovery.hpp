@@ -156,6 +156,47 @@ inline Json modes() {
         {"old_snapshots_unchanged",true},{"cancel_retains_snapshot",true},{"failure_retains_snapshot",true},
         {"bad_candidate_keeps_healthy_siblings",true},{"corrupt_format_whole_publication_refused",true},{"callback_refused",true}};
 }
+inline void parallelDiscovery() {
+    using device::DiscoveryMode;
+    using device::DiscoveryOutcome;
+    TempDirectory scratch("discovery_operation", "parallel");
+    const auto root = scratch.path() / "modules";
+    const auto vstOriginal = media::pathFromUtf8(ADI_CATALOGUE_FIXTURE);
+    std::vector<fs::path> clapPaths;
+    for (unsigned i = 0; i < 4; ++i) {
+        const auto directory = root / std::to_string(i);
+        fs::create_directories(directory);
+        fs::copy(vstOriginal, directory / vstOriginal.filename(), fs::copy_options::recursive);
+        const auto clap = directory / "probe.clap";
+        copyClap(clap);
+        clapPaths.push_back(clap);
+    }
+    std::vector<std::string> serial;
+    for (const auto workers : {1U, 4U}) {
+        scan::Config config;
+        config.executable = media::pathFromUtf8(ADI_CATALOGUE_SCANNER);
+        config.registry = scratch.path() / ("workers-" + std::to_string(workers) + ".sqlite");
+        config.workers = workers;
+        device::JuceDeviceLoader loader(false);
+        loader.setScanConfig(config);
+        loader.addSearchPath(juce::File(juce::String::fromUTF8(text(root).c_str())));
+        const auto cold = loader.discover(DiscoveryMode::Incremental);
+        require(cold && cold->outcome == DiscoveryOutcome::Published && cold->report.failures.empty() &&
+                    cold->catalogue && cold->catalogue->vst3.size() == 12 && cold->catalogue->clap.size() == 4,
+                "cold worker comparison discovers all real modules in both formats");
+        const auto list = loader.knownPlugins();
+        if (workers == 1) serial = list;
+        else require(list == serial, "K=4 publishes the same ordered catalogue as K=1");
+        const auto warm = loader.discover(DiscoveryMode::Incremental);
+        require(warm && warm->outcome == DiscoveryOutcome::Published && warm->report.failures.empty() &&
+                    loader.knownPlugins() == list && loader.clap().libraryCount() == 0,
+                "warm discovery retains every class without loading any plug-in in the owner");
+        for (const auto& path : clapPaths)
+            require(pids(path).child == (workers == 1 ? 1U : 2U) && pids(path).parent == 0,
+                    "each fresh registry probes each unchanged CLAP once in a child");
+    }
+}
+
 inline void cacheStates() {
     using device::DiscoveryMode;using device::DiscoveryOutcome;
     TempDirectory scratch("discovery_operation","cache_states");scan::Config config;
@@ -212,8 +253,10 @@ inline void command() {
 inline bool scannerDiscoveryContracts() {
     juce::ScopedJuceInitialiser_GUI initialize;
     try {discovery_test_detail::require(discovery_test_detail::fatalHeadlines(),"fatal discovery headline described an earlier nonfatal candidate");
-        auto receipt=discovery_test_detail::modes();discovery_test_detail::cacheStates();discovery_test_detail::command();
+        auto receipt=discovery_test_detail::modes();discovery_test_detail::parallelDiscovery();
+        discovery_test_detail::cacheStates();discovery_test_detail::command();
         receipt["passed"]=true;receipt["typed_cache_states"]=true;receipt["actual_cli_modes"]=true;
+        receipt["serial_parallel_catalogue_equal"]=true;
         std::printf("DISCOVERY_OPERATION %s\n",receipt.dump().c_str());return true;
     }catch(const std::exception& error){std::printf("DISCOVERY_OPERATION %s\n",discovery_test_detail::Json{{"passed",false},{"error",error.what()}}.dump().c_str());return false;}
 }

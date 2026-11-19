@@ -316,6 +316,15 @@ refuses to instantiate from an incomplete lazy scan. A failed VST3 hint reports
 its failure directly. Existing running instances are not terminated by rescans.
 Diagnostic probes, including the VST3 SDK fixtures and the raw CLAP runtime
 probe, also obtain descriptors through the child before runtime instantiation.
+Explicit discovery callers can set `Config::workers` to one through four. The
+serial default stays in place. Each active worker has its own registry
+connection and uses the identified helper. The owner consumes results in
+candidate order, keeping at most one unconsumed result per worker. A fatal
+result stops new requests and waits for active probes to finish within their
+existing timeouts. An external cancellation flag reaches every active probe.
+Only a complete batch can replace the runtime catalogue. Unchanged warm probes
+reuse their metadata without starting a module probe.
+
 Hosts/loaders also require one owner at a time. lastScanReport is borrowed only
 between jobs; copy/publish reports for another thread after completion.
 The window can read/re-enable PluginRegistry's owned blocklist; no UI is drawn

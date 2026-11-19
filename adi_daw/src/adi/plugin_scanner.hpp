@@ -33,7 +33,10 @@ struct Config {
     std::filesystem::path registry;   // empty => appdata::pluginRegistryFile()
     ProcessOptions process;
     std::int64_t (*clock)() noexcept = systemUtcMicros;
+    // Explicit batch concurrency. A custom clock must be thread-safe above one worker.
+    unsigned workers = 1;
 };
+inline constexpr unsigned kMaximumProbeWorkers = 4;
 enum class State { Ready, Quarantined, Unavailable, Cancelled, Failed, Invalid, CallbackRefused };
 struct Result {
     State state = State::Invalid;
@@ -58,6 +61,8 @@ using Validator = bool(*)(const std::vector<Plugin>&, const std::string&,
 class Scanner {
 public:
     static std::unique_ptr<Scanner> open(const Config&, std::string& error);
+    /// Same helper identity and configuration, with an independent registry connection.
+    [[nodiscard]] std::unique_ptr<Scanner> openPeer(std::string& error) const;
     /// Canonicalize/stamp an existing file/bundle, commit pending, validate a
     /// matching cached packet or launch one helper, then token-check completion.
     /// The stamp is checked again after validation. Never loads a
