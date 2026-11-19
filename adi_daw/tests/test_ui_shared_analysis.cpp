@@ -1782,7 +1782,7 @@ void compareAndAveragePages() {
               pair.a.metadata->endpoint.request.track == main && pair.b.metadata->endpoint.request.track == guitar &&
               pair.a.binsDbfs[16] > pair.b.binsDbfs[16],
           "Compare presents the two calibrated broker windows on their explicit channels");
-    const auto displayShowsBothTraces = [&] {
+    const auto displayShowsBothTraces = [&](int scaleId) {
         auto *compare = pages.compareA.getParentComponent();
         if (!compare || !pair.a.metadata || !pair.b.metadata) return false;
         juce::Image image(juce::Image::RGB, compare->getWidth(), compare->getHeight(), true, juce::SoftwareImageType{});
@@ -1790,8 +1790,17 @@ void compareAndAveragePages() {
             juce::Graphics graphics(image);
             compare->paint(graphics);
         }
-        const auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
+        auto plot = compare->getLocalBounds().reduced(look::border).withTrimmedTop(look::fieldHeight)
             .reduced(look::gap).withTrimmedTop(look::fieldHeight).withTrimmedBottom(look::fieldHeight).toFloat();
+        struct Axis { double lowHz, highHz; float upper, lower; };
+        constexpr std::array axes{Axis{20., 20000., 0.f, -96.f}, Axis{20., 20000., -18.f, -78.f},
+                                  Axis{10., 30000., 0.f, -100.f}, Axis{10., 24000., 0.f, -120.f}};
+        const auto &axis = axes[static_cast<std::size_t>(scaleId - 1)];
+        const float rulerWidth = look::fontCaption * 3.f, rulerHeight = look::fontCaption;
+        const bool wide = scaleId == 1;
+        if (scaleId == 4) plot = plot.withTrimmedLeft(rulerWidth).withTrimmedTop(rulerHeight);
+        else if (!wide) plot = plot.withTrimmedRight(rulerWidth).withTrimmedBottom(rulerHeight);
+        const float inset = wide ? 0.f : 1.f;
         const auto hasSegment = [&](std::span<const float> bins, juce::Colour colour) {
             if (bins.size() <= 16) return false;
             const auto colourDistance = [](juce::Colour a, juce::Colour b) {
@@ -1802,10 +1811,13 @@ void compareAndAveragePages() {
             // part of its colour, while still rejecting an unpainted plot column.
             const int maximumDistance = colourDistance(colour, look::display) * 7 / 10;
             const auto x = [&](int bin) {
-                return plot.getX() + plot.getWidth() * static_cast<float>(std::log(bin * 48000. / 1024. / 20.) / std::log(1000.));
+                const auto hz = bin * 48000. / 1024.;
+                return plot.getX() + (plot.getWidth() - inset) *
+                    static_cast<float>(std::log(hz / axis.lowHz) / std::log(axis.highHz / axis.lowHz));
             };
             const auto y = [&](std::size_t bin) {
-                return plot.getY() + plot.getHeight() * std::clamp(bins[bin] / -96.f, 0.f, 1.f);
+                const auto p = std::clamp((axis.upper - bins[bin]) / (axis.upper - axis.lower), 0.f, 1.f);
+                return plot.getY() + (plot.getHeight() - inset) * p;
             };
             for (float fraction : {.1f, .3f, .5f, .7f, .9f}) {
                 const int px = juce::roundToInt(std::lerp(x(15), x(16), fraction));
@@ -1821,7 +1833,8 @@ void compareAndAveragePages() {
         };
         return hasSegment(pair.a.binsDbfs, look::value) && hasSegment(pair.b.binsDbfs, look::accent);
     };
-    check(displayShowsBothTraces(), "both Compare paths draw continuous segments between consecutive measured bins");
+    check(pages.compareScale.isShowing() && pages.compareScale.getSelectedId() == 1 && displayShowsBothTraces(1),
+          "Wide is the initial Compare projection and both paths draw adjacent measured bins");
     write(*first, .4f, 1024, 2); broker->pump();
     pages.frame(broker, original, main, main);
     check(pages.comparisonView().status == Comparison::Unavailable,
@@ -1843,13 +1856,35 @@ void compareAndAveragePages() {
     check(pair.status == Comparison::Held && pair.b.binsDbfs[16] == reference &&
               pair.a.metadata->transportRevision == 3,
           "a deliberately held reference survives a new live transport revision");
+    const auto immutableA = pair.a.binsDbfs.data(), immutableB = pair.b.binsDbfs.data();
+    const auto unchanged = [](const auto &before, const auto &after) {
+        return before.consumers == after.consumers && before.taps == after.taps && before.domains == after.domains &&
+            before.spectralPlans == after.spectralPlans && before.transforms == after.transforms &&
+            before.publications == after.publications && before.cursorReads == after.cursorReads &&
+            before.frameRequests == after.frameRequests && before.workerPasses == after.workerPasses;
+    };
+    const auto beforeScale = broker->stats();
+    for (const int id : {2, 3, 4, 1}) {
+        pages.compareScale.setSelectedId(id, juce::sendNotificationSync);
+        pair = pages.comparisonView();
+        check(pair.status == Comparison::Held && pair.a.binsDbfs.data() == immutableA &&
+                  pair.b.binsDbfs.data() == immutableB && unchanged(beforeScale, broker->stats()) &&
+                  pages.detail.scaleBox.getSelectedId() == 1 && displayShowsBothTraces(id),
+              "Compare scales redraw both calibrated traces without changing the held bins, tap or Spectrum preference");
+    }
     root.setVisible(false);
     check(broker->stats().consumers == 0 && !pages.comparisonView().visible && pages.comparisonView().referenceHeld,
           "ancestor hide releases live Compare demand without a frame and retains the deliberate B reference");
+    const auto hidden = broker->stats();
+    pages.compareScale.setSelectedId(2, juce::sendNotificationSync);
+    broker->pump();
+    check(!pages.compareScale.isShowing() && pages.comparisonView().referenceHeld && unchanged(hidden, broker->stats()),
+          "changing the hidden Compare scale retains Hold B without new work");
     root.setVisible(true);
     pages.frame(broker, renamed, main, main);
-    check(!pages.comparisonView().a.metadata && pages.comparisonView().referenceHeld,
-          "showing Compare waits for a fresh A window");
+    check(!pages.comparisonView().a.metadata && pages.comparisonView().referenceHeld &&
+              pages.compareScale.getSelectedId() == 2,
+          "showing Compare waits for a fresh A window and retains its local scale");
     pages.clearCompare.onClick();
     check(!pages.comparisonView().referenceHeld && !pages.comparisonView().a.metadata &&
               !pages.comparisonView().b.metadata && broker->stats().consumers == 2,

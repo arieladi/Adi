@@ -113,6 +113,9 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         owner_.compareA.setTextWhenNothingSelected("Choose channel A");
         owner_.compareB.setTitle("Comparison channel B");
         owner_.compareB.setTextWhenNothingSelected("Choose channel B");
+        populateSpectrumScaleMenu(owner_.compareScale);
+        owner_.compareScale.setTitle("Comparison display scale");
+        owner_.compareScale.onChange = [this] { if (eligible()) repaint(); };
         owner_.holdB.onClick = [this] {
             const auto current = view();
             if (!current.visible || !comparison_) return;
@@ -128,6 +131,7 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         unwatch();
         owner_.holdB.onClick = {};
         owner_.clearCompare.onClick = {};
+        owner_.compareScale.onChange = {};
     }
     void present(std::shared_ptr<SharedAnalysis> broker, AnalysisComparison::Endpoint a, AnalysisComparison::Endpoint b) {
         if (broker_ == broker && a_ == a && b_ == b) return;
@@ -159,6 +163,7 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         const auto buttons = std::min(look::mixPageWidth, row.getWidth() / 5);
         owner_.clearCompare.setBounds(row.removeFromRight(buttons).reduced(look::border, 0));
         owner_.holdB.setBounds(row.removeFromRight(buttons).reduced(look::border, 0));
+        owner_.compareScale.setBounds(row.removeFromRight(buttons).reduced(look::border, 0));
         owner_.compareA.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(look::border, 0));
         owner_.compareB.setBounds(row.reduced(look::border, 0));
         plot_ = area.reduced(look::gap);
@@ -187,28 +192,40 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
                              body, juce::Justification::centred, 2);
             return;
         }
-        auto scale = body.removeFromBottom(look::fieldHeight);
-        g.drawFittedText("Independent spectra   |   dBFS", scale, juce::Justification::centredLeft, 1);
-        const auto topHz = std::min(20000., current.a.metadata->sampleRate * .5);
-        if (topHz <= 20. || body.isEmpty()) return;
-        const auto plot = body.toFloat();
-        const auto widthPerLogHz = plot.getWidth() / std::log(topHz / 20.);
-        const auto xAt = [&](double hz) { return plot.getX() + static_cast<float>(widthPerLogHz * std::log(hz / 20.)); };
-        constexpr float bottomDb = -96.f;
-        const auto yAt = [&](float db) { return plot.getY() + plot.getHeight() * std::clamp(db / bottomDb, 0.f, 1.f); };
-        g.setColour(look::outline);
-        for (const float level : {0.f, -24.f, -48.f, -72.f, bottomDb})
-            g.drawHorizontalLine(juce::roundToInt(yAt(level)), plot.getX(), plot.getRight());
-        for (const double frequency : {100., 1000., 10000.})
-            if (frequency < topHz)
-                g.drawVerticalLine(juce::roundToInt(xAt(frequency)), plot.getY(), plot.getBottom());
+        const auto footer = body.removeFromBottom(look::fieldHeight);
+        g.drawFittedText("Independent spectra   |   dBFS", footer, juce::Justification::centredLeft, 1);
+        const auto scale = selectedSpectrumScale(owner_.compareScale);
+        const auto &axis = spectrumAxis(scale);
+        const auto topHz = std::min(axis.highHz, current.a.metadata->sampleRate * .5);
+        if (topHz <= axis.lowHz || body.isEmpty()) return;
+        const bool wide = scale == SharedSpectrumView::SpectrumScale::Wide;
+        const auto plot = wide ? body.toFloat() : paintSpectrumGrid(g, body.toFloat(), scale);
+        if (plot.isEmpty()) return;
+        const auto logWidth = wide ? std::log(topHz / axis.lowHz) : axis.logWidth;
+        const float inset = wide ? 0.f : 1.f;
+        const auto widthPerLogHz = (plot.getWidth() - inset) / logWidth;
+        const auto xAt = [&](double hz) {
+            return plot.getX() + static_cast<float>(widthPerLogHz * std::log(hz / axis.lowHz));
+        };
+        const auto yAt = [&](float db) { return plot.getY() + (plot.getHeight() - inset) * axis.y(db); };
+        if (wide) {
+            g.setColour(look::outline);
+            for (int db = axis.topDb; db >= axis.bottomDb; db -= axis.divisionDb)
+                g.drawHorizontalLine(juce::roundToInt(yAt(static_cast<float>(db))), plot.getX(), plot.getRight());
+            for (const double frequency : {100., 1000., 10000.})
+                if (frequency < topHz)
+                    g.drawVerticalLine(juce::roundToInt(xAt(frequency)), plot.getY(), plot.getBottom());
+        }
+        juce::Graphics::ScopedSaveState state(g);
+        if (!wide && !g.reduceClipRegion(plot.toNearestInt())) return;
         const auto stroke = [&](AnalysisComparison::Picture picture, juce::Colour colour) {
             juce::Path curve;
             bool started = false;
             const auto hzPerBin = picture.metadata->sampleRate / picture.metadata->endpoint.request.fftSize;
             for (std::size_t i = 1; i < picture.binsDbfs.size(); ++i) {
                 const auto hz = hzPerBin * static_cast<double>(i);
-                if (hz < 20. || hz > topHz) continue;
+                if (hz < axis.lowHz) continue;
+                if (hz > topHz) break;
                 if (!started) {
                     curve.startNewSubPath(xAt(hz), yAt(picture.binsDbfs[i]));
                     started = true;
@@ -235,8 +252,8 @@ class MixAnalysers::Compare final : public juce::Component, private juce::Compon
         std::uint64_t generation{}, epoch{}, revision{};
         bool operator==(const Stamp &) const = default;
     };
-    std::array<juce::Component *, 4> controls() {
-        return {&owner_.compareA, &owner_.compareB, &owner_.holdB, &owner_.clearCompare};
+    std::array<juce::Component *, 5> controls() {
+        return {&owner_.compareA, &owner_.compareB, &owner_.compareScale, &owner_.holdB, &owner_.clearCompare};
     }
     bool valid() const noexcept {
         return a_.ownerToken && b_.ownerToken && a_.request.track != b_.request.track;

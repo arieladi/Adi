@@ -6,33 +6,45 @@
 #include <cmath>
 
 namespace adi::ui {
-namespace {
-constexpr float floorDb = -96.f;
 using SpectrumScale = SharedSpectrumView::SpectrumScale;
 
-struct SpectrumAxis {
-    double lowHz, highHz, logWidth;
-    int topDb, bottomDb, divisionDb;
-    const char *lowLabel, *highLabel;
+float SpectrumAxis::x(double hz) const noexcept {
+    return static_cast<float>(std::log(hz / lowHz) / logWidth);
+}
 
-    float x(double hz) const noexcept {
-        return static_cast<float>(std::log(hz / lowHz) / logWidth);
-    }
-
-    float y(float value) const noexcept {
-        if (!std::isfinite(value)) return 1.f;
-        return std::clamp((static_cast<float>(topDb) - value) / static_cast<float>(topDb - bottomDb), 0.f, 1.f);
-    }
-};
+float SpectrumAxis::y(float value) const noexcept {
+    if (!std::isfinite(value)) return 1.f;
+    return std::clamp((static_cast<float>(topDb) - value) / static_cast<float>(topDb - bottomDb), 0.f, 1.f);
+}
 
 const SpectrumAxis &spectrumAxis(SpectrumScale scale) {
+    static const SpectrumAxis wide{20., 20000., std::log(1000.), 0, -96, 24, "20", "20k"};
     static const SpectrumAxis detail{20., 20000., std::log(1000.), -18, -78, 6, "20", "20k"};
     static const SpectrumAxis extended{10., 30000., std::log(3000.), 0, -100, 10, "10", "30k"};
     static const SpectrumAxis device{10., 24000., std::log(2400.), 0, -120, 12, nullptr, nullptr};
     if (scale == SpectrumScale::Extended) return extended;
     if (scale == SpectrumScale::Device) return device;
-    return detail;
+    if (scale == SpectrumScale::Detail) return detail;
+    return wide;
 }
+
+void populateSpectrumScaleMenu(juce::ComboBox &box) {
+    box.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended", "Scale: Device"}, 1);
+    box.setSelectedId(1, juce::dontSendNotification);
+    box.setTitle("Spectrum display scale");
+    box.setTooltip("Detail uses 20 Hz to 20 kHz and -18 to -78 dBFS. "
+                   "Extended uses 10 Hz to 30 kHz and 0 to -100 dBFS. "
+                   "Device uses 10 Hz to 24 kHz and 0 to -120 dBFS.");
+}
+
+SpectrumScale selectedSpectrumScale(const juce::ComboBox &box) noexcept {
+    const int id = box.getSelectedId();
+    return id >= 1 && id <= static_cast<int>(SpectrumScale::Device) + 1
+        ? static_cast<SpectrumScale>(id - 1) : SpectrumScale::Wide;
+}
+
+namespace {
+constexpr float floorDb = -96.f;
 float db(float value) {
     return std::isfinite(value) && value > 0 ? std::max(floorDb, 20.f * std::log10(value)) : floorDb;
 }
@@ -794,12 +806,12 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
         g.drawText(values[i], row.withX(x).withWidth(end - x).reduced(look::border, 0), juce::Justification::centredLeft, true);
     }
 }
-juce::Rectangle<float> SharedSpectrumView::paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area) const {
-    const auto &axis = spectrumAxis(spectrumScale_);
+juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &g, juce::Rectangle<float> area, SpectrumScale scale) {
+    const auto &axis = spectrumAxis(scale);
     const auto scaleWidth = look::fontCaption * 3.f;
     const auto stepHeight = area.getHeight() / static_cast<float>((axis.topDb - axis.bottomDb) / axis.divisionDb);
     const bool labels = area.getWidth() >= scaleWidth * 4.f && stepHeight > look::fontCaption;
-    const bool topRuler = spectrumScale_ == SpectrumScale::Device;
+    const bool topRuler = scale == SpectrumScale::Device;
     const auto plot = labels ? (topRuler ? area.withTrimmedLeft(scaleWidth).withTrimmedTop(look::fontCaption)
                                          : area.withTrimmedRight(scaleWidth).withTrimmedBottom(look::fontCaption))
                              : area;
@@ -857,7 +869,7 @@ void SharedSpectrumView::paint(juce::Graphics &g) {
     if (plot.getHeight() <= 4 || plot.getWidth() <= 4) return;
     g.setFont(look::font(9.f));
     const bool scaled = spectrumMode() && spectrumScale_ != SpectrumScale::Wide;
-    const auto scaledPlot = scaled ? paintSpectrumGrid(g, plot) : juce::Rectangle<float>{};
+    const auto scaledPlot = scaled ? paintSpectrumGrid(g, plot, spectrumScale_) : juce::Rectangle<float>{};
     if ((spectrumMode() && !scaled) || mode_ == Mode::Meters) for (int step = 0; step <= 4; ++step) {
         const float value = static_cast<float>(step) * -24.f;
         const float y = heightFor(value, plot);
@@ -1025,16 +1037,8 @@ AnalysisPane::AnalysisPane() {
         else setSpectrumSlope(requestedSpectrumSlope());
     };
     restoreSlopeControls(SpectrumSlope::Flat); addAndMakeVisible(slopeBox);
-    scaleBox.addItemList({"Scale: Wide", "Scale: Detail", "Scale: Extended", "Scale: Device"}, 1);
-    scaleBox.setTitle("Spectrum display scale");
-    scaleBox.setTooltip("Detail uses 20 Hz to 20 kHz and -18 to -78 dBFS. "
-                        "Extended uses 10 Hz to 30 kHz and 0 to -100 dBFS. "
-                        "Device uses 10 Hz to 24 kHz and 0 to -120 dBFS.");
-    scaleBox.onChange = [this] {
-        const auto id = scaleBox.getSelectedId();
-        if (id > 0) setSpectrumScale(static_cast<SpectrumScale>(id - 1));
-    };
-    setSpectrumScale(SharedSpectrumView::SpectrumScale::Wide);
+    populateSpectrumScaleMenu(scaleBox);
+    scaleBox.onChange = [this] { setSpectrumScale(selectedSpectrumScale(scaleBox)); };
     addAndMakeVisible(scaleBox);
     palettePreviewTheme_ = look::themeId();
     for (std::size_t i = 0; i < palettes::count; ++i) {

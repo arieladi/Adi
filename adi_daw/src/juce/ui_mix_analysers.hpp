@@ -28,7 +28,7 @@ class MixAnalysers final : public juce::Component {
 
     AnalysisPane detail;
     juce::ComboBox pageBox, sourceBox;
-    juce::ComboBox compareA, compareB;
+    juce::ComboBox compareA, compareB, compareScale;
     juce::TextButton holdB{"Hold B"}, clearCompare{"Clear"};
 
   private:

@@ -111,7 +111,6 @@ class SharedSpectrumView final : public juce::Component,
     void updateRaster();
     void updateSpectrumProjection();
     void updateScaledSpectrum() noexcept;
-    juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>) const;
     bool spectrumMode() const noexcept { return mode_ == Mode::Spectrum || mode_ == Mode::SpectrumAverage; }
     Status pictureStatus() const noexcept;
     void resetPicture() noexcept;
@@ -153,6 +152,21 @@ class SharedSpectrumView final : public juce::Component,
     std::unique_ptr<ScaledSpectrum> scaledSpectrum_;
     SpectrumScale spectrumScale_ = SpectrumScale::Wide;
 };
+
+// Fixed display coordinates used by the spectrum and the A/B overlay. The
+// caller still caps visible bins at the measured Nyquist.
+struct SpectrumAxis {
+    double lowHz, highHz, logWidth;
+    int topDb, bottomDb, divisionDb;
+    const char *lowLabel, *highLabel;
+
+    float x(double hz) const noexcept;
+    float y(float db) const noexcept;
+};
+const SpectrumAxis &spectrumAxis(SharedSpectrumView::SpectrumScale);
+juce::Rectangle<float> paintSpectrumGrid(juce::Graphics &, juce::Rectangle<float>, SharedSpectrumView::SpectrumScale);
+void populateSpectrumScaleMenu(juce::ComboBox &);
+SharedSpectrumView::SpectrumScale selectedSpectrumScale(const juce::ComboBox &) noexcept;
 
 // A full analyzer and the compact Info renderer use SharedSpectrumView above. Controls are
 // view state, never audio parameters. Main is explicit default; Selected follows channel
