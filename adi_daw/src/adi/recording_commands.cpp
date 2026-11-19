@@ -81,6 +81,7 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
         if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
         Read read(store.db());result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
         if(recorded.sourceProject().empty() || recorded.sourceProject()!=result.sourceProject)throw std::runtime_error("recording belongs to a different project");
+        if(recorded.loopSpec())throw std::runtime_error("loop recording needs take-pass publication; linear attachment is not permitted");
         if(recorded.failure!=engine::RecordingFailure::None || recorded.frames==0 || recorded.sampleRate<8000 || recorded.sampleRate>768000 ||
            recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
            ids.size()!=recorded.tracks.size() || ids.empty() || recorded.directory().empty())throw std::runtime_error("recording is not a completed attachable take");
@@ -159,7 +160,8 @@ CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
             if(asset.target.empty())continue;
             const auto stagedHash=media::blake3File(asset.staged);
             if(!stagedHash || stagedHash.hex!=asset.hash){error="recording publication staging changed after capture";return false;}
-            const auto published=media::publishFile(asset.staged,asset.target);
+            const auto published = media::publishFile(asset.staged, asset.target, {},
+                                                      media::PublishPolicy::AtomicOnly);
             if(published.status==media::PublishStatus::exists && fs::is_regular_file(fs::symlink_status(asset.target))) {
                 const auto existing=media::blake3File(asset.target);if(existing && existing.hex==asset.hash)continue;
             }
