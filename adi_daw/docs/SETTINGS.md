@@ -33,6 +33,14 @@ One typed table of every setting:
 A setting that is not in the registry does not exist: the store refuses an
 unknown key from a caller.
 
+`midi.ports` stores a MIDI port's last known `name` inside its record. Input
+and output identifiers have separate records. The device-scoped `midi.port.name`
+row validates the text field and defaults to empty. The port host can match a
+saved name when the identifier changes.
+
+`record.autoArmOnSelect` defaults to `none`. Saved choices still apply when a
+user has selected `instrumentAndMidi` or `all`.
+
 ### The settings of ADR-0145
 
 | Key | Page | Default | Ruling |
