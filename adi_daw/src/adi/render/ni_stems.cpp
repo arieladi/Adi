@@ -197,7 +197,8 @@ Result renderNiStems(Job job, engine::DeviceLoader loader, Control control, JobI
         tick(control);
         audio::writeAacMovie(output, tracks, audio::makeStemManifest(labels), [&] { tick(control); });
         tick(control);
-        const auto published = media::publishFile(output, result.output);
+        const auto published = media::publishFile(output, result.output, {},
+                                                  media::PublishPolicy::AtomicOnly);
         if (published.status != media::PublishStatus::published)
             throw std::runtime_error(published.status == media::PublishStatus::exists
                                          ? "NI Stems destination already exists"
