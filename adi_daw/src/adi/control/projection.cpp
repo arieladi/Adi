@@ -178,11 +178,9 @@ Json routingRow(const rows::Routing& r) {
             {"preFader", r.preFader}, {"enabled", r.enabled}, {"origin", r.origin}};
 }
 
-/// MAX(id) + 1, or null when the largest id is already the largest there is
-/// (a crafted file): no free id above it, and no overflow computing one.
+/// One past the highest live or reserved ID. Null means the signed range is exhausted.
 template <class Rows, class Id>
-Json nextOf(const Rows& rowsIn, Id id) {
-    std::int64_t top = 0;
+Json nextOf(const Rows& rowsIn, Id id, std::int64_t top = 0) {
     for (const auto& r : rowsIn) top = std::max(top, id(r));
     if (top == std::numeric_limits<std::int64_t>::max()) return nullptr;
     return top + 1;
@@ -230,17 +228,23 @@ Json nextIds(const rows::Model& m) {
     std::uint64_t topNote = 0;
     for (const auto& n : m.notes) topNote = std::max(topNote, n.noteId);
     const Json nextNote = topNote == std::numeric_limits<std::uint64_t>::max() ? Json(nullptr) : Json(topNote + 1);
+    std::int64_t trackAnchor = 0, clipAnchor = 0, deviceAnchor = 0;
+    for (const auto& remark : m.remarks) {
+        if (remark.targetKind == "track") trackAnchor = std::max(trackAnchor, remark.targetId);
+        if (remark.targetKind == "clip") clipAnchor = std::max(clipAnchor, remark.targetId);
+        if (remark.targetKind == "device") deviceAnchor = std::max(deviceAnchor, remark.targetId);
+    }
     return {
         {"note", nextNote},
         {"keyEvent", nextOf(m.keyEvents, [](const rows::KeyEvent& r) { return r.id; })},
         {"remark", nextOf(m.remarks, [](const rows::Remark& r) { return r.id; })},
         {"tuning", nextOf(m.tunings, [](const rows::TuningSystem& r) { return r.id; })},
-        {"track", nextOf(m.tracks, [](const rows::Track& r) { return r.id; })},
-        {"clip", nextOf(m.clips, [](const rows::Clip& r) { return r.id; })},
+        {"track", nextOf(m.tracks, [](const rows::Track& r) { return r.id; }, trackAnchor)},
+        {"clip", nextOf(m.clips, [](const rows::Clip& r) { return r.id; }, clipAnchor)},
         {"lane", nextOf(m.lanes, [](const rows::Lane& r) { return r.id; })},
         {"routing", nextOf(m.routing, [](const rows::Routing& r) { return r.id; })},
         {"chain", nextOf(m.deviceChains, [](const rows::DeviceChain& r) { return r.id; })},
-        {"device", nextOf(m.devices, [](const rows::Device& r) { return r.id; })},
+        {"device", nextOf(m.devices, [](const rows::Device& r) { return r.id; }, deviceAnchor)},
         {"pluginRef", nextOf(m.pluginRefs, [](const rows::PluginRef& r) { return r.id; })},
         {"marker", nextOf(m.markers, [](const rows::Marker& r) { return r.id; })},
         {"automationLane", nextOf(m.automationLanes, [](const rows::AutomationLane& r) { return r.id; })},

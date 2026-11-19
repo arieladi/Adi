@@ -2127,6 +2127,15 @@ else (ADR-0131 d2). Payloads, all keys permanent:
   is legal only when `kind` is `device`; `author` is `user` or `agent`.
 - `remark.edit {id, text}` · `remark.resolve {id, resolved}` · `remark.remove {id}`.
 
+A remark keeps its weak target ID when a track, clip or device is deleted.
+Owner-side producers allocate those row IDs with `RowIds::next`, which includes
+remark targets in the read snapshot. Use one allocator per edit and submit
+the literal IDs with the head from that same snapshot. Undo, Redo and stored
+baseline navigation restore material and anchors together. A note ID belongs
+to its clip's note stream. Use the guarded note edit path for changes prepared
+from a snapshot. An automation range's `record_index` locates a record in its
+own data stream.
+
 Two §7 points specific to remarks:
 
 - **`created` is in the payload.** The handler never reads a clock; the caller
