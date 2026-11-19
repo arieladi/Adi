@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Explicit scanner refresh for eligible candidates
+
+**PR requested** `engine-win/scanner-refresh` at `8adc7a924939a26f27a30f62e69f4d332eb673df`, stacked on the reconciled scanner `fe7dda00`. An explicit Refresh bypasses unchanged success packets and deterministic rejected negatives. It retains normal durable admission, manual/pending blocks, two-strike quarantine and owner tokens. Cancellation or infrastructure abandonment keeps the previous same-stamp record. Incremental remains the default, and CacheOnly needs no helper. The explicit diagnostic is `adi_play --list --refresh`. Root reconciliation, startup scheduling and Settings wiring remain open.
+
+Seven core suites passed 337 checks under native MSVC x64 Debug `/W4 /WX`. The owned VST3 scanner passed 14 checks. Actual player/CLAP Refresh, negative retry, catalogue retention and both hosted Session reopen gates ran. Three native symlink cases skipped and the VST3 check used the original-path fallback.
+
 ## 2026-11-19 — Committed legacy extraction with pending file closure
 
 **PR requested** `engine-win/extract-cli-warning` at `2e008d7c6926cb5fa77b4d998d201c5e8fd1be15`, stacked on collected-media warnings `37e3ce5e`. The legacy extraction CLI keeps its nonzero status for a database that cannot close as one file. It now tells the operator the extraction committed and preserves any separate media-publication warnings. The native regression leaves concurrent connections open, verifies a committed external file and a reader's retained snapshot, and checks the real CLI message.
