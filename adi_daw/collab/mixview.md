@@ -16,6 +16,12 @@ The float and double adapters preserve dry input at the callback's actual offset
 
 The regression at `ec8819af` failed the four float/double callback cases. The exact Release passed all 104 native Clean host checks with zero callback allocations or frees, the three targeted CTest suites, and 870 shell checks. Release ADI.exe SHA-256 `069f4f64f19608d64e9fafc8181a63c262f4b5ed00d5fdfb8303083291bec75d`. Evidence is in the private seat folder `dfm37-built-20261119`. This defensive path has no new review package.
 
+### DF-M38 — Independent Clean and real Stack control gates
+
+**PR requested.** `mixview/clean-envelope-gates-20261119` at `50c42c77cbef978adadb28f5d5bcf45d57171892`.
+
+The Release gates now test analytic attack and release landmarks, a settled quiet signal and re-trigger, and a separately calculated Auto Gain value. The authored-chain fixture checks recovered ordering, settings, and project reopen. The Stack fixture drives the actual folded dot and checks authored membership across Undo. The compressor suite passed 141 checks over 425,984 compared samples with zero callback allocations or frees. All three targeted CTest suites and all 870 Mix View shell checks passed. This is a test-only branch.
+
 ## 19 November 2026 — DF-M36 unchanged-format prepare keeps audio admitted
 
 **PR requested.** `mixview/native-noop-prepare-20261119` is pushed at `bf221a35`. Exact-format and sufficient-capacity prepares return before taking the reactivation Hold in native EQ, Clean, and the built-in host. The EQ still updates the advertised read-only latency. Real format changes retain the guarded prepare path.
