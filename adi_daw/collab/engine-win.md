@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — DEV-25 Plug-In source Settings
+
+**PR requested** `engine-win/scanner-settings-roots` at `c800d747c3e9a54d9b3f1927b02eb9a2f78e4f36`, stacked on scanner Refresh `8adc7a92`. The desktop applies existing VST3 and CLAP lists independently, at launch and on Settings changes. The VST3-only system-folder switch leaves CLAP defaults intact. An admitted scan keeps its captured roots. Applying settings alone leaves the catalogue and instances available and launches no helper. This is now the scanner review tip.
+
+Strict native Windows x64 MSVC Debug built and linked the desktop and player. The real VST3 scan gate passed 14 checks. The player passed 25 new source-setting checks and its existing discovery and project-reopen cases. The overlapping Settings safety source merged cleanly in the read-only check. Startup scheduling, Rescan/Clean controls and a desktop interaction test remain open.
+
 ## 2026-11-19 — PD-05 WAL evidence at project open
 
 **PR requested** `engine-win/project-wal-observation` at `64c591169b8cbea8464dbddc5b328ed968bf65dd`. An optional Store open report records the file size of a WAL sidecar observed before opening SQLite. `adi_tool info` uses this receipt. It reports the possible live-writer and unclean-close causes together and leaves crash classification to the planned session marker.
