@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E27(b) clip End uses the source clock
+
+**PR requested** — branch `engine/df-e27-source-end`, head `25ba8fce3596ce97bddde293e69f3e3cad120351`, main base `bedee5ab`. Title **DF-E27(b): Keep clip playback End on its source clock**. This extracts the End-marker fix from `b9773069` as an independent patch on current main. The shortened fade fix is in its independent DF-E27(a) branch. #530's Start/End edit and source-pin synchronization follows on its own branch.
+
+An unwarped clip's physical End pin survives a placement or tempo change. Warped and unpinned clips derive End in the same source coordinate system as their offset. Playback and page readiness share that one bound. The native sample defaults capture preserves the effective pinned End and keeps the existing legacy-tick projection when the file has only that clock. An active loop still takes its own interval.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units from main and relinked them with the frozen DEV-23 Debug core. The run passed the clip playback, candidate readiness, sample defaults, warp playback and clip edit suites. The new physical-pin and warped-End checks failed first. The physical-pin sample defaults fixture round trips captured audio with a nonzero offset at double tempo. Both compiled faults failed their intended checks. The four validators and format layout check passed.
+
 ## 2026-11-19 — DEV-23 graph workers in the desktop app
 
 **PR requested** — branch `engine/dev23-app-workers`, head `3dd8c6056e13e6e2a89c5173a054360fd2768683`, main base `bedee5ab`. Title **DEV-23: Configure app graph workers from the granted audio buffer**. Includes engine-win's internal preference `240dc0fd3bb6d6904887c8867cab2e40e63614c8`. Hosted CLAP/VST3 worker admission follows the independent DF-E23 integration in #677.
