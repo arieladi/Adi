@@ -415,7 +415,12 @@ bool ProjectDocument::setDeviceKey(const DevicePanelData& target,std::optional<s
 bool ProjectDocument::addMixFunction(mix::Function kind, std::int64_t track) {
     const auto available = device::mixFunctionAvailability(kind);
     if (!available.ready) { error_ = available.reason; return false; }
-    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready);
+    // Removed instances stay alive for Undo. A fresh authored row must not
+    // claim an ID that the current session still uses for one of those instances.
+    std::int64_t retainedDeviceId = 0;
+    for (std::size_t i = 0; i < session_.entryCount(); ++i)
+        retainedDeviceId = std::max(retainedDeviceId, session_.entryAt(i).deviceId);
+    auto prepared = mix::prepareFunctionInsert(*store_, kind, track, available.ready, retainedDeviceId);
     if (!prepared.ok) { error_ = prepared.error; return false; }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, mix::PreparedFunctionEdit &p, Actor a) {
         return mix::commitFunctionEdit(s, p, a);
