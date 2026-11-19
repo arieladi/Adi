@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — #530 anchored left trim on current main
+
+**PR requested** — retest the existing #530 from branch `engine/clip-trim`, head `1a2777f9be8ab1b68174d4d35f70130f02ae1140`, main base `bedee5ab`. Title **Keep unwarped Start and End synchronized with their source pins**. The original PR head `da1de8db` was advanced by a normal push. The branch merges current main and DF-E27(b) `25ba8fce`. The merge retains Win's integer linear endpoint conversion, main's take-lane MIDI regression and #530's trim playback regression.
+
+The native unwarped marker ops record ticks and nanoseconds in the same journal transaction. Moving Start retains physical End and updates its displayed tick. Moving End retains physical Start and writes the new source End pin. Legacy unpinned markers get physical pins through the edited clip's current tempo. Undo and Redo retain the marker pairs and the clip continues to use them after a later tempo change. The #535 readiness fixture now describes the same 40,000-frame End on both clocks. The linear left-extension probe starts off-grid with one source sample available and reaches the correct source-zero sample while retaining the exact end in nanoseconds.
+
+**Gate** — GCC 14 and Clang 19 Debug with Pd and warnings as errors compiled the changed units and relinked them with the frozen DEV-23 Debug core. Both passed nine focused suites, including 522 clip-playback checks and 664 edit-plan checks. The old marker handlers failed the three new marker assertions first. The compiled Start, End and left-extension faults each failed their intended check. The four validators and format layout check passed. Windows and ARM64 PR legs are for Win's retest.
+
 ## 2026-11-19 — DEV-23 native Linux gate follow-up
 
 The GCC 14 JUCE app and shell linked at the unchanged DEV-23 head `3dd8c605`. The native ADI window and Audio Settings page each opened, painted and wrote their expected PNG under Xvfb. Both used ADI's no-audio smoke entry point. The driver preparation checks remain the headless tests recorded on the PR request.
