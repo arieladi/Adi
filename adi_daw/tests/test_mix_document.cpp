@@ -338,7 +338,7 @@ std::unique_ptr<ui::ProjectDocument> identityFixture(const std::filesystem::path
     if (!seed)
         return {};
     seed->db().exec("INSERT INTO tracks(id,kind,name) VALUES "
-                    "(1,'master','Main'),(2,'audio','Source'),(3,'audio','Destination');"
+                    "(1,'master','Main'),(2,'audio','Source'),(3,'audio','Destination'),(4,'audio','Empty');"
                     "INSERT INTO device_chains(id,track_id,ord,name) VALUES"
                     "(10,2,0,'Source devices'),(20,3,0,'Destination devices');"
                     "INSERT INTO plugin_refs(id,format,uid,name) "
@@ -510,6 +510,39 @@ void createAfterHighestRemoval(DeviceCreation creation, const char *caseName) {
           "Redo restores the separately authored device instance");
 }
 
+void pasteOnTrackWithoutChainAfterRemoval() {
+    constexpr std::int64_t emptyTrack = 4;
+    test::TempDirectory temp("mix_document", "paste-with-new-chain-after-removal");
+    auto doc = identityFixture(temp.path() / "project.adi");
+    if (!doc || !doc->addMixFunction(mix::Function::Compressor, 3)) {
+        check(false, "the empty-destination Paste fixture creates a retained highest device");
+        return;
+    }
+    doc->tick(0);
+    const auto retired = matchingPanel(*doc, compressorUid, 3);
+    DeviceCopy copy;
+    if (!retired || !doc->copyDevice(ordinarySource, copy) ||
+        !doc->deviceAction("device.remove", {{"id", retired->id}})) {
+        check(false, "the empty-destination Paste fixture copies the plug-in and removes the highest device");
+        return;
+    }
+    const auto beforePaste = OpJournal(doc->store()).headSeq();
+    if (!doc->pasteDevice(copy, emptyTrack, {})) {
+        check(false, "Paste creates the missing destination chain together with the plug-in");
+        return;
+    }
+    doc->tick(1);
+    const auto pasted = matchingPanel(*doc, ordinaryUid, emptyTrack);
+    auto *instance = pasted ? doc->session().resolveDevice(pasted->runtime) : nullptr;
+    check(pasted && pasted->id > retired->id && instance && instance->identity().format == "vst3" &&
+              instance->getParam("420").normalized == .375,
+          "Paste to a new chain takes a fresh device ID and restores the copied plug-in parameter");
+    const auto undone = doc->ops().undo();
+    check(undone.ok && doc->synchronise() && OpJournal(doc->store()).headSeq() == beforePaste &&
+              doc->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id=4").getInt() == 0,
+          "one Undo removes both the pasted plug-in and its implicitly created chain");
+}
+
 void replaceIdentityInOneJournalStep() {
     test::TempDirectory temp("mix_document", "legacy-atomic-device-replacement");
     auto doc = identityFixture(temp.path() / "project.adi");
@@ -620,6 +653,7 @@ int main() {
     createAfterHighestRemoval(DeviceCreation::BrowserBuiltin, "browser-builtin-after-removal");
     createAfterHighestRemoval(DeviceCreation::BrowserPlugin, "browser-plugin-after-removal");
     createAfterHighestRemoval(DeviceCreation::LegacyId, "legacy-device-identity");
+    pasteOnTrackWithoutChainAfterRemoval();
     replaceIdentityInOneJournalStep();
     test::TempDirectory temp("mix_document","native-functions");std::string error;
     auto doc=ui::ProjectDocument::open(temp.path()/"project.adi",true,device::withBuiltinDevices(),error);
