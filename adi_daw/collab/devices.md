@@ -14,6 +14,43 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — PD4: the allowed-object walk, with the vocabulary read from the running build
+
+**`devices/pd-object-walk` (`2d949a65`), from `main`.** PD4 serves DEV-09, DEV-10, DEV-11 and
+DEV-16; it is this lane's piece of DEV-10 (M7) that needs nobody else.
+
+- `walkPdObjects(patchText, abstractions, vocabulary)` (`src/juce/pd_object_walk.*`, no libpd,
+  every ABI): names each box this build cannot make by file (the patch or an abstraction),
+  subpatch path, class and object-box number (counted as `parsePdDeclarations` counts). Subpatches
+  walked in place; stored abstractions (DEV-10's 'abstractions' role), named as `[voice]` or by
+  `[clone]`'s argument (Pd 0.56's own argument rule), walked once each. Refused: unknown class,
+  a `$` class name (only known when Pd runs), an abstraction containing itself, nesting past 64,
+  a canvas that does not close. `describe()` gives one line per refusal for the device's
+  problem list.
+- `PdRuntime::creatableClasses()` (`pd_vocabulary.cpp`) reads `pd_objectmaker`'s creators under
+  instance 0's lock: the method table **plus the bang/float/symbol/list slots**, where
+  `class_doaddmethod` files those selectors (read in m_class.c; the first version, table only,
+  refused `Resonators.pd` for its `[list]` boxes — the test caught it). 329 names, ADI's
+  compiled-in externals included; no list kept by hand.
+- One tokeniser: `pdRecords` is the declaration parse's scanner made public; both read it.
+- Tests: walk cases on a hand-made vocabulary; the build has vanilla's objects and ADI's
+  externals and no cyclone/zexy; **all 27 shipped patches walk clean**. Walk 77; declarations 76
+  unchanged; CTest **246/246**.
+
+**PR requested** — title "The allowed-object walk, with the vocabulary read from the running
+build (PD4)"; head `devices/pd-object-walk` at `2d949a65`; base `main`. Body: the commit message.
+
+**For win (a ruling, not the director's unless you say so):** the vocabulary is the build's, so
+it includes vanilla's `[netsend]`, `[netreceive]`, `[oscparse]`, `[file]`, `[textfile]`,
+`[soundfiler]` (its `write`), `[writesf~]` and `[pdcontrol]`. A user patch (DEV-10) or a
+translated `.amxd` (DEV-16) can therefore open sockets and write files. Recommendation: the walk
+takes a deny set from one ADR line — network and file-writing classes refused in user patches
+unless the user allows them per device — and the fence stays the build's for natives (ADR-0188
+d8). Blocks nothing now: the walk has no caller until DEV-10's `loadState`.
+
+**Next:** DEV-10's other devices piece, the three starter templates, waits on its identity and
+state roles (the engine's). Then DEV-16's `.amxd` reader on top of this walk (P2, after DEV-10).
+
 ## 2026-11-19 — taking Live 12.4: Arpeggiate's style order (DEV-19 / XC-25), MIDI only
 
 One device, one question: the step order each of the 18 Arpeggiator/Arpeggiate styles gives for a
