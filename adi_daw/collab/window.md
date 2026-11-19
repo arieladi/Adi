@@ -111,6 +111,22 @@ Questions only the director can answer. Each says what the window lane recommend
 | N55 | Split of several clips as one undo step: each `prepareSplit` chooses identities from the project as it stands, so two clips' new pieces could take one identity in one batch | engine | E1's Split over several clips | one undo step per clip, the Status Bar counting them |
 | N56 | The look's registry rows (DF-W24, DF-W31): `lookfeel.theme` offering dark (the default), midgrey, light and mixview in place of os, dark and light; and `lookfeel.density`, compact (the default) and open | win (registry) | the theme and density tables (`src/adi/ui/theme.hpp`, `density.hpp`) | "os" and an unknown word read as Dark; no density key reads as Compact |
 
+## 2026-11-19, later, window lane — DF-W9 PR requested: the Browser's Plug-Ins; DF-W18, DF-W19, DF-W29, DF-W32 written
+
+**PR requested.** Branch `window/plugins-browser`, stacked on `window/arrangement-sheet` (step 4). Title: **adi_daw: window: the Browser's Plug-Ins lists the VST3 and CLAP plug-ins installed, by format and vendor (DF-W9, first half; loading waits for N57)**. The body is [`collab/window/pr-bodies/window-plugins-browser.md`](window/pr-bodies/window-plugins-browser.md). Shell 2768 checks; `test_all` PASS (59459 checks across 245 suites); Pd off green; the sweeps clean on its files. The review confirmed two defects, both fixed. The usage limit stopped part of the review's verification; the body says which part.
+
+**Its picture:** [`collab/window/pictures/2026-11-19-plugins-browser.png`](https://github.com/arieladi/Adi/blob/window/plugins-browser/adi_daw/collab/window/pictures/2026-11-19-plugins-browser.png?raw=true), 3840 x 1080. Left, the Arrangement sheet, which draws the Browser. Right, the window at 1920 x 1080 real size, on the grouped showcase song with Melody selected. The Browser's Plug-Ins lists nine plug-ins with invented names, CLAP (Northwind Audio, Tidewater DSP) and then VST3 (Copperline, Harbor Instruments), each under its vendor with its kind's icon; Arc Synth is chosen, and all are dimmed until N57.
+
+**Written and pushed, each on its own branch from main, not yet built** (the build tree serves one branch at a time; each is built, gated and requested in turn):
+- `window/input-clock` (DF-W18): the window reads the time and the keys held through one seam, `InputClock` (ADR-0231 d2), which a test sets. The flake's cause: Play Reference from a menu read the clock twice, so a slow machine made the menu's tap a hold; it now reads once.
+- `window/menu-parameters` (DF-W19): a parameter shown as a menu loses picks because JUCE sends a pick after a frame has put the menu back. The frame now leaves a pick on its way alone. A check picks every item by the mouse's way and the keyboard's, with a frame between.
+- `window/held-peak` (DF-W32): the strip's meter shows the engine's held peak, taken by one owner (`HeldPeaks`) and shared by every view of the strip.
+- `window/undo-settles` (DF-W29): Undo, Redo and a step restored from the Undo History first commit the knob edits still held for their quiet interval, so the undo takes back the last edit the user saw.
+
+**Note for the Mix View seat:** DF-W19's fix is in `ui_devices.cpp`/`.hpp` (`ParameterControl`'s menu): three lines and one member. Your rebuild of that file should keep it.
+
+---
+
 ## 2026-11-19, window lane — step 4 PR requested: the Arrangement from its sheet; five proposals; DF-W9 begun
 
 **PR requested.** Branch `window/arrangement-sheet`, stacked on `window/shared-controls` (step 3, whose painters it draws with), main merged in. Title: **adi_daw: window: the Arrangement from its sheet (DF-W24 step 4, DF-W25): the bar over the track names, and the groups' lines**. The body is [`collab/window/pr-bodies/window-arrangement-sheet.md`](window/pr-bodies/window-arrangement-sheet.md). Gate on its head `b5be45d7`: shell 2757 checks, `test_all` PASS (59459 checks across 245 suites, validators clean), Pd off (`ui.yml`'s six suites and `adi_app`) green, the sweeps clean on its lines. The review confirmed eight defects, all fixed (the body lists them; one was a shadowed variable MSVC `/W4` would have rejected).
