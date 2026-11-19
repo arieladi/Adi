@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <limits>
 #include <new>
 #include <thread>
@@ -55,7 +56,11 @@ struct Observe final:mix::EqProcessingBackend {
     void process(double* const* a,const double* const* k,int kc,int n,const q::Settings& s,
                  std::uint64_t b,int p) noexcept override {run(a,k,kc,n,s,b,p);}
     void pumpMainThread(const q::Settings& s) override {seen=s;}
-    int advertisedLatency() const noexcept override {return latency;}
+    std::function<void()> onLatencyRead;
+    int advertisedLatency() const noexcept override {
+        if (onLatencyRead) onLatencyRead();
+        return latency;
+    }
 };
 std::unique_ptr<device::DeviceInstance> make(std::unique_ptr<mix::EqProcessingBackend> backend,int channels=2,
                                             const char* format="internal",const char* uid="org.adidaw.mix.eq") {
@@ -306,6 +311,35 @@ void prepareLifecycle() {
     d->prepare(44100,128);check(seen->prepares==4,"maximum-frame change really reprepares provider");
     d->prepare(44100,128);check(seen->prepares==4,"new-format redundant prepare is idempotent too");
 }
+void duplicatePrepareKeepsProcessing() {
+    auto probe = std::make_unique<Observe>();
+    auto *seen = probe.get();
+    auto eq = make(std::move(probe), 1);
+    check(eq != nullptr, "native EQ no-op prepare fixture loads");
+    if (!eq) return;
+    eq->prepare(48000, 64);
+
+    const float input[]{.25f, .5f};
+    const float key[]{.125f, .25f};
+    float output[2]{};
+    const float *in[]{input}, *side[]{key};
+    float *out[]{output};
+    engine::NodeIo io;
+    io.channels = 1;
+    io.frames = 2;
+    io.in = in;
+    io.out = out;
+    io.sidechain = side;
+    // The backend's latency query occurs inside the redundant prepare. A
+    // process call here deterministically detects whether that scope gates it.
+    seen->onLatencyRead = [&] { eq->process(io); };
+    seen->latency = 17;
+    eq->prepare(48000, 64);
+    check(seen->prepares == 1 && seen->calls == 1 && output[0] == .375f &&
+              output[1] == .75f && eq->latencySamples() == 17,
+          "same-format EQ prepare leaves processing admitted and updates the read-only latency");
+}
+
 template<class Sample>void continuousPrepare() {
     auto uninterrupted=make(q::makeBackend()),duplicate=make(q::makeBackend());
     for(auto* d:{uninterrupted.get(),duplicate.get()}) {
@@ -348,7 +382,7 @@ int main() {
     auto narrow=std::make_unique<Observe>();narrow->doubles=false;auto d=make(std::move(narrow));
     check(d&&!d->processesDouble(),"narrow-only provider does not claim native double");
     publishedDesignPreview();metadataAndMapping();strictState();pairPublication();offsetsAndEvents<float>();offsetsAndEvents<double>();
-    prepareLifecycle();continuousPrepare<float>();continuousPrepare<double>();
+    prepareLifecycle();duplicatePrepareKeepsProcessing();continuousPrepare<float>();continuousPrepare<double>();
     for(const auto rate:{44100.,48000.,96000.})for(const int channels:{1,2}){exactCore<float>(channels,rate);exactCore<double>(channels,rate);}
     check(allocations==0&&deallocations==0,"native controller and direct core allocate/free nothing during callbacks");
     std::printf("Mix EQ host: %d checks, %d failures\n",checks,failures);return failures?1:0;
