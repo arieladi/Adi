@@ -10,6 +10,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 · Single-export collision policies
+
+**PR requested** — `engine-win/export-collision-modes` at `cbbc4202300ad1d4e5291da3ee5e392ab87cc4ac`, stacked on `engine-win/export-media-identity` at `e5461f1e`. Title **Resolve single-export Fail and Increment collisions at preflight**.
+
+EX-07. Default Fail and explicit Increment choose one final delivery name. Increment inserts the counter before the complete suffix. The shared exclusive publisher refuses late arrivals, leaving those bytes intact. WAV and NI select the policy for the outer delivery only. Five strict x64 MSVC suites passed 1,025 checks. The tests exercised Windows directory-native case behavior and the actual WAV publisher. NI's shared path was exercised with staged bytes and full AAC encoding remains gated. Replace, portable folded batch sets, group reservation and UI confirmation remain open.
+
 ## 2026-11-19 · Atomic settings saves
 
 **PR requested** — `engine-win/settings-atomic-save` at `acba2e53ee58d55fc5714b542f7fad5ed5728640`, stacked on `engine-win/settings-reset-overrides` at `783ee27a`. Title **Publish settings through a private atomic stage**.
