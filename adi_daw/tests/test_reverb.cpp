@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <new>
 #include <numbers>
+#include <string>
 #include <vector>
 namespace {
 bool counting = false;
@@ -86,10 +87,17 @@ void decay() {
                   "Schroeder -5 to -35 dB RT60 within 15 percent");
         }
 }
+// The mechanism tests below start from the plain tank, as they did before
+// Live's defaults (DEV-22) turned the input Lo Cut, Spin, Chorus and the
+// high shelf on: each test turns on what it is about.
+void plain(R& r) {
+    for (auto p : {R::LowCutOn, R::SpinOn, R::ChorusOn, R::HighShelfOn}) r.set(p, 0);
+}
 void controls() {
     std::vector<float> in(96000);
     in[0] = 1;
     R r;
+    plain(r);
     r.prepare(48000);
     r.set(R::Mix, 100);
     r.set(R::Predelay, 50);
@@ -132,6 +140,8 @@ void freezeAndFilters() {
     impulse[0] = 1;
     std::vector<float> silence(96000), ones(96000, 0.25f);
     R a, b;
+    plain(a);
+    plain(b);
     a.prepare(48000);
     b.prepare(48000);
     for (auto *r : {&a, &b}) {
@@ -212,8 +222,34 @@ void liveDefault() {
     r.process(in.data(), in.data(), l.data(), rr.data(), in.size());
     check(std::abs(l[0] - 0.6494480371) < 2e-6, "Live default: the dry impulse is 0.64945 (sin/cos at 55 %)");
 }
+// DEV-22: the rest of Live 12.4's Reverb browser default, each where ADI's
+// control means what Live's does (the same unit and range). Spin's amount,
+// the input band, the diffusion network and Density map onto ADI controls of
+// another shape and wait for the director's reading.
+void liveDefaultControls() {
+    struct Expect { R::Param p; double value; const char* name; };
+    const Expect expected[] = {
+        {R::LowCutOn, 1, "Lo Cut on"},          {R::HighCutOn, 0, "Hi Cut off"},
+        {R::SpinOn, 1, "Spin on"},              {R::SpinRate, 0.2977000177, "Spin rate 0.30 Hz"},
+        {R::HighShelfOn, 1, "High shelf on"},   {R::HighShelfFreq, 4500.00146, "High shelf 4.5 kHz"},
+        {R::HighShelfDecay, 0.6999999881, "High shelf 0.70"},
+        {R::LowShelfOn, 0, "Low shelf off"},    {R::LowShelfFreq, 90.0000076, "Low shelf 90 Hz"},
+        {R::LowShelfDecay, 0.75, "Low shelf 0.75"},
+        {R::ChorusOn, 1, "Chorus on"},          {R::ChorusAmount, 0.01999999955, "Chorus amount 0.02"},
+        {R::ChorusRate, 0.02000000142, "Chorus rate 0.02 Hz"},
+        {R::Predelay, 2.49999976, "Predelay 2.5 ms"}, {R::Size, 99.9999924, "Size 100"},
+        {R::Decay, 1.20000012, "Decay 1.2 s"},  {R::Freeze, 0, "Freeze off"},
+        {R::Flat, 1, "Flat on"},                {R::Cut, 1, "Cut on"},
+        {R::Stereo, 100, "Stereo 100"},         {R::Reflect, 0, "Reflect 0 dB"},
+        {R::Diffuse, 0, "Diffuse 0 dB"},        {R::Mix, 55.00000119, "Dry/Wet 55 %"},
+    };
+    for (const auto& e : expected)
+        check(std::abs(R::ranges[e.p].initial - e.value) < 1e-5 * std::max(1.0, std::abs(e.value)),
+              (std::string("Live default: ") + e.name).c_str());
+}
 int main() {
     liveDefault();
+    liveDefaultControls();
     decay();
     controls();
     freezeAndFilters();
