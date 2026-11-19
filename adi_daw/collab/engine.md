@@ -32,6 +32,16 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — N55 grouped clip splits
+
+**PR requested** — branch `engine/n55-split-clips-group`, head `9428d1d7bc04e56a02569235613211e0bd21cd10`, main base `88e2d94e`. Title **N55: Split several selected clips in one Undo step**.
+
+**For Window.** Pass the chosen clip IDs and one or two points per clip to `prepareSplits`, then submit the returned `edit` once through the existing project entry point. `refused` holds each failed clip ID and reason so the UI can still report skipped clips. Valid splits share root and child allocations and one expected head. Undo and Redo apply the entire group once. Existing single-clip overloads keep their input and remain available.
+
+**Gate** — GCC 14 and Clang 19 warnings as errors. Each passed clip edit (407), clip playback (489), edit plan (610), history (95), automation range Undo (87) and Warp playback (125). The new fixture covers physical audio, musical MIDI, one and two cuts, exact copied child IDs and bytes, a refused alias, a duplicate selection, group Undo/Redo, a stale head, and the last available signed identity after a refusal. Independent allocators and leaking a refused allocation each caused the expected ordinary failure in compiled faults. CI, ops, Pd, schema and binary layout checks passed.
+
+The two admission-fixture commits, now `50ae0d85`, also completed 200 full Linux suite runs at concurrency 12 with zero failures.
+
 ## 2026-11-19 — Clip-admission unavailable-page fixture handshake
 
 **PR requested** — updated `engine/clip-admission-fixture-order`, head `50ae0d857d05e9513688f554ce8b4123449bdb3e`, fast-forward from `fc14ccbb` on main `88e2d94e`. Title **Wait for the clip worker before testing unavailable pages**. Both commits go in the same fixture PR.
