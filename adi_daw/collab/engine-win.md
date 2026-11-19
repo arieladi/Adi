@@ -12,6 +12,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — Committed legacy extraction with pending file closure
+
+**PR requested** `engine-win/extract-cli-warning` at `2e008d7c6926cb5fa77b4d998d201c5e8fd1be15`, stacked on collected-media warnings `37e3ce5e`. The legacy extraction CLI keeps its nonzero status for a database that cannot close as one file. It now tells the operator the extraction committed and preserves any separate media-publication warnings. The native regression leaves concurrent connections open, verifies a committed external file and a reader's retained snapshot, and checks the real CLI message.
+
+Strict native MSVC x64 Debug `/W4 /WX` passed 323 checks across collection, ZIP and project files. The baseline failed the new message check. Three optional symlink cases skipped for Windows privilege.
+
 ## 2026-11-19 — Collect and Export status warning relay
 
 **PR requested** `engine-win/archive-window-warning` at `d5a50adb5c1dfd650327ad85ba0210c528e5cb41`, stacked on `99b03094`. The normal desktop export completion reports the archived filename or failure and includes the worker's existing warning. This keeps a successful published ZIP visible even when its directory sync was unconfirmed. A failed result can also carry a retained-file warning.
