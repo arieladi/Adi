@@ -32,7 +32,8 @@ struct BlockContext {
     [[nodiscard]] bool valid() const noexcept { return epoch != 0 && sequence != 0 && frames > 0; }
 };
 
-// One serialized audio owner; prepare/reset/destruction require stopped audio.
+// One serialized audio owner. Prepare/destruction require stopped processing.
+// Reset also works between calls on the audio owner after a drained graph tail.
 // Float processing uses double envelope state. Double I/O is converted to float
 // for this same engine, then widened; it is not a double-precision DSP engine.
 // All allocation and curve generation occur in prepare. No callback allocation,
@@ -52,6 +53,10 @@ class Core final {
     // amount and link mode are fixed until prepare; changes return
     // UnsupportedConfiguration. Auto Gain with link above 1 is unsupported.
     [[nodiscard]] Status prepare(const PrepareSpec &, const Settings & = {}) noexcept;
+    // Longest Clean release is two cascaded detector stages at at most 2.2 s
+    // per decade. Two 24 s intervals bound the remaining reduction below
+    // 1e-9 dB, including parameter changes while silence drains.
+    static constexpr double quietTailSeconds = 48.;
     void reset() noexcept;
     [[nodiscard]] bool isPrepared() const noexcept;
     [[nodiscard]] std::int32_t latencySamples() const noexcept { return 0; }

@@ -256,6 +256,9 @@ public:
     /// uses it to keep watched rings current through silence, and to land a
     /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
+    /// Audio owner, once on entry to suspension, after the tail has drained.
+    /// Keep this as cheap as silenceTaps. Stateful effects can arm a wake reset.
+    virtual void didSuspend() noexcept {}
 
     /// Capture ports have a lifetime independent of the node. A retired graph can release
     /// its node before a later callback detaches its old scope publication safely.

@@ -1833,6 +1833,7 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
         // Cleared once per silence and the flag does the rest; `process`
         // below clears the flag because the node has written.
         if (!s.zeroed) {
+            s.node->didSuspend();
             const auto cap = static_cast<std::size_t>(maxFrames_);
             for (std::size_t c = 0; c < ch; ++c) {
                 // At 64 the double buffer is what consumers read; a float

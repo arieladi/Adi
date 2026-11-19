@@ -439,6 +439,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
     // audio when it falls asleep. TailNode writes zeros and could never leak.
     class PassNode final : public Node {
     public:
+        void didSuspend() noexcept override { ++suspensions; }
         void process(const NodeIo& io) noexcept override {
             for (std::int32_t c = 0; c < io.channels; ++c) {
                 const float* in = io.in != nullptr ? io.in[c] + io.blockOffset : nullptr;
@@ -448,6 +449,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
         }
         [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
         [[nodiscard]] const char* name() const noexcept override { return "pass"; }
+        int suspensions = 0;
     };
 
     ConstNode src(1.0f);
@@ -492,6 +494,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
           "and five more silent blocks cleared nothing: " +
               std::to_string(g.stats().suspendClears));
     check(g.stats().nodesSuspended >= 6, "while the node stayed suspended");
+    check(pass.suspensions == 1, "the suspension hook is delivered only on entry");
 
     // Wake, then sleep again: the flag was dropped when the node wrote, so the
     // second sleep clears again. A plant that never drops the flag leaks the
@@ -506,6 +509,7 @@ void testSuspendedNodeClearsOnceToCapacity() {
     check(g.stats().suspendClears == clearsAfterSleep + 1,
           "which took exactly one more clear: " +
               std::to_string(g.stats().suspendClears));
+    check(pass.suspensions == 2, "a later wake and sleep deliver the next transition");
 }
 
 void testMixSkipsSleepingSources() {

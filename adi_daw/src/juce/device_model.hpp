@@ -241,6 +241,8 @@ public:
     [[nodiscard]] virtual bool wantsDeviceTransport() const noexcept { return false; }
     [[nodiscard]] virtual bool needsBypassTransition(std::int32_t /*configuredLatency*/) noexcept { return false; }
     virtual void processBypassTransition(const engine::NodeIo&) noexcept {}
+    /// Actual graph suspension transition, on the same serialized audio owner.
+    virtual void didSuspend() noexcept {}
 
     /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
     /// default: the device is handed float in every graph, converted either
@@ -608,6 +610,7 @@ public:
     void processActive(const engine::NodeIo& io) noexcept override;
     [[nodiscard]] bool needsBypassTransition(std::int32_t configuredLatency) noexcept override;
     void processBypassTransition(const engine::NodeIo& io) noexcept override;
+    void didSuspend() noexcept override;
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;

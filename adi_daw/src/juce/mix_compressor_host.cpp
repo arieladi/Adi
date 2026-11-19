@@ -123,14 +123,20 @@ class CompressorDevice final : public DeviceInstance {
             throw std::runtime_error("Clean compressor preparation failed");
         rate_ = rate;
         maximum_ = maximum;
+        const auto effectiveRate = std::max(rate, static_cast<double>(static_cast<float>(rate)));
+        tail_.store(static_cast<std::int64_t>(std::ceil(effectiveRate * c::Core::quietTailSeconds)),
+                    std::memory_order_release);
         prepared_ = true;
         controlsValid_ = false;
     }
     void release() override {
         const ReactivationGate::Hold hold(gate_);
         prepared_ = false;
+        tail_.store(engine::kInfiniteTail, std::memory_order_release);
     }
     std::int32_t latencySamples() const noexcept override { return 0; }
+    std::int64_t tailSamples() const noexcept override { return tail_.load(std::memory_order_acquire); }
+    void didSuspend() noexcept override { wakeReset_ = true; }
     void process(const engine::NodeIo &io) noexcept override {
         [[maybe_unused]] const ScopedFlushDenormals denormals;
         const ReactivationGate::Pass pass(gate_);
@@ -145,6 +151,10 @@ class CompressorDevice final : public DeviceInstance {
         if (!prepared_ || io.channels != channels_ || (io.events.count > 0 && !io.events.first)) {
             passThrough(io);
             return;
+        }
+        if (wakeReset_) {
+            core_.reset();
+            wakeReset_ = false;
         }
         auto v = read();
         for (std::int32_t n = 0; n < io.events.count; ++n) {
@@ -309,6 +319,8 @@ class CompressorDevice final : public DeviceInstance {
     double rate_ = 0;
     std::int32_t maximum_ = 0;
     bool prepared_ = false;
+    bool wakeReset_ = false; // only the audio owner, including graph suspension
+    std::atomic<std::int64_t> tail_{engine::kInfiniteTail};
     DeviceIdentity identity_;
     ReactivationGate gate_;
     c::Core core_;

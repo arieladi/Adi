@@ -198,6 +198,88 @@ void quietEnvelope() {
     check(std::isfinite(data[0][63]) && data[0][63] < .95f,
           "compression resumes after the long quiet interval");
 }
+void cleanGraphSuspension() {
+    constexpr double rate = 48000.;
+    constexpr int frames = 64;
+    auto device = make(), continuous = make(), cold = make();
+    check(device && continuous && cold, "graph suspension fixture creates three native Clean devices");
+    if (!device || !continuous || !cold) return;
+    for (auto *instance : {device.get(), continuous.get(), cold.get()}) {
+        instance->setParam("0", device::ParamValue::fromNormalized(0.));
+        instance->setParam("2", device::ParamValue::fromNormalized(0.));
+        instance->setParam("4", device::ParamValue::fromNormalized(0.));
+        instance->setParam("5", device::ParamValue::fromNormalized(1.));
+        instance->setParam("7", device::ParamValue::fromNormalized(0.));
+    }
+    continuous->prepare(rate, frames);
+    cold->prepare(rate, frames);
+    struct Programme final : engine::Node {
+        float value = .95f;
+        void process(const engine::NodeIo &io) noexcept override {
+            for (auto ch = 0; ch < io.channels; ++ch)
+                std::fill_n(io.out[ch] + io.blockOffset, io.frames, value);
+        }
+    } programme;
+    device::DeviceNode node(*device);
+    engine::Graph graph;
+    const auto input = graph.addNode(programme), effect = graph.addNode(node);
+    graph.connect(input, effect);
+    graph.setOutput(effect);
+    graph.prepare(rate, frames);
+    const auto tail = node.tailSamples();
+    check(tail == static_cast<std::int64_t>(rate * c::Core::quietTailSeconds) && tail < engine::kInfiniteTail,
+          "the scheduler sees the finite maximum prepared Clean release");
+    if (tail <= 0 || tail == engine::kInfiniteTail) return;
+
+    Audio<float> produced{}, unsuspended{}, restarted{};
+    float *outputs[]{produced[0].data(), produced[1].data()};
+    engine::AudioIo io;
+    io.frames = frames;
+    io.numOut = 2;
+    io.out = outputs;
+    const auto render = [&] {
+        audio = true;
+        graph.process(io);
+        audio = false;
+    };
+    std::uint64_t nextBlock = 1;
+    const auto continuousRender = [&] {
+        for (auto &lane : unsuspended) lane.fill(programme.value);
+        process(*continuous, unsuspended, nextBlock++, false);
+    };
+    const auto alloc = allocations.load(), free = frees.load();
+    for (int i = 0; i < 512; ++i) { render(); continuousRender(); }
+    check(produced == unsuspended && produced[0].back() < programme.value * .25f,
+          "the real graph drives a substantial Clean envelope before the quiet drain");
+    const auto awake = graph.stats().nodesSuspended;
+    programme.value = 0.f;
+    for (int i = 0; i < 32; ++i) { render(); continuousRender(); }
+    programme.value = .95f;
+    render(); continuousRender();
+    check(graph.stats().nodesSuspended == awake && produced == unsuspended,
+          "brief silent gaps keep the monitored release continuous");
+
+    programme.value = 0.f;
+    const auto tailBlocks = (tail + frames - 1) / frames;
+    for (std::int64_t i = 0; i < tailBlocks; ++i) { render(); continuousRender(); }
+    check(graph.stats().nodesSuspended == awake, "the complete quiet release runs before suspension");
+    const auto clears = graph.stats().suspendClears;
+    for (int i = 0; i < 5; ++i) { render(); continuousRender(); }
+    check(graph.stats().nodesSuspended == awake + 5 && graph.stats().suspendClears == clears + 1 &&
+              produced == Audio<float>{}, "the resting Clean node stops DSP and clears the output once");
+    programme.value = .95f;
+    render(); continuousRender();
+    for (auto &lane : restarted) lane.fill(programme.value);
+    process(*cold, restarted, 1, false);
+    double peakDifference = 0.;
+    for (std::size_t channel = 0; channel < produced.size(); ++channel)
+        for (std::size_t i = 0; i < produced[channel].size(); ++i)
+            peakDifference = std::max(peakDifference, std::abs(static_cast<double>(produced[channel][i]) -
+                                                             unsuspended[channel][i]));
+    check(produced == restarted && peakDifference <= 1.e-7 && graph.stats().nodesSuspended == awake + 5,
+          "Clean wakes on the first sample with fresh state within float tolerance of uninterrupted DSP");
+    check(allocations.load() == alloc && frees.load() == free, "drain, suspend, and wake allocate or free no DSP storage");
+}
 void stateAndDescriptors() {
     auto a = make(), b = make();
     check(a && b && a->paramCount() == 8 && a->latencySamples() == 0,
@@ -384,6 +466,7 @@ void documentPipeline() {
 int main() {
     stateAndDescriptors();
     quietEnvelope();
+    cleanGraphSuspension();
     for (double rate : {44100., 48000., 96000., 176400., 192000., 384000., 768000.}) {
         exactAudio<float>(rate);
         exactAudio<double>(rate);

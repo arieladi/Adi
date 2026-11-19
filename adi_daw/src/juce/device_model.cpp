@@ -174,6 +174,9 @@ void DeviceNode::processActive(const engine::NodeIo& io) noexcept {
     if (inst_ == nullptr) { passThrough(io); return; }
     inst_->process(io);
 }
+void DeviceNode::didSuspend() noexcept {
+    if (inst_ != nullptr && !bypassed()) inst_->didSuspend();
+}
 
 bool DeviceNode::needsBypassTransition(std::int32_t configuredLatency) noexcept {
     return inst_ != nullptr && inst_->needsBypassTransition(configuredLatency);
