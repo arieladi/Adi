@@ -14,6 +14,38 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-22: Saturator reports Live's 3 samples; defaults as Live's preset
+
+**`devices/saturator-latency` (`870c0e2f`), from `origin/main`.**
+
+- **Readings:** the latency table (DV-08: Status Bar text of each default preset, 48 kHz):
+  Saturator "Latency: 3 samples (0.062 ms)", the same when switched off. Live 12.4's shipped
+  default Saturator preset, read from its file: Oversampling (High Quality) on, Color on,
+  Bass Shaper threshold -50 dB, Waveshaper Drive 1 (100 %); PreDrive -36..36, BaseDrive (Amt
+  Lo) -36..36, ColorDepth (Amt Hi) -24..24, ColorFrequency 30..18500 Hz at 1000, ColorWidth
+  0..1 at 0.3, PostDrive (Output) -36..0, Dry/Wet 1; Waveshaper Lin 0.5, Curve 0.05, Damp 0,
+  Period 0, Depth 0 (all 0..1).
+- **ADI before:** High Quality off by default; with it, two 65-tap linear-phase passes at 4×,
+  16 samples delayed and reported (more delay than Live, against ADR-0203 d4).
+- **ADI now:** the same filter made minimum phase (same magnitude within 1e-6 through the
+  passband; DC group delay 3.56 samples for both passes), reporting Live's 3, dry delayed 3;
+  the 0.56-sample remainder is written in the code. Alias suppression unchanged. Defaults:
+  High Quality on, Color on, Bass Shaper -50 dB, Waveshaper Drive 100 %. Ranges matched where
+  the control means the same: Amt Lo ±36 dB, Frequency 30..18500 Hz, Output -36..0 dB.
+- **Left for a reading:** Width, Curve and Period are on Live's 0..1 scales (defaults 0.3,
+  0.05, 0); ADI's are octaves and its own units. Mapping them needs a render each.
+- Saturator **37**, Saturator Pd **30**; native/Pd parity unchanged; MSVC `/W4 /WX` clean;
+  CTest **242/242**. Plant: reporting 16 fails both latency checks.
+- **Merge note for win:** `tests/test_saturator_pd.cpp` is also touched by DEV-09 step 3
+  (`devices/pd-audio-thread` adds a `block()` before reading the HQ latency). Whichever lands
+  second takes both: the `block()` line and `== 3`.
+
+**PR requested** — title "Saturator reports Live 12.4's 3 samples, defaults as Live's preset
+(DEV-22)"; head `devices/saturator-latency` at `870c0e2f`; base `main`. Body: the commit message.
+
+**Next:** Overdrive (0 against Live's 5), then Redux (0 against 64), then the Limiter's lookahead
+against 64 / 128 / 256.
+
 ## 2026-11-19 — DEV-22: Shifter's Pitch mode as Live 12.4 measures it
 
 **`devices/shifter-latency` (`5bd1ec48`), from `origin/main`.** Files: `src/adi/dsp/shifter.*`,
