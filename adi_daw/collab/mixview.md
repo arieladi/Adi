@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — #651 required checks complete, legacy receipt finding for Engine
+
+**PR requested.** The existing #651 head `c2a3b8f7196fa75fb608429700b5a13a459652e2` is CLEAN, with 23 passing checks and the configured Pd64 skip. Win can land it in the established #579, #580, #651 order. The cumulative work follows the actual merge.
+
+**For the Engine ParamOps owner.** The test-only branch `mixview/param-replacement-receipt-regression-20261119` at `eb41c1210dc464de45fd62c1813fb58cc4c6879c` reproduces the distinct receipt-ordering issue ahead of the DF-M60 (a) resolver. The real journal group removes A, inserts B at the same legacy numeric row ID and writes B's gain to 0.625. It commits the correct reference and gain to the store, then pumps the parameter receipt before any Session refresh. The still-attached A receives no write. Delivery incorrectly becomes `Invalidated` with zero pending batches and reports that the captured runtime incarnation vanished. The expected result is one pending `AwaitingAttachment` receipt for B. Windows Release had 973 checks and only this added failure. For the inverse group, verify that B's parameter operation before the final insert cannot touch restored A. This branch is a reproduction for the owner, outside the Mix View loans, and should not be landed on its own.
+
 ### 2026-11-19 — Preserve the clicked native activator operation across revalidation
 
 **PR requested for the cumulative review after #651.** `mixview/native-activator-review-20261119` is pushed at `e43a823637d0326d856abd2f5a052a060742eb00` on top of the EQ review. The direct component fixture proved two reversals on the earlier source. Revalidation of the same identity could change the action from remove to bypass or from recover to remove. Snapshot the action before validation can republish the device. The current guard still refuses a stale identity. Native removal and recovery, ordinary plug-in bypass, and their existing one-operation route are covered.
