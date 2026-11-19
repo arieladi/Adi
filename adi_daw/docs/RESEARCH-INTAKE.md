@@ -1555,3 +1555,51 @@ ADI's own signals can be tracked in the repository; anything of another program'
   mode, transport, key input, parameter offsets), the fixture for ADR-0245 d8's acceptance and for
   DEV-23; and the scanner's (§6.5).
 - A process sampler and its paired statistics, usable on ADI itself for DEV-23's Windows runs.
+
+### 6.10 The last round, 18 November: two additions measured, three sentences corrected
+
+19 November 2026 (ADR-0246). The research's own erratum to its summary agrees with §6.8 and adds the
+corrections below. All runs are on Windows.
+
+**Bitwig 6.1: the FX track inside a group** (sixteen renders, each source in its own time slot; fifteen
+exact fits and a feedback fit within 4.5e-8). For MX-05 and ADR-0245 d9.
+
+| Question | Measured |
+|---|---|
+| Who can send to it | a direct child and a child of a nested group; a track outside the group cannot (its send does not exist); the group itself has sends to outer and top-level FX tracks and none to its own |
+| Where it sums | before the group's devices: a gain of 0.5 on the group halves dry and wet together |
+| Can it send on | to a sibling FX track, to an outer group's and to a top-level one; a ring of two siblings at low gain is accepted |
+| Solo and mute | a soloed child keeps its dry and its wet; a soloed FX track gives the wet of the sources in scope; soloing the group keeps children and return; muting the FX track removes the wet and keeps the dry |
+| Pre and Post | the send offers Auto, Pre and Post; with the track's fader at 0.5 and the send at unity, Pre adds 0.5 more at the impulse than Post |
+| Edits | a child moved out of the group loses its send; a duplicated group's sends target the copied FX track; deleting the group removes them |
+| Compensation | a render with 1,024 samples of delay on a child and 4,800 on the FX track equals the render without them, sample for sample |
+
+Not run there: Pre's place relative to a device on the source; a self-send; compensation switched off.
+
+**What a host tells a plug-in behind latency** (a probe that records the host's context, behind a delay
+reporting 1,024 or 4,800 samples; VST3). For ADR-0245 d8, MX-04 and DEV-26.
+
+| Host | Measured |
+|---|---|
+| REAPER 7.79 | the probe's sample and musical positions follow its input, on a track, a return and a group; a stepped parameter behind 4,800 lands on its source sample; offline mode is told; ignoring compensation on the chain shifts the probe by 4,800; before zero the sample position is negative and the musical position is held at zero; a delayed block crosses its own loop boundary unsplit |
+| Bitwig 6.1 | all matched cases, live and offline, follow the input; a stepped parameter behind 4,800 changes on its source sample |
+| Cubase 15.0.5 | track, group and return clocks follow the input; negative sample and musical positions are given; a delayed block crosses its own loop boundary whole; offline mode is told. An automation step and a seek were not captured |
+| Live 12.4 | the plug-in's clock is ahead of its incoming audio by exactly 1,024 or 4,800, in samples and in musical time, on a track, a group and a return, and with Delay Compensation off as well; the offline render's audio equals the source while the probe still sees the clock ahead |
+
+Not run: CLAP behind latency in any host; a stepped parameter behind latency in Live.
+
+**Corrections to §6.2, §6.4 and §6.8.**
+
+| Where | It said | Corrected |
+|---|---|---|
+| §6.4, first row | "Nothing was missed either way" | no recorded callback span exceeded its deadline in either mode at 2,048; physical output was not captured, so this is not a count of dropouts. The four spans at 128 samples are exceedances, not four measured dropouts |
+| §6.4, first row | processor time "not separable" read as none saved | the intervals of three short runs per mode overlap; nothing more follows |
+| §6.4, third row | plug-ins "128 to 469 ms ahead of the heard clock" | those figures are against REAPER's decode clock; against its play-position clock the same nodes lead by about 215, 386 and 557 ms. Neither is the loudspeaker |
+| §6.4, third row | an item's volume "reached the output after about 1.4 s" | one short capture, first change seen at a measuring point before the master fader; not a measured delay of what is heard |
+| §6.2, the closing note | meter ballistics "not measured anywhere" | they were: about 33 ms between visible updates, display decays of about 20 and 75 dB a second, a rise of about 209 ms, fitted from captured meter frames. For MX-01 |
+| §6.8, the macro item | the half-step in both range directions "not run" | it was: for a four-state target the stored macro value 63.5 gives state 2 in both directions, and 52 sampled windows agree with rounding to nearest. One midpoint and one target; other sizes and ties were not run. For DEV-06 |
+| §6.8, the export item | Cubase's export examples have no source | they are in the earlier reading of Cubase's 15.0.30 manual (render in place, mixdown, naming, jobs): documented, not run |
+
+**What the round leaves in the repository:** the test signals' generators, the MIDI and tuning fixtures,
+the specifications and the probe plug-ins of §6.9, as `tests/research_intake`, through the Windows engine
+seat's first pull request.

@@ -24,10 +24,20 @@ extern "C" {
 // once they have taken sys_lock(). See deliverMidi for why we call them
 // directly.
 #include "s_stuff.h"
+#include "g_canvas.h"
 }
 
 namespace adi::device {
 namespace {
+
+/// DF-E36 (a): whether `patch` is still one of this instance's top-level
+/// canvases. A second guard behind the menuclose fence: getdollarzero and
+/// closefile never touch a canvas Pd has freed.
+bool stillOpen(void* patch) noexcept {
+    for (t_canvas* x = pd_getcanvaslist(); x != nullptr; x = x->gl_next)
+        if (static_cast<void*>(x) == patch) return true;
+    return false;
+}
 
 std::mutex& initMutex() {
     static std::mutex m;
@@ -170,6 +180,8 @@ LibPdEngine::LibPdEngine(std::string patchDir, std::string patchFile,
     // Vyukov's bounded queue: slot i starts at sequence i.
     for (std::size_t i = 0; i < kPrintSlots; ++i)
         printSlots_[i].sequence.store(static_cast<std::uint64_t>(i), std::memory_order_relaxed);
+    for (std::size_t i = 0; i < kRefusalSlots; ++i)
+        refusalSlots_[i].sequence.store(static_cast<std::uint64_t>(i), std::memory_order_relaxed);
 }
 
 LibPdEngine::InstanceLock::InstanceLock(LibPdEngine& engine) noexcept
@@ -329,6 +341,11 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
         error = "libpd_openfile() could not open " + dir_ + "/" + file_;
         return false;
     }
+    if (!stillOpen(patch_)) {
+        error = "the patch closed itself while it opened";
+        patch_ = nullptr;
+        return false;
+    }
     dollarZero_ = libpd_getdollarzero(patch_);
     // Resolved once, here, for `sendParameter`'s reason: `gensym` on the audio
     // thread allocates for a name Pd has not seen, and `pd_list` by name would
@@ -382,7 +399,7 @@ void LibPdEngine::close() noexcept {
             libpd_unbind(latencyBinding_);
             latencyBinding_ = nullptr;
         }
-        libpd_closefile(patch_);
+        if (stillOpen(patch_)) libpd_closefile(patch_);
         patch_ = nullptr;
         dollarZero_ = 0;
     }
@@ -1070,6 +1087,30 @@ void LibPdEngine::printHookThunk(const char* line) {
 }
 
 void LibPdEngine::enqueuePrint(const char* piece) noexcept {
+    // DF-E36 (d): a refusal goes to its own small queue, which a flood of
+    // ordinary printing cannot fill. A full refusal queue still counts.
+    if (std::strstr(piece, "ADI refused") != nullptr) {
+        auto position = refusalHead_.load(std::memory_order_relaxed);
+        for (;;) {
+            RefusalSlot& slot = refusalSlots_[static_cast<std::size_t>(position % kRefusalSlots)];
+            const auto sequence = slot.sequence.load(std::memory_order_acquire);
+            const auto difference = static_cast<std::int64_t>(sequence - position);
+            if (difference == 0) {
+                if (refusalHead_.compare_exchange_weak(position, position + 1, std::memory_order_relaxed)) {
+                    const std::size_t part = std::min(std::strlen(piece), sizeof(slot.text) - 1);
+                    std::memcpy(slot.text, piece, part);
+                    slot.text[part] = '\0';
+                    slot.sequence.store(position + 1, std::memory_order_release);
+                    return;
+                }
+            } else if (difference < 0) {
+                refusalsDropped_.fetch_add(1, std::memory_order_relaxed);
+                return;
+            } else {
+                position = refusalHead_.load(std::memory_order_relaxed);
+            }
+        }
+    }
     // A piece longer than a slot continues in the next one; the reader joins
     // pieces into lines, so a split costs nothing.
     std::size_t length = std::strlen(piece);
@@ -1105,10 +1146,29 @@ void LibPdEngine::enqueuePrint(const char* piece) noexcept {
 void LibPdEngine::drainConsole() const {
     for (;;) {
         PrintSlot& slot = printSlots_[static_cast<std::size_t>(printTail_ % kPrintSlots)];
-        if (slot.sequence.load(std::memory_order_acquire) != printTail_ + 1) return;
+        if (slot.sequence.load(std::memory_order_acquire) != printTail_ + 1) break;
         appendConsole(slot.text);
         slot.sequence.store(printTail_ + kPrintSlots, std::memory_order_release);
         ++printTail_;
+    }
+    // DF-E36 (d): where pieces were dropped, say so, once, at the gap. A line
+    // Pd had not finished ends there, rather than joining the next one.
+    const auto dropped = consoleDropped_.load(std::memory_order_relaxed);
+    if (dropped > droppedShown_) {
+        if (!pending_.empty()) appendConsole("\n");
+        appendConsole(("[" + std::to_string(dropped - droppedShown_) + " pieces dropped]\n").c_str());
+        droppedShown_ = dropped;
+    }
+    // Refusals, from their own queue: each is a line of its own.
+    for (;;) {
+        RefusalSlot& slot = refusalSlots_[static_cast<std::size_t>(refusalTail_ % kRefusalSlots)];
+        if (slot.sequence.load(std::memory_order_acquire) != refusalTail_ + 1) break;
+        std::string line(slot.text);
+        while (!line.empty() && line.back() == '\n') line.pop_back();
+        if (!pending_.empty()) appendConsole("\n");
+        appendConsole((line + "\n").c_str());
+        slot.sequence.store(refusalTail_ + kRefusalSlots, std::memory_order_release);
+        ++refusalTail_;
     }
 }
 
@@ -1125,6 +1185,11 @@ void LibPdEngine::appendConsole(const char* line) const {
         console_.push_back(pending_.substr(0, nl));
         pending_.erase(0, nl + 1);
     }
+}
+
+void LibPdEngine::pumpConsole() {
+    const std::lock_guard<std::mutex> lock(consoleMutex_);
+    drainConsole();
 }
 
 std::vector<std::string> LibPdEngine::consoleLines() const {
