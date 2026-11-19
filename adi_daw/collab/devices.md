@@ -25,6 +25,39 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — the readings this lane waits on, as recipes (FOR THE DIRECTOR item 2)
+
+One device, one question each, Live 12.4 at 48 kHz, a fresh Set, the device from the browser (no
+preset), nothing else on the track. What comes back here is the statement (value, conditions,
+method); files stay in the director's research.
+
+1. **Arpeggiator style order (DEV-19, XC-25).** A MIDI clip with C3 E3 G3 B3 held one bar; Clip
+   View → Transform → Arpeggiate, Rate 1/16, Steps 0, Gate 50 %. For each of the 18 styles, the
+   16 note pitches in order (or the Set saved and its notes read). Also, with C3 E3 G3 B3 D4 (five
+   notes), the Converge/Diverge/Con & Diverge/Pinky/Thumb styles; and Up with Steps 1, Distance
+   +12, to see whether the transposed copy follows the whole pattern.
+2. **Simpler voices and velocity (DEV-21).** The Voices chooser's full list. Then Classic mode, a
+   1 kHz sine sample, Vel > Vol 35 %: render one note at each velocity 1, 32, 64, 100, 127 and
+   read the peak level of each.
+3. **Simpler envelope slope (DEV-21).** Attack 100 ms, slope 0 and slope +1 and −1: render one
+   note of a constant-level sample and read the level at 25, 50 and 75 ms; Decay 100 ms to
+   sustain −24 dB the same way.
+4. **Simpler filter (DEV-21).** Filter on, Clean, LP 12, cutoff 22 kHz then 1 kHz, Resonance 0 %
+   and 100 %: white noise through it, the magnitude at 500 Hz, 1 kHz, 2 kHz (a spectrum read).
+5. **Redux defaults (DEV-22).** A fresh Redux: every control's value as shown.
+6. **Saturator's Width, Curve, Period (DEV-22).** Waveshaper mode, Drive 20 dB, a 100 Hz sine at
+   −6 dBFS: render with Width 0 / 0.3 / 1 (others default), then Curve 0 / 0.05 / 1, then Period
+   0 / 0.5 / 1; nine renders, each read as its first five harmonic levels.
+7. **Shifter's dry path and sweep phase (DEV-22).** Pitch mode +7 st, Dry/Wet 50 %, an impulse:
+   is the dry impulse at 0 or delayed with the wet? Then the sweep render that DV-06 used, at
+   +7 st, its first 2,000 samples.
+8. **Envelope Follower and Shaper (DEV-07, DEV-16).** Envelope Follower mapped to a Utility
+   Gain, Rise 0, Fall 0 then defaults, a 1 kHz burst of 100 ms: the mapped value's curve (Utility
+   output level over time). Shaper: its default shape at 1 Hz mapped the same way, one cycle.
+9. **Max's own `line~` start and `[t]` tie order (DEV-16; Max, not Live).** A `line~` ramp
+   0 → 1 over 100 ms from a loadbang: the value at the first sample. Two boxes at the same x fed
+   from one outlet: which fires first.
+
 ## 2026-11-19 — DEV-16, step 4: what the director's own device uses most
 
 **`devices/amxd-translator` (`607d3d5a`), one more commit on the same PR request.** Chosen by the
