@@ -414,6 +414,55 @@ void returnedSettingsWithdrawLatency() {
     check(core.beginBlock(3, 0, active).generation && core.pendingLatencyChange().token == 0,
           "standalone EQ withdrawal also works within the original physical block");
 }
+void sameLatencyReversion() {
+    eq::Settings base;
+    base.bands[0].status = eq::Status::On;
+    base.bands[0].frequencyHz = 750;
+    base.bands[0].gainDb = 12;
+    base.bands[0].q = 4;
+    auto temporary = base;
+    temporary.structure = eq::Structure::SVF;
+
+    const auto prime = [&](eq::Core &core, const eq::Settings &requested) {
+        core.prepare({48000, 256, 2}, base);
+        Audio impulse;
+        impulse.data[0].back() = .5f;
+        return run(core, impulse, 256, requested, begin(core, 1, 0, requested));
+    };
+    eq::Core reference, unread, promised;
+    check(prime(reference, base) && prime(unread, temporary) && prime(promised, temporary),
+          "warm three Minimum Phase filters with the same pulse at the callback boundary");
+    const auto offer = unread.pendingLatencyChange();
+    check(offer.token && offer.samples == 0, "an unread SVF request differs from Minimum Phase at the same PDC");
+
+    Audio steadyTail, unreadTail, promisedTail;
+    const bool renderedSteady = run(reference, steadyTail, 256, base, begin(reference, 2, 0, base));
+    check(renderedSteady && std::any_of(steadyTail.data[0].begin(), steadyTail.data[0].end(),
+                                       [](float sample) { return std::abs(sample) > 1.e-6f; }),
+          "Minimum Phase supplies a measurable filter tail in the next callback");
+    const auto reverted = begin(unread, 2, 0, base);
+    check(reverted.generation && !unread.pendingLatencyChange().token && unread.latencySamples() == 0,
+          "a reversion withdraws an unread offer even when configured PDC equals its latency");
+    check(run(unread, unreadTail, 256, base, reverted) && unreadTail.data == steadyTail.data,
+          "withdrawing an unread equal-PDC offer preserves the original filter tail");
+
+    const auto published = promised.promiseLatencyChange();
+    check(published.token && published.samples == 0, "the owner can promise a same-latency structural offer");
+    check(begin(promised, 1, 0, base).generation && promised.pendingLatencyChange().token == published.token,
+          "the promised plan survives a reversion inside the original physical block");
+    const auto admitted = begin(promised, 2, 0, base);
+    check(run(promised, promisedTail, 256, base, admitted) && promisedTail.data != steadyTail.data,
+          "the matching physical block processes the promised SVF plan and replaces the old filter tail");
+    const auto reversal = promised.promiseLatencyChange();
+    check(reversal.token && reversal.token != published.token && reversal.samples == 0,
+          "the reversal becomes a separate offer after the promised plan admits");
+    check(begin(promised, 2, 0, base).block == admitted.block &&
+              promised.pendingLatencyChange().token == reversal.token,
+          "the same physical block holds the promised reversal until the next boundary");
+    const auto restored = begin(promised, 3, 0, base);
+    check(restored.generation && !promised.pendingLatencyChange().token && promised.latencySamples() == 0,
+          "the next physical block admits the reversal at unchanged PDC");
+}
 void advertisedLookaheadSurvivesReversion() {
     eq::Settings base, requested;
     requested.lookaheadMs = 8;
@@ -583,6 +632,7 @@ int main() {
         latencyCapacity();
         compoundAdmission();
         returnedSettingsWithdrawLatency();
+        sameLatencyReversion();
         advertisedLookaheadSurvivesReversion();
         undoDuringGraphRingPriming();
         pinCompoundControls();
