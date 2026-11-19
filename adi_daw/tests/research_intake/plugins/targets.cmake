@@ -2,8 +2,8 @@
 # Include after adi_warnings and ADI_THIRD_PARTY are defined. No downloads or installs.
 include_guard(GLOBAL)
 
-if(NOT WIN32)
-    message(STATUS "Research plug-in diagnostics unavailable here: the mapped-trace/loader platform layer currently requires Windows")
+if(NOT WIN32 AND NOT APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(STATUS "Research diagnostics require Windows, macOS or Linux mapped-memory/loader support")
     set(ADI_RESEARCH_PROBES_AVAILABLE FALSE)
     return()
 endif()
@@ -34,12 +34,32 @@ function(_adi_research_strict target headers)
         target_compile_options(${target} PRIVATE -Werror)
     endif()
     set_target_properties(${target} PROPERTIES FOLDER "Tests/Research probes")
+    if(APPLE)
+        target_link_libraries(${target} PRIVATE "-framework CoreFoundation")
+    elseif(UNIX)
+        target_link_libraries(${target} PRIVATE ${CMAKE_DL_LIBS})
+    endif()
 endfunction()
 
 function(_adi_research_module target source name suffix headers)
     add_library(${target} MODULE "${_adi_research_plugins}/${source}")
     _adi_research_strict(${target} "${headers}")
     set_target_properties(${target} PROPERTIES PREFIX "" OUTPUT_NAME "${name}" SUFFIX "${suffix}")
+    if(APPLE)
+        set(_bundle "${CMAKE_CURRENT_BINARY_DIR}/research_probes/$<CONFIG>/${name}${suffix}")
+        set_target_properties(${target} PROPERTIES SUFFIX ""
+            LIBRARY_OUTPUT_DIRECTORY "${_bundle}/Contents/MacOS")
+        set(ADI_PROBE_EXECUTABLE "${name}")
+        string(REPLACE "_" "-" ADI_PROBE_IDENTIFIER "${target}")
+        configure_file("${_adi_research_plugins}/Info.plist.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/${target}-Info.plist" @ONLY)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_BINARY_DIR}/${target}-Info.plist" "${_bundle}/Contents/Info.plist")
+    elseif(UNIX AND suffix STREQUAL ".vst3")
+        set_target_properties(${target} PROPERTIES SUFFIX ".so"
+            LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/research_probes/$<CONFIG>/${name}.vst3/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux")
+    endif()
 endfunction()
 
 # These sources use public interface declarations/IDs only. They need no separate

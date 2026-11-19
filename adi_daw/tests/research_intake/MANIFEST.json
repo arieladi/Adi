@@ -106,17 +106,17 @@
     {
       "path": "plugins/build.py",
       "bytes": 1617,
-      "sha256": "e855f18f2e51e52511b063eae06dfae4ce9fedf8ed8ae6db1542e1e7197490a1"
+      "sha256": "96b253b349ed0297e90aee7aa439f5a74709d490c9aa8d9a0122f8cb86d1c4e8"
     },
     {
       "path": "plugins/clap/adi_clap_probe.cpp",
-      "bytes": 11037,
-      "sha256": "2c951175dfca3361dfc66fb1ec532e54473b169847bef0cf686240e677eb1819"
+      "bytes": 11182,
+      "sha256": "71d9f17f549cc11b6e28974964787a127a338ed5666748d0b277c17d848d79fd"
     },
     {
       "path": "plugins/clap/selftest.cpp",
-      "bytes": 7825,
-      "sha256": "98882d05ce7c89f919a56038bedc4ed7f329d699e350e0b7644e202add7266e7"
+      "bytes": 8214,
+      "sha256": "69d40a087fee933a365049d400d71fa864b8d8f6bf9e072b35f120e6363c5ba8"
     },
     {
       "path": "plugins/fetch_sdk.py",
@@ -125,13 +125,13 @@
     },
     {
       "path": "plugins/probe_shared.h",
-      "bytes": 2758,
-      "sha256": "7fd7d31f2acad5d6dbe0288fae384f52f1cce0592589af1f4ed33a03051d0c0a"
+      "bytes": 2806,
+      "sha256": "153542438a33b8bc84d3691c010b5eb65b3b60bd6f377787af21278100ff849c"
     },
     {
       "path": "plugins/README.md",
-      "bytes": 5124,
-      "sha256": "fe8b6f4fe34eaafc0f2c5458cf9dea58a32e6aedd78449c3b81950403b300de9"
+      "bytes": 5620,
+      "sha256": "10e586c2aa75f504cadc43f07cb991bf222ab731cd10c5ba76d3575990f21fb7"
     },
     {
       "path": "plugins/scanner/cases.json",
@@ -145,23 +145,23 @@
     },
     {
       "path": "plugins/scanner/scan_probe.cpp",
-      "bytes": 3211,
-      "sha256": "e8ba44924205b808038d8e960e60b1d12229569dd30abc621dfb6c73c66b50e7"
+      "bytes": 3558,
+      "sha256": "43d0700da393cbf4ea0cb685d4460b6baa57ceb420986e49433a96a1aa111be7"
     },
     {
       "path": "plugins/time/probe/adi_time_probe.cpp",
-      "bytes": 17645,
-      "sha256": "c7daa175de1c31024684aa40616e9051600022611ed1e1b6957a5b3a08ae7b7e"
+      "bytes": 18227,
+      "sha256": "3f05791478b75da4e0f16081b0fc1e7715bd5092df6009719fcef0deefab09d8"
     },
     {
       "path": "plugins/time/probe/build.cmd",
       "bytes": 490,
-      "sha256": "bdbd630b9ece94a7e78584c366cedecef3b0bfa3672de208ad83b62a117a91fc"
+      "sha256": "3ce27811c64e7d0a13a33b3891145e544c62baf1e6b3a33d2eaa4323b251496c"
     },
     {
       "path": "plugins/time/probe/pcm_shared.h",
-      "bytes": 2699,
-      "sha256": "dc8e535852d4b60a7114a27370185fa265a9144b456a6d5ec8085ae6a850b1d8"
+      "bytes": 124,
+      "sha256": "b45a293e4a189f5d05c5d099aebb212f1e4096ef4afd1e5dcb6d94c2b0ea70f7"
     },
     {
       "path": "plugins/time/probe/README.md",
@@ -170,18 +170,18 @@
     },
     {
       "path": "plugins/time/probe/selftest.cpp",
-      "bytes": 9737,
-      "sha256": "b22105df60fae0b77442f230850c2bbb5a42305dab46bf648cb48fff717893c7"
+      "bytes": 10315,
+      "sha256": "6fe0ae0f7924ba4a9cebd313d88a3b30904700839ef66eb34543345b404a4e90"
     },
     {
       "path": "plugins/time/probe/time_shared.h",
-      "bytes": 2036,
-      "sha256": "d7348e664cd1d4ea1729fe02a0e4c37f42f3833c39c1e94af2bd5e32ddaf4e66"
+      "bytes": 2242,
+      "sha256": "99fcd2d00b34303b60560c5bc5c8ed1072aab52cb309628bf76840be297dc562"
     },
     {
       "path": "plugins/time/probe_shared.h",
-      "bytes": 2758,
-      "sha256": "7fd7d31f2acad5d6dbe0288fae384f52f1cce0592589af1f4ed33a03051d0c0a"
+      "bytes": 118,
+      "sha256": "aa101b0883a4a7b4815e78c3d96ba6af015e064bc997ec68aae2e03312c867b4"
     },
     {
       "path": "plugins/time/time_capture.py",
@@ -190,8 +190,8 @@
     },
     {
       "path": "plugins/vst3/adi_vst3_probe.cpp",
-      "bytes": 14557,
-      "sha256": "010f29c1ef6fa2cee97aad5fdff250c4fe6a68698441bce17ec76728d793b10a"
+      "bytes": 15036,
+      "sha256": "1d44bed5e216887656eb4f62e0288d6f8fdfb63f20d0daea2aedb8d8d58b3ed1"
     },
     {
       "path": "plugins/vst3/pcm_capture.py",
@@ -200,13 +200,13 @@
     },
     {
       "path": "plugins/vst3/pcm_shared.h",
-      "bytes": 2699,
-      "sha256": "dc8e535852d4b60a7114a27370185fa265a9144b456a6d5ec8085ae6a850b1d8"
+      "bytes": 2592,
+      "sha256": "37858d0ff62cf65f5a2e75e1dbfe2c356e13de739ee70cd4a0237a7232d5dde9"
     },
     {
       "path": "plugins/vst3/selftest.cpp",
-      "bytes": 10562,
-      "sha256": "ecdfdd14a85982ce28de08f342af1a5e9720d4d06397eb6fae1f0afa4f4725db"
+      "bytes": 10783,
+      "sha256": "124f525725c56d2e453853a5a2bb03b4855302f58c78c0b7e83d410f0fab6b1e"
     },
     {
       "path": "README.md",
@@ -405,13 +405,33 @@
     },
     {
       "path": "plugins/targets.cmake",
-      "bytes": 4712,
-      "sha256": "d702ea53d77ae2f5791b72fcf8ec73dd2feaca7dba20e13d4941df95de2022b6"
+      "bytes": 5885,
+      "sha256": "9b0f2412444ca308b56bac0cef50316ff56d813994b5f1b7f8b4be38a5001447"
     },
     {
       "path": "test_generated_assets.py",
       "bytes": 1351,
       "sha256": "f4289a36dfdac2d66fb1fcd7c6f0816bf12ddca964a2725625fcaff3ce06f518"
+    },
+    {
+      "path": "plugins/platform.h",
+      "bytes": 13330,
+      "sha256": "856153918aeceb9694ad7f649fea49540a37917543057d90e645addd93d38591"
+    },
+    {
+      "path": "plugins/platform_selftest.h",
+      "bytes": 2904,
+      "sha256": "90dd81f01d7759a08ccbfad1d4e7e47828e18a644802c52100342464ddd271ca"
+    },
+    {
+      "path": "plugins/Info.plist.in",
+      "bytes": 577,
+      "sha256": "6e1e1a60b2c472aa1ba9437ad7d1784d46d312e84055fa2a2a2daa1b7db4c653"
+    },
+    {
+      "path": "plugins/PORTABILITY.md",
+      "bytes": 4463,
+      "sha256": "71eb1ac8f27168651a4f21a0cf459d064c5f7f74443c0af5f6bb8d360e16df6f"
     }
   ]
 }
