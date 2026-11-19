@@ -5,6 +5,52 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-09, step 5: the Pd tier built with `PD_FLOATSIZE=64`, every suite passing (AR17); DEV-09 complete
+
+**`devices/pd-double` (`d4568d8e`), stacked on `devices/pd-hash-a`.**
+
+- `ADI_PD_FLOATSIZE_64` (off by default, in `pd_loader_fix.cmake`) puts
+  `PD_FLOATSIZE=64` PUBLIC on `libpd_static`, so everything that includes Pd agrees on
+  the layout.
+- **Built that way, 19 of 242 suites failed.** Every ADI external handed Pd's signal
+  vectors to its float core as `float*`, which at 64 are doubles. `FloatSignals`
+  (`src/adi/pd_builtins/float_signals.hpp`) gives an external float views of its
+  signals, converting around its perform routine only when `t_sample` is double (at 32 a
+  view is the signal itself and nothing is added); applied to all 18 externals, their
+  perform routines untouched. Plus one clamp of a `t_floatarg` against float literals.
+- The loader tests now also plant every name Pd itself tries: a 64-bit Pd looks for
+  deken names (`.windows-amd64-64.dll`) and never a bare `.dll`.
+- Native against real-Pd renders: at 64, AutoFilter and EQ Eight differ by **2^-25**
+  (one float ulp at 0.5; the canvas computes a parameter in double before the float core
+  rounds it). At 64 one float ulp at full scale is allowed; at 32 the check stays
+  bit-exact.
+- Result: **both configurations, MSVC `/W4 /WX` clean, CTest 242/242.** A new check pins
+  `sizeof(t_float)`/`sizeof(t_sample)` to `PD_FLOATSIZE`. Pd devices keep
+  `processesDouble()` false, which stays true of them (the engine adapter hands Pd float
+  buffers); a double path end to end would be its own change.
+- When #278 lands, OneShot's external (`oneshot_tilde.cpp`) takes `FloatSignals` the same
+  way; it is on DEV-21's list.
+
+**PR requested** — title "Pd: a PD_FLOATSIZE=64 build of the Pd tier, every suite passing
+in it (DEV-09 step 5, AR17)"; head `devices/pd-double` at `d4568d8e`; base
+`devices/pd-hash-a` until it lands, then `main`. Body: the commit message.
+**Request to win (CI is yours):** a CI leg configuring with `-DADI_PD_FLOATSIZE_64=ON`
+(one Linux leg would do), so the 64-bit Pd tier stays green.
+
+**DEV-09 as a whole**, five PRs in one stack, each naming its base:
+`devices/pd-teardown` → `pd-fence` → `pd-audio-thread` → `pd-hash-a` → `pd-double`.
+Its contract items: native loading closed at the source (step 2); quit, exit, open and
+path changes fenced (2); one trylock tick per Pd tick (3); printing through a queue (3);
+SPSC sends (3); arrays read without the lock-leaking path (3); the `#A` overlay (4); the
+latency binding unbound on close (1); a `PD_FLOATSIZE=64` build (5). Tests AR7, AR8, AR17,
+AR18 and #173's 40-cycle stress are in `test_pd_engine.cpp`. Not done, as the row defers
+them: `[pd~]` out-of-process patches; a file and network policy for shared patches.
+GCC and Clang have not compiled these branches here (no local GCC or Clang on this
+machine); CI's legs are the first to.
+
+**Next:** queue item 3, DEV-21, stacked on `devices/sampler`: OneShot's parameters to
+Live 12.4's own ranges, units and defaults, read from the default preset Live ships.
+
 ## 2026-11-19 — DEV-09, step 4: `#A` unbound when its owner is freed (AR18, PD2)
 
 **`devices/pd-hash-a` (`fcf0cc75`), stacked on `devices/pd-audio-thread`.**
