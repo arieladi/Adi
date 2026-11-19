@@ -17,6 +17,6 @@ inline void applyShaperTransport(dsp::AdiShaper& core, bool playing, double bpm,
         numerator <= 0 || denominator <= 0 || ticks < 0 || ticks >= textproj::kPPQ) return;
     core.tempo(bpm);
     const double beatStart = ((bar - 1.0) * numerator + beat - 1.0) * 4.0 / denominator;
-    core.sync(std::floor(beatStart) + ticks / textproj::kPPQ, playing);
+    core.sync(std::floor(beatStart) + ticks / textproj::kPPQ, playing, 64);
 }
 } // namespace adi::device

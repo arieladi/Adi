@@ -14,11 +14,28 @@ if(ADI_WITH_PD)
         # MSVC limits each source literal to 16 KiB. Split at complete Pd lines
         # so large canvases retain every byte, including UTF-8 and line feeds.
         string(LENGTH "${patch_text}" patch_size)
-        if(patch_size GREATER 16000)
-            string(REPLACE "\n" "\n)ADI_PD_CANON\"\nR\"ADI_PD_CANON(" patch_text "${patch_text}")
+        if(patch_size GREATER 64000)
+            # Adjacent literals still share MSVC's 65535-byte concatenation
+            # limit. Encode large normalized canvases as a single byte array.
+            string(HEX "${patch_text}" patch_hex)
+            string(REGEX MATCHALL ".." patch_bytes "${patch_hex}")
+            set(byte_initializers "")
+            foreach(value IN LISTS patch_bytes)
+                string(APPEND byte_initializers "'\\x${value}',")
+                if(value STREQUAL "0a")
+                    string(APPEND byte_initializers "\n")
+                endif()
+            endforeach()
+            string(APPEND ADI_NATIVE_PD_HEADER
+                "inline constexpr char ${identifier}Bytes[] = {\n${byte_initializers}};\n"
+                "inline constexpr std::string_view ${identifier}{${identifier}Bytes, sizeof(${identifier}Bytes)};\n")
+        else()
+            if(patch_size GREATER 16000)
+                string(REPLACE "\n" "\n)ADI_PD_CANON\"\nR\"ADI_PD_CANON(" patch_text "${patch_text}")
+            endif()
+            string(APPEND ADI_NATIVE_PD_HEADER
+                "inline constexpr std::string_view ${identifier} = R\"ADI_PD_CANON(${patch_text})ADI_PD_CANON\";\n")
         endif()
-        string(APPEND ADI_NATIVE_PD_HEADER
-            "inline constexpr std::string_view ${identifier} = R\"ADI_PD_CANON(${patch_text})ADI_PD_CANON\";\n")
         set(ADI_NATIVE_PD_HEADER "${ADI_NATIVE_PD_HEADER}" PARENT_SCOPE)
     endfunction()
     adi_embed_native_pd(adiShaper "pd/devices/ADi-SHAPER.pd")
