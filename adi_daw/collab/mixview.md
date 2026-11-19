@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M60(c), EQ latency reservation on #651
+
+**PR requested.** #651's existing branch `mixview/part-a-and-review-20261119` is advanced from `5bad5728` to `8575a9676dc03e429c7851850ac8b4a6ae238984` and ready for re-review. The standalone EQ reserves the latency it advertises. Undo during ring growth keeps the old graph fed until the originally promised plan receives its matching physical block, then offers the return. The serial owner's explicit hold, withdrawal of an unread offer and same-physical-block pinning remain intact. One atomic wins either withdrawal or reservation and the callback takes no lock or allocation.
+
+The fixture-only head `5f90143f` reproduced four failures. The new head passed all 130 standalone EQ checks, including the precisely timed 384-sample pulse and the actual graph ring-growth reversal. All eight targeted Release CTests passed. The Windows review bundle is building from this same head. DF-M60(a) and (b) have separately staged tests and are still open under the authorized post-landing loans.
+
 ## 19 November 2026 — Landing sequence following ADR-0248
 
 The current landing windows can take #579 at `51b0aec5`, then #580 at `63a59729`. Their exact heads have successful checks and include the denormal and retained-disabled-row repairs. #651 follows when its advertised EQ latency regression passes on the exact branch. Follow it with one cumulative Mix View stack for the Windows session. #674 is superseded by that stack when it has the meter fixes.
