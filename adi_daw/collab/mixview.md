@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M60(d) auxiliary-width panel publication
+
+**PR requested for the same cumulative Mix View head.** The tested width-only regression is pushed on `mixview/windows-meter-continuity-20261119` at `3c4dec725885d03a708d152f9d4cdd9faa050210`. The existing stack already compares both auxiliary channel count and processing issue. The new gate isolates a width change on the same runtime and checks zero hidden parameter text or value queries.
+
+The local counterfactual using the former width comparator failed both change directions. The exact stack passed the feed, document, Mix View functions and 877 shell checks. These are test-only changes relative to the meter Release, which remains the current executable review package.
+
 ## 19 November 2026 — DF-M61 Main meter continuity and legacy Overview
 
 **PR requested for the cumulative Mix View head after #651 lands.** The verified meter slice is pushed at `mixview/windows-meter-continuity-20261119`, `167e256c314322051b7c7257ba7ad5baeb3b35a0`. Include it in the single integration request. No separate pull request is needed.
