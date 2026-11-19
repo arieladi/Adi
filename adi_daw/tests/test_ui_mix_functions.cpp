@@ -479,21 +479,44 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
     check(!items[0].enabled && items[0].name.contains("Core pending") && items[1].enabled && !items[1].ticked &&
               items[4].ticked && !items[4].enabled,
           "menu distinguishes absent unavailable cores, addable core and already-present native function");
+    constexpr auto existingNotice = "Previous status";
+    constexpr auto staleNotice = "This Add menu is out of date. Reopen it and try again.";
     auto staleAction = items[1].action;
+    root.say(existingNotice);
     strip.cancelFunctionInteractions();
+    check(root.error() == existingNotice, "cancelling the Device View add menu alone leaves the Status Bar alone");
+    const auto cancelHead = History(document->store()).head();
     staleAction();
-    check(additions == 0, "cancelled add-menu action cannot insert a function later");
+    check(additions == 0 && root.error() == staleNotice && History(document->store()).head() == cancelHead,
+          "attempting the cancelled Device View choice explains the refusal with no insertion or undo step");
     items = menuItems(strip.functionMenu()); items[1].action();
     check(additions == 1 && added == mix::Function::Compressor, "current enabled menu action calls shared insertion once");
     staleAction = menuItems(strip.functionMenu())[1].action;
     strip.frame(3); strip.frame(2);
+    root.say(existingNotice);
     staleAction();
-    check(additions == 1, "leaving and returning to the channel cannot revive its prior add menu");
+    check(additions == 1 && root.error() == staleNotice && History(document->store()).head() == cancelHead,
+          "changing channels refuses the old Device View choice and says to reopen the menu");
     {
         root.chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack));
         root.setMixView(true, false);
         root.frame();
         auto &stack = root.mixViewPanel.stack;
+        root.arrangement.geometry.selection.track = 2;
+        root.publishSelection();
+        stack.frame(root.reader());
+        const auto toolbar = menuItems(stack.functionMenu());
+        check(toolbar.size() > 1 && toolbar[1].enabled && toolbar[1].action,
+              "the toolbar Add menu offers its current channel's Compressor");
+        const auto beforeCommit = root.current();
+        check(document->deviceAction("track.rename", {{"id", 2}, {"name", "Renamed while Add was open"}}) &&
+                  root.current() != beforeCommit,
+              "a real authored track commit invalidates the open toolbar menu");
+        const auto toolbarHead = History(document->store()).head();
+        root.say(existingNotice);
+        if (toolbar.size() > 1 && toolbar[1].action) toolbar[1].action();
+        check(additions == 1 && root.error() == staleNotice && History(document->store()).head() == toolbarHead,
+              "a stale toolbar choice only reports the refusal and leaves the latest commit and Undo intact");
         stack.frame(root.reader());
         rows::PluginRef reference;
         reference.format = "vst3";
@@ -530,9 +553,13 @@ void functions(AppCommands &commands, const std::filesystem::path &directory) {
             search->onReturnKey();
         }
         check(plugIns == 1, "Enter loads the matching plug-in on the captured row");
+        root.say(existingNotice);
+        if (search) search->onEscapeKey();
         stack.cancelInteractions();
-        if (plugin != result.end()) plugin->action();
-        check(plugIns == 1, "a stale picker action is refused after cancellation");
+        check(root.error() == existingNotice, "dismissing the row picker alone does not report a refusal");
+        if (search) search->onReturnKey();
+        check(plugIns == 1 && root.error() == staleNotice && History(document->store()).head() == toolbarHead,
+              "attempting a stale filtered row choice says to reopen and creates no edit or Undo step");
         root.catalogPlugins = {};
         root.loadPlugin = {};
         root.setMixView(false, false);

@@ -1862,18 +1862,20 @@ juce::PopupMenu DeviceChainStrip::functionMenuFor(std::int64_t track,
         juce::PopupMenu::Item item(label);
         item.isTicked = exists;
         item.isEnabled = !exists && availability.ready && addFunction && ownerCurrent && track > 0;
-        item.action = [safe, track, ownerCurrent, present, kind = info.kind] {
-            if (!safe || !ownerCurrent || !ownerCurrent() || !safe || !safe->addFunction ||
-                !safe->functionAvailability)
-                return;
-            const auto latest = safe->publication ? safe->publication() : safe->presented;
-            if (!safe || present(latest) || !ownerCurrent() || !safe)
-                return;
-            const auto availability = safe->functionAvailability(kind);
-            if (!safe || !availability.ready || !ownerCurrent() || !safe)
-                return;
-            safe->addFunction(kind, track);
-        };
+        if (item.isEnabled) {
+            item.action = [safe, track, ownerCurrent, present, kind = info.kind] {
+                const auto current = [&] {
+                    return safe && ownerCurrent() && safe && safe->addFunction && safe->functionAvailability;
+                };
+                const auto refuse = [&] { if (safe) safe->root.sayStaleAddMenu(); };
+                if (!current()) { refuse(); return; }
+                const auto latest = safe->publication ? safe->publication() : safe->presented;
+                if (!safe || present(latest) || !current()) { refuse(); return; }
+                const auto availability = safe->functionAvailability(kind);
+                if (!safe || !availability.ready || !current()) { refuse(); return; }
+                safe->addFunction(kind, track);
+            };
+        }
         menu.addItem(std::move(item));
     }
     return menu;

@@ -2269,6 +2269,9 @@ void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
 }
+void AdiRootComponent::sayStaleAddMenu() {
+    say("This Add menu is out of date. Reopen it and try again.");
+}
 juce::String AdiRootComponent::selectionText() const {
     // Live's Status Bar: the insert marker with its time, or the time selection.
     // Positions and lengths in the project's meters (#299).

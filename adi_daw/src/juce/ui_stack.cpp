@@ -859,13 +859,18 @@ juce::PopupMenu StackTab::rowAddMenu(stack::RowRef row) {
     menu.addSectionHeader("Mix View tools");
     const auto functions = root.devices.functionMenuFor(row.track, current);
     for (juce::PopupMenu::MenuItemIterator it(functions); it.next();) menu.addItem(it.getItem());
+    const auto chooseCurrent = [safe, current] {
+        if (current()) return true;
+        if (safe) safe->root.sayStaleAddMenu();
+        return false;
+    };
     menu.addSectionHeader("Devices");
     for (const auto &info : builtinCatalog()) {
         if (mix::functionForUid(info.uid)) continue;
         juce::PopupMenu::Item item(juce::String(std::string(info.name)));
         item.isEnabled = info.available && static_cast<bool>(root.loadBuiltin);
-        item.action = [safe, row, current, uid = std::string(info.uid)] {
-            if (current()) safe->root.insertDevice(uid, row.track, {});
+        if (item.isEnabled) item.action = [safe, row, chooseCurrent, uid = std::string(info.uid)] {
+            if (chooseCurrent()) safe->root.insertDevice(uid, row.track, {});
         };
         menu.addItem(std::move(item));
     }
@@ -880,11 +885,15 @@ juce::PopupMenu StackTab::rowAddMenu(stack::RowRef row) {
             !seen.emplace(plugin.format,plugin.uid,plugin.shellId).second) continue;
         juce::PopupMenu::Item item(juce::String(plugin.name) + " (" + juce::String(plugin.format).toUpperCase() + ")");
         item.isEnabled = static_cast<bool>(root.loadPlugin);
-        item.action = [safe, row, current, plugin] { if (current() && safe->root.loadPlugin) safe->root.loadPlugin(plugin,row.track); };
+        if (item.isEnabled) item.action = [safe, row, chooseCurrent, plugin] {
+            if (chooseCurrent() && safe->root.loadPlugin) safe->root.loadPlugin(plugin, row.track);
+        };
         menu.addItem(std::move(item));
     }
     if (root.scanPlugins)
-        menu.addItem("Scan installed plug-ins...", [safe, current] { if (current() && safe->root.scanPlugins) safe->root.scanPlugins(); });
+        menu.addItem("Scan installed plug-ins...", [safe, chooseCurrent] {
+            if (chooseCurrent() && safe->root.scanPlugins) safe->root.scanPlugins();
+        });
     return menu;
 }
 void StackTab::showRowAddMenu(stack::RowRef row, juce::Component& anchor) {
