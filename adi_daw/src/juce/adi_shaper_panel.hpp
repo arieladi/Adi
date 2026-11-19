@@ -21,6 +21,7 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     struct Point {
         float x{}, y{}, bend{};
         Shape shape = Shape::Line;
+        bool operator==(const Point &) const = default;
     };
     struct Change {
         int id{};
@@ -64,7 +65,7 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
 
   private:
     enum class Tool { Edit, Draw };
-    enum class Drag { None, Control, Node, Stroke, Bend, Level };
+    enum class Drag { None, Control, Node, Stroke, Bend, Level, Marquee, Group };
     using Rect = juce::Rectangle<float>;
     using Pos = juce::Point<float>;
     struct Control {
@@ -99,11 +100,16 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     Pos toPlot(Pos) const;
     Rect graph() const;
     Pos logical(Pos) const;
-    void updatePointer(Pos);
+    void updatePointer(Pos, juce::ModifierKeys);
     void invalidateDrawing();
     void drawStatic(juce::Graphics &);
     void drawLive(juce::Graphics &);
     void drawContour(juce::Graphics &) const;
+    Rect groupBounds(const std::vector<Point> &, std::span<const std::size_t>) const;
+    bool startGroup(Pos);
+    void transformGroup(Pos, juce::ModifierKeys);
+    void drawSelection(juce::Graphics &) const;
+    void selectInMarquee();
     void prepareDrawing(float scale);
     static std::vector<float> sampleCorners(const std::vector<Point> &, int columns);
     juce::Image background_, contour_;
@@ -119,6 +125,11 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     Tool tool_ = Tool::Edit;
     Shape segmentShape_ = Shape::Line;
     std::vector<Point> original_, working_;
+    std::vector<std::size_t> group_, initialGroup_;
+    std::vector<Point> selectedCurve_;
+    std::size_t groupPointCount_ = 0;
+    int handleX_ = 0, handleY_ = 0, initialPrimary_ = -1;
+    bool pendingWeightClick_ = false;
     mutable std::vector<Point> cachedPoints_;
     mutable bool pointsDirty_ = true;
     std::vector<Change> originalParams_, edits_;

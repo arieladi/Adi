@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <numeric>
 
 namespace adi::ui {
 namespace {
@@ -75,6 +76,7 @@ AdiShaperPanel::~AdiShaperPanel() { cancel(); }
 void AdiShaperPanel::bind(Binding next) {
     cancel();
     binding_ = std::move(next);
+    group_.clear();
     tabs_.fill(false);
     key_ = {};
     spectrum_.clear();
@@ -117,6 +119,10 @@ void AdiShaperPanel::setPresetName(juce::String name) {
 }
 void AdiShaperPanel::refresh() {
     pointsDirty_ = true;
+    if (drag_ == Drag::None && !group_.empty() && selectedCurve_ != points()) {
+        group_.clear();
+        selected_ = -1;
+    }
     invalidateDrawing();
 }
 void AdiShaperPanel::setTrace(Trace input, Trace output, float left, float right, float phase) {
@@ -138,6 +144,7 @@ void AdiShaperPanel::select(Key k) {
         k.lane = 0;
     k.lane = std::clamp(k.lane, 0, 1);
     key_ = k;
+    group_.clear();
     pointsDirty_ = true;
     tabs_[static_cast<std::size_t>(k.stage)] = true;
     selected_ = -1;
@@ -184,7 +191,8 @@ double AdiShaperPanel::read(int id) const {
 }
 bool AdiShaperPanel::freeCurve() const { return binding_.wave && binding_.editWave; }
 const std::vector<Panel::Point> &AdiShaperPanel::points() const {
-    if (drag_ == Drag::Node || drag_ == Drag::Stroke || drag_ == Drag::Bend || drag_ == Drag::Level)
+    if (drag_ == Drag::Node || drag_ == Drag::Stroke || drag_ == Drag::Bend || drag_ == Drag::Level ||
+        drag_ == Drag::Group)
         return working_;
     if (!pointsDirty_)
         return cachedPoints_;
@@ -368,6 +376,203 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
         juce::AffineTransform::scale(static_cast<float>(getWidth()) / background_.getWidth(),
                                      static_cast<float>(getHeight()) / background_.getHeight());
     g.drawImage(contour_, contourPixels_.toFloat().transformedBy(toPanel));
+    if (drag_ == Drag::Marquee || !group_.empty()) {
+        g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
+        drawSelection(g);
+    }
+}
+
+AdiShaperPanel::Rect AdiShaperPanel::groupBounds(const std::vector<Point> &nodes,
+                                                 std::span<const std::size_t> group) const {
+    if (group.empty() || nodes.size() != groupPointCount_)
+        return {};
+    const auto plot = graph();
+    float l = 1, r = 0, b = 1, t = 0;
+    for (const auto i : group) {
+        const auto &point = nodes[i];
+        l = std::min(l, point.x);
+        r = std::max(r, point.x);
+        b = std::min(b, point.y);
+        t = std::max(t, point.y);
+    }
+    return Rect(plot.getX() + l * plot.getWidth(), plot.getBottom() - t * plot.getHeight(),
+                (r - l) * plot.getWidth(), (t - b) * plot.getHeight())
+        .expanded(7.5f);
+}
+
+void AdiShaperPanel::selectInMarquee() {
+    const auto bounds = Rect(down_, previous_);
+    const auto plot = graph();
+    const auto &nodes = points();
+    group_.clear();
+    groupPointCount_ = nodes.size();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const Pos p{plot.getX() + nodes[i].x * plot.getWidth(),
+                    plot.getBottom() - nodes[i].y * plot.getHeight()};
+        if (bounds.contains(p))
+            group_.push_back(i);
+    }
+    selected_ = group_.empty() ? -1 : static_cast<int>(group_.front());
+    if (group_.size() < 2)
+        group_.clear();
+    else
+        selectedCurve_ = nodes;
+}
+
+namespace {
+Pos groupHandle(Rect box, int x, int y) {
+    return {box.getCentreX() + .5f * x * box.getWidth(), box.getCentreY() + .5f * y * box.getHeight()};
+}
+void shearSelection(std::vector<Panel::Point> &nodes, std::span<const std::size_t> indices, bool horizontal,
+                    float anchor, float edge, float travel) {
+    if (std::abs(edge - anchor) < 1.e-6f)
+        return;
+    auto offset = [&](const Panel::Point &point) {
+        return travel * ((horizontal ? point.y : point.x) - anchor) / (edge - anchor);
+    };
+    float available = 1.f;
+    for (const auto i : indices) {
+        const float delta = offset(nodes[i]);
+        const float value = horizontal ? nodes[i].x : nodes[i].y;
+        if (delta > 0)
+            available = std::min(available, (1.f - value) / delta);
+        else if (delta < 0)
+            available = std::min(available, -value / delta);
+    }
+    for (const auto i : indices) {
+        float &value = horizontal ? nodes[i].x : nodes[i].y;
+        value = clamp01(value + available * offset(nodes[i]));
+    }
+}
+} // namespace
+
+void AdiShaperPanel::drawSelection(juce::Graphics &g) const {
+    const bool selecting = drag_ == Drag::Marquee;
+    const auto bounds = selecting ? Rect(down_, previous_) : groupBounds(points(), group_);
+    if (bounds.isEmpty())
+        return;
+    auto accent = colour(key_.stage);
+    g.setColour(accent.withAlpha(.095f));
+    g.fillRect(bounds);
+    g.setColour(accent.withAlpha(.62f));
+    g.drawRect(bounds, 1.f);
+    if (selecting)
+        return;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if (x == 0 && y == 0)
+                continue;
+            const auto p = groupHandle(bounds, x, y);
+            const Rect handle(p.x - 3, p.y - 3, 6, 6);
+            g.setColour(ink);
+            g.fillRect(handle);
+            g.setColour(rail);
+            g.drawRect(handle, .75f);
+        }
+    }
+}
+
+bool AdiShaperPanel::startGroup(Pos p) {
+    const auto bounds = groupBounds(points(), group_);
+    if (bounds.isEmpty() || !bounds.expanded(5).contains(p))
+        return false;
+    handleX_ = 0;
+    handleY_ = 0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            if ((x || y) && p.getDistanceFrom(groupHandle(bounds, x, y)) <= 5.f) {
+                handleX_ = x;
+                handleY_ = y;
+            }
+        }
+    }
+    if (!handleX_ && !handleY_ && !bounds.contains(p))
+        return false;
+    initialGroup_ = group_;
+    initialPrimary_ = selected_;
+    startNodes(Drag::Group);
+    return true;
+}
+
+void AdiShaperPanel::transformGroup(Pos p, juce::ModifierKeys mods) {
+    const auto plot = graph();
+    const auto originalBounds = groupBounds(original_, initialGroup_).reduced(7.5f);
+    const float left = clamp01((originalBounds.getX() - plot.getX()) / plot.getWidth());
+    const float right = clamp01((originalBounds.getRight() - plot.getX()) / plot.getWidth());
+    const float top = clamp01((plot.getBottom() - originalBounds.getY()) / plot.getHeight());
+    const float bottom = clamp01((plot.getBottom() - originalBounds.getBottom()) / plot.getHeight());
+    float dx = (p.x - down_.x) / plot.getWidth();
+    float dy = (down_.y - p.y) / plot.getHeight();
+    const bool translating = !handleX_ && !handleY_;
+    if (translating && mods.isAltDown()) {
+        if (mods.isCtrlDown())
+            dy = 0;
+        else
+            dx = 0;
+    }
+    if ((snap_ || mods.isShiftDown()) && dx != 0) {
+        const float edge = handleX_ > 0 ? right : left;
+        dx = std::round((edge + dx) * 32.f) / 32.f - edge;
+    }
+    auto v = original_;
+    if (translating) {
+        dx = std::clamp(dx, -left, 1.f - right);
+        dy = std::clamp(dy, -bottom, 1.f - top);
+    }
+    const bool centered = mods.isAltDown();
+    auto stretch = [centered](float value, float fixed, float moving, float delta) {
+        if (std::abs(moving - fixed) <= 1.e-6f)
+            return value;
+        if (centered) {
+            const float center = .5f * (moving + fixed);
+            const float radius = moving - center;
+            const float maximum = std::min(center, 1.f - center) / std::abs(radius);
+            const float scale = std::clamp(1.f + delta / radius, 0.f, maximum);
+            return clamp01(center + (value - center) * scale);
+        }
+        const float edge = moving > fixed ? std::clamp(moving + delta, fixed, 1.f)
+                                          : std::clamp(moving + delta, 0.f, fixed);
+        return fixed + (value - fixed) * ((edge - fixed) / (moving - fixed));
+    };
+    const bool skew = mods.isCtrlDown() && ((handleX_ == 0) != (handleY_ == 0));
+    if (skew) {
+        const bool horizontal = handleY_ != 0;
+        const float fixed = horizontal ? (handleY_ < 0 ? bottom : top) : (handleX_ < 0 ? right : left);
+        const float edge = horizontal ? (handleY_ < 0 ? top : bottom) : (handleX_ < 0 ? left : right);
+        shearSelection(v, initialGroup_, horizontal, centered ? .5f * (fixed + edge) : fixed, edge,
+                       horizontal ? dx : dy);
+    } else {
+        for (const auto i : initialGroup_) {
+            auto &node = v[i];
+            if (translating) {
+                node.x = clamp01(node.x + dx);
+                node.y = clamp01(node.y + dy);
+            } else {
+                if (handleX_)
+                    node.x = stretch(node.x, handleX_ < 0 ? right : left, handleX_ < 0 ? left : right, dx);
+                if (handleY_)
+                    node.y = stretch(node.y, handleY_ < 0 ? bottom : top, handleY_ < 0 ? top : bottom, dy);
+            }
+        }
+    }
+    // Point identities follow the original gesture even when a group passes another point.
+    group_ = initialGroup_;
+    selected_ = initialPrimary_;
+    if (!std::is_sorted(v.begin(), v.end(), [](const Point &a, const Point &b) { return a.x < b.x; })) {
+        std::vector<std::size_t> order(v.size());
+        std::iota(order.begin(), order.end(), std::size_t{});
+        std::stable_sort(order.begin(), order.end(), [&](auto a, auto b) { return v[a].x < v[b].x; });
+        const auto unsorted = v;
+        group_.clear();
+        for (std::size_t i = 0; i < order.size(); ++i) {
+            v[i] = unsorted[order[i]];
+            if (static_cast<int>(order[i]) == initialPrimary_)
+                selected_ = static_cast<int>(i);
+            if (std::binary_search(initialGroup_.begin(), initialGroup_.end(), order[i]))
+                group_.push_back(i);
+        }
+    }
+    updateNodes(std::move(v));
 }
 void AdiShaperPanel::prepareDrawing(float density) {
     const int w = std::max(1, juce::roundToInt(getWidth() * density));
@@ -808,16 +1013,44 @@ void AdiShaperPanel::finish(Phase phase) {
     const auto old = drag_;
     if (old == Drag::None)
         return;
+    pendingWeightClick_ = false;
     drag_ = Drag::None;
-    if (old != Drag::Control && flexible_)
-        binding_.editWave(key_, phase, phase == Phase::Cancel ? original_ : working_);
-    else
-        send(phase, phase == Phase::Cancel ? originalParams_ : edits_);
+    if (old == Drag::Marquee) {
+        if (phase == Phase::End)
+            selectInMarquee();
+        invalidateDrawing();
+        return;
+    }
+    if (old != Drag::Control && working_ == original_)
+        phase = Phase::Cancel;
+    if (old == Drag::Group && phase == Phase::Cancel) {
+        group_ = initialGroup_;
+        selected_ = initialPrimary_;
+    }
+    const bool accepted = old != Drag::Control && flexible_
+                              ? binding_.editWave(key_, phase, phase == Phase::Cancel ? original_ : working_)
+                              : send(phase, phase == Phase::Cancel ? originalParams_ : edits_);
+    if (!accepted) {
+        group_.clear();
+        selected_ = -1;
+    }
     activeId_ = 0;
     original_.clear();
     working_.clear();
     originalParams_.clear();
     edits_.clear();
+    if ((old == Drag::Group || old == Drag::Node) && !group_.empty()) {
+        // Snapshot the actual normalized state. Undo or an outside edit may restore a different point
+        // order.
+        pointsDirty_ = true;
+        const auto &restored = points();
+        if (groupPointCount_ == restored.size())
+            selectedCurve_ = restored;
+        else {
+            group_.clear();
+            selected_ = -1;
+        }
+    }
     refresh();
 }
 void AdiShaperPanel::cancel() { finish(Phase::Cancel); }
@@ -895,7 +1128,16 @@ void AdiShaperPanel::controlDrag(Pos p) {
         cancel();
     invalidateDrawing();
 }
-void AdiShaperPanel::updatePointer(Pos p) {
+void AdiShaperPanel::updatePointer(Pos p, juce::ModifierKeys mods) {
+    if (drag_ == Drag::Marquee) {
+        previous_ = p;
+        repaint();
+        return;
+    }
+    if (drag_ == Drag::Group) {
+        transformGroup(p, mods);
+        return;
+    }
     if (drag_ == Drag::Control) {
         controlDrag(p);
         return;
@@ -933,7 +1175,7 @@ void AdiShaperPanel::updatePointer(Pos p) {
     auto q = toPlot(p);
     v[i].y = q.y;
     if (flexible_) {
-        float x = snap_ ? std::round(q.x * 32.f) / 32.f : q.x;
+        float x = snap_ || mods.isShiftDown() ? std::round(q.x * 32.f) / 32.f : q.x;
         v[i].x = std::clamp(x, i ? v[i - 1].x : 0.f, (i + 1 < v.size()) ? v[i + 1].x : 1.f);
     }
     updateNodes(std::move(v));
@@ -1035,6 +1277,10 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
     const auto p = logical(e.position);
     previous_ = down_ = p;
+    if (tool_ == Tool::Edit && e.getNumberOfClicks() == 1 && freeCurve() && !group_.empty() &&
+        startGroup(p))
+        return;
+    group_.clear();
     if (inside({373, 6, 190, 30}, p) && binding_.choosePreset) {
         binding_.choosePreset();
         return;
@@ -1141,21 +1387,35 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     selected_ = nearestNode(p, freeCurve());
-    if (selected_ >= 0 && freeCurve() && e.mods.isShiftDown()) {
-        const auto &current = points()[static_cast<std::size_t>(selected_)];
-        const int weight = current.shape == Shape::SourceCorner ? juce::roundToInt(current.bend) : -1;
-        chooseShape(Shape::SourceCorner, static_cast<float>(weight >= 1 ? -1 : weight + 1));
-        return;
-    }
-    if (selected_ >= 0)
+    if (selected_ >= 0) {
         startNodes(Drag::Node);
+        pendingWeightClick_ = drag_ == Drag::Node && freeCurve() && e.mods.isShiftDown();
+    } else if (freeCurve())
+        drag_ = Drag::Marquee;
     invalidateDrawing();
 }
 void AdiShaperPanel::mouseDrag(const juce::MouseEvent &e) {
+    if (pendingWeightClick_) {
+        if (down_.getDistanceFrom(logical(e.position)) < 3.f)
+            return;
+        pendingWeightClick_ = false;
+    }
     if (drag_ != Drag::None)
-        updatePointer(logical(e.position));
+        updatePointer(logical(e.position), e.mods);
 }
-void AdiShaperPanel::mouseUp(const juce::MouseEvent &) { finish(Phase::End); }
+void AdiShaperPanel::mouseUp(const juce::MouseEvent &e) {
+    if (pendingWeightClick_ && drag_ == Drag::Node) {
+        auto wave = working_;
+        auto &point = wave[static_cast<std::size_t>(selected_)];
+        const int weight = point.shape == Shape::SourceCorner ? juce::roundToInt(point.bend) : -1;
+        point.shape = segmentShape_ = Shape::SourceCorner;
+        point.bend = cornerWeight_ = static_cast<float>(weight >= 1 ? -1 : weight + 1);
+        updateNodes(std::move(wave));
+    }
+    if (drag_ == Drag::Marquee)
+        previous_ = logical(e.position);
+    finish(Phase::End);
+}
 void AdiShaperPanel::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto p = logical(e.position);
     if (!freeCurve() || tool_ != Tool::Edit || !graph().contains(p))

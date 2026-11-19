@@ -21,6 +21,7 @@ struct Fixture {
     std::vector<Panel::Point> wave, before;
     Core dsp;
     int starts = 0, changes = 0, ends = 0, cancels = 0, presets = 0;
+    bool rejectEnd = false;
     Fixture() {
         values[1] = 1;
         values[3] = 1. / 3;
@@ -77,6 +78,10 @@ struct Fixture {
                     ++cancels;
                     wave = before;
                 }
+                if (p == Panel::Phase::End && rejectEnd) {
+                    wave = before;
+                    return false;
+                }
                 if (p == Panel::Phase::End)
                     ++ends;
                 return true;
@@ -85,14 +90,16 @@ struct Fixture {
         return b;
     }
 };
-juce::MouseEvent event(Panel &p, float x, float y, int clicks = 1, bool alt = false, bool shift = false) {
+juce::MouseEvent event(Panel &p, float x, float y, int clicks = 1, bool alt = false, bool shift = false,
+                       bool ctrl = false) {
     juce::Point<float> pos{x, y};
     auto tick = juce::Time::getCurrentTime();
     return {juce::Desktop::getInstance().getMainMouseSource(),
             pos,
             juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier |
                                (alt ? juce::ModifierKeys::altModifier : 0) |
-                               (shift ? juce::ModifierKeys::shiftModifier : 0)),
+                               (shift ? juce::ModifierKeys::shiftModifier : 0) |
+                               (ctrl ? juce::ModifierKeys::ctrlModifier : 0)),
             0,
             0,
             0,
@@ -196,8 +203,119 @@ void gestures() {
     const int changes = f.ends;
     p.mouseDown(event(p, plot.getX() + corner.x * plot.getWidth(),
                       plot.getBottom() - corner.y * plot.getHeight(), 1, false, true));
+    p.mouseUp(event(p, plot.getX() + corner.x * plot.getWidth(),
+                    plot.getBottom() - corner.y * plot.getHeight(), 1, false, true));
     expect(f.ends == changes + 1 && f.wave.front().bend == -1,
            "shift-click cycles soft to hard in one gesture");
+    p.mouseDown(event(p, 22, 316)); // persistent snap off, only Shift can snap this drag
+    p.mouseDown(event(p, plot.getX() + corner.x * plot.getWidth(),
+                      plot.getBottom() - corner.y * plot.getHeight(), 1, false, true));
+    p.mouseDrag(event(p, plot.getX() + .041f * plot.getWidth(), plot.getCentreY(), 1, false, true));
+    p.mouseUp(event(p, plot.getX() + .041f * plot.getWidth(), plot.getCentreY(), 1, false, true));
+    expect(f.ends == changes + 2 && f.wave.front().bend == -1 && f.wave.front().x == 1.f / 32,
+           "holding shift from pointer down snaps the drag and preserves the weight");
+}
+void groupEdits() {
+    Fixture f;
+    Panel p;
+    p.setSize(1000, 600);
+    using Shape = Panel::Shape;
+    f.wave = {{0, .22f, -1, Shape::SourceCorner},
+              {1531.f / 8192, .8f, 1, Shape::SourceCorner},
+              {5099.f / 8192, .05f, 0, Shape::SourceCorner},
+              {6878.f / 8192, .65f, 1, Shape::SourceCorner}};
+    p.bind(f.binding(true));
+    p.mouseDown(event(p, 22, 316)); // turn off snapping
+    const auto plot = p.curveBounds();
+    auto at = [&](float x, float y, bool alt = false, bool ctrl = false) {
+        return event(p, plot.getX() + x * plot.getWidth(), plot.getBottom() - y * plot.getHeight(), 1, alt,
+                     false, ctrl);
+    };
+    p.mouseDown(at(.58f, .7f));
+    p.mouseDrag(at(.89f, .02f));
+    p.mouseUp(at(.89f, .02f));
+    expect(f.starts == 0 && f.changes == 0 && f.ends == 0 && f.wave.size() == 4,
+           "selecting two points adds no point or project edit");
+    p.mouseDown(at(.73f, .4f));
+    p.mouseDrag(at(.73f - 1523.f / 8192, .82f));
+    auto near = [](float a, float b) { return std::abs(a - b) < .000002f; };
+    expect(f.starts == 1 && f.changes == 1 && f.ends == 0 && near(f.wave[2].x, 3576.f / 8192) &&
+               near(f.wave[2].y, .40f) && near(f.wave[3].x, 5355.f / 8192) && near(f.wave[3].y, 1.f),
+           "both selected points move live and reach the upper boundary together");
+    p.mouseUp(at(.73f - 1523.f / 8192, .82f));
+    expect(f.ends == 1 && f.wave[0].y == .22f && f.wave[1].x == 1531.f / 8192 && f.wave[2].bend == 0 &&
+               f.wave[3].bend == 1,
+           "group release preserves neighbours and weights in one edit");
+    const auto moved = f.wave;
+    const float rightHandle = moved[3].x + 7.5f / plot.getWidth();
+    p.mouseDown(at(rightHandle, .7f));
+    p.mouseDrag(at(rightHandle + .12f, .7f));
+    expect(f.starts == 2 && f.changes == 2 && near(f.wave[2].x, moved[2].x) &&
+               near(f.wave[3].x, moved[3].x + .12f) && near(f.wave[2].y, moved[2].y),
+           "horizontal resize holds the opposite edge and vertical values fixed");
+    p.cancel();
+    expect(f.ends == 1 && f.cancels == 1 && near(f.wave[3].x, moved[3].x),
+           "cancel restores the whole group");
+    p.mouseDown(at(rightHandle, .7f, true));
+    p.mouseDrag(at(rightHandle + .07f, .7f, true));
+    expect(near(f.wave[2].x, moved[2].x - .07f) && near(f.wave[3].x, moved[3].x + .07f),
+           "alternate stretch expands about the midpoint");
+    p.cancel();
+    p.mouseDown(at(rightHandle, .7f, false, true));
+    p.mouseDrag(at(rightHandle, .6f, false, true));
+    expect(near(f.wave[2].y, moved[2].y) && near(f.wave[3].y, .90f) && f.wave[3].x == moved[3].x,
+           "side skew holds the opposite edge fixed");
+    p.cancel();
+    p.mouseDown(at(rightHandle, .7f, true, true));
+    p.mouseDrag(at(rightHandle, .6f, true, true));
+    expect(near(f.wave[2].y, .50f) && near(f.wave[3].y, .90f),
+           "centered skew moves the edges in opposite directions");
+    p.cancel();
+    const auto beforeCross = f.cancels;
+    p.mouseDown(at(.55f, .7f));
+    p.mouseDrag(at(.14f, .7f));
+    expect(std::is_sorted(f.wave.begin(), f.wave.end(),
+                          [](const auto &a, const auto &b) { return a.x < b.x; }) &&
+               near(f.wave[2].x, moved[1].x),
+           "crossing an unselected point preserves its position and the curve order");
+    p.mouseDrag(at(.55f, .7f));
+    p.mouseUp(at(.55f, .7f));
+    expect(near(f.wave[2].x, moved[2].x) && f.wave[2].bend == 0 && f.ends == 1 &&
+               f.cancels == beforeCross + 1,
+           "a group returned across a crossing keeps its points and adds no edit");
+    p.mouseDown(at(.55f, .7f));
+    p.mouseDrag(at(.14f, .7f));
+    p.mouseUp(at(.14f, .7f));
+    p.refresh();
+    expect(p.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && p.keyPressed(juce::KeyPress(juce::KeyPress::upKey)),
+           "refreshing an unchanged curve and nudging it twice preserve the active point");
+    expect(near(f.wave[1].y, moved[2].y + .02f) && f.wave[2].y == moved[1].y,
+           "the primary point follows a committed crossing for keyboard edits");
+    f.wave = moved;
+    p.refresh();
+    expect(!p.keyPressed(juce::KeyPress(juce::KeyPress::upKey)),
+           "external recall clears an obsolete point selection");
+    p.mouseDown(at(.40f, .36f));
+    p.mouseDrag(at(.70f, 1.04f));
+    p.mouseUp(at(.70f, 1.04f));
+    p.mouseDown(at(.55f, .7f));
+    p.mouseDrag(at(.14f, .7f));
+    f.rejectEnd = true;
+    p.mouseUp(at(.14f, .7f));
+    expect(f.wave == moved && !p.keyPressed(juce::KeyPress(juce::KeyPress::upKey)),
+           "rejected group commit discards obsolete selection indices after rollback");
+    f.rejectEnd = false;
+
+    f.wave.clear();
+    p.bind(f.binding(true));
+    const auto previousEnds = f.ends, previousCancels = f.cancels;
+    p.mouseDown(at(.45f, .8f));
+    p.mouseDrag(at(.90f, 1.04f));
+    p.mouseUp(at(.90f, 1.04f));
+    p.mouseDown(at(.69f, 1.f));
+    p.mouseUp(at(.69f, 1.f));
+    expect(f.wave.empty() && f.ends == previousEnds && f.cancels == previousCancels + 1,
+           "clicking a selected legacy curve preserves its compact representation");
 }
 void cornerLevel() {
     Fixture f;
@@ -436,6 +554,7 @@ void capture(const char *program, const char *destination, bool time, const char
 int main(int argc, char **argv) try {
     juce::ScopedJuceInitialiser_GUI gui;
     gestures();
+    groupEdits();
     cornerLevel();
     syncDivisions();
     cachedDrawing();
