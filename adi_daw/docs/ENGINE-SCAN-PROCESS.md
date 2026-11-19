@@ -54,5 +54,39 @@ project opcode, schema or blob format changes here.
 hang, flood, binary/large output, stderr, exact argument transport, Unicode
 executable paths, closed stdio, cancellation, timeout/normal-exit descendants,
 repeated/concurrent launches and callback refusal. It checks direct POSIX child
-reaping (Windows checks repeated-run handle balance). Linux GCC/Clang evidence
-does not claim Windows/macOS execution; those legs remain win/CI's gate.
+reaping (Windows checks repeated-run handle balance). Each native test run
+validates only its execution platform; Windows, Linux and macOS have independent
+execution gates.
+
+## Incremental binary stdout
+
+`runProcessStream` reuses the same executable/argument validation, null
+stdin/stderr, process ownership and cleanup. Existing `runProcess` options,
+buffered results and scanner callers are unchanged. The streamed API requires a
+positive `uint64_t` total-byte budget independent of the scanner's 8 MiB string
+cap. It retains only a fixed read buffer, delivering nonempty binary spans
+synchronously on the calling worker. Spans expire when the consumer returns;
+their boundaries do not identify protocol records or audio frames.
+
+The consumer returns `true` to acknowledge a chunk. `false`, a standard
+exception or a nonstandard exception yields `ConsumerFailed`; the runner
+terminates its child group/job and waits for the leader before returning. An
+entire chunk that would cross the budget is refused before consumer entry.
+`bytesDelivered` counts acknowledged whole chunks, not side effects made by a
+consumer that later refused or threw. Bytes remain provisional after every
+failure, including a later child crash/nonzero exit. The caller must discard or
+roll back its partial output; only `succeeded()` establishes a complete stream.
+
+Cancellation and deadline are checked before and after each consumer call as
+well as while waiting. The consumer must be bounded and cooperative: a blocked
+consumer cannot be interrupted by this synchronous API. The existing
+1–300,000 ms timeout bound remains; teardown itself is not a hard deadline.
+There is no asynchronous consumer, stderr capture, PCM framing, decoder launch,
+cache admission or output publication in this primitive.
+
+The owned-child tests add a handshake proving delivery before child exit,
+12 MiB plus 137 bytes with incremental byte verification, exact/crossing bounds,
+continuous output, cancellation during consumer work, consumer failure and
+exceptions, crash/nonzero exit after binary bytes, inherited writers and
+concurrent independent streams. Windows tests also compare handle counts after
+the successful and failing streamed paths.
