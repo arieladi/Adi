@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E49 gesture capture fault fence
+
+**PR requested** · `engine/df-e49-gesture-fault-fence` · `b57638c833cd42b7b54c0eff998d80b1ed48ae7b`
+**Title** — Keep refaults latched through gesture fence recovery.
+
+Producer faults now publish the latch and recovery interruption in the same atomic word. Recovery keeps the latch set while it checks ownership and clears it with compare-and-swap only if the scan was uninterrupted. A producer still acknowledges its own fault. The drain comment now explains why open gestures can reapply from the current Store revision when individual commit notices are discarded.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Gesture 780, gesture graph 125, gesture playback 569, History Move 49, param edits 377 and UI param capture 61 all pass in both. The gesture suite races independent producers for 200,000 rounds and checks that the fault survives until its own producer acknowledges it. A separate ordered probe paused a fault across the scan and the atomic clear. The same interleaving admitted navigation on previous main and kept it closed on the candidate. `git diff --check` passes.
+
+**Dependency** — Current main. Land before DEV-23 hosted plug-ins run on graph workers.
+
 ## 2026-11-19 — DF-E48(a,b) media and forwarded MIDI used by Freeze
 
 **PR requested** · `engine/df-e48-freeze-media-scope` · `c5f4ae0c164eeeea0ad78af70f2c83c1b21969d9`
