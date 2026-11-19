@@ -1457,6 +1457,85 @@ void testManyEnginesOpenedAndClosedLeaveNothingBehind() {
 #endif
 }
 
+// DEV-09 AR7 helpers: open a patch through the engine and return its console.
+std::string consoleOf(const TempDir& dir, const char* file, bool* opened = nullptr) {
+    LibPdEngine engine(dir.str(), file, 2, 2);
+    PdLatencyReceiver latency;
+    std::string error;
+    const bool ok = engine.open(latency, error);
+    if (opened != nullptr) *opened = ok;
+    std::string joined;
+    for (const auto& line : engine.consoleLines()) joined += line + "\n";
+    return joined + error;
+}
+
+// The loader refused AT THE SOURCE (DEV-09 AR7). The engine's directory checks
+// see only the patch's own folder and its search paths; an object named by an
+// absolute path, by a ../ path, or created by a message at run time reaches
+// Pd's loader with none of them. Each planted file is not a library: before the
+// fence, Pd handed it to LoadLibrary/dlopen and printed the system's refusal
+// with the file's name; now it is refused by name before any load is tried.
+void testNativeCodeIsRefusedWhateverNamesIt() {
+    section("DEV-09 AR7 -- a planted library never loads, however the patch names it");
+    [[maybe_unused]] const ErrorModeGuard quietLoaderFailures;   // the plant's LoadLibrary
+    TempDir lib("planted-lib");
+    for (const auto& ext : device::pdLoadableCodeExtensions())
+        lib.write(("adi_probe_external" + ext).c_str(), "not a library\n");
+    std::string where = lib.str();
+    std::replace(where.begin(), where.end(), '\\', '/');
+    const std::string absolute = where + "/adi_probe_external";
+    const std::string relative = "../" + lib.path.filename().string() + "/adi_probe_external";
+
+    TempDir patches("planted-users");
+    patches.write("by-absolute.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 " + absolute + ";\n");
+    patches.write("by-relative.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 " + relative + ";\n");
+    patches.write("by-message.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                   "#X msg 10 40 \\; pd-by-message.pd obj 10 80 " + absolute +
+                                   ";\n#X connect 0 0 1 0;\n");
+    for (const char* file : {"by-absolute.pd", "by-relative.pd", "by-message.pd"}) {
+        bool opened = false;
+        const std::string console = consoleOf(patches, file, &opened);
+        check(opened, std::string(file) + " opens (the patch itself is harmless): " + console);
+        check(console.find("ADI refused native code") != std::string::npos &&
+                  console.find("adi_probe_external.") != std::string::npos,
+              std::string(file) + ": the loader reached the planted file and refused it by "
+                                  "name\n          console: " + console);
+        // Before the fence the system's own failure was printed: on Windows
+        // "<file>: <message> (<code>)", elsewhere "<file>:<dlerror>". Neither
+        // can appear when no load is attempted.
+        check(console.find("not a valid Win32") == std::string::npos &&
+                  console.find("(193)") == std::string::npos &&
+                  console.find("dlopen") == std::string::npos &&
+                  console.find("load_object:") == std::string::npos,
+              std::string(file) + ": no load was attempted\n          console: " + console);
+    }
+}
+
+// What a patch may not ask of [; pd ...] (DEV-09 AR7). `quit 7` called exit(7):
+// before the fence this test process ended here, with a code ctest reports.
+void testAPatchCannotQuitOrReconfigurePd() {
+    section("DEV-09 AR7 -- [; pd quit / exit / open / add-to-path ...] are refused by name");
+    TempDir tmp("global-fence");
+    tmp.write("victim.pd", "#N canvas 0 0 200 100 12;\n#X obj 10 10 inlet~;\n");
+    const char* messages[] = {"quit 7", "exit 7", "verifyquit 7", "open victim.pd .",
+                              "menunew Untitled .", "add-to-path /tmp 0",
+                              "save-preferences", "fast-forward 1e+09", "audio-setapi 1"};
+    int n = 0;
+    for (const char* message : messages) {
+        const std::string file = "fence" + std::to_string(n++) + ".pd";
+        tmp.write(file.c_str(), std::string("#N canvas 0 0 200 100 12;\n#X obj 10 10 loadbang;\n"
+                                            "#X msg 10 40 \\; pd ") + message +
+                                    ";\n#X connect 0 0 1 0;\n");
+        bool opened = false;
+        const std::string console = consoleOf(tmp, file.c_str(), &opened);
+        std::string selector(message);
+        selector = selector.substr(0, selector.find(' '));
+        check(opened && console.find("ADI refused [; pd " + selector + "]") != std::string::npos,
+              "[; pd " + std::string(message) + "] refused by name\n          console: " + console);
+    }
+    check(true, "and the process is still here after `quit 7` and `exit 7`");
+}
+
 }  // namespace
 
 #ifdef _WIN32
@@ -1512,6 +1591,8 @@ int main() {
     testTheBufferIsAtomicPerArray();
     testAClosedEngineStillPassesAudio();
     testTheEngineRefusesADirectoryHoldingLoadableCode();
+    testNativeCodeIsRefusedWhateverNamesIt();
+    testAPatchCannotQuitOrReconfigurePd();
     testASearchPathHoldingLoadableCodeIsRefusedToo();
     testADeclareThatAsksForALibraryIsRefused();
     testAbstractionsStillResolveThroughTheSamePath();
