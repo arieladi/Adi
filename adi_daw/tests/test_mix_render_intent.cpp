@@ -2,6 +2,7 @@
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <vector>
@@ -13,18 +14,19 @@ void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("F
 struct Probe final:device::DeviceInstance {
     device::DeviceIdentity id;
     int calls=0;bool exporting=false;
-    bool finiteTail = false;
+    bool finiteTail = false, offline = false;
     explicit Probe(const rows::PluginRef& ref):id{ref.format,ref.uid,ref.name,ref.vendor,ref.version}{}
     std::int64_t tailSamples() const noexcept override {
         return finiteTail ? 0 : engine::kInfiniteTail;
     }
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
+    void setOffline(bool value) noexcept override { offline = value; }
     void process(const engine::NodeIo& io)noexcept override{++calls;exporting=io.exporting;device::passThrough(io);}
     bool setParam(const std::string&,const device::ParamValue&)override{return true;}
     bool loadState(const std::string&,const std::vector<std::uint8_t>&)override{return true;}
 };
-void run(Store& store,bool exporting,bool performanceState,bool finiteTail=false) {
+void run(Store& store,bool exporting,bool performanceState,bool finiteTail=false,bool offline=false) {
     std::vector<Probe*> probes;std::vector<bool> requests;
     engine::DeviceLoader loader=[&](const engine::DeviceRequest& rq,std::string& error)->std::unique_ptr<device::DeviceInstance>{
         if(!rq.ref){error="fixture requires a reference";return {};}
@@ -35,8 +37,11 @@ void run(Store& store,bool exporting,bool performanceState,bool finiteTail=false
         return probe;
     };
     engine::SessionSpec spec;spec.sampleRate=48000;spec.maxFrames=64;
-    spec.exporting=exporting;spec.performanceState=performanceState;
-    engine::Session session;check(session.load(store,loader,spec),"explicit render session loads");
+    spec.exporting=exporting;spec.performanceState=performanceState;spec.offline=offline;
+    engine::Session session;
+    const bool loaded = session.load(store,loader,spec);
+    check(loaded,"explicit render session loads");
+    if (!loaded) return;
     check(!requests.empty(),"loader receives prepared requests");
     bool preparedCorrectly=true;for(const auto value:requests)preparedCorrectly=preparedCorrectly&&value==exporting;
     check(preparedCorrectly,"quality intent reaches loader before prepare");
@@ -46,12 +51,16 @@ void run(Store& store,bool exporting,bool performanceState,bool finiteTail=false
     io.exporting=!exporting;session.process(io);
     bool called=false,correct=true;
     for(const auto* probe:probes)if(probe->calls){called=true;correct=correct&&probe->exporting==exporting;}
-    if (finiteTail && !exporting)
+    if (offline)
+        check(!probes.empty() && std::all_of(probes.begin(), probes.end(), [](const auto* p) { return p->offline; }),
+              "offline runtime mode reaches the prepared devices without export quality");
+    if (finiteTail && !exporting && !offline)
         check(!called && session.graph().currentGraph()->stats().nodesSuspended > 0,
               "a zero-tail device still suspends in a silent live callback");
     else
         check(called && correct, finiteTail
-              ? "the real export session invokes a zero-tail device on a silent block"
+              ? (offline ? "the normal-quality offline session invokes a zero-tail device on a silent block"
+                         : "the real export session invokes a zero-tail device on a silent block")
               : "pinned explicit quality intent reaches device processing while stopped");
 }
 }
@@ -61,5 +70,6 @@ int main(){
     run(*store,false,true);run(*store,false,false);run(*store,true,false);
     run(*store,false,true,true);
     run(*store,true,false,true);
+    run(*store,false,false,true,true);
     std::printf("render intent: %d checks, %d failures\n",checks,failures);return failures?1:0;
 }
