@@ -14,6 +14,21 @@ device PRs do not conflict on one shared log file.
    Live's behaviour behind a switch. **Recommendation:** keep Live's way (ADR-0203 d1);
    decide the addition only if you miss it in use.
 
+## 2026-11-19 — DEV-16, step 3: `[line~]`'s chained segments
+
+**`devices/amxd-translator` (`10fb3b4d`), one more commit on the same PR request.**
+
+- Max's `[line~]` plays a list of (target, ms) pairs one after another; Pd's `[vline~]` reads a
+  third number as a delay, so a Max list sent straight to it is wrong. `[line~]` becomes a
+  `[pd max-line~]` that walks the pairs and schedules each as "target ms delay" with the delay
+  accumulated; the first goes with delay 0, which in `[vline~]` cancels what was still scheduled,
+  as a new list does in Max. Its ramp-time inlet, end bang and an initial value are refused.
+- Played in libpd: "0 0 1 100 0 200" → 0, 0.5, 1, 0.5, 0 at 0, 50, 100, 200, 300 ms within 1e-3.
+  `[vline~]` leads the expected ramp by one sample; Max's own `line~` timing is a reading to take
+  (Max, not Live). Plant: no accumulated delay → 3 failures. 45 checks; CTest **247/247**.
+
+**PR requested** — as step 1's entry (head `devices/amxd-translator`, now `10fb3b4d`).
+
 ## 2026-11-19 — DEV-16, step 2: Max's integers and subpatchers, made explicit
 
 **`devices/amxd-translator` (`fe9fa8af`), one commit on top of step 1** — the same PR request now
