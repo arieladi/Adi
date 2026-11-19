@@ -18,6 +18,14 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DEV-23 graph workers in the desktop app
+
+**PR requested** — branch `engine/dev23-app-workers`, head `3dd8c6056e13e6e2a89c5173a054360fd2768683`, main base `bedee5ab`. Title **DEV-23: Configure app graph workers from the granted audio buffer**. Includes engine-win's internal preference `240dc0fd3bb6d6904887c8867cab2e40e63614c8`. Hosted CLAP/VST3 worker admission follows the independent DF-E23 integration in #677.
+
+Each desktop audio start and reconfiguration passes the driver grant to the internal preference from AppSettings. Auto permits workers at 1,024 frames and up. Off, smaller buffers and machines reporting at most one logical CPU use serial processing. The callback can participate in rendering. The worker count is bounded by logical CPUs, the graph's limit and available independent nodes. A callback shorter than 1,024 frames renders serially. The grant and worker policy prepare a single candidate. An identical live policy and format preserve the existing graph. A failed parallel preparation retries serially.
+
+**Gate** — GCC 14 Debug with Pd and warnings as errors covered 246 CTest suites, six focused suites, the four validators and the layout check. The initial run passed 245 suites. The existing Pd lock test exceeded its wall-clock threshold under load and passed its isolated rerun. GCC and Clang 19 each passed 257 document checks, including mismatched request and grant in both directions, the 1,023/1,024 boundary, actual worker dispatch, byte-identical output, reconfiguration, explicit Off at the same format and device restart. Four planted request, policy and dispatch faults failed as intended, and injected thread creation failure produced serial audio. GCC and Clang also compiled the native JUCE app translation unit with warnings as errors. The full native app and shell smoke is running separately. This cloud environment has no physical audio device.
+
 ## 2026-11-19 — N57 third-party plug-in insertion
 
 **PR requested** — branch `engine/n57-plugin-insertion`, head `2b67a9acb4719979ceab4e45ca837f25f6e2ce32`, base `af13cf5a`. Title **Insert third-party plug-ins with ordered placement and one Undo**. The remote head matches the gated commit. The reserved N57 engine and document core and its fixture are taken from Mix View commit `668e05c99cad906099e75c6573d98e6f138a3a1a`, with main's existing `RowIds` allocator.
