@@ -2,7 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/ui/library_listing.hpp"
-#include "adi/ui/plugin_listing.hpp"
+#include "adi/ui/plugin_scan.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <string>
@@ -31,8 +31,8 @@ class BrowserList final : public juce::ListBox {
 // own (D4, N15's catalogue part): double-click or Enter loads one onto the selected track, in front
 // of the device chosen in the strip; a drag drops it onto a lane's track or into the chain. An entry
 // this build cannot load is dimmed and says why. Plug-Ins lists the VST3 and CLAP plug-ins the app's
-// loader found, in folders by format and vendor (DF-W9); loading one waits for the engine's insert of a
-// plug-in (N57), so each is dimmed and says so. The other categories say what they wait for.
+// loader found, in folders by format and vendor (DF-W9), from the app's scan off the message thread
+// (DF-W34); loading one waits for the engine's insert of a plug-in (N57), so each is dimmed and says so. The other categories say what they wait for.
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
@@ -91,10 +91,14 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Loads the device on `row` (double-click, Enter), or says why it cannot.
     bool load(int row);
-    // The plug-ins the app's loader found, asked for when Plug-Ins is chosen; unset outside the app.
-    // A first scan may run then, on the message thread (N58 asks for one off it).
-    std::function<PluginListing()> listPlugins;
-    const PluginListing &plugins() const noexcept { return plugins_; }
+    // Asks the app to scan the plug-ins when Plug-Ins is chosen and no scan has begun; unset outside the
+    // app. It returns at once: the scan runs on the app's worker (DF-W34).
+    std::function<void()> scanPlugins;
+    // The app's scan, each time it changes: Plug-Ins refills when it is shown, and the Status Bar says a
+    // scan's start and end while it is.
+    void setPluginScan(const PluginScan &);
+    const PluginListing &plugins() const noexcept { return pluginScan_.listing; }
+    const PluginScan &pluginScan() const noexcept { return pluginScan_; }
     // What a load of a plug-in says until the engine inserts one (N57).
     static std::string pluginWaits(const PluginEntry &);
     // Why a catalogue entry cannot load in this build; empty when it can.
@@ -123,7 +127,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     std::vector<Row> rows_;
     LibraryListing listing_;
     bool ready_ = false;
-    PluginListing plugins_;
+    PluginScan pluginScan_;
+    bool pluginsShown() const;
     int footLimit_ = 1 << 20;
     // The search's down arrow goes into the list (§41.4.1.6).
     struct SearchKeys final : juce::KeyListener {

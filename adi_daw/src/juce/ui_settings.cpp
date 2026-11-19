@@ -403,10 +403,19 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
         for (auto &row : rows_)
             row->refresh();
     };
+    rescanPlugins.setTooltip("Scans the plug-in folders again, in the background.");
+    rescanPlugins.setColour(juce::TextButton::buttonColourId, look::button);
+    rescanPlugins.onClick = [this] {
+        if (onRescanPlugins) {
+            onRescanPlugins();
+            setHelp("Scanning the plug-ins again; the Browser's Plug-Ins lists them when it is done.");
+        }
+    };
     scroll_.setViewedComponent(&content_, false);
     scroll_.setScrollBarsShown(true, false);
     for (auto *c : std::initializer_list<juce::Component *>{&search, &pageList, &scroll_, &defaults})
         addAndMakeVisible(c);
+    addChildComponent(rescanPlugins);
     if (!pageNames_.empty())
         showPage(pageNames_.front());
 }
@@ -458,6 +467,7 @@ void SettingsPanel::showPage(const std::string &name) {
             }
         }
     defaults.setEnabled(true);
+    rescanPlugins.setVisible(name == "Plug-Ins" && onRescanPlugins != nullptr);
     scroll_.setViewPosition(0, 0);
     layoutRows();
     pageList.reveal();
@@ -494,6 +504,7 @@ void SettingsPanel::find(const juce::String &query) {
         audio_->setVisible(false);
     // Restoring defaults is a page's; the results are no page.
     defaults.setEnabled(false);
+    rescanPlugins.setVisible(false);
     setHelp(rows_.empty() ? juce::String("Nothing matches.")
                           : juce::String(static_cast<int>(rows_.size())) +
                                 (rows_.size() == 1 ? " setting matches." : " settings match."));
@@ -551,6 +562,7 @@ void SettingsPanel::resized() {
     scroll_.setBounds(page.getX(), page.getY() + 36, page.getWidth(),
                       std::max(0, page.getHeight() - 36 - kHelpHeight));
     defaults.setBounds(page.getRight() - 133, page.getBottom() - 27, 120, 18);
+    rescanPlugins.setBounds(page.getRight() - 133 - 8 - 80, page.getBottom() - 27, 80, 18);
     layoutRows();
 }
 void SettingsPanel::paint(juce::Graphics &g) {

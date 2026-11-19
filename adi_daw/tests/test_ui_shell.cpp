@@ -27,12 +27,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -2543,23 +2545,41 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
                           PluginEntry::Kind::MidiEffect},
                          *bare};
         found.failed = 1;
+        // The app's scan as the Browser sees it (DF-W34): choosing Plug-Ins asks for a scan and returns at
+        // once; the list fills when the scan's state arrives.
         int asked = 0;
-        browser.listPlugins = [&found, &asked] {
+        PluginScan scan;
+        browser.scanPlugins = [&] {
             ++asked;
-            return found;
+            scan.phase = PluginScan::Phase::Scanning;
+            browser.setPluginScan(scan);
         };
         root.say({});
         browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins…" &&
+                  root.error() == "Scanning plug-ins…",
+              "choosing Plug-Ins asks for a scan and returns at once; the list and the Status Bar say it scans");
+        scan.candidates = 150;
+        browser.setPluginScan(scan);
+        check(browser.rows().size() == 1 && browser.rows()[0].heading == "Scanning plug-ins: 150 files…",
+              "the files the scan probes are counted on the list's line");
+        scan.phase = PluginScan::Phase::Done;
+        scan.candidates = 0;
+        scan.listing = found;
+        browser.setPluginScan(scan);
         std::vector<std::pair<juce::String, int>> layout;
         for (const auto &r : browser.rows())
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
         const std::vector<std::pair<juce::String, int>> expected{
             {"CLAP", 0}, {"Northwind Audio", 1}, {"Arpeggiate", 2}, {"Glass Piano", 2},
             {"VST3", 0}, {"Other", 1},           {"Hiss", 2},       {"Zeta Audio", 1}, {"Echo", 2}};
-        check(asked == 1 && layout == expected,
+        check(layout == expected,
               "Plug-Ins lists a folder per format, then per vendor, the plug-ins by name; no vendor goes in Other");
-        check(root.error() == "1 plug-in files could not be scanned; the rest are listed.",
-              "a file the scan could not read is counted; the rest are listed");
+        check(root.error() == "1 plug-in file could not be scanned; the rest are listed.",
+              "a file a complete scan could not read is counted; the rest are listed");
+        browser.choose(plugIns);
+        check(asked == 1 && browser.rows().size() == expected.size(),
+              "choosing Plug-Ins again lists what was found and scans nothing");
         const auto rowNamed = [&browser](const char *name) {
             for (std::size_t i = 0; i < browser.rows().size(); ++i)
                 if (browser.rows()[i].plugin != nullptr && browser.rows()[i].plugin->name == name)
@@ -2576,17 +2596,189 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
         for (const auto &r : browser.rows())
             layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
         check(asked == 1 && layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0}, {"Zeta Audio", 1}, {"Echo", 2}},
-              "the search keeps a plug-in by its vendor too, and asks the loader nothing more");
+              "the search keeps a plug-in by its vendor too, and asks for no scan");
         browser.search.setText({}, false);
         browser.search.onTextChange();
-        found = {};
+        // DF-W34 (c): one folder per vendor ignoring case, spelled as the first in sort order; no vendor
+        // and "other" share one folder.
+        PluginScan spelled;
+        spelled.phase = PluginScan::Phase::Done;
+        spelled.listing.plugins = {{"vst3", "a", "Pro-C 2", "FabFilter", "1", "/a.vst3"},
+                                   {"vst3", "b", "Pro-L 2", "Fabfilter", "1", "/b.vst3"},
+                                   {"vst3", "c", "Pro-Q 4", "FabFilter", "1", "/c.vst3"},
+                                   {"vst3", "d", "Hum", "", "1", "/d.vst3"},
+                                   {"vst3", "e", "Fizz", "other", "1", "/e.vst3"}};
+        browser.setPluginScan(spelled);
+        layout.clear();
+        for (const auto &r : browser.rows())
+            layout.emplace_back(r.plugin != nullptr ? juce::String(r.plugin->name) : r.heading, r.depth);
+        check(layout == std::vector<std::pair<juce::String, int>>{{"VST3", 0},    {"FabFilter", 1}, {"Pro-C 2", 2},
+                                                                    {"Pro-L 2", 2}, {"Pro-Q 4", 2},   {"other", 1},
+                                                                    {"Fizz", 2},    {"Hum", 2}},
+              "one vendor spelled two ways is one folder, and no vendor goes in with one named other");
+        scan.listing = {};
+        browser.setPluginScan(scan);
         browser.choose(plugIns);
         check(browser.rows().empty() && root.error().rfind("No VST3 or CLAP plug-ins were found", 0) == 0,
-              "with none found, it says where to add their folders");
-        found.error = "the scan was cancelled.";
+              "with none found by a complete scan, it says where to add their folders");
+        // DF-W34 (b): a scan that stopped early is named, with why, and never worded as "the rest".
+        scan.listing.complete = false;
+        scan.listing.stopped = "the plug-in scanner could not run (adi_plugin_scanner was not found)";
+        browser.setPluginScan(scan);
         browser.choose(plugIns);
-        check(root.error() == "The plug-ins could not be scanned: the scan was cancelled.", "and a scan that failed says so");
-        browser.listPlugins = nullptr;
+        check(root.error() == "The plug-in scan stopped early: the plug-in scanner could not run (adi_plugin_scanner "
+                              "was not found). Nothing could be listed. Rescan from the Settings' Plug-Ins page." &&
+                  asked == 1,
+              "a scan that stopped early says why and where to rescan, and choosing Plug-Ins does not rescan");
+        scan.listing.plugins = found.plugins;
+        browser.setPluginScan(scan);
+        browser.choose(plugIns);
+        check(root.error().find("The list may be incomplete.") != std::string::npos &&
+                  root.error().find("the rest are listed") == std::string::npos,
+              "with plug-ins kept from before, a stopped scan says the list may be incomplete");
+        browser.scanPlugins = nullptr;
+        browser.setPluginScan({});
+    }
+    {
+        // The loader's report read into the listing (DF-W34 b).
+        scan::Report service;
+        service.complete = false;
+        service.failures.push_back({"", "the registry could not be opened", scan::State::Unavailable});
+        PluginListing l;
+        applyReport(l, service);
+        check(!l.complete && l.failed == 0 && l.stopped == "the plug-in scanner could not run (the registry could not be opened)",
+              "a failure with no file is the scanner's own, not a plug-in's");
+        scan::Report file;
+        file.complete = false;
+        file.failures.push_back({"/x/A.vst3", "quarantined", scan::State::Quarantined});
+        file.failures.push_back({"/x/B.vst3", "bad metadata", scan::State::Invalid});
+        applyReport(l, file);
+        check(!l.complete && l.failed == 0 && l.stopped == "/x/B.vst3 stopped the scan (bad metadata)",
+              "the file whose failure ended the scan is named");
+        scan::Report cancelled;
+        cancelled.complete = false;
+        cancelled.cancelled = true;
+        applyReport(l, cancelled);
+        check(!l.complete && l.stopped == "the scan was stopped before it finished", "a cancelled scan says it was stopped");
+        scan::Report done;
+        done.failures.push_back({"/x/A.vst3", "crashed", scan::State::Failed});
+        done.failures.push_back({"/x/C.clap", "quarantined", scan::State::Quarantined});
+        applyReport(l, done);
+        check(l.complete && l.stopped.empty() && l.failed == 2, "a complete scan counts the files it could not read");
+    }
+    {
+        // The scan's service (DF-W34 a): the worker scans while the owner waits for nothing; its count and
+        // its end reach the owner through the post queue; a gate waits for it; Quit cancels it.
+        std::vector<std::function<void()>> posted;
+        std::mutex postedMutex;
+        const auto drain = [&] {
+            std::vector<std::function<void()>> jobs;
+            {
+                std::lock_guard lock(postedMutex);
+                jobs.swap(posted);
+            }
+            for (auto &job : jobs)
+                job();
+            return jobs.size();
+        };
+        std::mutex gateMutex;
+        std::condition_variable gateWake;
+        bool release = false;
+        int scans = 0;
+        std::atomic<bool> sawCancel{false};
+        PluginListing result;
+        result.plugins = {{"clap", "org.x", "X", "Y", "1", "/x.clap"}};
+        auto service = std::make_unique<PluginScanService>(
+            [&](const std::atomic<bool> &cancel, const std::function<void(std::size_t)> &counted) {
+                counted(3);
+                std::unique_lock lock(gateMutex);
+                gateWake.wait(lock, [&] { return release || cancel.load(); });
+                ++scans;
+                release = false;
+                if (cancel.load()) {
+                    sawCancel = true;
+                    PluginListing stopped;
+                    stopped.complete = false;
+                    stopped.stopped = "the scan was stopped before it finished";
+                    return stopped;
+                }
+                return result;
+            },
+            [&](std::function<void()> job) {
+                std::lock_guard lock(postedMutex);
+                posted.push_back(std::move(job));
+            });
+        int changes = 0;
+        service->onChange = [&] { ++changes; };
+        const auto waitPosted = [&](std::size_t n) {
+            for (int i = 0; i < 2000; ++i) {
+                {
+                    std::lock_guard lock(postedMutex);
+                    if (posted.size() >= n)
+                        return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            return false;
+        };
+        const auto letGo = [&] {
+            {
+                std::lock_guard lock(gateMutex);
+                release = true;
+            }
+            gateWake.notify_all();
+        };
+        service->start();
+        check(service->running() && service->state().phase == PluginScan::Phase::Scanning && changes == 1,
+              "a scan begins on the worker and the owner is told at once");
+        check(waitPosted(1) && drain() == 1 && service->state().candidates == 3 && changes == 2,
+              "the files to probe reach the owner from the post queue");
+        service->start();
+        check(service->running() && changes == 2, "a second start while one runs waits for it");
+        letGo();
+        check(waitPosted(1) && drain() == 1 && service->state().phase == PluginScan::Phase::Scanning &&
+                  service->state().listing.plugins.size() == 1 && scans == 1,
+              "its end adopts the list, and the scan asked for meanwhile begins");
+        check(waitPosted(1) && drain() == 1 && service->state().candidates == 3, "the second scan counts too");
+        std::thread late([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            letGo();
+        });
+        service->waitIdle();
+        late.join();
+        check(!service->running() && service->state().phase == PluginScan::Phase::Done && scans == 2,
+              "the gate waits for a running scan and adopts it there, with nothing begun again inside it");
+        check(waitPosted(1) && drain() == 1 && !service->running() && service->state().phase == PluginScan::Phase::Done,
+              "the scan's own end, posted before the gate took it, does nothing");
+        service->start();
+        check(waitPosted(1) && drain() == 1, "a third scan counts");
+        service->start(); // another asked for while it runs, as the folders change
+        std::thread later([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            letGo();
+        });
+        service->waitIdle();
+        later.join();
+        check(!service->running() && scans == 3,
+              "the gate never begins the scan asked for meanwhile: the caller has the loader to itself");
+        check(waitPosted(2) && drain() == 2 && service->running(), "that scan begins from the owner's queue after the gate");
+        check(waitPosted(1) && drain() == 1, "and counts");
+        letGo();
+        check(waitPosted(1) && drain() == 1 && !service->running() && scans == 4, "and ends");
+        service->adoptListing(result);
+        check(service->state().listing.complete && changes > 0, "a list the loader made on its own is adopted while idle");
+        service->start();
+        service->stop();
+        check(!service->running() && sawCancel.load() && scans == 5, "Quit cancels a running scan and waits for it");
+        drain();
+        check(service->state().phase == PluginScan::Phase::Done && service->state().listing.complete &&
+                  service->state().listing.plugins.size() == 1,
+              "a stopped scan's posted jobs are dropped: nothing adopts its result, the list stays");
+        service->start();
+        const auto before = scans;
+        service.reset();
+        drain();
+        check(scans == before + 1, "the service gone, its scan is cancelled and its posted jobs do nothing");
     }
     browser.choose(audioEffects);
     const auto chainOf = [&](std::int64_t track) {

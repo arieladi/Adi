@@ -280,7 +280,9 @@ void BrowserPanel::refill() {
     } else if (!chosen.heading && chosen.name == "Plug-Ins") {
         // Live's Plug-Ins: a folder per format, in it a folder per vendor, in that its plug-ins by name.
         std::string format;
-        for (const auto &group : pluginGroups(plugins_, query.toStdString())) {
+        if (pluginScan_.phase == PluginScan::Phase::Scanning && pluginScan_.listing.plugins.empty())
+            rows_.push_back({nullptr, nullptr, juce::String::fromUTF8(pluginScanStatus(pluginScan_).c_str()), nullptr, 0});
+        for (const auto &group : pluginGroups(pluginScan_.listing, query.toStdString())) {
             if (group.format != format) {
                 format = group.format;
                 rows_.push_back({nullptr, nullptr, juce::String(formatFolder(format)), nullptr, 0});
@@ -368,7 +370,24 @@ std::string BrowserPanel::droppedDevice(const juce::var &description) {
     return findBuiltin(uid) != nullptr ? uid : std::string();
 }
 std::string BrowserPanel::pluginWaits(const PluginEntry &p) {
-    return "Loading " + p.name + " waits for the engine's insert of a plug-in (window log, N57).";
+    return "Loading " + p.name + " waits for the engine's insert of a plug-in (N57).";
+}
+bool BrowserPanel::pluginsShown() const {
+    return selected_ >= 0 && selected_ < static_cast<int>(sidebar_.size()) &&
+           !sidebar_[static_cast<std::size_t>(selected_)].heading &&
+           sidebar_[static_cast<std::size_t>(selected_)].name == "Plug-Ins";
+}
+void BrowserPanel::setPluginScan(const PluginScan &scan) {
+    const bool began = scan.phase == PluginScan::Phase::Scanning && pluginScan_.phase != PluginScan::Phase::Scanning;
+    const bool ended = scan.phase == PluginScan::Phase::Done && pluginScan_.phase == PluginScan::Phase::Scanning;
+    pluginScan_ = scan;
+    if (!pluginsShown())
+        return;
+    refill();
+    // The Status Bar says the scan's start and its end while Plug-Ins shows; a count arriving between
+    // them only redraws the list's line.
+    if (began || ended)
+        root_.say(pluginScanStatus(pluginScan_));
 }
 bool BrowserPanel::load(int row) {
     if (row >= 0 && row < static_cast<int>(rows_.size()))
@@ -481,10 +500,11 @@ void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
-        // Plug-Ins asks the app's loader what it found, scanning first if it has not (DF-W9).
+        // Plug-Ins lists what the app's scan found; the first time, it asks the app to scan, which runs on
+        // a worker and fills the list when it ends (DF-W9, DF-W34): choosing never waits on a scan.
         const bool plugIns = entry.name == "Plug-Ins";
-        if (plugIns && listPlugins)
-            plugins_ = listPlugins();
+        if (plugIns && scanPlugins && pluginScan_.phase == PluginScan::Phase::NotStarted)
+            scanPlugins();
         repaint();
         refill();
         const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
@@ -495,14 +515,10 @@ void BrowserPanel::choose(int i) {
                 }))
                 root_.say("ADI's built-in devices run on its Pd devices, which this build leaves out.");
         } else if (plugIns) {
-            if (!listPlugins)
+            if (!scanPlugins)
                 root_.say("Plug-ins list in the application, from its plug-in scan.");
-            else if (!plugins_.error.empty())
-                root_.say("The plug-ins could not be scanned: " + plugins_.error);
-            else if (plugins_.plugins.empty())
-                root_.say("No VST3 or CLAP plug-ins were found. Add their folders in the Settings' Plug-Ins page.");
-            else if (plugins_.failed > 0)
-                root_.say(std::to_string(plugins_.failed) + " plug-in files could not be scanned; the rest are listed.");
+            else
+                root_.say(pluginScanStatus(pluginScan_));
         } else if (!library)
             // The other categories say what they wait for (D4; N15).
             root_.say(entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||

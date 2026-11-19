@@ -115,6 +115,10 @@ class SettingsPanel final : public juce::Component {
     juce::TextEditor search;
     SettingsPageList pageList{*this};
     juce::TextButton defaults{"Restore Defaults"};
+    // Live's Rescan on the Plug-Ins page (DF-W34): scans the plug-in folders again in the background.
+    // Shown on that page only, and only where the application can scan (`onRescanPlugins` set).
+    juce::TextButton rescanPlugins{"Rescan"};
+    std::function<void()> onRescanPlugins;
     // Live's tab column and the page's frame; ADI's help line and buttons at its foot.
     static constexpr int kPageListWidth = 94, kHelpHeight = 58;
 

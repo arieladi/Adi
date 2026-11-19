@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/appdata.hpp"
+#include "adi/ui/plugin_scan.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/editor_host_component.hpp"
@@ -16,6 +17,7 @@
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stop_token>
 #include <thread>
 namespace adi::ui {
@@ -87,11 +89,9 @@ class AdiApplication final : public juce::JUCEApplication,
         commands_ = std::make_unique<AppCommands>(*settings_);
         // The plug-in folders the Settings' Plug-Ins page names, searched ahead of the system's for
         // both formats (DF-W9), before any project asks the loader for a plug-in.
-        for (const char *key : {"plugins.vst3Folders", "plugins.clapFolders"})
-            if (const auto folders = settings_->get(key); folders.is_array())
-                for (const auto &folder : folders)
-                    if (folder.is_string() && !folder.get<std::string>().empty())
-                        loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.get<std::string>().c_str())));
+        readPluginFolders();
+        applyPluginFolders();
+        startPluginScanService();
         manager_.addChangeListener(this);
         if (project == juce::File{}) {
             // ADI has no unsaved state: every op is committed to a file, so a new
@@ -181,23 +181,116 @@ class AdiApplication final : public juce::JUCEApplication,
             index.reset();
         });
     }
-    // The loader's catalogue as the Browser lists it: its VST3 lines and its CLAP descriptors, with the
-    // files its last scan could not read.
-    PluginListing pluginListing() {
-        if (loader_.stats().scans == 0)
-            loader_.scan();
+    // The loader's catalogue as the Browser lists it: its VST3 lines and its CLAP descriptors, with its
+    // last scan's state. Only the loader's owner of the moment reads it: the scan's worker, or the
+    // message thread while no scan runs.
+    static PluginListing listingOf(device::JuceDeviceLoader &loader) {
         PluginListing out;
-        for (const auto &line : loader_.knownPlugins())
+        for (const auto &line : loader.knownPlugins())
             if (auto entry = parseKnownVst3(line))
                 out.plugins.push_back(std::move(*entry));
-        for (const auto &p : loader_.clap().plugins())
+        for (const auto &p : loader.clap().plugins())
             out.plugins.push_back({"clap", p.id, p.name, p.vendor, p.version, p.bundlePath,
                                    clapKind(p.isInstrument, p.features)});
-        const auto &report = loader_.lastScanReport();
-        out.failed = report.failures.size();
-        if (report.cancelled)
-            out.error = "the scan was cancelled.";
+        applyReport(out, loader.lastScanReport());
         return out;
+    }
+    // The Settings' plug-in folders, read on the message thread; the loader takes them from its owner.
+    void readPluginFolders() {
+        std::vector<std::string> folders;
+        for (const char *key : {"plugins.vst3Folders", "plugins.clapFolders"})
+            if (const auto list = settings_->get(key); list.is_array())
+                for (const auto &folder : list)
+                    if (folder.is_string() && !folder.get<std::string>().empty())
+                        folders.push_back(folder.get<std::string>());
+        std::lock_guard lock(pluginFoldersMutex_);
+        pluginFolders_ = std::move(folders);
+    }
+    // Hands the loader the folders it does not search yet. Only its owner calls this (the scan's worker,
+    // or the message thread while no scan runs). A folder taken out of the Settings is searched until the
+    // app restarts: the loader adds folders and removes none (engine-win's catalogue settings, N58).
+    // True when a folder was added.
+    bool applyPluginFolders() {
+        std::vector<std::string> folders;
+        {
+            std::lock_guard lock(pluginFoldersMutex_);
+            folders = pluginFolders_;
+        }
+        bool added = false;
+        for (const auto &folder : folders)
+            if (loaderFolders_.insert(folder).second) {
+                loader_.addSearchPath(juce::File(juce::String::fromUTF8(folder.c_str())));
+                added = true;
+            }
+        return added;
+    }
+    // The Browser's Plug-Ins scan, on a worker that owns the loader while it runs (DF-W34). It begins
+    // when Plug-Ins is first chosen, on Rescan and when the plug-in folders change; never in a smoke run.
+    void startPluginScanService() {
+        scanService_ = std::make_unique<PluginScanService>(
+            [this](const std::atomic<bool> &cancel, const std::function<void(std::size_t)> &counted) {
+                scan::Config config;
+                config.process.cancel = &cancel;
+                loader_.setScanConfig(config);
+                applyPluginFolders();
+                // What it will probe, as the loader finds it: the VST3 files and the CLAP bundles of the
+                // system's folders and the Settings' (filesystem only, nothing is loaded).
+                auto vst3 = loader_.vst3().defaultSearchPaths();
+                auto clap = device::ClapHost::defaultSearchPaths();
+                for (const auto &folder : loaderFolders_) {
+                    vst3.add(juce::File(juce::String::fromUTF8(folder.c_str())));
+                    clap.push_back(folder);
+                }
+                juce::VST3PluginFormat format;
+                counted(static_cast<std::size_t>(format.searchPathsForPlugins(vst3, true, false).size()) +
+                        device::ClapHost::findBundles(clap).size());
+                loader_.scan();
+                return listingOf(loader_);
+            },
+            [](std::function<void()> job) { juce::MessageManager::callAsync(std::move(job)); });
+        scanService_->onChange = [this] {
+            if (root_)
+                root_->browser.setPluginScan(scanService_->state());
+        };
+    }
+    // The session's loader behind the gate: a VST3 or CLAP waits for a running scan to end, so the loader
+    // never runs on two threads; what the loader scanned on its own for a project is listed after.
+    engine::DeviceLoader gatedLoader() {
+        return [this, inner = loader_.fn()](const engine::DeviceRequest &rq, std::string &error) {
+            if (rq.ref == nullptr || rq.ref->format == "internal" || !scanService_)
+                return inner(rq, error);
+            scanService_->waitIdle();
+            applyPluginFolders();
+            const auto scans = loader_.stats().scans;
+            auto made = inner(rq, error);
+            if (loader_.stats().scans != scans)
+                scanService_->adoptListing(listingOf(loader_));
+            return made;
+        };
+    }
+    // The Settings' plug-in folders changed: once the plug-ins have been scanned, scan again with them
+    // (a scan running now is followed by another). A folder already searched changes nothing.
+    void pluginFoldersChanged() {
+        std::vector<std::string> before;
+        {
+            std::lock_guard lock(pluginFoldersMutex_);
+            before = pluginFolders_;
+        }
+        readPluginFolders();
+        bool changed = false;
+        {
+            std::lock_guard lock(pluginFoldersMutex_);
+            changed = pluginFolders_ != before;
+        }
+        if (changed && scanService_ && scanService_->state().phase != PluginScan::Phase::NotStarted)
+            scanService_->start();
+    }
+    void stopPluginScan() {
+        if (!scanService_)
+            return;
+        scanService_->stop();
+        scanService_.reset();
+        loader_.setScanConfig({}); // its cancel flag went with the service
     }
     void stopLibrary() {
         if (!libraryThread_.joinable())
@@ -222,6 +315,7 @@ class AdiApplication final : public juce::JUCEApplication,
         if (import_.joinable())
             import_.join();
         stopLibrary();
+        stopPluginScan();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -273,7 +367,7 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, gatedLoader(), error,
                                           &commands_->recordingDefaults());
         if (!next) {
             report(error);
@@ -391,10 +485,13 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
-        // The Browser's Plug-Ins (DF-W9): what the app's loader found, scanning once first if it has not.
-        // The one loader the projects load from lists them, so no second scan races its registry (N58
-        // asks for the scan off the message thread).
-        root->browser.listPlugins = [this] { return pluginListing(); };
+        // The Browser's Plug-Ins (DF-W9): what the app's one loader found, scanned on the service's worker
+        // the first time Plug-Ins is chosen (DF-W34); the projects load from the same loader, so no
+        // second scan races its registry. A smoke run scans nothing.
+        if (scanService_ && smokeOutput_ == juce::File{}) {
+            root->browser.scanPlugins = [this] { scanService_->start(); };
+            root->browser.setPluginScan(scanService_->state());
+        }
         // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
         root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
             const bool ok = document_->insertBuiltin(uid, track, before);
@@ -762,7 +859,13 @@ class AdiApplication final : public juce::JUCEApplication,
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
                 // settings, and every open window follows at its next frame.
-                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
+                settingsWindow_->panel().onChange = [this] {
+                    commands_->reload();
+                    pluginFoldersChanged();
+                };
+                // Live's Rescan on the Plug-Ins page (DF-W34), in the background.
+                if (scanService_ && smokeOutput_ == juce::File{})
+                    settingsWindow_->panel().onRescanPlugins = [this] { scanService_->start(); };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);
@@ -857,6 +960,12 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
     device::JuceDeviceLoader loader_;
+    // The Browser's plug-in scan (DF-W34) and the folders the loader is given: the Settings' list, read
+    // on the message thread, and those its owner has handed it.
+    std::unique_ptr<PluginScanService> scanService_;
+    std::mutex pluginFoldersMutex_;
+    std::vector<std::string> pluginFolders_;
+    std::set<std::string> loaderFolders_;
     std::unique_ptr<ProjectDocument> document_;
     std::shared_ptr<const MainMeterSource> mainMeterSource_;
     juce::AudioDeviceManager manager_;
