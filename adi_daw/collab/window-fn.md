@@ -32,10 +32,54 @@ until then a need is named by its item.
 | Need | Owner | Why the window needs it | What the window does meanwhile |
 |---|---|---|---|
 | Reserve: one N row. A distinct `scan::State` (or a shared constant) for "the scanner helper could not start", apart from the file it was asked to read | engine-win (`src/adi/plugin_scanner.*`) | DF-W34 (b): the Status Bar names the scanner, not the plug-in, when the helper is missing or blocked | the window matches `Scanner::probe`'s words ("scanner helper unavailable or scan cancelled") on an `Unavailable` failure |
+| Reserve: one N row. Live MIDI input to the armed track's instrument, taking the window's per-port rings (`MidiEventRing` of `MidiPortEvent`: MIDI 1.0 bytes, the UMP group, the arrival time in ms of JUCE's high-resolution clock) through a published list the callback reads | engine (ADR-0248 d6 item 4) | SRF-05: the director's keyboard into OneShot or his VST3 | the rings fill and are drained on the message thread; the MIDI Indicators light |
+| Reserve: one N row. A `midi.port.name` row, so a port's record can be found by name when its identifier changes (the registry's comment promises the healing) | engine-win (`src/adi/settings/registry.cpp`) | SRF-05: a keyboard on another USB socket keeps its switches | records are keyed by identifier and direction only |
 | Reserve: one N row. The snapshot's track fields for recording: `TrackNode::recordArmed`, `monitorMode` and `inputRef`, from `tracks.record_armed`, `monitor_mode` and `input_ref` | engine (`src/adi/engine/snapshot.*`) | MX-09: the strips' Arm and the monitoring switch read the frame's snapshot as every other control does (ADR-0201) | the application hands the window the session's rows (`Session::model()`) once a frame, and an action reads them fresh |
 | Reserve: one N row. The input-monitor node of MX-09: a live input per monitored track, from its input (channels 1/2 until `input_ref` has its grammar, MX-25), heard per `monitor_mode` (In always; Auto while armed and no clip plays; Off never) | engine (ADR-0248 d6, item 4) | MX-09: the director hears what he records | Arm and the switch store their choice; nothing is heard of the input; Record records |
 | Reserve: one N row. A failed capture's audio kept up to the failure (a locate or an overflow after minutes of good audio is lost whole today: `recording::prepareCommit` takes only a clean result) | engine (`src/adi/recording_commands.*`) | MX-09: a take is not lost to one click on the timeline | the take is dropped and the Status Bar says why, at once |
 | Reserve: one N row. Live's monitoring default for a new track: Auto, where New and `track.create` store 0 (Off) | win (AWAITING 20) and the engine | MX-09: a new audio track should monitor as Live's does once the input-monitor node exists | the switch shows Off on New's tracks, as stored |
+
+---
+
+## 2026-11-19, window-fn — SRF-05, the window's half: the MIDI port host, the MIDI Ports table, the MIDI Indicators (PR requested)
+
+**What it does** (`src/juce/app_midi_ports.*`, `src/adi/ui/midi_ports.hpp`, `ui_settings.*`, `ui_main.cpp`,
+`ui_controlbar.cpp`):
+- **The port host** (`MidiPortHost`), the application's one owner of the MIDI ports, on JUCE 9's
+  Universal MIDI Packet API with Windows MIDI Services off (JUCE's default; the Win32 backend). It lists
+  every input and output by name, follows hot-plug, and opens each input whose Track or Remote switch is
+  on, in the MIDI 1.0 protocol. What a port sends goes, timestamped in milliseconds and with its UMP group,
+  into that port's own lock-free ring (one producer, the port's input thread; one consumer; no lock, no
+  allocation) and is drained on the message thread.
+- **Live's MIDI Ports table** at the head of the Tempo & MIDI Settings page, in place of the `midi.ports`
+  record's text and the per-port rows: a row per port and direction, inputs first, Track, Sync, Remote and
+  MPE. A switch is in force at once, saved, and opens or closes the input; a record per direction
+  ("in:<identifier>", "out:<identifier>"), since a two-way port has one identifier on ALSA, Android and
+  WinRT. With no port: "No MIDI port is connected. A port connected now appears here."
+- **The MIDI Indicators** on the Control Bar light for 150 ms when MIDI comes in.
+
+**Not yet:** MIDI Arm into the armed track's instrument. The rings wait for their consumer, the engine's
+live MIDI input (ADR-0248 d6 item 4); until it is on main the events light the Indicators and are let go.
+The table's look is the Settings' own controls until the Settings sheet is agreed.
+
+**Review:** three dimensions (threads and the UMP API, behaviour against SRF-05 and Live's table, the
+tests), each finding checked by a skeptic: 13 confirmed, 4 refuted. Twelve fixed in the branch's last
+commit (listed in its message); the thirteenth, healing a record by name, is a need below. Planted
+faults fire (the per-port rows shown; the inputs-first order).
+
+**Run:** Linux, GCC 13, Debug, JUCE on, Pd off, warnings as errors: `adi_app` and all 27 of `ui.yml`'s
+suites on main merged; `adi_ui_shell_tests` 2754 checks, `adi_ui_window_state_tests` 109 checks, 0
+failures. This machine has no MIDI (no ALSA sequencer): the host lists none and says so; the table's
+switches are tested over a fixed list of ports.
+
+**PR requested.** Branch `window-fn/midi-ports` at `76508b13`, main merged. Title: **adi_daw: window-fn:
+SRF-05, the window's half: the MIDI port host on JUCE 9's UMP API, Live's MIDI Ports table, the MIDI
+Indicators**. Depends on nothing unlanded. Adds `src/juce/app_midi_ports.cpp` to `adi_app` and the shell
+tests in `src/juce/ui_shell.cmake`, and links `adi_settings` into `adi_ui_window_state_tests`.
+
+**For win (the default):** `midi.port.track` defaults to off, so a keyboard plugged in reaches no track
+until Track is ticked. Live's default for a new port is to be read (one more line for the devices lane's
+list of Live readings); if it is on, the registry row changes.
 
 ---
 
