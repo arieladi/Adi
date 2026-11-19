@@ -243,9 +243,10 @@ struct ParamOps::Runtime::DeviceProducer final : gesture::Producer {
     ParameterImage baseline;
     std::string parameter, pairedParameter;
     bool wholeState=false;
-    DeviceProducer(ParameterImage image,std::string endpoint,bool state,std::string pairedEndpoint)
+    double pairTolerance=0.0;
+    DeviceProducer(ParameterImage image,std::string endpoint,bool state,std::string pairedEndpoint,double tolerance)
         :baseline(std::move(image)),parameter(std::move(endpoint)),pairedParameter(std::move(pairedEndpoint)),
-         wholeState(state) {}
+         wholeState(state),pairTolerance(tolerance) {}
     gesture::OriginResult captureOrigin(const Store& store,const gesture::Base&) override {
         try {
             auto origin=std::make_unique<ParameterOrigin>();
@@ -308,7 +309,9 @@ struct ParamOps::Runtime::DeviceProducer final : gesture::Producer {
                     const auto wanted=value->image.parameters.at(endpoint);
                     const auto before=row?row->at("normalized_value").get<double>():baseline.parameters.at(endpoint);
                     if(!std::isfinite(wanted) || wanted<0 || wanted>1)return {{gesture::Error::InvalidInput,"parameter value is outside normalized range"},{}};
-                    if(wanted!=before) {
+                    // The paired preview uses the delivery tolerance. Its readback can differ
+                    // from a stored double by the native EQ's float rounding.
+                    if(std::fabs(wanted-before)>pairTolerance) {
                         if(!row)appendParameter(endpoint,before);
                         appendParameter(endpoint,wanted);
                     }
@@ -1929,7 +1932,8 @@ std::shared_ptr<ParamOps::Runtime::Gesture> ParamOps::Runtime::beginGesture(std:
     task->pairedParameter=pairedParameter;
     task->ordinal=++nextInputOrdinal_;task->input=std::move(input);
     task->presentation=std::make_shared<DevicePresentation>();task->presentation->runtime=shared_from_this();task->presentation->gestureOwner=task;
-    auto producer=std::make_unique<DeviceProducer>(attached.committed,parameter,state,pairedParameter);
+    auto producer=std::make_unique<DeviceProducer>(attached.committed,parameter,state,pairedParameter,
+                                                   pairedParameter.empty()?0.0:tolerance_);
     auto value=std::make_unique<ParameterInput>();value->image=task->input;value->ordinal=task->ordinal;value->unchangedState=task->unchangedState;
     gesture::Spec spec;spec.strategy=gesture::Strategy::LiveValues;
     if(state)spec.label=attached.name.empty()?std::string("Plugin state"):attached.name+": state";

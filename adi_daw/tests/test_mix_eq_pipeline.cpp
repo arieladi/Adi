@@ -149,10 +149,12 @@ void pairedBandGesture() {
     check(edit(E::End, final) && !owner && matches(final) &&
           operations() == before + 4 && transactions() == initialTransactions + 1 && doc->pendingParameterGestures().empty(),
           "paired End writes both first-touch openers and final values in one transaction");
-    check(doc->ops().undo().ok && doc->synchronise() && matches(origin),
-          "one Undo restores both original coordinates");
-    check(doc->ops().redo().ok && doc->synchronise() && matches(final),
-          "one Redo restores both edited coordinates");
+    const auto undone = doc->ops().undo();
+    doc->tick(1);
+    check(undone.ok && matches(origin), "one Undo restores both original coordinates");
+    const auto redone = doc->ops().redo();
+    doc->tick(2);
+    check(redone.ok && matches(final), "one Redo restores both edited coordinates");
     const auto settled = operations();
     check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin) &&
           edit(E::Cancel, origin) && !owner && matches(final) && operations() == settled,
@@ -160,11 +162,12 @@ void pairedBandGesture() {
     check(edit(E::Begin, final) && edit(E::Value, origin) && matches(origin),
           "paired capture can be abandoned with both preview coordinates audible");
     owner.reset();
-    doc->tick(1);
+    doc->tick(3);
     check(matches(final) && operations() == settled && doc->pendingParameterGestures().empty(),
           "the owner pump restores a pair if its surface disappears before Cancel");
-    check(edit(E::Begin, final) && edit(E::End, final) && !owner && operations() == settled,
-          "a click without a drag adds no undo entry");
+    const engine::ParameterPair readback{{{"13", value("13")}, {"14", value("14")}}};
+    check(edit(E::Begin, readback) && edit(E::End, readback) && !owner && operations() == settled,
+          "a click at the EQ's float readback adds no undo entry");
     auto invalid = origin;
     invalid[1].second = std::numeric_limits<double>::quiet_NaN();
     check(edit(E::Begin, final) && !edit(E::Value, invalid) && !owner && matches(final) &&

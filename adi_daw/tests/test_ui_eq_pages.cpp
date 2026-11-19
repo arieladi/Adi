@@ -159,8 +159,8 @@ void plottedGestures(AppCommands &commands, const std::filesystem::path &directo
     card.releaseEqHandle();
     const bool committed = !pairOwner && doc->synchronise();
     const auto undo = doc->ops().undo();
-    check(committed && undo.ok && doc->synchronise() &&
-              std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
+    doc->tick(1);
+    check(committed && undo.ok && std::abs(real("38") - 1000.) < .01 && std::abs(real("39")) < .001,
           "one Undo restores both coordinates of the diagonal gesture");
 
     check(card.pressEqGraph(point) && card.dragEqHandle(point.translated(6.f, 6.f)),
