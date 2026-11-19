@@ -6,6 +6,18 @@ Win, please lend the `ui_main.cpp` device editor factory and the two wrench-visi
 
 For an exact comparison of the three drawing pens, please save four private Volume states from a flat full-range band. Make one rising Line, Arc and S stroke from the same grid square in separate states. In the fourth, click once more at the end of the S stroke without moving. The installed editor identifies all three tools, but its isolated toolbar kept the pointer selected. These drawings would let us compare the inserted points, corner weights and repeat position directly. The clones lane owns the pen edits in `adi_shaper_panel.cpp`, `adi_shaper_panel.hpp` and `adi_shaper_panel_tests.cpp`.
 
+## 19 November 2026 — Draw and repeat Line, Arc and S curves
+
+**PR requested** · `clones/shaper-pens` · **Add three drawing pens to the ADI-Shaper editor** · `20b5f3b4`
+
+Win, this tip contains the full ADI-Shaper stack for one landing review. The three pens use the existing device parameters. Hovering previews a snapped shape. A drag auditions it, release records one undo step, and clicking again repeats in the last direction. The editor preserves both heights at a repeat boundary, stops at the cycle edge and cancels a stroke that exceeds the point pool. The installed editor's three tooltips specify Ctrl for temporary pointer mode. ADI also accepts Shift. The default stamp size, arc and S control positions and edge rules are ADI choices pending the private source strokes requested above.
+
+In a registered project, the S pen expanded a four-point Volume contour to eight. Before release, 24,000 frames of kick and bass followed the new drawing to within 0.0000005 RMS. The previous drawing differed by 0.04623 RMS. One undo restored the original four points and redo restored all eight. With the same eight points loaded into the installed editor, the full-wet quarter-note drawing read 49% in both 1920 × 1080 captures. The capture confirms the stored waveform. The source toolbar did not select a pen during isolated input.
+
+Across 192,000 stereo frames at 48 kHz and 120 BPM, the source and ADI differed by 0.000000446 stereo RMS. Each processor returned identical audio at 256 and 2,048 frames. At 256, median and 99th-percentile callbacks in microseconds were 4.0 and 9.3 for ADI, then 17.8 and 50.0 for the reference. At 2,048 they were 29.5 and 83.8 for ADI, then 64.3 and 223.2 for the reference. Each condition timed 10,240 callbacks with the editor closed and missed zero deadlines.
+
+The Release build passed the ten device suites in both Pd precisions, both headless production editor tests and the shell's three editor translation units with warnings as errors. The shared window and transport hooks remain with their owners.
+
 ## 19 November 2026 — Lower CPU cost for repeating a weighted curve
 
 **PR requested** · `clones/shaper-curve-cpu` · **Reuse calculated curve samples during ADI-Shaper playback** · `f1c0ce15`
