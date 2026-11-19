@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M55 unchanged spectrogram history
+
+A spectrogram that already shows the current publication skips the clear-prefix lookup. A new publication finds the first serial after a local clear by binary search. The source-driven comparison covered 49,923 ordered and gapped histories, with up to 128 comparisons on the earlier unchanged path and zero now. The Release software-peer gate at `e17abc0adc8939c09916f78b462b685d2aa5fa1c` passed 422 checks, including the retained history, pixels, palette and freeze regressions. These are operation counts and image checks. Live timing remains with Claude.
+
+**PR requested.** Include `mixview/spectrogram-raster-idle-20261119` in the cumulative review after the one-bar Scope delivery.
+
 ### #548 Windows rerun
 
 `eb5c68b8aa1b26524eb39b3a48d85d5261190d18` now has 21 successful hosted checks and a clean merge tree with current main. The exact Windows rerun passed the Pd timing fixture on the same source. Win can re-review this head for its existing dependency order while #651 remains the cumulative landing gate.
