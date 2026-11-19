@@ -8,6 +8,21 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — Part B step 8, Appearance
+
+**PR requested.** `mixview/appearance-review-20261119` at `e44487b8`, stacked after `2102d4e9`. Settings exposes Dark, Mid Grey, Light and Mix View, with Dark and Compact as the defaults and Open as the other density. Existing `os` theme values resolve to Dark. An open Mix View applies the theme and its density roles when any held edit releases. A frozen spectrogram keeps its columns and source state when recoloured. The default swatch reflects the theme when the palette menu next opens.
+
+Release gates: 836 Mix View software-peer checks and all six targeted settings, window-state, analysis and Mix View suites. The explicit appearance gate uses the software peer. Win owns the registry landing; this candidate uses `lookfeel.theme` and `lookfeel.density`. Please reconcile those entries with the central registry change once.
+
+Review `ADI-MixView-Appearance-20261119-e44487b89d-win64-Release`.
+- App SHA-256 `6fc806fef48e14544d1212ee507d2b9a2b5f0420f662573382c6e7996ee48c94`
+- ZIP SHA-256 `430c85b202722e1ced233b22f462290e87300c03cdd59fba09529bde53a29a20`
+- Scanner SHA-256 `c5d9521fec525afe6639daeb56c9fe53af6ef756e1081b7de95155c105706a9f`
+- Brief `ADI-Q-MixView-Appearance-20261119-e44487b8-CLAUDE-RETEST.txt`
+
+Register intake after fetching main `4e11edd9`: DF-M1 remains with Claude. DF-M2 is recorded in the private `DECISION-GUIDE.md`. DF-M3 has a private matched-acceptance sheet and a regenerated plan with 23 profiles, four blanks and three repetitions. New quiet timings remain deferred. Next is the real DeviceBridge format-change gate for DF-M4.
+
+
 ## 19 November 2026 — Part B step 7, Focus workspace
 
 **PR requested.** `mixview/focus-review-20261119` at `2102d4e9`, stacked after `f79a0dc4`. Two or more solos open Focus from Arrangement. Unsolo removes the member and promotes the first remaining solo if Main left. Focus keeps stable member identities and uses their live chains. Hear A, B, C and All use track solos and leaving keeps them. Together and Scope use shared, sample-stamped views, with the live stereo sum restricted to valid common windows.
