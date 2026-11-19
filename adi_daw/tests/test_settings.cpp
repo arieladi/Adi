@@ -476,6 +476,39 @@ void testAtomicSave() {
     check(!residue, "successful and refused saves both clean their private stages");
 }
 
+void testLastGoodBackup() {
+    section("reread, merge pending changes and preserve the prior good document");
+    adi::test::TempDirectory temp("settings", "last-good");
+    const auto file = temp.path() / "settings.json";
+    const auto backup = temp.path() / "settings.json.bak";
+    AppSettings store(appdata::App::Daw, file);
+    std::string why;
+    check(store.set("lookfeel.theme", "light", kUser, why) && store.save(why) &&
+              !fs::exists(backup), "the first save has no previous version to back up");
+
+    const std::string handEdit = R"({"schema": 1, "app": "ADI", "extra": 13, "values": {
+        "lookfeel.theme": "dark", "audio.bufferSize": 256, "future.userKey": [5, 6]}})";
+    writeText(file, handEdit);
+    check(store.reset("lookfeel.theme", kUser, why), "queue a reset over a hand edit");
+    check(fs::create_directory(backup) && !store.save(why) && readText(file) == handEdit,
+          "an unavailable backup prevents replacing the current settings");
+    check(fs::remove(backup) && store.save(why) && readText(backup) == handEdit,
+          "retry writes the exact previous document to the backup");
+    const auto merged = Value::parse(readText(file));
+    const auto& values = merged.at("values");
+    check(!values.contains("lookfeel.theme") && values.at("audio.bufferSize") == 256 &&
+              values.at("future.userKey") == Value::array({5, 6}) && merged.at("extra") == 13 &&
+              store.get("audio.bufferSize") == 256,
+          "the reset wins for its key while the other manual edits are adopted");
+
+    auto later = merged;
+    later.at("values")["lookfeel.theme"] = "dark";
+    writeText(file, later.dump());
+    check(store.save(why) && store.get("lookfeel.theme") == "dark" &&
+              readText(backup) == later.dump(),
+          "a published reset does not win against a subsequent hand edit");
+}
+
 void testCorruptKeptAside() {
     section("a corrupt file is kept aside, never overwritten silently");
     adi::test::TempDirectory temp("settings", "corrupt");
@@ -963,6 +996,7 @@ int runAll() {
     testStoreBasics();
     testUnknownKeysSurvive();
     testAtomicSave();
+    testLastGoodBackup();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();

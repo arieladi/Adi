@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -82,12 +83,13 @@ public:
     bool reset(const std::string& key, const ChangeContext& who, std::string& why);
     void resetPage(const std::string& page, const ChangeContext& who);
 
-    /// Saves through the shared publisher using a private sibling stage.
-    /// Keys this build does not know are written back exactly as read.
+    /// Rereads settings, overlays pending changes and saves atomically, with a
+    /// .bak of the prior good document. Keys that were not edited here keep
+    /// their latest value on disk, including keys this build does not know.
     /// Refused for a file that names another application or uses a newer schema,
     /// including if it appeared after loading. A successful save can put a
     /// directory-durability warning in why.
-    bool save(std::string& why) const;
+    bool save(std::string& why);
 
     /// The raw stored values, unknown keys included -- what save writes.
     [[nodiscard]] const Value& stored() const { return values_; }
@@ -108,6 +110,7 @@ private:
     LoadStatus status_ = LoadStatus::Defaults;
     std::optional<std::filesystem::path> aside_;
     Value values_ = Value::object();
+    std::set<std::string> pendingKeys_;
     bool logUsers_ = true;
 };
 
