@@ -2,6 +2,22 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 19 November 2026 — DF-M61 Main meter continuity and legacy Overview
+
+**PR requested for the cumulative Mix View head after #651 lands.** The verified meter slice is pushed at `mixview/windows-meter-continuity-20261119`, `167e256c314322051b7c7257ba7ad5baeb3b35a0`. Include it in the single integration request. No separate pull request is needed.
+
+The Main meter now preserves its interval through loop wraps and Play/Stop. A seek, source or format replacement, overrun and explicit Reset retain their existing fresh-interval behavior. TP and momentary LUFS follow the existing Main loudness service independently of the stereo publication. Changes to the undisplayed loudness values leave the readout paint idle. The historic peak remains while envelopes are still decaying after a signal. The exact visible post-signal cost is still a live gate. The pristine and freshly reset parked paths retain their zero-worker behavior.
+
+Saved Overview ID 0 now opens Analysers → Spectrum without rewriting the stored ID. Subsequent subpage changes remain available. The optional dock returns beside Stack and the retired Spectrum surface has no demand. The CTests reproduced the continuity/readout failures before the fixes. The shell regression reproduced six old-tab failures. A diagnostic showed that a fixture had fed Main and the visible Info spectrum from one synthetic source; separating their taps verified that the two Main Spectrum views share one transform and one publication.
+
+The exact Release passed six targeted CTests, 877 Mix View software-peer checks, and seven appearance checks. The approved design specifies Dark as default, and `53403555` matches it. The no-profile and Settings alias gates passed.
+
+- Release ZIP `ADI-MixView-Main-Meter-Continuity-167e256c31-win64-Release.zip`, SHA-256 `bba42c413656e199b726459aac95da3cc4fcfb45722dfbf8fd81f2a2cc0ef390`.
+- ADI.exe SHA-256 `4e2f189615556b26c69cca8f663258c7f3afbd286c4df8285b03b17122e4f615`, scanner `91fc524d9ab19730c162d64308dd005446a7c8b858c502c53dd4cba2f56906b9`, corresponding source `9c188b08d695a6816d5afad6b4ada93de964df4f456b5875c66566567cc4b8cc`.
+- Claude brief `ADI-Q-MixView-Main-Meter-Continuity-167e256c-CLAUDE-RETEST.txt`.
+
+In the rest of the older range, #552 is on main, as are #551, #553, #554, #556 and #557 via #578. #549 and #550 are merged work from other lanes. DF-M34's wet Limiter stays open because dither and latency changes can still produce legitimate work during a silent input.
+
 ## 19 November 2026 — Device routing and identity reproductions on the cumulative branch
 
 The local #651 integration `0c6e1985` takes the reviewed VST3 and CLAP host sources as-is and keeps the serial EQ provider. Its Release passes the EQ, serial-backend and existing unchanged-route suites. The serial graph version of the priming fixture keeps the promised EQ wet while the host grows its compensation rings.
