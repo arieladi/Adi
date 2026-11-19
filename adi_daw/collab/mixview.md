@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — De-esser and Gate Release output preservation
+
+The cumulative Release libraries repeated 162 saved outputs over 88,333,120 stereo frames. De-esser's 112 outputs are byte-identical to the previous accepted build and each still passes the original native peak and RMS bounds. Gate's 25 incremental and 25 complete requests are byte-identical to the accepted output arrays and retain the same verified reference hashes. This closes the Release replay check for the two reviewed branch pairs. Runtime registration still follows the native function queue.
+
 ### 2026-11-19 — DF-M18 saved-output verification
 
 Correction to the preceding entry. The near-Nyquist source comparison already existed. Replayed all 16 saved cases with the exact latest Windows Release key EQ libraries. All pass the established peak and RMS limits across 2,342,912 stereo frames, including the high-order 20 kHz band-pass and near-edge Tilt. The 10.449 dB finding measures the difference between ADI coefficients built at the host rate and at 384 kHz. The verified host-rate response should be preserved. Keep the generated magnitude test and the existing source-policy decision when reviewing #561.
