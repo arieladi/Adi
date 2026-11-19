@@ -56,6 +56,31 @@ method); Live's files and renders stay in the director's research.
 
 (The Shifter question is answered — Live's way, ADR-0247 d9 — and struck.)
 
+## 2026-11-19 — DF-E37 (c): a built-in's saved values survive a range change
+
+**`devices/builtin-real-values` (`2a4a5044`), from `main`, on win's loan of `builtin_host.cpp`'s
+value mapping.** It must land before #656, #659 and #660 (their new ranges).
+
+- The state (still `version: 1`) now also carries `real:{id:value}` and `units:{id:unit}`. On load
+  the real value wins while its unit is unchanged: clamped, rounded/snapped, turned back into a
+  position in the one `device.loadState`. A unit change falls back to the position. Positions-only
+  states keep their positions (pre-release loss, written in ENGINE-BUILTINS.md). The mapping is
+  now `juce/builtin_values.*`, tested under two declarations.
+- `setParam` honours `value.real` on lin/int/menu/toggle curves only. **For the engine:** the
+  parameter mirror's `real` is a linear reading of the position (`param_ops.cpp`'s
+  `fillRequest`), wrong on log and exponent curves; honouring it would have set Frequency 1000 Hz
+  to about 12.4 kHz on every reopen. So on those curves the position is taken — which means a
+  mirror row pushed after a state load (`Session::restoreState` pushes rows whose position
+  differs) still moves a log parameter when its range changed. **Request:** compute the mirror's
+  `real` with the parameter's curve (the device's own reading, e.g. `getParam(id).real` after the
+  set), or compare by real in `restoreState`; then `setParam` can honour real on every curve.
+- Tests: Output −12 dB, Frequency 1000 Hz, Window 40 ms come back exactly under the new ranges;
+  menu stays; unit change falls back; clamp; refusal leaves nothing to apply; per-curve `setParam`.
+  Plant: real ignored → 5 failures. 16 checks; CTest **246/246**.
+
+**PR requested** — title "A built-in's saved values survive a range change (DF-E37 c)"; head
+`devices/builtin-real-values` at `2a4a5044`; base `main`. Body: the commit message.
+
 ## 2026-11-19 — DF-E37 (b): Shifter returns to a clean unison after any pitch move
 
 **On #660's branch, `devices/shifter-latency` (`7c5d8158`).**
