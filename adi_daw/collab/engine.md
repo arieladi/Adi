@@ -18,6 +18,16 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — CT-02 atomic loop-pass Undo groups
+
+**PR requested** — branch `engine/ct02-loop-undo-groups`, head `a0a42ebd62c6b90abf9af4fc08c69f5ec0bde84c`, base `12aab48a`. Title **Commit loop passes atomically with separate Undo groups**. The remote head matches the gated commit. ADR-0248 d6 item 4, the journal contract for engine-win.
+
+`OpJournal::commitGrouped(requests, groupEnds, options)` commits the complete batch in one SQLite transaction. Each nonempty pass has one existing journal transaction ID and one Undo step. Each operation carries that ID into a single applied-batch notification after durable success. A failed handler or veto rolls back every pass, resource row and journal entry. The result exposes sequence numbers and group IDs only on success.
+
+**For engine-win / CT-02** — prepare the normal flat list of native requests and an exclusive end offset after each pass. Put the shared media import in the first pass and the main-lane edit with each pass so Undo restores its predecessor. Put each pass's label and selection metadata on its first request. Keep the existing expected-head and publication callback in `CommitOptions`; the callback runs once with the first ID and sees the complete transaction. `CommitResult::groupTxnIds` identifies each pass in order. The ordinary commit entry point keeps one Undo step and sealed gesture admission uses that entry point.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors passed 246 CTest suites, eight focused suites, four Python validators and the format layout check. GCC and Clang 19 each passed 117 history checks. The regression uses a real WAV imported once, four native take lanes and takes, and group-specific main-clip edits. A separate SQLite connection observes the old state until all four passes commit. Undo and Redo walk the four passes individually and preserve the shared media until the first pass is undone. Four compiled faults detected merged Undo IDs, a mislabelled applied notification, lost per-pass selection, and rolled-back sequence numbers escaping. Logs are in `/workspace/adi-engine-validation`. The first full run exposed the independent recorder finalization race documented in the separate report. The isolated recorder rerun passed before the successful full rerun.
+
 ## 2026-11-19 — For engine-win and Win, AudioInputRecorder can finalize a short WAV
 
 The first full CT-02 gate exposed three failures in the direct AudioInputRecorder fixture: the stereo and mono WAV lengths and exact PCM. The grouped journal candidate changes only the ops journal and its history fixture. The isolated recorder suite passed on retry.
