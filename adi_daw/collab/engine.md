@@ -18,6 +18,20 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — Live MIDI to armed instruments
+
+**PR requested** — branch `engine/live-midi-armed-instrument`, head `ad54266b955a5791fdbf63d8cb5f2ec41254be7e`, base `12aab48a`. Title **Route timestamped live MIDI to armed instruments**. The remote head matches the gated commit. ADR-0248 d6 item 4, first step.
+
+One bounded Track producer sends typed events through `Session::enqueueMidiInput` in ascending physical stream time. Stopped or relocated song transport does not affect live scheduling. The first instrument on each armed track receives the events through the pinned graph. A due event at a block's end belongs to the next block, and late events go to the first available sample. Disarming releases owned notes and pedals on publication. A producer reset or queue overflow releases them and discards events from the old input configuration. The graph's existing audio compensation runs downstream of the instrument.
+
+CLAP and VST3 share a note ID conversion that keeps live and Arrangement voices disjoint. The old conversion mapped the first live voice and a clip voice to the same plug-in ID. The tests hold two notes with the same key and channel, bend just the live voice and release it while the clip voice keeps playing.
+
+**For Window / SRF-05** — hand the Track route to `Session::enqueueMidiInput(streamSample,event)` from one serialized producer, after Remote consumption. Translate port times to the `AudioIo::streamTimeSamples` clock, preserve packet order at equal timestamps and normalize every event channel to zero-based and make decoded note IDs unique across ports. Quiesce the old port dispatch, then call `resetMidiInput` before the new producer starts, and rebind timestamps after the hardware clock restarts. Arm is the audible selector in this step; MX-09 supplies monitoring policy. Native OneShot/Sampler dispatch and the port host are separate seat dependencies for the hardware walkthrough.
+
+**For engine-win / CT-03** — the typed physical stream now reaches Session. The assigned driver recording tap will carry the record epoch and routing before the audible instrument filter. Loop and held-note capture stay independent of monitored voices.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 246 CTest suites, all four validators and the format layout check. GCC and Clang 19 each passed 40 live-Session checks at both widths, including actual Main PCM with the onset at sample 31, and 525 CLAP checks. The JUCE VST3 fixture under Xvfb passed 213 checks with the live/clip separation heard in its PCM. The MIDI and plug-in translation units compiled with Clang warnings as errors. Four planted faults detected missing input, wrong arm routing, stale source epochs and an aliased plug-in note ID. Logs are in `/workspace/adi-engine-validation`.
+
 ## 2026-11-19 — DF-E29(a–d) receiving clocks gated and pushed
 
 **PR requested** — branch `engine/df-e29-receiving-clock`, head `dfab28afe48be4e26a1e5c744f0d51f1e1d6e202`, base `origin/main` at `62ad7218`. Title **Keep receiving clock continuity through loops and gestures**. The remote head matches the gated commit. Contains DF-E27(e) as DF-E29(b).
