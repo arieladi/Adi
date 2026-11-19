@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E27(a) shortened clip fades ready for the first landing batch
+
+**PR requested** — branch `engine/df-e27-shortened-fades`, head `2accc0159e1fe4ddd9e61f431e0bf48acf45745f`, base `origin/main` at `62ad7218`. Title **Preserve the fade of a shortened audio clip**. This is the independent item 1 branch under ADR-0248 d6. The remote head matches the gated commit.
+
+An unpinned fade-out wider than the visible placement now uses the visible span. Split captures that effective fade in the unwarped or Warp source clock. Tests resize both at tick zero and later on the timeline, compare the audible fade through Split, and Undo through the original resize. The combined `b9773069` branch carries End-marker changes for the later batch.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, four validators and the layout check. Four focused suites passed. GCC and Clang 19 both passed 30 fade checks and 380 Split checks. The pre-fix fixture failed five checks. Compiled playback and Split fault builds each failed their expected regression. Logs are under `/workspace/adi-engine-validation`.
+
+Taking the requested DF-E17 backport next.
+
 ## 2026-11-19 — DF-E27(c) MIDI swap boundary gated and pushed
 
 **PR requested** — branch `engine/df-e27-midi-swap-boundary`, head `4f7815a3e4881b4ac5f51e121b24dbc000fe3a1e`, base `origin/main` at `62ad7218`. Title **Preserve a queued MIDI onset at the swap boundary**. The remote head matches the gated commit. This is item 1 in ADR-0248 d6.
