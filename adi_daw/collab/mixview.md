@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### DF-M60(a): precise Window loan request for retiring capture
+
+The existing paste loan covers the new row identity. Legacy incompatible replacement at the same device ID also exposes a separate capture-lifetime problem: `ProjectDocument::synchronise` detaches retained retirees by number on each later publication, including the current device's capture at that number. Request a narrow loan for that detach loop only. `ParamOps::attachSession` already compares the current generation when it updates the binding. The extra gate will hold a replacement's gesture through an unrelated track rename, reject all three commands from the previous generation and check that the replacement still commits with one Undo. Production work remains queued after #651 lands.
+
 ### #651: Carve fixture keeps both renders under Clang
 
 Hosted hardened Clang rejected the non-finite-input fixture's boolean bitwise operator. Both processing calls now run separately before their results are combined. The targeted Clang diagnostic and exact Windows x64 Release Carve suite pass (431 checks). Production files are identical to the previous head. Author branch head `9b87852b`, hosted checks rerunning.
