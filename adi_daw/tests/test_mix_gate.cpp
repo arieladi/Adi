@@ -669,6 +669,119 @@ template <class T> void completeRequestAliases() {
     check(requests(missing, external, a) && requests(connected, external, b, &key) && equal(a, b),
           "request disconnect preserves the same envelope tail as connected silence");
 }
+template <class T> void aliasedProgrammeMatchesFixedInternalKey() {
+    auto original = signal<T>();
+    original[0][5] = std::numeric_limits<T>::infinity();
+    original[1][18] = std::numeric_limits<T>::quiet_NaN();
+    if constexpr (std::numeric_limits<T>::max_exponent > std::numeric_limits<float>::max_exponent)
+        original[1][257] = std::numeric_limits<T>::max();
+    for (const double rate : {44100., 48000., 96000., 192000.}) {
+        g::Settings internal;
+        internal.leftKeyMix = -1;
+        internal.rightKeyMix = 1;
+        internal.holdMs = 37;
+        auto external = internal;
+        external.keySource = g::KeySource::External;
+        const g::PrepareSpec spec{rate, 257, 2, g::ProcessingContract::CompleteRequests};
+        g::Core baseline, routed;
+        const bool prepared = baseline.prepare(spec, internal) == g::Status::Ok &&
+                              routed.prepare(spec, external) == g::Status::Ok;
+        check(prepared, "fixed Internal and externally aliased Gate streams prepare");
+        if (!prepared) continue;
+        auto expected = original, actual = original;
+        bool processed = true;
+        for (std::size_t offset = 0; offset < count;) {
+            const auto frames = static_cast<int>(std::min<std::size_t>(offset % 2 == 0 ? 257 : 17,
+                                                                       count - offset));
+            T *fixed[]{expected[0].data() + offset, expected[1].data() + offset};
+            T *inPlace[]{actual[0].data() + offset, actual[1].data() + offset};
+            const T *alias[]{inPlace[0], inPlace[1]};
+            audioCall = true;
+            processed &= baseline.processRequest(frames, fixed, nullptr, 0, internal) == g::Status::Ok;
+            processed &= routed.processRequest(frames, inPlace, alias, 2, external) == g::Status::Ok;
+            audioCall = false;
+            offset += static_cast<std::size_t>(frames);
+        }
+        check(processed && equal(actual, expected),
+              "externally prepared Gate's programme aliases preserve its fixed Internal bits");
+    }
+}
+
+template <class T> void completeRequestHotKey() {
+    enum class Source { Programme, First, Silence, Second, Removed };
+    constexpr std::array sources{Source::Programme, Source::First, Source::Silence,
+                                 Source::Second, Source::Removed};
+    g::Settings internal;
+    auto external = internal;
+    external.keySource = g::KeySource::External;
+    const g::PrepareSpec spec{48000., 257, 2, g::ProcessingContract::CompleteRequests};
+    g::Core routed, timeline, stuckInternal;
+    const bool prepared = routed.prepare(spec, external) == g::Status::Ok &&
+                          timeline.prepare(spec, external) == g::Status::Ok &&
+                          stuckInternal.prepare(spec, internal) == g::Status::Ok;
+    check(prepared, "hot-route Gate fixture has separate one-time preparations");
+    if (!prepared) return;
+
+    auto actual = signal<T>(), first = actual, second = actual;
+    for (std::size_t i = 0; i < count; ++i) {
+        actual[0][i] *= static_cast<T>(.045);
+        actual[1][i] *= static_cast<T>(.045);
+        first[0][i] = static_cast<T>(.75);
+        first[1][i] = static_cast<T>(.6);
+        second[0][i] = static_cast<T>(.1);
+        second[1][i] = static_cast<T>(.65);
+    }
+    auto expected = actual, stale = actual;
+    auto timelineKey = actual;
+    for (std::size_t phase = 0; phase < sources.size(); ++phase) {
+        const auto start = count * phase / sources.size();
+        const auto end = count * (phase + 1) / sources.size();
+        for (std::size_t channel = 0; channel < 2; ++channel)
+            for (std::size_t i = start; i < end; ++i) {
+                switch (sources[phase]) {
+                case Source::First: timelineKey[channel][i] = first[channel][i]; break;
+                case Source::Silence: timelineKey[channel][i] = T{}; break;
+                case Source::Second: timelineKey[channel][i] = second[channel][i]; break;
+                case Source::Programme:
+                case Source::Removed: break;
+                }
+            }
+    }
+    bool processed = true, staleKeyMissed = false;
+    for (std::size_t phase = 0; phase < sources.size(); ++phase) {
+        const auto start = count * phase / sources.size();
+        const auto end = count * (phase + 1) / sources.size();
+        for (std::size_t offset = start; offset < end;) {
+            const auto frames = static_cast<int>(std::min<std::size_t>(offset % 2 == 0 ? 257 : 17, end - offset));
+            T *product[]{actual[0].data() + offset, actual[1].data() + offset};
+            T *oracle[]{expected[0].data() + offset, expected[1].data() + offset};
+            T *unchanged[]{stale[0].data() + offset, stale[1].data() + offset};
+            const T *key[]{product[0], product[1]};
+            const auto source = sources[phase];
+            if (source == Source::First || source == Source::Second) {
+                const auto &tapped = source == Source::First ? first : second;
+                key[0] = tapped[0].data() + offset;
+                key[1] = tapped[1].data() + offset;
+            }
+            const T *recorded[]{timelineKey[0].data() + offset, timelineKey[1].data() + offset};
+            const bool silent = source == Source::Silence;
+            audioCall = true;
+            processed &= routed.processRequest(frames, product, silent ? nullptr : key, silent ? 0 : 2,
+                                                external) == g::Status::Ok;
+            processed &= timeline.processRequest(frames, oracle, recorded, 2, external) == g::Status::Ok;
+            processed &= stuckInternal.processRequest(frames, unchanged, nullptr, 0, internal) == g::Status::Ok;
+            audioCall = false;
+            if (source == Source::First)
+                for (int i = 0; i < frames; ++i)
+                    staleKeyMissed |= std::abs(product[0][i] - unchanged[0][i]) > static_cast<T>(.001);
+            offset += static_cast<std::size_t>(frames);
+        }
+    }
+    check(processed && equal(actual, expected) && routed.latencySamples() == 0,
+          "connect, routed silence, retarget and removal match one chronological key without reprepare");
+    check(staleKeyMissed, "continuing to select the internal source audibly misses the hot connection");
+}
+
 void completeRequestRefusal() {
     g::Settings s;
     const g::PrepareSpec spec{48000, 257, 2, g::ProcessingContract::CompleteRequests};
@@ -798,6 +911,10 @@ int main() {
     completeRequestContinuity<double>();
     completeRequestAliases<float>();
     completeRequestAliases<double>();
+    aliasedProgrammeMatchesFixedInternalKey<float>();
+    aliasedProgrammeMatchesFixedInternalKey<double>();
+    completeRequestHotKey<float>();
+    completeRequestHotKey<double>();
     completeRequestRefusal();
     check(allocations == 0 && deallocations == 0, "callback allocation and deallocation counts remain zero");
     std::printf(

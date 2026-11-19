@@ -83,6 +83,13 @@ alone never imply a Constant source. Ordinary unity ratio skips detector control
 while preserving upstream key demand. No future input, extra latency or
 per-sample silence shortcut substitutes for this full-request decision.
 
+A caller that supports live routing can keep a single External CompleteRequests
+stream. With no route, use the two programme planes as exact key aliases.
+An active route supplies its two key planes. A routed source without samples
+supplies zero planes and feeds silence. Switching these inputs at a request
+boundary keeps the existing detector history. The caller determines route
+availability independently of sample pointers.
+
 Neither contract implements outer graph completion or whole-device sleep.
 These are demanded-span processing contracts, not a whole-plugin equivalence
 or quiet-CPU claim. Controls remain fixed in both contracts.
