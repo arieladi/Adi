@@ -520,7 +520,7 @@ void AdiShaper::render(StageData& stage, const float* inL, const float* inR,
                 double distance = (1.0 - static_cast<double>(primary)) * timeSpans_[index];
                 if (band.type >= static_cast<int>(DelayRange::Short2_5ms))
                     distance = std::max(0.0, distance - 1.0);
-                times_[index].processStereo(l, r, distance);
+                times_[index].processStereo(l, r, distance, band.primary.linear && !band.primary.constant);
             } else {
                 crush_[index].processStereo(l, r, primary, band.secondary.at(p));
             }

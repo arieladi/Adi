@@ -25,7 +25,8 @@ void AdiShaperTime::reset() noexcept {
     next_ = valid_ = 0;
 }
 
-void AdiShaperTime::processStereo(float& left, float& right, double delayFrames) noexcept {
+void AdiShaperTime::processStereo(float& left, float& right, double delayFrames,
+                                  bool interpolate) noexcept {
     if (!history_) {
         if (delayFrames != 0.0) left = right = 0.0f;
         return;
@@ -49,7 +50,7 @@ void AdiShaperTime::processStereo(float& left, float& right, double delayFrames)
     const auto slot = (current - whole) & mask;
     const auto& a = history_[slot];
     const auto fraction = static_cast<float>(delayFrames - static_cast<double>(whole));
-    if (fraction == 0.0f) {
+    if (!interpolate || fraction == 0.0f) {
         left = a[0];
         right = a[1];
         return;

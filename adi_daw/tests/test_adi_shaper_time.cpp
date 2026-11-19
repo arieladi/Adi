@@ -12,8 +12,8 @@ int main() {
     auto check = [&](bool ok, const char* label) {
         if (!ok) { ++failures; std::fprintf(stderr, "FAIL %s\n", label); }
     };
-    auto read = [&](float l, float r, double delay) {
-        time.processStereo(l, r, delay);
+    auto read = [&](float l, float r, double delay, bool interpolate = false) {
+        time.processStereo(l, r, delay, interpolate);
         return std::array{l, r};
     };
     check(read(.5f, -.125f, 0) == std::array{.5f,-.125f}, "zero offset before prepare");
@@ -29,8 +29,10 @@ int main() {
         }
     }
     time.reset();
-    check(read(.5f, -.25f, .25) == std::array{.375f,-.1875f}, "startup fraction uses zero prehistory");
-    check(read(0.f,0.f,.25) == std::array{.125f,-.0625f}, "fractional impulse tail");
+    check(read(.5f,-.25f,.875) == std::array{.5f,-.25f}, "stationary fractional reads truncate to a sample");
+    time.reset();
+    check(read(.5f, -.25f, .25, true) == std::array{.375f,-.1875f}, "startup fraction uses zero prehistory");
+    check(read(0.f,0.f,.25,true) == std::array{.125f,-.0625f}, "fractional impulse tail");
     time.reset();
     for (const double invalid : {static_cast<double>(Time::maximumDelay + 1), -1.0,
                                  std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()})

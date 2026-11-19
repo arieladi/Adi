@@ -13,7 +13,8 @@ class AdiShaperTime {
     static constexpr std::size_t maximumDelay = capacity - 512;
     [[nodiscard]] bool prepare() noexcept;
     void reset() noexcept;
-    void processStereo(float& left, float& right, double delayFrames) noexcept;
+    void processStereo(float& left, float& right, double delayFrames,
+                       bool interpolate = false) noexcept;
 
   private:
     using Frame = std::array<float, 2>;
