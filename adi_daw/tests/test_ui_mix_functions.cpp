@@ -64,6 +64,26 @@ struct MixFocusTestAccess {
         }
         return true;
     }
+    static bool compactScope(const MixFocus &focus) { return focus.sumLabel_.isEmpty(); }
+    static bool sumOverRangeInk(MixFocus &focus) {
+        const auto plot = focus.plot_.toNearestInt();
+        const auto left = plot.getX(), top = focus.scroll_.getBottom();
+        const auto right = focus.sumLabel_.isEmpty() ? plot.getRight() : focus.sumLabel_.getX();
+        juce::Image image(juce::Image::RGB, focus.getWidth(), focus.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            focus.paint(g);
+        }
+        const juce::Colour indicator = look::record;
+        for (auto y = top; y < plot.getY(); ++y)
+            for (auto x = left; x < right; ++x) {
+                const auto pixel = image.getPixelAt(x, y);
+                if (std::abs(pixel.getRed() - indicator.getRed()) <= 16 &&
+                    std::abs(pixel.getGreen() - indicator.getGreen()) <= 16 &&
+                    std::abs(pixel.getBlue() - indicator.getBlue()) <= 16) return true;
+            }
+        return false;
+    }
 };
 } // namespace adi::ui
 namespace {
@@ -1336,6 +1356,38 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     check(MixFocusTestAccess::sumStrokeAt(focus, 0.f) && afterSum.taps == beforeSum.taps &&
               afterSum.consumers == beforeSum.consumers,
           "an opposed pair collapses the visible sum to zero immediately without acquiring another analysis reader");
+    const auto writeSum = [&](float leftA, float rightA, float leftB, float rightB) {
+        std::array<float, 1024> left{}, right{};
+        const auto stamp = driver.position();
+        const auto frames = static_cast<std::int32_t>(left.size());
+        driver.advance(frames);
+        doc->mailbox().publish(driver);
+        left.fill(leftA); right.fill(rightA);
+        tap->write(left.data(), right.data(), frames, stamp, true, driver.revision());
+        left.fill(leftB); right.fill(rightB);
+        secondTap->write(left.data(), right.data(), frames, stamp, true, driver.revision());
+        broker->pump();
+        root.frame();
+    };
+    writeSum(.5f, -.5f, .5f, -.5f);
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::sumOverRangeInk(focus),
+          "an exact +1 left and -1 right sum leaves the Scope title normal");
+    writeSum(.8f, 0.f, .8f, 0.f);
+    check(MixFocusTestAccess::aligned(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the Scope title visibly marks an above-unity positive sum on the left channel alone");
+    writeSum(0.f, -.8f, 0.f, -.8f);
+    check(MixFocusTestAccess::aligned(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the Scope title visibly marks an above-unity negative sum on the right channel alone");
+    const auto wideFocus = focus.getBounds();
+    focus.setBounds(wideFocus.withWidth(3 * look::mixFocusSourceWidth));
+    focus.frame(SnapshotReader(root.current()));
+    check(MixFocusTestAccess::compactScope(focus) && MixFocusTestAccess::sumOverRangeInk(focus),
+          "the over-range title remains visible at a width without a separate numeric sum readout");
+    focus.setBounds(wideFocus);
+    writeSum(.8f, -.8f, -.8f, .8f);
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::sumOverRangeInk(focus) &&
+              broker->stats().consumers == afterSum.consumers && broker->stats().taps == afterSum.taps,
+          "the over-range title clears on cancellation without another analysis consumer or tap");
     driver.play(false);
     doc->mailbox().publish(driver);
     focus.scope.setToggleState(false, juce::dontSendNotification);
