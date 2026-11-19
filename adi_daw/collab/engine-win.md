@@ -8,6 +8,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across machines. Existing saved JUCE identifiers embed the installed path's hash and the cache retains only the existing 32-bit class hash. Recommend continuing to read existing identifiers and adding the exact VST3 class ID alongside them for new records. A single candidate can be checked against a legacy saved path hint under the existing identifier rule. Matching projects with no usable legacy hint or exact class ID needs a compatibility choice.
 
+Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
+
+## 2026-11-19 · Take-lane journal operations
+
+**PR requested** — `engine-win/take-lane-operations` at `dc65a5f72c432cd0939a395c387d0e6b1ef47867`, stacked on `engine-win/timeline-main-lane` at `8c088dcbfce9a2264290d58022dfee171843fbbb`. Title **Add undoable take lane operations**.
+
+CT-01. Create an empty `Lane` at the top, delete, reorder, rename, mute metadata and attach a clip to a same-track take lane or back to main. Delete captures clips and their child streams, aliases, source paths and previous order. It explicitly removes the take clips before deleting the lane. Undo and the late-failure rollback preserve captured data. Cross-track moves of a lane-attached clip require an explicit detach/move/attach batch. Strict x64 MSVC passed 1,892 checks across the lane, operation, schema, clip/time editing, placement and playback gates. Legacy comp-target behavior, audition and lane-aware producers remain open. CT-02 pass capture is in progress.
+
 ## 2026-11-19 · Catalogue reads, scanner infrastructure and export revision evidence
 
 **PR requested** — `engine-win/scanner-catalogue-read` at `6b51e34f1a4d3c1ac437ce66279264b381f4b3f1`, stacked on `engine-win/scanner-failure-cache` at `cab873e2bef86e9660b5abe0cf405521bf4c8389`. Title **Read validated plug-in catalogue snapshots without a helper**.
