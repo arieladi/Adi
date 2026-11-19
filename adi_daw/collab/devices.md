@@ -5,6 +5,52 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-21, step 1: OneShot's controls take Live 12.4's ranges, units and defaults
+
+**`devices/oneshot-live-params` (`95a4fe0b`), stacked on `devices/sampler`** (which stands
+on #278).
+
+**The reading.** Live 12.4 (build of 24 April 2026) ships a default Simpler preset in its
+Core Library; read from its files on this machine, no Live session run. The values, as
+statements: Volume -36..36 dB, default -12; Attack 0.1 ms..20 s, 0.1 ms; Decay 1 ms..60 s,
+600 ms; Sustain a level 0.000316..1 (shown -70..0 dB), 1 (0 dB); Release 1 ms..60 s, 50 ms;
+One-shot Fade In and Fade Out 0..2000 ms, 0.1 ms each; Loop on, Snap on, Retrigger on;
+Filter on, Low-pass, 24 dB, 30 Hz..22 kHz at 22 kHz, Resonance 0..1.25 at 0, Drive 0..24 dB;
+LFO on, sine, 0.01..30 Hz at 1 Hz, free-running; Vel > Vol 0.35; Transpose ±48 st; Detune
+±50 cents; Pan, Spread 0..100 %, Glide (off, 50 ms), pitch-bend range 5 (MPE 48); Voices
+the sixth entry of its chooser. The file stays private, the numbers are in the test.
+
+**What changed.** OneShot's matching controls now carry those ranges, units and defaults;
+Vel > Vol is new (35 %). The canvas declares the same and a test pins all 28 values.
+The oracles test mechanics, so they switch off what they do not test and model Live's
+shortest attack and release where they compare samples (an exact 0.1 ms ramp, spectral
+windows after it, one more block where a 1 ms release overlaps). Sampler keeps Snap off per
+zone and exposes Vel > Vol. OneShot **295**, OneShot Pd **38**, Sampler **31**; MSVC `/W4 /WX`
+clean; CTest **245/245**. Plant: the old Volume range fails the Live check and the dB oracle.
+
+**Not claimed (the laws are still ADI's):** linear envelope segments (Live's have slopes,
+default decay and release slope 1), the Vel > Vol blend, Resonance-to-Q, the filter circuits
+and Morph, Pan, Spread, Glide, Drive (not built). **Readings still to take from Live 12.4,
+one question each, before the sound is claimed:** the Voices chooser's list; the velocity
+law at 35 %; the envelope slope law; the Clean filter's response at 22 kHz and at a
+resonance. Each needs a render from Live; they are this lane's next use of Live and will be
+announced here first.
+
+**PR requested** — title "OneShot's controls take Live 12.4's ranges, units and defaults
+(DEV-21 step 1)"; head `devices/oneshot-live-params` at `95a4fe0b`; base `devices/sampler`
+until #278 and the Sampler PR land, then `main`. Body: the commit message.
+
+**Requests to the engine (DEV-21's other half; LANES: `src/juce/*host*` and the catalogue
+are not this lane's).** (1) `builtin_catalog`: entries for `adi.oneshot` and `adi.sampler`
+with kind `instrument` (`EventFlow::Consume`), available. (2) `makeBuiltinDevice`: native
+dispatch of both to `device::OneShot` / `device::Sampler` (no Pd adapter, ADR-0203 d4).
+(3) Their samples through #414's slot ops (the `sample:1` role). The device side is ready
+on the stack above; tests inject the loader meanwhile.
+
+**Next:** DEV-19 (item 4) waits on the engine's DEV-17/DEV-18 (see #207 above), so item 5,
+DEV-22: first the Shifter's latency against the reading (Live reports 0 and delays by half
+its window), then the latency table of RESEARCH-INTAKE 6.2 across the built effects.
+
 ## 2026-11-19 — DEV-09, step 5: the Pd tier built with `PD_FLOATSIZE=64`, every suite passing (AR17); DEV-09 complete
 
 **`devices/pd-double` (`d4568d8e`), stacked on `devices/pd-hash-a`.**
