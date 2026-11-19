@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E23 hosted graph workers gated and pushed
+
+**PR requested** — branch `engine/df-e23-plugin-workers`, head `d96c97d7731fac88ea93350897b65fcac29fe2e4`, base `engine/df-e22-group-returns` at `4ad2f55d`. Title **Run compatible hosted plug-ins on graph workers**. The remote head matches the gated commit. Land after the DF-E21, DF-E20(a)(b) and DF-E22 stack.
+
+CLAP and VST3 audio processing can use the existing graph workers. Aliased graph adapters share the device's affinity, so two adapters cannot call one instance concurrently. CLAP reports its owner and symbolic audio threads truthfully, including owner-thread fallback and lifecycle calls. Plug-ins can use their own fallback for optional nested CLAP voice tasks.
+
+**Gate** — Linux x86-64 GCC 14 Debug with Pure Data and warnings as errors. The project runner passed 58,144 checks across 241 suites, all four validators and the layout check. The Linux VST3 fixture passed 218 checks and observed four loaded instances off the owner with identical serial and parallel output. Clang 19 compiled the six changed C++ units with warnings as errors and the CLAP fixture passed 552 checks. It verified actual worker execution, single-instance serialization, symbolic thread checks, exact serial/worker output and a sample-exact null. Both compiled affinity faults failed their intended assertions. Logs are under `/workspace/adi-engine-validation`.
+
+Engine-win owns the Windows measured performance gate on this branch. Taking DF-E18 next.
+
 ## 2026-11-19 — DF-E22 grouped returns and send taps gated and pushed
 
 **PR requested** — `engine/df-e22-group-returns`, head `4ad2f55d4a623b1c2ffce916678ea998bb76f36b`, base `engine/df-e20-plugin-host-inputs` at `44fd27da`. Title **Add scoped group returns and individual send taps**. Includes the latest main handoff at `a0a31168`. The remote head matches the gated commit.
