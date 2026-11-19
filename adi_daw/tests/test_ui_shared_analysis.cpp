@@ -569,6 +569,9 @@ void permanentMainMeter() {
     meter.frame(f.broker, 1, source);
     check(meter.subscribed() && !meter.reading() && calls.size() == 7,
           "returning to view acquires fresh data without restoring audition");
+    meter.setTopLeftPosition(root.getWidth(), 0);
+    check(!meter.subscribed() && f.broker->stats().consumers == 0,
+          "moving the meter itself out of view also releases its lease immediately");
     meter.setAuditionSink({});
     root.removeFromDesktop();
 }

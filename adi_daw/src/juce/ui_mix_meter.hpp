@@ -18,6 +18,7 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     void setAuditionSink(std::function<void(Audition)> sink);
     juce::ComboBox listenBox;
     void resized() override;
+    void moved() override;
     void paint(juce::Graphics &) override;
     void mouseUp(const juce::MouseEvent &) override;
     bool subscribed() const noexcept { return static_cast<bool>(lease_); }
@@ -35,6 +36,7 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     void release();
     bool eligible() const noexcept;
     void componentVisibilityChanged(juce::Component &) override;
+    void componentMovedOrResized(juce::Component &, bool, bool) override;
     void componentBeingDeleted(juce::Component &) override;
     void stopWatching();
     void paintReadings(juce::Graphics &, juce::Rectangle<int>);

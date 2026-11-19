@@ -178,6 +178,7 @@ void MixOutputMeter::visibilityChanged() {
     if (!eligible()) release();
 }
 void MixOutputMeter::componentVisibilityChanged(juce::Component &) { visibilityChanged(); }
+void MixOutputMeter::componentMovedOrResized(juce::Component &, bool, bool) { visibilityChanged(); }
 void MixOutputMeter::componentBeingDeleted(juce::Component &) { release(); }
 void MixOutputMeter::suspend(bool value) {
     suspended_ = value;
@@ -247,8 +248,9 @@ void MixOutputMeter::resized() {
     floatButton.setBounds(controls.removeFromLeft(controls.getWidth() / 2));
     resetButton.setBounds(controls.reduced(hairline, 0));
     plot_ = area;
-    if (plot_.isEmpty()) release();
+    visibilityChanged();
 }
+void MixOutputMeter::moved() { visibilityChanged(); }
 void MixOutputMeter::paint(juce::Graphics &g) {
     g.fillAll(look::panel);
     paintReadings(g, plot_);
