@@ -199,6 +199,25 @@ void trimSourceZeroAndCollapse() {
                   tableRows(store,"clip_playback_details").empty(),
               "off-grid clip at source zero: extension is a true no-op without clock rows");
     }
+    {
+        Project project;
+        auto& store = *project.store;
+        auto& db = store.db();
+        addClip(store, 7, 21, 1, 100000005, 10000000, "audio");
+        db.exec("UPDATE clips SET content_offset_ticks=240 WHERE id=7;"
+                "INSERT INTO media_files(id,hash_blake3,format) VALUES(300,'one-sample','wav');"
+                "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,4000000);"
+                "INSERT INTO clip_playback_details(clip_id,content_offset_ns) VALUES(7,20833)");
+        const ReadGuard original(store);
+        const auto trim = prepareTrim(store, scope(1, 200000000), {7,{1,0}}, locked());
+        check(trim.ok && original.unchanged(store) && commit(store, trim) &&
+                  db.execAndGet("SELECT pos_ns FROM clips WHERE id=7").getInt64() == 99979167 &&
+                  db.execAndGet("SELECT pos_ns+length_ns FROM clips WHERE id=7").getInt64() == 110000005 &&
+                  db.execAndGet("SELECT content_offset_ns FROM clip_playback_details WHERE clip_id=7").getInt64() == 0,
+              "linear trim with one sample of source lead-in clamps to the source-zero sample and keeps the exact End");
+        check(History(store).undo().ok && typedRows(store) == original.rows,
+              "Undo restores the fractional linear placement and the one-sample offset");
+    }
     for(const char* kind:{"midi","audio"}) {
         Project project;auto& store=*project.store;
         addClip(store,7,21,0,4*q,4*q,kind);

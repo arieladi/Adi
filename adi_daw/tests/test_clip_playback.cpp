@@ -527,6 +527,53 @@ void sourceMarkers() {
     check(repeated[150]==loop.media[414] && repeated[250]==loop.media[214] && repeated[500]==0,
           "Loop uses its own source window while the End marker is inactive");
 }
+void editPinnedSourceMarkers() {
+    Fixture f(48000, 2, 4000);
+    f.add(1, 600, 1000, 0, 2500);
+    auto& db = f.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,240);"
+            "UPDATE clips SET content_offset_ticks=24024 WHERE id=1;"
+            "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,120120);"
+            "INSERT INTO clip_playback_details(clip_id,content_offset_ns,source_end_ns)"
+            " VALUES(1,2083333,10416667)");
+    const auto markers = [&] {
+        SQLite::Statement q(db, "SELECT content_offset_ticks,end_marker_ticks,"
+            " COALESCE(content_offset_ns,-1),COALESCE(source_end_ns,-1) FROM clips"
+            " JOIN clip_properties ON clip_properties.clip_id=clips.id"
+            " JOIN clip_playback_details ON clip_playback_details.clip_id=clips.id WHERE clips.id=1");
+        if (!q.executeStep()) throw std::runtime_error("no clip marker state");
+        return std::array{q.getColumn(0).getInt64(), q.getColumn(1).getInt64(),
+                          q.getColumn(2).getInt64(), q.getColumn(3).getInt64()};
+    };
+    OpJournal journal(*f.store);
+    History history(*f.store);
+    const auto move = [&](const char* type, std::int64_t tick) {
+        OpRequest op;
+        op.opType = type;
+        op.payload = {{"id", 1}, {"ticks", tick}};
+        return journal.commit(op).ok;
+    };
+    const auto original = markers();
+    const bool movedStart = move("clip.setStartMarker", 96096);
+    const auto start = markers();
+    check(movedStart && start == std::array<std::int64_t, 4>{96096,240240,4166667,10416667},
+          "a Start edit projects both displayed markers and preserves the audible End pin");
+    const bool movedEnd = move("clip.setEndMarker", 192192);
+    const auto end = markers();
+    check(movedEnd && end == std::array<std::int64_t, 4>{96096,192192,4166667,8333333},
+          "an End edit pins its own source time and keeps the physical Start");
+    check(history.undo().ok && markers() == start && history.undo().ok && markers() == original,
+          "Undo restores both captured source-marker clocks and the earlier display values");
+    check(history.redo().ok && markers() == start && history.redo().ok && markers() == end,
+          "Redo rebuilds the synchronized markers through the journal");
+
+    db.exec("UPDATE tempo_map SET bpm=120 WHERE pos_ticks=0");
+    f.load(1024);
+    f.session.transport().locate(600);
+    const auto audio = f.render(1024);
+    check(audio[0] == f.media[400] && audio[199] == f.media[798] && audio[200] == 0,
+          "an edited Start and End stay sample-exact when the placement tempo changes again");
+}
 void endSourceClocks() {
     Fixture plain(48000, 2, 4000, -1);
     plain.add(1, 600, 800, 0, 1000);
@@ -1038,7 +1085,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
-        if(only=="all" || only=="markers"){sourceMarkers();endSourceClocks();}
+        if(only=="all" || only=="markers"){sourceMarkers();editPinnedSourceMarkers();endSourceClocks();}
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();

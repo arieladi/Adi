@@ -97,9 +97,10 @@ other source type remain exact. Loop bounds, source
 End, media identity and file bytes stay unchanged. The actual marker-aligned
 Warp and looped/resampled playback tests compare retained PCM at both widths.
 These are ADI regression checks; the listed Live 12.4 measurements remain NOT RUN.
-Save Sample Defaults also retains the already captured source End pin instead
-of applying the current tempo's tick marker again. A legacy End edit uses the
-native marker op, which clears the previous pin before freezing its new End.
+Save Sample Defaults retains the captured source End pin across tempo changes.
+Start and End edits on unwarped audio write the edited boundary in ticks and
+nanoseconds and derive the other displayed marker from its preserved physical
+pin. Legacy unpinned boundaries are frozen in the edit's tempo.
 Portable defaults canonicalize a negative, unused unwarped tick fallback to
 the existing nonnegative physical offset; the project row and source pin stay
 unchanged. This keeps the existing library format and its validation bounds.
