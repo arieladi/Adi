@@ -561,25 +561,14 @@ void normaliseSearchText(std::string_view in, std::size_t maxBytes, std::string 
 
 // --- snapshot and owned actual-device publication adapters ---------------------------------------
 
-// Today's channel processor as MixViewProvider v1 reports it: ADI-Q, ducking, ADI-L (keys 1, 2, 4;
-// key 3 is kept for Clip, which v1 does not report).
-std::span<const ModuleKindInput> defaultModuleKinds() noexcept;
 struct SnapshotRows {
     std::vector<TrackInput> tracks;
-    std::vector<ModuleInput> modules;
     std::vector<ItemInput> items;
-    std::span<const ModuleKindInput> kinds;
     // Adapter scratch only: source indices sorted by owning track, then source order. Reused so
     // unchanged publications allocate nothing; it never owns project state or supplies identity.
     std::vector<std::pair<TrackId, std::size_t>> chainOrder;
     RowsInput input(std::uint64_t generation, std::uint64_t providerRevision = 0) const noexcept;
 };
-// Every track of the reader's snapshot in the arrangement's order (geometry.rows(reader)), with
-// inView from the geometry, the Reference from the provider (and the role), roles from TrackNode,
-// and the modules from MixViewProvider v1. Refilled in place; names are views into the snapshot,
-// valid while `reader` lives.
-void tracksFromSnapshot(const SnapshotReader &, const ArrangementGeometry &, const MixViewProvider &,
-                        SnapshotRows &out);
 
 // A message-thread publication supplies these records in each track's actual chain order. Its
 // owner holds the publication through setRows(). Identity is an opaque nonzero instance token,

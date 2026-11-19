@@ -2683,17 +2683,8 @@ void viewStateRoundTrip() {
           "m14: an offset inside an enlarged row is kept to the row at rest");
 }
 
-class V1Provider final : public MixViewProvider {
+class ReferenceProvider final : public MixViewProvider {
   public:
-    ChannelSlots slots(const adi::engine::TrackNode &t) const noexcept override {
-        ChannelSlots s;
-        s.eq = t.id == 1;
-        s.sidechain = t.id == 3 ? SidechainMode::Rmsc : SidechainMode::Off;
-        s.limiter = t.id == 5;
-        s.limiterFull = t.kind == "master";
-        return s;
-    }
-    bool live() const noexcept override { return true; }
     std::int64_t reference(const std::vector<std::shared_ptr<const adi::engine::TrackNode>> &) const noexcept override {
         return 6;
     }
@@ -2724,9 +2715,9 @@ void adapter() {
     rowsFromSnapshot(reader, rows);
     geometry.order.build(reader, rows);
     geometry.hidden = {4};
-    V1Provider provider;
+    ReferenceProvider provider;
     SnapshotRows out;
-    tracksFromSnapshot(reader, geometry, provider, out);
+    tracksFromSnapshot(reader, geometry, provider, {}, out);
     std::vector<TrackId> order;
     for (const auto &t : out.tracks)
         order.push_back(t.id);
@@ -2739,22 +2730,14 @@ void adapter() {
     };
     check(in(3).depth == 1 && in(3).parent == 2 && !in(4).inView && in(6).reference && in(2).group && in(5).main,
           "T45: depth, the project view, the Reference, groups and Main");
-    check(out.kinds.size() == 3 && out.kinds[0].key == 1 && out.kinds[1].key == 2 && out.kinds[2].key == 4,
-          "T45: today's provider reports ADI-Q, ducking and ADI-L");
-    const auto state = [&](TrackId id, std::size_t k) {
-        for (std::size_t i = 0; i < out.tracks.size(); ++i)
-            if (out.tracks[i].id == id)
-                return out.modules[i * 3 + k].state;
-        return ModuleState::Absent;
-    };
-    check(state(1, 0) == ModuleState::Engaged && state(3, 1) == ModuleState::Engaged && state(5, 2) == ModuleState::Engaged &&
-              state(5, 1) == ModuleState::Absent && state(1, 2) == ModuleState::Dormant && state(6, 0) == ModuleState::Absent,
-          "T45: the modules from v1, no ducking on Main");
+    const auto input = out.input(reader.seq());
+    check(out.items.empty() && input.kinds.empty() && input.modules.empty(),
+          "T45: a device-free snapshot has only channel rows");
     check(in(1).identity != 0 && in(1).identity == in(3).identity && in(1).identity != in(2).identity,
           "T45: the identity is the track kind");
     audit = true;
     allocations = 0;
-    tracksFromSnapshot(reader, geometry, provider, out);
+    tracksFromSnapshot(reader, geometry, provider, {}, out);
     audit = false;
     check(allocations == 0, "T45: a second call allocates nothing");
     StackModel m;
@@ -2781,7 +2764,7 @@ void actualChainAdapter() {
     std::vector<TrackRow> rows;
     rowsFromSnapshot(reader, rows);
     geometry.order.build(reader, rows);
-    StubMixViewProvider provider;
+    MixViewProvider provider;
     std::vector<ChainDeviceInput> devices{
         {2, 301, 4001, ItemClass::Plugin, "Same device"},
         {1, 105, 2005, ItemClass::Plugin, "Same device"},
@@ -2816,6 +2799,19 @@ void actualChainAdapter() {
     refresh();
     audit = false;
     check(allocations == 0, "actual chain adapter reuses all scratch capacities on steady input");
+
+    ViewState saved;
+    saved.window.channelScope = ChannelScope::AllChannels;
+    saved.window.moduleRange = {{1, 0, 105, DisplayRange::Db30}, {1, kDuck, 0, DisplayRange::Db12}};
+    saved.shared.pins = {1};
+    StackModel reopened;
+    reopened.setViewport(1800, 600, 0);
+    reopened.setRows(out.input(reader.seq(), 1), 0);
+    reopened.applyViewState(saved, 10);
+    const auto restored = reopened.viewState();
+    check(restored.window.moduleRange == saved.window.moduleRange && restored.shared.pins == saved.shared.pins &&
+              reopened.live(reopened.chainRef(1, 105)) && !reopened.live(reopened.moduleRef(1, kDuck)),
+          "older Stack view preferences reopen without recreating a reserved slot or changing a real device");
 
     StackModel model;
     model.setViewport(1800, 600, 0);

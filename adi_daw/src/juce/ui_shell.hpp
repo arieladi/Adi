@@ -699,8 +699,8 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
                    bool separate);
     void importNext();
     void finishImport(const std::string &why);
-    StubMixViewProvider mixStub_;
-    const MixViewProvider *mixProvider_ = &mixStub_;
+    MixViewProvider defaultMixProvider_;
+    const MixViewProvider *mixProvider_ = &defaultMixProvider_;
     ReferenceAudition reference_;
     MomentaryLatch latch_;
     TapTempo tap_;

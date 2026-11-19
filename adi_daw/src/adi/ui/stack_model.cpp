@@ -475,100 +475,52 @@ ViewState ViewState::normalised(const Constants &c) const {
     return v;
 }
 
-std::span<const ModuleKindInput> defaultModuleKinds() noexcept {
-    static constexpr std::array<ModuleKindInput, 3> kinds{{
-        {1, "ADI-Q", "adi-q eq", ItemClass::AdiQ, true, true},
-        {2, "Ducking", "ducking sidechain sc", ItemClass::Ducking, false, false},
-        {4, "ADI-L", "adi-l limiter", ItemClass::AdiL, false, false},
-    }};
-    return kinds;
-}
-
 RowsInput SnapshotRows::input(std::uint64_t generation, std::uint64_t providerRevision) const noexcept {
     RowsInput in;
-    in.kinds = kinds;
     in.tracks = tracks;
     in.items = items;
-    in.modules = modules;
     in.generation = generation;
     in.providerRevision = providerRevision;
     return in;
 }
 
 void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry &geometry,
-                        const MixViewProvider &provider, SnapshotRows &out) {
-    out.kinds = defaultModuleKinds();
-    const auto rows = geometry.rows(reader);
-    const std::size_t n = rows.size(), nk = out.kinds.size();
-    out.tracks.resize(n);
-    out.modules.resize(n * nk);
-    out.items.clear();
-    const TrackId referenceTrack = provider.reference(reader.tracks());
-    for (std::size_t i = 0; i < n; ++i) {
-        const auto row = rows[i];
-        const engine::TrackNode &node = *row.track;
-        TrackInput &t = out.tracks[i];
-        t = TrackInput{};
-        t.id = node.id;
-        t.parent = row.place.parent;
-        t.depth = row.place.depth;
-        t.group = row.place.group;
-        t.main = row.place.main;
-        t.ret = row.place.ret;
-        std::uint64_t identity = hashBytes(hashBytes(kFnvBasis, "track:"), node.kind);
-        t.identity = identity == 0 ? 1 : identity;
-        t.inView = geometry.inView(node.id);
-        const std::string_view roleName = node.role ? std::string_view(*node.role) : std::string_view();
-        t.reference = node.id == referenceTrack || roleName == "reference";
-        t.colour = node.color && *node.color >= 0 && *node.color < kPaletteColours
-                       ? static_cast<std::int32_t>(*node.color)
-                       : -1;
-        t.roles = roleName == "kick"    ? role::Kick
-                  : roleName == "bass"  ? role::Bass
-                  : roleName == "vocal" ? role::Vocal
-                                        : std::uint8_t{0};
-        t.name = node.name;
-        // MixViewProvider v1 reports three engaged flags per channel; the rest is ADI's rules:
-        // no ducking on Main (nothing above it to key from), nothing on the Reference.
-        const auto state = provider.slots(node);
-        for (std::size_t k = 0; k < nk; ++k) {
-            ModuleInput &m = out.modules[i * nk + k];
-            m = ModuleInput{};
-            const std::uint32_t key = out.kinds[k].key;
-            bool engaged = false, absent = t.reference;
-            if (key == 1)
-                engaged = state.eq;
-            else if (key == 2) {
-                engaged = state.sidechain != SidechainMode::Off;
-                absent = absent || t.main;
-            } else if (key == 4)
-                engaged = state.limiter;
-            m.state = absent ? ModuleState::Absent : engaged ? ModuleState::Engaged : ModuleState::Dormant;
-            if (m.state != ModuleState::Absent) {
-                const std::uint64_t instance =
-                    hashWord(hashWord(hashWord(kFnvBasis, static_cast<std::uint64_t>(node.id)), t.identity), key);
-                m.instance = instance == 0 ? 1 : instance;
-            }
-        }
-    }
-}
-
-void tracksFromSnapshot(const SnapshotReader &reader, const ArrangementGeometry &geometry,
                         const MixViewProvider &provider, std::span<const ChainDeviceInput> devices,
                         SnapshotRows &out) {
-    tracksFromSnapshot(reader, geometry, provider, out);
-    // The compatibility adapter's columns are not real devices. Actual-chain rows have only
-    // their user-added devices; this overload never switches on or reserves a built-in module.
-    out.kinds = {};
-    out.modules.clear();
+    const auto rows = geometry.rows(reader);
+    out.tracks.resize(rows.size());
+    out.items.clear();
+    const TrackId referenceTrack = provider.reference(reader.tracks());
     out.chainOrder.resize(devices.size());
     for (std::size_t i = 0; i < devices.size(); ++i)
         out.chainOrder[i] = {devices[i].track, i};
     std::sort(out.chainOrder.begin(), out.chainOrder.end());
     out.items.reserve(devices.size());
-    for (auto &track : out.tracks) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto row = rows[i];
+        const engine::TrackNode &node = *row.track;
+        TrackInput &track = out.tracks[i];
+        track = TrackInput{};
+        track.id = node.id;
+        track.parent = row.place.parent;
+        track.depth = row.place.depth;
+        track.group = row.place.group;
+        track.main = row.place.main;
+        track.ret = row.place.ret;
+        std::uint64_t identity = hashBytes(hashBytes(kFnvBasis, "track:"), node.kind);
+        track.identity = identity == 0 ? 1 : identity;
+        track.inView = geometry.inView(node.id);
+        const std::string_view roleName = node.role ? std::string_view(*node.role) : std::string_view();
+        track.reference = node.id == referenceTrack || roleName == "reference";
+        track.colour = node.color && *node.color >= 0 && *node.color < kPaletteColours
+                           ? static_cast<std::int32_t>(*node.color)
+                           : -1;
+        track.roles = roleName == "kick"    ? role::Kick
+                    : roleName == "bass"  ? role::Bass
+                    : roleName == "vocal" ? role::Vocal
+                                          : std::uint8_t{0};
+        track.name = node.name;
         track.itemBegin = static_cast<std::uint32_t>(out.items.size());
-        track.itemCount = 0;
         auto at = std::lower_bound(out.chainOrder.begin(), out.chainOrder.end(),
                                    std::pair<TrackId, std::size_t>{track.id, 0});
         for (; at != out.chainOrder.end() && at->first == track.id; ++at) {

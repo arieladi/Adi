@@ -10442,8 +10442,6 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir, bool 
         root.referenceKey(false, 50);
         // A provider that names Lead, as the snapshot's will once tracks carry their role.
         struct Named final : MixViewProvider {
-            ChannelSlots slots(const engine::TrackNode &) const noexcept override { return {}; }
-            bool live() const noexcept override { return false; }
             std::int64_t reference(const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks) const noexcept override {
                 for (const auto &t : tracks)
                     if (t->id == 12)
