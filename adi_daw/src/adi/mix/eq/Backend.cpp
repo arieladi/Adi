@@ -26,13 +26,15 @@ public:
                  const Settings& settings) override {
         prepared_ = false;
         zeroTail_ = false;
-        // Restrict the proof to a fresh preparation that has never run a
-        // stateful configuration. Retained EQ history and learning are owned
-        // by stopped reprepare. A return to authored zero does not clear them.
-        pristine_ = !everPrepared_ && !offline_ && neutral(settings);
+        // Keep a pristine history through the host's stopped format
+        // handoff. Authored neutral settings do not erase an older stateful
+        // stream. A failed preparation also leaves no suspension proof.
+        const bool pristine = (!everPrepared_ || pristine_) && !offline_ && neutral(settings);
         everPrepared_ = true;
+        pristine_ = false;
         audioSettings_.eq = settings;
         serial_.prepare({rate, maximum, channels}, audioSettings_);
+        pristine_ = pristine;
         channels_ = channels;
         maximum_ = maximum;
         prepared_ = true;
