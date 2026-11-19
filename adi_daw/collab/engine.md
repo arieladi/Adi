@@ -20,7 +20,7 @@ My recommendation is to keep MIDI aligned to the device's physical audio delay a
 
 ## 2026-11-19 — DF-E1 exact tick and linear marker conversion
 
-**PR requested** — branch , head , main base . Title **DF-E1: Preserve exact ticks and linear marker endpoints**. This is the tempo and displayed marker step of DF-E1. The sample-domain End fence follows with the DF-E27(b) source-clock path.
+**PR requested** — branch `engine/df-e1-clock-rounding`, head `55fd8bbdcb665e1248bd2380783ddbec071b8ba6`, main base `bedee5ab`. Title **DF-E1: Preserve exact ticks and linear marker endpoints**. This is the tempo and displayed marker step of DF-E1. The sample-domain End fence follows with the DF-E27(b) source-clock path.
 
 The tempo inverse admits rounding error of a few ulps of the absolute time and caps the tolerance below a fraction of a tick. Linear Clip View and native Start derive End from the stored integer absolute endpoint. The tests cross two tempo changes and a long prior segment, and check the floor between real tick boundaries. A native marker fixture verifies the same exact End in the Clip View and in the journal.
 
