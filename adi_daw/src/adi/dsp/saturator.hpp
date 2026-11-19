@@ -42,6 +42,7 @@ class Saturator {
     struct Lane {
         std::array<std::array<double, 2>, 4> z{};
         std::array<double, 65> up{}, down{};
+        std::array<double, 65> upDry{};   ///< DF-E37 (a): the dry, upsampled beside the wet
         std::array<double, 4> dry{};
         std::size_t pos = 0, dryPos = 0;
         double dcIn = 0, dcOut = 0;

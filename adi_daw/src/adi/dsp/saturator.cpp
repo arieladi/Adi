@@ -155,14 +155,25 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
             l.dry[l.dryPos] = in[c];
             const double dry = hq ? l.dry[(l.dryPos + 1) % 4] : in[c];   // 3 samples, the reported latency
             l.dryPos = (l.dryPos + 1) % 4;
+            // DF-E37 (a): at a partial Dry/Wet with High Quality on, the dry is
+            // upsampled beside the wet and mixed BEFORE the down-sampling filter,
+            // so both pass the same two minimum-phase filters and share one phase
+            // response. A plain 3-sample dry against them comb-filtered (-13.9 dB
+            // at 18 kHz at 50 %). At 0 % the dry stays the exact 3-sample delay;
+            // at 100 % there is no dry.
+            const bool inLoop = hq && mix > 0 && mix < 1;
             double wet = 0;
             for (int k = 0; k < factor; ++k) {
-                double x = input;
+                double x = input, xd = 0;
                 if (hq) {
                     l.up[l.pos] = k == 0 ? input * 4 : 0;
+                    l.upDry[l.pos] = k == 0 ? in[c] * 4 : 0;
                     x = 0;
                     for (std::size_t j = 0; j < 65; ++j)
                         x += fir_[j] * l.up[(l.pos + 65 - j) % 65];
+                    if (inLoop)
+                        for (std::size_t j = 0; j < 65; ++j)
+                            xd += fir_[j] * l.upDry[(l.pos + 65 - j) % 65];
                 }
                 if (p_[ColorOn] >= .5) {
                     x = filter(x, f[0], l.z[0]);
@@ -174,7 +185,7 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
                     x = filter(x, f[3], l.z[3]);
                 }
                 if (hq) {
-                    l.down[l.pos] = x;
+                    l.down[l.pos] = inLoop ? xd + (x - xd) * mix : x;
                     double y = 0;
                     for (std::size_t j = 0; j < 65; ++j)
                         y += fir_[j] * l.down[(l.pos + 65 - j) % 65];
@@ -184,7 +195,7 @@ void Saturator::process(const float *il, const float *ir, float *ol, float *orr,
                 } else
                     wet = x;
             }
-            double combined = dry + (wet - dry) * mix;
+            double combined = inLoop ? wet : dry + (wet - dry) * mix;
             if (p_[PostClip] >= 1.5)
                 combined = std::clamp(combined, -1., 1.);
             else if (p_[PostClip] >= .5)

@@ -200,7 +200,7 @@ void measurements() {
     check(worst < 1e-6, "and the windowed sinc's magnitude through the passband");
 }
 // DEV-22: Live 12.4's default Saturator preset, read from the file that build
-// ships (the director's research machine, 19 November): Bass Shaper threshold
+// ships (the director's research, 19 November): Bass Shaper threshold
 // -50 dB, Color on, Waveshaper Drive 100 %, Oversampling (High Quality) on;
 // Amt Lo -36..36 dB, Frequency 30..18500 Hz, Output -36..0 dB.
 void liveDefaults() {
@@ -221,6 +221,37 @@ void liveDefaults() {
     top.set(C::Frequency, 30);
     top.prepare(48000);
     check(render(c, x) == render(top, x), "Output, Amt Lo and Frequency stop at Live's limits");
+}
+// DF-E37 (a): with High Quality on (the default), a partial Dry/Wet must not
+// comb-filter. The wet path runs the minimum-phase 4x filters, whose group
+// delay rises from 3.56 samples to 7.8 at 18 kHz; a plain 3-sample dry path
+// against it cut 6.3 dB at 15 kHz and 13.9 at 18 kHz at Mix 50 %. Written to
+// hold for any filter later fitted to Live's impulse: at any Dry/Wet the
+// response follows the 100 %-wet one -- the dry and the wet share one phase
+// response, and the resampler's own roll-off (0.9 dB at 18 kHz) is all that
+// is left.
+void partialMix() {
+    const double freqs[] = {1000., 10000., 15000., 18000.};
+    double full[4];
+    for (std::size_t k = 0; k < 4; ++k) {
+        C c;
+        c.set(C::Mix, 100);
+        c.prepare(48000);
+        full[k] = bin(render(c, tone(freqs[k], .3)), freqs[k]);
+    }
+    std::printf("HQ 100 %% wet at 18 kHz: %.2f dB (the resampler's roll-off)\n", 20 * std::log10(full[3] / .3));
+    for (double mix : {10., 50., 90.}) {
+        double worst = 0;
+        for (std::size_t k = 0; k < 4; ++k) {
+            C c;
+            c.set(C::Mix, mix);
+            c.prepare(48000);
+            const double db = 20 * std::log10(bin(render(c, tone(freqs[k], .3)), freqs[k]) / full[k]);
+            worst = std::max(worst, std::abs(db));
+        }
+        std::printf("HQ at Mix %.0f %%: worst %.3f dB from the 100 %%-wet response, 1 to 18 kHz\n", mix, worst);
+        check(worst < 0.5, "HQ at a partial Dry/Wet follows the 100 %-wet response within 0.5 dB to 18 kHz");
+    }
 }
 void partitions() {
     auto x = tone(731);
@@ -251,6 +282,7 @@ void partitions() {
 } // namespace
 int main() {
     liveDefaults();
+    partialMix();
     measurements();
     partitions();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
