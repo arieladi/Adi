@@ -5,6 +5,45 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-11-19 — DEV-09, step 3: the audio thread never waits for Pd (AR8)
+
+**`devices/pd-audio-thread` (`b86243f3`), stacked on `devices/pd-fence`.** Files: this
+lane's `src/juce/pd_engine.*` and the Pd tests.
+
+- **One `sys_trylock` per Pd tick** replaces `libpd_process_float`, which took
+  `sys_lock` (blocking) and ran `sys_pollgui` on the audio thread on every tick. A busy
+  lock skips the tick (silence, counted as `skippedTicks`). Measured: a message-thread
+  holder of the lock for 50 ms; the slowest 64-frame segment stayed under 10 ms and the
+  ticks were counted. Plant (waiting for the lock): 61 ms in one segment, nothing skipped.
+- **Every delivery inside that lock**, just before the tick: `sendFloat` from the message
+  thread through a single-producer ring (its name resolved under the lock), parameters
+  latest-value-wins, transport and routed MIDI (kept over a segment that holds no whole
+  tick). A parameter therefore reaches Pd in the next locked tick, still before its block
+  (ADR-0188 d3). Two device tests read a latency straight after a parameter without
+  rendering; they now render one block first (EQ Eight, Saturator).
+- **Printing through a queue:** the print hook pushes into a bounded multi-producer queue
+  of fixed slots (no lock, no allocation); the message thread joins the pieces. `[print]`
+  on a 1 ms `[metro]`: **0** CRT allocations on the audio thread over ~400 lines (MSVC debug
+  heap hook). Plant (the old string append): 3.
+- **Arrays read without the lock-leaking path:** `libpd_read_array` returns -2 with the
+  instance still locked when a table is shorter than asked. A published table that
+  shrinks then hung the instance; the plant trips the test's 10 s watchdog. The tick now
+  reads under its own trylock with a bounds check; `readArray` always unlocks.
+- `gensym` in `bindParameters`/`bindArrays` now under the lock; `InstanceLock` is the
+  message-thread holder an attached editor will use (DEV-11).
+- Not serviced any more: `sys_pollgui` (sockets, GUI) never runs. `[netreceive]`-style
+  objects therefore get no socket polling; the plan defers a file and network policy for
+  shared patches (DEV-09 "Reject or defer"), and it is noted here so nobody is surprised.
+
+`adi_pd_engine_tests` **631** checks. MSVC `/W4 /WX` whole tree clean; CTest **242/242**.
+
+**PR requested** — title "Pd: the audio thread never waits for Pd: trylock tick, queued
+deliveries, lock-free print (DEV-09 step 3, AR8)"; head `devices/pd-audio-thread` at
+`b86243f3`; base `devices/pd-fence` until it lands, then `main`. Body: the commit message.
+
+**Next:** DEV-09 step 4, the `#A` overlay (plugdata-pd `bdb30eed`, BSD-3 like Pd) with a
+dangling-binding test, then step 5, the `PD_FLOATSIZE=64` build.
+
 ## 2026-11-19 — DEV-09, step 2: native code refused at Pd's own loader; `[; pd quit]` and kin fenced (AR7)
 
 **`devices/pd-fence` (`b3adb315`), stacked on `devices/pd-teardown`** (both change
