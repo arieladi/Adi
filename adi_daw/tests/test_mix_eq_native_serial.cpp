@@ -89,8 +89,13 @@ template<class Sample>
 bool reference(eq::Core &core, Audio<Sample> &audio, const Audio<Sample> *key, int keyChannels,
                const eq::Settings &s, eq::BlockContext context, int offset = 0, int count = frames) {
     auto main = audio.pointers(offset);
+    static constexpr std::array<Sample, frames> zeros{};
+    const std::array<const Sample *, 2> silence{zeros.data(), zeros.data()};
     const auto side = key ? key->keyPointers(offset) : std::array<const Sample *, 2>{};
     AudioScope scope;
+    // An explicit zero bus is the detector oracle even with the older direct core.
+    if (s.externalSidechain && keyChannels == 0)
+        return core.process(main.data(), silence.data(), 2, count, s, context);
     return core.process(main.data(), key ? side.data() : nullptr, keyChannels, count, s, context);
 }
 template<class Sample> void exactMatrix(double rate, int channels, int mode) {
@@ -122,19 +127,20 @@ template<class Sample> void exactMatrix(double rate, int channels, int mode) {
           "serial EQ provider preserves exact float/double mono/stereo static/dynamic/spectral audio for absent, silent and active keys");
     backend->release();
 }
-template<class Sample> void silentKeyIsDistinct() {
+template<class Sample> void missingKeyMatchesSilence() {
     auto settings = settingsFor(1); settings.bands[0].gainDb = 0;
     auto absent = eq::makeBackend(), silent = eq::makeBackend();
     absent->prepare(48000, frames, 2, settings); silent->prepare(48000, frames, 2, settings);
-    double difference = 0;
+    bool exact = true;
     for (std::uint64_t block = 1; block <= 64; ++block) {
-        Audio<Sample> a, zero; a.signal(block, 48000); auto b = a;
-        run(*absent, a, static_cast<const Audio<Sample> *>(nullptr), 0, settings, block, 0);
-        run(*silent, b, &zero, 2, settings, block, 0);
-        for (std::size_t ch = 0; ch < 2; ++ch) for (std::size_t i = 0; i < frames; ++i)
-            difference = std::max(difference, std::abs(static_cast<double>(a.samples[ch][i]) - static_cast<double>(b.samples[ch][i])));
+        Audio<Sample> a, key; a.signal(block, 48000); auto b = a;
+        const bool connected = block > 16 && block <= 32;
+        if (connected) key.signal(block, 48000, true);
+        run(*absent, a, connected ? &key : nullptr, connected ? 2 : 0, settings, block, 0);
+        run(*silent, b, &key, 2, settings, block, 0);
+        exact = (a == b) && exact;
     }
-    check(difference > 1.e-5, "authored external On with no bus uses programme, while an actual silent bus remains silent");
+    check(exact, "missing and connected silent external keys give identical audio before connection and after removal");
 }
 template<class Sample> void malformedPlanes() {
     const auto settings = settingsFor(1); auto backend = eq::makeBackend(); backend->prepare(48000, frames, 2, settings);
@@ -183,6 +189,7 @@ template<class Sample> void spectralKeyIsDistinct() {
 }
 template<class Sample> void continuation() {
     auto settings = settingsFor(1); settings.bands[0].dynamicLearn = true;
+    settings.externalSidechain = false;
     auto backend = eq::makeBackend(); eq::Core direct;
     backend->prepare(48000, frames, 2, settings); direct.prepare({48000, frames, 2}, settings);
     bool exact = true;
@@ -348,7 +355,7 @@ int main() {
     for (double rate : {44100., 48000., 96000.}) for (int channels : {1, 2}) for (int mode = 0; mode < 3; ++mode) {
         exactMatrix<float>(rate, channels, mode); exactMatrix<double>(rate, channels, mode);
     }
-    silentKeyIsDistinct<float>(); silentKeyIsDistinct<double>();
+    missingKeyMatchesSilence<float>(); missingKeyMatchesSilence<double>();
     spectralKeyIsDistinct<float>(); spectralKeyIsDistinct<double>();
     malformedPlanes<float>(); malformedPlanes<double>();
     continuation<float>(); continuation<double>();

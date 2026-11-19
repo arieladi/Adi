@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "Backend.hpp"
 #include "../eq_chain/Backend.hpp"
-#include <array>
 
 namespace adi::mix::eq {
 namespace {
@@ -62,14 +61,6 @@ private:
         // The existing EQ facade refused malformed positive-width key planes.
         // Keep that policy even though the general serial core can zero a plane.
         for (std::int32_t ch = 0; ch < keyChannels; ++ch) if (!key[ch]) return;
-        std::array<const Sample*, 2> programme{main[0], channels_ == 2 ? main[1] : main[0]};
-        if (settings.externalSidechain && keyChannels == 0) {
-            // Native EQ historically falls back to programme without an actual
-            // external bus. Supplying that view preserves the authored toggle
-            // and detector law; connected silence remains a genuine silent key.
-            key = programme.data();
-            keyChannels = channels_;
-        }
         audioSettings_.eq = settings;
         (void)serial_.process(main, key, keyChannels, frames, audioSettings_, physicalBlock,
                               configuredLatency);

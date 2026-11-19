@@ -160,8 +160,8 @@ downstream stages disabled. All 730 parameter IDs, saved-state values and common
 remain the same. The adapter retains the authored EQ learning object across stopped reprepare.
 The native provider forces a stopped prepare when the engine switches between float and double,
 even at the same rate and buffer size. Same-format rebuilds retain the running state.
-An absent external key keeps the existing programme fallback; a connected silent key remains
-silent. This compatibility path does not create a device sidechain route.
+When External Sidechain is on, the detector treats an absent bus as silence. Turning External
+Sidechain off selects the programme. A device sidechain route is still set separately.
 
 Scalar edits run without configuration-owner jobs. Prepared-plan changes use one demand-driven
 owner, a complete aggregate latency offer and physical-callback admission. Main relays published
