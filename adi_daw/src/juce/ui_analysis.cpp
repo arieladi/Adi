@@ -134,13 +134,31 @@ void SharedSpectrumView::setMode(Mode mode) {
     if (mode == Mode::SpectrumAverage || mode_ == Mode::SpectrumAverage) frozen_ = false;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; freshRequired_ = false;
-    mode_ = mode; updateDemand(); repaint();
+    if (mode == Mode::ClassicScope && !classicPanel_) {
+        classicPanel_ = std::make_unique<ClassicScopePanel>();
+        classicPanel_->setTitle("s(M)exoscope");
+        classicPanel_->setBounds(getLocalBounds());
+        classicPanel_->onChange = [this](const ClassicScopeControls &controls) { setClassicControls(controls); };
+        classicPanel_->onFreeze = [this](bool held) {
+            freeze(held);
+            if (onClassicFreeze) onClassicFreeze(held);
+        };
+        addChildComponent(*classicPanel_);
+    }
+    mode_ = mode;
+    if (classicPanel_) {
+        resetClassic(false);
+        classicPanel_->setVisible(mode_ == Mode::ClassicScope);
+        setInterceptsMouseClicks(false, mode_ == Mode::ClassicScope);
+    }
+    updateDemand();
+    repaint();
 }
 void SharedSpectrumView::setSource(engine::ScopePoint point, std::int64_t device) {
     if (point_ == point && device_ == device) return;
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
     sourcePosition_ = {}; freshRequired_ = false;
-    point_ = point; device_ = device; updateDemand(); repaint();
+    point_ = point; device_ = device; resetClassic(false); updateDemand(); repaint();
 }
 void SharedSpectrumView::setChannel(SharedAnalysis::Channel channel) {
     if (channel_ == channel) return;
@@ -198,9 +216,32 @@ juce::String SharedSpectrumView::mainMeterText() const {
            "  S " + meterNumber(mainMeter_->shortTermLufs) + "  I " + meterNumber(mainMeter_->integratedLufs) +
            " LUFS\nTP (held) " + meterNumber(mainMeter_->truePeakDb) + " dBTP";
 }
+void SharedSpectrumView::setClassicControls(const ClassicScopeControls &controls) {
+    if (controls == classicControls_) return;
+    auto previous = classicControls_;
+    previous.sync = controls.sync;
+    const bool newProfile = controls != previous;
+    classicControls_ = controls;
+    if (mode_ != Mode::ClassicScope) return;
+    if (newProfile) {
+        // Keep the physical tap during a knob drag. The new profile starts
+        // its own capture before the previous sweep drops its lease.
+        auto previousLease = std::move(captureLease_);
+        resetClassic(false);
+        updateDemand();
+        previousLease.reset();
+    }
+    presentClassic();
+}
 void SharedSpectrumView::freeze(bool value) {
     if (frozen_ == value) return;
     frozen_ = value;
+    if (mode_ == Mode::ClassicScope) {
+        if (!value) resetClassic(true);
+        updateDemand();
+        presentClassic();
+        return;
+    }
     if (value) lease_.reset();
     else {
         freshRequired_ = true; sourcePosition_ = {};
@@ -210,6 +251,14 @@ void SharedSpectrumView::freeze(bool value) {
     repaint();
 }
 void SharedSpectrumView::clear() {
+    if (mode_ == Mode::ClassicScope) {
+        captureShown_.reset();
+        captureFresh_ = true;
+        capturePosition_ = captureLease_.sourcePosition();
+        updateDemand();
+        presentClassic();
+        return;
+    }
     // Local interval only: clearing one view never seeks the tap, discards another view's
     // publication or resets audio/loudness state. Wait for a subsequent worker window.
     if (shown_) {
@@ -235,6 +284,7 @@ void SharedSpectrumView::present(std::shared_ptr<SharedAnalysis> broker, std::in
         clearedRevision_ = clearedEpoch_ = clearedColumn_ = 0;
         sourcePosition_ = {}; freshRequired_ = false;
         status_ = Status::Detached;
+        resetClassic(false);
         repaint();
     }
     updateDemand();
@@ -250,6 +300,10 @@ bool SharedSpectrumView::eligible() const noexcept {
     return true;
 }
 void SharedSpectrumView::updateDemand() noexcept {
+    if (mode_ == Mode::ClassicScope) {
+        updateClassicDemand();
+        return;
+    }
     const auto previous = status_;
     const bool hadMainMeter = mainMeter_.has_value();
     if (!eligible()) {
@@ -279,6 +333,7 @@ void SharedSpectrumView::updateDemand() noexcept {
             case Mode::Phase: request.outputs = SharedAnalysis::Phase; break;
             case Mode::Spectrogram: request.outputs = SharedAnalysis::Spectrogram; break;
             case Mode::SpectrumAverage: request.outputs = SharedAnalysis::Average1s; break;
+            case Mode::ClassicScope: break; // Uses the continuous capture lease above.
             }
             try {
                 lease_ = broker_->acquire(request);
@@ -305,8 +360,91 @@ void SharedSpectrumView::armFreshBoundary() noexcept {
     freshRequired_ = true;
     sourcePosition_ = lease_.sourcePosition();
 }
+void SharedSpectrumView::resetClassic(bool fresh) noexcept {
+    captureLease_.reset();
+    captureShown_.reset();
+    capturePosition_ = {};
+    captureFresh_ = fresh;
+    presentClassic();
+}
+void SharedSpectrumView::presentClassic() noexcept {
+    if (classicPanel_) classicPanel_->present(classicControls_, frozen_, captureShown_, capturePosition_.written);
+}
+void SharedSpectrumView::updateClassicDemand() noexcept {
+    if (!eligible()) {
+        if (captureLease_) captureFresh_ = true;
+        captureLease_.reset();
+        if (!frozen_ && captureShown_) resetClassic(true);
+        status_ = Status::Detached;
+        return;
+    }
+    if (!broker_->active()) {
+        resetClassic(true);
+        status_ = Status::Unavailable;
+        return;
+    }
+    if (frozen_) {
+        captureLease_.reset();
+        status_ = captureShown_ ? Status::Ready : Status::Waiting;
+        return;
+    }
+    if (!captureLease_) {
+        try {
+            const auto lane = classicControls_.right ? SharedAnalysis::Channel::Right : SharedAnalysis::Channel::Left;
+            captureLease_ = broker_->acquireCapture({{track_, point_, device_}, lane, classicControls_.settings()});
+        } catch (...) {
+            status_ = Status::Unavailable;
+            return;
+        }
+    }
+    if (!captureLease_.available()) {
+        if (capturePosition_.generation) captureFresh_ = true;
+        capturePosition_ = {};
+        if (captureShown_) {
+            captureShown_.reset();
+            presentClassic();
+        }
+        status_ = Status::Unavailable;
+        return;
+    }
+    // The tap's activation fence is cheap and owner-only. Re-read it only to
+    // detect a replaced tap, never to chase ordinary audio writes.
+    const auto position = captureLease_.sourcePosition();
+    if (capturePosition_.generation != position.generation) {
+        const bool replacement = capturePosition_.generation != 0;
+        capturePosition_ = position;
+        if (replacement) captureFresh_ = true;
+        if (!captureFresh_) capturePosition_.written = 0;
+        if (captureShown_) {
+            captureShown_.reset();
+            presentClassic();
+        }
+    }
+    status_ = captureShown_ ? Status::Ready : Status::Waiting;
+}
+void SharedSpectrumView::classicFrame() noexcept {
+    if (!captureLease_) return;
+    broker_->requestFrame();
+    updateClassicDemand(); // owner resolution can replace a tap before its next publication
+    if (!captureLease_.available()) return;
+    auto next = captureLease_.read();
+    if (next && next->generation != capturePosition_.generation) next.reset();
+    const auto hasNewColumn = [this](const auto &columns) {
+        return !columns.empty() && columns.back().firstSequence >= capturePosition_.written;
+    };
+    if (next && captureFresh_ && !hasNewColumn(next->current) && !hasNewColumn(next->previous))
+        next.reset();
+    if (next == captureShown_) return;
+    captureShown_ = std::move(next);
+    status_ = captureShown_ ? Status::Ready : Status::Waiting;
+    presentClassic();
+}
 void SharedSpectrumView::frame() noexcept {
     updateDemand();
+    if (mode_ == Mode::ClassicScope) {
+        classicFrame();
+        return;
+    }
     if (raster_ && raster_->theme != look::themeId()) {
         raster_->setPalette(paletteIndex_, paletteReversed_);
         try { raster_->recolor(); } catch (...) { raster_.reset(); }
@@ -440,7 +578,10 @@ void SharedSpectrumView::suspend(bool value) noexcept {
 }
 void SharedSpectrumView::visibilityChanged() { updateDemand(); }
 void SharedSpectrumView::parentHierarchyChanged() { watchAncestors(); updateDemand(); }
-void SharedSpectrumView::resized() { updateDemand(); }
+void SharedSpectrumView::resized() {
+    if (classicPanel_) classicPanel_->setBounds(getLocalBounds());
+    updateDemand();
+}
 void SharedSpectrumView::moved() { updateDemand(); }
 void SharedSpectrumView::unwatchAncestors() noexcept {
     for (auto &parent : ancestors_)
@@ -458,6 +599,7 @@ void SharedSpectrumView::componentVisibilityChanged(juce::Component &) { updateD
 void SharedSpectrumView::componentParentHierarchyChanged(juce::Component &) { watchAncestors(); updateDemand(); }
 void SharedSpectrumView::componentMovedOrResized(juce::Component &, bool, bool) { updateDemand(); }
 void SharedSpectrumView::componentBeingDeleted(juce::Component &) {
+    resetClassic(true);
     if (shown_ || lease_) freshRequired_ = true;
     sourcePosition_ = {};
     lease_.reset(); resetPicture(); mainMeter_.reset(); raster_.reset(); status_ = Status::Detached;
@@ -493,6 +635,7 @@ void SharedSpectrumView::paintChannelReadout(juce::Graphics &g) const {
 void SharedSpectrumView::paint(juce::Graphics &g) {
     if (mode_ == Mode::ChannelReadout) { paintChannelReadout(g); return; }
     g.fillAll(look::display);
+    if (mode_ == Mode::ClassicScope) return;
     const auto area = getLocalBounds().toFloat().reduced(5.f);
     if (area.isEmpty()) return;
     g.setColour(look::textOnBand);
@@ -641,6 +784,7 @@ AnalysisPane::AnalysisPane() {
     setTitle("Analysis");
     modeBox.addItemList({"Spectrum", "Scope", "Meters", "Phase", "Spectrogram"}, 1);
     modeBox.addItem("Spectrum 1 s average", static_cast<int>(SharedSpectrumView::Mode::SpectrumAverage) + 1);
+    modeBox.addItem("s(M)exoscope", static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1);
     sourceBox.addItemList({"Main", "Selected"}, 1);
     pointBox.addItemList({"Post Mixer", "Post FX", "Pre FX"}, 1);
     channelBox.addItemList({"Mid", "Side", "Left", "Right", "Stereo Power"}, 1);
@@ -680,6 +824,7 @@ AnalysisPane::AnalysisPane() {
     channelBox.onChange = [this] { view.setChannel(static_cast<SharedAnalysis::Channel>(channelBox.getSelectedId() - 1)); };
     freezeButton.setClickingTogglesState(true);
     freezeButton.onClick = [this] { view.freeze(freezeButton.getToggleState()); };
+    view.onClassicFreeze = [this](bool held) { freezeButton.setToggleState(held, juce::dontSendNotification); };
     freezeButton.setTooltip("Freeze this picture and release its live analysis demand. Resume waits for fresh audio.");
     resetButton.onClick = [this] { view.clear(); };
     resetButton.setTooltip("Clear this view's display interval; other analyzer views and audio are unchanged.");
@@ -700,6 +845,10 @@ void AnalysisPane::setMode(SharedSpectrumView::Mode mode) {
     paletteBox.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
     reverseButton.setEnabled(mode == SharedSpectrumView::Mode::Spectrogram);
     slopeBox.setEnabled(spectral);
+    const bool classic = mode == SharedSpectrumView::Mode::ClassicScope;
+    for (auto *control : std::array<juce::Component *, 5>{&channelBox, &paletteBox, &reverseButton, &slopeBox, &freezeButton})
+        control->setVisible(!classic);
+    resized();
 }
 void AnalysisPane::setSource(Source source) {
     source_ = source; sourceBox.setSelectedId(source == Source::Selected ? 2 : 1, juce::dontSendNotification);

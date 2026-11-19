@@ -75,6 +75,19 @@ if(ADI_WITH_JUCE)
         endif()
     endif()
     add_library(adi_ui_shell STATIC src/juce/ui_shell.cpp src/juce/ui_arrangement.cpp src/juce/ui_browser.cpp src/juce/ui_controlbar.cpp src/juce/ui_devices.cpp src/juce/ui_floating.cpp src/juce/ui_look.cpp src/juce/ui_controls.cpp src/juce/ui_mixer.cpp src/juce/ui_mixview.cpp src/juce/ui_mix_channels.cpp src/juce/ui_mix_meter.cpp src/juce/ui_mix_analysers.cpp src/juce/ui_mix_focus.cpp src/juce/ui_settings.cpp src/juce/ui_stack.cpp src/juce/ui_analysis.cpp src/juce/ui_channel_config.cpp src/juce/ui_history.cpp src/juce/ui_clipview.cpp)
+    set(classic_skin "${CMAKE_CURRENT_LIST_DIR}/smexoscope/images")
+    juce_add_binary_data(adi_scope_skin NAMESPACE ScopeClassicImages HEADER_NAME ScopeClassicImages.h SOURCES
+        ${classic_skin}/body.png ${classic_skin}/blue_knob1_4.png ${classic_skin}/free_etc.png
+        ${classic_skin}/lefr_right.png ${classic_skin}/off_on.png ${classic_skin}/slider_new.png
+        ${classic_skin}/heads.png ${classic_skin}/readout.png)
+    set_target_properties(adi_scope_skin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set(classic_widgets src/juce/smexoscope/widgets)
+    target_sources(adi_ui_shell PRIVATE src/juce/ui_scope_classic.cpp
+        ${classic_widgets}/WaveDisplay.cpp ${classic_widgets}/TextElement.cpp
+        ${classic_widgets}/MultiStateButton.cpp ${classic_widgets}/CustomKnob.cpp ${classic_widgets}/CustomSlider.cpp)
+    set_source_files_properties(src/juce/ui_scope_classic.cpp PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
+    target_link_libraries(adi_ui_shell PRIVATE adi_scope_skin)
     target_link_libraries(adi_ui_shell PUBLIC adi_settings juce::juce_gui_basics)
     target_compile_definitions(adi_ui_shell PUBLIC JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
     juce_add_console_app(adi_ui_shell_tests PRODUCT_NAME "adi_ui_shell_tests")

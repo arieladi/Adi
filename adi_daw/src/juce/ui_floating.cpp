@@ -128,7 +128,7 @@ struct FloatingHost::Entry {
                 h.root_.mixViewPanel.stack.suspendParameters(minimised || e.hidden || e.closing);
                 if (minimised) h.root_.mixViewPanel.stack.cancelInteractions();
             }
-            if (auto *analysis = dynamic_cast<AnalysisPane *>(e.component.getComponent())) analysis->suspend(minimised);
+            if (auto *analysis = dynamic_cast<AnalysisPane *>(e.component.getComponent())) analysis->suspend(minimised || e.hidden || e.closing);
         }
         FloatingHost &h;
         Entry &e;
@@ -215,6 +215,8 @@ void FloatingHost::show(const std::string &key, bool on) {
         return;
     auto &e = *it->second;
     e.hidden = !on;
+    if (auto *analysis = dynamic_cast<AnalysisPane *>(e.component.getComponent()))
+        analysis->suspend(!on || e.closing || (e.window && e.window->isMinimised()));
     if (e.component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(!on || e.closing || (e.window && e.window->isMinimised()));
     if (native_ && e.window && !e.closing)
@@ -323,6 +325,8 @@ void FloatingHost::requestClose(const std::string &key) {
     if (it == entries_.end())
         return;
     it->second->closing = true;
+    if (auto *analysis = dynamic_cast<AnalysisPane *>(it->second->component.getComponent()))
+        analysis->suspend(true);
     if (it->second->component.getComponent() == &root_.mixViewPanel)
         root_.mixViewPanel.stack.suspendParameters(true);
     if (it->second->window)
@@ -406,11 +410,12 @@ bool showAnalyzerWindow(FloatingHost &host, AdiRootComponent &root, std::int64_t
     }
     if (auto *existing = dynamic_cast<AnalysisPane *>(host.content(key))) {
         existing->setSource(track == root.analysisTrack() ? AnalysisPane::Source::Main : AnalysisPane::Source::Selected);
-        host.show(key, true); existing->suspend(false); return true;
+        host.show(key, true); return true;
     }
     auto pane = std::make_unique<AnalysisPane>();
     pane->setSize(800, 420);
     const auto &settings = root.mixViewPanel.analysis.detail;
+    pane->view.setClassicControls(settings.view.classicControls());
     pane->setMode(settings.mode());
     pane->setPoint(settings.point());
     pane->view.setChannel(settings.view.channel());

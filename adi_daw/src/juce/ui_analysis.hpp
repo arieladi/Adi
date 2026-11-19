@@ -4,6 +4,7 @@
 #include "adi/ui/analysis_palettes.hpp"
 #include "adi/ui/spectrum_slope.hpp"
 #include "adi/ui/theme.hpp"
+#include "ui_scope_classic.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
 #include <limits>
@@ -46,7 +47,7 @@ class SharedSpectrumView final : public juce::Component,
     SharedSpectrumView();
     ~SharedSpectrumView() override;
     void present(std::shared_ptr<SharedAnalysis>, std::int64_t track);
-    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage };
+    enum class Mode { Spectrum, Scope, Meters, Phase, Spectrogram, ChannelReadout, SpectrumAverage, ClassicScope };
     void setMode(Mode);
     Mode mode() const noexcept { return mode_; }
     void setSource(engine::ScopePoint, std::int64_t device = 0);
@@ -63,6 +64,9 @@ class SharedSpectrumView final : public juce::Component,
     void setMainMeterSource(const std::shared_ptr<const MainMeterSource> &);
     std::optional<MainMeterSnapshot> mainMeterSnapshot() const noexcept { return mainMeter_; }
     juce::String mainMeterText() const;
+    void setClassicControls(const ClassicScopeControls &);
+    const ClassicScopeControls &classicControls() const noexcept { return classicControls_; }
+    std::function<void(bool)> onClassicFreeze;
     void freeze(bool);
     void clear();
     bool frozen() const noexcept { return frozen_; }
@@ -77,7 +81,7 @@ class SharedSpectrumView final : public juce::Component,
     void moved() override;
     enum class Status { Detached, Unavailable, Waiting, Ready };
     Status status() const noexcept { return status_; }
-    bool subscribed() const noexcept { return static_cast<bool>(lease_); }
+    bool subscribed() const noexcept { return static_cast<bool>(lease_) || static_cast<bool>(captureLease_); }
     std::shared_ptr<const SharedAnalysis::Result> snapshot() const noexcept { return shown_; }
     std::span<const float> spectrumBins() const noexcept;
     std::int64_t track() const noexcept { return track_; }
@@ -87,6 +91,10 @@ class SharedSpectrumView final : public juce::Component,
     void updateDemand() noexcept;
     void armFreshBoundary() noexcept;
     void updateMainMeter() noexcept;
+    void updateClassicDemand() noexcept;
+    void classicFrame() noexcept;
+    void resetClassic(bool fresh) noexcept;
+    void presentClassic() noexcept;
     void watchAncestors();
     void unwatchAncestors() noexcept;
     void componentVisibilityChanged(juce::Component &) override;
@@ -103,6 +111,12 @@ class SharedSpectrumView final : public juce::Component,
     std::shared_ptr<SharedAnalysis> broker_;
     std::int64_t track_ = 0;
     SharedAnalysis::Lease lease_;
+    SharedAnalysis::CaptureLease captureLease_;
+    std::shared_ptr<const SharedAnalysis::CaptureResult> captureShown_;
+    std::unique_ptr<ClassicScopePanel> classicPanel_;
+    ClassicScopeControls classicControls_;
+    SharedAnalysis::Lease::SourcePosition capturePosition_;
+    bool captureFresh_ = false;
     std::shared_ptr<const SharedAnalysis::Result> shown_;
     std::shared_ptr<const std::vector<float>> averageBins_;
     SharedAnalysis::AverageStatus averageStatus_ = SharedAnalysis::AverageStatus::Waiting;

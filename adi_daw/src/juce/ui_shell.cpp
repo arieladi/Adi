@@ -1134,7 +1134,8 @@ void AdiRootComponent::frame() noexcept {
     if (infoSpectrum.isVisible()) {
         const auto &analysis = mixViewPanel.analysis;
         const auto &settings = analysis.detail;
-        infoSpectrum.setMode(settings.mode());
+        using AnalysisMode = SharedSpectrumView::Mode;
+        infoSpectrum.setMode(settings.mode() == AnalysisMode::ClassicScope ? AnalysisMode::Scope : settings.mode());
         infoSpectrum.setSource(settings.point());
         infoSpectrum.setChannel(settings.view.channel());
         infoSpectrum.setPalette(settings.view.palette(), settings.view.paletteReversed());

@@ -6,6 +6,7 @@
 #include "ui_fake_peer.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,7 @@ using adi::ui::SharedAnalysis;
 using adi::ui::SharedSpectrumView;
 namespace adi::ui {
 struct SharedSpectrumViewTestAccess {
+    static auto capture(const SharedSpectrumView &view) { return view.captureShown_; }
     static std::size_t offsetCount(const SharedSpectrumView &view) { return view.spectrumProjection_.offsets().size(); }
 };
 }
@@ -974,6 +976,155 @@ void spectrumSlopeProjection() {
     }
 }
 
+void classicScopeSurface() {
+    using namespace adi::ui;
+    using Trigger = adi::dsp::TriggeredScope::Trigger;
+    const ClassicScopeControls factory;
+    const auto defaults = factory.settings();
+    check(defaults.columns == 627 && defaults.trigger == Trigger::Free && defaults.threshold == 0 &&
+              defaults.gain == 1 && defaults.holdoffSamples == 100 &&
+              std::abs(defaults.columnsPerSample - std::pow(10., -2.25)) < 1.e-12 &&
+              !factory.right && !factory.sync && !defaults.removeDc,
+          "Classic scope uses the pinned factory face and capture settings");
+
+    ClassicScopePanel face;
+    face.setBounds(0, 0, 825, 300);
+    face.setVisible(true);
+    auto picture = std::make_shared<SharedAnalysis::CaptureResult>();
+    picture->sampleRate = 48000;
+    picture->previous = {{.25f, .25f, 1, 1}, {.25f, .25f, 2, 2}};
+    picture->current = {{.5f, .5f, 7, 7}};
+    const auto pixel = [&](int x, int y) {
+        juce::Image image(juce::Image::RGB, 825, 300, true);
+        juce::Graphics g(image);
+        face.paintEntireComponent(g, true);
+        return image.getPixelAt(38 + x, 16 + y);
+    };
+    auto controls = factory;
+    const auto ink = juce::Colour(118, 118, 118);
+    face.present(controls, false, picture, 0);
+    check(pixel(0, 67) == ink && pixel(1, 100) == ink, "progressive redraw keeps the preceding sweep tail");
+    controls.sync = true;
+    face.present(controls, false, picture, 0);
+    check(pixel(0, 100) == ink && pixel(0, 67) != ink, "Sync redraw uses only the previous sweep");
+    controls.sync = false;
+    face.present(controls, false, picture, 7);
+    check(pixel(0, 67) == ink && pixel(1, 100) != ink, "the local freshness fence omits pre-resume columns");
+
+    bool heldFace = false;
+    face.onChange = [&](const ClassicScopeControls &next) { controls = next; face.present(controls, heldFace, picture, 7); };
+    face.onFreeze = [&](bool held) { heldFace = held; face.present(controls, heldFace, picture, 7); };
+    const auto mouse = [](juce::Component &c, juce::Point<float> p, int mods) {
+        const auto now = juce::Time::getCurrentTime();
+        return juce::MouseEvent{juce::Desktop::getInstance().getMainMouseSource(), p, juce::ModifierKeys(mods),
+                               1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, p, now, 1, false};
+    };
+    const auto press = [&](int x, int y, const char *title) {
+        auto *control = face.getComponentAt(x, y);
+        if (!control || control->getTitle() != title) return false;
+        const auto event = mouse(*control, control->getLocalBounds().toFloat().getCentre(),
+                                 juce::ModifierKeys::leftButtonModifier);
+        control->mouseDown(event);
+        control->mouseUp(event);
+        return true;
+    };
+    for (auto trigger : {Trigger::Rising, Trigger::Falling, Trigger::Internal, Trigger::Free})
+        check(press(730, 100, "Trigger mode") && controls.trigger == trigger,
+              "the original trigger control cycles through all four modes");
+    check(press(760, 262, "Left or right channel") && controls.right, "the original channel control selects Right");
+    check(press(705, 262, "DC removal") && controls.removeDc, "the original DC control edits acquisition");
+    check(press(705, 225, "Sync redraw") && controls.sync, "the original Sync control selects the completed sweep");
+    check(press(767, 225, "Freeze") && heldFace && press(767, 225, "Freeze") && !heldFace,
+          "the original Freeze control toggles local hold");
+    auto *timeKnob = dynamic_cast<juce::Slider *>(face.getComponentAt(713, 48));
+    if (timeKnob) timeKnob->setValue(.6, juce::sendNotificationSync);
+    check(timeKnob && std::abs(controls.time - .6f) < 1.e-6f, "the original Time knob changes the capture profile");
+    auto *wave = face.getComponentAt(158, 206);
+    const auto before = pixel(120, 190);
+    if (wave) {
+        const auto left = mouse(*wave, {120.f, 102.f}, juce::ModifierKeys::leftButtonModifier);
+        wave->mouseDown(left);
+        wave->mouseUp(left);
+    }
+    check(wave && wave->getTitle() == "Waveform ruler" && pixel(120, 190) == juce::Colour(10, 10, 10) &&
+              pixel(120, 190) != before,
+          "a left press places the sticky ruler independently of the waveform");
+    if (wave) wave->mouseUp(mouse(*wave, {120.f, 102.f}, juce::ModifierKeys::rightButtonModifier));
+    check(pixel(120, 190) == before, "a right press clears the ruler");
+
+    Fixture f;
+    Root root;
+    root.setBounds(0, 0, 970, 720);
+    Root detached;
+    detached.setBounds(0, 0, 920, 420);
+    MixAnalysers pages;
+    pages.setBounds(root.getLocalBounds());
+    AnalysisPane pane;
+    pane.setBounds(detached.getLocalBounds());
+    root.addAndMakeVisible(pages);
+    detached.addAndMakeVisible(pane);
+    for (auto *peer : {&root, &detached}) {
+        peer->setVisible(true);
+        peer->addToDesktop(0);
+    }
+    const SnapshotReader reader{std::make_shared<adi::engine::Snapshot>()};
+    pages.setPage(MixAnalysers::Page::Scope);
+    pane.modeBox.setSelectedId(static_cast<int>(SharedSpectrumView::Mode::ClassicScope) + 1, juce::sendNotificationSync);
+    pages.frame(f.broker, reader, 1, 2);
+    pane.frame(f.broker, 1, 2);
+    check(pages.detail.mode() == SharedSpectrumView::Mode::ClassicScope && !pages.detail.channelBox.isVisible() &&
+              pane.modeBox.getText() == "s(M)exoscope" && !pane.channelBox.isVisible() && !pane.freezeButton.isVisible(),
+          "the full and detached Scope views use the original controls");
+    f.write(); f.broker->pump(); pages.detail.view.frame(); pane.view.frame();
+    const auto capture = [](const SharedSpectrumView &v) { return SharedSpectrumViewTestAccess::capture(v); };
+    const auto first = capture(pane.view);
+    check(first && first == capture(pages.detail.view) && !first->current.empty() &&
+              f.broker->stats().transforms == 0 && f.broker->stats().domains == 1 && f.acquired == 1,
+          "compatible full and detached scopes share one immutable capture without an FFT");
+    controls = factory;
+    controls.sync = true;
+    pane.view.setClassicControls(controls);
+    check(capture(pane.view) == first && f.acquired == 1, "Sync redraw does not restart the shared cursor");
+
+    pane.view.freeze(true);
+    f.write(1024); f.broker->pump(); pages.detail.view.frame(); pane.view.frame();
+    check(first && capture(pane.view) == first && capture(pages.detail.view) != first && !pane.view.subscribed(),
+          "Freeze retains the local trace and releases only that view's live demand");
+    pane.view.freeze(false);
+    pane.view.frame();
+    check(!capture(pane.view), "Resume rejects pre-resume audio even when another view still owns the capture");
+    f.write(2048); f.broker->pump(); pane.view.frame();
+    const auto resumed = capture(pane.view);
+    check(resumed && !resumed->current.empty() && resumed->current.back().firstSequence >= 2048,
+          "Resume accepts data after the physical tap fence");
+
+    pane.view.clear();
+    pane.view.frame();
+    check(!capture(pane.view) && capture(pages.detail.view), "Reset clears this scope and leaves its shared peer alone");
+    controls.right = true;
+    pane.view.setClassicControls(controls);
+    check(f.broker->stats().domains == 2 && f.acquired == 1, "a different lane shares the tap but owns its own sweep");
+    detached.setVisible(false);
+    check(!pane.view.subscribed() && f.broker->stats().consumers == 1 && f.released == 0,
+          "hiding the detached parent drops demand without waiting for another frame");
+    detached.setVisible(true);
+    pane.suspend(true);
+    pane.frame(f.broker, 1, 2);
+    check(!pane.view.subscribed() && f.broker->stats().consumers == 1, "minimising the detached view prevents reacquisition");
+    pane.suspend(false);
+    check(pane.view.subscribed() && f.broker->stats().consumers == 2, "restoring the detached view reacquires demand");
+    detached.removeChildComponent(&pane);
+    auto retuned = factory;
+    retuned.time = .65f;
+    pages.detail.view.setClassicControls(retuned);
+    check(f.broker->stats().consumers == 1 && f.broker->stats().domains == 1 && f.acquired == 1 && f.released == 0,
+          "retuning the final view replaces its sweep without tearing down the physical tap");
+    root.setVisible(false);
+    check(!pane.view.subscribed() && !pages.detail.view.subscribed() &&
+              f.broker->stats().consumers == 0 && f.released == 1,
+          "detaching and hiding the final views release the shared tap");
+}
+
 void mixAnalyserPages() {
     using namespace adi::ui;
     using Page = MixAnalysers::Page;
@@ -1033,7 +1184,7 @@ void mixAnalyserPages() {
     for (const auto &[page, mode] : std::array{
          std::pair{Page::Spectrogram, SharedSpectrumView::Mode::Spectrogram},
          std::pair{Page::Spectrum, SharedSpectrumView::Mode::Spectrum},
-         std::pair{Page::Scope, SharedSpectrumView::Mode::Scope},
+         std::pair{Page::Scope, SharedSpectrumView::Mode::ClassicScope},
          std::pair{Page::Phase, SharedSpectrumView::Mode::Phase},
          std::pair{Page::Loudness, SharedSpectrumView::Mode::Meters}}) {
         pages.pageBox.setSelectedId(static_cast<int>(page) + 1, juce::sendNotificationSync);
@@ -1279,7 +1430,7 @@ int main() {
     juce::ScopedJuceInitialiser_GUI initialiser;
     try { sharingAndVisibility(); sourceAndOwnerLifetime(); parentDestruction(); modesSourcesAndFreeze(); pendingSourceLease(); cappedFrozenHistoryAndIdleReset();
           mainReadoutFormatProjection(); mainMetersSharedPresentation(); permanentMainMeter(); compactAnalyzerDock(); paletteMenuTheme(); palettesAndFrozenRaster(); restartedRasterDomain();
-          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); mixAnalyserPages(); compareAndAveragePages(); }
+          freshActionsWithSharedConsumer(); backlogAndLifecycleFreshness(); spectrumSlopeProjection(); classicScopeSurface(); mixAnalyserPages(); compareAndAveragePages(); }
     catch (const std::exception &e) { ++failures; std::printf("FAIL exception: %s\n", e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

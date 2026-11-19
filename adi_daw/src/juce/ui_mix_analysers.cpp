@@ -350,13 +350,18 @@ void MixAnalysers::setPage(Page page) {
     sourceBox.setVisible(page != Page::Analysis && !comparing);
     for (auto &tile : tiles_) tile.setVisible(all);
     table_->setVisible(showTable);
-    if (!showTable && !comparing) detail.setMode(page == Page::Average ? Mode::SpectrumAverage : modes[index - 1]);
+    if (!showTable && !comparing) {
+        if (page == Page::Scope) detail.setMode(Mode::ClassicScope);
+        else if (page == Page::Average) detail.setMode(Mode::SpectrumAverage);
+        else detail.setMode(modes[index - 1]);
+    }
     detail.setVisible(!showTable && !comparing);
     compare_->setVisible(comparing);
     resized();
 }
 
 void MixAnalysers::setMode(Mode mode) {
+    if (mode == Mode::ClassicScope) mode = Mode::Scope;
     if (mode == Mode::SpectrumAverage) setPage(Page::Average);
     else if (const auto found = std::ranges::find(modes, mode); found != modes.end())
         setPage(static_cast<Page>(found - modes.begin() + 1));
