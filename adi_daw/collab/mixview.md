@@ -2,6 +2,10 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+### 2026-11-19 — Bound the Limiter's silent-start case
+
+Windows Release passed all 288 native Limiter checks. Two actual Transparent instances with dither off took 117+139-sample segments at 48 kHz. Omitting 64 leading zero blocks preserved the first programme and its delayed output byte for byte. The history control admitted a second programme, then omitted silent callbacks on one instance. It moved real buffered samples into later callbacks while the continuously run instance was already silent. This narrows the available idle optimization to prepared histories that are proven empty. It does not give a general post-programme release bound.
+
 ### 2026-11-19 — Graph proof for the neutral EQ suspension slice
 
 The staged DF-M34 candidate limits its zero tail to an EQ that has only processed a neutral Minimum-phase plan. A stopped format handoff can retain that history proof. A changed owner revision wakes the EQ before its first new callback. An EQ previously used nonneutrally stays running. Offline mode also keeps it running.
