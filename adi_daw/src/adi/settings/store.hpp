@@ -46,7 +46,7 @@ enum class LoadStatus {
     ForeignApp,    // names another application; untouched, defaults in use, saving refused
     NewerSchema,   // written by a newer build: read familiar values, refuse writes
     MigrationFailed, // unsupported/broken older migration: original untouched, writes refused
-    Unavailable,   // could not inspect/read: original untouched; reload before edits/save
+    Unavailable,   // inspection/read/recovery failed; reload before edits/save
 };
 [[nodiscard]] const char* toString(LoadStatus);
 

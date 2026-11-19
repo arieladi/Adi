@@ -108,6 +108,61 @@ public:
 private:
     HANDLE handle_ = INVALID_HANDLE_VALUE;
 };
+class DenyRename {
+public:
+    explicit DenyRename(const fs::path& file) {
+        // Reads and writes remain shareable; only deletion/rename is denied.
+        handle_ = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot hold owned recovery fixture");
+    }
+    ~DenyRename() { CloseHandle(handle_); }
+    DenyRename(const DenyRename&) = delete;
+    DenyRename& operator=(const DenyRename&) = delete;
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
+void recoveryMoveFailure() {
+    adi::test::TempDirectory scratch("settings_read", "recovery_move");
+    const auto file = scratch.path()/"settings.json";
+    auto previous = file; previous += ".corrupt-1";
+    auto attempted = file; attempted += ".corrupt-2";
+    const std::string broken = "{\"schema\":1,broken\n";
+    write(file, broken); write(previous, "prior recovery belongs here");
+    std::optional<AppSettings> unavailable;
+    {
+        DenyRename lock(file);
+        check(read(file) == broken, "native no-delete handle still permits reading every malformed byte");
+        unavailable.emplace(app, file);
+        check(unavailable->status() == LoadStatus::Unavailable && !unavailable->keptAside(),
+              "failed recovery move reports unavailable, not a nonexistent kept copy");
+        check(unavailable->loadError().find("malformed") != std::string::npos &&
+              unavailable->loadError().find("aside") != std::string::npos &&
+              unavailable->loadError().find("reload") != std::string::npos,
+              "failed recovery diagnostic names malformed recovery and explicit reload");
+        check(fs::exists(file) && read(file) == broken && !fs::exists(attempted) &&
+              read(previous) == "prior recovery belongs here", "failed rename leaves original bytes and previous recovery unchanged");
+        std::string why;
+        check(!unavailable->set("lookfeel.theme", "light", {}, why) && !unavailable->reset("lookfeel.theme", {}, why),
+              "failed recovery cannot edit or reset fallback defaults");
+        check(!unavailable->save(why) && !why.empty() && why == unavailable->loadError() &&
+              unavailable->stored().empty() && !fs::exists(unavailable->changeLogFile()),
+              "failed recovery refuses save without retaining or logging edits");
+    }
+    AppSettings recovered(app, file);
+    check(recovered.status() == LoadStatus::CorruptKept && recovered.keptAside() == attempted &&
+          recovered.loadError().empty() && read(attempted) == broken && !fs::exists(file),
+          "fresh load after handle release performs byte-exact recovery at the next free name");
+    std::string why;
+    check(!unavailable->save(why) && why.find("reload") != std::string::npos && !fs::exists(file),
+          "old unavailable instance cannot create defaults even after another instance completes recovery");
+    check(recovered.set("lookfeel.theme", "light", {}, why) && recovered.save(why),
+          "successfully recovered fresh instance can save normal settings");
+    AppSettings loaded(app, file);
+    check(loaded.status() == LoadStatus::Loaded && loaded.get("lookfeel.theme") == "light" &&
+          read(attempted) == broken && read(previous) == "prior recovery belongs here",
+          "saved recovery loads normally and retains both historical byte copies");
+}
 class LockedTail {
 public:
     explicit LockedTail(const fs::path& file) {
@@ -218,7 +273,7 @@ int main() {
         absenceAndMalformed();
         literalNul();
 #if defined(_WIN32)
-        unreadable(); incompleteRead(); saveRetry();
+        unreadable(); incompleteRead(); saveRetry(); recoveryMoveFailure();
 #else
         std::printf("Windows sharing-denial regressions not run on this platform\n");
 #endif

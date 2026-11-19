@@ -178,7 +178,13 @@ AppSettings::AppSettings(appdata::App app, std::filesystem::path file)
         const auto aside = asideName(file_);
         std::error_code ec;
         std::filesystem::rename(file_, aside, ec);
-        if (!ec) aside_ = aside;
+        if (ec) {
+            loadError_ = "cannot keep malformed settings aside: " + ec.message() +
+                "; reload settings before editing or saving";
+            status_ = LoadStatus::Unavailable;
+            return;
+        }
+        aside_ = aside;
         status_ = LoadStatus::CorruptKept;
         return;
     }
