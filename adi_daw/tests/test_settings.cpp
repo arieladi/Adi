@@ -411,6 +411,17 @@ void testUnknownKeysSurvive() {
                            : Value();
     check(kept == Value({{"attack", 3}, {"release", 300}}),
           "and the newer build's key is still there, exactly");
+    check(s.reset("lookfeel.theme", kUser, why) && !s.stored().contains("lookfeel.theme") &&
+          s.get("lookfeel.theme") == find("lookfeel.theme")->defaultValue,
+          "reset follows the registered default and removes its stored override");
+    check(s.set("lookfeel.theme", "light", kUser, why), "prepare a page override again");
+    s.resetPage(find("lookfeel.theme")->page, kUser);
+    const auto remaining = s.stored();
+    check(!remaining.contains("lookfeel.theme") && remaining.at("audio.bufferSize") == 1024 &&
+          remaining.at("future.meterBallistics") == kept,
+          "page reset erases its overrides and preserves other pages and unknown keys");
+    check(s.save(why) && Value::parse(readText(file)).at("values") == remaining,
+          "saved settings omit defaults removed by reset");
 
     const std::string future = R"({"schema": 3, "app": "ADI", "values": {"lookfeel.theme": "light"},
          "futureHeader": {"mustSurvive": true}})";

@@ -77,8 +77,8 @@ public:
     /// change when the log is on. Does not save.
     bool set(const std::string& key, const Value& value, const ChangeContext& who, std::string& why);
 
-    /// Back to the registry default, for one key or a whole page (the page's
-    /// Defaults button, ADR-0125 d3's recovery).
+    /// Erase the override so the value follows the registry default. Applies
+    /// to one key or all App-scope overrides on the requested page.
     bool reset(const std::string& key, const ChangeContext& who, std::string& why);
     void resetPage(const std::string& page, const ChangeContext& who);
 
@@ -97,7 +97,8 @@ public:
     [[nodiscard]] std::filesystem::path changeLogFile() const;
 
 private:
-    bool write(const std::string& key, const Value& value, const ChangeContext& who, std::string& why);
+    bool write(const std::string& key, const Value& value, const ChangeContext& who,
+               std::string& why, bool removeOverride = false);
     void log(const std::string& key, const Value& before, const Value& after, const ChangeContext& who) const;
 
     appdata::App app_;

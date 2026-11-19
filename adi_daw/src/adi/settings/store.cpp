@@ -111,7 +111,7 @@ Value AppSettings::get(const std::string& key) const {
 }
 
 bool AppSettings::write(const std::string& key, const Value& value, const ChangeContext& who,
-                        std::string& why) {
+                        std::string& why, bool removeOverride) {
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
@@ -125,7 +125,8 @@ bool AppSettings::write(const std::string& key, const Value& value, const Change
     // Read before the write, so the change that turns the log off is the log's
     // last line and explains its own silence (A6-20, ADR-0203).
     const bool logged = who.actor != Actor::User || get(kLogChangesKey) != false;
-    values_[key] = value;
+    if (removeOverride) values_.erase(key);
+    else values_[key] = value;
     if (logged && before != value) log(key, before, value, who);
     return true;
 }
@@ -138,14 +139,14 @@ bool AppSettings::set(const std::string& key, const Value& value, const ChangeCo
 bool AppSettings::reset(const std::string& key, const ChangeContext& who, std::string& why) {
     const Setting* s = find(key);
     if (!s) { why = "no setting named '" + key + "'"; return false; }
-    return write(key, s->defaultValue, who, why);
+    return write(key, s->defaultValue, who, why, true);
 }
 
 void AppSettings::resetPage(const std::string& page, const ChangeContext& who) {
     for (const auto& s : registry()) {
         if (s.page != page || s.scope != Scope::App) continue;
         std::string ignored;
-        write(s.key, s.defaultValue, who, ignored);
+        write(s.key, s.defaultValue, who, ignored, true);
     }
 }
 
