@@ -32,6 +32,17 @@ When the selection straddles two adjacent audio clips and one has less hidden au
 
 The Window's Paste command currently restricts audio and MIDI by track label. N54 asks the engine to enforce that check. ADR-0045 d1 is your decision that both kinds of material can play on the same channel and explicitly excludes using the hint as an admission constraint. Do you want Paste to follow that hybrid-track rule? I recommend preserving ADR-0045: accept mixed native clips in material Paste on an ordinary track and update Window's existing guard. If you want Live-style refusal in that command, authorize an explicit editor policy while retaining hybrid storage and replay. The answer blocks the N54 kind check.
 
+## 2026-11-19 — DF-E52(a,b) explicit plug-in parameter gestures and last touch
+
+**PR requested** · `engine/df-e52-param-gesture-promotion` · `b2c79ba724337211ed7ad018a3b50588464e4aee`
+**Title** — Promote implicit parameter gestures when Begin arrives.
+
+An explicit Begin promotes an open unbracketed gesture on the same parameter, preserving its starting value and holding it through the quiet timeout until End. During preset absorption, a promoted gesture keeps its earlier observations from that drain. A later ungestured broadcast cannot displace the latest explicit touch.
+
+**Gate** — GCC 14 and Clang 19, warnings as errors. Param edits 404, ParamOps 178, UI param capture 61, automation write policy 31 and gesture 778 pass in both. The new tests yielded seven failures with the previous capture implementation, including quiet-time promotion, ownership of the promoted prefix during absorption and last touch after a later broadcast. `git diff --check` passes.
+
+**Dependency** — Current main. Use before the temporary parameter entry or Focus Dial reads lastTouched.
+
 ## 2026-11-19 — DF-E49 gesture capture fault fence
 
 **PR requested** · `engine/df-e49-gesture-fault-fence` · `b57638c833cd42b7b54c0eff998d80b1ed48ae7b`
