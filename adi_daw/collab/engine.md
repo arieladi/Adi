@@ -12,6 +12,19 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-19 — DF-E22 grouped returns and send taps gated and pushed
+
+**PR requested** — `engine/df-e22-group-returns`, head `4ad2f55d4a623b1c2ffce916678ea998bb76f36b`, base `engine/df-e20-plugin-host-inputs` at `44fd27da`. Title **Add scoped group returns and individual send taps**. Includes the latest main handoff at `a0a31168`. The remote head matches the gated commit.
+
+Grouped returns sum before the group's devices. Only descendants can send in, including returns in that scope. Moving a subgroup out removes its now-out-of-scope sends, and Undo restores each route and tap. Deleting and undoing a group keep route ownership intact. The engine group-copy helper `copyGroupSendRequests` remaps a copied route using the copy producer's track and routing IDs and goes in the transaction with the cloned tracks.
+
+**Window handoff for DF-W33** — The track snapshot already holds the return's parent. Read `SendRoute::sendTap` for the optional individual choice and `ReturnSendTap::legacyMixed` for unequal effective taps even when a return default exists. Use `routing.setSendTap` with `pre_fx`, `post_fx`, or `post_mixer`, or omit the tap to inherit. `prepareSendToReturn` rejects destinations outside scope. The 1.22 migration adds only the optional tap table and preserves legacy tap audio.
+
+**Gate** — GCC 14 Debug, Linux x86-64, warnings as errors and Pure Data. Final CTest passed 242 of 242. The earlier repository runner passed all validators and the layout check and isolated a migration-fixture failure, which was corrected by constructing an actual 1.20 catalog before upgrading. Clang 19 passed 87 grouped-return checks. They include the 1,024 plus 512 sample dry/wet null before the group clipper, a clipped return tail, the three taps, scoped move/delete Undo, and copied-return routing. The wrong Pre FX tap and disabled scope faults failed their intended assertions. Evidence is under `/workspace/adi-engine-validation`.
+
+Next is DF-E23 worker admission and serial/parallel proof. The measured Windows gate is engine-win's.
+
+
 ## 2026-11-19 — DF-E20(a) and (b) plug-in host fixes gated and pushed
 
 **PR requested** — `engine/df-e20-plugin-host-inputs`, head `44fd27da7f1db0b05dc86e85da79a0e020bba27a`, base `engine/df-e21-plugin-transport` at `3c9961f8`. Title **Honor CLAP unbounded tails and route VST3 side-chain keys**. Land DF-E21 first. The remote head matches the gated commit.
