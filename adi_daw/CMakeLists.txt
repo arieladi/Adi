@@ -396,6 +396,7 @@ add_library(adi_core STATIC
     src/adi/tuning_ops.cpp
     src/adi/render/queue.cpp
     src/adi/render/job_json.cpp
+    src/adi/render/job_preset.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
     src/adi/freeze_groups.cpp
@@ -1988,6 +1989,10 @@ add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 add_executable(adi_render_job_json_tests tests/test_render_job_json.cpp)
 target_link_libraries(adi_render_job_json_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_render_job_json_tests COMMAND adi_render_job_json_tests)
+
+add_executable(adi_render_job_preset_tests tests/test_render_job_preset.cpp)
+target_link_libraries(adi_render_job_preset_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_render_job_preset_tests COMMAND adi_render_job_preset_tests)
 
 add_executable(adi_normalization_tests tests/test_normalization.cpp)
 target_link_libraries(adi_normalization_tests PRIVATE adi_core adi_warnings)
