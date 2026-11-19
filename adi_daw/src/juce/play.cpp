@@ -30,6 +30,7 @@
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "juce/play_edits.hpp"
+#include "juce/play_diagnostics.hpp"
 #include "juce/vst3_host.hpp"
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -37,6 +38,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -97,6 +99,39 @@ private:
     std::atomic<float> peak_{0.0f};
 };
 
+// Only --diagnostics uses this forwarding callback. Defaults keep the original
+// bridge directly registered. Its fixed storage is consumed after removal.
+class MeasuredCallback final : public juce::AudioIODeviceCallback {
+public:
+    MeasuredCallback(adi::device::DeviceBridge& bridge,adi::engine::Session& session,adi_play::CallbackTimings& timings)
+        :bridge_(bridge),session_(session),timings_(timings){}
+    void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
+        bridge_.audioDeviceAboutToStart(device);
+        if(const auto* graph=session_.graph().currentGraph())workersAtStart=graph->renderWorkerCount();
+    }
+    void audioDeviceStopped() override {
+        if(const auto* graph=session_.graph().currentGraph()){finalGraph=graph->stats();workersAtStop=graph->renderWorkerCount();}
+        ++stops;bridge_.audioDeviceStopped();
+    }
+    void audioDeviceError(const juce::String& message) override {bridge_.audioDeviceError(message);}
+    void audioDeviceIOCallbackWithContext(const float* const* in,int numIn,float* const* out,int numOut,int frames,
+        const juce::AudioIODeviceCallbackContext& context) override {
+        adi_play::CallbackTiming row;row.frames=frames;row.numIn=numIn;row.numOut=numOut;
+        row.streamSample=bridge_.core().streamTime();row.sampleRate=bridge_.core().sampleRate();
+        row.threadId=adi_play::measurementThread();row.cpuStart=adi_play::measurementCpu();
+        row.startTicks=adi_play::measurementTicks();
+        bridge_.audioDeviceIOCallbackWithContext(in,numIn,out,numOut,frames,context);
+        row.endTicks=adi_play::measurementTicks();row.cpuEnd=adi_play::measurementCpu();timings_.record(row);
+    }
+    adi::engine::GraphStats finalGraph;
+    std::uint32_t workersAtStart=0,workersAtStop=0;
+    unsigned stops=0;
+private:
+    adi::device::DeviceBridge& bridge_;
+    adi::engine::Session& session_;
+    adi_play::CallbackTimings& timings_;
+};
+
 std::string dbfs(float peak) {
     if (peak <= 0.0f) return "silence";
     char buf[32];
@@ -114,6 +149,11 @@ struct Options {
     std::int64_t toneTrack = 0;
     bool dry = false;
     bool list = false;
+    bool searchOnly = false;
+    int workers = -1;
+    std::string diagnostics;
+    std::size_t diagnosticCapacity = 262144;
+    bool diagnosticCapacitySet = false;
     bool fixture = false;
     /// ADR-0011 keeps a plug-in that will not load as a bypassed stand-in, so
     /// a render through a missing plug-in is a SUCCESS: the project played,
@@ -156,6 +196,10 @@ int usage() {
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
         "adi_play --list [--search DIR]... [--fixture]\n"
+        "  Diagnostics: --workers N (0..16; forced thresholds 1 frame / 2 nodes),\n"
+        "  --diagnostics PREFIX [--diagnostic-capacity N] writes PREFIX.callbacks.csv\n"
+        "  and PREFIX.json after device close. --search-only DIR excludes all default\n"
+        "  plug-in roots; repeat it for more private roots. --list prints exact UIDs.\n"
         "  Opens a project, resolves its devices, plays it through the default audio\n"
         "  device at the granted block size. --resize changes the block size half way\n"
         "  through the run without reloading a plugin (ADR-0122). --tone pushes a 220 Hz\n"
@@ -179,6 +223,11 @@ int usage() {
 }
 
 bool parse(int argc, char** argv, Options& o) {
+    const auto bounded=[](const char* text,int minimum,int maximum,int& value) {
+        if(!text)return false;const auto length=std::char_traits<char>::length(text);
+        const auto result=std::from_chars(text,text+length,value);
+        return result.ec==std::errc{} && result.ptr==text+length && value>=minimum && value<=maximum;
+    };
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         auto next = [&](int& idx) -> const char* { return idx + 1 < argc ? argv[++idx] : nullptr; };
@@ -187,6 +236,11 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--seconds") { const char* v = next(i); if (!v) return false; o.seconds = std::atoi(v); }
         else if (a == "--resize")  { const char* v = next(i); if (!v) return false; o.resize = std::atoi(v); }
         else if (a == "--search")  { const char* v = next(i); if (!v) return false; o.searchDirs.emplace_back(v); }
+        else if (a == "--search-only") { const char* v=next(i);if(!v || !*v)return false;o.searchOnly=true;o.searchDirs.emplace_back(v); }
+        else if (a == "--workers") { if(!bounded(next(i),0,16,o.workers))return false; }
+        else if (a == "--diagnostics") { const char* v=next(i);if(!v || !*v)return false;o.diagnostics=v; }
+        else if (a == "--diagnostic-capacity") { int value=0;if(!bounded(next(i),1,1000000,value))return false;
+            o.diagnosticCapacity=static_cast<std::size_t>(value);o.diagnosticCapacitySet=true; }
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
         else if (a == "--expect-no-edits") o.expectNoEdits = true;
@@ -220,6 +274,8 @@ bool parse(int argc, char** argv, Options& o) {
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
+    if(o.diagnosticCapacitySet && o.diagnostics.empty())return false;
+    if(!o.diagnostics.empty() && (o.list || o.dry || o.render>0 || o.seconds>3600))return false;
     if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
@@ -443,7 +499,7 @@ int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceInit;
     std::printf("adi_play -- %s\n\n", juce::SystemStats::getJUCEVersion().toRawUTF8());
 
-    adi::device::JuceDeviceLoader loader;
+    adi::device::JuceDeviceLoader loader(!o.searchOnly);
     for (const std::string& d : o.searchDirs) {
         const juce::String s(d);
         loader.addSearchPath(juce::File::isAbsolutePath(s)
@@ -474,6 +530,9 @@ int main(int argc, char** argv) {
     const double rate = o.rate > 0.0 ? o.rate : static_cast<double>(peek.project.sampleRate);
 
     adi::engine::Session session;
+    if(o.workers>=0 && !session.setParallelRendering(static_cast<std::uint32_t>(o.workers),1,2)) {
+        std::printf("FAILED -- graph worker override refused\n");return 1;
+    }
     // No watchClapGlue. ADR-0179 gave every CLAP instance its own glue, owned
     // by its ClapDevice, and `DeviceHost::add` now registers that device's
     // latency, port and restart epochs through the device CONTRACT -- three
@@ -506,6 +565,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     const bool allDouble = reportPrecision(session);
+    if(o.workers>=0)std::printf("  workers  requested %d, allocated %u; forced minimum frames 1 / eligible nodes 2\n",
+        o.workers,session.graph().currentGraph()?session.graph().currentGraph()->renderWorkerCount():0);
 
     // --require-devices: a stand-in is a FAILURE, not a note in the log.
     //
@@ -563,6 +624,15 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if(!o.diagnostics.empty()) {
+        try {
+            for(const auto* suffix:{".callbacks.csv",".json"}) {
+                const auto path=adi_play::diagnosticPath(o.diagnostics,suffix);
+                if(std::filesystem::exists(path))throw std::runtime_error("diagnostic output already exists");
+                if(!path.parent_path().empty())std::filesystem::create_directories(path.parent_path());
+            }
+        }catch(const std::exception& error){std::printf("FAILED -- diagnostic destination: %s\n",error.what());return 1;}
+    }
     juce::AudioDeviceManager mgr;
     if (!o.deviceType.empty()) {
         bool known = false;
@@ -583,7 +653,7 @@ int main(int argc, char** argv) {
         std::printf("\nno audio device on this machine -- loaded and reported; nothing to open.%s%s\n",
                     initErr.isNotEmpty() ? " " : "", initErr.toRawUTF8());
         if (o.saveState && saveStates(session, *store) != 0) return 1;
-        return 0;
+        return o.diagnostics.empty()?0:1;
     }
     juce::AudioDeviceManager::AudioDeviceSetup setup = mgr.getAudioDeviceSetup();
     if (!o.deviceName.empty()) setup.outputDeviceName = juce::String(o.deviceName);
@@ -609,13 +679,43 @@ int main(int argc, char** argv) {
     MeteredSession metered(session);
     adi::device::DeviceBridge bridge(metered);
     bridge.setRequestedBlockSize(o.block);
+    adi_play::CallbackTimings timings(o.diagnostics.empty()?0:o.diagnosticCapacity);
+    MeasuredCallback measured(bridge,session,timings);
+    auto* callback=o.diagnostics.empty()?static_cast<juce::AudioIODeviceCallback*>(&bridge):static_cast<juce::AudioIODeviceCallback*>(&measured);
     adi::device::DeviceHostTimer timer(session.devices());
     timer.start(20);
     edits.start(50);
-    mgr.addAudioCallback(&bridge);
+    mgr.addAudioCallback(callback);
 
     juce::MessageManager* mm = juce::MessageManager::getInstance();
-    const int totalMs = o.seconds * 1000;
+    nlohmann::json receipt;std::int64_t readyTicks=0;int nativeXrunsAtReady=-1,managerXrunsAtReady=-1;
+    if(!o.diagnostics.empty()) {
+        const auto deadline=adi_play::measurementTicks()+2*juce::Time::getHighResolutionTicksPerSecond();
+        while(timings.observed()==0 && adi_play::measurementTicks()<deadline)mm->runDispatchLoopUntil(10);
+        readyTicks=adi_play::measurementTicks();nativeXrunsAtReady=dev->getXRunCount();managerXrunsAtReady=mgr.getXRunCount();
+        receipt={{"status",timings.observed()>0?"MEASURED":"NOT RUN"},{"process_id",adi_play::measurementPid()},
+            {"executable",juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName().toStdString()},
+            {"project",o.file},{"build",
+#if defined(NDEBUG)
+            "Release"
+#else
+            "Debug"
+#endif
+            },{"requested",{{"type",o.deviceType},{"device",o.deviceName},{"sample_rate",rate},{"buffer",o.block},
+                {"workers",o.workers},{"worker_override",o.workers>=0}}},
+            {"granted",{{"type",dev->getTypeName().toStdString()},{"device",dev->getName().toStdString()},
+                {"sample_rate",dev->getCurrentSampleRate()},{"buffer",dev->getCurrentBufferSizeSamples()},
+                {"bit_depth",dev->getCurrentBitDepth()},{"input_channels",dev->getActiveInputChannels().countNumberOfSetBits()},
+                {"output_channels",dev->getActiveOutputChannels().countNumberOfSetBits()},
+                {"input_latency_samples",dev->getInputLatencyInSamples()},{"output_latency_samples",dev->getOutputLatencyInSamples()},
+                {"workers_allocated",measured.workersAtStart}}},
+            {"ready",{{"ticks",readyTicks},{"ticks_per_second",juce::Time::getHighResolutionTicksPerSecond()},
+                {"observed_callbacks",timings.observed()},{"stream_playing",dev->isPlaying()}}},
+            {"worker_policy",{{"initializer","none"},{"mmcss_verified",false},{"minimum_frames",o.workers>=0?1:256},
+                {"minimum_eligible_nodes",o.workers>=0?2:4}}}};
+        std::printf("%s %s\n",timings.observed()>0?"ADI_PLAY_READY":"ADI_PLAY_NOT_READY",receipt.dump().c_str());std::fflush(stdout);
+    }
+    const int totalMs=!o.diagnostics.empty() && timings.observed()==0?0:o.seconds*1000;
     bool resizeExercised = false;
     bool resizeMissed = false;
     float peakFirst = 0.0f;
@@ -649,8 +749,10 @@ int main(int argc, char** argv) {
     }
     const float peakLast = metered.takePeak();
 
-    mgr.removeAudioCallback(&bridge);
+    mgr.removeAudioCallback(callback);
     timer.stop();
+    const auto nativeXrunsAtStop=dev?dev->getXRunCount():-1;
+    const auto managerXrunsAtStop=mgr.getXRunCount();const auto managerCpuAtStop=mgr.getCpuUsage();
     mgr.closeAudioDevice();
 
     const adi::device::DeviceCore& core = bridge.core();
@@ -684,6 +786,25 @@ int main(int argc, char** argv) {
     if (mismatch.isNotEmpty()) std::printf("  note      %s\n", mismatch.toRawUTF8());
     // Before --save-state, which attaches its own glue: finish detaches ours.
     const int editsRc = edits.finish(0, o.expectNoEdits);
+    if(!o.diagnostics.empty()) {
+        receipt["closed_ticks"]=adi_play::measurementTicks();
+        receipt["callbacks"]={{"device_core",core.callbacks()},{"graph_host_blocks",gs.blocks},
+            {"oversize_refusals",core.oversizeRefusals()},{"device_reconfigurations",core.reconfigurations()},
+            {"stop_notifications",measured.stops},{"device_error",bridge.lastError().toStdString()}};
+        receipt["graph"]={{"published",gs.published},{"worker_count_before_release",measured.workersAtStop},
+            {"blocks",measured.finalGraph.blocks},{"parallel_levels",measured.finalGraph.parallelLevels},
+            {"worker_node_blocks",measured.finalGraph.workerNodeBlocks},{"worker_fallbacks",measured.finalGraph.workerFallbacks}};
+        receipt["driver_reports"]={{"device_xruns_at_ready",nativeXrunsAtReady},{"device_xruns_before_close",nativeXrunsAtStop},
+            {"manager_xruns_at_ready",managerXrunsAtReady},{"manager_xruns_before_close",managerXrunsAtStop},
+            {"manager_cpu_fraction_before_close",managerCpuAtStop},
+            {"device_xrun_meaning","ASIO: JUCE kAsioOverload notifications; -1 means unsupported"},
+            {"manager_xrun_meaning","native if supported, otherwise JUCE callback-duration estimate"}};
+        if(const auto* clips=session.clips())receipt["clips"]={{"underrun_frames",clips->underrunSamples()},{"read_errors",clips->readErrors()}};
+        std::string error;
+        if(!adi_play::writeDiagnostics(o.diagnostics,timings,receipt,readyTicks,error)) {
+            std::printf("FAILED -- diagnostic output: %s\n",error.c_str());return 1;
+        }
+    }
 
     if (core.callbacks() == 0) {
         std::printf("\nFAILED -- the device opened but produced no callbacks.\n");
