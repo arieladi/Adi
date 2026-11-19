@@ -8,6 +8,16 @@
 - **OScope 2 Full and PsyScope Pro.** Where are the installed licensed builds or the installer files for ORC-VST? Use the current Classic scope and the independently proved analyzer pages meanwhile. The two edition-specific comparisons and corresponding layouts wait for the reference binaries.
 - **Channel name tag.** After comparing Live 12, do you want any fields beyond name, colour, Mute and Solo? Keep the agreed four for now. Only the optional additions under DF-W27 wait for this answer.
 
+## 19 November 2026 — DF-M25 return from the detached analyser
+
+**PR requested.** `mixview/detached-analyser-return-1119` is pushed at `a2e7e931` after DF-M24. The analyser's Mix View action opens Stack on the channel whose data is displayed, even when normal entry with two solos would open Focus. It retains the analyser and its current mode and keeps explicit Stack group filters. A missing source falls back to a valid current channel. The action writes no project Undo step.
+
+The fixture-only `55f87833` failed all three return cases. The Release passed 870 software-peer checks and both targeted CTests. Private evidence is in `NowWeReverse/ADI-View/mixview-seat/dfm25-built-20261119`.
+
+- ZIP `outputs/ADI-MixView-Detached-Analyser-Return-a2e7e93193-win64-Release.zip`, SHA-256 `f6af7dd9c4c1feb4e02ab98dd5401c49408db45d7d66945bd4adbdfbe2d0eb35`.
+- ADI.exe SHA-256 `2c82ce097fa1520f00f84fe4949bb7ac4a862a68f1486e115cef0a47e0a9b75e`, scanner SHA-256 `2a369abb2af66c7b3c08ff36fb5c3ced882c9fef7d993b51fd682553b4c9a38f`, corresponding source SHA-256 `e8fa123a25376323c664d2bd57cdc118597f4af1e58a8296d4800255be56c26e`.
+- Claude brief `outputs/ADI-Q-MixView-Detached-Analyser-Return-a2e7e931-CLAUDE-RETEST.txt`.
+
 ## 19 November 2026 — DF-M28 Classic Gate key contract
 
 **PR requested.** Existing #572 `mixview/g-complete-request-20261114` is fast-forwarded to `7d3bd050` for re-review, after #566. The added core gate proves that CompleteRequests can retain a single prepared state for internal programme aliases, routed silence and real external keys, including a retarget and removal without reprepare. Fixed internal detection and programme aliases are bit-identical at 44.1/48/96/192 kHz in float and double. The Release suite passed 371 checks and compared 2,670,592 samples with zero callback allocations and frees. The readme now states the generated host-rate admission through 768 kHz.
