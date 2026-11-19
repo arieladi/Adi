@@ -598,9 +598,15 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     throw std::runtime_error("invalid audio clip End marker; silent");
                 clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
             }
-            clip->fadeIn=duration(row.fadeInTicks);
-            if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
-            clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
+            clip->fadeIn = duration(row.fadeInTicks);
+            if (row.fadeOutTicks < 0) throw std::runtime_error("invalid fade-out duration");
+            // Resize can leave a legacy fade wider than the placement. Its
+            // fallback shape stays inside the rendered span. Retained split
+            // domains are evaluated independently in shaped().
+            const auto tickSpan = endTicks - origin;
+            const auto frameSpan = clip->end - clip->start;
+            clip->fadeOut = row.fadeOutTicks > tickSpan ? frameSpan : std::min(frameSpan,
+                samples(tempo.ticksToSeconds(endTicks) - tempo.ticksToSeconds(endTicks - row.fadeOutTicks), rate));
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
             if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
                (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
