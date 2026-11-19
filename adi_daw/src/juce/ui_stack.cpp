@@ -838,10 +838,10 @@ void StackTab::showRowAddMenu(stack::RowRef row, juce::Component& anchor) {
     auto menu = rowAddMenu(row);
     if (!menu.getNumItems()) return;
     auto picker = std::make_unique<StackAddPicker>(menu);
-    const juce::Component::SafePointer<StackAddPicker> search(picker.get());
+    const juce::Component::SafePointer<StackAddPicker> pickerHandle(picker.get());
     auto& popup = juce::CallOutBox::launchAsynchronously(std::move(picker), button->getScreenBounds(), nullptr);
     popup.setDismissalMouseClicksAreAlwaysConsumed(true);
-    if (search) search->focusSearch();
+    if (pickerHandle) pickerHandle->focusSearch();
 }
 juce::String StackTab::emptyMessage() const {
     if (!search.getText().isEmpty())

@@ -285,7 +285,7 @@ void replaceRetainedDeviceFromPicker() {
 
     constexpr std::string_view utility = "org.adidaw.builtin.utility";
     if (const auto* info = findBuiltin(utility); info && info->available) {
-        check(doc->deviceAction("device.remove", {{"id", inserted->id}}) && doc->insertBuiltin(std::string(utility), 3),
+        check(doc->deviceAction("device.remove", {{"id", inserted->id}}) && doc->insertBuiltin(std::string(utility), 3, std::nullopt),
               "the built-in picker can insert a utility after removing the external device");
         const auto builtIn = find(utility);
         check(builtIn && builtIn->id > inserted->id && builtIn->available && !builtIn->plugin &&
