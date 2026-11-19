@@ -53,6 +53,8 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     void paint(juce::Graphics &) override;
     void resized() override;
     void lookAndFeelChanged() override;
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseExit(const juce::MouseEvent &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
@@ -64,8 +66,8 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     void cancel();
 
   private:
-    enum class Tool { Edit, Draw };
-    enum class Drag { None, Control, Node, Stroke, Bend, Level, Marquee, Group };
+    enum class Tool { Edit, Draw, LinePen, ArcPen, SCurvePen };
+    enum class Drag { None, Control, Node, Stroke, Bend, Level, Marquee, Group, Pen };
     using Rect = juce::Rectangle<float>;
     using Pos = juce::Point<float>;
     struct Control {
@@ -90,6 +92,13 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     bool send(Phase, std::span<const Change>);
     void setOnce(int, double);
     void stroke(Pos);
+    bool isPen() const noexcept { return tool_ >= Tool::LinePen; }
+    Pos snappedPenPoint(Pos logicalPoint) const;
+    Pos penOrigin(Pos logicalPoint) const;
+    std::vector<Point> penCurve(const std::vector<Point> &, Pos origin, Pos extent) const;
+    void updatePen(Pos logicalPoint);
+    void previewPen(Pos logicalPoint, juce::ModifierKeys);
+    void clearPenPreview();
     void controlDrag(Pos);
     void chooseShape(Shape, float weight = 0);
     void writeShape(int);
@@ -138,6 +147,10 @@ class AdiShaperPanel final : public juce::Component, public juce::SettableToolti
     std::array<float, 2> peaks_{};
     float phase_ = -1;
     Pos down_{}, previous_{};
+    std::array<Pos, 3> penSizes_{{{.125f, .25f}, {.125f, .25f}, {.125f, .25f}}};
+    Pos penStart_{}, penExtent_{}, repeatAt_{}, repeatCursor_{}, hoverOrigin_{};
+    bool repeatPen_ = false, hoverValid_ = false;
+    juce::Path penPreview_;
     int selected_ = -1, activeId_ = 0, selectedSegment_ = -1;
     double originalValue_ = 0;
     bool snap_ = true, showInput_ = true, showOutput_ = true, flexible_ = false;

@@ -358,6 +358,118 @@ void cornerLevel() {
     expect(readout({.22f, .80f, .05f, .65f}) == uniform(.43f),
            "mixed point heights preserve the forty-three percent readout");
 }
+void geometricPens() {
+    using Shape = Panel::Shape;
+    const std::vector<Panel::Point> original{{0, .22f, -1, Shape::SourceCorner},
+                                             {1531.f / 8192, .8f, 1, Shape::SourceCorner},
+                                             {5099.f / 8192, .05f, 0, Shape::SourceCorner},
+                                             {6878.f / 8192, .65f, 1, Shape::SourceCorner}};
+    for (int pen = 0; pen < 3; ++pen) {
+        Fixture f;
+        f.wave = original;
+        Panel p;
+        p.setSize(1000, 600);
+        p.bind(f.binding(true));
+        const auto chart = p.curveBounds();
+        const auto at = [&](float x, float y, bool ctrl = false) {
+            return event(p, chart.getX() + x * chart.getWidth(), chart.getBottom() - y * chart.getHeight(),
+                         1, false, false, ctrl);
+        };
+        p.mouseDown(event(p, 22, 316)); // the pen grid is independent of pointer snapping
+        p.mouseDown(event(p, 22, 350.f + pen * 33));
+        const auto start = at(.282f, .249f), end = at(.592f, .872f);
+        const auto chartPixels = [&] {
+            juce::Image image(juce::Image::RGB, 1000, 600, true);
+            {
+                juce::Graphics g(image);
+                p.paintEntireComponent(g, true);
+            }
+            std::uint64_t hash = 0;
+            for (int y = 218; y < 479; y += 2)
+                for (int x = 53; x < 985; x += 2)
+                    hash = hash * 65599u + image.getPixelAt(x, y).getARGB();
+            return hash;
+        };
+        const auto plain = chartPixels();
+        p.mouseMove(start);
+        const auto preview = chartPixels();
+        p.mouseMove(at(.283f, .25f));
+        expect(preview != plain && preview == chartPixels() && !f.starts && f.wave == original,
+               "a hover previews one snapped shape without starting a device edit");
+        p.mouseMove(at(.997f, .25f));
+        p.mouseMove(at(.998f, .249f));
+        expect(chartPixels() == plain && !f.starts, "a forward pen stops at the right edge");
+        p.mouseDown(start);
+        p.mouseDrag(end);
+        expect(f.starts == 1 && !f.ends && f.changes > 0, "a dragged pen auditions before release");
+        p.mouseUp(end);
+        expect(f.ends == 1 && f.wave.size() == original.size() + 2u + static_cast<std::size_t>(pen) &&
+                   f.wave[0] == original[0] && f.wave[1] == original[1] &&
+                   f.wave[f.wave.size() - 2] == original[2] && f.wave.back() == original[3],
+               "each pen preserves outside points and writes one gesture");
+        expect(f.wave[2] == Panel::Point{.28125f, .25f, -1.f, Shape::SourceCorner} &&
+                   f.wave[f.wave.size() - 3] == Panel::Point{.59375f, .875f, -1.f, Shape::SourceCorner},
+               "pen endpoints snap in time and height");
+        if (pen == 1)
+            expect(f.wave[3] == Panel::Point{.4375f, .875f, 1.f, Shape::SourceCorner},
+                   "arc has one rounded interior control point");
+        if (pen == 2)
+            expect(f.wave[3] == Panel::Point{.359375f, .25f, 1.f, Shape::SourceCorner} &&
+                       f.wave[4] == Panel::Point{.515625f, .875f, 1.f, Shape::SourceCorner},
+                   "S pen has two rounded interior controls");
+        const auto first = f.wave;
+        p.mouseDown(end);
+        p.mouseUp(end);
+        const auto seam = std::find_if(f.wave.begin(), f.wave.end(), [](auto node) {return node.x == .59375f;});
+        expect(f.ends == 2 && seam != f.wave.end() && std::next(seam) != f.wave.end() &&
+                   seam->y == .875f && std::next(seam)->x == seam->x && std::next(seam)->y == .25f,
+               "one repeat writes one step and keeps a deliberate reset at its shared edge");
+        p.mouseDown(at(.78f, .2f));
+        p.mouseDrag(at(.4f, .8f));
+        p.cancel();
+        expect(f.ends == 2 && f.cancels == 1, "cancelling an audition adds no step");
+        f.wave = first;
+        p.refresh();
+        p.mouseDown(at(.28f, .25f, true));
+        p.mouseDrag(at(.29f, .4f, true));
+        p.mouseUp(at(.29f, .4f, true));
+        expect(f.wave.size() == first.size() && f.ends == 3, "Ctrl temporarily uses the point editor");
+
+        f.wave = original;
+        p.refresh();
+        const auto back = at(.5f, .75f);
+        p.mouseDown(at(.75f, .25f));
+        p.mouseDrag(back);
+        p.mouseUp(back);
+        p.mouseDown(back);
+        p.mouseUp(back);
+        const auto reverse = std::find_if(f.wave.begin(), f.wave.end(), [](auto node) {return node.x == .5f;});
+        expect(reverse != f.wave.end() && std::next(reverse) != f.wave.end() &&
+                   reverse->y == .25f && std::next(reverse)->x == reverse->x && std::next(reverse)->y == .75f,
+               "reverse repetition preserves both sides of the shared point");
+        for (int i = 0; i < 2; ++i) {
+            p.mouseDown(back);
+            p.mouseUp(back);
+        }
+        const auto atLimit = f.ends;
+        p.mouseDown(back);
+        p.mouseUp(back);
+        expect(f.ends == atLimit && f.wave.front().x == 0 && f.wave.back().x <= 1,
+               "repeating past the cycle boundary leaves the curve alone");
+    }
+    Fixture f;
+    f.wave.resize(512);
+    for (std::size_t i = 0; i < f.wave.size(); ++i)
+        f.wave[i] = {static_cast<float>(i) / 8192.f, .5f, -1.f, Shape::SourceCorner};
+    const auto crowded = f.wave;
+    Panel p;
+    p.setSize(1000, 600);
+    p.bind(f.binding(true));
+    p.mouseDown(event(p, 22, 416));
+    p.mouseDown(event(p, 550, 350));
+    p.mouseUp(event(p, 550, 350));
+    expect(f.wave == crowded && f.cancels == 1 && !f.ends, "an over-capacity pen does not lose points");
+}
 void syncDivisions() {
     Fixture f;
     Panel panel;
@@ -579,6 +691,7 @@ int main(int argc, char **argv) try {
     gestures();
     groupEdits();
     cornerLevel();
+    geometricPens();
     syncDivisions();
     cachedDrawing();
     spectrumFrames();

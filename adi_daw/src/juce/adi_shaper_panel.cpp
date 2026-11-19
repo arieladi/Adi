@@ -68,7 +68,12 @@ constexpr std::array<const char *, 8> timeRanges{"Follow", "1 bar",  "2 bars", "
                                                  "8 bars", "2.5 ms", "10 ms",  "20 ms"};
 constexpr float clamp01(float v) { return std::clamp(v, 0.f, 1.f); }
 bool inside(Rect r, Pos p) { return r.contains(p); }
-Rect button(int i) { return {10.f, 238.f + 33.f * i, 31.f, 27.f}; }
+Rect button(int i) {
+    if (i == 3 || i == 4)
+        return {5.f + (i - 3) * 22.f, 451.f, 21.f, 23.f};
+    const int row = i < 3 ? i : i - 2;
+    return {10.f, 238.f + 33.f * row, 31.f, 27.f};
+}
 Rect palette(int i) { return {10.f + i * 76.f, 549.f, 70.f, 22.f}; }
 } // namespace
 
@@ -81,7 +86,11 @@ AdiShaperPanel::AdiShaperPanel() {
 AdiShaperPanel::~AdiShaperPanel() { cancel(); }
 void AdiShaperPanel::bind(Binding next) {
     cancel();
+    repeatPen_ = false;
+    clearPenPreview();
     binding_ = std::move(next);
+    if (isPen() && !freeCurve())
+        tool_ = Tool::Edit;
     group_.clear();
     tabs_.fill(false);
     key_ = {};
@@ -124,6 +133,7 @@ void AdiShaperPanel::setPresetName(juce::String name) {
     bind(std::move(recalled));
 }
 void AdiShaperPanel::refresh() {
+    clearPenPreview();
     pointsDirty_ = true;
     if (drag_ == Drag::None && !group_.empty() && selectedCurve_ != points()) {
         group_.clear();
@@ -144,6 +154,8 @@ void AdiShaperPanel::setTrace(Trace input, Trace output, float left, float right
 }
 void AdiShaperPanel::select(Key k) {
     cancel();
+    repeatPen_ = false;
+    clearPenPreview();
     k.stage = std::clamp(k.stage, 0, binding_.parameterCount >= 463 ? 7 : 6);
     k.band = std::clamp(k.band, 0, 2);
     if (k.stage != 3 && k.stage != 4 && k.stage != 6)
@@ -198,7 +210,7 @@ double AdiShaperPanel::read(int id) const {
 bool AdiShaperPanel::freeCurve() const { return binding_.wave && binding_.editWave; }
 const std::vector<Panel::Point> &AdiShaperPanel::points() const {
     if (drag_ == Drag::Node || drag_ == Drag::Stroke || drag_ == Drag::Bend || drag_ == Drag::Level ||
-        drag_ == Drag::Group)
+        drag_ == Drag::Group || drag_ == Drag::Pen)
         return working_;
     if (!pointsDirty_)
         return cachedPoints_;
@@ -363,6 +375,7 @@ void AdiShaperPanel::invalidateDrawing() {
     repaint();
 }
 void AdiShaperPanel::resized() {
+    clearPenPreview();
     background_ = {};
     contour_ = {};
     invalidateDrawing();
@@ -382,9 +395,13 @@ void AdiShaperPanel::paint(juce::Graphics &g) {
         juce::AffineTransform::scale(static_cast<float>(getWidth()) / background_.getWidth(),
                                      static_cast<float>(getHeight()) / background_.getHeight());
     g.drawImage(contour_, contourPixels_.toFloat().transformedBy(toPanel));
-    if (drag_ == Drag::Marquee || !group_.empty()) {
+    if (drag_ == Drag::Marquee || !group_.empty() || !penPreview_.isEmpty()) {
         g.addTransform(juce::AffineTransform::scale(getWidth() / designWidth, getHeight() / designHeight));
         drawSelection(g);
+        if (!penPreview_.isEmpty()) {
+            g.setColour(juce::Colours::white.withAlpha(.87f));
+            g.strokePath(penPreview_, juce::PathStrokeType(1.5f));
+        }
     }
 }
 
@@ -861,14 +878,15 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
           juce::Justification::centredLeft);
     label(g, scale[2], {1, plot.getBottom() - 7, 43, 14}, 10, dim, juce::Justification::centredRight);
     const std::array<const char *, 5> tools{"", "", "#", "In", "Out"};
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < (freeCurve() ? 8 : 5); ++i) {
         auto r = button(i);
         box(g, r, plate);
         bool active = i == 0   ? tool_ == Tool::Edit
                       : i == 1 ? tool_ == Tool::Draw
                       : i == 2 ? snap_
                       : i == 3 ? showInput_
-                               : showOutput_;
+                      : i == 4 ? showOutput_
+                               : static_cast<int>(tool_) == i - 3;
         g.setColour(active ? accent : dim);
         const auto c = r.getCentre();
         if (i == 0) {
@@ -885,6 +903,18 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
         } else if (i == 1) {
             g.drawLine(c.x - 5, c.y + 5, c.x + 5, c.y - 5, 2.5f);
             g.drawLine(c.x - 6, c.y + 7, c.x - 4, c.y + 6, 1.f);
+        } else if (i >= 5) {
+            juce::Path shape;
+            shape.startNewSubPath(c.x - 9, c.y + 4);
+            if (i == 5)
+                shape.lineTo(c.x + 9, c.y - 4);
+            else if (i == 6)
+                shape.quadraticTo(c.x - 3, c.y - 8, c.x + 9, c.y - 4);
+            else
+                shape.cubicTo(c.x + 5, c.y + 7, c.x - 5, c.y - 7, c.x + 9, c.y - 4);
+            g.strokePath(shape, juce::PathStrokeType(1.5f));
+            for (float sign : {-1.f, 1.f})
+                g.fillEllipse(c.x + sign * 9 - 2, c.y - sign * 4 - 2, 4.f, 4.f);
         } else {
             label(g, tools[static_cast<std::size_t>(i)], r, 13, active ? accent : dim);
         }
@@ -943,7 +973,8 @@ void AdiShaperPanel::drawStatic(juce::Graphics &g) {
     }
     box(g, {0, 578, 1000, 22}, juce::Colour(0xff37373b), 0);
     label(g,
-          tool_ == Tool::Draw
+          isPen() ? "Click to draw or repeat. Drag to resize or reverse. Hold Ctrl for the pointer."
+          : tool_ == Tool::Draw
               ? "Draw across the grid to shape the curve."
               : (freeCurve()
                      ? "Drag a point to move it. Double-click the grid to add a point. Alt-drag a segment to "
@@ -1036,6 +1067,14 @@ void AdiShaperPanel::finish(Phase phase) {
     const bool accepted = old != Drag::Control && flexible_
                               ? binding_.editWave(key_, phase, phase == Phase::Cancel ? original_ : working_)
                               : send(phase, phase == Phase::Cancel ? originalParams_ : edits_);
+    if (old == Drag::Pen) {
+        repeatPen_ = accepted && phase == Phase::End;
+        if (repeatPen_) {
+            penSizes_[static_cast<std::size_t>(tool_) - 2] = penExtent_;
+            repeatCursor_ = previous_;
+            repeatAt_ = {std::clamp(penStart_.x + penExtent_.x, 0.f, 1.f), penStart_.y};
+        }
+    }
     if (!accepted) {
         group_.clear();
         selected_ = -1;
@@ -1093,6 +1132,131 @@ int AdiShaperPanel::segment(Pos p) const {
     auto it = std::upper_bound(v.begin(), v.end(), x, [](float a, const Point &b) { return a < b.x; });
     return it == v.begin() ? static_cast<int>(v.size()) - 1 : static_cast<int>(it - v.begin()) - 1;
 }
+AdiShaperPanel::Pos AdiShaperPanel::snappedPenPoint(Pos p) const {
+    const auto q = toPlot(p);
+    return {std::round(q.x * 32.f) / 32.f, std::round(q.y * 16.f) / 16.f};
+}
+AdiShaperPanel::Pos AdiShaperPanel::penOrigin(Pos p) const {
+    return repeatPen_ && p.getDistanceFrom(repeatCursor_) <= 3.f ? repeatAt_ : snappedPenPoint(p);
+}
+std::vector<Panel::Point> AdiShaperPanel::penCurve(const std::vector<Point> &original, Pos start,
+                                                   Pos extent) const {
+    const auto end = start + extent;
+    const float lo = std::max(0.f, std::min(start.x, end.x));
+    const float hi = std::min(1.f, std::max(start.x, end.x));
+    if (hi <= lo)
+        return {};
+    const auto height = [&](float t) {
+        if (tool_ == Tool::ArcPen)
+            t *= 2.f - t;
+        else if (tool_ == Tool::SCurvePen)
+            t = t * t * (3.f - 2.f * t);
+        return clamp01(start.y + t * extent.y);
+    };
+    constexpr float lastPhase = 8191.f / 8192.f;
+    const auto hard = [](float x, float y) { return Point{x, y, -1.f, Shape::SourceCorner}; };
+    auto first = hard(lo, height((lo - start.x) / extent.x));
+    auto last = hard(std::min(hi, lastPhase), height((hi - start.x) / extent.x));
+    std::vector<Point> stamp{first};
+    const auto soft = [&](float at, float level) {
+        const float x = start.x + extent.x * at;
+        if (x > lo && x < hi)
+            stamp.push_back({x, clamp01(start.y + extent.y * level), 1.f, Shape::SourceCorner});
+    };
+    if (tool_ == Tool::ArcPen)
+        soft(.5f, 1.f);
+    else if (tool_ == Tool::SCurvePen) {
+        soft(.25f, 0.f);
+        soft(.75f, 1.f);
+    }
+    stamp.push_back(last);
+    std::sort(stamp.begin(), stamp.end(), [](Point a, Point b) { return a.x < b.x; });
+    auto left = std::lower_bound(original.begin(), original.end(), lo,
+                                 [](Point p, float x) { return p.x < x; });
+    auto right = std::upper_bound(left, original.end(), hi, [](float x, Point p) { return x < p.x; });
+    // A repeated ramp can reset at its shared edge. Stable coincident hard
+    // points retain both limits without introducing an extra timed segment.
+    const auto sharedLeft = std::upper_bound(left, right, lo, [](float x, Point p) { return x < p.x; });
+    const auto sharedRight = std::lower_bound(left, right, std::min(hi, lastPhase),
+                                               [](Point p, float x) { return p.x < x; });
+    std::vector<Point> result(original.begin(), left);
+    const Point *preceding = original.empty() ? nullptr : &(left == original.begin() ? original.back() : *std::prev(left));
+    if (sharedLeft != left || (preceding && preceding->shape == Shape::Hold)) {
+        const float outside = sharedLeft != left ? left->y : preceding->y;
+        if (std::abs(outside - stamp.front().y) > .5f / 65535)
+            result.push_back(hard(lo, outside));
+    }
+    const bool wrap = hi == 1.f && !original.empty() && original.front().x == 0.f;
+    if (sharedRight != right || wrap) {
+        const float outside = wrap ? original.front().y : std::prev(right)->y;
+        if (std::abs(outside - stamp.back().y) > .5f / 65535)
+            stamp.push_back(hard(stamp.back().x, outside));
+    }
+    result.insert(result.end(), stamp.begin(), stamp.end());
+    result.insert(result.end(), right, original.end());
+    if (result.size() > dsp::AdiShaperWaveBank::slots)
+        return {};
+    return result;
+}
+void AdiShaperPanel::updatePen(Pos p) {
+    if (p.getDistanceFrom(down_) > 3.f) {
+        const auto delta = snappedPenPoint(p) - snappedPenPoint(down_);
+        if (delta.x != 0)
+            penExtent_.x = delta.x;
+        penExtent_.y = delta.y;
+    }
+    previous_ = p;
+    auto proposed = penCurve(original_, penStart_, penExtent_);
+    if (proposed.empty())
+        cancel();
+    else if (proposed != working_)
+        updateNodes(std::move(proposed));
+}
+void AdiShaperPanel::clearPenPreview() {
+    hoverValid_ = false;
+    if (!penPreview_.isEmpty()) {
+        penPreview_.clear();
+        repaint();
+    }
+}
+void AdiShaperPanel::previewPen(Pos p, juce::ModifierKeys mods) {
+    if (!isPen() || !freeCurve() || !graph().contains(p) || mods.isCtrlDown() || mods.isShiftDown()) {
+        clearPenPreview();
+        return;
+    }
+    const auto origin = penOrigin(p);
+    if (hoverValid_ && origin == hoverOrigin_)
+        return;
+    clearPenPreview();
+    hoverOrigin_ = origin;
+    hoverValid_ = true;
+    const auto extent = penSizes_[static_cast<std::size_t>(tool_) - 2];
+    const auto proposed = penCurve(points(), origin, extent);
+    if (proposed.empty())
+        return;
+    const auto plot = graph();
+    const int columns = juce::roundToInt(plot.getWidth());
+    const auto preview = sampleCorners(proposed, columns);
+    const float end = origin.x + extent.x;
+    const int first = juce::roundToInt(clamp01(std::min(origin.x, end)) * columns);
+    const int last = juce::roundToInt(clamp01(std::max(origin.x, end)) * columns);
+    for (int i = first; i <= last; ++i) {
+        const Pos point{plot.getX() + i, plot.getBottom() - preview[static_cast<std::size_t>(i)] * plot.getHeight()};
+        if (i == first) penPreview_.startNewSubPath(point);
+        else penPreview_.lineTo(point);
+    }
+    repaint();
+}
+void AdiShaperPanel::mouseMove(const juce::MouseEvent &e) {
+    const auto p = logical(e.position);
+    if (p.getDistanceFrom(repeatCursor_) > 3.f)
+        repeatPen_ = false;
+    previewPen(p, e.mods);
+}
+void AdiShaperPanel::mouseExit(const juce::MouseEvent &) {
+    repeatPen_ = false;
+    clearPenPreview();
+}
 void AdiShaperPanel::stroke(Pos p) {
     const auto a = toPlot(previous_), b = toPlot(p);
     auto v = working_;
@@ -1146,6 +1310,10 @@ void AdiShaperPanel::updatePointer(Pos p, juce::ModifierKeys mods) {
     }
     if (drag_ == Drag::Control) {
         controlDrag(p);
+        return;
+    }
+    if (drag_ == Drag::Pen) {
+        updatePen(p);
         return;
     }
     if (drag_ == Drag::Stroke) {
@@ -1283,7 +1451,9 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
     const auto p = logical(e.position);
     previous_ = down_ = p;
-    if (tool_ == Tool::Edit && e.getNumberOfClicks() == 1 && freeCurve() && !group_.empty() &&
+    clearPenPreview();
+    const bool pointerTool = tool_ == Tool::Edit || (isPen() && (e.mods.isCtrlDown() || e.mods.isShiftDown()));
+    if (pointerTool && e.getNumberOfClicks() == 1 && freeCurve() && !group_.empty() &&
         startGroup(p))
         return;
     group_.clear();
@@ -1304,16 +1474,19 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
         showStages(p);
         return;
     }
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < (freeCurve() ? 8 : 5); ++i)
         if (button(i).contains(p)) {
+            repeatPen_ = false;
             if (i < 2)
                 tool_ = i ? Tool::Draw : Tool::Edit;
             else if (i == 2)
                 snap_ = !snap_;
             else if (i == 3)
                 showInput_ = !showInput_;
-            else
+            else if (i == 4)
                 showOutput_ = !showOutput_;
+            else
+                tool_ = static_cast<Tool>(i - 3);
             invalidateDrawing();
             return;
         }
@@ -1379,7 +1552,22 @@ void AdiShaperPanel::mouseDown(const juce::MouseEvent &e) {
                 beginParam(c.id);
             return;
         }
-    if (!graph().expanded(4).contains(p) || e.getNumberOfClicks() > 1)
+    if (!graph().expanded(4).contains(p))
+        return;
+    if (isPen() && !pointerTool && freeCurve()) {
+        penStart_ = penOrigin(p);
+        penExtent_ = penSizes_[static_cast<std::size_t>(tool_) - 2];
+        const bool outward = (penStart_.x >= 1.f && penExtent_.x > 0) ||
+                             (penStart_.x <= 0.f && penExtent_.x < 0);
+        if (outward && repeatPen_ && p.getDistanceFrom(repeatCursor_) <= 3.f)
+            return;
+        startNodes(Drag::Pen);
+        if (drag_ == Drag::Pen && !outward)
+            updatePen(p);
+        return;
+    }
+    repeatPen_ = false;
+    if (e.getNumberOfClicks() > 1)
         return;
     if (tool_ == Tool::Draw) {
         startNodes(Drag::Stroke);
@@ -1410,6 +1598,8 @@ void AdiShaperPanel::mouseDrag(const juce::MouseEvent &e) {
         updatePointer(logical(e.position), e.mods);
 }
 void AdiShaperPanel::mouseUp(const juce::MouseEvent &e) {
+    if (drag_ == Drag::Pen && logical(e.position) != previous_)
+        updatePen(logical(e.position));
     if (pendingWeightClick_ && drag_ == Drag::Node) {
         auto wave = working_;
         auto &point = wave[static_cast<std::size_t>(selected_)];
@@ -1420,11 +1610,13 @@ void AdiShaperPanel::mouseUp(const juce::MouseEvent &e) {
     }
     if (drag_ == Drag::Marquee)
         previous_ = logical(e.position);
+    const bool wasPen = drag_ == Drag::Pen;
     finish(Phase::End);
+    if (wasPen) previewPen(logical(e.position), e.mods);
 }
 void AdiShaperPanel::mouseDoubleClick(const juce::MouseEvent &e) {
     const auto p = logical(e.position);
-    if (!freeCurve() || tool_ != Tool::Edit || !graph().contains(p))
+    if (!freeCurve() || (tool_ != Tool::Edit && !(isPen() && (e.mods.isCtrlDown() || e.mods.isShiftDown()))) || !graph().contains(p))
         return;
     cancel();
     const int nearest = nearestNode(p, true);
