@@ -25,6 +25,27 @@ device PRs do not conflict on one shared log file.
    private folder, only the measured statements reach this log. Otherwise, each reading is
    written as a one-paragraph recipe here for you to take.
 
+## 2026-11-19 — DEV-22: Live's Dry/Wet is sin/cos, confirmed at a second point; both reverbs follow
+
+**`devices/reverb-equal-power` (`69c75a50`), from `main`.**
+
+- **Reading (DV-09):** Hybrid Reverb's dry impulse is 0.7071 at its default 50 %; **Reverb's is
+  0.64945 at its default 55 %** = cos(0.55·π/2) — which settles the curve (the square-root
+  equal-power law gives 0.6708). With Chorus-Ensemble and Delay, four Live 12 devices measured, one
+  law.
+- **ADI now:** Reverb and Hybrid Reverb crossfade sin/cos (were linear), exact at the ends; Reverb's
+  Dry/Wet default 55 % (Live's preset).
+- Tests: Reverb's first sample 0.64945 at its default; Hybrid Reverb's dry 0.70711 (IR silent at
+  its start). Plant: linear → fails. Reverb 28, Hybrid Reverb 51; CTest **245/245**.
+
+**PR requested** — title "Reverb and Hybrid Reverb mix sin/cos as Live 12.4 measures; Reverb's
+default 55 % (DEV-22)"; head `devices/reverb-equal-power` at `69c75a50`; base `main`. Body: the
+commit message.
+
+**Not explained by it:** Echo's dry is 0.300 and Resonators' 0.500 at their defaults; their default
+Dry/Wet values are not in Live's preset library (the corpus Set deleted each device after
+rendering), so they wait for a reading (recipe 5's kind: one look at a fresh device).
+
 ## 2026-11-19 — DEV-22: Delay's loop filter is 12 dB/oct, and its default is Live 12.4's
 
 **`devices/delay-defaults` (`92511657`), from `main`.** Third of the corpus devices.
