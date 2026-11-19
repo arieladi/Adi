@@ -43,7 +43,6 @@ class MixOutputMeter final : public juce::Component, private juce::ComponentList
     std::weak_ptr<SharedAnalysis> broker_;
     SharedAnalysis::Lease lease_;
     std::shared_ptr<const SharedAnalysis::StereoMeterResult> shown_;
-    std::weak_ptr<const MainMeterSource> lastMainSource_;
     std::optional<MainMeterSnapshot> main_;
     std::vector<juce::Component::SafePointer<juce::Component>> ancestors_;
     std::function<void(Audition)> audition_;

@@ -213,12 +213,10 @@ void MixOutputMeter::frame(const std::shared_ptr<SharedAnalysis> &broker, std::i
     const bool available = lease_.available();
     if (std::exchange(wasAvailable_, available) != available) repaint(plot_);
     const auto publication = lease_.readStereoMeter();
-    const bool sameService = !lastMainSource_.owner_before(source) && !source.owner_before(lastMainSource_);
     const bool changed = shown_ != publication;
-    if (!changed && sameService)
-        return;
     shown_ = publication;
-    lastMainSource_ = source;
+    // The existing Main loudness service advances independently, including
+    // while the stereo envelope has no work on certified parked silence.
     std::optional<MainMeterSnapshot> next;
     if (publication && source && source->track == track && source->read) {
         try {

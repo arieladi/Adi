@@ -502,14 +502,23 @@ struct SharedAnalysis::Domain {
         while (cursor.next < end && reads < kMaxReadsPerFrame && samples < kMaxSamplesPerFrame) {
             const auto count = std::min({static_cast<std::size_t>(end - cursor.next), l.size(),
                                          kMaxSamplesPerFrame - samples});
+            const auto previousRevision = cursor.expectedRevision;
+            const bool wasAdvancing = cursor.expectedAdvancing;
             ++reads;
             const auto read = tap->read(cursor, l.first(count), r.first(count));
-            if (read.status == engine::ScopeTap::ReadStatus::Overrun ||
-                read.status == engine::ScopeTap::ReadStatus::GenerationChanged ||
-                read.status == engine::ScopeTap::ReadStatus::Discontinuity) {
+            using Status = engine::ScopeTap::ReadStatus;
+            if (read.status == Status::Overrun || read.status == Status::GenerationChanged) {
                 resetMeter();
                 advanced = false;
-                if (read.status != engine::ScopeTap::ReadStatus::Discontinuity) continue;
+                continue;
+            }
+            // A loop changes the heard stamp, while the source keeps streaming.
+            // Play/Stop also bumps Transport's revision once. A seek bumps it
+            // without flipping playback, or may be hidden in a larger jump.
+            if (read.status == Status::Discontinuity && read.transportRevision != previousRevision &&
+                (read.advancing == wasAdvancing || read.transportRevision != previousRevision + 1)) {
+                resetMeter();
+                advanced = false;
             }
             if (!read.frames) break;
             const auto frames = static_cast<std::size_t>(read.frames);
