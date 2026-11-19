@@ -2,19 +2,51 @@
 name: Step 7 UI
 on:
   pull_request:
-    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml']
+    # GitHub's default three, plus ready_for_review: a draft runs nothing (the
+    # `if` on `changes`), so marking it ready is what builds it.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   push:
     branches: [main]
-    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml']
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml', '.github/scripts/markdown_only.sh']
   workflow_dispatch:
 permissions:
   contents: read
+# A pull request's run is cancelled by its next push; main's never is, so every
+# merge burst still ends in a finished run on main. The reasoning is in ci.yml.
 concurrency:
   group: ui-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # Whether the shell builds at all: not on a draft, and not for a pull request
+  # that changes only Markdown no build reads (the rule is ci.yml's, in
+  # .github/scripts/markdown_only.sh). Three runners, one of them macOS, cost
+  # more than this one Linux job does. Its name must not begin "GUI shell /",
+  # which is how land_top.sh finds the three shell checks. land_checks.py reads
+  # this job's name, the workflow's and the matrix's size (a Markdown-only
+  # skip counts only beside this job's SUCCESS); test_land_checks.py fails if
+  # they drift from what is written here.
+  changes:
+    name: 'ui: which jobs run'
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.pull_request.draft }}
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Only Markdown no build reads?
+        id: changes
+        env:
+          # code=false only when the base is main: a stack's top lands with no
+          # new run, so a stacked pull request always builds (the script says why).
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: bash .github/scripts/markdown_only.sh >> "$GITHUB_OUTPUT"
   shell:
     name: GUI shell / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
