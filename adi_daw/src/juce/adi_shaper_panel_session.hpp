@@ -18,7 +18,8 @@ public:
     AdiShaperPanelSession(const AdiShaperPanelSession&) = delete;
     AdiShaperPanelSession& operator=(const AdiShaperPanelSession&) = delete;
     AdiShaperPanel::Binding binding();
-    bool applyPreset(std::span<const std::uint8_t>);
+    bool applyPreset(std::span<const std::uint8_t>, const std::string& title = {});
+    const std::string& presetTitle() const noexcept { return title_; }
     void refresh();
     bool valid() const { return instance() != nullptr; }
     bool editing() const noexcept { return editing_; }
@@ -34,12 +35,13 @@ private:
     bool editWave(Key, Phase, std::span<const Point>);
     std::vector<Point> wave(Key) const;
     void cancel();
+    bool capture(device::DeviceInstance&);
     ProjectDocument& document_;
     std::int64_t id_;
     engine::DeviceRuntimeToken token_;
     std::map<int, double> defaults_, values_, storedAtBegin_;
     std::map<int, Touched> touched_;
-    std::string error_;
+    std::string error_, title_;
     std::uint64_t stamp_ = 0;
     mutable bool retired_ = false;
     bool editing_ = false;

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "juce/adi_shaper_panel_view.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/appdata.hpp"
 #include "juce/device_model.hpp"
 namespace adi::ui {
 AdiShaperPanelView::AdiShaperPanelView(ProjectDocument &doc, std::int64_t id)
@@ -36,7 +37,11 @@ void AdiShaperPanelView::frame() {
         return;
     const auto version = source->shaperParameterRevision();
     if (version != revision_ && !model_.editing()) {
+        const auto previousTitle = model_.presetTitle();
         model_.refresh();
+        if (model_.presetTitle() != previousTitle)
+            panel_.setPresetName(model_.presetTitle().empty() ? juce::String("Initial state") :
+                juce::String::fromUTF8(model_.presetTitle().c_str()));
         panel_.refresh();
         revision_ = version;
     }
@@ -57,8 +62,15 @@ void AdiShaperPanelView::frame() {
     }
 }
 void AdiShaperPanelView::choosePreset() {
+    auto location = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const auto config = appdata::pathsFor(appdata::App::Daw).config;
+    if (!config.empty()) {
+        const auto folder = (config / "Presets" / "ADI-Shaper").u8string();
+        juce::File bank(juce::String::fromUTF8(reinterpret_cast<const char*>(folder.c_str())));
+        if (bank.isDirectory()) location = bank;
+    }
     chooser_ = std::make_unique<juce::FileChooser>(
-        "Load an ADI-Shaper preset", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+        "Load an ADI-Shaper preset", location,
         "*.cbor");
     auto weak = juce::Component::SafePointer<AdiShaperPanelView>(this);
     chooser_->launchAsync(
@@ -73,7 +85,8 @@ void AdiShaperPanelView::choosePreset() {
             bool ok = file.getSize() > 0 && file.getSize() <= 1024 * 1024 && file.loadFileAsData(bytes);
             if (ok)
                 ok = weak->model_.applyPreset(
-                    {static_cast<const std::uint8_t *>(bytes.getData()), bytes.getSize()});
+                    {static_cast<const std::uint8_t *>(bytes.getData()), bytes.getSize()},
+                    file.getFileNameWithoutExtension().toStdString());
             weak->status_.setVisible(!ok);
             if (!ok) {
                 weak->status_.setBounds(8, 8, weak->getWidth() - 16, 28);

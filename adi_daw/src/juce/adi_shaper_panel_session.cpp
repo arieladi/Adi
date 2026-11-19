@@ -59,6 +59,8 @@ void AdiShaperPanelSession::refresh() {
     // The native built-in's single snapshot walks its target array once.
     const auto state = Payload::from_cbor(live->saveState("state"), true, false);
     if (!state.is_object() || !state.contains("params")) return;
+    const auto savedTitle = state.find("adiPresetTitle");
+    title_ = savedTitle != state.end() && savedTitle->is_string() ? savedTitle->get<std::string>() : std::string{};
     values_ = defaults_;
     for (const auto& [name, value] : state["params"].items()) {
         const int id = numericId(name);
@@ -67,6 +69,7 @@ void AdiShaperPanelSession::refresh() {
 }
 AdiShaperPanel::Binding AdiShaperPanelSession::binding() {
     AdiShaperPanel::Binding b;
+    if (!title_.empty()) b.presetName = juce::String::fromUTF8(title_.c_str());
     b.parameterCount = defaults_.contains(416) ? 463 : 415;
     b.read = [this](int id) { const auto i = values_.find(id); return i == values_.end() ? 0.0 : i->second; };
     b.parameters = [this](Phase p, auto changes) { return parameters(p, changes); };
@@ -91,6 +94,10 @@ bool AdiShaperPanelSession::parameters(Phase phase, std::span<const Change> chan
     if (!live) { cancel(); return false; }
     if (phase == Phase::Begin) {
         if (editing_) return false;
+        for (const auto& gesture : document_.pendingParameterGestures())
+            if (gesture.deviceId == id_ && gesture.submission != CapturedSubmissionPhase::Durable) {
+                error_ = "Another edit on this device is pending."; return false;
+            }
         error_.clear(); refresh();
         storedAtBegin_ = storedParameters(document_, id_);
         editing_ = true; return true;
@@ -124,14 +131,20 @@ bool AdiShaperPanelSession::parameters(Phase phase, std::span<const Change> chan
         }
         changed = true;
     }
-    if (changed) {
-        // A curve may edit several words. The device's ordinary state-capture
-        // boundary preserves all of them as one undoable preset-style edit.
-        // ParamOps owns the first-touch values, blob and exact-instance replay.
-        { const auto signal = live->beginStateSignal(); }
-        document_.tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-    }
-    touched_.clear(); editing_ = false; return true;
+    touched_.clear(); editing_ = false;
+    return !changed || capture(*live);
+}
+bool AdiShaperPanelSession::capture(device::DeviceInstance& live) {
+    // A contour can edit several parameters. The ordinary device-state
+    // boundary lets ParamOps retain their exact values in one undo step.
+    { const auto signal = live.beginStateSignal(); }
+    document_.tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    for (const auto& gesture : document_.pendingParameterGestures())
+        if (gesture.deviceId == id_ && gesture.submission == CapturedSubmissionPhase::Refused) {
+            error_ = gesture.status.message.empty() ? "The project refused the parameter edit." : gesture.status.message;
+            refresh(); return false;
+        }
+    return true;
 }
 std::vector<AdiShaperPanelSession::Point> AdiShaperPanelSession::wave(Key k) const {
     std::vector<Point> result;
@@ -179,7 +192,7 @@ bool AdiShaperPanelSession::editWave(Key k, Phase phase, std::span<const Point> 
     }
     return parameters(phase, changes);
 }
-bool AdiShaperPanelSession::applyPreset(std::span<const std::uint8_t> bytes) {
+bool AdiShaperPanelSession::applyPreset(std::span<const std::uint8_t> bytes, const std::string& title) {
     if (editing_ || bytes.empty() || bytes.size() > 1024 * 1024) return false;
     const auto s = Payload::from_cbor(bytes.begin(), bytes.end(), true, false);
     if (!s.is_object() || !s.contains("version") || s["version"] != 1 ||
@@ -193,8 +206,22 @@ bool AdiShaperPanelSession::applyPreset(std::span<const std::uint8_t> bytes) {
         target[id] = n;
     }
     if (!parameters(Phase::Begin, {})) return false;
-    std::vector<Change> changes;
-    for (const auto& [id, n] : target) if (n != values_.at(id)) changes.push_back({id, n});
-    return parameters(Phase::End, changes);
+    bool changed = title != title_;
+    for (const auto& [id, n] : target) {
+        if (static_cast<float>(n) == static_cast<float>(values_.at(id))) continue;
+        changed = true;
+        if (!document_.session().overrideDeviceAutomation(id_, std::to_string(id))) { cancel(); return false; }
+    }
+    auto* live = instance();
+    editing_ = false;
+    if (!live || !changed) return live != nullptr;
+    // This built-in replaces missing parameters with their declared defaults
+    // and publishes the entire state under its normal reactivation gate.
+    Payload preset = {{"version",1},{"uid",uid},{"params",s["params"]}};
+    if (!title.empty()) preset["adiPresetTitle"] = title;
+    if (!live->loadState("state", Payload::to_cbor(preset))) return false;
+    const bool accepted = capture(*live);
+    refresh();
+    return accepted;
 }
 } // namespace adi::ui

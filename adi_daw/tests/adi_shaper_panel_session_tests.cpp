@@ -68,11 +68,19 @@ void run() {
         Payload state={{"version",1},{"uid",uid},{"params",{{"999999",.5}}}};
         require(!session.applyPreset(Payload::to_cbor(state)) && steps()==count+1,"reject unknown preset atomically");
         state["params"]=Payload::object();
-        require(session.applyPreset(Payload::to_cbor(state)) && steps()==count+2,"one-step sparse recall");
+        require(session.applyPreset(Payload::to_cbor(state),"Flat") && session.presetTitle()=="Flat" && steps()==count+2,"one-step sparse recall");
         sync(40); session.refresh();
         require(b.wave(key).empty() && std::abs(sample(*device)-1)<.0001f,"recall clears omitted slots");
         require(doc->ops().undo().ok,"undo recall"); sync(50); session.refresh();
-        require(b.wave(key).size()==2 && std::abs(sample(*device)-.25f)<.0001f,"undo recall restores previous curve");
+        require(session.presetTitle().empty() && b.wave(key).size()==2 && std::abs(sample(*device)-.25f)<.0001f,"undo recall restores previous curve");
+        const std::array<Panel::Change,1> half{{{1,.5}}}, dry{{{1,0}}};
+        const auto previousSteps=steps();
+        require(b.parameters(Phase::Begin,{}) && b.parameters(Phase::Change,half) &&
+                std::abs(sample(*device)-.625f)<.0001f && b.parameters(Phase::End,half),"master mix drag auditions and commits");
+        require(b.parameters(Phase::Begin,{}) && b.parameters(Phase::End,dry) &&
+                std::abs(sample(*device)-1)<.0001f && steps()==previousSteps+2,"two successive control edits have separate undo steps");
+        require(doc->ops().undo().ok,"undo second control"); sync(55);
+        require(std::abs(sample(*device)-.625f)<.0001f,"undo restores exact intermediate control value");
         require(doc->deviceAction("device.remove",{{"id",id}}),"remove target");
         require(!b.parameters(Phase::Begin,{}),"stale binding refuses gesture");
         require(doc->ops().undo().ok,"restore target"); sync(60);
