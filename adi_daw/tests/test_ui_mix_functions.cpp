@@ -26,6 +26,22 @@
 
 using namespace adi;
 using namespace adi::ui;
+namespace adi::ui {
+struct MixFocusTestAccess {
+    static bool aligned(const MixFocus &focus) { return focus.scopeRange_ && focus.sum_; }
+    static bool waitingForAlignment(const MixFocus &focus) { return focus.alignment_ != MixFocus::Alignment::Ready; }
+    static bool independent(const MixFocus &focus) {
+        return !focus.scopeRange_ && !focus.sum_ && focus.scopeHasTrace_ &&
+               std::all_of(focus.members_.begin(), focus.members_.end(),
+                           [](const auto &member) { return !member.scopePaths[0].isEmpty(); });
+    }
+    static bool spectraWithoutMask(const MixFocus &focus) {
+        return focus.masked_.empty() && !focus.sum_ &&
+               std::all_of(focus.members_.begin(), focus.members_.end(),
+                           [](const auto &member) { return !member.path.isEmpty(); });
+    }
+};
+} // namespace adi::ui
 namespace {
 int checks = 0, failures = 0;
 void check(bool value, const char *what) {
@@ -861,10 +877,11 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     };
     std::vector<std::int64_t> opened, closed;
     auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
+    auto secondTap = std::make_shared<engine::ScopeTap>(48000, 1.);
     auto broker = std::make_shared<SharedAnalysis>(
         [&](engine::ScopeSource source, double) -> std::shared_ptr<const engine::ScopeTap> {
             if (ownSource(source)) opened.push_back(source.track);
-            return tap;
+            return source.track == second ? secondTap : tap;
         },
         [&](engine::ScopeSource source) { if (ownSource(source)) closed.push_back(source.track); },
         SharedAnalysis::Mode::Manual);
@@ -872,7 +889,7 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
 
     UiPeerRoot peer;
     juce::Component docked;
-    peer.setSize(1200, 800);
+    peer.setSize(1440, 800);
     peer.setVisible(true);
     peer.addToDesktop(0);
     peer.addAndMakeVisible(docked);
@@ -959,10 +976,13 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
     std::array<float, 1024> pcm{};
     pcm.fill(.25f);
     tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
     broker->pump();
+    root.frame();
     const auto retained = waveform.read();
-    check(root.playing() && retained && detail.read() == retained && !retained->scopeLeft.empty(),
-          "the detailed analyzer and waveform own the same publication while Focus Scope is active");
+    check(root.playing() && retained && detail.read() == retained && !retained->scopeLeft.empty() &&
+              MixFocusTestAccess::aligned(focus),
+          "the detailed analyzer and waveform share a publication and Focus aligns the two live sources");
     auto floating = std::make_unique<juce::Component>();
     peer.addChildComponent(floating.get());
     floating->setBounds(peer.getLocalBounds());
@@ -985,6 +1005,42 @@ void focusWorkspace(AppCommands &commands, const std::filesystem::path &director
           "closing a visible hosting component detaches Focus Scope without another frame");
 
     docked.addAndMakeVisible(root);
+    root.frame();
+    check(root.submitEdit("transport.setLoop", {{"on", true}, {"start", 0}, {"end", 3840}}, "Loop"),
+          "Focus fixture enables the authored Arrangement Loop");
+    // Only the second channel observes a repeated heard interval before this frame.
+    // The loop does not advance the audio engine's transport control revision.
+    pcm.fill(.125f);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 0, true, 1);
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::independent(focus), "loop passes with repeated stamps retain individual traces without a combined sum");
+    focus.scope.setToggleState(false, juce::dontSendNotification);
+    root.frame();
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::spectraWithoutMask(focus), "Together retains member spectra while withholding a cross-loop mask");
+    check(root.submitEdit("transport.setLoop", {{"on", false}, {"start", 0}, {"end", 3840}}, "Loop Off"),
+          "Focus fixture disables the authored Arrangement Loop");
+    focus.scope.setToggleState(true, juce::dontSendNotification);
+    root.frame();
+    check(MixFocusTestAccess::waitingForAlignment(focus) && !MixFocusTestAccess::aligned(focus),
+          "turning the loop off while playing cannot combine retained loop windows");
+    driver.play(false);
+    doc->mailbox().publish(driver);
+    root.frame();
+    driver.play(true);
+    doc->mailbox().publish(driver);
+    root.frame();
+    check(MixFocusTestAccess::waitingForAlignment(focus) && !MixFocusTestAccess::aligned(focus),
+          "restarting playback still waits for complete windows beyond the new tap boundaries");
+    const auto revision = driver.revision();
+    tap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 2048, true, revision);
+    secondTap->write(pcm.data(), pcm.data(), static_cast<std::int32_t>(pcm.size()), 2048, true, revision);
+    broker->pump();
+    root.frame();
+    check(MixFocusTestAccess::aligned(focus) && !MixFocusTestAccess::waitingForAlignment(focus),
+          "fresh aligned member data restores combined Focus after a stop and start");
     driver.play(false);
     doc->mailbox().publish(driver);
     focus.scope.setToggleState(false, juce::dontSendNotification);

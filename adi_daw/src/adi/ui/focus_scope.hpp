@@ -18,6 +18,19 @@ struct FocusSumReading {
     std::array<double, 2> peak{}, rms{};
 };
 
+inline std::optional<std::int64_t> focusWindowEnd(std::int64_t first, std::int64_t length) noexcept {
+    if (length <= 0 || first > std::numeric_limits<std::int64_t>::max() - length) return {};
+    return first + length;
+}
+inline std::optional<FocusScopeRange> focusScopeMember(const SharedAnalysis::Result &source) noexcept {
+    const auto frames = source.scopeLeft.size();
+    if (!source.advancing || !source.transportRevision || !std::isfinite(source.sampleRate) ||
+        source.sampleRate <= 0. || !(source.outputs & SharedAnalysis::Scope) || source.nonFiniteSamples ||
+        frames != source.scopeRight.size() || frames > static_cast<std::size_t>(SharedAnalysis::kMaxFftSize) ||
+        !focusWindowEnd(source.firstStamp, static_cast<std::int64_t>(frames))) return {};
+    return FocusScopeRange{source.firstStamp, frames, source.sampleRate};
+}
+
 // The displayed interval is the intersection of the member windows in the
 // same audible transport epoch. A parked stamp is constant across callbacks
 // and cannot identify a simultaneous multi-source window.
@@ -25,19 +38,15 @@ inline std::optional<FocusScopeRange>
 focusScopeRange(std::span<const SharedAnalysis::Result *const> sources) noexcept {
     if (sources.size() < 2 || !sources.front()) return {};
     const auto &primary = *sources.front();
-    if (!primary.transportRevision || !std::isfinite(primary.sampleRate) || primary.sampleRate <= 0.) return {};
     auto first = std::numeric_limits<std::int64_t>::min();
     auto last = std::numeric_limits<std::int64_t>::max();
     for (const auto *source : sources) {
-        if (!source || !source->advancing || source->transportRevision != primary.transportRevision ||
-            source->sampleRate != primary.sampleRate || !(source->outputs & SharedAnalysis::Scope) ||
-            source->nonFiniteSamples != 0 || source->scopeLeft.empty() ||
-            source->scopeLeft.size() != source->scopeRight.size() ||
-            source->scopeLeft.size() > static_cast<std::size_t>(SharedAnalysis::kMaxFftSize)) return {};
-        const auto size = static_cast<std::int64_t>(source->scopeLeft.size());
-        if (source->firstStamp > std::numeric_limits<std::int64_t>::max() - size) return {};
-        first = std::max(first, source->firstStamp);
-        last = std::min(last, source->firstStamp + size);
+        if (!source || source->transportRevision != primary.transportRevision ||
+            source->sampleRate != primary.sampleRate) return {};
+        const auto window = focusScopeMember(*source);
+        if (!window) return {};
+        first = std::max(first, window->first);
+        last = std::min(last, window->first + static_cast<std::int64_t>(window->frames));
     }
     if (first >= last) return {};
     return FocusScopeRange{first, static_cast<std::size_t>(last - first), primary.sampleRate};

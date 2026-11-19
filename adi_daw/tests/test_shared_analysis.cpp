@@ -115,6 +115,17 @@ void focusScopeWindows() {
     check(disjoint && disjoint->firstStamp == 400 && disjoint->transportRevision == 7 &&
           !adi::ui::focusScopeRange(std::array{ra.get(), rb.get(), disjoint.get()}),
           "same-revision buffers with no audible intersection produce a gap");
+    constexpr auto lastStamp = std::numeric_limits<std::int64_t>::max();
+    check(adi::ui::focusWindowEnd(lastStamp - 32, 32) == lastStamp &&
+              !adi::ui::focusWindowEnd(lastStamp - 31, 32) && !adi::ui::focusWindowEnd(0, -1),
+          "Focus validates the window end before comparing it with the rendered position");
+    if (ra) {
+        auto badStamp = *ra;
+        badStamp.firstStamp = lastStamp - 31;
+        check(!adi::ui::focusScopeMember(badStamp) &&
+                  !adi::ui::focusScopeRange(std::array<const SharedAnalysis::Result *, 2>{ra.get(), &badStamp}),
+              "overflowing stamps cannot form an independent trace or participate in a combined range");
+    }
 }
 void parkedSilence() {
     Fixture f;

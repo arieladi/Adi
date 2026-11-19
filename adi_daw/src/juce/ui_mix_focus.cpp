@@ -211,6 +211,7 @@ void MixFocus::drop() {
     scopeSources_.clear();
     scopeRange_.reset();
     sum_.reset();
+    scopeHasTrace_ = false;
     masked_.clear();
     broker_.reset();
     redraw_ = true;
@@ -297,6 +298,18 @@ void MixFocus::frame(const SnapshotReader &reader) {
         snapshot_ = reader.get();
     }
     const bool playing = root_.playing();
+    const auto &transport = reader.transport();
+    const bool looping = playing && transport.loopEnabled && transport.hasLoop;
+    if (looping && alignment_ != Alignment::WaitForStop) {
+        alignment_ = Alignment::WaitForStop;
+        for (auto &member : members_) member.afterLoop.reset();
+        redraw_ = true;
+    } else if (!playing && alignment_ == Alignment::WaitForStop) {
+        // Turning off the authored loop may lead the audio. A visible
+        // stop/start gives the next frame a fresh boundary on every tap.
+        alignment_ = Alignment::WaitForFresh;
+        redraw_ = true;
+    }
     if (scopePlaying_ != playing) {
         scopePlaying_ = playing;
         redraw_ = true;
@@ -328,7 +341,8 @@ void MixFocus::frame(const SnapshotReader &reader) {
     if (broker && broker->active()) {
         const auto pose = membershipPose_;
         auto outputs = static_cast<std::uint32_t>(scopeShown ? SharedAnalysis::Scope : SharedAnalysis::Spectrum);
-        if (playing && !sumLabel_.isEmpty() && members_.size() >= 2) outputs |= SharedAnalysis::Scope;
+        if (playing && alignment_ != Alignment::WaitForStop && !sumLabel_.isEmpty() && members_.size() >= 2)
+            outputs |= SharedAnalysis::Scope;
         for (std::size_t i = 0; i < members_.size(); ++i) {
             if (!members_[i].lease || members_[i].outputs != outputs) {
                 SharedAnalysis::Request req;
@@ -346,10 +360,17 @@ void MixFocus::frame(const SnapshotReader &reader) {
                 }
             }
             auto &member = members_[i];
+            if (playing && alignment_ == Alignment::WaitForFresh && !member.afterLoop && member.lease.available()) {
+                const auto boundary = member.lease.sourcePosition();
+                if (boundary.generation != 0) member.afterLoop = boundary;
+            }
             auto next = member.lease.read();
-            if (next && next->advancing &&
-                next->firstStamp + next->request.fftSize > root_.renderedSamplePosition())
-                next = member.data && member.data->sourceEpoch == next->sourceEpoch ? member.data : nullptr;
+            if (next && next->advancing) {
+                const auto end = focusWindowEnd(next->firstStamp, next->request.fftSize);
+                if (!end) next.reset();
+                else if (*end > root_.renderedSamplePosition())
+                    next = member.data && member.data->sourceEpoch == next->sourceEpoch ? member.data : nullptr;
+            }
             if (next != member.data) {
                 redraw_ = true;
                 member.data = std::move(next);
@@ -358,6 +379,16 @@ void MixFocus::frame(const SnapshotReader &reader) {
         }
         if (!members_.empty())
             broker->requestFrame();
+    }
+    if (playing && alignment_ == Alignment::WaitForFresh && !members_.empty() &&
+        std::all_of(members_.begin(), members_.end(), [](const auto &member) {
+            if (!member.afterLoop || !member.data || !member.data->advancing) return false;
+            const auto &boundary = *member.afterLoop;
+            return member.data->generation > boundary.generation ||
+                   (member.data->generation == boundary.generation && member.data->firstSequence >= boundary.written);
+        })) {
+        alignment_ = Alignment::Ready;
+        redraw_ = true;
     }
     if (redraw_) {
         if (!scope.getToggleState()) rebuildPlot();
@@ -425,7 +456,8 @@ void MixFocus::rebuildPlot() {
         if (m.id == main_)
             primary = &m;
     }
-    if (!primary || members_.size() < 2 || !primary->data->advancing)
+    if (alignment_ != Alignment::Ready || !primary || members_.size() < 2 || !primary->data->advancing ||
+        !primary->data->transportRevision)
         return;
     const auto &p = *primary->data;
     std::fill(maskers_.begin(), maskers_.end(), 0.);
@@ -458,24 +490,32 @@ void MixFocus::rebuildPlot() {
 void MixFocus::rebuildScope() {
     scopeRange_.reset();
     sum_.reset();
+    scopeHasTrace_ = false;
+    scopeSources_.clear();
     const bool scopeShown = scope.getToggleState();
     if (scopeShown)
         for (auto &member : members_)
             for (auto &path : member.scopePaths) path.clear();
     if (!scopePlaying_ || (!scopeShown && sumLabel_.isEmpty())) return;
 
-    scopeSources_.clear();
-    for (const auto &member : members_) scopeSources_.push_back(member.data.get());
-    scopeRange_ = focusScopeRange(scopeSources_);
-    if (!scopeRange_) return;
+    const bool aligned = alignment_ == Alignment::Ready;
+    if (aligned) {
+        for (const auto &member : members_) scopeSources_.push_back(member.data.get());
+        scopeRange_ = focusScopeRange(scopeSources_);
+        if (scopeRange_ && !sumLabel_.isEmpty()) sum_ = focusReadSum(scopeSources_, *scopeRange_);
+    }
+    if (!scopeShown || (aligned && !scopeRange_)) return;
 
-    const auto &range = *scopeRange_;
-    if (!sumLabel_.isEmpty()) sum_ = focusReadSum(scopeSources_, range);
-    if (!scopeShown) return;
-
-    const auto steps = std::min<std::size_t>(range.frames, static_cast<std::size_t>(std::max(1.f, plot_.getWidth())));
     for (auto &member : members_) {
+        if (!member.data) continue;
         const auto &data = *member.data;
+        // A loop can replay the same heard stamp with the same revision.
+        // Draw each member's own window without implying a shared time range.
+        const auto window = aligned ? scopeRange_ : focusScopeMember(data);
+        if (!window) continue;
+        const auto &range = *window;
+        scopeHasTrace_ = true;
+        const auto steps = std::min<std::size_t>(range.frames, static_cast<std::size_t>(std::max(1.f, plot_.getWidth())));
         const auto start = static_cast<std::size_t>(range.first - data.firstStamp);
         for (std::size_t ch = 0; ch < member.scopePaths.size(); ++ch) {
             auto &path = member.scopePaths[ch];
@@ -532,7 +572,9 @@ void MixFocus::paint(juce::Graphics &g) {
     const auto plot = plot_.toNearestInt();
     const bool scopeShown = scope.getToggleState();
     juce::String title = scopeShown ? "Scope" : "Together";
-    if (scopeShown && scopeRange_)
+    if (scopeShown && alignment_ != Alignment::Ready)
+        title += "   Individual traces";
+    else if (scopeShown && scopeRange_)
         title += "   " + juce::String(1000. * static_cast<double>(scopeRange_->frames) / scopeRange_->sampleRate, 1) + " ms";
     const int titleWidth = sumLabel_.isEmpty() ? plot.getWidth() : std::max(0, sumLabel_.getX() - plot.getX());
     g.drawText(title, plot.getX(), scroll_.getBottom(), titleWidth,
@@ -565,10 +607,11 @@ void MixFocus::paint(juce::Graphics &g) {
             g.setColour(member.colour);
             g.strokePath(member.scopePaths[0], juce::PathStrokeType(look::line));
         }
-        if (!scopeRange_) {
+        if (!scopeHasTrace_) {
             g.setColour(look::textDim);
             g.setFont(look::font());
-            g.drawText("Waiting for aligned playback", plot_, juce::Justification::centred);
+            g.drawText(alignment_ == Alignment::Ready ? "Waiting for aligned playback" : "Waiting for playback",
+                       plot_, juce::Justification::centred);
         }
         return;
     }

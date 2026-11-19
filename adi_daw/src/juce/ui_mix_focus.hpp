@@ -33,6 +33,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     std::function<void()> onMembersChanged;
 
   private:
+    friend struct MixFocusTestAccess;
     look::DensityId density_ = look::densityId();
     struct Member {
         std::int64_t id{};
@@ -44,6 +45,7 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
         juce::Path path;
         std::array<juce::Path, 2> scopePaths;
         std::vector<double> energy;
+        std::optional<SharedAnalysis::Lease::SourcePosition> afterLoop;
         bool spectrumChanged{true};
     };
     void setMembers(const std::vector<std::int64_t> &, bool promoteSoloed);
@@ -79,6 +81,8 @@ class MixFocus final : public juce::Component, private juce::ComponentListener {
     size_t bins_{};
     const void *snapshot_{};
     std::uint64_t generation_{}, membershipPose_{};
-    bool suspended_{}, redraw_{true}, scopePlaying_{};
+    enum class Alignment { Ready, WaitForStop, WaitForFresh };
+    Alignment alignment_ = Alignment::Ready;
+    bool suspended_{}, redraw_{true}, scopePlaying_{}, scopeHasTrace_{};
 };
 } // namespace adi::ui
