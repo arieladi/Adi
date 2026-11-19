@@ -13860,7 +13860,7 @@ int main(int argc, char **argv) {
                 }
         std::size_t paged = 0;
         for (const auto &s : settings::registry())
-            paged += s.page.empty() ? 0 : 1; // internal preferences (DEV-23) have no page
+            paged += s.page.empty() ? std::size_t{0} : std::size_t{1}; // internal preferences (DEV-23) have no page
         check(once && placed == paged, "every setting is on one tab, once");
         {
             // Live's sections in Live's order (N14), then ADI's own settings on the tab, in the
