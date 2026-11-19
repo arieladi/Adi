@@ -4,6 +4,14 @@ Windows engine seat. Work is cut to `engine-win/<topic>`. Newest entry first. Wi
 
 ---
 
+## 2026-11-19, automatic audio take-lane reuse (CT-02)
+
+**PR requested** — `engine-win/audio-loop-lane-reuse` at `d3e53de4b8407ba6c8e69f09cca8e6ad9fc12a69`, on main `88e2d94e` and after audio loop materialization at `b4907bcc`.
+
+The engine picks the first eligible visible take lane on each track. Every existing clip must end by that pass's capture start. Each existing lane is used at most once per capture. The owner-supplied new IDs are fallbacks for passes without an eligible lane. New lanes keep pass order, and existing clips and lane identity survive. First-visible selection is an ADI decision while the director's reading of Live's tie case remains open.
+
+**MEASURED.** The pre-fix recording suite failed 10 of 149 assertions. The fixed strict MSVC x64 `/W4 /WX` gate passed 11,063 checks in five suites, including sample-exact tick and nanosecond endpoints, future material refusal, mixed reuse and fallback, Undo/Redo and rollback. The ops and schema validators passed. The loop-recording checklist records the director's mid-pass Stop, per-pass Undo and MIDI Overdub Off readings, with the ADI desktop and CT-03 gates identified.
+
 ## 2026-11-19, recording recovery and dither rulings (ADR-0250)
 
 The director approved recovery of interrupted recordings as one Stop-equivalent Undo step with a recording ID to prevent duplicate placement. Shaped 1, 2 and 3 are SoX Lipshitz, improved E-weighted and Shibata. PD-06 and EX-06 remain in their ordered M5 slots.
