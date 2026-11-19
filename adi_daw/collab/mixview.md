@@ -2,6 +2,12 @@
 
 The Focus entry and unsolo rules are confirmed by ADR-0248. ADR-0247 keeps the four channel tag fields, assigns Removed to the selected recipient and stage, and makes Align Apply one timing-offset edit. The clones seat is measuring the two additional scope references.
 
+## 2026-11-20, early — fence a spectrogram Clear at the writer
+
+The software-peer Release test reproduced two failures in 436 checks when the worker was four columns ahead of the displayed picture. Scroll showed the four earlier columns after Clear, and Sweep used the stale displayed series to place its origin. The fix compares each column's first physical window to the position captured at Clear. The same 436 checks passed twice, including the unaffected sibling display and exact Scroll and Sweep pixels.
+
+The default-history split keeps just the column position through its existing publisher, including under backpressure. It can be reviewed independently of the grouped-history experiment. Its current-main projection is in the component build queue. This is a private test result and the current review build remains the one recorded below.
+
 ## 2026-11-20, early — complete the shared spectrogram history proof
 
 The private exact Windows x64 Release broker passed 486 checks twice. The previous broker had 16 expected failures in 477 checks. The first grouped candidate then exposed competition between ordinary and grouped history at a full byte budget. The next revision exposed starvation when both frozen readers released together and an unneeded publication to the ordinary Scope and Spectrum. The final tests preserve both readers' first recovered columns, release staged bins in order, and leave the ordinary picture untouched on a grouped-only update. Cleanup and a revision change discard incomplete groups without extra transforms. The two views continue to share one tap and FFT plan.
