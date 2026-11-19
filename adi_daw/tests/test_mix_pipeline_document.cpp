@@ -116,20 +116,16 @@ void bypassedClaim(bool full) {
     const auto previousLatency = instance->latencySamples();
     check(instance->getParam(stage).real == 0 && edit(*doc, shown, stage, 1),
           "a real authored edit requests the latency-changing stage enable");
-    // The device processes through the old graph once and the owner advertises
-    // the new offer. There is no physically pinned acknowledgement yet.
+    // Document delivery may rebuild or prepare while publishing the new
+    // latency. The separate one-prepare graph fixture isolates the live claim.
     render();
     doc->tick(++now);
     const auto offered = instance->latencySamples();
-    check(offered > previousLatency, "owner advertises a positive pending latency before bypass");
+    check(offered > previousLatency, "the document advertises the latency of the authored stage before bypass");
     if (offered <= previousLatency) return;
-    const bool claimHeld = !instance->setParam(stage, device::ParamValue::fromNormalized(0)) &&
-        instance->getParam(stage).real == 1;
-    check(claimHeld, "the actual retained runtime refuses a different structural value before graph bypass");
-    if (!claimHeld) return;
     check(doc->deviceAction("device.setEnabled", {{"id", shown.id}, {"enabled", false}}) && isBypassed() &&
           session.instanceFor(shown.id) == instance,
-          "graph activator bypass retains the instance that owns the claim");
+          "graph activator bypass retains the native instance");
     cycle(16);
 
     const auto audioError = [&]() -> std::optional<double> {
