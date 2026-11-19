@@ -4,13 +4,18 @@
 #include "adi/media/publish_file.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <exception>
 #include <fstream>
-#include <iterator>
+#include <memory>
 #include <stdexcept>
 #include <system_error>
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 namespace adi::settings {
 namespace {
@@ -33,10 +38,23 @@ bool newerSchema(const Value& doc) {
 }
 
 bool readText(const std::filesystem::path& p, std::string& out) {
-    std::ifstream in(p, std::ios::binary);
+#if defined(_WIN32)
+    auto* file = _wfsopen(p.c_str(), L"rb", _SH_DENYNO);
+#else
+    auto* file = std::fopen(p.c_str(), "rb");
+#endif
+    const std::unique_ptr<std::FILE, decltype(&std::fclose)> in(file, &std::fclose);
     if (!in) return false;
-    out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-    return true;
+    out.clear();
+    std::array<char, 4096> block{};
+    for (;;) {
+        const auto count = std::fread(block.data(), 1, block.size(), in.get());
+        out.append(block.data(), count);
+        if (count != block.size()) break;
+    }
+    // A locked later range can look like EOF through the MSVC filebuf. The
+    // stream error flag keeps a readable prefix from becoming a save baseline.
+    return std::feof(in.get()) && !std::ferror(in.get());
 }
 
 // Each save owns its staging name even when two instances write side by side.
@@ -72,10 +90,11 @@ private:
 std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& file) {
     std::error_code error;
     const auto status = std::filesystem::symlink_status(file, error);
-    if (error == std::errc::no_such_file_or_directory ||
-        status.type() == std::filesystem::file_type::not_found)
+    if (error == std::errc::no_such_file_or_directory)
         return std::nullopt;
-    if (error || !std::filesystem::is_regular_file(status))
+    if (error) throw std::runtime_error("cannot inspect the settings destination: " + error.message());
+    if (status.type() == std::filesystem::file_type::not_found) return std::nullopt;
+    if (!std::filesystem::is_regular_file(status))
         throw std::runtime_error("cannot inspect the settings destination");
     std::string text;
     if (!readText(file, text)) throw std::runtime_error("cannot read the settings destination");
@@ -84,6 +103,8 @@ std::optional<std::string> readSettingsSnapshot(const std::filesystem::path& fil
 
 Value readSettingsDocument(const std::optional<std::string>& snapshot, appdata::App app) {
     if (!snapshot) return {{"values", Value::object()}};
+    if (snapshot->find('\0') != std::string::npos)
+        throw std::runtime_error("the settings destination contains a null byte");
     auto doc = Value::parse(*snapshot, nullptr, false);
     if (doc.is_object() && newerSchema(doc)) throw std::runtime_error(kNewerSchemaReadOnly);
     if (!doc.is_object() || !doc.contains("values") || !doc.at("values").is_object() ||
@@ -218,7 +239,7 @@ void AppSettings::resetPage(const std::string& page, const ChangeContext& who) {
     }
 }
 
-bool AppSettings::save(std::string& why) {
+bool AppSettings::save(std::string& why, SaveRename rename) {
     if (file_.empty()) { why = "this machine gives no settings folder"; return false; }
     if (status_ == LoadStatus::NewerSchema) { why = kNewerSchemaReadOnly; return false; }
     if (status_ == LoadStatus::ForeignApp) {
@@ -243,17 +264,24 @@ bool AppSettings::save(std::string& why) {
         writeSettingsStage(stage, doc.dump(2) + '\n');
         std::string backupWarning;
         media::ReplaceHooks hooks;
-        hooks.validateTarget = [&](const std::filesystem::path& target) -> std::error_code {
-            // Another writer can replace the document before this lease was
-            // taken. Never publish a merge or a backup of those stale bytes.
+        hooks.rename = rename;
+        const auto confirmPrevious = [&](const std::filesystem::path& target) -> std::error_code {
             if (readSettingsSnapshot(target) != previous)
                 throw std::runtime_error("settings changed during save; retry");
+            return {};
+        };
+        hooks.validateFallback = confirmPrevious;
+        hooks.validateTarget = [&](const std::filesystem::path& target) -> std::error_code {
+            (void)confirmPrevious(target);
             if (!previous) return {};
             auto backup = target;
             backup += ".bak";
             SettingsStage backupStage(target.parent_path());
             writeSettingsStage(backupStage, *previous);
-            auto saved = media::replaceFile(backupStage.file(), backup);
+            media::ReplaceHooks backupHooks;
+            backupHooks.rename = rename;
+            auto saved = media::replaceFile(backupStage.file(), backup, std::move(backupHooks),
+                                            media::ReplacePolicy::PortableSettings);
             if (saved.status != media::PublishStatus::published)
                 throw std::runtime_error("cannot save the previous settings: " + saved.error);
             backupWarning = std::move(saved.warning);
@@ -261,7 +289,8 @@ bool AppSettings::save(std::string& why) {
                 throw std::runtime_error("settings changed during backup; retry");
             return {};
         };
-        auto published = media::replaceFile(stage.file(), destination, std::move(hooks));
+        auto published = media::replaceFile(stage.file(), destination, std::move(hooks),
+                                            media::ReplacePolicy::PortableSettings);
         if (published.status != media::PublishStatus::published) {
             why = std::move(published.error);
             return false;

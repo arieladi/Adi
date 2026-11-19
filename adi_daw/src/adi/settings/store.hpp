@@ -31,6 +31,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace adi::settings {
@@ -58,6 +59,8 @@ struct ChangeContext {
 
 class AppSettings {
 public:
+    using SaveRename = std::error_code (*)(const std::filesystem::path&, const std::filesystem::path&);
+
     /// This application's own file: appdata::pathsFor(app).config/settings.json.
     [[nodiscard]] static AppSettings forApp(appdata::App app);
 
@@ -89,7 +92,7 @@ public:
     /// Refused for a file that names another application or uses a newer schema,
     /// including if it appeared after loading. A successful save can put a
     /// directory-durability warning in why.
-    bool save(std::string& why);
+    bool save(std::string& why, SaveRename rename = nullptr);
 
     /// The raw stored values, unknown keys included -- what save writes.
     [[nodiscard]] const Value& stored() const { return values_; }

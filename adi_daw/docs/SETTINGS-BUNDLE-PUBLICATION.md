@@ -1,10 +1,21 @@
 # Settings-bundle publication and import envelopes
 
 `exportBundle` builds its JSON and ZIP in a uniquely reserved sibling directory
-and publishes the closed archive through `media::replaceFile`. It preserves the
-existing successful replacement behavior, while a staging, archive, flush or
-rename failure leaves the previous destination intact. There is no copy fallback
-and the final ZIP is never opened for writing by `ZipWriter`.
+and publishes the closed archive through `media::replaceFile`. Existing archives
+use lease-safe replacement. If the volume rejects that operation, choose a new
+filename. For a new target on a volume without exclusive rename, the publisher
+claims the final name with an exclusive hard link to the closed archive. When
+both operations are unavailable, choose another folder. A target created by
+another writer during the fallback keeps its original bytes.
+
+App-owned `settings.json` and its last-good backup can use a classic whole-file
+rename when the volume lacks lease-safe replacement. Before that rename, the
+publisher releases its destination lease and rechecks the file identity and
+bytes. The main document is also compared with the version read before the save.
+The save reports a portability warning because an external writer can still
+change the destination during the interval between verification and rename.
+The backup publishes first. A backup failure preserves the main file and leaves
+the pending settings available for retry.
 
 Cleanup addresses only the directory this invocation successfully created. The
 old filename-derived `<output>.staging` path and other preexisting sibling paths

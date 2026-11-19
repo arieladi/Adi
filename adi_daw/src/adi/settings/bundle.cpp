@@ -283,7 +283,7 @@ BundleReport exportBundle(const AppSettings& store, const std::vector<Preset>& p
     }
     // Reserve any fallback warning before the irreversible publication point.
     rep.publication.emplace(BundlePublication{false,"bundle published; directory durability could not be confirmed"});
-    auto published=media::replaceFile(archive,target,hooks.publication);
+    auto published=media::replaceFile(archive,target,hooks.publication,media::ReplacePolicy::PortableBundle);
     if(published.status!=media::PublishStatus::published) {
         rep.publication.reset();rep.why=std::move(published.error);return rep;
     }

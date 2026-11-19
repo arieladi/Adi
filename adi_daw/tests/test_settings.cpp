@@ -746,6 +746,60 @@ void testBundles() {
           "the absolute-path test knows Windows, UNC and POSIX, and not roles or '1/16'");
 }
 
+void testPortableSettingsPublication() {
+    section("settings publication with unsupported lease-safe rename");
+    adi::test::TempDirectory temp("settings", "portable-publication");
+    const auto output = temp.path() / "settings.json";
+    auto backup = output;
+    backup += ".bak";
+    AppSettings settings(appdata::App::Daw, output);
+    const auto unsupported = [](const fs::path&, const fs::path& target) {
+        return std::make_error_code(fs::exists(target) ? std::errc::operation_not_supported
+                                                       : std::errc::invalid_argument);
+    };
+    std::string why;
+    check(settings.set("lookfeel.theme", "light", kUser, why), "first portable preference is pending");
+    const bool first = settings.save(why, unsupported);
+    check(first && fs::is_regular_file(output), "unsupported exclusive rename allows the first whole settings save");
+    if (!first) return;
+    const auto firstBytes = readText(output);
+    check(settings.set("lookfeel.theme", "dark", kUser, why), "second portable preference is pending");
+    const bool second = settings.save(why, unsupported);
+    check(second && readText(backup) == firstBytes && why.find("portable") != std::string::npos,
+          "portable replacement publishes the last good backup and reports its weaker guarantee");
+    if (!second) return;
+    const auto secondBytes = readText(output);
+    check(settings.set("lookfeel.theme", "light", kUser, why), "third portable preference is pending");
+    const auto blockedBackup = [](const fs::path&, const fs::path& target) {
+        if (target.extension() == ".bak") return std::make_error_code(std::errc::permission_denied);
+        return std::make_error_code(std::errc::operation_not_supported);
+    };
+    check(!settings.save(why, blockedBackup) && readText(output) == secondBytes && readText(backup) == firstBytes,
+          "permission refusal on backup leaves the main file and its previous backup intact");
+    check(settings.save(why, unsupported) && readText(backup) == secondBytes && readText(output) != secondBytes,
+          "a retry retains the third edit and the immediately preceding settings bytes");
+
+    const auto stage = temp.path() / "pending-settings.json";
+    writeText(stage, "staged settings replacement");
+    adi::media::ReplaceHooks changed;
+    changed.rename = unsupported;
+    changed.validateFallback = [](const fs::path& target) -> std::error_code {
+        writeText(target, "external settings revision");
+        return {};
+    };
+    const auto conflicting = adi::media::replaceFile(stage, output, changed,
+                                                    adi::media::ReplacePolicy::PortableSettings);
+    check(conflicting.status == adi::media::PublishStatus::failed &&
+              readText(output) == "external settings revision" && fs::is_regular_file(stage),
+          "portable replacement preserves bytes changed after the destination lease was released");
+    auto incomplete = secondBytes + std::string("\0later bytes", 12);
+    writeText(output, incomplete);
+    check(settings.set("lookfeel.theme", "dark", kUser, why) &&
+              !settings.save(why, unsupported) && readText(output) == incomplete &&
+              readText(backup) == secondBytes,
+          "a valid JSON prefix followed by a null byte cannot become the latest good settings");
+}
+
 void testBundlePublication() {
     section("bundle export: private staging, atomic replacement and publication warnings");
     adi::test::TempDirectory temp("settings","bundle-publication");
@@ -803,6 +857,27 @@ void testBundlePublication() {
     const auto absent=temp.path()/"absent.zip";
     check(!exportBundle(from,{},absent,hooks).ok && !fs::exists(absent) && noPrivateStage(),
           "failed publication to an absent path leaves no partial final archive");
+    hooks.publication.rename = [](const fs::path&, const fs::path&) {
+        return std::make_error_code(std::errc::invalid_argument);
+    };
+    const auto portable = exportBundle(from, {}, absent, hooks);
+    check(portable.ok && portable.publication &&
+              readZipJson(absent, "settings.json")["values"]["lookfeel.theme"] == "dark" && noPrivateStage(),
+          "unsupported no-replace rename publishes a complete bundle with an exclusive hard link");
+    check(!exportBundle(from, {}, output, hooks).ok && readText(output) == original,
+          "portable bundle fallback preserves an existing archive when lease-safe replacement is unavailable");
+    hooks.publication.syncDirectory = [](const fs::path&) { return std::make_error_code(std::errc::io_error); };
+    const auto portableWarning = exportBundle(from, {}, temp.path() / "portable-warning.zip", hooks);
+    check(portableWarning.ok && portableWarning.publication && !portableWarning.publication->durabilityConfirmed &&
+              !portableWarning.publication->warning.empty(),
+          "a folder sync warning follows successful hard-link publication");
+    const auto lateBundle = temp.path() / "late.zip";
+    hooks.publication.rename = [](const fs::path&, const fs::path& target) {
+        writeText(target, "external writer's archive");
+        return std::make_error_code(std::errc::invalid_argument);
+    };
+    check(!exportBundle(from, {}, lateBundle, hooks).ok && readText(lateBundle) == "external writer's archive",
+          "a target claimed before portable bundle publication stays that writer's file");
     const auto directory=temp.path()/"directory.zip";fs::create_directory(directory);
     const auto wrongType=exportBundle(from,{},directory);
     check(!wrongType.ok && !wrongType.publication && fs::is_directory(directory) && fs::is_empty(directory),
@@ -1208,6 +1283,7 @@ int runAll() {
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
+    testPortableSettingsPublication();
     testBundlePublication();
     testBundleSchemas();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
