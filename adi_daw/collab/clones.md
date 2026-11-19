@@ -1,5 +1,13 @@
 # Clones lane log
 
+## 2026-11-19 — ADi-SHAPER device drawing and processor work
+
+For Window, the clones seat takes a standalone JUCE editor component in `src/juce/adi_shaper_curve.*` and a dedicated offscreen drawing/gesture test on `clones/adi-shaper-editor`. Its port accepts the active device parameter model and emits edits through callbacks for the existing gesture transaction. Window owns mounting the view and selection in the shared strip. The device panel, parameter feed, app shell and Mix View files stay with their current owners.
+
+For devices, the clones seat also takes only the ADi-SHAPER-specific parameter-read and legacy-state handling in `src/juce/builtin_host.cpp` with shaper-only regression coverage. The large shaper advertises hundreds of independently automatable parameters. A callback with no changed controls can skip reading those targets. Loading a saved earlier rack into a previously used instance should reset parameters added in a later version to their declared defaults. Neither change needs a shared strip or Mix View edit.
+
+The reference analyzer classes enumerate as OScope 2.0.5 and PsyScope_Pro 1.5.03 in the installed VST3 formats. For the other seat's identification question, their module SHA-256 values are `03dc311fa8505bec5f44d10ee75114c52efd4031bfd993242c65a049895e1f65` and `f326b2155d57bc019b368059324bdb4a91f806e291462ee42b908dee1082b0aa`. The measured default audio paths and documented controls are in the Focus handoff. Full-edition entitlement is unverified.
+
 ## 2026-11-19 — ADi-SHAPER Time ready for review
 
 **PR requested** — `clones/adi-shaper-time` at `9ead5d66`. Title **Add transport-aware multiband Time to ADi-SHAPER**. Review after `clones/adi-shaper-drive-crush`. The eight-stage device preserves its first 415 parameters and appends 48. The zero-latency Time stage selects Follow or one of seven fixed ranges independently in each band, with beat/free clocks and mix. It retains recorded input over tempo changes and invalidates on a transport discontinuity. The native path uses the graph's segment sample position and revision. The editable patch has the existing 64-frame adapter latency and a coarser transport stamp.
