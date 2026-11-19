@@ -23,6 +23,10 @@ std::optional<std::string> encodeMetadata(const std::string& format,
     const std::string& path, const std::vector<Plugin>& plugins, std::string& error);
 
 std::filesystem::path defaultScannerExecutable(); // sibling of current executable
+/// Enumerate a plug-in format without loading its modules. Returns sorted,
+/// canonical UTF-8 paths, and follows native links without repeating folders.
+std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
+                                        std::string_view extension);
 std::int64_t systemUtcMicros() noexcept;
 struct Config {
     std::filesystem::path executable; // empty => sibling adi_plugin_scanner[.exe]

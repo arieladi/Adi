@@ -57,25 +57,33 @@ bool junction(const fs::path& link,const fs::path& target) {
     CloseHandle(handle);return ok;
 }
 
-bool clapSearchLinks(const fs::path& parent) {
-    const auto search = parent / "clap-search";
-    const auto vendor = parent / "clap-vendor";
+bool nativeSearchLinks(const fs::path& parent) {
+    const auto search = parent / "linked-search";
+    const auto vendor = parent / "linked-vendor";
     fs::create_directory(search);
     fs::create_directory(vendor);
     const auto module = vendor / "Original.clap";
     std::ofstream(module) << "discovery fixture";
+    const auto vstBundle = vendor / "Original.VST3";
+    fs::create_directory(vstBundle);
+    std::ofstream(vstBundle / "Nested.vst3") << "inside a bundle";
     const auto one = search / "first";
     const auto two = search / "second";
     const auto cycle = vendor / "cycle";
     if (!junction(one, vendor) || !junction(two, vendor) || !junction(cycle, search))
-        throw std::runtime_error("CLAP discovery fixture junction unavailable");
-    const auto throughAlias = device::ClapHost::findBundles({text(search)});
-    const auto overlapping = device::ClapHost::findBundles({text(search), text(vendor), text(one)});
-    const std::vector<std::string> expected{text(fs::canonical(module))};
+        throw std::runtime_error("discovery fixture junction unavailable");
+    const std::vector<std::string> aliasRoots{text(search)};
+    const std::vector<std::string> overlappingRoots{text(search), text(vendor), text(one)};
+    const std::vector<std::string> clapExpected{text(fs::canonical(module))};
+    const std::vector<std::string> vstExpected{text(fs::canonical(vstBundle))};
+    const bool clapMatches = device::ClapHost::findBundles(aliasRoots) == clapExpected &&
+                             device::ClapHost::findBundles(overlappingRoots) == clapExpected;
+    const bool vstMatches = scan::findCandidates(aliasRoots, ".vst3") == vstExpected &&
+                            scan::findCandidates(overlappingRoots, ".vst3") == vstExpected;
     if (!RemoveDirectoryW(cycle.c_str()) || !RemoveDirectoryW(two.c_str()) ||
         !RemoveDirectoryW(one.c_str()) || !fs::exists(module))
-        throw std::runtime_error("CLAP discovery fixture junction cleanup failed");
-    return throughAlias == expected && overlapping == expected;
+        throw std::runtime_error("discovery fixture junction cleanup failed");
+    return clapMatches && vstMatches;
 }
 
 struct Receipt {
@@ -221,11 +229,11 @@ bool run() {
     const auto link=s.temp.path()/"directory-link";if(!junction(link,s.temp.path()))throw std::runtime_error("native directory junction unavailable");
     retry(15,link/a.filename(),"explicit retry through actual directory junction clears same canonical block");
     if(!RemoveDirectoryW(link.c_str()) || !fs::exists(a))throw std::runtime_error("junction cleanup failed");
-    const bool clapAliases = clapSearchLinks(s.temp.path());
-    std::printf("CLAP discovery junctions, overlapping roots and directory cycle: %s\n",
-                clapAliases ? "PASS" : "FAIL");
+    const bool linkedSearch = nativeSearchLinks(s.temp.path());
+    std::printf("CLAP and VST3 discovery junctions, overlapping roots and directory cycle: %s\n",
+                linkedSearch ? "PASS" : "FAIL");
     s.save();std::printf("SCANNER CASES: %d passed, %d failed; actual VST3 factory callbacks, case16 separate\n",s.passed,s.failed);
-    return s.passed==15 && s.failed==0 && clapAliases;
+    return s.passed==15 && s.failed==0 && linkedSearch;
 }
 } // namespace
 int main(int argc,char** argv){

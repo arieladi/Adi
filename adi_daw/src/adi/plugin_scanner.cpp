@@ -185,6 +185,37 @@ std::filesystem::path defaultScannerExecutable() {
     return executable.parent_path()/"adi_plugin_scanner";
 #endif
 }
+std::vector<std::string> findCandidates(const std::vector<std::string>& roots,
+                                        std::string_view extension) {
+    if (audio::onAudioThread) return {};
+    namespace fs = std::filesystem;
+    std::vector<fs::path> pending;
+    for (const auto& bytes : roots)
+        pending.emplace_back(std::u8string(bytes.begin(), bytes.end()));
+    std::set<fs::path> visited;
+    std::set<std::string> candidates;
+    const fs::directory_iterator end;
+    while (!pending.empty()) {
+        std::error_code ec;
+        const auto dir = fs::canonical(pending.back(), ec);
+        pending.pop_back();
+        if (ec || !visited.insert(dir).second) continue;
+        fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+        for (; !ec && it != end; it.increment(ec)) {
+            auto suffix = utf8(it->path().extension());
+            for (char& c : suffix) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            std::error_code entryError;
+            if (suffix == extension) {
+                const auto module = fs::canonical(it->path(), entryError);
+                if (!entryError) candidates.insert(utf8(module));
+                continue; // A bundle is a candidate, not another search directory.
+            }
+            if (it->is_directory(entryError)) pending.push_back(it->path());
+        }
+    }
+    return {candidates.begin(), candidates.end()};
+}
+
 std::int64_t systemUtcMicros() noexcept {
     return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }

@@ -108,14 +108,14 @@ scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPlu
 scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginList& into,
                             const scan::Config& config) {
     if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    std::vector<std::string> roots;
+    for (int i = 0; i < paths.getNumPaths(); ++i)
+        roots.push_back(paths[i].getFullPathName().toStdString());
+    const auto candidates = scan::findCandidates(roots, ".vst3");
     std::vector<juce::String> files;
-    for (int i = 0; i < formats_.getNumFormats(); ++i) {
-        // Pinned JUCE VST3 searchPathsForPlugins only walks files/bundles;
-        // findAllTypesForFile (factory code) belongs solely to the child.
-        const auto candidates=formats_.getFormat(i)->searchPathsForPlugins(paths,true,false);
-        for(const auto& file:candidates)files.push_back(file);
-    }
-    std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
+    files.reserve(candidates.size());
+    for (const auto& candidate : candidates)
+        files.push_back(juce::String::fromUTF8(candidate.c_str()));
     return scanVst3Files(files,into,config);
 }
 scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
