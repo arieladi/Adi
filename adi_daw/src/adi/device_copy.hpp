@@ -16,8 +16,8 @@ struct DeviceCopy {
     std::optional<DeviceRemoteReference> remoteHost;
     bool hasNestedChains=false;
 };
-/// Stored state on this connection's owner, off the callback. Uses the same
-/// registered capture as device.remove; does not read a live plug-in or write.
+/// Stored state on this connection's owner, off the callback. Shares the
+/// ordinary device.remove image and reads only the rack's root for clipboard metadata.
 [[nodiscard]] DeviceCopy readDeviceCopy(Store&,std::int64_t);
 struct PreparedDevicePaste {
     bool ok=false;
@@ -38,4 +38,7 @@ struct PreparedDevicePaste {
 [[nodiscard]] PreparedDevicePaste
 prepareDevicePasteForTrack(Store &, const DeviceCopy &, std::int64_t newId, std::int64_t track);
 [[nodiscard]] CommitResult commitDevicePaste(Store&,const PreparedDevicePaste&,Actor=Actor::User);
+namespace detail {
+bool captureDeviceCopyPayload(OpContext&, std::int64_t id, Payload&, std::string&);
+}
 }

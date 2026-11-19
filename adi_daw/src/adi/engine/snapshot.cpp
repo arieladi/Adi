@@ -4,6 +4,7 @@
 #include "adi/freeze_groups.hpp"
 
 #include "adi/controller_lanes.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
 #include "juce/builtin_samples.hpp"
@@ -305,14 +306,30 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve "
+            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
+            "time_base, pos_ns, length_ns "
             "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+        std::optional<edit::TimeMap> clipClock;
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();
             const auto trackId = st.getColumn(1).getInt64();
             c.posTicks = st.getColumn(2).getInt64();
             c.lengthTicks = st.getColumn(3).getInt64();
+            if (st.getColumn(11).getInt() == 1) {
+                c.posTicks = 0;
+                c.lengthTicks = 0;
+                try {
+                    if (!clipClock) clipClock.emplace(db);
+                    const auto start = st.getColumn(12).getInt64();
+                    const auto end = edit::addTime(start, st.getColumn(13).getInt64());
+                    const auto firstTick = clipClock->ticks(start), lastTick = clipClock->ticks(end);
+                    c.posTicks = firstTick;
+                    c.lengthTicks = std::max<std::int64_t>(0, lastTick - firstTick);
+                } catch (const std::exception&) {
+                    // A corrupt linear extent has no drawable placement.
+                }
+            }
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
             c.name = st.getColumn(6).getString();

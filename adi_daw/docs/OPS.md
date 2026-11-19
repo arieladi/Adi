@@ -172,8 +172,9 @@ produce a correct inverse, the op does not commit.
 
 ### 6.2 Three shapes, in order of preference
 
-1. **Symmetric** (`sym`) — same op, swapped arguments. `clip.move {id, from, to}`
-   inverts to `clip.move {id, to, from}`. Most ops should be built to land here.
+1. **Symmetric** (`sym`) — same op with the prior arguments. A `track.rename`
+   inverse carries the track ID and its previous name. Most ops should be built
+   to land here.
 2. **Paired** (`pair`) — a dedicated opposite. `track.create` ↔ `track.delete`.
 3. **State capture** (`cap`) — a CBOR blob of everything the forward op
    destroyed. Required for anything lossy.
@@ -488,8 +489,8 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.delete` | e | S | cap | P0 |
 | `clip.attachAudio` | e | G | pair `clip.detachAudio` | P0 |
 | `clip.detachAudio` | e | G | cap | P0 |
-| `clip.move` | e | S | sym | P0 |
-| `clip.resize` | e | S | sym | P0 |
+| `clip.move` | e | S | cap | P0 |
+| `clip.resize` | e | S | cap | P0 |
 | `clip.split` | e | G | pair `clip.join` | P0 |
 | `clip.join` | e | G | cap | P1 |
 | `clip.duplicate` | e | G | pair `clip.delete` | P0 |
@@ -517,6 +518,12 @@ physical source limit, and a loop-window edit clears both physical loop
 endpoints. A switch-only loop edit retains the dormant window. Inverses capture
 the full typed details row, including future fields or row absence; undo and
 redo restore it. This optional SQL seam adds no dependency on N17's schema.
+
+`clip.move {id,to,track}` and `clip.resize {id,pos,length}` take arrangement
+ticks. Linear clips store the converted position in nanoseconds. A linear
+resize converts both endpoints through the tempo map. A move between tracks
+clears the source lane and Undo restores the exact native placement and lane.
+Historical scalar inverses retain their recorded behavior.
 
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
@@ -1395,6 +1402,8 @@ Every point-edit request contains `id` (explicit automation_data row ID), `lane`
 an existing clip ID). The complete address must match the stored row; an absent
 row can be created only by writePoints and only if its lane/clip slot is free.
 No handler generates IDs, reads UI selection, or consults the grid.
+New point values must meet the lane's inclusive minimum and maximum where
+present. History can replay values stored by earlier versions.
 
 - `writePoints.points`: array of `{id,time,value,curve,tension}`. Positive full
   uint64 point IDs upsert existing points or insert new ones. Time is nonnegative
@@ -1625,12 +1634,16 @@ so delayed replay does not read a newer transaction's rows. See
 [Live parameter replay](ENGINE-PARAM-REPLAY.md) for ownership and admission.
 
 Device clipboard (N18): readDeviceCopy(Store&,id), in device_copy.hpp,
-returns the registered device.remove inverse as a device.insert payload, plus
-the referenced plug-in metadata. It is a read on the Store's owner, including
+returns the device's stored root as a device.insert payload, plus the referenced
+plug-in metadata. It is a read on the Store's owner, including
 read-only projects: no live plug-in call, state-byte copy or op. Stored params,
 state hashes, panel order, expression route, nullable rack kind and remote host
 reference are retained. Native order/latency/parameter flags remain signed
 64-bit; device.insert accepts optional rackKind and remoteHost (null clears).
+
+Undo of rack removal restores its nested chains, devices, macros, and the
+macro mappings that cascaded at removal. It also restores typed child rows
+and shared-state references. The clipboard retains the rack's root metadata.
 
 prepareDevicePaste captures an ordered batch with a caller-supplied new ID,
 destination chain and optional before-device. It normalizes that chain's

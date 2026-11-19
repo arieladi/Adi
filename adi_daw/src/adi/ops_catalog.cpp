@@ -18,6 +18,8 @@
 #include "adi/clip_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
+#include "adi/device_copy.hpp"
+#include "adi/edit_time.hpp"
 #include "adi/blob.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/automation_lanes.hpp"
@@ -571,50 +573,76 @@ bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& 
     } catch(const std::exception& e){err=e.what();return false;}
 }
 
+Payload captureClipPlacement(SQLite::Database& db, std::int64_t id) {
+    SQLite::Statement st(db, "SELECT id,track_id,lane_id,time_base,pos_ticks,pos_ns,"
+                             "length_ticks,length_ns FROM clips WHERE id=?");
+    st.bind(1, id);
+    if (!st.executeStep()) throw std::runtime_error("no such clip");
+    return detail::captureQueryRow(st);
+}
+bool legacyClipPlacement(const OpContext& c) {
+    if (!c.replay) return false;
+    if (!c.replay->hasInverse || c.replay->asInverse) return true;
+    std::string error;
+    const auto inverse = decodeFromLog(c.replay->inverse, error);
+    if (!inverse) throw std::runtime_error("cannot decode clip placement inverse: " + error);
+    return !inverse->contains("_placement");
+}
+bool clipPlacementApply(OpContext& c, const Payload& p, std::string& err, bool move) {
+    try {
+        const auto id = detail::signedInteger(p.at("id"));
+        if (p.contains("_placement")) {
+            const auto& saved = p.at("_placement");
+            if (!c.replay || !c.replay->asInverse || saved.at("id") != id)
+                throw std::runtime_error("invalid captured clip placement");
+            detail::restoreRow(c.db, "clips", saved, "id");
+            return true;
+        }
+        const auto start = detail::signedInteger(p.at(move ? "to" : "pos"));
+        Payload values = {{"id", id}};
+        if (legacyClipPlacement(c)) {
+            // Old logs deliberately reproduce the row effects they recorded.
+            values["pos_ticks"] = start;
+            values[move ? "track_id" : "length_ticks"] = p.at(move ? "track" : "length");
+            detail::restoreRow(c.db, "clips", values, "id");
+            return true;
+        }
+        const auto before = captureClipPlacement(c.db, id);
+        const bool linear = before.at("time_base") == 1;
+        if (start < 0) throw std::runtime_error("clip position must be nonnegative");
+        std::optional<edit::TimeMap> time;
+        if (linear) time.emplace(c.db);
+        const auto position = time ? time->nanos(start) : start;
+        const auto* lengthKey = linear ? "length_ns" : "length_ticks";
+        values[linear ? "pos_ns" : "pos_ticks"] = position;
+        if (move) {
+            const auto track = detail::signedInteger(p.at("track"));
+            values["track_id"] = track;
+            if (track != detail::signedInteger(before.at("track_id")))
+                values["lane_id"] = nullptr;
+            if (!before.at(lengthKey).is_null())
+                (void)edit::addTime(position, detail::signedInteger(before.at(lengthKey)));
+        } else {
+            const auto ticks = detail::signedInteger(p.at("length"));
+            const auto end = edit::addTime(start, ticks);
+            const auto length = time ? time->nanos(end) - position : ticks;
+            if (length <= 0) throw std::runtime_error("clip length must be positive");
+            values[lengthKey] = length;
+        }
+        detail::restoreRow(c.db, "clips", values, "id");
+        return true;
+    } catch (const std::exception& e) { err = e.what(); return false; }
+}
 bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, track_id = ? WHERE id = ?");
-        st.bind(1, p.at("to").get<std::int64_t>());
-        st.bind(2, p.at("track").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, true);
 }
-bool clipMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, track_id FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["to"] = st.getColumn(0).getInt64();
-        inv["track"] = st.getColumn(1).getInt64();
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
-}
-
 bool clipResizeApply(OpContext& c, const Payload& p, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "UPDATE clips SET pos_ticks = ?, length_ticks = ? WHERE id = ?");
-        st.bind(1, p.at("pos").get<std::int64_t>());
-        st.bind(2, p.at("length").get<std::int64_t>());
-        st.bind(3, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    return clipPlacementApply(c, p, err, false);
 }
-bool clipResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+bool clipPlacementInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "SELECT pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["pos"] = st.getColumn(0).getInt64();
-        inv["length"] = st.getColumn(1).getInt64();
+        const auto id = detail::signedInteger(p.at("id"));
+        inv = {{"id", id}, {"_placement", captureClipPlacement(c.db, id)}};
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1499,6 +1527,12 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         const auto id = deviceInteger(p,"id");
+        if (p.contains("_rack_contents")) {
+            if (!c.replay || !c.replay->asInverse || c.replay->opType != "device.remove")
+                throw std::runtime_error("rack contents require a captured removal");
+            detail::restoreRack(c.db, id, p.at("_rack_contents"));
+            return true;
+        }
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
             "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
@@ -1565,7 +1599,8 @@ bool deviceRemoveApply(OpContext& c, const Payload& p, std::string& err) {
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
-bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+bool captureDeviceBeforeRemove(OpContext& c, const Payload& p, Payload& inv, std::string& err,
+                               bool captureNested) {
     try {
         const auto id = p.at("id").get<std::int64_t>();
         SQLite::Statement st(c.db,
@@ -1574,6 +1609,10 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
             "FROM devices WHERE id = ?");
         st.bind(1, id);
         if (!st.executeStep()) { err = "no such device to capture"; return false; }
+        if (captureNested && st.getColumn(5).getInt() != 0) {
+            inv = {{"id", id}, {"_rack_contents", detail::captureRack(c.db, id)}};
+            return true;
+        }
 
         inv = Payload::object();
         inv["id"]    = id;
@@ -1609,6 +1648,9 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         if (r.executeStep()) inv["route"] = r.getColumn(0).getString();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
+}
+bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
+    return captureDeviceBeforeRemove(c, p, inv, err, true);
 }
 
 // --- device.move ------------------------------------------------------------
@@ -1932,9 +1974,9 @@ const OpDescriptor kHandWritten[] = {
     {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      audioDetachApply, audioDetachInverse, "clip.attachAudio"},
     {"clip.move", "Move a clip in time, and optionally to another track", Scope::Edit, EngineImpact::Snapshot,
-     kFClipMove, false, false, clipMoveApply, clipMoveInverse, ""},
+     kFClipMove, false, false, clipMoveApply, clipPlacementInverse, ""},
     {"clip.resize", "Change a clip's start and length", Scope::Edit, EngineImpact::Snapshot, kFClipResize,
-     false, false, clipResizeApply, clipResizeInverse, ""},
+     false, false, clipResizeApply, clipPlacementInverse, ""},
 
     {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
      notes::noteInsertApply, notes::noteInsertInverse, "note.delete"},
@@ -2051,6 +2093,11 @@ const OpDescriptor kHandWritten[] = {
 };
 
 }  // namespace
+
+bool detail::captureDeviceCopyPayload(OpContext& c, std::int64_t id, Payload& payload,
+                                      std::string& error) {
+    return captureDeviceBeforeRemove(c, {{"id", id}}, payload, error, false);
+}
 
 std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {

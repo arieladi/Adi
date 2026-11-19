@@ -166,7 +166,8 @@ void freezeAudio(Store& store,Payload& image,const edit::TimeMap& time,double ra
     }
     if(fadeOut>0 && clock.at("out_begin_ns").is_null()) {
         const auto lastTick=row.at("time_base")==0?edit::addTime(origin,detail::signedInteger(row.at("length_ticks"))):
-            time.ticks(detail::signedInteger(row.at("pos_ns"))+detail::signedInteger(row.at("length_ns")));
+            time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),
+                                     detail::signedInteger(row.at("length_ns"))));
         if(lastTick<fadeOut)throw std::runtime_error("clip fade precedes project origin");
         const auto length=sample(time.seconds(lastTick)-time.seconds(lastTick-fadeOut),rate);
         if(length>0) {

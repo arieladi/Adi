@@ -11,4 +11,7 @@ Payload captureTrack(SQLite::Database&,std::int64_t);
 Payload captureTrackSource(SQLite::Database &, std::int64_t);
 void deleteTrack(SQLite::Database&,std::int64_t);
 void restoreTrack(SQLite::Database&,std::int64_t,const Payload&);
+// Physical cascade for a rack and its nested devices.
+Payload captureRack(SQLite::Database&,std::int64_t);
+void restoreRack(SQLite::Database&,std::int64_t,const Payload&);
 }

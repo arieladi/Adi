@@ -140,6 +140,12 @@ void bounceInPlaceAndStale() {
     const auto result=clip_edit::commitMaterial(*p.store,material);
     if(!result.ok)std::printf("bounce in place: %s\n",result.error.c_str());
     check(material.edit.ok && result.ok && p.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==3,"Bounce in Place trims crossing material and reserves the caller's next clip ID");
+    auto& db = p.store->db();
+    check(result.ok &&
+              db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=8").getInt64()==512 &&
+              db.execAndGet("SELECT min(clip_id) FROM audio_clips WHERE clip_id NOT IN (7,8)").getInt64()==9 &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE id=7").getInt()==1,
+          "the supplied next ID belongs to the bounce and the crossing source uses two other IDs");
     check(History(*p.store).undo().ok && p.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==1,"Bounce in Place undo restores the source whole");
     options.replace.reset();options.destination.clipId=20;options.destination.mediaId=21;
     bool edited=false;render::Control control;

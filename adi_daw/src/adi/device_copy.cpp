@@ -52,10 +52,9 @@ DeviceCopy readDeviceCopy(Store& store,std::int64_t id) {
     try {
         if(audio::onAudioThread)throw std::runtime_error("device copy belongs off the audio callback");
         Read read(store.db());result.sourceFile=identity(store);
-        const auto* descriptor=OpRegistry::instance().find("device.remove");
         OpContext context{store,store.db()};
-        if(!descriptor || !descriptor->buildInverse ||
-           !descriptor->buildInverse(context,{{"id",id}},result.insert,result.error))return result;
+        if (!detail::captureDeviceCopyPayload(context, id, result.insert, result.error))
+            return result;
         if(!result.insert.at("ref").is_null()) {
             SQLite::Statement reference(store.db(),"SELECT id,format,uid,vendor,name,version,subtype,path_hint,is_shell,shell_id FROM plugin_refs WHERE id=?");
             reference.bind(1,result.insert.at("ref").get<std::int64_t>());
