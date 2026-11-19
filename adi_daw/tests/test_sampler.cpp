@@ -172,6 +172,44 @@ int main(int argc, char **argv) {
     d.publishZones(std::span(&z, 1));
     check(std::abs(bin(render(d, 64, std::span(&attack, 1)), 16) - .4 / std::sqrt(2.)) < 1e-6,
           "constant-power selection crossfade");
+    // DF-E37 (e): the fades again at the DEFAULT Vel > Vol (35 %). A zone's
+    // weight used to scale the note's velocity, which Vel > Vol then turned
+    // into 1 - a + a w: a linear fade at w 0.5 played at 0.825, not 0.5. The
+    // weight is now the voice's own gain, latched at note-on.
+    set(d, "vel_to_vol", 35);
+    z.constantPower = false;
+    d.publishZones(std::span(&z, 1));
+    check(std::abs(bin(render(d, 64, std::span(&attack, 1)), 16) - .2) < 1e-6,
+          "linear selection crossfade at the default Vel > Vol: 0.5 of the zone, not 0.825");
+    z.constantPower = true;
+    d.publishZones(std::span(&z, 1));
+    check(std::abs(bin(render(d, 64, std::span(&attack, 1)), 16) - .4 / std::sqrt(2.)) < 1e-6,
+          "constant-power crossfade at the default Vel > Vol: 0.707 of the zone, not 0.897");
+    {
+        // A key crossfade's midpoint, two zones on identical samples: they sum
+        // to the constant-power 2 x 0.707, not 2 x 0.897 (+2 dB).
+        auto lowZone = z, highZone = z;
+        lowZone.select = highZone.select = {0, 127, 0, 0};
+        lowZone.key = {0, 62, 0, 4};
+        highZone.key = {58, 127, 4, 0};
+        std::array keyed{lowZone, highZone};
+        d.publishZones(keyed);
+        auto mid = on(0, 60, 1);
+        check(std::abs(bin(render(d, 64, std::span(&mid, 1)), 16) - .8 / std::sqrt(2.)) < 1e-6,
+              "a key crossfade's midpoint sums constant-power at the default Vel > Vol");
+        // Vel > Vol still acts on the played velocity: velocity 0.5 plays at 1 - .35 + .35 x .5.
+        z.select = {0, 127, 0, 0};
+        z.constantPower = false;
+        d.publishZones(std::span(&z, 1));
+        auto soft = on(0, 60, .5);
+        check(std::abs(bin(render(d, 64, std::span(&soft, 1)), 16) - .4 * (1 - .35 + .35 * .5)) < 1e-6,
+              "Vel > Vol acts on the played velocity only");
+        z.select.fadeLow = 127;
+        z.constantPower = true;   // as the checks below expect
+    }
+    set(d, "vel_to_vol", 100);
+    d.publishZones(std::span(&z, 1));
+    (void)render(d, 64, std::span(&attack, 1));   // saved after a render, as before
     auto state = d.saveState("component");
     device::Sampler copy;
     check(copy.loadState("component", state), "multisample state restores");

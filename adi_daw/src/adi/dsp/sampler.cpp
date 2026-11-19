@@ -198,7 +198,10 @@ void Sampler::process(const engine::NodeIo &io) noexcept {
                                       z.constantPower);
                     if (w <= 0)
                         continue;
-                    e.value *= w;
+                    // DF-E37 (e): the zone's weight is the voice's own gain,
+                    // latched at note-on -- not a scaled velocity, which Vel >
+                    // Vol would squeeze (0.825 for a 0.5 fade at 35 %).
+                    layer.engine->queueNoteGain(w);
                 }
                 (void)events.push(e); // sized in prepare() for the block's events
             }

@@ -291,6 +291,12 @@ double OneShot::read(const Sample &s, double position, int channel) const noexce
     const double x = s.data[a * stride + ch];
     return x + (s.data[b * stride + ch] - x) * (position - static_cast<double>(a));
 }
+void OneShot::queueNoteGain(double gain) noexcept {
+    if (noteGainCount_ == noteGains_.size() || !std::isfinite(gain)) return;
+    noteGains_[(noteGainHead_ + noteGainCount_) % noteGains_.size()] = std::max(0., gain);
+    ++noteGainCount_;
+}
+
 void OneShot::noteOn(const engine::Event &e, const Sample &s,
                      const std::array<double, Count> &p) noexcept {
     if(e.dim>127 || !std::isfinite(e.value) || e.value<=0)return;
@@ -317,6 +323,12 @@ void OneShot::noteOn(const engine::Event &e, const Sample &s,
     v.key = e.dim;
     v.age = ++age_;
     v.velocity = std::clamp(e.value, 0., 1.);
+    v.gain = 1;
+    if (noteGainCount_ > 0) {
+        v.gain = noteGains_[noteGainHead_];
+        noteGainHead_ = (noteGainHead_ + 1) % noteGains_.size();
+        --noteGainCount_;
+    }
     v.rng = static_cast<std::uint32_t>(v.age) | 1u;
     const double frames = static_cast<double>(s.frames());
     v.begin = std::min(frames - 1, frames * p[Start] / 100.);
@@ -496,7 +508,7 @@ void OneShot::processSample(const engine::NodeIo& io, const Sample* s,
                     const double pitch = (p[Mode] == 2 ? 0 : v.key - rootKey_) + p[Transpose] +
                                          p[Detune] / 100. + v.tuning + lfo * p[LfoPitch];
                     const double increment = s->rate / rate_ * std::exp2(pitch / 12.);
-                    double amplitude = v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
+                    double amplitude = v.gain * v.env * (1 - velocityAmount + velocityAmount * v.velocity) *
                                        std::pow(10., (p[Gain] + p[Volume]) / 20.) *
                                        (1 - p[LfoVolume] / 200. * (1 - lfo));
                     if (!classic)
