@@ -18,6 +18,22 @@ Should MIDI keep the upstream plug-in's physical latency when Delay Compensation
 
 My recommendation is to keep MIDI aligned to the device's physical audio delay and record that exception to ADR-0245 d8 for the off setting. It is also the current N24 engine contract in `docs/ENGINE-DELAY-COMPENSATION.md`. The decision blocks DF-E29(e)'s acceptance rule and the eventual application wiring of this option. DF-E29(a–d) continues independently.
 
+## 2026-11-19 — DF-E29(a–d) receiving clocks gated and pushed
+
+**PR requested** — branch `engine/df-e29-receiving-clock`, head `dfab28afe48be4e26a1e5c744f0d51f1e1d6e202`, base `origin/main` at `62ad7218`. Title **Keep receiving clock continuity through loops and gestures**. The remote head matches the gated commit. Contains DF-E27(e) as DF-E29(b).
+
+The synthetic startup fold at or beyond Loop End no longer counts as crossing a lap. The plug-in and metronome share projected transport history, with the click waiting for its output pipeline and the plug-in reporting signed preroll. Retime keeps the preceding laps and respects a newly introduced linear approach through Begin to the next real wrap. The tests cover loops shorter and longer than arrival latency.
+
+Owner-prepared device clock boundaries are shared by the regular Session and gesture generations, including the adopted non-topology base and the preview restore. Tempo and meter split the receiving plug-in at the same sample before a commit, after the drain, during the structural preview and after cancel. A beat at a rounded-down change is snapped to the effective boundary tick, keeping it aligned with the reported bar start. Actual CLAP and VST3 fixtures prove the rounded bar at 48 and 44.1 kHz.
+
+A diagnostic that put a latency retap immediately after a gesture rebuild measured the old 1,024-sample arrival for one callback and the new 1,536-sample arrival from the next. The original immediate retap fixture runs in its original preparation context, and the new gesture checks run after it.
+
+DF-E29(e) is parked in the FOR THE DIRECTOR note above. The test reproduced sample 4,116 for both events with compensation on, and sample 5,140 for the note versus 4,116 for automation with compensation off. The transport fixes leave that policy decision independent.
+
+**Gate** — GCC 14 Debug with Pure Data and warnings as errors, 245 CTest suites, five focused suites, four validators and the layout check. The JUCE VST3 fixture under Xvfb passed 214 checks. Clang 19 passed 195 transport and 529 CLAP checks with warnings as errors, including the VST3 probe compile. The original transport fixture failed six checks. Four compiled faults reproduced the startup false lap, retimed lead-in jump, lost gesture boundaries, and fractional beat behind its reported bar. Logs are under `/workspace/adi-engine-validation`.
+
+Taking the next available ADR-0248 d6 item after fetching main and checking #651.
+
 ## 2026-11-19 — DF-E27(a) backported to DF-E17 and gated
 
 **PR requested** — update the existing `engine/df-e17-edit-invariants` branch to `0c30d4ce713ece414a65b4c92be37a38ed10d15a`. The preceding remote head was `c0269d2d`. Title **Preserve native clip and rack edits through undo**. This adds the DF-E27(a) fix from `2accc015` and retains DF-E17's checked linear endpoint arithmetic. The remote head matches the gated commit. DF-E17 remains in the landing slot that follows agreement with DF-E35's lane semantics.
