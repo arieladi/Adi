@@ -16,6 +16,12 @@ DEV-25 and DF-E25(c) need a rule for the identity a saved VST3 carries across ma
 
 Legacy comp-target metadata in OPS needs a ruling for CT-01. Recommend retiring the legacy comp-target operation for new take lanes because the comp is made of clips on the main lane. This clears the remaining operation-table question. Take capture and main-lane playback can continue.
 
+## 2026-11-19 — TM-MD-05 bounded binary process streaming
+
+**PR requested** `engine-win/streamed-process-output` at `228adcb72b11a4bfd467d61522b9ec1de8e7f0e7`. The shared process runner gains a synchronous binary sink with a caller-supplied total-byte cap. It detects sink refusals and exceptions, keeps delivered bytes provisional until a clean child exit, and terminates and waits for the owned Windows process during cleanup. The scanner retains its existing buffered protocol, limits and deadline ordering.
+
+The exact process source and existing owned-child suite compiled under strict native x64 MSVC Debug. All 47 checks passed, including binary output over 8 MiB, cap exhaustion, a deadline, cancellation in the sink, standard and nonstandard exceptions, failing children and descendants, and Windows handle balance. Other platform execution and PCM/cache integration remain separate.
+
 ## 2026-11-19 — PD-13 closed-project salvage
 
 **PR requested** `engine-win/project-salvage` at `267d716a6b3a32cfa86748f7e976240de7a84d8b`. The tested code is `6d216aa1` and the follow-up changes the command documentation only. This stacks on SQLiteCpp 3.4.0 and its SQLite 3.53.4 runtime. Win can review the dependency fix independently first.
